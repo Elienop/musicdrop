@@ -45,6 +45,18 @@ entry carries a dated correction block where the pass changed it._
    browser-CSRF + DNS-rebinding pair and none of them is authentication — their own
    docstrings say so. Full posture analysis and option comparison: the vault note
    `musicdrop-auth-posture`.
+   **Slice 1 — the backend session gate — shipped (PR # filled in at merge):** every
+   `/api/*` route plus the docs surface (`/docs`, `/redoc`, `/openapi.json`) now requires
+   an HMAC-signed session cookie minted by `POST /api/auth/login` against the scrypt hash
+   in `MUSICDROP_PASSWORD_HASH`; exempt exact paths: `/api/health`, `/api/slskd/webhook`
+   (its own fail-closed secret), `/api/auth/login`, `/api/auth/status`. The gate matches
+   both the raw and root-path-stripped scope path (fail-closed OR), the signing key is
+   bound to the password hash so rotating it evicts every session, and the whole test
+   suite exercises the live gate via a conftest-minted cookie. Remaining: **slice 2** —
+   the frontend login screen + 401 handling + `EventSource` reconnect (until it ships, a
+   deployed slice-1 image has a working, gated API but no way to sign in from the UI —
+   do not deploy the in-between release); **slice 3** — re-open the three "no auth"
+   justifications (the dropped `/import` containment, the plex/slskd SSRF concessions).
 
 The 40 banked #143 Plex review Minors stay fully adjudicated (2026-08-25, every item
 re-verified against v0.44.0): 12 shipped as the triage fix slice (see Recently shipped), 12
@@ -53,6 +65,17 @@ three that sat under Open bugs shipped in #184; the nine under Deferred minors r
 Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 ## Open bugs / hardening
+
+- **`GET /api/health` publishes the exact backend version to unauthenticated callers
+  (2026-08-30 security audit of auth slice 1, finding L6 — deferred to auth slice 2).**
+  The session gate exists so an anonymous scanner learns nothing, but the exempt
+  healthcheck returns `{"status":"ok","version":"<release>"}` — the precise release to
+  match advisories against. Not fixed in slice 1 because the frontend consumes it:
+  `Topbar.tsx` renders "Backend online (vX.Y.Z)" and its test pins the string, so removal
+  forces a frontend change the backend slice should not carry. Fix shape for slice 2:
+  serve `version` from a gated endpoint (or fold it into an authenticated status payload),
+  point the Topbar there, and drop it from `/api/health` — the Dockerfile HEALTHCHECK
+  reads only `.status`, so the container is unaffected.
 
 - ~~**Three internal comments drifted from enforced behavior (2026-08-29 README audit;
   comment-only, fold into the next code PR — a docs-only PR can't carry them without
@@ -661,6 +684,29 @@ Nothing in this section is a task. Each item was decided, with its reasoning, an
 because a recorded decision is what stops the question being reopened from scratch. Do not
 scan here for something to pick up — scan *Open bugs / hardening*. Revisit an item only if
 the condition it names has changed.
+
+- **The session cookie is deliberately NOT `Secure` (2026-08-30, auth slice 1).**
+  MusicDrop is browsed over plain HTTP by LAN IP as a design point; a `Secure` cookie
+  would never be sent on that path and the app could not be signed into at all in its
+  primary deployment. The cookie is HttpOnly, SameSite=Lax, host-only, Path=/ — the
+  residual is exactly "as private as the LAN". A TLS hop in front (Caddy) encrypts that
+  leg regardless. Recorded at the Set-Cookie site in `app/api/auth.py` and in README's
+  Authentication section; revisit only if the by-IP plain-HTTP path stops being used.
+
+- **Logout is client-side only; session tokens are stateless (2026-08-30, auth slice 1).**
+  A token stays cryptographically valid until its embedded expiry (≤30 days) — there is
+  no server-side session table, so nothing can revoke ONE session early. Deliberate: no
+  state to store, reconcile or sweep. Rotating `MUSICDROP_PASSWORD_HASH` invalidates
+  every session at once (the signing key is bound to the hash — 2026-08-30 audit fix M3),
+  as does deleting `<beets_dir>/session-secret`. Pinned as intended behaviour by
+  `test_a_token_copied_before_logout_still_works`.
+
+- **The session-secret create race is narrowed, not closed (2026-08-30, auth slice 1).**
+  Two processes hitting first-run together could each mint a signing key; the loser
+  re-reads after `write_atomic_bytes` and adopts the winner's, but both could re-read
+  before the other's `os.replace`. Accepted because the image runs uvicorn single-worker
+  by design — there is no second process in the shipped deployment. Documented at
+  `app/auth/session.py::load_or_create_session_secret`.
 
 - **Cross-origin no-cors GET side effects are an accepted residual.** `GET
   /api/artists/image` (and its peer cache-fillers), plus the outbound-credential GETs like

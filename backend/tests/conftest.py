@@ -16,6 +16,10 @@ adapter:
   :class:`LibraryHandle`. This is the canonical way to get a hermetic beets
   library in tests now that the old ``MUSICDROP_BEETS_LIBRARY_*`` settings
   are gone.
+
+The third load-bearing thing here is not a fixture at all — see
+``_install_session_cookie_on_every_test_client`` below, which is what keeps the
+session gate (``app/auth/gate.py``) from 401-ing the whole suite.
 """
 
 import os
@@ -28,11 +32,78 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app.auth.session import SESSION_COOKIE_NAME, mint_session_token
 from app.beets.library import LibraryHandle, close_library
 from app.beets.setup import setup_beets
+from app.config import settings
+from app.main import app as _real_app
 
 if TYPE_CHECKING:
     from beets.library import Library
+
+#: A fixed 32-byte signing secret for the whole suite. Fixed rather than random
+#: so a token minted in a subprocess test (test_origin_guard, test_host_guard)
+#: or written into a hand-built ASGI scope (test_security_headers) verifies
+#: against the same key the in-process app is using.
+TEST_SESSION_SECRET = b"0123456789abcdef0123456789abcdef"
+
+
+def session_cookie_value() -> str:
+    """A freshly minted, valid session token for :data:`TEST_SESSION_SECRET`.
+
+    Minted through the PRODUCTION function, never a hand-rolled equivalent:
+    that is what makes the suite exercise the gate instead of bypassing it. If
+    the token format or the signature changes and the gate stops accepting what
+    this mints, ~2,500 tests go red — which is the intended alarm.
+
+    ``settings.password_hash`` is read HERE, at mint time, because the signing
+    key is derived from it (``app/auth/session.py::_signing_key``). A test whose
+    fixture patches the hash and THEN builds a client gets a cookie bound to the
+    patched value; one that patches it after construction has invalidated its
+    own cookie, and must re-mint or clear the jar. That is the same rule real
+    clients live under — rotating the password signs everyone out — so the suite
+    is not being given a special case.
+    """
+    return mint_session_token(TEST_SESSION_SECRET, settings.password_hash)
+
+
+def _install_session_cookie_on_every_test_client() -> None:
+    """Make every ``TestClient`` in the suite arrive authenticated.
+
+    The session gate is secure by DEFAULT, so without this the ~140 client
+    construction sites across the suite would each need a cookie. Two details
+    make this work where the obvious alternatives do not:
+
+    * it patches the CLASS OBJECT's ``__init__`` rather than a module
+      attribute. ``fastapi.testclient.TestClient`` IS
+      ``starlette.testclient.TestClient`` (a re-export, verified: the two names
+      are the same object), and the suite imports it both ways — patching one
+      module's name would silently miss every file that used the other;
+    * it runs at MODULE level, not in a fixture. ``tests/test_health.py`` builds
+      its client at import time, which is before any fixture has run.
+
+    Cookies are set on the instance's jar AFTER the real ``__init__``, so a
+    caller's own ``cookies=``/``headers=`` arguments survive — EXCEPT a
+    ``musicdrop_session`` passed to the constructor, which this overwrites.
+    A test that needs a specific session cookie (an expired one, a tampered
+    one, none at all) must therefore set it on the jar AFTER construction, or
+    call ``client.cookies.clear()``; every such test in this suite does. See
+    ``test_session_gate.py::test_clearing_the_seam_cookie_makes_the_gate_bite``,
+    the positive control proving this stamping is load-bearing.
+    """
+    _real_app.state.session_secret = TEST_SESSION_SECRET
+    original_init = TestClient.__init__
+
+    def __init__(self: TestClient, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        self.cookies.set(SESSION_COOKIE_NAME, session_cookie_value())
+
+    # Patching the class in place is the point: one assignment covers both
+    # import paths and all ~140 construction sites.
+    TestClient.__init__ = __init__  # type: ignore[method-assign]  # see the docstring
+
+
+_install_session_cookie_on_every_test_client()
 
 
 @pytest.fixture(autouse=True)

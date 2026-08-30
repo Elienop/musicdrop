@@ -227,9 +227,9 @@ def test_the_reset_declares_the_403_and_409_its_own_guards_return() -> None:
     from app.main import app
 
     responses = app.openapi()["paths"]["/api/artists/image/reset"]["post"]["responses"]
-    # 400 is the app-wide host guard (DNS-rebinding allowlist), declared by
-    # the OpenAPI overlay (app/openapi_overlay.py), not by this route.
-    assert sorted(responses) == ["200", "400", "403", "409", "422"]
+    # 400 (host guard) and 401 (session gate) are declared by the OpenAPI
+    # overlay (app/openapi_overlay.py), not by this route.
+    assert sorted(responses) == ["200", "400", "401", "403", "409", "422"]
     for sentence_status in ("403", "409"):
         content = responses[sentence_status]["content"]
         assert set(content) == {"application/json"}

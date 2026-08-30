@@ -249,10 +249,20 @@ def test_prod_posture_rejects_testserver_and_honors_the_setting(tmp_path: Path) 
     dist = tmp_path / "dist"
     (dist / "assets").mkdir(parents=True)
     (dist / "index.html").write_text('<!doctype html><div id="root"></div>')
+    # No conftest in the child, so the session secret is seeded and a cookie
+    # minted here. The three GETs hit `/api/health`, which the session gate
+    # exempts, but the reverse-proxy WRITE below is gated — un-authenticated it
+    # would report 401 and the proxy assertion would silently stop testing the
+    # host guard. Scaffolding only; every assertion still pins HOST posture.
     code = (
         "from starlette.testclient import TestClient\n"
         "from app.main import app\n"
-        "c = TestClient(app)\n"
+        "from app.auth.session import SESSION_COOKIE_NAME, mint_session_token\n"
+        "from app.config import settings\n"
+        "secret = b'0123456789abcdef0123456789abcdef'\n"
+        "app.state.session_secret = secret\n"
+        "c = TestClient(app, cookies={SESSION_COOKIE_NAME:"
+        " mint_session_token(secret, settings.password_hash)})\n"
         "default = c.get('/api/health')\n"
         "named = c.get('/api/health', headers={'Host': 'music.example.test'})\n"
         "ip = c.get('/api/health', headers={'Host': '127.0.0.1:3030'})\n"
@@ -269,6 +279,11 @@ def test_prod_posture_rejects_testserver_and_honors_the_setting(tmp_path: Path) 
         **os.environ,
         "MUSICDROP_STATIC_DIR": str(dist),
         "MUSICDROP_ALLOWED_HOSTS": "Music.Example.Test",
+        # Hermetic binding: the session token is signed with a key derived
+        # from MUSICDROP_PASSWORD_HASH, and an env var beats backend/.env —
+        # so an owner who sets a real hash locally cannot change what this
+        # child mints under.
+        "MUSICDROP_PASSWORD_HASH": "",
     }
     backend = Path(__file__).resolve().parents[1]
     out = subprocess.run(
@@ -309,6 +324,11 @@ def test_posture_log_emits_under_real_uvicorn(tmp_path: Path) -> None:
         # Real uvicorn runs the lifespan, which OPENS a beets library; aim it at
         # a throwaway dir so the boot cannot touch the dev library `.env` points at.
         "MUSICDROP_BEETS_DIR": str(tmp_path / "beets"),
+        # Pin the auth clause's input rather than inheriting it: an env var
+        # beats `backend/.env`, so an owner who sets a real hash locally does
+        # not turn this assertion red. Empty is also the state a fresh deploy
+        # boots in, which is the one worth pinning.
+        "MUSICDROP_PASSWORD_HASH": "",
     }
     backend = Path(__file__).resolve().parents[1]
     proc = subprocess.Popen(
@@ -354,3 +374,9 @@ def test_posture_log_emits_under_real_uvicorn(tmp_path: Path) -> None:
     assert "prod (static_dir set)" in posture
     assert "music.example.test" in posture
     assert "IP literals, localhost" in posture
+    # The auth clause, on the same line and through the same logger. The child
+    # inherits no MUSICDROP_PASSWORD_HASH, so this is the state a fresh deploy
+    # is in — an app that answers nothing until the operator sets one, which is
+    # exactly the case that must not boot silently.
+    assert "NO password configured" in posture
+    assert "MUSICDROP_PASSWORD_HASH" in posture

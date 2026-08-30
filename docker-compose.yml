@@ -11,6 +11,14 @@ services:
       - PUID=1000
       - PGID=1000
       - TZ=Etc/UTC
+      # REQUIRED — the single account's password, as a scrypt hash. Until this
+      # is set every /api request is refused with a 401 (the startup log says
+      # so). Generate one with:
+      #   docker exec -it musicdrop python -m app.auth.hash_password
+      # Note the DOUBLED $$: compose expands a single $ as a variable, so the
+      # hash's own separators have to be escaped here (an env_file entry does
+      # not need this).
+      # - MUSICDROP_PASSWORD_HASH=scrypt$$131072$$8$$1$$c2FsdA==$$ZGlnZXN0
       # Optional integrations (see README):
       # - MUSICDROP_ARTIST_IMAGE_FANARTTV_API_KEY=...
       # - MUSICDROP_INBOX_DIR=/inbox   # pair with the /inbox volume below

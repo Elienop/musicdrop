@@ -356,9 +356,9 @@ def test_the_cover_fetch_declares_every_status_it_can_return() -> None:
     """
     operation = app.openapi()["paths"]["/api/albums/{album_id}/cover/fetch"]["post"]
     responses = operation["responses"]
-    # 400 is the app-wide host guard (DNS-rebinding allowlist), declared by
-    # the OpenAPI overlay (app/openapi_overlay.py), not by this route.
-    assert sorted(responses) == ["200", "400", "403", "404", "422"]
+    # 400 (host guard) and 401 (session gate) are declared by the OpenAPI
+    # overlay (app/openapi_overlay.py), not by this route.
+    assert sorted(responses) == ["200", "400", "401", "403", "404", "422"]
     # The 200 is image bytes; before this it offered ONLY a JSON body.
     assert "image/*" in responses["200"]["content"]
     for code in ("403", "404"):
@@ -427,10 +427,22 @@ def test_the_cover_install_declares_every_status_it_can_return() -> None:
     """
     operation = app.openapi()["paths"]["/api/albums/{album_id}/cover"]["post"]
     responses = operation["responses"]
-    # 400 (host guard) and 403 (cross-origin write guard) are stamped on by the
-    # OpenAPI overlay (app/openapi_overlay.py), not by this route.
-    assert sorted(responses) == ["200", "400", "403", "404", "409", "413", "415", "422", "500"]
-    for code in ("400", "403", "404", "409", "413", "415"):
+    # 400 (host guard), 401 (session gate) and 403 (cross-origin write guard)
+    # are stamped on by the OpenAPI overlay (app/openapi_overlay.py), not by
+    # this route.
+    assert sorted(responses) == [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "409",
+        "413",
+        "415",
+        "422",
+        "500",
+    ]
+    for code in ("400", "401", "403", "404", "409", "413", "415"):
         schema = responses[code]["content"]["application/json"]["schema"]
         assert schema["$ref"] == "#/components/schemas/ErrorDetail", code
     assert responses["422"]["content"]["application/json"]["schema"]["anyOf"] == [

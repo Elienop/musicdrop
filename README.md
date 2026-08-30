@@ -118,6 +118,67 @@ The same goes for server-to-server callers — a proxy that rewrites `Host` to a
 *name*, or another container calling MusicDrop by service name (slskd's webhook posting to
 `http://musicdrop:3030`) — list those names too; container/host IPs always work.
 
+### Authentication
+
+MusicDrop has a **single account**, protected by one password. Every `/api/*` request — and
+`/docs`, `/redoc`, `/openapi.json` — is refused with a `401` unless the browser holds a valid
+session cookie. The only exceptions are the container healthcheck (`/api/health`), the slskd
+webhook (which carries its own shared secret), and the two sign-in endpoints themselves.
+
+**Until you set a password, the API answers nothing.** That is deliberate — there is no
+"unprotected by default" mode — and the startup log says so on one line:
+
+```
+security posture: prod (static_dir set); …; auth: NO password configured, so every gated API
+request will be rejected until MUSICDROP_PASSWORD_HASH is set
+```
+
+Set it in two steps. First generate a hash — **never put the plaintext password in an env var**,
+which is why MusicDrop has no setting for one:
+
+```bash
+docker exec -it musicdrop python -m app.auth.hash_password
+# or, from a checkout:  cd backend && uv run python -m app.auth.hash_password
+```
+
+It prompts twice (hidden — nothing reaches your shell history) and prints a self-describing
+scrypt string like `scrypt$131072$8$1$vIfqnSPZ…$bTMGckBk…`. Put it in your compose file and
+restart:
+
+```yaml
+    environment:
+      # Every $ DOUBLED: compose expands a single $ as a variable reference.
+      - MUSICDROP_PASSWORD_HASH=scrypt$$131072$$8$$1$$vIfqnSPZ…$$bTMGckBk…
+```
+
+The doubling is only a `docker-compose.yml` quirk. In an `.env` file, an `env_file:`, or a plain
+`docker run -e`, paste the value exactly as printed.
+
+Signing in sets a cookie that lasts **30 days**, survives container restarts, and is
+`HttpOnly` + `SameSite=Lax`. **Sign out** clears it in that browser.
+
+**Changing the password signs every session out, everywhere.** The cookie is signed with a key
+derived from `MUSICDROP_PASSWORD_HASH`, so setting a new hash and restarting invalidates every
+outstanding cookie — which is what you want if a password ever leaks, and worth knowing before
+you rotate one casually. Deleting `data/beets/session-secret` and restarting does the same
+thing without changing the password.
+
+The one thing you cannot do is revoke a *single* session early: **Sign out** expires the cookie
+in the browser, but the token itself stays valid until it expires or until you rotate one of the
+two values above. There is no server-side session list, deliberately — nothing to store, sweep
+or back up.
+
+**One honest caveat: the cookie is not marked `Secure`.** MusicDrop is designed to be browsed
+over plain HTTP by LAN IP (`http://192.168.1.10:3030`), and a `Secure` cookie is never sent over
+plain HTTP — the app would be impossible to sign into in its primary deployment. The practical
+consequence is that the session cookie is only as private as your network. If you expose
+MusicDrop beyond your LAN, put it behind a reverse proxy terminating TLS (which encrypts the hop
+that matters) and keep it off the open internet.
+
+> **This release is API-side only.** The backend enforces the password; the **login screen
+> arrives in the next release**. Until then a browser hitting a protected page gets 401s with no
+> way to sign in from the UI — so do not deploy this version expecting a usable interface.
+
 Releases are automatic: every merged PR that touches anything beyond markdown/docs publishes a new image tag (`vX.Y.Z`, plus `latest`) with generated notes on the [Releases page](https://github.com/Elienop/musicdrop/releases); a docs-only merge cuts no release of its own and ships with the next one.
 
 **One-time repair, for libraries built before the path fix.** Every release up to and including v0.34.1 stored MusicDrop-imported track paths in `library.db` *absolutely* (`/music/Artist/…`) instead of relative to the music directory, the way beets does. Nothing is damaged, but such rows do not follow the music share if it ever moves to a new mount, dataset, or machine. The release containing `fix(import): store item paths relative to the music dir` stops it recurring; the existing rows need a separate one-time database repair, and **the two have to land in the same maintenance window** — deploying either half on its own leaves the importer's duplicate lookup worse off than doing neither. The procedure, starting with the census that tells you whether you are affected, is [`docs/import-path-repair.md`](docs/import-path-repair.md).
@@ -156,6 +217,7 @@ Those are the shipped image's paths (`MUSICDROP_BEETS_DIR=/data/beets`, `MUSICDR
 - `data/cache/artist-images/*.bin` · `*.mime` · `*.miss` — the auto-fetch cache and its negative markers, refetched on demand.
 - `data/cache/artist-images/*.thumb.bin` · `*.thumb.src` — the 320px WebP portraits the grids and rosters render, re-derived from the `*.override` or `*.bin` beside them the moment the sidecar's source tag stops matching.
 - `data/cache/cover-thumbs/` — the same derivation for album covers (`MUSICDROP_COVER_THUMB_CACHE_DIR=/data/cache/cover-thumbs` in the shipped image). Nothing authoritative is here at all: unlike the artist cache this one never owns an original — every cover it thumbnails lives in the music tree, as an art file or an embedded tag. Delete the whole directory and the next page view rebuilds what it needs.
+- `data/beets/session-secret` — the key your session cookie is signed with, mode `0600`. Restoring it keeps you signed in across the restore; losing it just means signing in again on the next visit, which is also how you revoke every outstanding session on purpose. It is *not* your password — that lives only in `MUSICDROP_PASSWORD_HASH`, so a snapshot with no `session-secret` still lets you in.
 - import, backfill and sweep jobs — in memory only; they don't survive a restart anyway.
 
 **Snapshot consistency**

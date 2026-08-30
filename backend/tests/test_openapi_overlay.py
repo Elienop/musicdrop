@@ -1,8 +1,9 @@
-"""Pin the middleware 400/403/413 overlay against the LIVE served spec.
+"""Pin the middleware 400/401/403/413 overlay against the LIVE served spec.
 
-The guards (``app/host_guard.py``, ``app/origin_guard.py``, ``app/body_limit.py``)
-reject requests before the router; ``app/openapi_overlay.py`` declares their
-statuses on every operation. These tests read ``/openapi.json`` off the running
+The guards (``app/host_guard.py``, ``app/auth/gate.py``, ``app/origin_guard.py``,
+``app/body_limit.py``) reject requests before the router;
+``app/openapi_overlay.py`` declares their statuses on every operation. These
+tests read ``/openapi.json`` off the running
 app — the same contract the frontend generates its types from — and pin that
 every route, now and added later, advertises the statuses it can actually get,
 with the real ``ErrorDetail`` body shape, without disturbing anything FastAPI
