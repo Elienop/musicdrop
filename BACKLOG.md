@@ -565,8 +565,41 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `import.copy: no` still render an escaping relpath (`../inbox/Album`) — display-only,
   recorded, not worth a mapping layer today.
 
-- **Artist-image cache: after a broken cache dir is repaired, affected artists never return
-  to disk.** Read "to disk" literally — the portraits keep SERVING, correct bytes and correct
+- ~~**Artist-image cache: after a broken cache dir is repaired, affected artists never return
+  to disk.**~~ — **FIXED on `fix/artist-image-cache-tier` (PR #198), 2026-08-29,
+  per the owner's settled design (vault decisions 24): the in-memory stand-in becomes a real
+  cache TIER with LAZY write-back on the next touch, no background job.** Two halves, both in
+  `app/artwork/cache.py`. (1) `validator()` now consults the tier after disk: a strand carries
+  its own quoted-strong tag (`"mem-<sha256[:16]>-<size>"`, minted once in `_MemoryFallback.put`
+  and stored on a `_MemoryEntry`, never recomputed on the read path), so a stranded artist takes
+  the ordinary 304 / `_serve_cached` route and never reaches `filler.fill` — which kills the
+  ~2 Hz remount loop during the outage as well as after repair, and with it the per-request
+  sha256 in `_serve_full` and the per-request thumb re-derive. The tag families are disjoint by
+  construction (a stat tag opens with a digit), which is what `get_thumb` reads to refuse the
+  recorded hazard: a `.thumb` pair keyed to a memory tag is derived and SERVED but never
+  written, because no restart could reproduce the tag and no sweep looks for it. (2) `get()`
+  re-attempts the disk write on a memory hit (`_write_back`, through the same
+  `_publish_positive` helper `store_positive` uses, so the `.miss` unlink and the
+  mime-before-bytes order cannot drift); success DROPS the strand exactly as `_or_remember`'s
+  success branch does, failure is swallowed and leaves the entry untouched — deliberately not
+  re-put, since re-putting would refresh its eviction position and turn a bounded oldest-first
+  map into an access-ordered one. Negatives are excluded from the write-back: they self-heal on
+  TTL and a `.miss` conjured from a probe would bar the re-resolve that repairs the key.
+  `api/artists.py` needed no change. Twelve mutants run, every one killed;
+  `test_clear_auto_forgets_an_in_memory_fallback_entry` was reworked because its "unwritable"
+  dir was an ordinary missing path, so the write-back would have emptied the map in its own
+  setup and left it green for the wrong reason — the new fixtures use a dir whose parent is a
+  regular FILE (ENOTDIR on `mkdir`, root-safe unlike `chmod`). **Residuals, all by design or
+  pre-existing:** a restart before the next touch still loses the memory copies (accepted — they
+  re-fetch); the rename merge / `kept_target` paths still discard the old key's strand without
+  carrying it (pre-existing — only `_rename_move_all` migrates one; the discard itself is now
+  pinned by `test_rename_purging_the_old_key_forgets_its_strand` and
+  `test_rename_moving_a_pin_onto_an_auto_image_forgets_the_sources_strand`, since the merge tests
+  are disk-only and never reach the memory half);
+  and the other recovery paths named below (the backfill sweep's own cache instance, a manual
+  override, `clear_auto`) remain as they were. **Original entry, kept for the diagnosis that
+  shaped the fix:**
+  Read "to disk" literally — the portraits keep SERVING, correct bytes and correct
   content-type, on every request, out of the in-memory stand-in. What never recovers is
   persistence: the on-disk slot stays absent for the process lifetime. Nothing user-visible
   breaks. The stand-in (`ArtistImageCache._MemoryFallback`, added in the perf/images wave) is

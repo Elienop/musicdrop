@@ -4,6 +4,8 @@ import contextlib
 import io
 import logging
 import os
+import re
+import threading
 import time
 import unittest.mock
 from pathlib import Path
@@ -17,7 +19,11 @@ from app.artwork.cache import (
     NEGATIVE,
     ArtistImageCache,
     CachedImage,
+    _is_memory_tag,
+    _MemoryEntry,
+    _NegativeUntil,
 )
+from app.etag import stat_etag
 
 _StrPath = str | os.PathLike[str]
 
@@ -31,6 +37,33 @@ def _png(width: int, height: int, color: str = "red") -> bytes:
 @pytest.fixture
 def cache(tmp_path: Path) -> ArtistImageCache:
     return ArtistImageCache(tmp_path)
+
+
+def _broken_cache_dir(tmp_path: Path) -> Path:
+    """A cache dir that genuinely cannot be created, read or written — as root too.
+
+    The path's parent is a regular FILE, so ``mkdir`` raises ENOTDIR and every
+    slot ``exists()`` reads False (pathlib swallows ENOTDIR). That matters
+    because the ``chmod 0o500`` fixtures this file already uses have to
+    ``skip`` under root, and CI images do run as root: a write-back test built
+    on chmod would report green having executed nothing.
+    """
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_bytes(b"")
+    return blocker / "cache"
+
+
+def _strand(cache: ArtistImageCache, name: str, data: bytes, mime: str) -> _MemoryEntry:
+    """Put ``name`` in the memory tier the way a failed write would, and hand
+    back the entry.
+
+    Inserted directly rather than staged with ``chmod``: that is the root-safe
+    pattern the rest of this file already uses for fallback fixtures.
+    """
+    cache._memory.put(cache._key(name), CachedImage(data=data, content_type=mime))
+    entry = cache._memory.get(cache._key(name))
+    assert isinstance(entry, _MemoryEntry)
+    return entry
 
 
 def _artwork_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
@@ -636,6 +669,499 @@ def test_the_memory_fallback_is_bounded_by_bytes(cache: ArtistImageCache, tmp_pa
     assert survivors == [1, 2, 3], "the oldest entry must be the one evicted"
 
 
+# --- the memory tier: its own validator tag, and the lazy write-back ---------
+
+
+def test_a_stranded_image_carries_its_own_revalidation_tag(tmp_path: Path) -> None:
+    """A strand must be validatable, or every request for it skips the 304 path.
+
+    That was the whole bug: ``validator`` stat'd disk only, so a stranded
+    portrait looked unvalidatable, fell through to the background filler, and
+    each completed fill armed an unscoped ``art:changed`` that re-requested it —
+    a self-sustaining remount loop, plus a per-request sha256 and thumb
+    re-derive. The dir here is genuinely broken, so nothing can write back and
+    the tag is the tier's own.
+    """
+    cache = ArtistImageCache(_broken_cache_dir(tmp_path))
+    _strand(cache, "ABBA", b"stranded", "image/png")
+
+    tag = cache.validator("ABBA")
+
+    assert tag is not None
+    # QUOTED STRONG, because app.etag's size_scoped_etag splices its "-t" thumb
+    # marker INSIDE the closing quote — an unquoted tag would silently break it.
+    assert tag.startswith('"')
+    assert tag.endswith('"')
+    assert cache.validator("ABBA") == tag, "an unchanged entry must not move its tag"
+
+
+def test_a_memory_tag_is_never_mistaken_for_a_disk_tag(cache: ArtistImageCache) -> None:
+    """Same key, same bytes, two tiers -> two tags.
+
+    A shared tag would 304 a request against the wrong tier's copy, and the two
+    families have to stay disjoint by construction (a stat tag opens with a
+    digit; a memory tag opens with its own marker).
+    """
+    _strand(cache, "ABBA", b"same-bytes", "image/png")
+    memory_tag = cache.validator("ABBA")
+
+    cache.store_positive("ABBA", b"same-bytes", "image/png")
+    disk_tag = cache.validator("ABBA")
+
+    assert memory_tag is not None
+    assert disk_tag is not None
+    assert disk_tag != memory_tag
+    # Disjoint BY CONSTRUCTION, not by luck: get_thumb reads exactly this to
+    # decide whether the pair it is about to write can survive a restart, so a
+    # memory tag that no longer announces itself is a silent orphan factory.
+    assert _is_memory_tag(memory_tag)
+    assert not _is_memory_tag(disk_tag)
+
+
+def test_a_disk_slot_outranks_the_memory_tier_in_the_validator(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """Disk keeps authority the instant it has anything, here as everywhere else.
+
+    Probing memory first would let a strand's tag validate an image ``get()``
+    is not about to serve — the two orders must agree.
+    """
+    key = cache._key("ABBA")
+    _strand(cache, "ABBA", b"stranded", "image/png")
+    (tmp_path / f"{key}.bin").write_bytes(b"on-disk")
+
+    assert cache.validator("ABBA") == stat_etag(tmp_path / f"{key}.bin")
+
+
+def test_touching_a_strand_writes_it_back_and_releases_it(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """The persistence half: a repaired dir re-persists on the next TOUCH.
+
+    ``store_positive`` cannot do this — it runs only after ``get()`` misses, and
+    a strand makes ``get()`` hit — so without a write-back here the key stayed
+    memory-only for the life of the process however healthy the dir became.
+    """
+    key = cache._key("ABBA")
+    _strand(cache, "ABBA", b"stranded", "image/jpeg")
+    memory_tag = cache.validator("ABBA")
+
+    got = cache.get("ABBA")
+
+    assert isinstance(got, CachedImage)
+    assert got.data == b"stranded"
+    assert (tmp_path / f"{key}.bin").read_bytes() == b"stranded"
+    assert (tmp_path / f"{key}.mime").read_text(encoding="utf-8") == "image/jpeg"
+    assert cache._memory.get(key) is None, "disk took it, so the tier must let go"
+    disk_tag = cache.validator("ABBA")
+    assert disk_tag is not None
+    assert disk_tag != memory_tag
+
+
+def test_the_write_back_supersedes_a_negative_marker_the_way_a_store_does(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """A strand is a POSITIVE, so persisting it clears any ``.miss`` beneath it.
+
+    Invoked directly because ``get()`` cannot stage this state: a FRESH marker
+    short-circuits to NEGATIVE before the memory tier is consulted, and a stale
+    one is swept by ``get()`` itself — so a marker reaching the write-back is
+    only reachable through the shared publish helper. Hand-rolling the two
+    writes inside the write-back instead of reusing that helper is what this
+    catches.
+    """
+    key = cache._key("ABBA")
+    cache._ensure_dir()
+    (tmp_path / f"{key}.miss").write_text(repr(time.time() + 3600), encoding="utf-8")
+    entry = _strand(cache, "ABBA", b"stranded", "image/png")
+
+    cache._write_back(key, entry)
+
+    assert not (tmp_path / f"{key}.miss").exists()
+    assert cache.get("ABBA") is not NEGATIVE
+
+
+def test_a_failed_write_back_leaves_the_strand_exactly_as_it_was(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """During the outage the retry just fails, and must cost nothing.
+
+    ``is`` rather than ``==``: re-putting the entry would build an equal one
+    while moving it to the END of the eviction order, quietly turning a bounded
+    oldest-first map into an access-ordered cache. The byte-budget test cannot
+    see that (it touches every key in insertion order, which permutes to the
+    same survivors), so identity is the only pin.
+
+    Swallowed but NOT silent: this is the only signal that a repaired-looking
+    install is still serving every portrait out of a map that dies with the
+    process, and a dropped ``warn_throttled`` here leaves an operator with a
+    working app and no trace at all. Throttled, so it is one line per condition
+    per interval however many artists the outage strands.
+    """
+    cache = ArtistImageCache(_broken_cache_dir(tmp_path))
+    key = cache._key("ABBA")
+    before = _strand(cache, "ABBA", b"stranded", "image/png")
+
+    with caplog.at_level(logging.WARNING, logger="musicdrop.artwork"):
+        got = cache.get("ABBA")  # must not raise
+
+    assert isinstance(got, CachedImage)
+    assert got.data == b"stranded"
+    assert cache._memory.get(key) is before
+    assert not (tmp_path / "not-a-dir").is_dir(), "nothing may have reached disk"
+    records = _artwork_records(caplog)
+    assert len(records) == 1
+    assert "unwritable" in records[0].getMessage()
+
+
+def test_a_remembered_negative_never_materialises_a_miss_file(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """Negatives are excluded from the write-back on purpose.
+
+    They carry their own expiry and self-heal on TTL, and a ``.miss`` conjured
+    out of a mere probe would outlive that TTL's intent by barring the
+    re-resolve that repairs the key. The dir here is writable, so an absent
+    marker is a decision, not a refusal.
+    """
+    cache._memory.put(cache._key("Nobody"), _NegativeUntil(expiry=time.time() + 3600))
+
+    assert cache.has_fresh_negative("Nobody") is True
+    assert cache.get("Nobody") is NEGATIVE
+    assert not list(tmp_path.glob("*.miss"))
+    # And a negative is not a portrait: nothing for a conditional GET to match.
+    assert cache.validator("Nobody") is None
+
+
+def test_a_fresh_disk_negative_silences_the_memory_tag(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """``get()`` ranks a fresh ``.miss`` above the tier, so the tag must too.
+
+    One process cannot stage this pair (a strand blocks the resolve that
+    writes markers), but the backfill daemon runs its own cache instance over
+    the same dir and can conclude "no image upstream" while this instance
+    still holds a strand. A memory tag answered here would keep 304ing the
+    stale portrait for exactly the clients that cached it, while everyone
+    else 404s off ``has_fresh_negative`` — two truths from one URL.
+    """
+    key = cache._key("ABBA")
+    _strand(cache, "ABBA", b"stranded", "image/png")
+    cache._ensure_dir()
+    (tmp_path / f"{key}.miss").write_text(repr(time.time() + 3600), encoding="utf-8")
+
+    assert cache.validator("ABBA") is None
+    assert cache.get("ABBA") is NEGATIVE, "the two reads must tell the same story"
+
+
+def test_a_stale_disk_negative_leaves_the_memory_tag_standing(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """Only a FRESH marker outranks the tier — a lapsed one is already dead."""
+    key = cache._key("ABBA")
+    entry = _strand(cache, "ABBA", b"stranded", "image/png")
+    cache._ensure_dir()
+    (tmp_path / f"{key}.miss").write_text(repr(time.time() - 1), encoding="utf-8")
+
+    assert cache.validator("ABBA") == entry.tag
+
+
+def test_a_reset_during_the_write_back_stays_reset(
+    cache: ArtistImageCache, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The publish must not resurrect an image the user just cleared.
+
+    The write-back publishes outside the map's lock, so a ``clear_auto``
+    landing mid-publish discards the strand AFTER the read but BEFORE the
+    let-go. The let-go is an identity compare exactly so this interleaving is
+    detectable — and the freshly published files are taken back rather than
+    outliving the reset with no TTL.
+    """
+    key = cache._key("ABBA")
+    _strand(cache, "ABBA", b"stranded", "image/png")
+    real_publish = cache._publish_positive
+
+    def race(publish_key: str, image: CachedImage) -> None:
+        real_publish(publish_key, image)
+        cache._memory.discard(publish_key)  # the reset, landing mid-publish
+
+    monkeypatch.setattr(cache, "_publish_positive", race)
+    got = cache.get("ABBA")
+
+    assert isinstance(got, CachedImage), "the toucher itself still gets the bytes"
+    assert not (tmp_path / f"{key}.bin").exists(), "the reset must stay reset"
+    assert not (tmp_path / f"{key}.mime").exists()
+    assert cache._memory.get(key) is None
+
+
+def test_a_newer_strand_survives_a_stale_write_back(
+    cache: ArtistImageCache, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A strand replaced mid-publish keeps its newer bytes in the tier.
+
+    An unconditional discard here would drop the replacement along with the
+    stale entry — the identity compare is what tells "disk took MINE" apart
+    from "somebody newer moved in while I published".
+    """
+    key = cache._key("ABBA")
+    _strand(cache, "ABBA", b"stale", "image/png")
+    real_publish = cache._publish_positive
+
+    def race(publish_key: str, image: CachedImage) -> None:
+        real_publish(publish_key, image)
+        cache._memory.put(publish_key, CachedImage(data=b"newer", content_type="image/png"))
+
+    monkeypatch.setattr(cache, "_publish_positive", race)
+    cache.get("ABBA")
+
+    survivor = cache._memory.get(key)
+    assert isinstance(survivor, _MemoryEntry)
+    assert survivor.image.data == b"newer"
+    assert not (tmp_path / f"{key}.bin").exists(), "the stale publish was taken back"
+
+
+def test_rename_carries_the_strand_without_re_tagging(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """The migrated entry is the SAME object — tag and all, no re-hash.
+
+    The tag is content-derived, so a re-mint would be equal anyway; identity
+    is asserted because it is the only observable proof the up-to-10MB hash
+    was not spent inside ``rename``.
+    """
+    entry = _strand(cache, "Fayrouz", b"stranded", "image/png")
+
+    assert cache.rename("Fayrouz", "Fairuz") == "moved"
+    assert cache._memory.get(cache._key("Fairuz")) is entry
+    assert cache._memory.get(cache._key("Fayrouz")) is None
+
+
+def test_a_stranded_source_serves_a_thumb_but_caches_no_pair(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """A ``.thumb`` pair keyed to a memory tag is a permanent orphan.
+
+    No restart can reproduce the tag, so nothing would ever match the pair
+    again, and ``clear_auto`` only sweeps keys somebody resets. Deriving per
+    request while the strand lasts is what the strand already cost.
+    """
+    key = cache._key("ABBA")
+    _strand(cache, "ABBA", _png(1000, 1000), "image/png")
+
+    thumb = cache.get_thumb("ABBA")
+
+    assert thumb is not None
+    assert thumb.content_type == "image/webp"
+    assert Image.open(io.BytesIO(thumb.data)).size == (320, 320)
+    assert not list(tmp_path.glob("*.thumb.*"))
+    # Non-vacuity: this dir DOES take writes — the source was written back
+    # during the same call, so the missing pair is a skip, not a refusal.
+    assert (tmp_path / f"{key}.bin").exists()
+
+
+def test_the_thumb_after_a_write_back_caches_under_the_disk_tag(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """The skip above is for the strand only, and it ends with the strand."""
+    _strand(cache, "ABBA", _png(1000, 1000), "image/png")
+    assert cache.get_thumb("ABBA") is not None  # strand: derived, nothing cached
+    assert not list(tmp_path.glob("*.thumb.*"))
+
+    assert cache.get_thumb("ABBA") is not None  # source is on disk now
+
+    (src_path,) = tmp_path.glob("*.thumb.src")
+    stored_tag, _, _ = src_path.read_text(encoding="utf-8").partition(" ")
+    assert stored_tag == cache.validator("ABBA")
+    # And the sweep that owns derived thumbs still reaches it.
+    cache.clear_auto("ABBA")
+    assert not list(tmp_path.glob("*.thumb.*"))
+
+
+def _touch_one_strand_from_two_threads(
+    run_dir: Path, data: bytes
+) -> tuple[ArtistImageCache, list[object]]:
+    """Two real threads calling ``get()`` on one strand, released together.
+
+    A module-level helper rather than a closure in the loop below: the barrier,
+    the result list and the cache would all be loop variables captured by the
+    thread body, which is the shape ruff's B023 exists to stop.
+    """
+    cache = ArtistImageCache(run_dir)
+    _strand(cache, "ABBA", data, "image/png")
+    start = threading.Barrier(2)
+    served: list[object] = []
+    append_lock = threading.Lock()
+
+    def touch() -> None:
+        start.wait()
+        got = cache.get("ABBA")
+        with append_lock:
+            served.append(got)
+
+    threads = [threading.Thread(target=touch) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return cache, served
+
+
+def test_two_concurrent_touches_of_one_strand_never_destroy_it(tmp_path: Path) -> None:
+    """The claim, under real threads. Without it this loses the entry outright.
+
+    Both touches publish (idempotent, so disk is fine) and then both let go:
+    the first ``discard_if`` wins and drops the strand, the second finds the key
+    gone and cannot tell that from a concurrent ``clear_auto`` — so it takes
+    back the files its rival just published. Disk empty, memory empty, a full
+    upstream re-resolve, for a key that was never reset. Reachable from one
+    artist row: ``?size=full`` and ``?size=thumb`` land in the threadpool
+    together.
+
+    Measured 40/40 destroyed on the unclaimed code with exactly this shape, so
+    twenty iterations is far past the escape rate; the barrier is what makes
+    each one a real race rather than two sequential calls.
+
+    A non-claimer may legitimately observe a transient MISS: its disk probe can
+    run before the rival's publish lands and its memory read after the rival's
+    release — the entry moved tiers between its two looks. The endpoint heals
+    that inside the same request (the filler's own ``get()`` then hits disk),
+    so the pin here is "never a wrong answer and never a destroyed entry",
+    not "every racer gets bytes".
+    """
+    data = b"stranded" * 1000
+    for iteration in range(20):
+        run_dir = tmp_path / f"run{iteration}"
+        run_dir.mkdir()
+
+        cache, served = _touch_one_strand_from_two_threads(run_dir, data)
+
+        key = cache._key("ABBA")
+        answers = [got.data for got in served if isinstance(got, CachedImage)]
+        assert answers, f"iteration {iteration}: nobody got the image"
+        assert all(a == data for a in answers)
+        assert all(isinstance(got, CachedImage) or got is None for got in served), (
+            "a racer saw something other than the image or a transient miss"
+        )
+        on_disk = (run_dir / f"{key}.bin").exists()
+        in_memory = cache._memory.get(key) is not None
+        assert on_disk or in_memory, f"iteration {iteration}: the entry was destroyed"
+        # The state a healthy dir must reach: disk took it, so the tier let go.
+        assert on_disk, f"iteration {iteration}: the bytes never reached disk"
+        assert (run_dir / f"{key}.bin").read_bytes() == data
+        assert not in_memory, f"iteration {iteration}: disk took it, so the tier must let go"
+
+
+def test_only_one_caller_at_a_time_claims_a_strands_write_back(
+    cache: ArtistImageCache,
+) -> None:
+    """The claim itself, deterministically — the hammer above proves the effect.
+
+    Three properties, because each is a separate way to reintroduce the bug: a
+    second claim on a live one is refused; releasing re-opens the key (a leaked
+    claim would bar it from ever persisting again); and a claim for an entry the
+    map no longer holds is refused, so a caller that read the strand before a
+    replacement cannot publish stale bytes over the newer ones.
+    """
+    key = cache._key("ABBA")
+    entry = _strand(cache, "ABBA", b"stranded", "image/png")
+
+    assert cache._memory.begin_write_back(key, entry) is True
+    assert cache._memory.begin_write_back(key, entry) is False, "already in flight"
+
+    cache._memory.end_write_back(key)
+    assert cache._memory.begin_write_back(key, entry) is True, "the release must re-open it"
+    cache._memory.end_write_back(key)
+
+    replacement = _strand(cache, "ABBA", b"newer", "image/png")
+    assert replacement is not entry
+    assert cache._memory.begin_write_back(key, entry) is False, "a replaced entry is not claimable"
+    assert cache._memory.begin_write_back(key, replacement) is True
+
+
+def test_a_replaced_strand_mints_a_new_tag(cache: ArtistImageCache) -> None:
+    """The tag is DERIVED from the bytes, and a constant would be worse than none.
+
+    A strand replaced after a reset (dir still broken) that kept the old tag
+    would 304 every client holding it — permanently serving the portrait the
+    reset was meant to remove, to exactly the clients that had cached it.
+    """
+    first = _strand(cache, "ABBA", b"first-bytes", "image/png")
+    assert cache.validator("ABBA") == first.tag
+
+    second = _strand(cache, "ABBA", b"second-bytes", "image/png")
+
+    assert second.tag != first.tag
+    assert cache.validator("ABBA") == second.tag
+
+
+def test_the_tag_moves_when_only_the_content_type_does(cache: ArtistImageCache) -> None:
+    """Same bytes, different type — still a different response, so a different tag.
+
+    The digest covers the content-type as well as the payload; a digest over the
+    bytes alone would 304 a client holding the image/png copy against an
+    image/jpeg one and leave it with a permanently mislabelled portrait.
+    """
+    png = _strand(cache, "ABBA", b"identical-bytes", "image/png")
+    jpeg = _strand(cache, "ABBA", b"identical-bytes", "image/jpeg")
+
+    assert png.tag != jpeg.tag
+
+
+def test_a_memory_tag_has_the_shape_its_docstring_documents(cache: ArtistImageCache) -> None:
+    """``"mem-<16 hex>-<len>"``, pinned including the LENGTH suffix.
+
+    The suffix is half of what the docstring promises and is otherwise
+    unobservable: dropping it leaves a tag that still changes with the bytes, so
+    every other assertion in this file survives. Matched structurally rather
+    than recomputed — a test that re-derives the digest would pass against any
+    derivation the production code happened to use.
+    """
+    data = b"stranded-bytes"
+    entry = _strand(cache, "ABBA", data, "image/png")
+
+    match = re.fullmatch(r'"mem-([0-9a-f]{16})-(\d+)"', entry.tag)
+
+    assert match is not None, f"tag {entry.tag!r} is not the documented shape"
+    assert int(match.group(2)) == len(data), "the length suffix must be the payload's"
+
+
+def test_a_strand_still_validates_when_the_cache_dir_becomes_unreadable(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """``validator`` runs FIRST on every image request, strand or no strand.
+
+    Its memory branch re-probes ``.miss`` (a fresh marker outranks the tier), and
+    that probe is an ``exists()`` on the broken dir — EACCES after a container
+    recreate re-chowns the volume. Unguarded it 500s both image endpoints from
+    the very first call, before any other guard can catch it. The sibling test
+    below covers the same dir with NO strand, so its ``validator`` returns
+    before this branch and never executes it.
+    """
+    if os.getuid() == 0:
+        pytest.skip("running as root: mode 000 does not deny access")
+    entry = _strand(cache, "ABBA", b"stranded", "image/png")
+    os.chmod(tmp_path, 0o000)
+    try:
+        tag = cache.validator("ABBA")  # must not raise
+    finally:
+        os.chmod(tmp_path, 0o755)
+
+    assert tag == entry.tag
+
+
+def test_re_putting_a_key_counts_its_bytes_once(cache: ArtistImageCache) -> None:
+    """The pre-insert discard is what refunds the outgoing entry's bytes.
+
+    Without it a replaced entry's bytes are never given back, so the budget
+    shrinks on every re-put and the tier starts evicting live entries early —
+    invisible until the map is smaller than it says it is.
+    """
+    _strand(cache, "ABBA", b"stranded", "image/png")
+    _strand(cache, "ABBA", b"stranded-again-and-longer", "image/png")
+
+    assert cache._memory._bytes == len(b"stranded-again-and-longer")
+
+
 def test_an_unreadable_cache_dir_degrades_instead_of_raising(
     cache: ArtistImageCache, tmp_path: Path
 ) -> None:
@@ -807,12 +1333,25 @@ def test_clear_auto_removes_the_derived_thumb(tmp_path: Path) -> None:
 
 
 def test_clear_auto_forgets_an_in_memory_fallback_entry(tmp_path: Path) -> None:
-    # A cache dir that refused the write keeps the image in the bounded memory
-    # map. A reset that only unlinked files would keep serving it forever.
-    cache = ArtistImageCache(tmp_path / "unwritable")
-    cache._memory.put(cache._key("ABBA"), CachedImage(data=b"remembered", content_type="image/png"))
+    """A cache dir that refused the write keeps the image in the bounded memory
+    map. A reset that only unlinked files would keep serving it forever.
+
+    TWO things this had to be rebuilt for. Its dir was named "unwritable" but
+    was an ordinary missing path any ``mkdir`` creates, so once ``get()`` gained
+    the lazy write-back the setup ``get()`` emptied the map before ``clear_auto``
+    ever ran and the test passed for the wrong reason. It now uses a dir that
+    genuinely refuses (root included, unlike ``chmod``), and asserts the MAP
+    rather than only ``get()`` — with a writable dir the two are no longer the
+    same question.
+    """
+    cache = ArtistImageCache(_broken_cache_dir(tmp_path))
+    key = cache._key("ABBA")
+    _strand(cache, "ABBA", b"remembered", "image/png")
     assert isinstance(cache.get("ABBA"), CachedImage)
+
     cache.clear_auto("ABBA")
+
+    assert cache._memory.get(key) is None
     assert cache.get("ABBA") is None
 
 
@@ -902,8 +1441,6 @@ def test_has_fresh_negative_is_false_once_the_ttl_lapses(tmp_path: Path) -> None
 def test_has_fresh_negative_honours_an_in_memory_marker(tmp_path: Path) -> None:
     # A cache dir that refused the write keeps the marker in memory; ignoring it
     # would re-fetch a confirmed no-match on every single request, forever.
-    from app.artwork.cache import _NegativeUntil
-
     cache = ArtistImageCache(tmp_path / "unwritable")
     cache._memory.put(cache._key("Nobody"), _NegativeUntil(expiry=time.time() + 3600))
     assert cache.has_fresh_negative("Nobody") is True
@@ -914,8 +1451,6 @@ def test_has_fresh_negative_lets_an_expired_in_memory_marker_go(tmp_path: Path) 
     read as "no marker" exactly as an expired ``.miss`` body does — otherwise a
     cache dir that refused ONE write bars that artist from ever re-resolving
     again for the life of the process."""
-    from app.artwork.cache import _NegativeUntil
-
     cache = ArtistImageCache(tmp_path / "unwritable")
     cache._memory.put(cache._key("Nobody"), _NegativeUntil(expiry=time.time() - 1))
     assert cache.has_fresh_negative("Nobody") is False
@@ -1064,6 +1599,119 @@ def test_rename_never_raises_when_the_cache_dir_refuses(
 
 def test_every_slot_suffix_is_either_moved_or_deliberately_dropped() -> None:
     assert set(_MOVE_ORDER) | {".miss"} == set(_ALL_SLOT_SUFFIXES)
+
+
+def test_rename_onto_a_target_that_holds_only_a_strand_keeps_the_targets_bytes(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """A strand IS a portrait for the merge decision — the wrong-artist case.
+
+    ``_has_portrait`` counts the memory tier, so a target whose only copy is a
+    strand wins the merge exactly as a disk portrait does. Counting disk alone
+    reads the target as empty and takes the move-everything branch instead: the
+    SOURCE's ``.bin`` lands on the target key and the target artist starts
+    serving somebody else's picture, reported as a clean "moved". That is a
+    silent wrong-image bug with no error anywhere, which is why the outcome is
+    pinned alongside the verdict.
+    """
+    cache.store_positive("Fayrouz", b"source-on-disk", "image/jpeg")
+    _strand(cache, "Fairuz", b"target-strand", "image/png")
+
+    assert cache.rename("Fayrouz", "Fairuz") == "kept_target"
+
+    got = cache.get("Fairuz")
+    assert isinstance(got, CachedImage)
+    assert got.data == b"target-strand", "the target must keep its OWN portrait"
+    old_key = cache._key("Fayrouz")
+    assert not any(name.startswith(old_key) for name in _slot_files(tmp_path))
+
+
+def test_a_case_only_rename_of_a_strand_reports_moved(cache: ArtistImageCache) -> None:
+    """The same-key branch asks ``_has_portrait``, and a strand is one.
+
+    Nothing moves here (the key is unchanged), so the verdict is the ONLY
+    output — and it is not cosmetic: ``api/artists.py`` emits ``art:changed``
+    for "moved"/"kept_target" and stays silent on "none", so a strand read as
+    "none" leaves every open roster showing the old name's monogram until
+    something else bumps the asset version.
+    """
+    assert cache._key("Beyoncé") == cache._key("beyonce"), "non-vacuity: one key, two spellings"
+    _strand(cache, "Beyoncé", b"stranded", "image/png")
+
+    assert cache.rename("Beyoncé", "beyonce") == "moved"
+
+    got = cache.get("beyonce")
+    assert isinstance(got, CachedImage)
+    assert got.data == b"stranded"
+
+
+def test_a_rename_chain_never_drifts_the_memory_budget(cache: ArtistImageCache) -> None:
+    """``put`` must charge for a CARRIED entry, not only for a fresh image.
+
+    ``put`` converts a ``CachedImage`` to a ``_MemoryEntry`` before it measures,
+    so a size test written against ``CachedImage`` matches nothing and charges
+    zero — while the discard on the way out still refunds. Each rename then
+    drives the budget further negative (measured -32768 after nine), and a
+    negative budget silently disables the byte cap the tier exists to enforce.
+    Only the accumulator can see this: every ``get()`` still returns the right
+    bytes throughout.
+    """
+    data = b"stranded"
+    _strand(cache, "Fayrouz", data, "image/png")
+
+    for old, new in (("Fayrouz", "Fairuz"), ("Fairuz", "Fairouz"), ("Fairouz", "Feyrouz")):
+        assert cache.rename(old, new) == "moved"
+
+    assert cache._memory._bytes == len(data)
+    carried = cache._memory.get(cache._key("Feyrouz"))
+    assert isinstance(carried, _MemoryEntry), "non-vacuity: the entry really did travel"
+
+
+def test_rename_purging_the_old_key_forgets_its_strand(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """``_purge_old_key`` unlinks five files AND drops the memory entry.
+
+    The old artist has ceased to exist, so a strand left under the old key is
+    the forever-orphan ``rename`` exists to prevent — invisible to every disk
+    sweep, and served for the life of the process to anyone who asks for the
+    old name. The disk half is covered by the merge tests; only this reaches
+    the memory half.
+    """
+    old_key = cache._key("Fayrouz")
+    _strand(cache, "Fayrouz", b"source-strand", "image/png")
+    cache.store_positive("Fairuz", b"target-on-disk", "image/jpeg")
+
+    assert cache.rename("Fayrouz", "Fairuz") == "kept_target"
+
+    assert cache._memory.get(old_key) is None
+    assert cache.get("Fayrouz") is None, "the departed name must serve nothing"
+    assert not any(name.startswith(old_key) for name in _slot_files(tmp_path))
+
+
+def test_rename_moving_a_pin_onto_an_auto_image_forgets_the_sources_strand(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """The other target-wins branch drops the old key's strand too.
+
+    ``_rename_pin_onto_auto`` moves only the override pair and deletes the rest
+    of the old key — the strand is part of "the rest", and it is the part no
+    ``_unlink`` can reach. Left behind it outlives the artist it belonged to.
+    """
+    old_key = cache._key("Fayrouz")
+    cache.write_override("Fayrouz", b"source-pin", "image/png")
+    _strand(cache, "Fayrouz", b"source-strand", "image/png")
+    cache.store_positive("Fairuz", b"target-auto", "image/jpeg")
+
+    assert cache.rename("Fayrouz", "Fairuz") == "moved"
+
+    assert cache._memory.get(old_key) is None
+    assert cache.get("Fayrouz") is None, "the departed name must serve nothing"
+    assert not any(name.startswith(old_key) for name in _slot_files(tmp_path))
+    # The pin really did land, so the branch under test is the one that ran.
+    got = cache.get("Fairuz")
+    assert isinstance(got, CachedImage)
+    assert got.data == b"source-pin"
 
 
 def test_rename_move_failure_returns_kept_target(
