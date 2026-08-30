@@ -52,11 +52,33 @@ entry carries a dated correction block where the pass changed it._
    (its own fail-closed secret), `/api/auth/login`, `/api/auth/status`. The gate matches
    both the raw and root-path-stripped scope path (fail-closed OR), the signing key is
    bound to the password hash so rotating it evicts every session, and the whole test
-   suite exercises the live gate via a conftest-minted cookie. Remaining: **slice 2** —
-   the frontend login screen + 401 handling + `EventSource` reconnect (until it ships, a
-   deployed slice-1 image has a working, gated API but no way to sign in from the UI —
-   do not deploy the in-between release); **slice 3** — re-open the three "no auth"
-   justifications (the dropped `/import` containment, the plex/slskd SSRF concessions).
+   suite exercises the live gate via a conftest-minted cookie.
+   **Slice 2 — the login UI — shipped in #200** (`0eca9c2` = v0.47.0): `/login` outside the
+   shell, a `RequireAuth` guard, transport 401 handling across both the openapi-fetch client
+   and `apiFetch`, sign out; plus the scheme-conditional `Secure` cookie and `version` moved
+   onto a gated `GET /api/version`. **The do-not-deploy hold is lifted** — v0.47.0 is the
+   first deployable release of this work.
+   **Slice 3 — re-open the "no auth" justifications — shipped in #201**, which completes
+   auth option C. No behaviour change: the OpenAPI dump regenerates byte-identical, and an AST
+   diff against `0eca9c2` with docstrings stripped is IDENTICAL on all five app files, so
+   nothing executable moved. The one addition is a test —
+   `test_assert_public_url_rejects_every_normal_integration_base_url` — which makes the
+   anti-hardening claim executable; mutation-tested by neutering the guard's loopback and
+   private terms, which reddens it. Re-derived 2026-08-30
+   by three investigators under nine adversarial verification lenses, zero refutations, and
+   the result inverts the framing this entry used to carry: the justifications were **not**
+   made stale by auth, they were **false when written** and auth has just made them true.
+   Each claimed the value was "admin-controlled (only the single self-hosted owner can set
+   it)" while any Origin-less `curl` on the LAN could write it — roughly twelve weeks for the
+   Plex one (written 2026-06-07 in #24; the gate shipped 2026-08-30). So the work is
+   replacing an assumption with a named enforcement mechanism, not conceding anything new.
+   It is also **five** sites, not three: the two `base_url` concessions and the `/import`
+   containment, plus `security_headers.py`'s CORP bullet (which cites "with no
+   authentication" outright and is the one genuinely stale reason) and
+   `artwork/download.py`'s DNS-rebind scope-out (which auth *strengthens*). Two hypotheses
+   were tested and **refuted**: the gate-exempt slskd webhook does not reach arbitrary-path
+   import (doubly contained by `contain(..., strict=True)` in the handler and again in the
+   queue, and it forces its own `operation="move"`), and it never reads `base_url` at all.
 
 The 40 banked #143 Plex review Minors stay fully adjudicated (2026-08-25, every item
 re-verified against v0.44.0): 12 shipped as the triage fix slice (see Recently shipped), 12
@@ -65,6 +87,159 @@ three that sat under Open bugs shipped in #184; the nine under Deferred minors r
 Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 ## Open bugs / hardening
+
+- **`tests/test_import_session.py::test_attended_astracks_lands_the_singletons_full_pipeline`
+  writes to the developer's PERSONAL beets config dir** (`~/.config/beets/state.pickle`) on every
+  full-suite run — bisected as the only offender, and present at least as far back as `643783f`,
+  so it predates the path-binding branch. Bounded: only beets' importer scratch state is written,
+  the personal `library.db` md5 is unchanged and no `.bak` appears. Same class as the sibling entry
+  above and as the 2026-08-15 incident where an agent's unguarded `beet --version` ran two pending
+  migrations against that same personal library. Its sibling entry (the two
+  `test_artist_image_endpoint.py` lifespan tests that opened the real dev library) was fixed on
+  the backlog-minors wave via `_pin_settings_at`, canary-proven with
+  `MUSICDROP_BEETS_DIR=/nonexistent`; the durable close for THIS entry and the whole class is
+  still an autouse fixture pointing `BEETSDIR` at `tmp_path` for the entire suite.
+  **Re-fired 2026-08-30, and the new fact is that the workaround is unenforceable.** The
+  standing mitigation is a human rule — "this file is CI-only, never run it locally" — and
+  nothing in the repo implements it: `uv run pytest` from `backend/`, which is the exact
+  Dev command `CLAUDE.md` documents, collects all 91 of this file's tests and runs them
+  (2806 collected with, 2715 without). So the rule is violated by following the project's
+  own instructions, and it fails **silently** — the suite is green and nothing names the
+  file. Measured blast radius this time, matching this entry's bound exactly: personal
+  `library.db` mtime unchanged, no new `.bak`, only `state.pickle` rewritten — its
+  `taghistory` set replaced with the single path
+  `/tmp/pytest-of-<user>/pytest-N/test_sweep_mode_stores_relativ0/inbox/Artist - Album`
+  and `tagprogress` emptied. Consequence for the developer: a personal
+  `beet import --incremental` re-offers folders it had already marked done, and an
+  interrupted import loses its resume point. Nothing is deleted or moved. The fix is
+  unchanged and now has a second reason to be a fixture rather than a rule: a rule that
+  only lives in a session's memory is one an agent, a `--` invocation, or a fresh
+  contributor breaks on their first test run.
+
+- **The slskd webhook secret has no minimum length, no rate limit and no lockout — and it
+  is the ONLY thing in front of a gate-exempt import trigger (2026-08-30, found while
+  re-deriving the auth justifications for slice 3).** `POST /api/slskd/webhook` is one of
+  four exact paths exempt from the session gate, precisely *because* it carries its own
+  secret (`app/api/slskd.py::require_webhook_secret`) — so that secret now does a job the
+  session cookie does everywhere else, and it is held to a much weaker standard. Three
+  gaps, all verified at `0eca9c2`: (1) **no minimum length.** `SlskdSettingsUpdate.
+  webhook_secret` (`app/models/slskd.py:38`) is a bare `str | None` with no
+  `StringConstraints`, and `app/slskd/config.py::SlskdConfig.webhook_secret` a bare
+  `str` — a one-character secret saves cleanly, and the UI gives no hint that it
+  shouldn't. (2) **No attempt throttling anywhere on the path.** No *inbound* rate limiter
+  exists in this app at all: `TokenBucketLimiter` paces outbound artwork fetches, and auth's
+  `anyio.CapacityLimiter(1)` serialises *scrypt* verification and so only incidentally
+  paces login guessing. (Stated as a predicate rather than an enumeration on purpose — a
+  review of this entry named a "third limiter", `RateLimitAdapter`, which on inspection is
+  **beets'** own `TimeoutAndRetrySession` described in a docstring at
+  `app/beets/research.py`, not a MusicDrop limiter at all.) The webhook's
+  `hmac.compare_digest` is microseconds and
+  unserialised, so guesses run at connection speed. (3) **No lockout or alerting** — an
+  unbounded run of 401s is indistinguishable from silence. The comparison is unflattering
+  in exactly the direction that matters: the password behind the session gate is scrypt-
+  hashed and rate-paced, while the secret that bypasses that gate is compared in
+  constant time and otherwise unprotected. Fix shape (ordered by value): a `min_length`
+  on both models plus a one-time migration warning for an existing short secret; then a
+  per-IP failure counter with a backoff, on this path only. The comparison itself is
+  already correct — `compare_digest` on bytes, with the surrogateescape and
+  dependency-ordering reasoning documented in the docstring; do not touch that half.
+  **Not a regression and not urgent** — it predates auth and the webhook still fails
+  closed when no secret is set. It is filed now because slice 1 changed its *role*: it
+  used to be one lock among many equals, and is now the single exception in a locked
+  house.
+
+- **`POST /api/plex/test` reports success for a server that sent nothing, and 500s on one
+  that sent the wrong thing (2026-08-30, found while re-deriving the auth justifications
+  for slice 3).** `app/plex/service.py:30` promises *"never raises"* and returns a friendly
+  `PlexConnection(ok=False, error=...)` for the Settings panel to render. It catches
+  `PlexApiException` and `RequestException` — neither of which covers what a **non-Plex**
+  HTTP server produces, and pointing `base_url` at the wrong port is the single most
+  likely operator mistake this button exists to catch. Measured 2026-08-30 against a
+  throwaway `http.server` on 127.0.0.1, all three answering `200`:
+  - `200` + an **empty body** → `ok=True, server_name="Plex"`. A green *Connected*
+    against a server that sent zero bytes. Mechanism: `plexapi.utils.parseXMLString`
+    returns `None` for a blank body (`utils.py:838`), `PlexObject.__init__` then skips
+    `_loadData` entirely (`base.py:119-120`), so no attribute is ever set and
+    `getattr(server, "friendlyName", "") or "Plex"` manufactures the name from the
+    fallback. Nothing raises, so nothing is caught.
+  - `200` + **any well-formed XML that is not a Plex response** → also
+    `ok=True, server_name="Plex"`, by the same route: it parses, but carries no
+    `friendlyName`, so the fallback fires. Measured for `<html><body>hi</body></html>`
+    and `<div>x</div>`, both of which are valid XML. This is the widest arm and the
+    empty-body framing above understates it — **the rule is that any 200 whose body
+    parses as XML without a `friendlyName` reports a successful connection**.
+  - `200` + **malformed HTML** (e.g. an unclosed `<br>`) → escapes as
+    `xml.etree.ElementTree.ParseError: mismatched tag`.
+  - `200` + **JSON** → escapes as `ParseError: not well-formed (invalid token)`.
+
+  `ParseError` subclasses `SyntaxError`, so it is outside both `except` arms and reaches
+  the client as a 500 rather than the typed body the panel branches on. Fix shape: catch
+  `ElementTree.ParseError` (or the broader "anything the seam can throw") in `_friendly`
+  and, separately, refuse to report `ok=True` when the server produced no parseable
+  identity — check for a real `friendlyName`/`machineIdentifier` instead of falling back
+  to the literal `"Plex"`. **The false-success arms are the more serious half**: an error
+  is visible, a green *Connected* against the wrong server is not, and it is the arm that
+  fires for the most likely mistake (a wrong port on a box that runs other web services).
+  **The slskd twin shares the false-success half** — a first draft of this entry called it
+  "already correct", which is true only of the crash half. Measured: a 20,000-character junk
+  body comes back as `ok=True` with the junk as `version`. So the "refuse `ok=True` without a
+  parseable identity" fix belongs on both sides. Where slskd genuinely is correct is not
+  crashing —
+  `app/slskd/client.py` catches `ValueError` around `response.json()` and degrades to the
+  raw text.
+
+- **`server.url(key, includeToken=True)` puts the Plex admin token in a query string
+  (`app/plex/playlists_pull.py:129`, 2026-08-30).** The custom-poster fetch bypasses
+  plexapi's `PlexServer._headers()` — which is where the token normally travels, as
+  `X-Plex-Token:` — and instead calls `server._session.get()` on a URL that
+  `PlexServer.url` has appended `?X-Plex-Token=<token>` to (`plexapi/server.py:883-886`).
+  It is not gratuitous: the raw `_session` carries no auth of its own, so *something* had
+  to supply it, and `includeToken=True` is the shortest way. The cost is that the token
+  lands in the Plex server's own access log, in any intermediary's, and in a URL that can
+  be shoulder-read from a traceback — plexapi's own `logfilter.add_secret` scrubs it from
+  *plexapi's* logging and cannot reach any of those. This is the Plex **admin** token,
+  which is full account control, not a scoped read key. Fix shape: pass
+  `headers=server._headers()` to `_session.get` and drop `includeToken`, keeping the
+  header path the rest of the module already uses. Low severity — the log it leaks into
+  belongs to the server that already holds the token — but it is a one-line change with
+  no behavioural risk, so the ratio is good.
+
+- **`POST /import` gives a signed-in owner two footguns with no confirmation and no way
+  out (2026-08-30).** Distinct from the containment ruling recorded under *Accepted
+  residuals* — that ruling is about an **attacker's** marginal capability and it stands.
+  This is about the **owner's** own typo, which it never covered. (1) `{"path": "/"}` is
+  accepted and starts a beets autotag walk of the whole container filesystem. The only
+  path validation on the way in is `BeetsImportRunner.validate`
+  (`app/import_jobs/runner.py:99`), and it checks exactly one thing — an *explicit* copy of
+  an in-library source. **A root path passes it in EVERY mode, copy included**, which a
+  first draft of this entry got wrong by saying "in the default mode" and so implying copy
+  was covered. Measured 2026-08-30: `validate(["/"], operation="copy")` and
+  `validate(["/mnt"], operation="copy")` both **pass**, while a path *inside* the library
+  raises `InLibraryCopyError`. The cause is that `is_in_library_source` tests only
+  source-at-or-below-library, so any **ancestor** of the library defeats it — and the
+  worker's "second" guard re-calls the same predicate, so it is one lock counted twice.
+  That matters because an operator who picks Copy and types `/` gets exactly the harm the
+  guard's own message warns about ("a copy-import would duplicate its files"), at library
+  scale, with the guard silent. The model does not help either
+  (`app/models/import_api.py::StartImportRequest.path` is constrained to non-empty after
+  stripping, and nothing more).
+  The single-slot policy then works against the operator rather than for them:
+  `ensure_import_can_start` (`app/api/import_.py:86`) plus the registry's
+  `RuntimeError -> 409` mean this one job holds the only import slot, so every later
+  import — plus the lyrics, artist-art, reorganize and disk-sync backfills that share the
+  gate — returns 409 until the walk finishes, and the screen offers no confirmation for a
+  path far outside the usual `/downloads`. What the walk *does* to the files follows the
+  user's beets config, not MusicDrop: `run_import_worker`'s `move=None` "touches nothing"
+  for a manual import, and the shipped starter config is `copy: yes` / `move: no`
+  (`app/beets/config.starter.yaml:20-21`), so a stock install fills the library disk with
+  a copy of every music file it can reach — while an operator who set `move: yes` gets the
+  destructive version of the same typo. (2) There is no cheap pre-flight: nothing reports
+  how many candidate folders a path contains before the slot is committed to it. Fix shape
+  (smallest first): refuse — or interstitially confirm — a path that is a filesystem root
+  or an ancestor of the configured music library; then a `dry_run` probe returning a
+  candidate count. Explicitly **not** an allowlist: that is the exact remedy the
+  2026-07-07 ruling rejected as workflow friction, and the reasoning it gave for ad-hoc
+  `/downloads` imports has not changed.
 
 - **The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
   three cleared families have now measurably regrown (2026-08-30, found while clearing auth
@@ -734,6 +909,133 @@ the condition it names has changed.
   by design — there is no second process in the shipped deployment. Documented at
   `app/auth/session.py::load_or_create_session_secret`.
 
+- **Both integration `base_url` fields are credential-exfiltrating SSRF for whoever holds
+  the password; the slskd one is additionally REFLECTED — accepted, and measured
+  2026-08-30 so the acceptance is informed.** Both are deliberately unrestricted (see the
+  ruling below and the comments at `PlexConfig.base_url` / `SlskdConfig.base_url`). A first
+  draft of this entry called the slskd field "strictly worse than its Plex twin"; the
+  security seat refuted that and the measurement backs it. **Plex:** one
+  `POST /api/plex/test` hands `X-Plex-Token` — full Plex account control — as a *header* to
+  whatever host the field names, together with `X-Plex-Platform-Version` (the running
+  kernel version — measured on the dev box, and a container shares the host's kernel) and
+  `X-Plex-Device-Name` (the hostname), fingerprinting the box for free.
+  No log-reading and no second request. The response is not usefully reflected, so it is
+  effectively blind. **slskd** is worse in exactly one way that matters — it reads the
+  response body back out — plus it grants full path control. That difference had never been
+  written down or tested. Measured against a local echo server:
+  - `app/slskd/client.py` builds `f"{base_url}/api/v0/application/version"`. A trailing
+    `#` on the stored value pushes that suffix into the **fragment**, which is never sent
+    — so the wire path is entirely chosen by the setting. Observed wire path for
+    `http://127.0.0.1:PORT/latest/meta-data/iam/#` was exactly `/latest/meta-data/iam/`.
+  - The `X-API-Key` header — the slskd credential — is sent to whatever host it names.
+  - The response body is returned to the caller **untruncated**, as
+    `SlskdConnection.version`, so `POST /api/slskd/test` reads it back out. Blind SSRF
+    this is not.
+  - The one real mitigation is that `httpx.get` defaults to `follow_redirects=False`
+    (verified on httpx 0.28.1), so a redirect cannot re-aim the request afterwards.
+
+  **The credential exfiltration is accepted**, on the same reasoning as the import ruling:
+  the runtime writer is `PUT /api/slskd/settings`, behind the session gate, and the same
+  cookie already grants `POST /api/config/save` — arbitrary beets configuration on the same
+  box. It crosses no boundary between MusicDrop **principals**, because there is exactly one
+  account. Note carefully what that does *not* say, because the first draft of this entry
+  over-claimed it as "strictly smaller than what the cookie already buys" and the security
+  seat refuted that: this capability **reaches off-box** (Plex account control, whatever the
+  slskd key reaches — lateral movement that survives wiping MusicDrop) and it **defeats a
+  confidentiality property the app deliberately implements**, since the settings API returns
+  only `has_token`/`has_webhook_secret` and these fields are write-only by design. The SSRF
+  turns write-only into readable-by-an-attacker-chosen-host; `config/save` does not.
+  Accepted because the writer is gated — **re-open the moment a second, less-privileged
+  account exists**, and treat this as one of the first things that must stop being a plain
+  settings field.
+
+  **The PATH control is not accepted — it is filed as a Low task** (this reversed a first
+  draft that dismissed it as "worth little"; the security seat argued it back and was
+  right). Rejecting a `base_url` that carries a query or fragment is three lines in a
+  validator, and it is what separates *"connect to a host and see whether it speaks slskd"*
+  from *"read `/latest/meta-data/iam/security-credentials/` and get the body back"*. With
+  the path pinned, `raise_for_status()` does most of the rest: against a non-slskd host,
+  `<host>/api/v0/application/version` is a 404, which raises before anything is reflected.
+  It doubles as an operator-footgun fix — today a pasted URL with a stray `#` silently
+  retargets the request. Do **not** describe this as fixing the SSRF; it does not touch the
+  host or the credential.
+
+      # Check the RAW STRING, not urlsplit's parts. See the trap below.
+      if "#" in value or "?" in value:
+          raise ValueError("base_url must not contain a query string or fragment")
+
+  **The obvious version of that validator does not work, and would ship green.** The
+  canonical `parts = urlsplit(value); if parts.query or parts.fragment:` **passes the exact
+  payload measured above**: a *bare trailing* `#` makes `urlsplit` return `fragment=''`,
+  which is falsy. Measured 2026-08-30 —
+  `http://169.254.169.254/latest/meta-data/iam/security-credentials/#` → `fragment=''` →
+  passes; `http://x/y/?` → `query=''` → passes; only a *non-empty* `#x` is caught. So an
+  implementer who reaches for `urlsplit` and tests with `#x` sees it blocked, ships, and
+  leaves the attack untouched. The bare `#` is not an edge case here — it is precisely the
+  shape that works, because the suffix has to land in an *empty* fragment for the wire path
+  to end where the attacker wants.
+
+  For completeness, since a reader will ask: `assert_public_url` *would* block the
+  link-local metadata target specifically — so the anti-hardening argument is "wrong tool",
+  not "no benefit". It stays wrong-tool because it also rejects every correct
+  configuration, which disqualifies it regardless.
+
+  **The structural fix worth filing above either** — re-confirm the password before writing
+  a secret-bearing settings field (`plex_base_url`, `slskd_base_url`, `webhook_secret`,
+  both tokens). That is the only measure addressing the exfiltration rather than the path:
+  it turns a stolen cookie into a non-event for all of them. It also closes the asymmetry
+  the webhook-secret entry notices under *Open bugs* — the password is scrypt-hashed and
+  rate-paced while everything it protects is not.
+
+- **`/import` takes an arbitrary server-side path, and that is deliberate (ruled
+  2026-07-07, re-based on authentication 2026-08-30).** Relocated here from
+  `docs/superpowers/plans/2026-07-07-important-audit-9.md:19`, which is **gitignored** —
+  the ruling that answers "why is there no import allowlist?" lived where a fresh clone
+  could not read it, so the question was re-openable from scratch by anyone but the two
+  people in that conversation. The owner's words, verbatim:
+
+  > **#5 Import containment:** **DROPPED 2026-07-07** (user challenge, agreed). For this
+  > deployment — single-user, no auth, CORS-blocked from browsers — `/import` grants no
+  > capability an attacker on the LAN doesn't already have via the other unauthenticated
+  > mutating endpoints (`DELETE /albums`, `/reorganize`, `/trash`, tag-edit). Marginal
+  > delta ≈ 0; an allowlist is pure workflow friction for ad-hoc `/downloads` imports.
+  > Fails "complexity must earn its place." #4 (SSRF) is kept because "make the server
+  > fetch an internal URL" IS a distinct capability.
+
+  **The conclusion survives auth; its stated premise does not, and the swap makes it
+  stronger.** The argument was never "`/import` is safe" — it was a *marginal-delta*
+  argument: an allowlist buys nothing while every sibling mutation is equally open. Auth
+  did not weaken that, it repaired it. The comparison set (`DELETE /albums`,
+  `/reorganize`, `/trash`, tag-edit) is now behind the session gate, so `/import` is
+  compared against gated peers rather than ungated ones, and the delta is still ≈ 0 —
+  but now because the whole set is closed, not because it is uniformly open. The clause
+  to stop repeating is "no auth"; **CORS-blocked from browsers** was and remains true
+  (`app/origin_guard.py`), and it was never the load-bearing half.
+
+  What this ruling does **not** cover, and never did: an authenticated owner's own
+  mistakes. `{"path": "/"}` is a well-formed request from a signed-in operator, and the
+  footguns are filed as their own entry under *Open bugs / hardening* rather than hidden
+  under this
+  decision — a threat-model ruling about *attackers* is not a ruling about *typos*.
+
+  **The #4-vs-#5 tension is real and is resolved here, not left implicit.** The same
+  document kept the artwork SSRF guard (#4) on the ground that *"make the server fetch an
+  internal URL" IS a distinct capability* — yet `plex_base_url` and `slskd_base_url` make
+  the server fetch exactly that, with no `assert_public_url` in front of them, justified
+  by a different argument entirely ("admin-controlled"). Both calls are correct; the
+  distinction was simply never written down, so the two comments read as a contradiction.
+  It is this: `assert_public_url` exists to stop a *value that should point at the public
+  internet* from being aimed inward. `base_url` is the opposite — pointing inward is its
+  entire job (`http://192.168.1.50:32400`, `http://plex:32400`, `http://slskd:5030` — the
+  last two are this repo's own test values — plus `http://localhost:32400`), so the same
+  guard applied there would reject every correct configuration. Measured 2026-08-30:
+  `assert_public_url` refuses all four. The enforcement that makes it safe is now
+  authentication, not a URL shape. **Do not "harden" `base_url` with `assert_public_url`**
+  — it would be a pure regression. The anti-hardening note now lives at both config sites
+  and on `assert_public_url` itself, and
+  `test_assert_public_url_rejects_every_normal_integration_base_url` pins the measurement
+  so the claim cannot quietly go stale.
+
 - **Cross-origin no-cors GET side effects are an accepted residual.** `GET
   /api/artists/image` (and its peer cache-fillers), plus the outbound-credential GETs like
   `/api/plex/*`, still fire for a foreign page — GETs are structurally outside an
@@ -963,17 +1265,6 @@ the condition it names has changed.
   catches source exceptions as transient failures, so an unmocked-call raise is laundered
   into the same 404. A real proof needs a transport spy plus deterministic background-fill
   settling; not worth it until the wiring changes.
-- **`tests/test_import_session.py::test_attended_astracks_lands_the_singletons_full_pipeline`
-  writes to the developer's PERSONAL beets config dir** (`~/.config/beets/state.pickle`) on every
-  full-suite run — bisected as the only offender, and present at least as far back as `643783f`,
-  so it predates the path-binding branch. Bounded: only beets' importer scratch state is written,
-  the personal `library.db` md5 is unchanged and no `.bak` appears. Same class as the sibling entry
-  above and as the 2026-08-15 incident where an agent's unguarded `beet --version` ran two pending
-  migrations against that same personal library. Its sibling entry (the two
-  `test_artist_image_endpoint.py` lifespan tests that opened the real dev library) was fixed on
-  the backlog-minors wave via `_pin_settings_at`, canary-proven with
-  `MUSICDROP_BEETS_DIR=/nonexistent`; the durable close for THIS entry and the whole class is
-  still an autouse fixture pointing `BEETSDIR` at `tmp_path` for the entire suite.
 - Stat-then-read ETag race on the artwork cache (self-healing, mirrors the covers precedent);
   its integration test only exercises the hash-fallback branch.
 - Thumb edge-case paths (animated/palette/CMYK/tiny source images) were verified by reviewer

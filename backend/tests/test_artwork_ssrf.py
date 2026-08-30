@@ -265,3 +265,79 @@ async def test_assert_public_url_rejects_unresolvable(monkeypatch: pytest.Monkey
     monkeypatch.setattr(socket, "getaddrinfo", _resolver({}))  # everything fails to resolve
     with pytest.raises(ValueError, match=_GENERIC):
         assert_public_url("https://nope.test/a.jpg")
+
+
+@pytest.mark.anyio
+async def test_assert_public_url_rejects_every_normal_integration_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The anti-hardening pin: this guard must NEVER be reused on ``base_url``.
+
+    ``PlexConfig.base_url`` and ``SlskdConfig.base_url`` are the mirror image of
+    the pasted-image URL this module guards. A pasted image URL is expected to
+    be PUBLIC, so refusing private space costs a legitimate user nothing; a
+    ``base_url`` is expected to be PRIVATE — a LAN address, a compose service
+    name, or the app's own host — so the same guard would reject EVERY CORRECT
+    CONFIGURATION. That alone disqualifies it, whatever else it might block: it
+    would in fact also block the link-local metadata target that
+    ``SlskdConfig.base_url``'s comment describes, so the argument here is
+    "wrong tool", not "no benefit". Both field comments say this in prose and
+    cite these exact values; this test is the executable half, so the claim
+    cannot quietly become false if the guard stops refusing these shapes.
+
+    Scope, so nobody over-trusts it: it pins the four values the comments name,
+    not the guard's rule set. ``ipaddress.is_private`` subsumes link-local,
+    reserved and unspecified, so deleting any of those three disjuncts leaves
+    this whole FILE green — a real gap, but a pre-existing one in the by-class
+    test above, not something this test claims to close.
+
+    Overlaps ``test_assert_public_url_rejects_each_disallowed_class`` on intent,
+    but not entirely on coverage: ``172.16/12`` is exercised nowhere else in the
+    suite, and this is the only ``assert_public_url`` case with an explicit port,
+    so it is the only one taking the ``parts.port`` branch rather than the
+    scheme default.
+
+    The ``resolved`` assertion is load-bearing, not decoration.
+    ``assert_public_url`` deliberately raises the SAME generic message for "DNS
+    failed" and "address disallowed" (no oracle), so
+    ``pytest.raises(match=_GENERIC)`` alone cannot tell them apart — a review
+    probe mis-keyed every mapping entry, leaving all four hosts unresolvable,
+    and the test still passed. Note it must record a SUCCESSFUL resolution, not
+    merely that the stub was called: a first attempt at this fix appended the
+    host on entry, which the same mutation sailed straight through. Recording
+    the address the stub handed back is what proves each refusal came from the
+    guard's address rules.
+    """
+    from app.artwork.download import assert_public_url
+
+    normal_base_urls = {
+        "192.168.1.50": "192.168.1.50",  # Plex on the LAN, the owner's own case
+        "plex": "172.18.0.4",  # a compose service name on the bridge network
+        "slskd": "172.18.0.5",  # ditto — this repo's own test value
+        "localhost": "127.0.0.1",  # same host as the app
+    }
+    ports = {"slskd": 5030}  # the real shapes: slskd listens on 5030, Plex on 32400
+    resolved: list[tuple[str, str]] = []
+
+    def _recording(mapping: dict[str, str]) -> Callable[..., list[Any]]:
+        inner = _resolver(mapping)
+
+        def fake(host: str, port: int, *args: object, **kwargs: object) -> list[Any]:
+            infos = inner(host, port, *args, **kwargs)  # raises gaierror if unresolvable
+            resolved.append((host, str(infos[0][4][0])))
+            return infos
+
+        return fake
+
+    for host, ip in normal_base_urls.items():
+        monkeypatch.setattr(socket, "getaddrinfo", _recording({host: ip}))
+        # Built outside the block so the guard is the only call that can raise
+        # inside it (sonar python:S5778 counts invocations, not statements —
+        # ruff's PT012 twin passes this because it is one statement).
+        url = f"http://{host}:{ports.get(host, 32400)}"
+        with pytest.raises(ValueError, match=_GENERIC):
+            assert_public_url(url)
+
+    # Each host resolved to its private address BEFORE the refusal, so every
+    # refusal came from the address rules — not from an unresolvable stub key.
+    assert resolved == list(normal_base_urls.items())

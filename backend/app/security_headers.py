@@ -11,11 +11,34 @@ allowed to DO with a response it already has. Five headers on every response:
 - ``Referrer-Policy: same-origin`` — library paths, artist names and search
   terms live in this app's URLs; they must not leak in the ``Referer`` of the
   cover-art and portrait requests the pages make to third parties.
-- ``Cross-Origin-Resource-Policy: same-origin`` — with no authentication, a
-  foreign page could probe the library through no-CORS subresource loads
-  (``<img src=".../api/artists/image?name=X">`` 404s when absent, so onerror
-  is an existence oracle); browsers now refuse to deliver those loads. Safe in
-  dev too: the Vite proxy serves ``/api`` same-origin from the browser's view.
+- ``Cross-Origin-Resource-Policy: same-origin`` — refuses delivery of no-CORS
+  subresource loads (``<img src=".../api/artists/image?name=X">``, whose 404
+  when absent makes onerror an existence oracle). This header long predates
+  authentication and used to be justified BY its absence; that reason is now
+  retired, because the session gate alone defeats the version of the oracle it
+  described — a CROSS-SITE ``<img>`` is not a top-level navigation, so
+  SameSite=Lax withholds the cookie, and present and absent artists both answer
+  401 indistinguishably. What keeps the header is the case the gate cannot see:
+  cookies are scoped to a HOST, not a port (``app/api/csrf.py::origin_allowed``
+  does compare a port-inclusive authority, though it does not itself record why),
+  so ANOTHER
+  PLAIN-HTTP SERVICE ON THE SAME HOST the victim uses to reach MusicDrop is
+  same-SITE, and its subresource loads DO carry the cookie. The origin guard
+  checks only unsafe methods and waves that GET through, and the gate then
+  honours a genuinely valid cookie — so a logged-in victim would leak the real
+  image, not a 401. CORP is the only one of these mechanisms that applies to a
+  safe-method subresource load at all, and it compares the full ORIGIN, port
+  included. Note it refuses DELIVERY of the response — the request still reaches
+  the app, so the GET's side effects and cache fills still happen (an accepted
+  residual, recorded in BACKLOG.md). Two carve-outs keep this narrower than
+  "any neighbour": same-site
+  is SCHEMEFUL, so an HTTPS neighbour against this HTTP app is cross-site; and a
+  victim who reaches MusicDrop by hostname is cross-site from a neighbour on the
+  raw IP. The all-HTTP, one-address homelab case — i.e. this deployment's own
+  design point — is exactly where it bites. Strictly a better reason than the
+  original: it protects an authenticated session instead of substituting for the
+  absence of one. Safe in dev too: the Vite proxy serves ``/api`` same-origin from
+  the browser's view.
 - ``Content-Security-Policy`` — the injection backstop. Tag values, filenames
   and playlist names come from disk and from the network, so the app renders
   strings it did not author; the policy says none of them can become script.
