@@ -331,8 +331,12 @@ async def test_assert_public_url_rejects_every_normal_integration_base_url(
 
     for host, ip in normal_base_urls.items():
         monkeypatch.setattr(socket, "getaddrinfo", _recording({host: ip}))
+        # Built outside the block so the guard is the only call that can raise
+        # inside it (sonar python:S5778 counts invocations, not statements —
+        # ruff's PT012 twin passes this because it is one statement).
+        url = f"http://{host}:{ports.get(host, 32400)}"
         with pytest.raises(ValueError, match=_GENERIC):
-            assert_public_url(f"http://{host}:{ports.get(host, 32400)}")
+            assert_public_url(url)
 
     # Each host resolved to its private address BEFORE the refusal, so every
     # refusal came from the address rules — not from an unresolvable stub key.
