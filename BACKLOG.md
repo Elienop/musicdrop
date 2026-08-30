@@ -711,8 +711,11 @@ the condition it names has changed.
   there: MusicDrop is browsed by LAN IP over HTTP as a design point, and an unconditional
   `Secure` makes that deployment impossible to sign into at all. This is what the
   ecosystem does — Sonarr/Radarr (`SameAsRequest`), qBittorrent, Gitea, Nextcloud and
-  Portainer are all conditional; Authelia is the only unconditional one and bans plain
-  HTTP outright. The cookie is HttpOnly, SameSite=Lax, host-only, Path=/ throughout, so
+  Portainer are all conditional; Authelia is the only unconditional one, and it pairs that
+  with refusing plain HTTP outright — *"we won't support websites served over HTTP in order
+  to avoid any risk"* (<https://www.authelia.com/overview/security/measures/>, re-verified
+  2026-08-30). That pairing is the point: an unconditional `Secure` is only coherent
+  alongside a refusal to serve HTTP at all, which is not a trade MusicDrop can make. The cookie is HttpOnly, SameSite=Lax, host-only, Path=/ throughout, so
   on the HTTP path the residual is exactly "as private as the LAN". Recorded at
   `request_is_https` and in README's Authentication section.
 
