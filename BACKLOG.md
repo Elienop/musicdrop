@@ -204,7 +204,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - ~~**The frontend has no linter, so the Sonar "lock-on-clear" rule cannot hold there — and
   three cleared families have now measurably regrown (2026-08-30, found while clearing auth
-  slice 2's Sonar violations).**~~ — **FIXED in #TBD, 2026-08-30.** The owner's standing
+  slice 2's Sonar violations).**~~ — **FIXED in #202, 2026-08-30.** The owner's standing
   instruction is that the PR driving a family to zero also enables its lint twin, so CI pins
   it; the backend honoured that through ruff `select` (PT018, PT012, PT001, S324) and the
   frontend could not, having no `eslint.config.*`, no eslint dependency and no `lint`
