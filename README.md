@@ -180,9 +180,13 @@ two values above. There is no server-side session list, deliberately — nothing
 or back up.
 
 **The `Secure` flag follows the connection, so a TLS proxy pays for itself.** If you sign in over
-HTTPS — directly, or through a reverse proxy that forwards `X-Forwarded-Proto` (Caddy, Traefik
-and nginx all do by default) — the cookie is marked `Secure` and your browser will refuse to
-send it over plain HTTP from then on. Nothing to configure.
+HTTPS — directly, or through a reverse proxy that forwards `X-Forwarded-Proto` — the cookie is
+marked `Secure` and your browser will refuse to send it over plain HTTP from then on. Caddy's
+`reverse_proxy` sets that header for you (and ignores any value the client sent, which is what
+you want); nginx does **not** add it by default, so a proxied deployment there needs
+`proxy_set_header X-Forwarded-Proto $scheme;`. Check your own proxy rather than assuming — a
+proxy that passes a client-supplied value through instead of overwriting it lets a client hand
+itself a plain cookie on a TLS connection.
 
 **The honest caveat is what remains over plain HTTP.** MusicDrop is designed to be browsed by LAN
 IP (`http://192.168.1.10:3030`), and a `Secure` cookie is never sent over plain HTTP — marking it
