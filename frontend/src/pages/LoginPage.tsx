@@ -175,8 +175,36 @@ function intendedDestination(state: unknown): string {
  * A merely MALFORMED `from` (no leading slash) resolves against the origin and
  * so stays in-app, landing on that path rather than on the Overview. That is
  * the honest reading of a nonsense destination, and it is in-app either way.
+ *
+ * TWO passes, because one pass was not CLOSED under its own output: dot
+ * segments are stripped during resolution, so `/.//evil.com`, `/..//evil.com`
+ * and `/x/..//evil.com` each resolved on this origin and then returned
+ * `//evil.com` — the exact protocol-relative shape this guard exists to
+ * reject, and a string the function itself rejects when handed it back. Latent
+ * rather than live at the time of writing (the WHATWG parser normalises
+ * `location.pathname` before router state can hold a dot segment, so no
+ * reachable input was found), but the value we return is a destination, and a
+ * destination this function would refuse must not be one it emits. The second
+ * pass is enough to reach the fixed point: its input is already normalised, so
+ * anything that survives it is unchanged by a third.
+ *
+ * Worth knowing for the severity if it ever does become reachable: the caller
+ * uses `navigate(destination, { replace: true })`, and react-router 7.15.1
+ * falls back to `window.location.assign` on a SecurityError for `push()` but
+ * NOT for `replace()` — so dropping that one flag turns "throws" into a
+ * working open redirect.
  */
 function sameOriginPath(raw: string): string | null {
+  const once = resolveOnThisOrigin(raw);
+  if (once === null) {
+    return null;
+  }
+  return resolveOnThisOrigin(once) === once ? once : null;
+}
+
+/** One resolution pass: `raw` read as a URL against the page origin, reduced
+ * to the parser's OWN pathname+search — never the raw string we were handed. */
+function resolveOnThisOrigin(raw: string): string | null {
   let url: URL;
   try {
     url = new URL(raw, window.location.origin);

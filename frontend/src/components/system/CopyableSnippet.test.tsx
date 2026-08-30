@@ -19,6 +19,21 @@ function stubClipboard(writeText: () => Promise<void>) {
   vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
 }
 
+/** A navigator with NO clipboard at all — what every browser hands an insecure
+ * origin, because `navigator.clipboard` is gated on a secure context. Built by
+ * DELETING the property rather than by stubbing a rejecting `writeText`: in a
+ * real insecure context `writeText` is never reached, so a rejecting stub
+ * models a code path that origin cannot take. */
+function stubInsecureContext() {
+  // Typed as a mutable record, not `Partial<Navigator>`: `Navigator.clipboard`
+  // is declared readonly, and `delete` on a readonly property does not compile.
+  // The `delete` stays because it is the assertion — whatever the spread of a
+  // host object did or did not carry over, this navigator has no clipboard.
+  const nav: Record<string, unknown> = { ...navigator };
+  delete nav.clipboard;
+  vi.stubGlobal("navigator", nav);
+}
+
 describe("CopyableSnippet", () => {
   test("shows the text and copies it verbatim, confirming on the button", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
@@ -35,9 +50,30 @@ describe("CopyableSnippet", () => {
     expect(writeText).toHaveBeenCalledWith(SNIPPET);
   });
 
-  test("a refused clipboard is a no-op, because the text is still on screen", async () => {
-    // Clipboard access is denied in an insecure context — which is exactly how
-    // a self-hosted app is often reached (plain http on a LAN address).
+  test("offers no Copy button on an insecure origin, and says what to do instead", async () => {
+    // MusicDrop's PRIMARY deployment, per the README: plain http on a LAN
+    // address like http://192.168.1.10:3030. That is not a secure context
+    // (http://localhost is), so `navigator.clipboard` is `undefined`,
+    // `navigator.clipboard.writeText(...)` threw a TypeError, and the
+    // handler's catch swallowed it — a button that did nothing at all, on the
+    // first screen a new operator sees, for the one action the copy asks them
+    // to take.
+    stubInsecureContext();
+    render(<CopyableSnippet label="Generate a password hash" snippet={SNIPPET} />);
+
+    expect(screen.queryByRole("button", { name: "Copy" })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/copying needs a secure page/i),
+    ).toBeInTheDocument();
+    // The fallback the message points at has to actually be there: the block
+    // wraps, so every character is selectable by hand.
+    expect(screen.getByText(SNIPPET)).toBeInTheDocument();
+  });
+
+  test("a clipboard that refuses the write says so, instead of nothing", async () => {
+    // The OTHER failure, and the one that survives feature detection: the API
+    // is present (secure context) and rejects anyway — a denied permission, an
+    // unfocused document. Silence here was the same dead-button experience.
     const writeText = vi.fn().mockRejectedValue(new Error("denied"));
     stubClipboard(writeText);
     render(<CopyableSnippet label="Generate a password hash" snippet={SNIPPET} />);
@@ -45,9 +81,23 @@ describe("CopyableSnippet", () => {
     await userEvent.click(screen.getByRole("button", { name: "Copy" }));
 
     await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(
+      await screen.findByText(/this browser refused the copy/i),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Copied" })).not.toBeInTheDocument();
     expect(screen.getByText(SNIPPET)).toBeInTheDocument();
+  });
+
+  test("a working clipboard shows neither fallback message", async () => {
+    // The negative control. Without it both messages could be permanently
+    // rendered and every assertion above would still pass.
+    stubClipboard(vi.fn().mockResolvedValue(undefined));
+    render(<CopyableSnippet label="Generate a password hash" snippet={SNIPPET} />);
+
+    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    expect(screen.queryByText(/copying needs a secure page/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/refused the copy/i)).not.toBeInTheDocument();
   });
 
   test("the snippet wraps rather than scrolling, so it needs no tab stop", () => {

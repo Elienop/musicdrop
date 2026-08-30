@@ -129,8 +129,12 @@ webhook (which carries its own shared secret), and the two sign-in endpoints the
 **Until you set a password, nothing is reachable.** That is deliberate — there is no
 "unprotected by default" mode. On a fresh install the browser lands on a **setup screen** instead
 of the sign-in form: it names the env var to set (`MUSICDROP_PASSWORD_HASH`), shows the command
-that generates a hash with a **Copy** button, and offers **Check again** so you can restart the
-container and recheck without reloading the page. The startup log says the same thing on one line:
+that generates a hash, and offers **Check again** so you can restart the container and recheck
+without reloading the page. The command block comes with a **Copy** button *when the browser will
+allow one* — clipboard access needs a secure page, meaning HTTPS or `localhost`, so on a plain-HTTP
+LAN address the button is replaced by a line telling you to select the text instead. The command
+wraps rather than scrolling, so it is fully visible either way. The startup log says the same thing
+on one line:
 
 ```
 security posture: prod (static_dir set); …; auth: NO password configured, so every gated API

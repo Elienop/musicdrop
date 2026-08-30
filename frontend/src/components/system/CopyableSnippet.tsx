@@ -6,6 +6,42 @@ import { Button } from "@/components/ui/button";
 const COPIED_FOR_MS = 2000;
 
 /**
+ * Shown INSTEAD of the Copy button where this browser will not give us the
+ * clipboard at all.
+ *
+ * Names the CONDITION rather than the API, because the condition is the thing
+ * the operator can act on: `navigator.clipboard` exists only in a secure
+ * context, and MusicDrop's primary deployment — plain http on a LAN address
+ * like http://192.168.1.10:3030 — is not one. `http://localhost` IS, which is
+ * why the sentence lists both and why this cannot simply say "use HTTPS":
+ * plenty of the people who would read it already have a working Copy button.
+ */
+const COPY_UNAVAILABLE =
+  "Copying needs a secure page (HTTPS, or localhost), so select the text above to copy it by hand.";
+
+/** Shown when the clipboard EXISTS and refused the write — a denied
+ * permission, an unfocused document. A different cause from the above, so a
+ * different first half; the same second half, because the way out is the
+ * same and it is the half the reader needs. */
+const COPY_REFUSED =
+  "This browser refused the copy, so select the text above to copy it by hand.";
+
+/**
+ * Whether this page may use the clipboard at all.
+ *
+ * Read at render, not inside the click handler, so the button is never OFFERED
+ * where it cannot work: on an insecure origin `navigator.clipboard` is
+ * `undefined`, so `navigator.clipboard.writeText(...)` throws a TypeError that
+ * the handler's catch swallowed — a button that silently did nothing, on the
+ * first screen a new operator sees, for the one action its copy asks them to
+ * take. The value cannot change for the life of a document (the origin
+ * decides it), so there is nothing to subscribe to.
+ */
+function clipboardIsAvailable(): boolean {
+  return typeof navigator.clipboard?.writeText === "function";
+}
+
+/**
  * Read-only text meant to be pasted somewhere else — a shell command, a config
  * block — with a labelled header row and a Copy button.
  *
@@ -28,6 +64,8 @@ export function CopyableSnippet({
   children?: ReactNode;
 }>) {
   const [copied, setCopied] = useState(false);
+  const [refused, setRefused] = useState(false);
+  const canCopy = clipboardIsAvailable();
 
   async function handleCopy() {
     try {
@@ -35,8 +73,11 @@ export function CopyableSnippet({
       setCopied(true);
       window.setTimeout(() => setCopied(false), COPIED_FOR_MS);
     } catch {
-      // Clipboard access can be denied (insecure context / permission); the
-      // text stays on screen to select by hand, so a failed copy is a no-op.
+      // A PRESENT clipboard can still refuse the write — a denied permission,
+      // a document that isn't focused. Same outcome for the user as an absent
+      // one, so it gets the same sentence rather than the silence it used to:
+      // the text is on screen and selectable, and now says so.
+      setRefused(true);
     }
   }
 
@@ -44,14 +85,21 @@ export function CopyableSnippet({
     <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between gap-2">
         <p className="text-sm font-medium">{label}</p>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => void handleCopy()}
-        >
-          {copied ? "Copied" : "Copy"}
-        </Button>
+        {/* No button at all where the clipboard is unreachable, rather than a
+            disabled one: `disabled` drops it out of the tab order, so the
+            explanation below would be the only thing a keyboard or screen
+            reader user ever reaches anyway — and a button that is present but
+            dead is the shape this fix exists to delete. */}
+        {canCopy && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void handleCopy()}
+          >
+            {copied ? "Copied" : "Copy"}
+          </Button>
+        )}
       </div>
       {children}
       {/* This wraps rather than scrolling, which is why it needs no tabIndex,
@@ -74,6 +122,19 @@ export function CopyableSnippet({
       <pre className="bg-muted rounded-lg p-3 font-mono text-xs break-words whitespace-pre-wrap">
         {snippet}
       </pre>
+      {/* Below the block, because both sentences point AT it ("the text
+          above") — and the fallback is only real because the block wraps and
+          shows every character (see the note above). */}
+      {!canCopy && (
+        <p className="text-muted-foreground text-xs">{COPY_UNAVAILABLE}</p>
+      )}
+      {/* `<output>` IS role="status": this one appears in response to a click,
+          so it has to announce itself rather than wait to be found. The
+          unavailable line above is static from first paint and needs no live
+          region. */}
+      {refused && (
+        <output className="text-muted-foreground text-xs">{COPY_REFUSED}</output>
+      )}
     </div>
   );
 }

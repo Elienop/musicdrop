@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router";
 
-import { useAuthGateState } from "@/api/auth";
+import { useAuthGateState, useClearCacheOnSignOut } from "@/api/auth";
 import { ICON_WEIGHT, IconContext, Spinner } from "@/components/icons";
 
 /**
@@ -20,6 +20,11 @@ import { ICON_WEIGHT, IconContext, Spinner } from "@/components/icons";
 export function RequireAuth({ children }: Readonly<{ children: ReactNode }>) {
   const location = useLocation();
   const state = useAuthGateState();
+  // Mounted HERE because this is the component that already watches the flip
+  // and acts on it, and because it wraps everything that put anything gated in
+  // the cache — /login is a sibling route and mounts no gated query, so by the
+  // time the redirect below lands there is nothing left to empty.
+  useClearCacheOnSignOut();
 
   if (state === "unknown") {
     return <AuthGateLoading />;

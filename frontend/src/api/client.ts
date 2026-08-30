@@ -52,8 +52,15 @@ export const client = createClient<paths>({
  * session really is gone. Exempting it deadlocked sign-out — the middleware
  * returned without flipping the store, `useLogout` threw, and every retry
  * reproduced it (see `useLogout` in api/auth.ts for the other half of the fix).
+ *
+ * EXPORTED for one reason: this set and `backend/app/auth/gate.py::EXEMPT_PATHS`
+ * are hand-maintained in two languages, and nothing failed if they diverged.
+ * The tracked `frontend/openapi.json` already carries the gate's own answer —
+ * `app/openapi_overlay.py` stamps `security: []` on exactly the operations
+ * `path_requires_session` exempts — so `api/gateExemptions.test.ts` reads the
+ * contract and refuses to let the two drift silently.
  */
-const GATE_EXEMPT_PATHS: ReadonlySet<string> = new Set([
+export const GATE_EXEMPT_PATHS: ReadonlySet<string> = new Set([
   "/api/auth/login",
   "/api/auth/status",
 ]);

@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
 
 import { bumpAssetVersion } from "@/api/assetVersion";
 import {
@@ -31,6 +32,24 @@ export function useAuthStatus() {
   return useQuery({ queryKey: AUTH_STATUS_KEY, queryFn: fetchAuthStatus });
 }
 
+/**
+ * What BOTH session mutations say when the request never got an answer.
+ *
+ * A transport failure makes `client.POST` REJECT rather than resolve, and the
+ * browser's own words for that — "Failed to fetch" (Chromium) / "NetworkError
+ * when attempting to fetch resource" (Firefox) — are jargon wherever they
+ * surface: in the sign-in page's alert, and in the sign-out toast. One constant
+ * rather than two literals because the two hooks were fixed a slice apart and
+ * only one of them got the sentence; sharing it is what stops the next edit
+ * moving one and not the other.
+ *
+ * Deliberately about REACHABILITY rather than about signing in or out: it is
+ * the same fact in both places, and the operator's next move ("is MusicDrop
+ * running?") is the same too.
+ */
+export const SERVER_UNREACHABLE_MESSAGE =
+  "Can’t reach the server. Check that MusicDrop is running, then try again.";
+
 export type AuthGateState = "unknown" | "authenticated" | "unauthenticated";
 
 /**
@@ -54,6 +73,38 @@ export function useAuthGateState(): AuthGateState {
   // flip the store instead.
   if (isError) return "authenticated";
   return data?.authenticated ? "authenticated" : "unauthenticated";
+}
+
+/**
+ * Empty the query cache when this browser stops being signed in — on the
+ * TRANSITION, so both ways of getting there are covered by one line.
+ *
+ * `["beets-config"]` holds the raw config.yaml with its secrets UNMASKED, and
+ * TanStack keeps every cached answer readable for `gcTime` (five minutes by
+ * default) after its last observer unmounts. This used to live in
+ * `useLogout.onSuccess`, which is the BUTTON rather than the transition: an
+ * EXPIRY (a gated poll's 401 → `markUnauthenticated()` from the client
+ * middleware) bounced to /login with the whole cache still sitting in the JS
+ * heap, because nobody had clicked anything. Measured before the move:
+ * `CONFIG STILL IN CACHE AFTER EXPIRY BOUNCE: {"raw":"slskd:\n  api_key:
+ * SUPERSECRET\n"}`.
+ *
+ * `clear()` and not `invalidateQueries()` — invalidation only marks data
+ * stale, it leaves the bytes in place.
+ *
+ * Keyed on the STORE, not on `useAuthGateState()`: the store flips only on a
+ * real refusal, whereas the gate state also reads "unauthenticated" for a cold
+ * signed-out visit — whose cache is empty anyway, and whose status query
+ * `clear()` would delete out from under the observer that is still asking, for
+ * a re-render loop and no benefit.
+ */
+export function useClearCacheOnSignOut(): void {
+  const queryClient = useQueryClient();
+  const signedOut = useSignedOut();
+  useEffect(() => {
+    if (!signedOut) return;
+    queryClient.clear();
+  }, [signedOut, queryClient]);
 }
 
 /**
@@ -88,13 +139,11 @@ export function useLogin() {
       } catch {
         // A rejection here means the request never got an ANSWER — the server
         // is down, the proxy dropped it, DNS failed. The browser's own words
-        // for that are "Failed to fetch" / "NetworkError when attempting to
-        // fetch resource", which is jargon on the one screen whose whole job
-        // is explaining why signing in isn't working. (The gate's 401 cannot
-        // reach here: /api/auth/login is exempt from the client middleware.)
-        throw new Error(
-          "Can’t reach the server. Check that MusicDrop is running, then try again.",
-        );
+        // for that are jargon on the one screen whose whole job is explaining
+        // why signing in isn't working, so this says the same thing sign-out
+        // says (see SERVER_UNREACHABLE_MESSAGE). (The gate's 401 cannot reach
+        // here: /api/auth/login is exempt from the client middleware.)
+        throw new Error(SERVER_UNREACHABLE_MESSAGE);
       }
       const { data, error } = result;
       if (error || !data) {
@@ -122,14 +171,11 @@ export function useLogin() {
 /** Expire the cookie in this browser. The server keeps no session list, so
  * this is the browser's half only (README §Authentication). */
 export function useLogout() {
-  const queryClient = useQueryClient();
   return useMutation<void, Error, void>({
     mutationFn: async () => {
+      let response: Response;
       try {
-        const { response } = await client.POST("/api/auth/logout");
-        if (!response.ok) {
-          throw new Error("Couldn’t sign out. Try again.");
-        }
+        ({ response } = await client.POST("/api/auth/logout"));
       } catch (error) {
         // A 401 is the ASKED-FOR outcome, not a failure. /api/auth/logout is
         // itself gated, so an expired cookie — or an operator rotating the
@@ -140,21 +186,25 @@ export function useLogout() {
         if (error instanceof UnauthenticatedError) {
           return;
         }
-        throw error;
+        // Everything else that REJECTS is a request with no answer, and its
+        // message is the browser's raw "Failed to fetch" — which this hook
+        // used to rethrow verbatim into `SignOutButton`'s toast. Same fact and
+        // same sentence as the sign-in form's (see useLogin above); the
+        // ANSWERED failure below keeps its own wording, because a server that
+        // replied 500 is emphatically reachable.
+        throw new Error(SERVER_UNREACHABLE_MESSAGE);
+      }
+      if (!response.ok) {
+        throw new Error("Couldn’t sign out. Try again.");
       }
     },
     onSuccess: () => {
       // The cached AuthStatus still says `authenticated: true`; the store is
       // what makes the gate (and the login page's already-signed-in redirect)
-      // disagree with it, exactly as it does for an expired cookie.
+      // disagree with it, exactly as it does for an expired cookie. Emptying
+      // the cache is NOT done here: it hangs off this same flip, one level up,
+      // so an expiry gets it too (see useClearCacheOnSignOut).
       markUnauthenticated();
-      // Sign out is a promise about THIS browser, and the cache is where it
-      // would otherwise be broken: `["beets-config"]` holds the raw
-      // config.yaml with its secrets unmasked, and the default gcTime keeps
-      // every cached answer readable for five minutes after the last observer
-      // unmounts. `clear()` (not `invalidate`) because invalidation only marks
-      // data stale — it leaves the bytes in place.
-      queryClient.clear();
     },
   });
 }

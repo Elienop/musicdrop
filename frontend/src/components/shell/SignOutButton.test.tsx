@@ -119,6 +119,31 @@ describe("SignOutButton", () => {
     expect(toast.error).toHaveBeenCalledWith("Couldn’t sign out. Try again.");
   });
 
+  test("an unreachable server is explained, not reported in browser jargon", async () => {
+    // `useLogout` caught only UnauthenticatedError and rethrew everything else
+    // AS IT WAS, so a dead server arrived at the toast as the browser's own
+    // words — literally "Failed to fetch" in Chromium, "NetworkError when
+    // attempting to fetch resource" in Firefox. `useLogin` was fixed for
+    // exactly this a slice earlier and this half was missed, which is why the
+    // sentence is now one shared constant rather than two literals.
+    server.use(http.post(LOGOUT_URL, () => HttpResponse.error()));
+    renderInGuardedShell();
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Sign out" }),
+    );
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    // The literal, not the imported constant: an oracle that reads the same
+    // constant the code does would pass whatever that constant said.
+    expect(toast.error).toHaveBeenCalledWith(
+      "Can’t reach the server. Check that MusicDrop is running, then try again.",
+    );
+    expect(vi.mocked(toast.error).mock.calls[0][0]).not.toMatch(/fetch/i);
+    // Still signed in, because nothing cleared the cookie.
+    expect(screen.queryByTestId("location")).not.toBeInTheDocument();
+  });
+
   test("a 401 on the logout route IS a sign-out, not a failure", async () => {
     // The deadlock this replaced: the cookie expired (or the operator rotated
     // the password hash), so the gated logout route refuses the one request
@@ -141,16 +166,18 @@ describe("SignOutButton", () => {
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent("/login"),
     );
-    // The bounce alone does NOT discriminate: the client middleware flips the
-    // store on its way past, so the user reaches /login whether or not this
-    // hook treats the 401 as success. What only the success arm does is run
-    // `onSuccess` — and with it the cache clear. Treated as an error, a
-    // sign-out on an expired cookie left the unmasked config sitting in the
-    // cache, which is the one thing sign-out is supposed to deal with.
+    // Neither the bounce NOR the cache clear discriminates any more, and
+    // saying so is the point: the client middleware flips the store on its way
+    // past, and BOTH of those now hang off that flip (RequireAuth ->
+    // useClearCacheOnSignOut), so they happen whether this hook calls the 401
+    // a success or a failure. They are asserted as invariants, not as the
+    // oracle.
     await waitFor(() =>
       expect(queryClient.getQueryData(["beets-config"])).toBeUndefined(),
     );
-    // And it is not ALSO reported as a failure on the way out.
+    // THIS is what discriminates: the error arm would report the refusal, and
+    // that is the deadlock — a user told sign-out failed, on a session that is
+    // already gone, whose every retry reproduces the same 401.
     expect(toast.error).not.toHaveBeenCalled();
   });
 

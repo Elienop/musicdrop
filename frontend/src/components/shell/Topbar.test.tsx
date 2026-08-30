@@ -255,6 +255,45 @@ describe("HealthStatus version", () => {
     );
   });
 
+  test("an unreachable backend shows no version, even when /api/version answered", async () => {
+    // The other half of the `reachable && versionQuery.data` conjunct, and the
+    // half nothing pinned: dropping `reachable &&` survived every test here,
+    // because they all had the two probes agreeing. They can disagree for real
+    // — /api/health is exempt from the session gate and /api/version is not,
+    // and the two are separate queries that resolve independently — and the
+    // result would be a build string sitting next to "Offline", or next to the
+    // checking spinner while health is still pending.
+    // Ordered, not raced: health is held until the version response has gone
+    // out, so "Offline" can only appear once the version query already has its
+    // answer. Without that the absence assertion could pass simply by running
+    // before the badge had a chance to render — a test that holds whether or
+    // not the conjunct is there.
+    let versionServed = () => {};
+    const versionDone = new Promise<void>((resolve) => {
+      versionServed = resolve;
+    });
+    server.use(
+      http.get(VERSION_URL, () => {
+        versionServed();
+        return HttpResponse.json({ version: RELEASE_VERSION });
+      }),
+      http.get(HEALTH_URL, async () => {
+        await versionDone;
+        return new HttpResponse(null, { status: 500 });
+      }),
+    );
+
+    renderWithProviders(<HealthStatus />);
+
+    expect(await screen.findByText(/offline/i)).toBeInTheDocument();
+    expect(screen.queryByText(RELEASE_VERSION)).not.toBeInTheDocument();
+    // And the version does not sneak in through the status description either.
+    expect(screen.getByRole("status")).toHaveAttribute(
+      "title",
+      "Backend unreachable",
+    );
+  });
+
   test("a failing version probe leaves the backend Online, just unlabelled", async () => {
     // Reachability is keyed on /api/health ALONE. The version query is gated,
     // so it is the one that dies first when a session expires — and a dead

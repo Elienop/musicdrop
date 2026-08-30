@@ -337,6 +337,18 @@ describe("LoginPage — signing in", () => {
     // `search` was concatenated onto `pathname` with no check of its own, so
     // two innocent-looking halves composed into "//evil.com".
     ["a hostile search half", { pathname: "/", search: "/evil.com" }],
+    // Dot segments. The guard resolved these on THIS origin (they are paths,
+    // so `url.origin` is ours) and then RETURNED the parser's normalised
+    // pathname — which for each of these is the literal "//evil.com", the one
+    // protocol-relative shape the guard exists to reject. It was not closed
+    // under its own output: hand it back what it just handed you and it says
+    // null. No reachable input was found (the WHATWG parser strips dot
+    // segments before `location.pathname` can hold one, and RequireAuth is the
+    // only writer of this state), so these are latent — but a function must
+    // not emit a destination it would itself refuse.
+    ["a dot segment", { pathname: "/.//evil.com", search: "" }],
+    ["a parent segment", { pathname: "/..//evil.com", search: "" }],
+    ["a parent segment mid-path", { pathname: "/x/..//evil.com", search: "" }],
   ])("refuses %s as a destination", async (_label, from) => {
     server.use(
       statusHandler(true),
