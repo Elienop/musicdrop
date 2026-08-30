@@ -68,6 +68,7 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 - **Acquisition (slskd)** — completed slskd downloads land in a watched inbox (webhook-driven) and queue into the import pipeline; a unified **Review** page is the one home for import decisions and inbox backlog.
 - **Faceted Browse** — slice the library by genre · decade · format · type · media · country · source · lyrics coverage, sorted A–Z or recently added.
 - **Live updates** — library changes stream to every open tab (SSE), no manual refresh.
+- **Sign-in** — a single-password login screen, a 30-day session cookie, and a **Sign out** control in the top bar. Before a password hash is configured, the same screen is a setup notice naming the env var and the command that generates one — see [Authentication](#authentication).
 - **Dark, art-forward UI** — violet-accented dark theme, dissolving detail rails, Koito-inspired row cards, a two-font type system (League Spartan display face), and the original MusicDrop logo re-colored onto the design tokens.
 
 **Planned** — deemix acquisition adapter.
@@ -125,8 +126,11 @@ MusicDrop has a **single account**, protected by one password. Every `/api/*` re
 session cookie. The only exceptions are the container healthcheck (`/api/health`), the slskd
 webhook (which carries its own shared secret), and the two sign-in endpoints themselves.
 
-**Until you set a password, the API answers nothing.** That is deliberate — there is no
-"unprotected by default" mode — and the startup log says so on one line:
+**Until you set a password, nothing is reachable.** That is deliberate — there is no
+"unprotected by default" mode. On a fresh install the browser lands on a **setup screen** instead
+of the sign-in form: it names the env var to set (`MUSICDROP_PASSWORD_HASH`), shows the command
+that generates a hash with a **Copy** button, and offers **Check again** so you can restart the
+container and recheck without reloading the page. The startup log says the same thing on one line:
 
 ```
 security posture: prod (static_dir set); …; auth: NO password configured, so every gated API
@@ -154,8 +158,15 @@ restart:
 The doubling is only a `docker-compose.yml` quirk. In an `.env` file, an `env_file:`, or a plain
 `docker run -e`, paste the value exactly as printed.
 
-Signing in sets a cookie that lasts **30 days**, survives container restarts, and is
-`HttpOnly` + `SameSite=Lax`. **Sign out** clears it in that browser.
+With a hash set, MusicDrop opens on a **sign-in screen** — one password field, no username, and
+it is the only page an unauthenticated visitor can reach. Signing in sets a cookie that lasts
+**30 days**, survives container restarts, and is `HttpOnly` + `SameSite=Lax`; you land on
+whichever page you originally asked for rather than being dropped on the Overview. If the server
+refuses, it says why in the form itself — a wrong password, a hash it cannot read, a sign-in
+already in flight — rather than failing blankly.
+
+**Sign out** is in the top bar, beside the activity indicator, at every window width; it clears
+the cookie in that browser.
 
 **Changing the password signs every session out, everywhere.** The cookie is signed with a key
 derived from `MUSICDROP_PASSWORD_HASH`, so setting a new hash and restarting invalidates every
@@ -180,10 +191,6 @@ flag is deliberately absent and the session cookie is only as private as your ne
 accepted residual, not an oversight. If you expose MusicDrop beyond your LAN, put it behind a
 reverse proxy terminating TLS (which encrypts the hop that matters, *and* hardens the cookie as
 above) and keep it off the open internet.
-
-> **This release is API-side only.** The backend enforces the password; the **login screen
-> arrives in the next release**. Until then a browser hitting a protected page gets 401s with no
-> way to sign in from the UI — so do not deploy this version expecting a usable interface.
 
 Releases are automatic: every merged PR that touches anything beyond markdown/docs publishes a new image tag (`vX.Y.Z`, plus `latest`) with generated notes on the [Releases page](https://github.com/Elienop/musicdrop/releases); a docs-only merge cuts no release of its own and ships with the next one.
 

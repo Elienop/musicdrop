@@ -37,11 +37,31 @@ from app.models.errors import ErrorDetail
 
 router = APIRouter(tags=["auth"])
 
-_NO_PASSWORD_DETAIL: Final = "no password is configured on this server"
-_UNREADABLE_HASH_DETAIL: Final = "the configured password hash is not readable"
-_WRONG_PASSWORD_DETAIL: Final = "incorrect password"
-_BUSY_DETAIL: Final = "another sign-in attempt is in progress"
-_NO_SECRET_DETAIL: Final = "the session signing secret is unavailable"
+# These five are UI COPY, which is why they are full sentences.
+#
+# Every other ``ErrorDetail`` in the app is read by a developer — in a log, in
+# `curl` output, through a generated client — but the login form renders
+# whichever of these came back straight into the page, verbatim and unwrapped
+# (frontend/src/pages/LoginPage.tsx; the contract is documented on both sides).
+# The operator IS the only user here, and they see this text in a form next to
+# sentence-case labels, so the register is a copy decision rather than a house
+# convention.
+#
+# The divergence is narrower than it looks. Capitalisation is already the house
+# majority — 45 of the app's 56 distinct detail literals start with a capital
+# ("Album not found", "An import is already running") — so only the terminating
+# period is unusual, and it is here because a fragment reads as a label while a
+# sentence reads as an answer. ``app/models/errors.py`` calls the shape "one
+# ASCII sentence"; these five are the ones that take it literally.
+#
+# The gate's own detail (``app/auth/gate.py``: "authentication required") is
+# deliberately NOT in this set. It is a bounce trigger the transport turns into
+# a redirect and no human ever reads, so it keeps the house register.
+_NO_PASSWORD_DETAIL: Final = "No password is configured on this server."
+_UNREADABLE_HASH_DETAIL: Final = "The configured password hash is not readable."
+_WRONG_PASSWORD_DETAIL: Final = "Incorrect password."
+_BUSY_DETAIL: Final = "Another sign-in is already in progress. Try again in a moment."
+_NO_SECRET_DETAIL: Final = "The session signing secret is unavailable."
 
 # ONE verify at a time, process-wide. Each scrypt derive holds ~128 MiB
 # (app/auth/passwords.py), so N parallel logins would allocate N times that and

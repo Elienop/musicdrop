@@ -111,7 +111,7 @@ def test_verify_raises_rather_than_returning_false_on_a_broken_hash(broken: str)
     """A refusal the caller must SEE, not one that looks like a wrong password.
 
     ``verify_password`` returning False for an unreadable hash would let the
-    route answer "incorrect password" for a server misconfiguration, and the
+    route answer "Incorrect password." for a server misconfiguration, and the
     operator would spend the afternoon retyping a password that was right.
     """
     with pytest.raises(PasswordHashError):

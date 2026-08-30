@@ -153,7 +153,9 @@ def test_a_login_over_real_tls_gets_a_secure_cookie(configured: None) -> None:
         ("https", True),
         # Case-insensitive: the header is a token, and proxies differ.
         ("HTTPS", True),
-        # Proxies APPEND, so the LEFTMOST element is the browser's own hop.
+        # By convention the LEFTMOST element is the browser's own hop, the way
+        # X-Forwarded-For reads — whether a given proxy appends, overwrites or
+        # passes a client value through is its own config (app/auth/cookies.py).
         ("https, http", True),
         ("  https ,http", True),
         ("http", False),
@@ -169,13 +171,44 @@ def test_the_forwarded_proto_header_decides_the_secure_flag(
 ) -> None:
     """Over plain HTTP, ``X-Forwarded-Proto``'s first element decides it.
 
-    Trusted rather than validated, deliberately: a direct client forging this
-    header only mints ITSELF a cookie its own browser will refuse to send back
-    — see ``app/auth/cookies.py`` for why that differs from the host guard's
-    treatment of ``X-Forwarded-Host``.
+    Trusted rather than validated, deliberately: a client that gets this header
+    wrong only affects its OWN cookie — either locking itself out with a
+    ``Secure`` cookie it cannot send back, or silently downgrading its own
+    session to a plain one. See ``app/auth/cookies.py`` for both modes, and for
+    why this differs from the host guard's treatment of ``X-Forwarded-Host``.
     """
     resp = _anonymous().post(
         _LOGIN, json={"password": _PASSWORD}, headers={_PROTO_HEADER: forwarded}
+    )
+    assert resp.status_code == 200
+    assert (_SECURE_FLAG in resp.headers["set-cookie"]) is expect_secure
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "expect_secure"),
+    [
+        ("https", "http", True),
+        # The silent self-downgrade: a TLS-fronted session whose cookie comes
+        # back without Secure, because the value the browser's own proxy set is
+        # not the one read.
+        ("http", "https", False),
+    ],
+)
+def test_duplicate_forwarded_proto_headers_are_decided_by_the_FIRST_one(
+    first: str, second: str, expect_secure: bool, configured: None
+) -> None:
+    """Two separate headers, not one comma chain — first-header-wins.
+
+    A proxy that APPENDS its own ``X-Forwarded-Proto`` rather than rewriting a
+    client-supplied one sends the value twice, and Starlette's ``Headers.get``
+    returns the FIRST occurrence. So the second arm here is a genuinely
+    TLS-fronted request that mints a non-Secure cookie — the self-downgrade
+    ``app/auth/cookies.py`` names, pinned so the two arms cannot quietly swap.
+    """
+    resp = _anonymous().post(
+        _LOGIN,
+        json={"password": _PASSWORD},
+        headers=[(_PROTO_HEADER, first), (_PROTO_HEADER, second)],
     )
     assert resp.status_code == 200
     assert (_SECURE_FLAG in resp.headers["set-cookie"]) is expect_secure
@@ -197,7 +230,7 @@ def test_the_issued_cookie_actually_opens_a_gated_route(configured: None) -> Non
 def test_the_wrong_password_is_refused(configured: None) -> None:
     resp = _anonymous().post(_LOGIN, json={"password": _PASSWORD + "!"})
     assert resp.status_code == 401
-    assert resp.json() == {"detail": "incorrect password"}
+    assert resp.json() == {"detail": "Incorrect password."}
     assert "set-cookie" not in resp.headers
 
 
@@ -207,7 +240,7 @@ def test_an_unset_hash_refuses_every_password(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr("app.config.settings.password_hash", "")
     resp = _anonymous().post(_LOGIN, json={"password": "anything"})
     assert resp.status_code == 401
-    assert resp.json() == {"detail": "no password is configured on this server"}
+    assert resp.json() == {"detail": "No password is configured on this server."}
     assert "set-cookie" not in resp.headers
 
 
@@ -224,7 +257,7 @@ def test_an_unreadable_hash_says_so_rather_than_blaming_the_password(
     monkeypatch.setattr("app.config.settings.password_hash", "argon2id$v=19$whatever")
     resp = _anonymous().post(_LOGIN, json={"password": _PASSWORD})
     assert resp.status_code == 401
-    assert resp.json() == {"detail": "the configured password hash is not readable"}
+    assert resp.json() == {"detail": "The configured password hash is not readable."}
 
 
 @pytest.mark.parametrize(
@@ -249,7 +282,7 @@ def test_every_shape_of_broken_hash_refuses(broken: str, monkeypatch: pytest.Mon
     monkeypatch.setattr("app.config.settings.password_hash", broken)
     resp = _anonymous().post(_LOGIN, json={"password": _PASSWORD})
     assert resp.status_code == 401
-    assert resp.json() == {"detail": "the configured password hash is not readable"}
+    assert resp.json() == {"detail": "The configured password hash is not readable."}
 
 
 def test_login_refuses_when_the_server_has_no_signing_secret(
@@ -264,7 +297,7 @@ def test_login_refuses_when_the_server_has_no_signing_secret(
     monkeypatch.delattr(real_app.state, "session_secret")
     resp = _anonymous().post(_LOGIN, json={"password": _PASSWORD})
     assert resp.status_code == 503
-    assert resp.json() == {"detail": "the session signing secret is unavailable"}
+    assert resp.json() == {"detail": "The session signing secret is unavailable."}
     assert "set-cookie" not in resp.headers
 
 
@@ -321,7 +354,9 @@ async def test_a_verify_that_cannot_get_a_turn_is_refused_rather_than_queued(
 
     # The one that did not was told to come back rather than queued behind it.
     assert results["second"].status_code == 429
-    assert results["second"].json() == {"detail": "another sign-in attempt is in progress"}
+    assert results["second"].json() == {
+        "detail": "Another sign-in is already in progress. Try again in a moment."
+    }
     # It WAITED (a bare non-blocking acquire would 429 a double-clicked Sign in)...
     assert elapsed["second"] >= wait
     # ...and it gave up rather than blocking for the whole derive.
