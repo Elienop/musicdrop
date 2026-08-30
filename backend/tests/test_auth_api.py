@@ -561,10 +561,21 @@ def test_logout_matches_logins_secure_posture(configured: None) -> None:
 
     Both arms, because only the pair proves the flag is being computed rather
     than hardcoded: the plain-HTTP request must not grow one and the forwarded
-    HTTPS request must. Browsers match the cookie to expire by name and path
-    alone, so a mismatch here would not actually break sign-out — the pin is
-    that the two call sites share ONE policy, which is what keeps the "same
-    attributes as the Set-Cookie that created it" comment true.
+    HTTPS request must.
+
+    This symmetry is load-bearing, and the plain-HTTP arm is the one that
+    matters. A Set-Cookie carrying Secure that arrives over a non-secure
+    connection is ignored entirely rather than stored, so it expires nothing
+    (draft-ietf-httpbis-rfc6265bis-20 section 5.7, "Storage Model", step 13) —
+    a logout hardcoded to secure=True would return 204 over plain HTTP while
+    leaving the session cookie live.
+
+    What is asserted here is still only the SYMMETRY, not that browser rule.
+    http.cookiejar applies no secure check when storing a cookie
+    (DefaultCookiePolicy has set_ok_path and set_ok_domain but no
+    set_ok_secure), so this client would accept a cookie a browser drops, and
+    any test claiming to pin the browser behaviour would be pinning nothing.
+    See the block above ``delete_cookie`` in ``app/api/auth.py``.
     """
     plain = _anonymous()
     assert plain.post(_LOGIN, json={"password": _PASSWORD}).status_code == 200
