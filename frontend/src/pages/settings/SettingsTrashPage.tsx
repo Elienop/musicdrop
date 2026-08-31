@@ -248,6 +248,20 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
               {restoreResultMessage(result)}
             </output>
           )}
+          {/* The request never got an answer it could use — a 503 because the
+            * music share is unmounted, a 500, a dropped connection. `useTrash`
+            * has already pulled the backend's `detail` sentence out of the
+            * body; without this the button simply stops spinning and the row
+            * is byte-identical to before the click. Destructive + `role=alert`
+            * rather than the `<output>` above deliberately: that one is the
+            * server's considered answer (`role=status`, amber for a refusal),
+            * this is the request failing outright, and the sibling `Empty`
+            * action already words its failures this way. */}
+          {restore.isError && (
+            <p className="text-destructive text-xs" role="alert">
+              {restore.error.message}
+            </p>
+          )}
         </div>
       </div>
       <Button
@@ -255,7 +269,14 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
         size="sm"
         disabled={restore.isPending}
         aria-describedby={noTracks ? `${outlookId} ${reasonId}` : outlookId}
-        onClick={() => restore.mutate(album.folder, { onSuccess: setResult })}
+        // `setResult(null)` first: the previous outcome is about the previous
+        // attempt. Without it a row that was refused, then retried into a 503,
+        // shows the amber refusal and the red error at once — two answers to
+        // one click, the older one looking current.
+        onClick={() => {
+          setResult(null);
+          restore.mutate(album.folder, { onSuccess: setResult });
+        }}
       >
         {restore.isPending ? (
           <>

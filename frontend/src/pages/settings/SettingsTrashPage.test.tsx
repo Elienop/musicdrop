@@ -34,6 +34,20 @@ const NO_RECORD_NOTE =
   " origins were recorded. Restoring re-imports it, so beets files it under your" +
   " current naming rules rather than putting it back.";
 
+/** The other arm. Shared, because several tests need to assert that the two
+ * arms differ — an assertion one fixture cannot make on its own. */
+const importedAlbum: TrashedAlbum = {
+  folder: "Old Band - Demos",
+  album_artist: "Old Band",
+  album: "Demos",
+  year: 1999,
+  track_count: 4,
+  format: "MP3",
+  restore_mode: "import",
+  restore_note: NO_RECORD_NOTE,
+  origin: "/old-library/Old Band/Demos",
+};
+
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -110,7 +124,7 @@ describe("SettingsTrashPage", () => {
     await waitFor(() => expect(called).toBe(true));
   });
 
-  test("Restore posts the folder and shows the restored result", async () => {
+  test("Restore posts the folder and shows the restored result in the calm tone", async () => {
     let posted: unknown = null;
     server.use(
       http.get(TRASH_URL, () =>
@@ -132,9 +146,13 @@ describe("SettingsTrashPage", () => {
     await waitFor(() =>
       expect(posted).toEqual({ folder: "2 Brothers - Dreams" }),
     );
-    expect(
-      await screen.findByText(/Restored to your library/i),
-    ).toBeInTheDocument();
+    const message = await screen.findByText(/Restored to your library/i);
+    expect(message).toBeInTheDocument();
+    // The other half of "a refusal must not read like a success": the refusal
+    // is asserted amber elsewhere, so a tone that is ALWAYS amber would pass
+    // that test alone. A success has to be positively calm.
+    expect(message).toHaveClass("text-muted-foreground");
+    expect(message).not.toHaveClass("text-warning");
   });
 
   test("a zero-track row keeps Restore enabled and explains the uncertainty", async () => {
@@ -189,20 +207,9 @@ describe("SettingsTrashPage", () => {
   test("an import row shows the backend's note verbatim and keeps Restore enabled", async () => {
     // Owner's call: an approximate restore is still a recovery path, so it is
     // warned about, never disabled.
-    const reimported: TrashedAlbum = {
-      folder: "Old Band - Demos",
-      album_artist: "Old Band",
-      album: "Demos",
-      year: 1999,
-      track_count: 4,
-      format: "MP3",
-      restore_mode: "import",
-      restore_note: NO_RECORD_NOTE,
-      origin: "/old-library/Old Band/Demos",
-    };
     server.use(
       http.get(TRASH_URL, () =>
-        HttpResponse.json({ albums: [reimported], trash_path: "/t" }),
+        HttpResponse.json({ albums: [importedAlbum], trash_path: "/t" }),
       ),
     );
     renderPage();
@@ -325,6 +332,129 @@ describe("SettingsTrashPage", () => {
     // zero, or the path's min-content width becomes the row's.
     expect(path.closest("p")?.querySelector(":scope > span")).toHaveClass(
       "min-w-0",
+    );
+  });
+
+  test("a restore that never landed says why instead of going quiet", async () => {
+    // The backend refuses a restore with a 503 when the music share is not
+    // mounted, and words the reason itself. Nothing read `restore.isError`, so
+    // the button just stopped spinning and the row was byte-identical to
+    // before the click — the sentence existed and could not reach anyone.
+    server.use(
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [album], trash_path: "/t" }),
+      ),
+      http.post(RESTORE_URL, () =>
+        HttpResponse.json(
+          { detail: "The music library isn’t readable. Is the share mounted?" },
+          { status: 503 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: /^Restore$/ }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/Is the share mounted\?/i);
+    // Destructive, not the amber a refusal gets: the request failed outright.
+    expect(alert).toHaveClass("text-destructive");
+    // And the row is still usable — a failure must not strand the control.
+    expect(screen.getByRole("button", { name: /^Restore$/ })).toBeEnabled();
+  });
+
+  test("retrying after a refusal drops the stale outcome", async () => {
+    // Two answers to one click is worse than one: the amber "already there"
+    // from the first attempt reads as current beside the new red failure.
+    let call = 0;
+    server.use(
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [album], trash_path: "/t" }),
+      ),
+      http.post(RESTORE_URL, () => {
+        call += 1;
+        return call === 1
+          ? HttpResponse.json({
+              restored: false,
+              reason: "origin_occupied",
+              album_id: null,
+            })
+          : HttpResponse.json({ detail: "Server fell over" }, { status: 500 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: /^Restore$/ }));
+    expect(
+      await screen.findByText(/original folder exists again/i),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^Restore$/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /Server fell over/,
+    );
+    expect(
+      screen.queryByText(/original folder exists again/i),
+    ).not.toBeInTheDocument();
+  });
+
+  test("the approximate row is marked by an icon AND colour, the exact row by neither", async () => {
+    // A note that communicates by colour alone is not acceptable, and one that
+    // communicates by words alone is not glanceable. Both arms are asserted
+    // because dropping the icon leaves the words behind and looks fine.
+    const outlookOf = (button: HTMLElement) =>
+      document.getElementById(
+        (button.getAttribute("aria-describedby") ?? "").split(" ")[0],
+      );
+
+    server.use(
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [importedAlbum], trash_path: "/t" }),
+      ),
+    );
+    const { unmount } = renderPage();
+    const importOutlook = outlookOf(
+      await screen.findByRole("button", { name: /^Restore$/ }),
+    );
+    const icon = importOutlook?.querySelector("svg");
+    expect(icon).toBeInTheDocument();
+    expect(icon).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByText("Approximate restore.")).toHaveClass("text-warning");
+    unmount();
+
+    server.use(
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [album], trash_path: "/t" }),
+      ),
+    );
+    renderPage();
+    const exactOutlook = outlookOf(
+      await screen.findByRole("button", { name: /^Restore$/ }),
+    );
+    expect(exactOutlook?.querySelector("svg")).toBeNull();
+    expect(screen.getByText("Exact restore.")).toHaveClass("text-foreground");
+  });
+
+  test("both arms' origin paths can break, so a long one cannot pan the row", async () => {
+    // jsdom computes no layout, so this pins the classes the 320px browser
+    // measurement depends on — one per arm, since they are separate elements
+    // and a mutant can drop either alone.
+    server.use(
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({
+          albums: [album, importedAlbum],
+          trash_path: "/t",
+        }),
+      ),
+    );
+    renderPage();
+
+    expect(await screen.findByText("/music/2 Brothers/Dreams")).toHaveClass(
+      "break-words",
+    );
+    expect(screen.getByText("/old-library/Old Band/Demos")).toHaveClass(
+      "break-words",
     );
   });
 
