@@ -212,6 +212,15 @@ def write_trash_origin(entry: Path, *, origin: str, moved: MovedShape) -> None:
         # returning: the arm below is exactly the right degradation (no record,
         # folder still in Trash, restorable by re-import) and this is the one
         # place that decision is written down.
+        #
+        # The trade this makes, stated because declining is not free: writing
+        # nothing means a record ALREADY sitting in the linked-to directory is
+        # the one the listing reads, so such a row can advertise a path we never
+        # wrote. Measured -- the plant wins the display. It steers nothing:
+        # ``resolve_trash_child`` resolves the child and refuses anything landing
+        # outside Trash, so neither Restore nor a single Empty can act on that
+        # row, and ``empty_all`` clears it by unlinking the link. A misleading
+        # row, versus writing THROUGH the link, which is what this replaced.
         if entry.is_symlink():
             raise OSError(f"{RECORD_NAME} would be written through a symlinked Trash entry")
         fd, tmp = tempfile.mkstemp(dir=entry, prefix=".musicdrop-trash-", suffix=".tmp")
