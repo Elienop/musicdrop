@@ -1030,6 +1030,49 @@ def test_a_nul_in_the_origin_cannot_reach_the_move(tmp_path: Path) -> None:
     assert read_trash_origin(entry) is None
 
 
+def test_an_album_named_with_a_no_break_space_keeps_its_exact_restore(tmp_path: Path) -> None:
+    """Pins the DECISION not to widen the origin denylist, and states its cost.
+
+    ``_REJECTED_IN_ORIGIN`` refuses C0/C1/DEL and the Trojan-Source bidi set, and
+    nothing else. Several characters that plainly misrepresent a path are absent
+    -- U+200B, U+00AD, U+034F and the U+00A0 used here all pass, parse, earn a
+    ``move_back_target`` and render into the row intact, so a row can promise
+    ``/music/Artist/Album`` and move the folder to a path that merely looks like
+    it. That is left open on purpose, and this test is what stops it being
+    "fixed" by widening the pattern.
+
+    The trade is asymmetric. The consequence of leaving it is bounded by
+    ``move_back_target``'s containment -- a folder somewhere inside the user's
+    own library under an unexpected name, confusing rather than a capability.
+    The consequence of closing it here is that an album folder GENUINELY named
+    with a no-break space, which is ordinary in Windows-authored names, loses its
+    exact restore permanently and can never get it back. A real loss traded
+    against a cosmetic one.
+
+    Written as the legitimate case rather than as ``assert not
+    _REJECTED_IN_ORIGIN.search(...)`` on purpose: the reason is what must survive,
+    and asserting the regex would pin the mechanism while saying nothing about
+    why. If this ever is closed, the display is the place -- escaping
+    non-printing characters denies no one a restore.
+    """
+    lib = _seeded_library(tmp_path, folder="Portishead/Dummy\u00a0Deluxe")
+    source = tmp_path / "music" / "Portishead" / "Dummy\u00a0Deluxe"
+    album = _dummy(lib)
+
+    with lib.transaction():
+        dest = Path(trash_album_folder(lib, album, trash_dir=tmp_path / "trash"))
+
+    record = _record(dest)
+    assert record.origin == str(source)
+    assert move_back_target(record, music_dir=str(tmp_path / "music")) == source
+
+    result = restore_album(lib, str(dest), trash_dir=tmp_path / "trash")
+
+    assert result.restored is True
+    assert source.is_dir(), "the folder went back to its own name, not a stripped one"
+    assert len(list(source.glob("*.flac"))) == 2
+
+
 def test_the_origin_length_cap_sits_at_path_max_and_not_below_it(tmp_path: Path) -> None:
     """Bounded, but not so tightly that a legal deep path loses its exact restore.
 

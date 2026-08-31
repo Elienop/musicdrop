@@ -81,6 +81,25 @@ _MAX_ORIGIN_CHARS = 4096
 #:   U+202E turns the one field whose entire job is telling the user where their
 #:   files will go into something that reads as a different path.
 #:
+#: That second reason is broader than this pattern, and the gap is stated here
+#: rather than left for the next reader to discover. This is a DENYLIST of two
+#: named groups, not a predicate over "characters that misrepresent a path", and
+#: several that plainly do are absent. Measured: U+200B zero-width space, U+00AD
+#: soft hyphen, U+034F combining grapheme joiner and U+00A0 no-break space all
+#: pass the filter, parse, earn a ``move_back_target`` and render intact into the
+#: Trash row -- so a row can promise ``/music/Artist/Album`` and move the folder
+#: to a visually identical path that is not it.
+#:
+#: Left open deliberately, and widening this pattern is the WRONG fix. The
+#: consequence is bounded by ``move_back_target``'s containment: the folder
+#: lands somewhere inside the user's own library under an unexpected name --
+#: confusing, not a capability. Rejection is not free the way it looks: an album
+#: folder genuinely named with a no-break space (ordinary in Windows-authored
+#: names) would lose its exact restore permanently, which is a real loss traded
+#: against a cosmetic one. If it is ever closed, the place is the DISPLAY, where
+#: non-printing characters can be escaped without denying anyone a restore --
+#: a UI decision, not a validation one.
+#:
 #: Lone surrogates are deliberately NOT here. U+DC80-U+DCFF is how a non-UTF-8
 #: POSIX filename survives ``os.fsdecode``, so rejecting them would deny an exact
 #: restore to precisely the paths this app takes the most care over.
