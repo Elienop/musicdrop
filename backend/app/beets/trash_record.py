@@ -31,6 +31,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from app.wire import display_path
+
 logger = logging.getLogger(__name__)
 
 #: The sidecar's filename. Dot-prefixed on purpose: beets ships
@@ -199,10 +201,23 @@ def write_trash_origin(entry: Path, *, origin: str, moved: MovedShape) -> None:
                 os.unlink(tmp)
             raise
     except Exception:
+        # ``display_path``, not a hand-rolled escape. This handler is the last
+        # thing standing between a failed record write and a delete that keeps
+        # its library rows (both callers drop rows on the very next line), so
+        # NOTHING in it may raise -- and the obvious spelling does:
+        # ``.encode("utf-8", "backslashreplace")`` escapes nothing, because
+        # ``backslashreplace`` on an ENCODE only escapes what the target codec
+        # cannot encode and UTF-8 encodes everything, so the following
+        # ``.decode("ascii")`` raised ``UnicodeDecodeError`` on every non-ASCII
+        # path. ``display_path`` is the shared helper the rest of this package
+        # already logs through, and it is documented and tested as never
+        # raising. ``%r`` stays: a Trash folder's name comes from the album's
+        # own tags, so the quoting is what stops a crafted name forging a log
+        # line (see ``test_a_failed_return_to_trash_cannot_forge_a_log_line``).
         logger.warning(
             "could not record the Trash origin for %r; the folder is still in Trash but"
             " can only be restored by re-importing it",
-            os.fsdecode(entry).encode("utf-8", "backslashreplace").decode("ascii"),
+            display_path(entry),
             exc_info=True,
         )
 

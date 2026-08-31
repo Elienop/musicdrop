@@ -213,11 +213,32 @@ def test_the_record_carries_a_trash_time_nothing_else_on_disk_keeps(tmp_path: Pa
 # ----- recording must never be able to fail a delete -----
 
 
-def test_write_trash_origin_swallows_a_failing_write(tmp_path: Path) -> None:
-    # The binding secondary invariant: this is a NEW write on the delete path,
-    # so its failure must be no worse than today (folder in Trash, no record).
-    write_trash_origin(tmp_path / "does-not-exist", origin="/music/A/B", moved="folder")
-    assert not (tmp_path / "does-not-exist").exists()
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param("does-not-exist", id="ascii"),
+        pytest.param("Homogenic \u00c9dition", id="accented"),
+        pytest.param(os.fsdecode(b"Dummy \xf6"), id="non-utf8"),
+    ],
+)
+def test_write_trash_origin_swallows_a_failing_write(tmp_path: Path, name: str) -> None:
+    """The binding secondary invariant, pinned at the contract rather than a caller.
+
+    This is a NEW write on the delete path, so its failure must be no worse than
+    today (folder in Trash, no record). TWO of the three callers run
+    ``album.remove()`` on the very next line (``trash.py:231`` for the per-item
+    mover, ``trash.py:418`` for the whole-folder one), so anything escaping here
+    keeps the library rows while the files are already in Trash.
+
+    Parametrised over the NAME because the failure handler interpolates it, and
+    an ASCII fixture exercises the swallow without ever exercising the handler's
+    own encoding. Covering it here rather than at each call site pins the
+    contract once for all three -- including the per-item mover, whose container
+    name comes from the album's tags and can be anything at all.
+    """
+    entry = tmp_path / name
+    write_trash_origin(entry, origin="/music/A/B", moved="folder")
+    assert not entry.exists()
 
 
 def test_a_husk_still_reaches_trash_when_the_record_cannot_be_written(tmp_path: Path) -> None:
@@ -236,9 +257,58 @@ def test_a_husk_still_reaches_trash_when_the_record_cannot_be_written(tmp_path: 
     assert read_trash_origin(dest) is None  # no record, but the delete happened
 
 
-def test_an_album_still_reaches_trash_when_the_record_cannot_be_written(tmp_path: Path) -> None:
-    lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
-    source = tmp_path / "music" / "Portishead" / "Dummy"
+@pytest.mark.parametrize(
+    "folder",
+    [
+        pytest.param("Portishead/Dummy", id="ascii"),
+        pytest.param("Bj\u00f6rk/Homogenic \u00c9dition", id="accented"),
+        pytest.param(os.fsdecode(b"Bjork/Dummy \xf6"), id="non-utf8"),
+    ],
+)
+def test_an_album_still_reaches_trash_when_the_record_cannot_be_written(
+    tmp_path: Path, folder: str
+) -> None:
+    """The record write must not be able to keep the library rows -- at ANY name.
+
+    Parametrised over the FIXTURE NAME rather than over the failure, because the
+    name is what the failure handler touches and an ASCII fixture proves only
+    that the write was swallowed. This test passed for months on
+    ``Portishead/Dummy`` alone while the handler itself raised
+    ``UnicodeDecodeError`` on every non-ASCII path: ``backslashreplace`` on an
+    ENCODE escapes only what the target codec cannot encode, and UTF-8 encodes
+    everything, so the ``.decode("ascii")`` that followed had real bytes to
+    choke on. The escape skipped ``album.remove()`` one line later, leaving the
+    files in Trash and the rows in the library -- the exact split this whole
+    module exists to prevent.
+
+    Both non-ASCII arms are load-bearing, and for DIFFERENT regressions -- an
+    accented name is valid UTF-8 that ASCII cannot carry, while a non-UTF-8
+    POSIX name arrives as lone surrogates that UTF-8 itself cannot encode.
+    Measured against the plausible spellings of this one log argument:
+
+    ======================================  ========  ========
+    argument expression                     accented  non-utf8
+    ======================================  ========  ========
+    ``display_path`` (shipped)              pass      pass
+    the bug: utf-8 backslashreplace, ascii  FAILS     pass
+    ascii backslashreplace, decode ascii    pass      pass
+    strict ``.encode("ascii")``             FAILS     FAILS
+    plain ``.encode("utf-8")``              pass      FAILS
+    ======================================  ========  ========
+
+    Note the third row: the obvious one-character fix does not raise, so this
+    test does not object to it. It is only worse output, not a crash, and a
+    test that failed on it would be pinning a preference.
+
+    The undecodable byte must sit in the LEAF, not a parent directory: ``entry``
+    is the TRASH destination, named from the album folder's basename, so a
+    surrogate in the artist component never reaches the handler at all. A first
+    draft put it there and the arm silently proved nothing while still entering
+    the handler -- it takes a mutation matrix, not a green run, to tell those
+    apart.
+    """
+    lib = _seeded_library(tmp_path, folder=folder)
+    source = tmp_path / "music" / folder
     (source / RECORD_NAME).mkdir()
     album = _dummy(lib)
     album_id = _require_id(album.id)
