@@ -166,14 +166,14 @@ function RestoreOutlook({
         <span className="text-warning font-medium">Approximate restore.</span>{" "}
         {album.restore_note}
         {album.origin && (
-          // The wrap goes on the PATH ONLY, never the label around it.
-          // `break-words`, not the `break-all` PlexSettingsPanel needs: that
-          // one has no `min-w-0` ancestor, so a long segment sets the flex
-          // item's min-content width and pushes the page sideways. Here the
-          // text column IS `min-w-0`, so `overflow-wrap` alone holds — measured
-          // at 320px with an 85-char space-free origin, scrollWidth stayed
-          // equal to clientWidth. It breaks at the separators first and only
-          // splits a token that cannot fit on its own.
+          // The wrap goes on the PATH ONLY, never the label around it, and it
+          // is `break-words` so a path breaks at its separators instead of
+          // mid-token. That is a READABILITY choice and nothing more: unlike
+          // `break-all` it does not lower any ancestor's min-content width, so
+          // it is only safe here because the span above carries `min-w-0` —
+          // see that comment. Do not read this as "break-words is the safe
+          // default"; every flex ancestor between this text and the scroll
+          // container needs its own floor.
           <span className="mt-0.5 block">
             Was at <span className="break-words">{album.origin}</span>
           </span>
