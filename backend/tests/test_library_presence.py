@@ -220,3 +220,57 @@ def test_require_library_present_short_circuits_on_the_first_hit(
 
     # One for the root guard, one for the first sampled album folder.
     assert len(checked) == 2, checked
+
+
+# ----- SQLite is dynamically typed: a raw `path` row is not always BLOB -----
+
+
+def _rewrite_every_path_as_text(lib: Library) -> None:
+    """Store every item's ``path`` as TEXT, byte-for-byte the same path.
+
+    What an external tool or a hand-run ``UPDATE items SET path = '...'`` leaves
+    behind: the column is declared BLOB, but SQLite stores what it was given and
+    hands it back with the type it was written with. beets' own model API never
+    notices, because it reads through a converter — only the raw-SQL readers do.
+    """
+    with lib.transaction() as tx:
+        rows = tx.query("SELECT id, path FROM items")
+        for row in rows:
+            tx.mutate("UPDATE items SET path = ? WHERE id = ?", (os.fsdecode(row[1]), row[0]))
+        assert {r[0] for r in tx.query("SELECT DISTINCT typeof(path) FROM items")} == {"text"}
+
+
+def test_the_presence_check_survives_a_path_row_stored_as_text(
+    duplicates_lib: Library,
+) -> None:
+    """``bytes(raw)`` raised ``TypeError`` on a str; ``os.fsencode`` takes both.
+
+    Fails CLOSED, which is what makes it worth a test rather than a shrug: the
+    TypeError escaped from the one predicate whose whole job is answering "is the
+    music really there" before a delete drops rows, so a delete 500'd instead of
+    taking its ghost branch and a restore 500'd instead of answering 503.
+    """
+    _rewrite_every_path_as_text(duplicates_lib)
+
+    require_library_present(duplicates_lib)  # the raise under test is TypeError, not the 503
+
+    # And the paths still resolve to the same folders, so the check is not
+    # merely surviving — it is still asking the real question.
+    dirs = library_mod._sampled_library_dirs(duplicates_lib, 5)
+    assert dirs, "a seeded library must sample something"
+    assert all(os.path.isdir(d) for d in dirs)
+
+
+def test_a_text_path_row_does_not_hide_a_dropped_share(duplicates_lib: Library) -> None:
+    """The TEXT row must not turn the refusal into a pass either.
+
+    Pairs with the test above the way the dropped-share pair at the top of this
+    file does: "it no longer crashes" is only worth having beside "it still
+    refuses", or a fix that swallowed the row entirely would pass both halves of
+    the first test.
+    """
+    _rewrite_every_path_as_text(duplicates_lib)
+    _drop_the_share(duplicates_lib, stray=".stfolder")
+
+    with pytest.raises(LibraryRootUnavailableError):
+        require_library_present(duplicates_lib)

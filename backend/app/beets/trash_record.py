@@ -24,6 +24,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -50,6 +51,42 @@ _SCHEMA = 1
 #: Refuse to parse anything larger. The record is four keys; a big file under
 #: this name is not one of ours and must not be read into memory to find out.
 _MAX_BYTES = 64 * 1024
+
+#: The longest ``origin`` accepted, in characters. Grounded rather than round:
+#: Linux caps a path at ``PATH_MAX`` = 4096 BYTES including the terminating NUL
+#: (``linux/limits.h``), and a UTF-8 string never has more characters than bytes
+#: — so no folder this app could have moved anything out of has an origin longer
+#: than this, and a longer string is padding, not a path. Distinct from
+#: :data:`_MAX_BYTES`, which is 16x larger and answers a different question ("do
+#: not read a big file into memory"); this one answers "is this a path at all".
+#: Without it a 60,000-character origin parses and renders into the Trash row.
+_MAX_ORIGIN_CHARS = 4096
+
+#: Characters an ``origin`` may not contain. Two groups, rejected for two
+#: different reasons:
+#:
+#: * **C0/C1 controls and DEL.** NUL is the one that BREAKS something rather
+#:   than merely looking wrong: ``Path.exists()`` swallows the ``ValueError`` an
+#:   embedded NUL raises and answers ``False``, so ``trash_manage``'s occupancy
+#:   guard PASSES and the failure surfaces two lines later at ``os.rename`` as a
+#:   ``ValueError`` that no ``except OSError`` catches — a blanket 500 on a row
+#:   the UI had just labelled "Exact restore". The rest are legal in a POSIX
+#:   path and refused anyway: this string is rendered in the Trash UI and named
+#:   in log lines, and a newline or an ANSI escape in it is a forged line rather
+#:   than a path.
+#: * **Bidi controls** (the Trojan-Source set: U+061C, U+200E/U+200F,
+#:   U+202A-U+202E, U+2066-U+2069). They reorder the text around them, so a
+#:   U+202E turns the one field whose entire job is telling the user where their
+#:   files will go into something that reads as a different path.
+#:
+#: Lone surrogates are deliberately NOT here. U+DC80-U+DCFF is how a non-UTF-8
+#: POSIX filename survives ``os.fsdecode``, so rejecting them would deny an exact
+#: restore to precisely the paths this app takes the most care over.
+#:
+#: The cost is stated rather than hidden: a folder genuinely named with a control
+#: character loses its move-back and degrades to import-restore. That is the
+#: documented fallback for any record we cannot trust, not a failure.
+_REJECTED_IN_ORIGIN = re.compile("[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]")
 
 #: What the mover actually relocated, which is what decides whether a faithful
 #: move-back is even possible:
@@ -164,28 +201,104 @@ def read_trash_origin(entry: Path) -> TrashOrigin | None:
     answer is the same in all of them: fall back to the import-restore that Trash
     rows have always had. A record is a claim about a path we are about to
     ``shutil.move`` a folder onto, so it is validated as untrusted input.
+
+    **The RETURN collapses; the log does not.** An absent record is ordinary —
+    every row trashed before this feature shipped has none — while a record that
+    is present and unusable is a write that failed half-way, a disk going bad, or
+    a planted payload. The Trash row cannot tell them apart (both get
+    ``trash_manage._NO_RECORD_NOTE``), so a WARNING here is the only place the
+    difference is visible, and without it a write failing on a full or read-only
+    volume reads as "trashed before origins were recorded" — blaming a feature
+    that shipped today and sending nobody to look at the disk while every later
+    delete loses its origin the same way.
+
+    **Do NOT turn an unusable record into a refusal.** The WARNING above makes
+    that tempting — a planted or corrupt payload now announces itself, so
+    refusing the row feels like the safe answer. It is the opposite. A record we
+    cannot read must never leave a folder worse off than a record that was never
+    written, and that is the floor this whole feature was built above (see the
+    module docstring): refusing would strand the row entirely, and for an
+    audio-free art/booklet husk — the case the record exists for — Trash would
+    have no exit left at all. It buys nothing against an attacker either, since
+    whoever can plant an unusable payload can plant a well-formed one just as
+    easily. The refusal that matters is of the MOVE-BACK, not of the row, and it
+    already happens: :func:`_parse` declines to build a record it cannot vouch
+    for and :func:`move_back_target` declines to act outside the library, so the
+    row falls through to the import-restore every Trash row has always had.
     """
     path = entry / RECORD_NAME
     try:
-        if not path.is_file() or path.stat().st_size > _MAX_BYTES:
+        if not path.is_file():
+            if os.path.lexists(path):
+                # Something is at the record's name and is not a record — a
+                # directory (what a write leaves when one was already sitting
+                # there), a socket, a dangling symlink. ``lexists`` rather than
+                # ``exists`` so a broken link counts as present: it is a thing
+                # someone put there, not an absence.
+                _warn_unusable(path, "it is not a regular file")
+            return None  # otherwise the ordinary case: no record was ever written
+        if path.stat().st_size > _MAX_BYTES:
+            _warn_unusable(path, f"it is larger than the {_MAX_BYTES}-byte cap")
             return None
         # ``UnicodeDecodeError`` and ``json.JSONDecodeError`` are both
         # ``ValueError`` subclasses, so the two arms below cover read, decode
         # and parse together.
         raw: object = json.loads(path.read_text(encoding="ascii"))
     except OSError:
+        # NOT folded into the absent case above: ``Path.is_file()`` already
+        # answered False for ENOENT, so reaching here means a real fault
+        # (EACCES, EIO, a stale mount) or the file vanishing mid-read.
+        _warn_unusable(path, "it could not be read", exc_info=True)
         return None
     except ValueError:
+        _warn_unusable(path, "it is not the ASCII JSON this writes", exc_info=True)
         return None
-    return _parse(raw)
+    record = _parse(raw)
+    if record is None:
+        _warn_unusable(path, "its contents are not a record this version can trust")
+    return record
+
+
+def _warn_unusable(path: Path, why: str, *, exc_info: bool = False) -> None:
+    """Log that a record file is present but cannot be used.
+
+    ``%r`` rather than ``%s`` on the path, for the same reason
+    :func:`write_trash_origin` uses it: a Trash folder's name comes from the
+    album's own tags and carries whatever they held, so a raw ``%s`` lets a
+    newline or an ANSI escape in an ``albumartist`` forge log lines. ``repr``
+    escapes those and lone surrogates too, while leaving ordinary text readable.
+
+    Once per listing per bad record, which is the right frequency: the row is
+    showing a misleading note for as long as the file sits there.
+    """
+    logger.warning(
+        "the Trash origin record at %r is present but unusable: %s. That folder falls back"
+        " to a re-import restore, and its Trash row cannot say which of the two causes it"
+        " hit — this line is the difference.",
+        os.fsdecode(path),
+        why,
+        exc_info=exc_info,
+    )
 
 
 def _parse(raw: object) -> TrashOrigin | None:
-    """Validate a decoded payload into a :class:`TrashOrigin`, or ``None``."""
+    """Validate a decoded payload into a :class:`TrashOrigin`, or ``None``.
+
+    ``origin`` is checked for being a PATH, not merely for being an absolute-
+    looking string: bounded in length and free of the characters that either
+    break a filesystem call or misrepresent the result — see
+    :data:`_MAX_ORIGIN_CHARS` and :data:`_REJECTED_IN_ORIGIN` for what each one
+    costs when it gets through. Both refusals happen here rather than at the
+    sinks because there are three of them (the occupancy guard, the move, and
+    the Trash row's own text) and only one place where the value is still known
+    to be untrusted.
+    """
     if not isinstance(raw, dict) or raw.get("schema") != _SCHEMA:
         return None
     origin = raw.get("origin")
     if not isinstance(origin, str) or not os.path.isabs(origin):
+        return None
+    if len(origin) > _MAX_ORIGIN_CHARS or _REJECTED_IN_ORIGIN.search(origin):
         return None
     # Matched against the literals one at a time rather than a membership test:
     # that is what narrows the value from the payload's ``Any`` to ``MovedShape``
@@ -227,7 +340,9 @@ def move_back_target(record: TrashOrigin | None, *, music_dir: str) -> Path | No
     to import-restore. Three ways to get there, and the listing distinguishes
     them for the user (``trash_manage._restore_fields``):
 
-    * no record at all — a row trashed before origins were recorded;
+    * no record we can use — a row trashed before origins were recorded, or one
+      whose record could not be written or cannot be read back
+      (:func:`read_trash_origin` logs which);
     * ``moved="items"`` — see :data:`MovedShape`;
     * an origin outside the CURRENT music library — the honest answer after the
       user re-points ``directory`` at another library, where the recorded folder

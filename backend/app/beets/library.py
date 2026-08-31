@@ -209,7 +209,16 @@ def _sampled_library_dirs(lib: Library, size: int) -> list[str]:
         raw = row[0]
         if not raw:
             continue
-        dirs.append(os.path.dirname(_abs_path(lib, bytes(raw))))
+        # ``os.fsencode``, never ``bytes(raw)``. SQLite is dynamically typed, so
+        # the declared-BLOB ``path`` column hands back whatever was written to
+        # it: beets writes bytes, but a row an external tool or a manual
+        # ``UPDATE`` wrote comes back as ``str`` and ``bytes(str)`` raises
+        # ``TypeError: string argument without an encoding``. That escapes as a
+        # 500 from the presence check — the one predicate whose whole job is to
+        # answer "is the music really there" before rows are dropped. fsencode
+        # takes both types and is the exact inverse of the ``os.fsdecode``
+        # ``_abs_path`` applies next, so neither loses a non-UTF-8 path.
+        dirs.append(os.path.dirname(_abs_path(lib, os.fsencode(raw))))
     return dirs
 
 

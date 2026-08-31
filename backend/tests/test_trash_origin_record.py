@@ -8,9 +8,10 @@ must never be able to make a delete fail.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -22,18 +23,22 @@ from app.beets.library import LibraryRootUnavailableError, _require_id
 from app.beets.trash import trash_album, trash_album_folder, trash_folder
 from app.beets.trash_manage import (
     TrashRestoreIncompleteError,
+    _restore_to_origin,
     _return_to_trash,
     list_trashed_albums,
     restore_album,
 )
 from app.beets.trash_record import (
+    _MAX_ORIGIN_CHARS,
     RECORD_NAME,
     TrashOrigin,
     move_back_target,
     read_trash_origin,
     write_trash_origin,
 )
+from app.fsutil import exists
 from app.models.bank import BankApplyDirective
+from app.models.trash import RestoreResult
 from tests.conftest import build_library
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
@@ -208,6 +213,28 @@ def test_an_album_still_reaches_trash_when_the_record_cannot_be_written(tmp_path
             json.dumps({"schema": 1, "origin": "/music/A", "moved": "sideways"}), id="unknown-shape"
         ),
         pytest.param(json.dumps({"schema": 1, "moved": "folder"}), id="no-origin"),
+        # An origin is a PATH, not any absolute-looking string. Each of these got
+        # through the old `isinstance(str) and isabs()` pair and reached a sink.
+        pytest.param(
+            json.dumps({"schema": 1, "origin": "/music/A\x00B", "moved": "folder"}),
+            id="nul-in-origin",
+        ),
+        pytest.param(
+            json.dumps({"schema": 1, "origin": "/music/A\nB", "moved": "folder"}),
+            id="newline-in-origin",
+        ),
+        pytest.param(
+            json.dumps({"schema": 1, "origin": "/music/A\x1b[31mB", "moved": "folder"}),
+            id="ansi-escape-in-origin",
+        ),
+        pytest.param(
+            json.dumps({"schema": 1, "origin": "/music/\u202egpm.3pm", "moved": "folder"}),
+            id="bidi-override-in-origin",
+        ),
+        pytest.param(
+            json.dumps({"schema": 1, "origin": "/music/" + "A" * 60_000, "moved": "folder"}),
+            id="over-long-origin",
+        ),
     ],
 )
 def test_read_trash_origin_rejects_a_payload_it_cannot_trust(tmp_path: Path, payload: str) -> None:
@@ -266,7 +293,14 @@ def test_listing_marks_a_row_with_no_record_as_an_import(tmp_path: Path) -> None
     assert row.restore_mode == "import"
     assert row.origin is None
     assert row.restore_note is not None
-    assert "no record" in row.restore_note
+    # Both causes, because ``read_trash_origin`` collapses them onto one ``None``:
+    # a row that predates the record and a row whose record write FAILED get this
+    # same sentence, so naming only the first blames a feature that shipped today
+    # for a disk that filled up thirty seconds ago — and nobody looks at the disk.
+    assert "no usable record" in row.restore_note
+    assert "before origins were recorded" in row.restore_note
+    assert "writing that record failed" in row.restore_note
+    assert "server log" in row.restore_note
 
 
 def test_listing_marks_a_shared_folder_row_as_an_import_but_shows_its_origin(
@@ -638,3 +672,298 @@ def test_trash_folder_does_not_detonate_a_planted_symlink(tmp_path: Path) -> Non
 
     assert victim.read_text() == before, "an album delete overwrote a file outside the library"
     assert read_trash_origin(dest) is not None, "the record still has to be written"
+
+
+# ----- an ABSENT record and an UNUSABLE one are not the same event -----
+
+
+def test_a_present_but_unusable_record_is_logged_and_an_absent_one_is_not(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The return still collapses to ``None``; the LOG is where they separate.
+
+    ``read_trash_origin`` answering ``None`` for both is correct — the caller
+    degrades to import-restore either way — but it made a corrupt or unreadable
+    record indistinguishable from a folder that simply predates the feature, and
+    the Trash row says the same sentence for both. Nothing anywhere pointed at
+    the difference, so a record going bad was invisible.
+
+    Both halves in one test on purpose: "the bad one warns" is only worth having
+    beside "the ordinary one stays quiet", or a fix that warned on every listing
+    of every pre-record folder would pass the first half and flood the log.
+    """
+    absent = tmp_path / "absent"
+    absent.mkdir()
+    corrupt = tmp_path / "corrupt"
+    corrupt.mkdir()
+    (corrupt / RECORD_NAME).write_text("{ not json at all", encoding="ascii")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_record"):
+        assert read_trash_origin(absent) is None
+        assert caplog.records == [], "a folder with no record is the ordinary case"
+        assert read_trash_origin(corrupt) is None
+
+    (record,) = caplog.records
+    assert record.levelno == logging.WARNING
+    assert "present but unusable" in record.getMessage()
+    assert RECORD_NAME in record.getMessage()
+
+
+@pytest.mark.parametrize(
+    ("plant", "why"),
+    [
+        pytest.param(lambda p: p.write_text("{ nope", encoding="ascii"), "JSON", id="unparseable"),
+        pytest.param(
+            lambda p: p.write_text(
+                json.dumps({"schema": 1, "origin": "relative", "moved": "folder"}),
+                encoding="ascii",
+            ),
+            "not a record this version can trust",
+            id="rejected-payload",
+        ),
+        pytest.param(
+            lambda p: p.write_text(
+                json.dumps({"schema": 1, "origin": "/a", "moved": "folder", "pad": "x" * 70_000}),
+                encoding="ascii",
+            ),
+            "cap",
+            id="oversized",
+        ),
+        pytest.param(lambda p: p.mkdir(), "not a regular file", id="a-directory"),
+    ],
+)
+def test_every_unusable_record_names_its_own_cause(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    plant: Callable[[Path], object],
+    why: str,
+) -> None:
+    """Four ways to be unusable, four different sentences.
+
+    One generic "could not read the record" would leave the reader no better off
+    than the collapsed ``None`` did: a truncated write, a hand-edited payload, a
+    62 KB file and a directory sitting on the name need four different actions.
+    """
+    plant(tmp_path / RECORD_NAME)
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_record"):
+        assert read_trash_origin(tmp_path) is None
+
+    (record,) = caplog.records
+    assert why in record.getMessage()
+
+
+def test_a_row_whose_record_could_not_be_written_no_longer_blames_its_age(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The finding, end to end: the write fails NOW and the row said "before".
+
+    A real write failure, no monkeypatching — a DIRECTORY already sitting at the
+    sidecar's name, so ``os.replace`` cannot put the record there. The Trash row
+    used to read "it was moved to Trash before origins were recorded", which is
+    false and, worse, unfalsifiable: it points at the folder's age instead of at
+    the volume that just went read-only, so nobody investigates and every later
+    delete loses its origin the same silent way.
+    """
+    husk = tmp_path / "music" / "Old Name"
+    (husk / RECORD_NAME).mkdir(parents=True)
+    (husk / "cover.jpg").write_bytes(b"\x00")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_record"):
+        trash_folder(husk, trash_dir=tmp_path / "trash")
+
+    # The write announced its own failure at the time it happened...
+    assert any("could not record the Trash origin" in r.getMessage() for r in caplog.records)
+    # ...and the row the user reads no longer attributes it to the folder's age.
+    (row,) = list_trashed_albums(tmp_path / "trash", music_dir=str(tmp_path / "music"))
+    assert row.restore_note is not None
+    assert "writing that record failed" in row.restore_note
+    assert "server log" in row.restore_note
+
+
+# ----- an origin is a PATH, and the sinks assume it -----
+
+
+def test_a_nul_in_the_origin_cannot_reach_the_move(tmp_path: Path) -> None:
+    """The whole chain, not just the parse — every link is asserted here.
+
+    A NUL passes ``isabs``; ``app.fsutil.exists`` answers False because
+    ``Path.exists()`` swallows the ``ValueError`` internally; so the occupancy
+    guard PASSES and the failure lands at the move as a ``ValueError`` that
+    ``_restore_to_origin``'s ``except OSError`` does not catch — a blanket 500 on
+    the one row the UI had labelled "Exact restore", instead of the documented
+    import fallback.
+
+    The two stdlib links are pinned as well as the fix, so a future Python that
+    closes either of them is visible here rather than leaving a guard whose
+    reason for existing has quietly evaporated.
+    """
+    entry = tmp_path / "trash" / "Portishead - Dummy"
+    entry.mkdir(parents=True)
+    poisoned = f"{tmp_path}/music/Portishead/Du\x00mmy"
+    (entry / RECORD_NAME).write_text(
+        json.dumps({"schema": 1, "origin": poisoned, "moved": "folder"}), encoding="ascii"
+    )
+
+    assert exists(Path(poisoned)) is False, "the occupancy guard fails OPEN on a NUL"
+    with pytest.raises(ValueError, match="null"):
+        os.rename(str(entry), poisoned)  # and the move is where it detonates
+
+    # So the record never becomes a move target in the first place.
+    assert read_trash_origin(entry) is None
+
+
+def test_the_origin_length_cap_sits_at_path_max_and_not_below_it(tmp_path: Path) -> None:
+    """Bounded, but not so tightly that a legal deep path loses its exact restore.
+
+    Unbounded, an origin is capped only by the 64 KB FILE limit, so a 60,002-
+    character string parses and renders verbatim into the Trash row — the one row
+    whose job is telling the user where their files will go. The bound is
+    ``PATH_MAX``, and the lower half of this test is what keeps it honest: a
+    round number chosen for looks would refuse paths the kernel accepts.
+    """
+    # Pinned as a LITERAL, and grounded in the kernel beside it. A version of
+    # this test that built its inputs from ``_MAX_ORIGIN_CHARS`` moved with the
+    # constant and proved only self-consistency: mutating 4096 to 4095 SURVIVED
+    # it. 4096 is Linux's PATH_MAX in bytes including the terminating NUL
+    # (``linux/limits.h``), and a UTF-8 string never has more characters than
+    # bytes, so no path the kernel accepts can exceed it.
+    assert _MAX_ORIGIN_CHARS == 4096
+    assert _MAX_ORIGIN_CHARS >= os.pathconf("/", "PC_PATH_MAX")
+    at_cap = "/" + "a" * 4095
+    over_cap = "/" + "a" * 4096
+
+    for origin, expected in ((at_cap, at_cap), (over_cap, None)):
+        (tmp_path / RECORD_NAME).write_text(
+            json.dumps({"schema": 1, "origin": origin, "moved": "folder"}), encoding="ascii"
+        )
+        record = read_trash_origin(tmp_path)
+        assert (record.origin if record else None) == expected
+
+
+def test_a_non_utf8_origin_still_gets_its_exact_restore(tmp_path: Path) -> None:
+    """The control for the character guard: surrogates are NOT rejected.
+
+    U+DC80-U+DCFF is how a non-UTF-8 POSIX filename survives ``os.fsdecode``, so
+    a guard that swept them up with the control characters would deny an exact
+    restore to precisely the paths this app takes the most care over — and would
+    look identical to a correct one on every test above.
+    """
+    origin = os.fsdecode(os.fsencode(str(tmp_path / "music")) + b"/Caf\xe9 Album")
+    (tmp_path / RECORD_NAME).write_text(
+        json.dumps({"schema": 1, "origin": origin, "moved": "folder"}), encoding="ascii"
+    )
+
+    record = read_trash_origin(tmp_path)
+    assert record is not None
+    assert record.origin == origin
+    assert move_back_target(record, music_dir=str(tmp_path / "music")) == Path(origin)
+
+
+# ----- the occupancy guard is a pre-filter; the refusal lives at the syscall -----
+
+
+def test_a_move_back_refuses_an_origin_that_appeared_in_the_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard's comment promises a refusal; ``shutil.move`` delivered a burial.
+
+    ``exists(origin)`` and the move are two syscalls. Anything that creates the
+    origin in between — a sync client, an ``*arr``, the user — made
+    ``shutil.move`` treat it as a CONTAINER and put the album INSIDE it, one
+    level down under the Trash entry's own name: still complete, still on disk,
+    and in a place nothing looks for it.
+
+    ``monkeypatch`` IS the window: the guard is told the origin is free while the
+    filesystem knows it is not. That is the only way to land inside a race
+    deterministically, and it exercises the real ``os.rename`` underneath.
+    """
+    lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
+    origin = tmp_path / "music" / "Portishead" / "Dummy"
+    entry = tmp_path / "trash" / "Portishead - Dummy"
+    entry.mkdir(parents=True)
+    (entry / "01 restored.flac").write_bytes(b"\x00")
+    before = sorted(p.name for p in origin.iterdir())
+
+    monkeypatch.setattr("app.beets.trash_manage.exists", lambda _p: False)
+    result = _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash")
+
+    assert result == RestoreResult(restored=False, reason="origin_occupied")
+    assert not (origin / entry.name).exists(), "the album was buried one level down"
+    assert (entry / "01 restored.flac").is_file(), "it must still be in Trash"
+    assert sorted(p.name for p in origin.iterdir()) == before
+
+
+def test_return_to_trash_refuses_an_entry_that_appeared_in_the_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_return_to_trash`` has the same two-syscall shape and the same burial.
+
+    Its own docstring promises it refuses to move onto an existing entry, and the
+    stakes are higher than the forward move's: this runs only when a restore has
+    already failed, so burying the folder here is the second thing to go wrong to
+    an album that is already in trouble.
+    """
+    origin = tmp_path / "music" / "Portishead" / "Dummy"
+    origin.mkdir(parents=True)
+    (origin / "01 a.flac").write_bytes(b"\x00")
+    entry = tmp_path / "trash" / "Portishead - Dummy"
+    entry.mkdir(parents=True)
+    (entry / "stranger.flac").write_bytes(b"\x00")
+
+    # The window: the pre-check is told the Trash entry is free, the disk is not.
+    monkeypatch.setattr("app.beets.trash_manage.exists", lambda p: Path(p) != entry)
+    with pytest.raises(TrashRestoreIncompleteError):
+        _return_to_trash(origin, entry)
+
+    assert not (entry / origin.name).exists(), "the folder was buried inside the entry"
+    assert (origin / "01 a.flac").is_file()
+    assert sorted(p.name for p in entry.iterdir()) == ["stranger.flac"]
+
+
+# ----- a Trash folder name reaches the log, and it comes from the album's tags -----
+
+
+def test_a_failed_return_to_trash_cannot_forge_a_log_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``%r``, not ``%s`` — and the same in the message whose traceback this logs.
+
+    ``_trash_container_name`` neutralises path separators and nothing else, so a
+    newline or an ANSI escape in an ``albumartist`` survives into the folder
+    name; ``display_path`` replaces only UNDECODABLE bytes, never control
+    characters. Interpolated raw, that lets a crafted album name write whatever
+    it likes into the server log, on the one code path an operator reads when a
+    restore has already gone wrong.
+
+    The HTTP surface was never affected (JSON escapes it), which is exactly why
+    this needs its own test: nothing else would have caught it.
+    """
+    lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
+    forged = "Dummy\x1b[31m\nCRITICAL:app:all clear"
+    origin = tmp_path / "music" / "Portishead" / forged
+    entry = tmp_path / "trash" / "Portishead - Dummy"
+    entry.mkdir(parents=True)
+    (entry / "01 a.flac").write_bytes(b"\x00")
+
+    def _import_destroys_the_folder_then_fails(*_a: object, **_k: object) -> RestoreResult:
+        # Leaves the state _return_to_trash refuses to work from, so the failure
+        # reaches the log line under test without a second monkeypatch.
+        shutil.rmtree(origin)
+        raise RuntimeError("the import blew up")
+
+    monkeypatch.setattr(
+        "app.beets.trash_manage._restore_by_import", _import_destroys_the_folder_then_fails
+    )
+    with (
+        caplog.at_level(logging.WARNING, logger="app.beets.trash_manage"),
+        pytest.raises(RuntimeError),
+    ):
+        _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash")
+
+    assert any("could not return" in r.getMessage() for r in caplog.records)
+    assert "\x1b" not in caplog.text, "an ANSI escape reached the log"
+    assert "\nCRITICAL" not in caplog.text, "a forged log line reached the log"
+    # Escaped, not dropped: the operator still gets the path they have to look at.
+    assert "\\x1b" in caplog.text
+    assert "\\n" in caplog.text

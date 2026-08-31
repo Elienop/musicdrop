@@ -114,6 +114,39 @@ def test_folder_shared_guard(duplicates_lib: Library) -> None:
     assert _folder_is_shared(duplicates_lib, album, music_dir) is True
 
 
+def test_folder_shared_guard_survives_a_weird_path_row_stored_as_text(
+    duplicates_lib: Library,
+) -> None:
+    """The weird-path arm reads a raw ``path`` row, and SQLite hands back its type.
+
+    The column is declared BLOB and beets always writes bytes, but a row an
+    external tool or a hand-run ``UPDATE`` wrote comes back as ``str`` — and
+    ``bytes(str)`` raises ``TypeError: string argument without an encoding``. It
+    escaped as a 500 from a delete that should have taken its ordinary answer.
+
+    Reaching that arm needs a row the SCOPED query cannot match but that still
+    normalizes into the folder, which is exactly what the arm exists for: a
+    ``/./`` segment makes the stored prefix differ from the real one. Both halves
+    are asserted — that it does not raise, AND that it still answers True — so a
+    fix that skipped the row instead of decoding it would not pass.
+    """
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_root = _album_root(duplicates_lib, list(album.items()))
+    stranger = next(a for a in duplicates_lib.albums() if a.albumartist == "Boards of Canada")
+    stranger_item = next(iter(stranger.items()))
+    head, tail = album_root.rsplit(os.sep, 1)
+    weird = f"{head}{os.sep}.{os.sep}{tail}{os.sep}01 Track 1.mp3"
+
+    with duplicates_lib.transaction() as tx:
+        tx.mutate("UPDATE items SET path = ? WHERE id = ?", (weird, stranger_item.id))
+        typed = tx.query("SELECT typeof(path) FROM items WHERE id = ?", (stranger_item.id,))
+    assert typed[0][0] == "text", "the row under test must be TEXT, not BLOB"
+
+    # A stranger's file normalizes into this album's folder, so moving the folder
+    # wholesale would take it too.
+    assert _folder_is_shared(duplicates_lib, album, album_root) is True
+
+
 # ----- I23: _folder_is_shared must be a scoped query, not a library scan -----
 
 

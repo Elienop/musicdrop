@@ -20,6 +20,7 @@ beets imports allowed here (inside app/beets/, CLAUDE.md rule 3).
 from __future__ import annotations
 
 import contextlib
+import errno
 import logging
 import os
 import shutil
@@ -50,21 +51,32 @@ class TrashRestoreIncompleteError(Exception):
     """A move-back restore left the folder neither in Trash nor in the library.
 
     Raised only when the recovery itself could not be completed — the forward
-    move failed part-way (a cross-filesystem ``shutil.move`` copies then removes,
-    so it has a partial state a same-filesystem rename does not), or the folder
-    had to be put back in Trash after a failed import and that move failed too.
+    move failed part-way (a cross-filesystem move copies then removes, so it has
+    a partial state a same-filesystem rename does not; see :func:`_move_no_merge`
+    for which of the two runs), or the folder had to be put back in Trash after a
+    failed import and that move failed too.
     Carries both paths, because the person reading it is the one who has to look
     at them.
     """
 
 
-#: Shown for a row that predates the origin record. Decision 2 of the owner's
-#: ruling: such a row must say why it cannot be put back, not quietly restore
-#: somewhere else.
+#: Shown for a row with no record we can use. Decision 2 of the owner's ruling:
+#: such a row must say why it cannot be put back, not quietly restore somewhere
+#: else.
+#:
+#: It names TWO causes, and the second one is why: ``read_trash_origin``
+#: collapses "no file" and "a file we cannot trust" to the same ``None``, so this
+#: sentence is also what a row gets when the record write FAILED thirty seconds
+#: ago on a full or read-only volume. Blaming that on "trashed before origins
+#: were recorded" would send the user looking at a folder's age instead of at the
+#: disk, and every later delete would lose its origin the same way, unnoticed.
+#: The log line is the tie-breaker, so the note points at it — ``read_trash_origin``
+#: WARNs for the unusable case and stays silent for the absent one.
 _NO_RECORD_NOTE = (
-    "MusicDrop has no record of where this came from — it was moved to Trash before"
-    " origins were recorded. Restoring re-imports it, so beets files it under your"
-    " current naming rules rather than putting it back."
+    "MusicDrop has no usable record of where this came from — either it was moved to"
+    " Trash before origins were recorded, or writing that record failed (the server log"
+    " says which). Restoring re-imports it, so beets files it under your current naming"
+    " rules rather than putting it back."
 )
 #: ``moved="items"``: the album's files were taken out of a folder it shared.
 _SHARED_FOLDER_NOTE = (
@@ -299,7 +311,11 @@ def _restore_to_origin(
       check alone.
     * the origin already exists — refuse rather than merge or divert. A restore
       that lands beside the thing it was meant to be is not a restore, and
-      ``shutil.move`` onto an existing directory moves the folder INSIDE it.
+      ``shutil.move`` onto an existing directory moves the folder INSIDE it. The
+      ``exists`` call below answers that cheaply, but it is a PRE-FILTER and not
+      the guard: it and the move are two syscalls, so the promise is kept by
+      :func:`_move_no_merge`, which cannot be raced. Both answer
+      ``origin_occupied``, so the window is invisible to the caller.
     * the import did not land the album — put the folder back in Trash and report
       the import's own answer, so a duplicate reads exactly as it does today.
 
@@ -311,15 +327,21 @@ def _restore_to_origin(
         return RestoreResult(restored=False, reason="origin_occupied")
     try:
         origin.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(entry), str(origin))
+        try:
+            _move_no_merge(entry, origin)
+        except FileExistsError:
+            # The origin appeared between the check above and the move — a
+            # sync client, an *arr or the user. Same answer as the pre-filter's,
+            # and the folder is still sitting untouched in Trash.
+            return RestoreResult(restored=False, reason="origin_occupied")
     except OSError as exc:
         # No undo attempted: a same-filesystem rename either happened or did
         # not, and a cross-filesystem one that failed part-way has left a
         # partial copy whose relationship to the source only a human can judge.
         # Naming both paths beats guessing.
         raise TrashRestoreIncompleteError(
-            f"could not move {display_path(entry)} back to {display_path(origin)}: {exc}."
-            " Check both paths before retrying."
+            f"could not move {display_path(entry)!r} back to {display_path(origin)!r}:"
+            f" {exc}. Check both paths before retrying."
         ) from exc
     try:
         result = _restore_by_import(lib, str(origin), trash_dir=trash_dir, in_place=True)
@@ -330,8 +352,16 @@ def _restore_to_origin(
         try:
             _return_to_trash(origin, entry)
         except TrashRestoreIncompleteError:
+            # ``%r``, not ``%s``, and the same in the message this logs the
+            # traceback of. A Trash folder's name comes from the album's own
+            # tags, and ``_trash_container_name`` neutralises only path
+            # separators — so a newline or an ANSI escape in an ``albumartist``
+            # survives into the folder name, and ``display_path`` replaces only
+            # UNDECODABLE bytes, never control characters. Interpolated raw,
+            # that forges log lines. ``repr`` escapes them and leaves ordinary
+            # text (including the U+FFFD placeholder) readable.
             logger.exception(
-                "could not return %s to Trash after a failed restore", display_path(origin)
+                "could not return %r to Trash after a failed restore", display_path(origin)
             )
         raise
     if not result.restored and result.reason == "could_not_restore" and not _holds_media(origin):
@@ -370,23 +400,79 @@ def _holds_media(folder: Path) -> bool:
     return False
 
 
+#: ``rename``'s ways of saying "something is already at the destination". POSIX
+#: lets an implementation answer a non-empty destination directory with either
+#: EEXIST or ENOTEMPTY (Linux picks ENOTEMPTY), and a destination that is a FILE
+#: while the source is a directory answers ENOTDIR. All three mean the same thing
+#: here, and none of them moved anything.
+_DEST_OCCUPIED = frozenset({errno.EEXIST, errno.ENOTEMPTY, errno.ENOTDIR})
+
+
+def _move_no_merge(src: Path, dest: Path) -> None:
+    """Move ``src`` onto ``dest``, refusing rather than moving INSIDE it.
+
+    ``shutil.move`` treats an existing DIRECTORY destination as a container: it
+    puts the source in there under its own name. Both callers check ``exists``
+    first, but a check and a move are two syscalls, so anything that creates the
+    destination in the window between them — a sync client, an ``*arr``, the
+    user — turns a documented refusal into a silent burial one level down.
+    Measured: the album ends up at ``<origin>/<trash entry name>/``, still
+    present, still complete, and in a place nothing looks for it.
+
+    ``rename`` closes the window because the kernel makes the check and the move
+    one operation, so it goes first and only a cross-filesystem move falls back
+    to a copy. The refusal is normalised to ``FileExistsError`` whatever errno
+    the kernel chose, so a caller can tell "the destination was taken" apart from
+    a move that half-happened.
+
+    Two residuals, stated rather than hidden:
+
+    * ``rename`` REPLACES an EMPTY directory at the destination instead of
+      refusing it. Nothing is buried or merged when it does, which is the
+      property the callers need; an empty dir is also what a pruning beets or a
+      half-finished sync leaves behind, so refusing it would be worse.
+    * Both callers move a DIRECTORY, and the EXDEV branch is written for that. A
+      file source raises ``NotADirectoryError`` here instead of quietly taking
+      ``shutil.move``'s file path, which would bury it the same way.
+    """
+    try:
+        os.rename(src, dest)
+    except OSError as exc:
+        if exc.errno == errno.EXDEV:
+            # Different filesystems, so no rename can do it and the move has to
+            # copy. ``copytree``'s own ``os.makedirs(..., exist_ok=False)`` is
+            # the atomic refusal ``shutil.move`` skips: one ``mkdir`` syscall
+            # that raises ``FileExistsError`` rather than descending into a
+            # destination that appeared. ``symlinks=True`` + ``copy2`` are what
+            # ``shutil.move`` itself uses for a directory, so the copy is
+            # unchanged — only the container behaviour is dropped.
+            shutil.copytree(src, dest, symlinks=True)
+            shutil.rmtree(src)
+            return
+        if exc.errno in _DEST_OCCUPIED:
+            raise FileExistsError(exc.errno, os.strerror(exc.errno), str(dest)) from exc
+        raise
+
+
 def _return_to_trash(origin: Path, entry: Path) -> None:
     """Undo a move-back whose import did not land. Raises if it cannot.
 
     Refuses to move onto an existing ``entry``: ``shutil.move`` would put the
-    folder INSIDE it and bury the album one level down under its own name.
+    folder INSIDE it and bury the album one level down under its own name. The
+    ``exists`` check is the cheap pre-filter; :func:`_move_no_merge` is what
+    makes the refusal hold when something creates ``entry`` in the window.
     """
     if exists(entry) or not exists(origin):
         raise TrashRestoreIncompleteError(
-            f"cannot return {display_path(origin)} to Trash at {display_path(entry)}:"
+            f"cannot return {display_path(origin)!r} to Trash at {display_path(entry)!r}:"
             " the source is gone or the Trash entry is occupied. Check both paths."
         )
     try:
-        shutil.move(str(origin), str(entry))
+        _move_no_merge(origin, entry)
     except OSError as exc:
         raise TrashRestoreIncompleteError(
-            f"the restore did not land and {display_path(origin)} could not be returned to"
-            f" Trash at {display_path(entry)}: {exc}. Check both paths."
+            f"the restore did not land and {display_path(origin)!r} could not be returned"
+            f" to Trash at {display_path(entry)!r}: {exc}. Check both paths."
         ) from exc
     # Only removes the artist folder if the restore is what created it.
     with contextlib.suppress(OSError):
