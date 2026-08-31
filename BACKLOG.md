@@ -743,10 +743,34 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   album's shape (less protection, never more).
 
 - ~~**Record the origin path at trash time so a move-back restore becomes possible.**~~
-  **FIXED** on `fix/undoable-deletes` (follow-up from #189). Every mover now writes a
-  `.musicdrop-trash.json` sidecar INSIDE the trashed folder (owner's design call, recorded
-  as `decisions.md` 27: a sidecar over a central manifest, so `Empty` needs no extra logic
-  and a failure to record one folder cannot touch another's).
+  **FIXED** on `fix/undoable-deletes` (follow-up from #189). Every mover records the origin
+  in a SIBLING store — `<beets_dir>/trash-origins/<entry name>.json`, one file per Trash
+  entry, keyed on the entry's own name — mirroring freedesktop.org's `info/<name>.trashinfo`
+  beside `files/<name>`.
+
+  **SUPERSEDES the sidecar** this entry first recorded (`decisions.md` 27: "a sidecar over a
+  central manifest, so `Empty` needs no extra logic and a failure to record one folder cannot
+  touch another's"). Owner-approved 2026-09-01. `decisions.md` 27 needs amending in the same
+  breath so the next reader does not follow it back. What the sidecar got wrong: the folder
+  arrives from the music library, which the threat model treats as attacker-writable, and
+  `shutil.move` carries whatever it holds into Trash — so the record's own directory was
+  hostile, and every guard around it existed to buy back trust that a `/data` file gives for
+  free. The property the guard chain rested on ("our write wins the filename") failed twice
+  in three commits. It also broke beets' source pruning: a file left inside the folder makes
+  beets refuse to prune it, so the re-import a failed restore asks for left a husk behind.
+  Deleted with the sidecar: the symlink refusal, the `mkstemp`/`fchmod`/`os.replace`
+  choreography, the 64 KB size cap, the `PATH_MAX` origin-length cap and the
+  hostile-character denylist (~230 production lines, ~220 test lines). The NUL check is the
+  one member of that denylist kept — it is the only one whose consequence is a 500 rather
+  than a cosmetic one.
+
+  **What the name key costs, and where it is paid.** An entry removed OUTSIDE MusicDrop
+  leaves its record, and a later folder taking that name would inherit a stale origin that
+  steers a `rename()` — the same hazard inode keys were rejected for. Closed at the
+  ALLOCATOR: `trash._unique_trash_dest` treats a recorded name as occupied, so the residual
+  is a burnt name (litter), never a wrong restore. Deliberately NOT closed by a reaper on the
+  listing: "unlink every record with no matching entry" cannot tell an empty Trash dir from
+  one whose share just dropped, and would destroy every origin in that state.
 
   **Re-derive before quoting the old framing — "the Trash rows Restore can never restore"
   was imprecise.** A Restore already existed; it re-imports through beets. The genuine gaps
@@ -775,14 +799,18 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   **Residual, stated in the code, not a bug:** the origin-inside-the-library test is
   LEXICAL. An origin under a symlink that escapes the library passes it (measured). Resolving
   both sides would close that and break a legitimate symlinked-subtree layout in the same
-  stroke, so the check answers "is this still my library", not "is this safe".
-  **Corrected 2026-08-31 by the branch's security audit:** the sentence that used to follow —
-  "a hostile sidecar needs write access to the Trash dir, which is strictly more than this
-  path grants" — was FALSE when written. The record write swallows its errors, so a plant
-  merely `chmod 444`'d in the MUSIC library survived the app's failed overwrite and its origin
-  won. It is true only because the write is now `mkstemp` + `os.replace`, where `rename` needs
-  write permission on the DIRECTORY rather than the file, so the app's record always wins.
-  The lexical check leans on that write; do not weaken one without re-reading the other.
+  stroke, so the check answers "is this still my library", not "is this safe". It survives
+  the move to a trusted store on CONTRACT grounds rather than threat-model ones: deleting it
+  would start offering a `move_back` on rows that today carry the "not inside the current
+  music library" note, which is a wire change. (The 2026-08-31 audit note this replaces —
+  about a `chmod 444` plant in the MUSIC library winning against the app's failed overwrite —
+  is moot: there is no plantable filename left. It is kept in the git history, not here.)
+
+  **Second residual, unchanged in substance:** a symlinked Trash entry gets NO record.
+  `resolve_trash_child` refuses a child resolving outside Trash, so such a row can never be
+  restored by any route, and a record would make the listing offer an "Exact restore" whose
+  button 404s. The row reads as an import-restore instead — exactly its pre-feature
+  behaviour.
 
   **UI shipped in the same slice:** each row states its outlook before the user clicks — a
   quiet "Exact restore. Goes back to <path>" or an amber-flagged "Approximate restore."

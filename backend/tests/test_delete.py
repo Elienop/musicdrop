@@ -23,7 +23,7 @@ from app.beets.delete import (
 from app.beets.library import LibraryRootUnavailableError, _require_id
 from app.beets.trash import album_folder, trash_album_folder
 from app.config import Settings
-from tests.conftest import make_test_handle
+from tests.conftest import make_test_handle, origins_for
 
 
 def test_delete_album_trashes_whole_folder_and_drops(
@@ -35,7 +35,7 @@ def test_delete_album_trashes_whole_folder_and_drops(
     folder = album_folder(duplicates_lib, list(album.items()))
     (Path(folder) / "cover-extra.lrc").write_text("[00:01.00] x", encoding="utf-8")
 
-    result = delete_album(duplicates_lib, album_id, trash_dir=trash)
+    result = delete_album(duplicates_lib, album_id, trash_dir=trash, origins_dir=origins_for(trash))
 
     assert result.trashed_albums == 1
     assert str(trash) in result.trash_path
@@ -57,7 +57,7 @@ def test_delete_album_ghost_folder_already_gone(duplicates_lib: Library, tmp_pat
     folder = album_folder(duplicates_lib, list(album.items()))
     shutil.rmtree(folder)  # ghost: DB rows remain, the files are gone
 
-    result = delete_album(duplicates_lib, album_id, trash_dir=trash)
+    result = delete_album(duplicates_lib, album_id, trash_dir=trash, origins_dir=origins_for(trash))
 
     assert result.trashed_albums == 1
     assert duplicates_lib.get_album(album_id) is None  # ghost rows dropped
@@ -66,7 +66,12 @@ def test_delete_album_ghost_folder_already_gone(duplicates_lib: Library, tmp_pat
 
 def test_delete_album_unknown_id_raises(duplicates_lib: Library, tmp_path: Path) -> None:
     with pytest.raises(AlbumNotFoundError):
-        delete_album(duplicates_lib, 999_999, trash_dir=tmp_path / "trash")
+        delete_album(
+            duplicates_lib,
+            999_999,
+            trash_dir=tmp_path / "trash",
+            origins_dir=tmp_path / "trash-origins",
+        )
 
 
 def test_delete_artist_trashes_all_their_albums(duplicates_lib: Library, tmp_path: Path) -> None:
@@ -74,14 +79,21 @@ def test_delete_artist_trashes_all_their_albums(duplicates_lib: Library, tmp_pat
     before = [a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk"]
     assert before, "fixture should have at least one Daft Punk album"
 
-    result = delete_artist(duplicates_lib, "Daft Punk", trash_dir=trash)
+    result = delete_artist(
+        duplicates_lib, "Daft Punk", trash_dir=trash, origins_dir=origins_for(trash)
+    )
 
     assert result.trashed_albums == len(before)
     assert not [a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk"]
 
 
 def test_delete_artist_unknown_is_noop(duplicates_lib: Library, tmp_path: Path) -> None:
-    result = delete_artist(duplicates_lib, "Nobody At All", trash_dir=tmp_path / "trash")
+    result = delete_artist(
+        duplicates_lib,
+        "Nobody At All",
+        trash_dir=tmp_path / "trash",
+        origins_dir=tmp_path / "trash-origins",
+    )
     assert result.trashed_albums == 0
 
 
@@ -128,7 +140,7 @@ def test_delete_album_root_unavailable_keeps_rows(duplicates_lib: Library, tmp_p
     shutil.rmtree(os.fsdecode(duplicates_lib.directory))
 
     with pytest.raises(LibraryRootUnavailableError):
-        delete_album(duplicates_lib, album_id, trash_dir=trash)
+        delete_album(duplicates_lib, album_id, trash_dir=trash, origins_dir=origins_for(trash))
 
     assert duplicates_lib.get_album(album_id) is not None  # still queryable
     assert not trash.exists()
@@ -149,7 +161,7 @@ def test_delete_artist_root_unavailable_drops_nothing(
     shutil.rmtree(os.fsdecode(duplicates_lib.directory))
 
     with pytest.raises(LibraryRootUnavailableError):
-        delete_artist(duplicates_lib, "Radiohead", trash_dir=trash)
+        delete_artist(duplicates_lib, "Radiohead", trash_dir=trash, origins_dir=origins_for(trash))
 
     assert [_require_id(a.id) for a in duplicates_lib.albums() if a.albumartist == "Radiohead"] == (
         before
@@ -279,7 +291,12 @@ def test_delete_artist_root_gone_raises_before_the_transaction(
     shutil.rmtree(os.fsdecode(duplicates_lib.directory))
 
     with pytest.raises(LibraryRootUnavailableError):
-        delete_artist(duplicates_lib, "Radiohead", trash_dir=tmp_path / "trash")
+        delete_artist(
+            duplicates_lib,
+            "Radiohead",
+            trash_dir=tmp_path / "trash",
+            origins_dir=tmp_path / "trash-origins",
+        )
 
     assert calls == []  # the fan-out never started
     assert len(list(duplicates_lib.albums())) == before
@@ -301,13 +318,15 @@ def test_delete_artist_op_mid_flight_drop_reports_partial_progress(
     real = trash_album_folder  # from its own module: delete.py does not re-export it
     calls = {"n": 0}
 
-    def _drops_on_the_second(lib: Library, album: object, *, trash_dir: Path) -> str:
+    def _drops_on_the_second(
+        lib: Library, album: object, *, trash_dir: Path, origins_dir: Path
+    ) -> str:
         calls["n"] += 1
         if calls["n"] == 2:
             raise LibraryRootUnavailableError(
                 "Library folder unavailable. Is the music share mounted?"
             )
-        return str(real(lib, album, trash_dir=trash_dir))
+        return str(real(lib, album, trash_dir=trash_dir, origins_dir=origins_dir))
 
     monkeypatch.setattr(delete_mod, "trash_album_folder", _drops_on_the_second)
 
@@ -333,3 +352,42 @@ def test_delete_artist_op_mid_flight_drop_reports_partial_progress(
     # The library agrees with the message: one album trashed, one untouched.
     assert len([a for a in duplicates_lib.albums() if a.albumartist == "Radiohead"]) == 1
     assert trash.is_dir()
+
+
+def test_delete_album_op_records_an_origin_the_listing_can_offer_a_move_back_on(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    """The op resolves BOTH dirs, and only an end-to-end check sees the second.
+
+    Every unit test below the op passes ``origins_dir`` explicitly, so an op that
+    resolved it wrong — as the Trash dir, say, which would put the records inside
+    the entry namespace the listing walks — is invisible to all of them and
+    silently degrades every deleted album to an import-restore.
+    """
+    from app.beets.trash_manage import list_trashed_albums
+
+    trash = tmp_path / "trash"
+    origins = tmp_path / "trash-origins"
+    handle = make_test_handle(duplicates_lib, tmp_path)
+    album = next(iter(duplicates_lib.albums()))
+    album_id = _require_id(album.id)
+    album_root = os.path.dirname(os.fsdecode(next(iter(album.items())).path))
+
+    class _App:
+        state = SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins)),
+        )
+
+    class _Req:
+        app = _App()
+
+    asyncio.run(delete_album_op(_Req(), album_id))  # type: ignore[arg-type]  # duck-typed stub
+
+    assert list(origins.glob("*.json")), "the op resolved no origin store"
+    assert not list(trash.glob("*.json")), "records must not land in the entry namespace"
+    rows = list_trashed_albums(
+        trash, origins_dir=origins, music_dir=os.fsdecode(duplicates_lib.directory)
+    )
+    (row,) = [r for r in rows if r.origin == album_root]
+    assert row.restore_mode == "move_back"

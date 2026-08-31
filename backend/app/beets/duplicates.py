@@ -36,7 +36,13 @@ from app.beets.library import (
     _coerce_str,
     _require_id,
 )
-from app.beets.trash import album_folder, album_format_bitrate, resolve_trash_dir, trash_album
+from app.beets.trash import (
+    album_folder,
+    album_format_bitrate,
+    resolve_trash_dir,
+    resolve_trash_origins_dir,
+    trash_album,
+)
 from app.library_busy import library_job_active
 from app.models.duplicates import (
     DuplicateAlbum,
@@ -335,6 +341,7 @@ def resolve_duplicate_group(
     keep_album_id: int,
     remove_album_ids: list[int],
     trash_dir: Path,
+    origins_dir: Path,
     dropped_item_ids: set[int] | None = None,
 ) -> ResolveResult:
     """Move ``remove_album_ids`` to ``trash_dir`` and drop them from the library.
@@ -381,7 +388,7 @@ def resolve_duplicate_group(
                     # ``album.items()`` afterwards yields nothing and the caller
                     # would never learn which playlists it just invalidated.
                     dropped_item_ids.update(_require_id(i.id) for i in album.items())
-                trash_path = trash_album(lib, album, trash_dir=trash_dir)
+                trash_path = trash_album(lib, album, trash_dir=trash_dir, origins_dir=origins_dir)
                 moved.append(
                     MovedAlbum(
                         id=album_id,
@@ -427,6 +434,7 @@ async def resolve_duplicates_op(
                 keep_album_id=req.keep_album_id,
                 remove_album_ids=req.remove_album_ids,
                 trash_dir=trash_dir,
+                origins_dir=resolve_trash_origins_dir(_settings(app), handle),
                 dropped_item_ids=dropped_item_ids,
             )
         except StaleGroupError as exc:
@@ -452,6 +460,7 @@ def resolve_all_groups(
     mode: DuplicateMode,
     groups: list[GroupDecision],
     trash_dir: Path,
+    origins_dir: Path,
     dropped_item_ids: set[int] | None = None,
 ) -> ResolveAllResult:
     """Resolve many duplicate groups in one pass.
@@ -476,6 +485,7 @@ def resolve_all_groups(
                 keep_album_id=decision.keep_album_id,
                 remove_album_ids=decision.remove_album_ids,
                 trash_dir=trash_dir,
+                origins_dir=origins_dir,
                 dropped_item_ids=dropped_item_ids,
             )
         except StaleGroupError as exc:
@@ -518,6 +528,7 @@ async def resolve_all_op(
                 mode=req.mode,
                 groups=req.groups,
                 trash_dir=trash_dir,
+                origins_dir=resolve_trash_origins_dir(_settings(app), handle),
                 dropped_item_ids=dropped_item_ids,
             )
         except AlbumNotFoundError as exc:

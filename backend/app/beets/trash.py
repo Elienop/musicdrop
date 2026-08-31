@@ -7,10 +7,11 @@ action (``app.beets.import_session``). Reversible by design: files are
 *relocated* (never deleted) and the DB rows dropped with ``delete=False`` —
 exactly ``beet dup --move <trash> --remove`` for albums.
 
-Every mover here also drops an origin record inside the folder it leaves in
-Trash (``app.beets.trash_record``), so Restore can put it back where it came
-from instead of re-filing it by path template. Writing that record can never
-fail a delete — see ``trash_record.write_trash_origin``.
+Every mover here also records where the folder came from, in the SIBLING store
+``app.beets.trash_origins`` (``<origins_dir>/<entry name>.json``, never a file
+inside the trashed folder), so Restore can put it back where it came from
+instead of re-filing it by path template. Writing that record can never fail a
+delete — see ``trash_origins.write_trash_origin``.
 
 Lives in its own module so both features import it without forming the
 ``import_session -> duplicates -> registry -> import_session`` cycle. Imports
@@ -36,7 +37,7 @@ from app.beets.library import (
     require_library_present,
     require_library_root,
 )
-from app.beets.trash_record import write_trash_origin
+from app.beets.trash_origins import MovedShape, origin_recorded, write_trash_origin
 from app.config import Settings
 
 
@@ -151,7 +152,7 @@ def _require_move_happened(
     )
 
 
-def trash_album(lib: Library, album: Any, *, trash_dir: Path) -> str:
+def trash_album(lib: Library, album: Any, *, trash_dir: Path, origins_dir: Path) -> str:
     """Relocate one album's files under ``trash_dir`` and drop it from the library.
 
     Reversible: the album is moved into its OWN collision-free container dir
@@ -193,7 +194,7 @@ def trash_album(lib: Library, album: Any, *, trash_dir: Path) -> str:
     """
     require_library_root(lib)
     trash_dir.mkdir(parents=True, exist_ok=True)
-    container = _unique_trash_dest(trash_dir, _trash_container_name(album))
+    container = _unique_trash_dest(trash_dir, origins_dir, _trash_container_name(album))
     container.mkdir(parents=True, exist_ok=True)
     # BEFORE the move: ``Album.move`` rewrites every item's stored path, so this
     # is the last moment the album's own folder can be read off the rows.
@@ -226,9 +227,16 @@ def trash_album(lib: Library, album: Any, *, trash_dir: Path) -> str:
     # resolve, while ``trash_path`` is a template level deeper inside it.
     # ``moved="items"`` because this mover relocates tracked FILES out of a
     # folder that may hold other music — the origin is worth showing, a
-    # move-back is not on offer. See ``trash_record.MovedShape``.
-    if source_root:
-        write_trash_origin(container, origin=source_root, moved="items")
+    # move-back is not on offer. See ``trash_origins.MovedShape``.
+    #
+    # Gated on ``moved`` as well as ``source_root``: the ghost arm of
+    # ``_require_move_happened`` ``rmdir``s the container and returns normally,
+    # so an empty ``moved`` means there is no Trash entry to describe. That used
+    # to be masked — a write INTO the deleted container failed harmlessly — but a
+    # write on the /data side would succeed and leave an origin file whose name
+    # nothing in Trash answers to.
+    if source_root and moved:
+        _record_origin(origins_dir, container, origin=source_root, moved="items")
     album.remove(delete=False)  # drop DB rows; files stay in Trash
     return trash_path
 
@@ -332,18 +340,53 @@ def _folder_is_shared(lib: Library, album: Any, album_root: str) -> bool:
     return False
 
 
-def _unique_trash_dest(trash_dir: Path, name: str) -> Path:
-    """A non-colliding ``trash_dir/<name>`` (append ``(n)`` if it already exists)."""
+def _unique_trash_dest(trash_dir: Path, origins_dir: Path, name: str) -> Path:
+    """A non-colliding ``trash_dir/<name>`` (append ``(n)`` if it already exists).
+
+    A name counts as taken when EITHER namespace holds it. The origins half is
+    what makes the name key safe: an entry deleted outside MusicDrop (a file
+    manager, an SMB client, ``docker volume rm``) leaves its record behind, and
+    without this test the next album to earn that name would inherit a stale
+    origin — which steers a ``rename()`` for the wrong folder. That is the exact
+    hazard inode keys were rejected for, and it is strictly worse than losing an
+    origin, so it is closed here rather than by a reaper that would have to
+    decide whether an empty Trash dir means "empty" or "unmounted".
+
+    The cost is a burnt name: after a manual deletion the record is litter, and
+    an album that would have been ``<name>`` becomes ``<name> (1)``. Litter is
+    the accepted residual; a wrong restore is not.
+    """
     base = name or "album"
     dest = trash_dir / base
     counter = 1
-    while dest.exists():
+    while dest.exists() or origin_recorded(origins_dir, dest.name):
         dest = trash_dir / f"{base} ({counter})"
         counter += 1
     return dest
 
 
-def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path) -> str:
+def _record_origin(origins_dir: Path, dest: Path, *, origin: str, moved: MovedShape) -> None:
+    """Record ``dest``'s origin, unless ``dest`` is a symlink. Never raises.
+
+    A symlinked Trash entry is ordinary rather than hostile: ``_album_root`` is
+    ``dirname(item.path)``, so an album whose own folder is a symlink into
+    another volume is trashed AS a symlink because ``shutil.move`` preserves
+    them. ``resolve_trash_child`` resolves the child and refuses anything landing
+    outside Trash, so such a row can never be restored — and a record would make
+    the listing offer "Exact restore" on a row whose Restore button 404s. Writing
+    nothing keeps the promise honest: the row reads as an import-restore, exactly
+    as it did before origins existed.
+
+    (For the sidecar this refusal was a security guard — ``mkstemp(dir=entry)``
+    followed the link straight out of Trash. On the ``/data`` side there is no
+    such escape left; only the unkeepable promise.)
+    """
+    if dest.is_symlink():
+        return
+    write_trash_origin(origins_dir, dest.name, origin=origin, moved=moved)
+
+
+def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path, origins_dir: Path) -> str:
     """Relocate the album's ENTIRE folder under ``trash_dir`` and drop it from the
     library. Reversible.
 
@@ -406,21 +449,23 @@ def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path) -> str:
         album.remove(delete=False)
         return str(trash_dir)
     if _folder_is_shared(lib, album, album_root):
-        return trash_album(lib, album, trash_dir=trash_dir)
+        return trash_album(lib, album, trash_dir=trash_dir, origins_dir=origins_dir)
     trash_dir.mkdir(parents=True, exist_ok=True)
-    dest = _unique_trash_dest(trash_dir, os.path.basename(os.path.normpath(album_root)))
+    dest = _unique_trash_dest(
+        trash_dir, origins_dir, os.path.basename(os.path.normpath(album_root))
+    )
     shutil.move(album_root, str(dest))
     # The folder moved whole, so ``dest`` maps 1:1 back onto ``album_root`` and a
     # true restore is a single move. Written after the move (the destination is
     # in Trash, so a failure here cannot leave anything in the music library) and
     # before the rows are dropped, so the record exists from the moment the
     # physical fact it describes is true.
-    write_trash_origin(dest, origin=album_root, moved="folder")
+    _record_origin(origins_dir, dest, origin=album_root, moved="folder")
     album.remove(delete=False)  # drop DB rows; files now live under Trash
     return str(dest)
 
 
-def trash_folder(folder: Path, *, trash_dir: Path) -> Path:
+def trash_folder(folder: Path, *, trash_dir: Path, origins_dir: Path) -> Path:
     """Move an orphan husk folder (no tracked items) wholesale into Trash.
 
     Reversible: ``shutil.move`` relocates the whole directory under ``trash_dir`` to
@@ -433,13 +478,13 @@ def trash_folder(folder: Path, *, trash_dir: Path) -> Path:
     deletion.
     """
     trash_dir.mkdir(parents=True, exist_ok=True)
-    dest = _unique_trash_dest(trash_dir, folder.name)
+    dest = _unique_trash_dest(trash_dir, origins_dir, folder.name)
     origin = os.path.abspath(str(folder))
     shutil.move(str(folder), str(dest))
     # The husk's ONLY exit from Trash. An audio-free folder cannot be imported,
     # so before this record it could be permanently deleted and nothing else;
     # with it, Restore moves it straight back where the sweep took it from.
-    write_trash_origin(dest, origin=origin, moved="folder")
+    _record_origin(origins_dir, dest, origin=origin, moved="folder")
     return dest
 
 
@@ -453,3 +498,17 @@ def resolve_trash_dir(settings: Settings, handle: LibraryHandle) -> Path:
     if settings.trash_dir:
         return Path(settings.trash_dir).resolve()
     return handle.beets_dir / "trash"
+
+
+def resolve_trash_origins_dir(settings: Settings, handle: LibraryHandle) -> Path:
+    """Where the origin records go: ``trash_origins_dir`` or ``<beets_dir>/trash-origins``.
+
+    Same shape as :func:`resolve_trash_dir` and resolved from the same two
+    inputs, so the pair is always read together. Deliberately NOT derived from
+    the resolved ``trash_dir``: a configured Trash dir may point anywhere,
+    including inside the music library, and a record reachable from ``/music`` is
+    the whole thing this store exists to avoid.
+    """
+    if settings.trash_origins_dir:
+        return Path(settings.trash_origins_dir).resolve()
+    return handle.beets_dir / "trash-origins"

@@ -1,8 +1,9 @@
 """Trash management: list / restore / empty.
 
 Sits above the low-level relocation primitive (``app.beets.trash``). Restore has
-two shapes, and which one a row gets is decided by the origin record the mover
-left inside it (``app.beets.trash_record``):
+two shapes, and which one a row gets is decided by the origin the mover recorded
+for it in the sibling store (``app.beets.trash_origins`` — one JSON file per
+Trash entry, keyed on the entry's name, outside the trashed folder entirely):
 
 * **move back** — the folder came from a known place inside the library, so it
   is moved straight back there and re-imported IN PLACE. Exact, and the only
@@ -37,7 +38,7 @@ from app.beets.library import (
     _music_dir,
     require_library_present,
 )
-from app.beets.trash_record import delete_trash_origin, move_back_target, read_trash_origin
+from app.beets.trash_origins import delete_trash_origin, move_back_target, read_trash_origin
 from app.fsutil import exists
 from app.models.bank import BankApplyDirective
 from app.models.import_models import AlbumOutcomeStatus
@@ -96,7 +97,9 @@ _OUTSIDE_LIBRARY_NOTE = (
 )
 
 
-def list_trashed_albums(trash_dir: Path, *, music_dir: str) -> list[TrashedAlbum]:
+def list_trashed_albums(
+    trash_dir: Path, *, origins_dir: Path, music_dir: str
+) -> list[TrashedAlbum]:
     """Group the audio files under ``trash_dir`` into trashed albums (by tags).
 
     Reads each file's tags via ``Item.from_path`` (no DB), groups by
@@ -104,17 +107,27 @@ def list_trashed_albums(trash_dir: Path, *, music_dir: str) -> list[TrashedAlbum
     relative to ``trash_dir`` (handles whole-folder, per-item, and multi-disc
     layouts). A missing dir yields ``[]``.
 
-    ``music_dir`` is the library's music root, and it is REQUIRED rather than
-    defaulted: it is what decides whether each row's recorded origin is still
-    inside the library, and a default would silently answer that question with
-    "no check ran" for any caller that forgot it. One extra JSON read per
-    top-level entry, next to the tag read this already does per FILE.
+    ``origins_dir`` and ``music_dir`` are both REQUIRED rather than defaulted,
+    for the same reason: between them they decide all three of ``restore_mode``,
+    ``restore_note`` and ``origin``, and a caller that forgot either would
+    silently degrade EVERY row to "import" while every unit test below still
+    passed. One extra JSON read per top-level entry, next to the tag read this
+    already does per FILE.
+
+    Nothing is REAPED here. An origin file whose entry was deleted outside
+    MusicDrop is litter, and the tempting sweep — "unlink every record with no
+    matching entry" — cannot tell an empty Trash dir from a Trash dir on a share
+    that just dropped, which is the state where it would destroy every remaining
+    origin at once. The hazard orphans actually pose is closed in the name
+    allocator instead (``trash._unique_trash_dest``).
     """
     if not trash_dir.exists():
         return []
     groups = _walk_trash_groups(trash_dir)
-    albums = _albums_from_groups(groups, trash_dir, music_dir=music_dir)
-    albums.extend(_audio_free_entries(trash_dir, groups, music_dir=music_dir))
+    albums = _albums_from_groups(groups, trash_dir, origins_dir=origins_dir, music_dir=music_dir)
+    albums.extend(
+        _audio_free_entries(trash_dir, groups, origins_dir=origins_dir, music_dir=music_dir)
+    )
     albums.sort(key=lambda a: ((a.album_artist or "").lower(), (a.album or "").lower()))
     return albums
 
@@ -144,13 +157,15 @@ def _walk_trash_groups(trash_dir: Path) -> dict[str, list[Any]]:
 
 
 def _albums_from_groups(
-    groups: dict[str, list[Any]], trash_dir: Path, *, music_dir: str
+    groups: dict[str, list[Any]], trash_dir: Path, *, origins_dir: Path, music_dir: str
 ) -> list[TrashedAlbum]:
     """Turn each tag group into a :class:`TrashedAlbum`, keyed on the raw name."""
     albums: list[TrashedAlbum] = []
     for folder, items in groups.items():
         first = items[0]
-        mode, note, origin = _restore_fields(trash_dir / folder, music_dir=music_dir)
+        mode, note, origin = _restore_fields(
+            trash_dir / folder, origins_dir=origins_dir, music_dir=music_dir
+        )
         albums.append(
             TrashedAlbum(
                 # Grouping stays keyed on the RAW name; only the emitted key is
@@ -170,7 +185,7 @@ def _albums_from_groups(
 
 
 def _restore_fields(
-    entry: Path, *, music_dir: str
+    entry: Path, *, origins_dir: Path, music_dir: str
 ) -> tuple[TrashRestoreMode, str | None, str | None]:
     """``(restore_mode, restore_note, origin)`` for one top-level Trash entry.
 
@@ -178,8 +193,13 @@ def _restore_fields(
     than one generic "cannot restore": the user's next action differs (wait for
     nothing / put it back by hand / re-point the library), and a row that simply
     predates the record must say so — that is the owner's decision 2.
+
+    ``entry.name`` is the store's key, and it must be the RAW on-disk name — the
+    same string ``_walk_trash_groups`` groups on and ``resolve_trash_child`` maps
+    back to. Passing the display form (``display_path``) would look right and
+    read nothing for any folder whose name is not valid UTF-8.
     """
-    record = read_trash_origin(entry)
+    record = read_trash_origin(origins_dir, entry.name)
     if record is None:
         return "import", _NO_RECORD_NOTE, None
     origin = display_path(record.origin)
@@ -191,7 +211,7 @@ def _restore_fields(
 
 
 def _audio_free_entries(
-    trash_dir: Path, groups: dict[str, list[Any]], *, music_dir: str
+    trash_dir: Path, groups: dict[str, list[Any]], *, origins_dir: Path, music_dir: str
 ) -> list[TrashedAlbum]:
     """Zero-track entries for top-level trash dirs that produced no audio group."""
     # Audio-free trashed folders (art/sidecar husks the orphan sweep relocates here)
@@ -203,7 +223,9 @@ def _audio_free_entries(
     albums: list[TrashedAlbum] = []
     for entry in sorted(trash_dir.iterdir()):
         if entry.is_dir() and not entry.name.startswith(".") and entry.name not in groups:
-            mode, note, origin = _restore_fields(entry, music_dir=music_dir)
+            mode, note, origin = _restore_fields(
+                entry, origins_dir=origins_dir, music_dir=music_dir
+            )
             albums.append(
                 TrashedAlbum(
                     folder=display_path(entry.name),
@@ -239,7 +261,9 @@ def _audio_free_entries(
     return albums
 
 
-def restore_album(lib: Library, folder_abs: str, *, trash_dir: Path) -> RestoreResult:
+def restore_album(
+    lib: Library, folder_abs: str, *, trash_dir: Path, origins_dir: Path
+) -> RestoreResult:
     """Restore a trashed folder, returning the outcome. Synchronous.
 
     ONE entry point with a branch, not a second endpoint: the caller asks for
@@ -248,23 +272,28 @@ def restore_album(lib: Library, folder_abs: str, *, trash_dir: Path) -> RestoreR
     fallback is the old function unchanged rather than a degraded new one.
     """
     entry = Path(folder_abs)
-    record = read_trash_origin(entry)
+    record = read_trash_origin(origins_dir, entry.name)
     origin = move_back_target(record, music_dir=_music_dir(lib))
     if origin is None:
-        result = _restore_by_import(lib, folder_abs, trash_dir=trash_dir, in_place=False)
-        if result.restored and record is not None:
+        result = _restore_by_import(
+            lib, folder_abs, trash_dir=trash_dir, origins_dir=origins_dir, in_place=False
+        )
+        if result.restored:
             # A record that is no longer about anything: beets has moved the
             # files out from under it. Left in place it outlives its subject —
-            # and a ``moved="folder"`` record whose origin was merely outside the
-            # library at the time would start offering a move-back again the day
-            # the user points ``directory`` back, on a folder that is now empty.
-            delete_trash_origin(entry)
+            # and because the key is the entry NAME, a later folder taking that
+            # name would inherit it. Unconditional, deliberately: an UNREADABLE
+            # record also reaches here (``read_trash_origin`` collapses it to
+            # ``None``) and it is exactly the file that must not be left to be
+            # adopted. In the sidecar design it rode out inside the folder and
+            # was inert either way; on the /data side it survives forever.
+            delete_trash_origin(origins_dir, entry.name)
         return result
-    return _restore_to_origin(lib, entry, origin, trash_dir=trash_dir)
+    return _restore_to_origin(lib, entry, origin, trash_dir=trash_dir, origins_dir=origins_dir)
 
 
 def _restore_by_import(
-    lib: Library, folder_abs: str, *, trash_dir: Path, in_place: bool
+    lib: Library, folder_abs: str, *, trash_dir: Path, origins_dir: Path, in_place: bool
 ) -> RestoreResult:
     """Import a folder AS-IS through the directive path, returning the outcome.
 
@@ -283,7 +312,14 @@ def _restore_by_import(
     bridge = ImportBridge()
     directive = BankApplyDirective(action="asis")
     session = WebImportSession(
-        lib, None, [os.fsencode(folder_abs)], None, bridge, trash_dir, directive=directive
+        lib,
+        None,
+        [os.fsencode(folder_abs)],
+        None,
+        bridge,
+        trash_dir,
+        trash_origins_dir=origins_dir,
+        directive=directive,
     )
     run_import_worker(
         session, move=None if in_place else True, in_place=in_place, directive=directive
@@ -298,7 +334,7 @@ def _restore_by_import(
 
 
 def _restore_to_origin(
-    lib: Library, entry: Path, origin: Path, *, trash_dir: Path
+    lib: Library, entry: Path, origin: Path, *, trash_dir: Path, origins_dir: Path
 ) -> RestoreResult:
     """Move ``entry`` back to ``origin`` and re-import it there. All or nothing.
 
@@ -338,6 +374,14 @@ def _restore_to_origin(
     is a contract value the UI renders, so widening it is a contract change.
     """
     require_library_present(lib)
+    # The store's key, named ONCE so the two clean-ups below cannot drift apart.
+    # Both run at a point where the entry is no longer in Trash, and the obvious
+    # thing to reach for there is the folder actually in front of you —
+    # ``origin.name``, which is what the sidecar version effectively used. That
+    # is a DIFFERENT string whenever the two differ (a collision suffix, a husk
+    # the sweep renamed) and belongs to no Trash entry at all. Not load-bearing
+    # as a capture: ``Path.name`` is a string and does not follow the file.
+    entry_name = entry.name
     if exists(origin):
         return RestoreResult(restored=False, reason="origin_occupied")
     try:
@@ -366,7 +410,9 @@ def _restore_to_origin(
             f" it worse: a restore refuses while anything is at the destination."
         ) from exc
     try:
-        result = _restore_by_import(lib, str(origin), trash_dir=trash_dir, in_place=True)
+        result = _restore_by_import(
+            lib, str(origin), trash_dir=trash_dir, origins_dir=origins_dir, in_place=True
+        )
     except Exception as exc:
         # The import failed outright. Undo the move so the caller's error is
         # about a folder still safely in Trash.
@@ -384,19 +430,21 @@ def _restore_to_origin(
             logger.exception(
                 "could not return %r to Trash after a failed restore", display_path(origin)
             )
-            # The record rode out of Trash inside the folder and now sits in the
-            # music library naming the folder it is inside, so it has nothing
-            # left to say. Removing it is the same clean-up a landed restore
-            # does, for the reason ``write_trash_origin`` refuses to write on
-            # the source side at all: a stray record in the music library is one
-            # nothing will clean up, and it would outlive this folder — the
-            # re-import this error asks for moves the media out and beets' own
-            # source pruning then refuses the dir because the record is still in
-            # it, leaving a husk for the orphan sweep to relocate. Deleting it
-            # costs only the contrived recovery of hand-moving the folder BACK
-            # to Trash, which is the one thing the message below does not ask
-            # for. Never raises, so it cannot make this path worse.
-            delete_trash_origin(origin)
+            # The entry is no longer in Trash — it is stranded at ``origin`` and
+            # the name is free again — so the record describes nothing and would
+            # be inherited by whatever takes that name next. (The allocator
+            # refuses to reuse a recorded name, so leaving it would burn the name
+            # rather than mis-steer a restore; deleting it is still the honest
+            # state.) It costs only the contrived recovery of hand-moving the
+            # folder BACK to Trash, which is the one thing the message below does
+            # not ask for. Never raises, so it cannot make this path worse.
+            #
+            # (Under the old sidecar this deletion had a second, larger job: the
+            # record rode out inside the folder, and the re-import this error
+            # asks for then left a husk behind because beets refuses to prune a
+            # source dir that still holds a file. A sibling store cannot cause
+            # that, which is one of the reasons it replaced the sidecar.)
+            delete_trash_origin(origins_dir, entry_name)
             # The propagating error is the UNDO's story, not the import's. The
             # import's exception alone answers "Restore failed: <beets error>",
             # which sends the user to look in Trash — where there is now
@@ -443,11 +491,14 @@ def _restore_to_origin(
         # not silently depend on that beets-internal fact.
         result = RestoreResult(restored=True, reason="restored")
     if not result.restored:
+        # The entry is back in Trash under its own name, so its record is still
+        # TRUE and must survive. Deleting it here would strand a returned row on
+        # the import-restore fallback for good.
         _return_to_trash(origin, entry)
         return result
-    # Only now: the record has ridden along inside the folder and its job is
-    # done. The accepted cost of a sidecar over a central manifest.
-    delete_trash_origin(origin)
+    # Only now: the folder is in the library and the Trash entry is gone, so the
+    # record has nothing left to describe and its name is free for reuse.
+    delete_trash_origin(origins_dir, entry_name)
     return result
 
 
@@ -578,17 +629,25 @@ def resolve_trash_child(trash_dir: Path, rel: str) -> Path:
     return dest
 
 
-def empty_one(folder_abs: str) -> EmptyResult:
-    """Permanently remove one trashed entry — a folder or a loose file."""
+def empty_one(folder_abs: str, *, origins_dir: Path) -> EmptyResult:
+    """Permanently remove one trashed entry — a folder or a loose file.
+
+    The origin record goes with it, and strictly AFTER: a failed ``rmtree``
+    raises out of here, and losing the record for an entry that is still sitting
+    in Trash would silently downgrade its row to an import-restore. With the
+    sidecar this ordering was free (the ``rmtree`` took the record with it);
+    keyed on the name in a sibling dir, it is a rule.
+    """
     path = Path(folder_abs)
     if path.is_dir():
         shutil.rmtree(path)
     else:
         path.unlink()
+    delete_trash_origin(origins_dir, path.name)
     return EmptyResult(removed=1)
 
 
-def empty_all(trash_dir: Path) -> EmptyResult:
+def empty_all(trash_dir: Path, *, origins_dir: Path) -> EmptyResult:
     """Permanently remove everything under ``trash_dir``.
 
     ``is_dir()`` FOLLOWS symlinks and ``shutil.rmtree`` refuses one, so a
@@ -605,6 +664,15 @@ def empty_all(trash_dir: Path) -> EmptyResult:
     them. Treating it as a leaf is also the only safe reading of "remove
     everything under ``trash_dir``" -- following it would ``rm -rf`` a directory
     that merely happens to be pointed at.
+
+    Each entry's origin record is dropped INSIDE the loop, right after that entry
+    is removed, so a fault part-way through leaves a consistent pair rather than
+    a set of records for entries that are still there. Deliberately per-child and
+    not "wipe the origins dir at the end": a ``trash_dir`` whose share has
+    dropped presents as an empty directory, and emptying it would then destroy
+    the origins of every entry that is still on the real volume. The records left
+    behind by an entry deleted outside MusicDrop stay as litter — see
+    ``trash._unique_trash_dest`` for why that is harmless.
     """
     if not trash_dir.exists():
         return EmptyResult(removed=0)
@@ -614,5 +682,6 @@ def empty_all(trash_dir: Path) -> EmptyResult:
             shutil.rmtree(child)
         else:
             child.unlink()
+        delete_trash_origin(origins_dir, child.name)
         removed += 1
     return EmptyResult(removed=removed)

@@ -80,11 +80,15 @@ class BeetsImportRunner:
         self,
         lib: object,
         trash_dir: Path | None = None,
+        trash_origins_dir: Path | None = None,
         bank_dir: Path | None = None,
         playlists_dir: Path | None = None,
     ) -> None:
         self._lib = lib
         self._trash_dir = trash_dir
+        # Threaded session-ward as a PAIR with trash_dir (see WebImportSession):
+        # the post-run Replace pass records where each trashed copy came from.
+        self._trash_origins_dir = trash_origins_dir
         # Where sweep runs write bank rows (<beets_dir>/bank by default),
         # threaded session-ward exactly like trash_dir. Non-sweep runs never
         # receive it (the session's _bank_row would no-op anyway).
@@ -141,6 +145,7 @@ class BeetsImportRunner:
             None,  # query -> path import, not a library query
             bridge,
             self._trash_dir,
+            trash_origins_dir=self._trash_origins_dir,
             unattended=unattended,
             sweep=sweep,
             bank_dir=self._bank_dir if sweep else None,

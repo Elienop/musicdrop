@@ -36,6 +36,7 @@ def sweep(
     artist: str | None = None,
     album_id: int | None = None,
     trash_dir: Path | None = None,
+    trash_origins_dir: Path | None = None,
     ignore_dirs: tuple[Path, ...] = (),
     playlists_dir: Path | None = None,
     delay: float = 0.0,
@@ -50,7 +51,11 @@ def sweep(
 
     When ``trash_dir`` is given, an orphan pass runs after the moves: any
     audio-empty husk left behind is moved to Trash. Omit it (the default) and
-    the pass is skipped, leaving existing callers unchanged.
+    the pass is skipped, leaving existing callers unchanged. ``trash_origins_dir``
+    is wired as a PAIR with it (both come from one resolve in the API layer) and
+    is what lets a relocated husk be put back exactly — the ONLY exit from Trash
+    an audio-free folder has, so the pass is skipped unless both are present
+    rather than trashing husks that could never be restored.
 
     When ``playlists_dir`` is given, a `.m3u8` re-export pass runs LAST, over the
     union of every item the run actually relocated — a reorganize is the widest
@@ -90,7 +95,7 @@ def sweep(
                     moved_ids=moved_ids,
                     delay=delay,
                 )
-            if not stopped and trash_dir is not None:
+            if not stopped and trash_dir is not None and trash_origins_dir is not None:
                 # Read AFTER the unit loops, because the roots move during the
                 # run. What keeps the library still between this read and the
                 # orphan pass is the library-busy UNION gate (app/library_busy.py,
@@ -104,6 +109,7 @@ def sweep(
                     scope=scope,
                     music_dir=Path(os.fsdecode(handle.lib.directory)),
                     trash_dir=trash_dir,
+                    trash_origins_dir=trash_origins_dir,
                     vacated=vacated,
                     ignore_dirs=ignore_dirs,
                     protected_dirs=live_album_roots(handle.lib),
@@ -178,6 +184,7 @@ def _sweep_orphans(
     scope: ReorganizeScope,
     music_dir: Path,
     trash_dir: Path,
+    trash_origins_dir: Path,
     vacated: list[Path],
     ignore_dirs: tuple[Path, ...],
     protected_dirs: Collection[str],
@@ -201,7 +208,7 @@ def _sweep_orphans(
         if reg.should_stop():
             return True
         try:
-            trash_folder(folder, trash_dir=trash_dir)
+            trash_folder(folder, trash_dir=trash_dir, origins_dir=trash_origins_dir)
             reg.record_orphans(1)
         except OSError:
             continue
@@ -216,6 +223,7 @@ def start_backfill(
     artist: str | None = None,
     album_id: int | None = None,
     trash_dir: Path | None = None,
+    trash_origins_dir: Path | None = None,
     ignore_dirs: tuple[Path, ...] = (),
     playlists_dir: Path | None = None,
     delay: float = 0.0,
@@ -233,6 +241,7 @@ def start_backfill(
             artist=artist,
             album_id=album_id,
             trash_dir=trash_dir,
+            trash_origins_dir=trash_origins_dir,
             ignore_dirs=ignore_dirs,
             playlists_dir=playlists_dir,
             delay=delay,

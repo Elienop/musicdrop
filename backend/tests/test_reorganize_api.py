@@ -87,6 +87,40 @@ def test_start_passes_the_overridden_playlists_dir_to_the_worker(
     assert received == [sentinel]
 
 
+def test_start_passes_the_trash_origin_store_to_the_worker(
+    reorg_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The orphan sweep's husks are the rows the origin record exists for.
+
+    An audio-free art/booklet folder cannot be imported at all, so an exact
+    restore is its ONLY exit from Trash. The sweep is the one mover on a
+    background thread, wired through four hops, and it is the easiest place for
+    the second dir to be dropped: without it the pass is skipped entirely (both
+    or neither, by design), so a route that forgets it stops collecting husks
+    rather than collecting them unrestorably.
+    """
+    import app.api.reorganize as reorganize_api
+
+    received: dict[str, object] = {}
+
+    def fake_start_backfill(reg: object, handle: object, **kwargs: object) -> None:
+        received.update(kwargs)
+        reg.set_total(0)  # type: ignore[attr-defined]  # fake reg is the real registry
+        reg.finish("done")  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(reorganize_api, "start_backfill", fake_start_backfill)
+    assert reorg_client.post("/api/reorganize").status_code == 200
+
+    trash = received["trash_dir"]
+    origins = received["trash_origins_dir"]
+    assert isinstance(trash, Path)
+    assert isinstance(origins, Path)
+    assert origins != trash
+    assert not origins.is_relative_to(trash), "the store must be a sibling, not a child"
+    # ...and the sweep must be told not to trash the store it is writing into.
+    assert origins in received["ignore_dirs"]  # type: ignore[operator]  # tuple of Path
+
+
 def test_status_idle_then_start(reorg_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_sweep(monkeypatch)
     assert reorg_client.get("/api/reorganize/status").json()["phase"] == "idle"

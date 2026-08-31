@@ -4,17 +4,31 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.beets.trash_record import write_trash_origin
+from app.beets.config_editor import _settings
+from app.beets.trash import resolve_trash_origins_dir
+from app.beets.trash_origins import write_trash_origin
 from app.models.trash import EmptyResult
 
 
 def _trash_dir(client: TestClient) -> Path:
     """The active Trash dir (read off the list endpoint's response)."""
     return Path(client.get("/api/trash").json()["trash_path"])
+
+
+def _origins_dir(client: TestClient) -> Path:
+    """The active origin store, resolved exactly as the routes resolve it.
+
+    Deliberately NOT read off a response field: the origins path is not on the
+    wire (adding it would be a contract change for something no UI shows), so a
+    test that needs it has to resolve it the way ``app/api/trash.py`` does.
+    """
+    app: Any = client.app  # TestClient.app is typed as a bare ASGI callable
+    return resolve_trash_origins_dir(_settings(app), app.state.beets_library)
 
 
 def test_get_trash_empty(client: TestClient) -> None:
@@ -26,7 +40,7 @@ def test_get_trash_empty(client: TestClient) -> None:
     assert body["trash_path"]
 
 
-def test_list_trash_reports_the_move_back_a_real_sidecar_offers(
+def test_list_trash_reports_the_move_back_a_real_record_offers(
     client: TestClient, tmp_path: Path
 ) -> None:
     """The one argument the ROUTE contributes: which music dir the record is judged against.
@@ -38,15 +52,20 @@ def test_list_trash_reports_the_move_back_a_real_sidecar_offers(
     current music library" note, with every unit test still green and the UI
     quietly telling the user their exact restore is gone.
 
-    The sidecar is written by the real writer under the client's own music dir,
-    so the row is produced end to end rather than from a hand-built model.
+    Since the record moved to a sibling store the route supplies TWO such values
+    — the music dir AND the origins dir — and forgetting either degrades every
+    row the same silent way, so this covers both at once.
+
+    The record is written by the real writer, into the store the route itself
+    resolves, so the row is produced end to end rather than from a hand-built
+    model.
     """
     trash = _trash_dir(client)
     entry = trash / "Weird Folder"
     entry.mkdir(parents=True)
     (entry / "cover.jpg").write_bytes(b"\x00")
     origin = tmp_path / "music" / "Weird Folder"
-    write_trash_origin(entry, origin=str(origin), moved="folder")
+    write_trash_origin(_origins_dir(client), entry.name, origin=str(origin), moved="folder")
 
     r = client.get("/api/trash")
 
@@ -118,7 +137,9 @@ def test_restore_503_when_the_music_share_is_unavailable(
     entry = trash / "Dummy"
     entry.mkdir(parents=True)
     (entry / "cover.jpg").write_bytes(b"\x00")
-    write_trash_origin(entry, origin=str(tmp_path / "music" / "Dummy"), moved="folder")
+    write_trash_origin(
+        _origins_dir(client), entry.name, origin=str(tmp_path / "music" / "Dummy"), moved="folder"
+    )
     shutil.rmtree(tmp_path / "music")
 
     r = client.post("/api/trash/restore", json={"folder": "Dummy"})
@@ -190,10 +211,10 @@ def test_empty_one_holds_swap_lock_during_removal(
     (trash / "Album").mkdir(parents=True)
     seen: dict[str, bool] = {}
 
-    def spy(path: str) -> EmptyResult:
+    def spy(path: str, *, origins_dir: Path) -> EmptyResult:
         lock = getattr(app.state, "beets_swap_lock", None)
         seen["locked"] = lock is not None and lock.locked()
-        return real_empty_one(path)
+        return real_empty_one(path, origins_dir=origins_dir)
 
     monkeypatch.setattr(trash_mod, "empty_one", spy)
     r = client.delete("/api/trash", params={"folder": "Album"})
@@ -213,10 +234,10 @@ def test_empty_all_holds_swap_lock_during_removal(
     (trash / "A").mkdir(parents=True)
     seen: dict[str, bool] = {}
 
-    def spy(trash_dir: Path) -> EmptyResult:
+    def spy(trash_dir: Path, *, origins_dir: Path) -> EmptyResult:
         lock = getattr(app.state, "beets_swap_lock", None)
         seen["locked"] = lock is not None and lock.locked()
-        return real_empty_all(trash_dir)
+        return real_empty_all(trash_dir, origins_dir=origins_dir)
 
     monkeypatch.setattr(trash_mod, "empty_all", spy)
     r = client.delete("/api/trash/all")

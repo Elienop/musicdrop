@@ -308,6 +308,7 @@ class WebImportSession(ImportSession):
         bridge: ImportBridge,
         trash_dir: Path | None = None,
         *,
+        trash_origins_dir: Path | None = None,
         unattended: bool = False,
         sweep: bool = False,
         bank_dir: Path | None = None,
@@ -321,6 +322,12 @@ class WebImportSession(ImportSession):
         # Where Replace moves the old copies (reversible Trash). None = unwired
         # (the post-run trash pass is then skipped defensively).
         self._trash_dir = trash_dir
+        # Its sibling origin store. Wired as a PAIR with ``trash_dir`` from the
+        # one resolve point (the runner / the restore path), and the post-run
+        # pass below skips unless BOTH are set — a Replace that trashed the old
+        # copies without recording where they came from would leave rows that can
+        # only ever be re-imported.
+        self._trash_origins_dir = trash_origins_dir
         # Existing duplicate album ids recorded by Replace, trashed AFTER run().
         self._replace_album_ids: set[int] = set()
         # Library album ids beets actually ADDED during this run (filled by
@@ -1651,7 +1658,8 @@ def _trash_replaced_albums(session: WebImportSession) -> None:
     the invariant; reporting it is not.
     """
     trash_dir = session._trash_dir
-    if trash_dir is None or not session._replace_album_ids:
+    origins_dir = session._trash_origins_dir
+    if trash_dir is None or origins_dir is None or not session._replace_album_ids:
         return
     lib = session.lib
     dropped_item_ids: set[int] = set()
@@ -1662,7 +1670,7 @@ def _trash_replaced_albums(session: WebImportSession) -> None:
                 continue  # already gone — nothing to trash
             dropped_item_ids.update(_require_id(i.id) for i in album.items())
             with lib.transaction():
-                trash_album(lib, album, trash_dir=trash_dir)
+                trash_album(lib, album, trash_dir=trash_dir, origins_dir=origins_dir)
     _reexport_replaced_playlists(session, dropped_item_ids)
 
 

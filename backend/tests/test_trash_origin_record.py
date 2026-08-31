@@ -1,23 +1,30 @@
-"""The origin record a trashed folder carries, and the move-back restore on it.
+"""The origin recorded for a trashed folder, and the move-back restore on it.
 
 Covers the invariant the feature exists for: a folder MusicDrop moves to Trash
-must carry enough to be put back exactly where it came from — and recording that
-must never be able to make a delete fail.
+must leave behind enough to be put back exactly where it came from — and
+recording that must never be able to make a delete fail.
+
+The record is a SIBLING file (``<origins_dir>/<entry name>.json``), never
+anything inside the trashed folder, so the two directories are always built as a
+pair here: ``tmp_path/"trash"`` and ``tmp_path/"trash-origins"``. A whole family
+of tests that used to live in this file — a planted symlink at the record's
+name, a symlinked Trash entry the write escaped through, an oversized file, a
+FIFO, a hostile-character denylist — described an attack surface that only
+existed because the record sat in a directory arriving from the music library.
+They are gone rather than relaxed; see the module docstring of
+``app.beets.trash_origins``.
 """
 
 from __future__ import annotations
 
-import contextlib
 import errno
 import json
 import logging
 import os
 import shutil
-import signal
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from types import FrameType
 from typing import Any, NoReturn
 
 import pytest
@@ -26,26 +33,38 @@ from beets.library import Album, Item, Library
 
 from app.beets.import_session import ImportBridge, WebImportSession, run_import_worker
 from app.beets.library import LibraryRootUnavailableError, _require_id
-from app.beets.trash import trash_album, trash_album_folder, trash_folder
+from app.beets.trash import (
+    resolve_trash_dir,
+    resolve_trash_origins_dir,
+    trash_album,
+    trash_album_folder,
+    trash_folder,
+)
 from app.beets.trash_manage import (
     TrashRestoreIncompleteError,
     _restore_to_origin,
     _return_to_trash,
+    empty_all,
+    empty_one,
     list_trashed_albums,
     restore_album,
 )
-from app.beets.trash_record import (
-    _MAX_ORIGIN_CHARS,
-    RECORD_NAME,
+from app.beets.trash_origins import (
+    _MAX_KEY_BYTES,
+    _NAME_MAX,
     TrashOrigin,
+    delete_trash_origin,
     move_back_target,
+    origin_file,
+    origin_recorded,
     read_trash_origin,
     write_trash_origin,
 )
+from app.config import Settings
 from app.fsutil import exists
 from app.models.bank import BankApplyDirective
 from app.models.trash import RestoreResult
-from tests.conftest import build_library
+from tests.conftest import build_library, make_test_handle, origins_for
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
 
@@ -105,31 +124,20 @@ def _dummy(lib: Library) -> Album:
     return next(a for a in lib.albums() if a.album == "Dummy")
 
 
-def _record(entry: Path) -> TrashOrigin:
-    record = read_trash_origin(entry)
+def _origins(tmp_path: Path) -> Path:
+    """The origin store for this test's Trash dir — its SIBLING, never its child.
+
+    Built through the shared helper so the shape is stated in one place: inside
+    ``trash_dir`` a record file would land in the entry namespace ``iterdir``
+    walks and list as a trashed album of its own.
+    """
+    return origins_for(tmp_path / "trash")
+
+
+def _record(tmp_path: Path, entry: Path) -> TrashOrigin:
+    record = read_trash_origin(_origins(tmp_path), entry.name)
     assert record is not None
     return record
-
-
-@contextlib.contextmanager
-def _deadline(seconds: float) -> Iterator[None]:
-    """Turn a HANG into a failure, so a missing guard cannot pass as a green run.
-
-    ``SIGALRM`` rather than a thread or a plugin: it is the only thing that
-    interrupts a blocking read on a FIFO. PEP 475 retries an interrupted syscall
-    unless the handler raises, so the handler raises.
-    """
-
-    def _fire(_signum: int, _frame: FrameType | None) -> NoReturn:
-        raise TimeoutError(f"blocked for more than {seconds}s")
-
-    previous = signal.signal(signal.SIGALRM, _fire)
-    signal.setitimer(signal.ITIMER_REAL, seconds)
-    try:
-        yield
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
 
 
 # ----- the record is written by every mover that relocates something -----
@@ -141,9 +149,13 @@ def test_trash_album_folder_records_the_folder_it_came_from(tmp_path: Path) -> N
     album = _dummy(lib)
 
     with lib.transaction():
-        dest = Path(trash_album_folder(lib, album, trash_dir=tmp_path / "trash"))
+        dest = Path(
+            trash_album_folder(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+            )
+        )
 
-    record = _record(dest)
+    record = _record(tmp_path, dest)
     assert record.origin == source
     assert record.moved == "folder"  # a whole directory moved -> a move-back is exact
 
@@ -156,9 +168,9 @@ def test_trash_folder_records_the_husk_origin(tmp_path: Path) -> None:
     husk.mkdir(parents=True)
     (husk / "cover.jpg").write_bytes(b"\x00")
 
-    dest = trash_folder(husk, trash_dir=tmp_path / "trash")
+    dest = trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
 
-    record = _record(dest)
+    record = _record(tmp_path, dest)
     assert record.origin == str(husk)
     assert record.moved == "folder"
 
@@ -166,16 +178,16 @@ def test_trash_folder_records_the_husk_origin(tmp_path: Path) -> None:
 def test_trash_album_records_the_source_folder_as_items(tmp_path: Path) -> None:
     # The per-item mover takes tracked FILES out of a folder that may hold other
     # music, so the origin is recorded for display but a move-back is not on
-    # offer — see trash_record.MovedShape.
+    # offer — see trash_origins.MovedShape.
     lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
     source = str(tmp_path / "music" / "Portishead" / "Dummy")
     album = _dummy(lib)
 
     with lib.transaction():
-        trash_album(lib, album, trash_dir=tmp_path / "trash")
+        trash_album(lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
 
     container = next(p for p in (tmp_path / "trash").iterdir() if p.is_dir())
-    record = _record(container)
+    record = _record(tmp_path, container)
     assert record.origin == source
     assert record.moved == "items"
     assert move_back_target(record, music_dir=str(tmp_path / "music")) is None
@@ -184,13 +196,14 @@ def test_trash_album_records_the_source_folder_as_items(tmp_path: Path) -> None:
 def test_the_record_carries_a_trash_time_nothing_else_on_disk_keeps(tmp_path: Path) -> None:
     """``trashed_at`` has no reader, and this test is what keeps it on disk.
 
-    It is written for the human who ``cat``s the sidecar, and because the move is
-    a rename — which preserves the folder's OWN mtime — so once a folder is in
-    Trash this file is the only place the time it got there survives. A field
-    with no reader greps as dead code, and the class docstring saying "do not
-    clean it up" loses that argument to anyone who greps first; a failing test
-    wins it. Without this, deleting the write passes all 2891 tests (measured),
-    and the gap would be permanent for every row trashed before anyone noticed.
+    It is written for the human who ``cat``s the record. The record file now has
+    an mtime of its own, which weakens the old "nothing else on disk keeps this"
+    argument — but only weakens it: an mtime does not survive a backup restore, a
+    ``cp`` without ``-p`` or an rsync, and the payload does. A field with no
+    reader greps as dead code, and the class docstring saying "do not clean it
+    up" loses that argument to anyone who greps first; a failing test wins it.
+    Without this, deleting the write passes all 2891 tests (measured), and the
+    gap would be permanent for every row trashed before anyone noticed.
 
     Read from the raw JSON on purpose: :class:`TrashOrigin` deliberately does
     NOT surface the field, so going through ``read_trash_origin`` would pin
@@ -201,9 +214,10 @@ def test_the_record_carries_a_trash_time_nothing_else_on_disk_keeps(tmp_path: Pa
     (husk / "cover.jpg").write_bytes(b"\x00")
     before = datetime.now(UTC)
 
-    dest = trash_folder(husk, trash_dir=tmp_path / "trash")
+    dest = trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
 
-    payload = json.loads((dest / RECORD_NAME).read_text(encoding="ascii"))
+    record_path = origin_file(_origins(tmp_path), dest.name)
+    payload = json.loads(record_path.read_text(encoding="ascii"))
     stamped = datetime.fromisoformat(payload["trashed_at"])
     # Offset-aware, or it cannot be read on a machine in another zone later.
     assert stamped.tzinfo is not None
@@ -235,26 +249,36 @@ def test_write_trash_origin_swallows_a_failing_write(tmp_path: Path, name: str) 
     own encoding. Covering it here rather than at each call site pins the
     contract once for all three -- including the per-item mover, whose container
     name comes from the album's tags and can be anything at all.
+
+    The failure is REAL, with no monkeypatching: a regular FILE where the origins
+    directory belongs, so ``write_atomic_bytes``'s ``mkdir(parents=True,
+    exist_ok=True)`` raises. Chosen over ``chmod`` because a suite run as root
+    defeats a permission trick and would pass vacuously.
     """
-    entry = tmp_path / name
-    write_trash_origin(entry, origin="/music/A/B", moved="folder")
-    assert not entry.exists()
+    origins = tmp_path / "trash-origins"
+    origins.write_bytes(b"not a directory")
+
+    write_trash_origin(origins, name, origin="/music/A/B", moved="folder")
+
+    assert origins.is_file()  # nothing was written, and nothing escaped
+    assert read_trash_origin(origins, name) is None
 
 
 def test_a_husk_still_reaches_trash_when_the_record_cannot_be_written(tmp_path: Path) -> None:
-    # A real failure, no monkeypatching: a DIRECTORY already sitting at the
-    # sidecar's name travels with the move, so write_text hits IsADirectoryError
-    # on the destination. The delete must still complete.
+    # A real failure, no monkeypatching: a regular FILE where the origins dir
+    # belongs, so the store's mkdir raises. The delete must still complete.
     husk = tmp_path / "music" / "Old Name"
-    (husk / RECORD_NAME).mkdir(parents=True)
+    husk.mkdir(parents=True)
     (husk / "cover.jpg").write_bytes(b"\x00")
+    _origins(tmp_path).write_bytes(b"not a directory")
 
-    dest = trash_folder(husk, trash_dir=tmp_path / "trash")
+    dest = trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
 
     assert dest.is_dir()
     assert (dest / "cover.jpg").is_file()
     assert not husk.exists()
-    assert read_trash_origin(dest) is None  # no record, but the delete happened
+    # No record, but the delete happened.
+    assert read_trash_origin(_origins(tmp_path), dest.name) is None
 
 
 @pytest.mark.parametrize(
@@ -308,17 +332,20 @@ def test_an_album_still_reaches_trash_when_the_record_cannot_be_written(
     apart.
     """
     lib = _seeded_library(tmp_path, folder=folder)
-    source = tmp_path / "music" / folder
-    (source / RECORD_NAME).mkdir()
     album = _dummy(lib)
     album_id = _require_id(album.id)
+    _origins(tmp_path).write_bytes(b"not a directory")
 
     with lib.transaction():
-        dest = Path(trash_album_folder(lib, album, trash_dir=tmp_path / "trash"))
+        dest = Path(
+            trash_album_folder(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+            )
+        )
 
     assert lib.get_album(album_id) is None  # the delete completed
     assert len(list(dest.glob("*.flac"))) == 2
-    assert read_trash_origin(dest) is None
+    assert read_trash_origin(_origins(tmp_path), dest.name) is None
 
 
 # ----- reading a record is reading untrusted input -----
@@ -339,43 +366,28 @@ def test_an_album_still_reaches_trash_when_the_record_cannot_be_written(
             json.dumps({"schema": 1, "origin": "/music/A", "moved": "sideways"}), id="unknown-shape"
         ),
         pytest.param(json.dumps({"schema": 1, "moved": "folder"}), id="no-origin"),
-        # An origin is a PATH, not any absolute-looking string. Each of these got
-        # through the old `isinstance(str) and isabs()` pair and reached a sink.
+        # The one member of the deleted hostile-character filter that is kept.
+        # A POSIX path cannot hold a NUL, so only corruption produces this — but
+        # ``Path.exists()`` swallows the ValueError it raises and answers False,
+        # so the occupancy pre-filter passes and the failure lands at the move as
+        # a ValueError no ``except OSError`` catches: a blanket 500 on a row the
+        # UI had just labelled "Exact restore".
         pytest.param(
             json.dumps({"schema": 1, "origin": "/music/A\x00B", "moved": "folder"}),
             id="nul-in-origin",
-        ),
-        pytest.param(
-            json.dumps({"schema": 1, "origin": "/music/A\nB", "moved": "folder"}),
-            id="newline-in-origin",
-        ),
-        pytest.param(
-            json.dumps({"schema": 1, "origin": "/music/A\x1b[31mB", "moved": "folder"}),
-            id="ansi-escape-in-origin",
-        ),
-        pytest.param(
-            json.dumps({"schema": 1, "origin": "/music/\u202egpm.3pm", "moved": "folder"}),
-            id="bidi-override-in-origin",
-        ),
-        pytest.param(
-            json.dumps({"schema": 1, "origin": "/music/" + "A" * 60_000, "moved": "folder"}),
-            id="over-long-origin",
         ),
     ],
 )
 def test_read_trash_origin_rejects_a_payload_it_cannot_trust(tmp_path: Path, payload: str) -> None:
     # Every rejection collapses to None so the caller degrades to import-restore
-    # rather than acting on a path it cannot vouch for.
-    (tmp_path / RECORD_NAME).write_text(payload, encoding="ascii")
-    assert read_trash_origin(tmp_path) is None
-
-
-def test_read_trash_origin_refuses_an_oversized_file(tmp_path: Path) -> None:
-    (tmp_path / RECORD_NAME).write_text(
-        json.dumps({"schema": 1, "origin": "/music/A", "moved": "folder", "pad": "x" * 70_000}),
-        encoding="ascii",
-    )
-    assert read_trash_origin(tmp_path) is None
+    # rather than acting on a path it cannot vouch for. These are CORRUPTION
+    # cases, not hostile ones — a truncated ``os.replace``, a hand-edited file, a
+    # payload from a version whose meaning has moved — which is why they survive
+    # the record's move to a directory nothing but this app writes into.
+    origins = tmp_path / "trash-origins"
+    origin_file(origins, "Dummy").parent.mkdir(parents=True, exist_ok=True)
+    origin_file(origins, "Dummy").write_text(payload, encoding="ascii")
+    assert read_trash_origin(origins, "Dummy") is None
 
 
 def test_move_back_target_refuses_an_origin_outside_the_library(tmp_path: Path) -> None:
@@ -386,6 +398,14 @@ def test_move_back_target_refuses_an_origin_outside_the_library(tmp_path: Path) 
     music = str(tmp_path / "music")
     assert move_back_target(outside, music_dir=music) is None
     assert move_back_target(inside, music_dir=music) == tmp_path / "music" / "A"
+    # The library ROOT itself is refused separately from "outside the library",
+    # and it is the one that costs something: a corrupt or empty origin that
+    # normalises to the music root would hand ``_move_no_merge`` the whole
+    # library as a move destination.
+    assert move_back_target(TrashOrigin(origin=music, moved="folder"), music_dir=music) is None
+    assert (
+        move_back_target(TrashOrigin(origin=music + "/", moved="folder"), music_dir=music) is None
+    )
 
 
 # ----- the listing tells the UI which restore each row gets, and why -----
@@ -395,9 +415,11 @@ def test_listing_offers_a_move_back_for_a_recorded_album(tmp_path: Path) -> None
     lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
     album = _dummy(lib)
     with lib.transaction():
-        trash_album_folder(lib, album, trash_dir=tmp_path / "trash")
+        trash_album_folder(lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
 
-    (row,) = list_trashed_albums(tmp_path / "trash", music_dir=str(tmp_path / "music"))
+    (row,) = list_trashed_albums(
+        tmp_path / "trash", origins_dir=_origins(tmp_path), music_dir=str(tmp_path / "music")
+    )
     assert row.restore_mode == "move_back"
     assert row.restore_note is None
     assert row.origin == str(tmp_path / "music" / "Portishead" / "Dummy")
@@ -415,7 +437,9 @@ def test_listing_marks_a_row_with_no_record_as_an_import(tmp_path: Path) -> None
         track=1,
     )
 
-    (row,) = list_trashed_albums(trash, music_dir=str(tmp_path / "music"))
+    (row,) = list_trashed_albums(
+        trash, origins_dir=origins_for(trash), music_dir=str(tmp_path / "music")
+    )
     assert row.restore_mode == "import"
     assert row.origin is None
     assert row.restore_note is not None
@@ -435,9 +459,11 @@ def test_listing_marks_a_shared_folder_row_as_an_import_but_shows_its_origin(
     lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
     album = _dummy(lib)
     with lib.transaction():
-        trash_album(lib, album, trash_dir=tmp_path / "trash")
+        trash_album(lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
 
-    (row,) = list_trashed_albums(tmp_path / "trash", music_dir=str(tmp_path / "music"))
+    (row,) = list_trashed_albums(
+        tmp_path / "trash", origins_dir=_origins(tmp_path), music_dir=str(tmp_path / "music")
+    )
     assert row.restore_mode == "import"
     assert row.origin == str(tmp_path / "music" / "Portishead" / "Dummy")
     assert row.restore_note is not None
@@ -448,9 +474,16 @@ def test_listing_marks_an_origin_outside_the_library_as_an_import(tmp_path: Path
     trash = tmp_path / "trash"
     entry = trash / "Dummy"
     entry.mkdir(parents=True)
-    write_trash_origin(entry, origin=str(tmp_path / "elsewhere" / "Dummy"), moved="folder")
+    write_trash_origin(
+        _origins(tmp_path),
+        entry.name,
+        origin=str(tmp_path / "elsewhere" / "Dummy"),
+        moved="folder",
+    )
 
-    (row,) = list_trashed_albums(trash, music_dir=str(tmp_path / "music"))
+    (row,) = list_trashed_albums(
+        trash, origins_dir=origins_for(trash), music_dir=str(tmp_path / "music")
+    )
     assert row.restore_mode == "import"
     assert row.origin == str(tmp_path / "elsewhere" / "Dummy")
     assert row.restore_note is not None
@@ -464,9 +497,11 @@ def test_a_recorded_husk_is_a_zero_track_row_that_can_still_move_back(tmp_path: 
     husk = tmp_path / "music" / "Portishead" / "Dummy"
     husk.mkdir(parents=True)
     (husk / "cover.jpg").write_bytes(b"\x00")
-    trash_folder(husk, trash_dir=tmp_path / "trash")
+    trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
 
-    (row,) = list_trashed_albums(tmp_path / "trash", music_dir=str(tmp_path / "music"))
+    (row,) = list_trashed_albums(
+        tmp_path / "trash", origins_dir=_origins(tmp_path), music_dir=str(tmp_path / "music")
+    )
     assert row.track_count == 0
     assert row.restore_mode == "move_back"
     assert row.origin == str(husk)
@@ -484,10 +519,16 @@ def test_restore_puts_an_album_back_at_its_exact_origin(tmp_path: Path) -> None:
     source = tmp_path / "music" / "Weird Folder"
     album = _dummy(lib)
     with lib.transaction():
-        dest = Path(trash_album_folder(lib, album, trash_dir=tmp_path / "trash"))
+        dest = Path(
+            trash_album_folder(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+            )
+        )
     assert not source.exists()
 
-    result = restore_album(lib, str(dest), trash_dir=tmp_path / "trash")
+    result = restore_album(
+        lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+    )
 
     assert result.restored is True
     assert result.reason == "restored"
@@ -498,7 +539,9 @@ def test_restore_puts_an_album_back_at_its_exact_origin(tmp_path: Path) -> None:
     ]
     assert not (tmp_path / "music" / "Portishead").exists()  # never re-filed by template
     assert not dest.exists()  # gone from Trash
-    assert not (source / RECORD_NAME).exists()  # the sidecar came back and was removed
+    # The entry is gone and its name is free again, so the record must go too —
+    # left behind it would be inherited by whatever takes that name next.
+    assert read_trash_origin(_origins(tmp_path), dest.name) is None
     restored = _dummy(lib)
     assert {os.path.dirname(os.fsdecode(i.path)) for i in restored.items()} == {str(source)}
 
@@ -511,11 +554,17 @@ def test_restore_recreates_an_artist_folder_that_was_swept_away(tmp_path: Path) 
     artist_dir = tmp_path / "music" / "Portishead"
     album = _dummy(lib)
     with lib.transaction():
-        dest = Path(trash_album_folder(lib, album, trash_dir=tmp_path / "trash"))
+        dest = Path(
+            trash_album_folder(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+            )
+        )
     artist_dir.rmdir()
     inode = (dest / "01 Mysterons.flac").stat().st_ino
 
-    result = restore_album(lib, str(dest), trash_dir=tmp_path / "trash")
+    result = restore_album(
+        lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+    )
 
     assert result.restored is True
     assert len(list((artist_dir / "Dummy").glob("*.flac"))) == 2
@@ -556,9 +605,15 @@ def test_restore_never_links_the_album_when_the_user_config_asks_for_links(
     source = tmp_path / "music" / "Weird Folder"
     album = _dummy(lib)
     with lib.transaction():
-        dest = Path(trash_album_folder(lib, album, trash_dir=tmp_path / "trash"))
+        dest = Path(
+            trash_album_folder(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+            )
+        )
 
-    result = restore_album(lib, str(dest), trash_dir=tmp_path / "trash")
+    result = restore_album(
+        lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+    )
 
     assert result.restored is True
     assert not (tmp_path / "music" / "Portishead").exists()  # nothing was filed by template
@@ -621,9 +676,15 @@ def test_a_landed_in_place_restore_hands_the_link_flags_back(tmp_path: Path) -> 
     lib = _seeded_library(tmp_path, folder="Weird Folder")
     album = _dummy(lib)
     with lib.transaction():
-        dest = Path(trash_album_folder(lib, album, trash_dir=tmp_path / "trash"))
+        dest = Path(
+            trash_album_folder(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+            )
+        )
 
-    result = restore_album(lib, str(dest), trash_dir=tmp_path / "trash")
+    result = restore_album(
+        lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+    )
 
     assert result.restored is True  # the forcing really ran, so the finally really fired
     assert config["import"]["link"].get(bool) is True
@@ -656,14 +717,16 @@ def test_restore_puts_an_audio_free_husk_back(tmp_path: Path) -> None:
     husk = tmp_path / "music" / "Artist Extras"
     husk.mkdir(parents=True)
     (husk / "booklet.jpg").write_bytes(b"\x00")
-    dest = trash_folder(husk, trash_dir=tmp_path / "trash")
+    dest = trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
 
-    result = restore_album(lib, str(dest), trash_dir=tmp_path / "trash")
+    result = restore_album(
+        lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+    )
 
     assert result.restored is True
     assert result.album_id is None
     assert (husk / "booklet.jpg").is_file()
-    assert not (husk / RECORD_NAME).exists()
+    assert read_trash_origin(_origins(tmp_path), dest.name) is None
     assert not dest.exists()
 
 
@@ -675,14 +738,16 @@ def test_an_import_restore_drops_a_record_it_has_outlived(tmp_path: Path) -> Non
     lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
     album = _dummy(lib)
     with lib.transaction():
-        trash_album(lib, album, trash_dir=tmp_path / "trash")
+        trash_album(lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
     container = next(p for p in (tmp_path / "trash").iterdir() if p.is_dir())
-    assert read_trash_origin(container) is not None
+    assert read_trash_origin(_origins(tmp_path), container.name) is not None
 
-    result = restore_album(lib, str(container), trash_dir=tmp_path / "trash")
+    result = restore_album(
+        lib, str(container), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+    )
 
     assert result.restored is True
-    assert read_trash_origin(container) is None
+    assert read_trash_origin(_origins(tmp_path), container.name) is None
 
 
 def test_a_failed_import_restore_keeps_the_record(tmp_path: Path) -> None:
@@ -693,7 +758,7 @@ def test_a_failed_import_restore_keeps_the_record(tmp_path: Path) -> None:
     lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
     album = _dummy(lib)
     with lib.transaction():
-        trash_album(lib, album, trash_dir=tmp_path / "trash")
+        trash_album(lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
     container = next(p for p in (tmp_path / "trash").iterdir() if p.is_dir())
     replacement = Item(
         album="Dummy", albumartist="Portishead", artist="Portishead", title="Mysterons", track=1
@@ -701,11 +766,13 @@ def test_a_failed_import_restore_keeps_the_record(tmp_path: Path) -> None:
     replacement.path = os.fsencode(str(tmp_path / "music" / "Portishead" / "Dummy" / "01 a.flac"))
     lib.add_album([replacement])
 
-    result = restore_album(lib, str(container), trash_dir=tmp_path / "trash")
+    result = restore_album(
+        lib, str(container), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+    )
 
     assert result.restored is False
     assert result.reason == "already_in_library"
-    assert read_trash_origin(container) is not None
+    assert read_trash_origin(_origins(tmp_path), container.name) is not None
 
 
 def test_restore_refuses_when_the_origin_is_occupied_and_keeps_the_files_in_trash(
@@ -717,11 +784,17 @@ def test_restore_refuses_when_the_origin_is_occupied_and_keeps_the_files_in_tras
     source = tmp_path / "music" / "Weird Folder"
     album = _dummy(lib)
     with lib.transaction():
-        dest = Path(trash_album_folder(lib, album, trash_dir=tmp_path / "trash"))
+        dest = Path(
+            trash_album_folder(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+            )
+        )
     source.mkdir(parents=True)
     (source / "someone else.flac").write_bytes(b"\x00")
 
-    result = restore_album(lib, str(dest), trash_dir=tmp_path / "trash")
+    result = restore_album(
+        lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+    )
 
     assert result.restored is False
     assert result.reason == "origin_occupied"
@@ -739,19 +812,27 @@ def test_restore_returns_the_folder_to_trash_when_the_album_is_already_in_the_li
     source = tmp_path / "music" / "Weird Folder"
     album = _dummy(lib)
     with lib.transaction():
-        dest = Path(trash_album_folder(lib, album, trash_dir=tmp_path / "trash"))
+        dest = Path(
+            trash_album_folder(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+            )
+        )
     replacement = Item(
         album="Dummy", albumartist="Portishead", artist="Portishead", title="Mysterons", track=1
     )
     replacement.path = os.fsencode(str(tmp_path / "music" / "Portishead" / "Dummy" / "01 a.flac"))
     lib.add_album([replacement])
 
-    result = restore_album(lib, str(dest), trash_dir=tmp_path / "trash")
+    result = restore_album(
+        lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+    )
 
     assert result.restored is False
     assert result.reason == "already_in_library"
     assert len(list(dest.glob("*.flac"))) == 2  # back in Trash
-    assert read_trash_origin(dest) is not None  # with its record
+    # With its record: the entry is back under its own name, so the record is
+    # still TRUE and deleting it would strand the row on import-restore forever.
+    assert read_trash_origin(_origins(tmp_path), dest.name) is not None
     assert not source.exists()
 
 
@@ -762,11 +843,15 @@ def test_restore_refuses_to_move_into_an_unavailable_music_share(tmp_path: Path)
     lib = _seeded_library(tmp_path, folder="Weird Folder")
     album = _dummy(lib)
     with lib.transaction():
-        dest = Path(trash_album_folder(lib, album, trash_dir=tmp_path / "trash"))
+        dest = Path(
+            trash_album_folder(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+            )
+        )
     shutil.rmtree(tmp_path / "music")
 
     with pytest.raises(LibraryRootUnavailableError):
-        restore_album(lib, str(dest), trash_dir=tmp_path / "trash")
+        restore_album(lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
 
     assert len(list(dest.glob("*.flac"))) == 2  # nothing left Trash
 
@@ -785,7 +870,9 @@ def test_restore_without_a_record_still_re_imports_as_before(tmp_path: Path) -> 
         track=1,
     )
 
-    result = restore_album(lib, str(trash / "Weird Folder"), trash_dir=trash)
+    result = restore_album(
+        lib, str(trash / "Weird Folder"), trash_dir=trash, origins_dir=origins_for(trash)
+    )
 
     assert result.restored is True
     assert result.album_id is not None
@@ -793,102 +880,53 @@ def test_restore_without_a_record_still_re_imports_as_before(tmp_path: Path) -> 
     assert not (tmp_path / "music" / "Weird Folder").exists()
 
 
-# ----- The record write must never follow a planted symlink -----
-#
-# ``shutil.move`` preserves symlinks, so a trashed folder holds whatever the
-# SOURCE folder held. Anyone who can write into the music library — a household
-# Samba export, an *arr container on the same media volume, a second user — can
-# pre-plant the record name as a link to any file this process can write. The
-# delete then truncates it, and because the write SUCCEEDS the swallow-and-log
-# arm never fires: silent by construction. Measured before the fix: one album
-# delete overwrote beets' config.yaml and truncated library.db 4112 -> 148 bytes.
+# ----- a SYMLINKED Trash entry gets no record, because it can never be restored -----
 
 
-def _plant_a_symlink_bomb(tmp_path: Path) -> tuple[Path, Path, str]:
-    """A staged album whose record name is a link to a file outside the library."""
-    album = tmp_path / "music" / "Artist" / "Album"
-    album.mkdir(parents=True)
-    outside = tmp_path / "data"
-    outside.mkdir()
-    victim = outside / "config.yaml"
-    victim.write_text("directory: /music\nlibrary: /data/beets/library.db\n")
+def test_a_symlinked_trash_entry_is_not_promised_an_exact_restore(tmp_path: Path) -> None:
+    """The one thing the sidecar's symlink refusal leaves behind, re-decided.
 
-    (album / RECORD_NAME).symlink_to(victim)
-    (album / "01 track.mp3").write_bytes(b"\x00" * 16)
-    return album, victim, victim.read_text()
+    For a sidecar that refusal was a security guard: ``mkstemp(dir=entry)``
+    resolved the link and wrote the record — and, in an earlier version, wrote
+    THROUGH a plant at the record's own name — straight out of Trash and into
+    ``/data``. Measured then: one album delete overwrote beets' ``config.yaml``
+    and truncated ``library.db`` from 4112 bytes to 148. None of that is reachable
+    now; the write never touches the trashed folder, so those tests are gone
+    rather than relaxed.
 
-
-def test_write_trash_origin_never_writes_through_a_planted_symlink(tmp_path: Path) -> None:
-    """The record replaces the link; it does not write down it.
-
-    Both halves asserted together: the plant really does survive the move (so
-    the test is exercising the real shape, not a strawman), and the victim is
-    untouched afterwards.
+    What is left is a PROMISE problem. A symlinked entry is ordinary rather than
+    hostile — ``_album_root`` is ``dirname(item.path)``, so an album whose own
+    folder is a symlink into another volume lands in Trash still a symlink,
+    because ``shutil.move`` preserves them — and ``resolve_trash_child`` resolves
+    the child and refuses anything landing outside Trash, so such a row can never
+    be restored by any route. A record would make the listing offer "Exact
+    restore" on a row whose Restore button 404s. Writing nothing keeps the row
+    honest: it reads as an import-restore, exactly as it did before origins
+    existed.
     """
-    album, victim, before = _plant_a_symlink_bomb(tmp_path)
-    trash = tmp_path / "trash"
-    trash.mkdir()
-    dest = trash / "Album"
-    shutil.move(str(album), str(dest))
-    assert (dest / RECORD_NAME).is_symlink(), "the plant must survive the move"
-
-    write_trash_origin(dest, origin=str(album), moved="folder")
-
-    assert victim.read_text() == before, "a file outside the library was overwritten"
-    record = dest / RECORD_NAME
-    assert record.is_file()
-    assert not record.is_symlink()
-    assert json.loads(record.read_text())["moved"] == "folder"
-    assert [p.name for p in dest.iterdir() if p.name.endswith(".tmp")] == []
-
-
-def test_the_record_is_not_written_through_a_symlinked_trash_entry(tmp_path: Path) -> None:
-    """The plant one level up: the ENTRY is the link, not the record name.
-
-    ``mkstemp``'s ``O_CREAT|O_EXCL`` -- the fix for the test above -- protects
-    the FINAL component only. ``dir=`` is resolved normally, so if the Trash
-    entry itself is a symlink both the temp file and the ``os.replace`` land in
-    whatever it points at. Measured before this was fixed: the record was
-    written into the directory beside beets' ``config.yaml``.
-
-    Nothing hostile is required, which is why this is a real case and not a lab
-    one: ``_album_root`` is ``dirname(item.path)``, so an album whose own folder
-    is a symlink into another volume arrives in Trash still a symlink, because
-    ``shutil.move`` preserves them.
-
-    The right answer is to decline, not to fail: the folder is in Trash either
-    way and stays restorable by re-import. Impact was litter at a fixed hidden
-    name rather than an overwrite -- but "the write touches only Trash" is an
-    invariant this module states, so it has to be true rather than nearly true.
-    """
-    trash, elsewhere = tmp_path / "trash", tmp_path / "data"
+    trash, elsewhere = tmp_path / "trash", tmp_path / "elsewhere"
     trash.mkdir()
     elsewhere.mkdir()
-    (elsewhere / "config.yaml").write_text("directory: /music\n")
+    (elsewhere / "cover.jpg").write_bytes(b"\x00")
+    (tmp_path / "music").mkdir()
     entry = trash / "Album"
     entry.symlink_to(elsewhere, target_is_directory=True)
 
-    write_trash_origin(entry, origin="/music/Artist/Album", moved="folder")
+    write_trash_origin(_origins(tmp_path), "Real Album", origin="/music/A", moved="folder")
+    trash_folder_origin = "/music/Artist/Album"
+    from app.beets.trash import _record_origin
 
-    assert not (elsewhere / RECORD_NAME).exists(), "the record escaped Trash"
-    assert [p.name for p in elsewhere.iterdir()] == ["config.yaml"]
-    assert read_trash_origin(entry) is None  # declined, so the row degrades to a re-import
+    _record_origin(_origins(tmp_path), entry, origin=trash_folder_origin, moved="folder")
 
-
-def test_trash_folder_does_not_detonate_a_planted_symlink(tmp_path: Path) -> None:
-    """End to end through the orphan sweep's mover, not just the primitive.
-
-    ``trash_folder`` is the reorganize sweep's path and takes no library at all,
-    so it is the cheapest whole-mover proof that the fix is wired in rather than
-    only unit-tested.
-    """
-    album, victim, before = _plant_a_symlink_bomb(tmp_path)
-    trash = tmp_path / "trash"
-
-    dest = trash_folder(album, trash_dir=trash)
-
-    assert victim.read_text() == before, "an album delete overwrote a file outside the library"
-    assert read_trash_origin(dest) is not None, "the record still has to be written"
+    assert read_trash_origin(_origins(tmp_path), entry.name) is None
+    (row,) = [
+        r
+        for r in list_trashed_albums(
+            trash, origins_dir=_origins(tmp_path), music_dir=str(tmp_path / "music")
+        )
+        if r.folder == "Album"
+    ]
+    assert row.restore_mode == "import"  # never a move_back it cannot honour
 
 
 # ----- an ABSENT record and an UNUSABLE one are not the same event -----
@@ -903,27 +941,27 @@ def test_a_present_but_unusable_record_is_logged_and_an_absent_one_is_not(
     degrades to import-restore either way — but it made a corrupt or unreadable
     record indistinguishable from a folder that simply predates the feature, and
     the Trash row says the same sentence for both. Nothing anywhere pointed at
-    the difference, so a record going bad was invisible.
+    the difference, so a record going bad was invisible. On the ``/data`` side
+    the WARNING is MORE diagnostic, not less: unusable there means the volume is
+    full, read-only, permission-broken or failing — never a plant.
 
     Both halves in one test on purpose: "the bad one warns" is only worth having
     beside "the ordinary one stays quiet", or a fix that warned on every listing
     of every pre-record folder would pass the first half and flood the log.
     """
-    absent = tmp_path / "absent"
-    absent.mkdir()
-    corrupt = tmp_path / "corrupt"
-    corrupt.mkdir()
-    (corrupt / RECORD_NAME).write_text("{ not json at all", encoding="ascii")
+    origins = tmp_path / "trash-origins"
+    origin_file(origins, "corrupt").parent.mkdir(parents=True)
+    origin_file(origins, "corrupt").write_text("{ not json at all", encoding="ascii")
 
-    with caplog.at_level(logging.WARNING, logger="app.beets.trash_record"):
-        assert read_trash_origin(absent) is None
-        assert caplog.records == [], "a folder with no record is the ordinary case"
-        assert read_trash_origin(corrupt) is None
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        assert read_trash_origin(origins, "absent") is None
+        assert caplog.records == [], "an entry with no record is the ordinary case"
+        assert read_trash_origin(origins, "corrupt") is None
 
     (record,) = caplog.records
     assert record.levelno == logging.WARNING
     assert "present but unusable" in record.getMessage()
-    assert RECORD_NAME in record.getMessage()
+    assert "corrupt.json" in record.getMessage()
 
 
 @pytest.mark.parametrize(
@@ -938,15 +976,10 @@ def test_a_present_but_unusable_record_is_logged_and_an_absent_one_is_not(
             "not a record this version can trust",
             id="rejected-payload",
         ),
-        pytest.param(
-            lambda p: p.write_text(
-                json.dumps({"schema": 1, "origin": "/a", "moved": "folder", "pad": "x" * 70_000}),
-                encoding="ascii",
-            ),
-            "cap",
-            id="oversized",
-        ),
-        pytest.param(lambda p: p.mkdir(), "not a regular file", id="a-directory"),
+        # No ``is_file()`` preamble survives, so a directory at the name comes
+        # back as the OSError it really is rather than a hand-written sentence —
+        # the arm is kept to pin that it degrades instead of escaping.
+        pytest.param(lambda p: p.mkdir(), "could not be read", id="a-directory"),
     ],
 )
 def test_every_unusable_record_names_its_own_cause(
@@ -955,16 +988,18 @@ def test_every_unusable_record_names_its_own_cause(
     plant: Callable[[Path], object],
     why: str,
 ) -> None:
-    """Four ways to be unusable, four different sentences.
+    """Three ways to be unusable, three different sentences.
 
     One generic "could not read the record" would leave the reader no better off
-    than the collapsed ``None`` did: a truncated write, a hand-edited payload, a
-    62 KB file and a directory sitting on the name need four different actions.
+    than the collapsed ``None`` did: a truncated write, a hand-edited payload and
+    an I/O fault need different actions.
     """
-    plant(tmp_path / RECORD_NAME)
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    plant(origin_file(origins, "Dummy"))
 
-    with caplog.at_level(logging.WARNING, logger="app.beets.trash_record"):
-        assert read_trash_origin(tmp_path) is None
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        assert read_trash_origin(origins, "Dummy") is None
 
     (record,) = caplog.records
     assert why in record.getMessage()
@@ -975,24 +1010,29 @@ def test_a_row_whose_record_could_not_be_written_no_longer_blames_its_age(
 ) -> None:
     """The finding, end to end: the write fails NOW and the row said "before".
 
-    A real write failure, no monkeypatching — a DIRECTORY already sitting at the
-    sidecar's name, so ``os.replace`` cannot put the record there. The Trash row
-    used to read "it was moved to Trash before origins were recorded", which is
-    false and, worse, unfalsifiable: it points at the folder's age instead of at
-    the volume that just went read-only, so nobody investigates and every later
-    delete loses its origin the same silent way.
+    A real write failure, no monkeypatching — a regular FILE where the origins
+    directory belongs, so the store cannot create it. The Trash row used to read
+    "it was moved to Trash before origins were recorded", which is false and,
+    worse, unfalsifiable: it points at the folder's age instead of at the volume
+    that just went read-only, so nobody investigates and every later delete loses
+    its origin the same silent way. That second clause is now the LIKELIER of the
+    two, because a full or read-only ``/data`` fails every delete's record at
+    once rather than one folder's.
     """
     husk = tmp_path / "music" / "Old Name"
-    (husk / RECORD_NAME).mkdir(parents=True)
+    husk.mkdir(parents=True)
     (husk / "cover.jpg").write_bytes(b"\x00")
+    _origins(tmp_path).write_bytes(b"not a directory")
 
-    with caplog.at_level(logging.WARNING, logger="app.beets.trash_record"):
-        trash_folder(husk, trash_dir=tmp_path / "trash")
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
 
     # The write announced its own failure at the time it happened...
     assert any("could not record the Trash origin" in r.getMessage() for r in caplog.records)
     # ...and the row the user reads no longer attributes it to the folder's age.
-    (row,) = list_trashed_albums(tmp_path / "trash", music_dir=str(tmp_path / "music"))
+    (row,) = list_trashed_albums(
+        tmp_path / "trash", origins_dir=_origins(tmp_path), music_dir=str(tmp_path / "music")
+    )
     assert row.restore_note is not None
     assert "writing that record failed" in row.restore_note
     assert "server log" in row.restore_note
@@ -1003,6 +1043,12 @@ def test_a_row_whose_record_could_not_be_written_no_longer_blames_its_age(
 
 def test_a_nul_in_the_origin_cannot_reach_the_move(tmp_path: Path) -> None:
     """The whole chain, not just the parse — every link is asserted here.
+
+    The rest of the old hostile-character denylist is gone: the record lives on
+    the trusted side now, and rejecting a control character only cost a
+    legitimately-named folder its exact restore. This one member stays because
+    its consequence is not cosmetic, and because only CORRUPTION can produce it
+    (a POSIX path cannot hold a NUL — it is the terminator).
 
     A NUL passes ``isabs``; ``app.fsutil.exists`` answers False because
     ``Path.exists()`` swallows the ``ValueError`` internally; so the occupancy
@@ -1018,7 +1064,9 @@ def test_a_nul_in_the_origin_cannot_reach_the_move(tmp_path: Path) -> None:
     entry = tmp_path / "trash" / "Portishead - Dummy"
     entry.mkdir(parents=True)
     poisoned = f"{tmp_path}/music/Portishead/Du\x00mmy"
-    (entry / RECORD_NAME).write_text(
+    origins = _origins(tmp_path)
+    origins.mkdir()
+    origin_file(origins, entry.name).write_text(
         json.dumps({"schema": 1, "origin": poisoned, "moved": "folder"}), encoding="ascii"
     )
 
@@ -1027,94 +1075,71 @@ def test_a_nul_in_the_origin_cannot_reach_the_move(tmp_path: Path) -> None:
         os.rename(str(entry), poisoned)  # and the move is where it detonates
 
     # So the record never becomes a move target in the first place.
-    assert read_trash_origin(entry) is None
+    assert read_trash_origin(origins, entry.name) is None
 
 
 def test_an_album_named_with_a_no_break_space_keeps_its_exact_restore(tmp_path: Path) -> None:
-    """Pins the DECISION not to widen the origin denylist, and states its cost.
+    """The general round trip, at a name a validator would have been tempted by.
 
-    ``_REJECTED_IN_ORIGIN`` refuses C0/C1/DEL and the Trojan-Source bidi set, and
-    nothing else. Several characters that plainly misrepresent a path are absent
-    -- U+200B, U+00AD, U+034F and the U+00A0 used here all pass, parse, earn a
-    ``move_back_target`` and render into the row intact, so a row can promise
-    ``/music/Artist/Album`` and move the folder to a path that merely looks like
-    it. That is left open on purpose, and this test is what stops it being
-    "fixed" by widening the pattern.
+    This used to pin a DECISION -- not to widen ``_REJECTED_IN_ORIGIN`` to the
+    characters that misrepresent a path without being control characters (U+200B,
+    U+00AD, U+034F, the U+00A0 used here). That filter is gone with the sidecar,
+    so there is no longer a decision to pin: the behaviour it protected -- an
+    album folder with an exotic character round-trips to an exact restore -- is
+    now universally true rather than a carve-out.
 
-    The trade is asymmetric. The consequence of leaving it is bounded by
-    ``move_back_target``'s containment -- a folder somewhere inside the user's
-    own library under an unexpected name, confusing rather than a capability.
-    The consequence of closing it here is that an album folder GENUINELY named
-    with a no-break space, which is ordinary in Windows-authored names, loses its
-    exact restore permanently and can never get it back. A real loss traded
-    against a cosmetic one.
-
-    Written as the legitimate case rather than as ``assert not
-    _REJECTED_IN_ORIGIN.search(...)`` on purpose: the reason is what must survive,
-    and asserting the regex would pin the mechanism while saying nothing about
-    why. If this ever is closed, the display is the place -- escaping
-    non-printing characters denies no one a restore.
+    Kept because the end-to-end shape is worth having (seed -> trash ->
+    ``move_back_target`` -> restore -> the folder is back at its own name), and
+    because the residual it named is still open and still belongs at the DISPLAY
+    layer: a row can promise ``/music/Artist/Album`` and move the folder to a
+    path that merely looks like it. Escaping non-printing characters where they
+    are RENDERED denies no one a restore; rejecting the record denied an exact
+    restore to a name that is ordinary in Windows-authored folders.
     """
     lib = _seeded_library(tmp_path, folder="Portishead/Dummy\u00a0Deluxe")
     source = tmp_path / "music" / "Portishead" / "Dummy\u00a0Deluxe"
     album = _dummy(lib)
 
     with lib.transaction():
-        dest = Path(trash_album_folder(lib, album, trash_dir=tmp_path / "trash"))
+        dest = Path(
+            trash_album_folder(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+            )
+        )
 
-    record = _record(dest)
+    record = _record(tmp_path, dest)
     assert record.origin == str(source)
     assert move_back_target(record, music_dir=str(tmp_path / "music")) == source
 
-    result = restore_album(lib, str(dest), trash_dir=tmp_path / "trash")
+    result = restore_album(
+        lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+    )
 
     assert result.restored is True
     assert source.is_dir(), "the folder went back to its own name, not a stripped one"
     assert len(list(source.glob("*.flac"))) == 2
 
 
-def test_the_origin_length_cap_sits_at_path_max_and_not_below_it(tmp_path: Path) -> None:
-    """Bounded, but not so tightly that a legal deep path loses its exact restore.
-
-    Unbounded, an origin is capped only by the 64 KB FILE limit, so a 60,002-
-    character string parses and renders verbatim into the Trash row — the one row
-    whose job is telling the user where their files will go. The bound is
-    ``PATH_MAX``, and the lower half of this test is what keeps it honest: a
-    round number chosen for looks would refuse paths the kernel accepts.
-    """
-    # Pinned as a LITERAL, and grounded in the kernel beside it. A version of
-    # this test that built its inputs from ``_MAX_ORIGIN_CHARS`` moved with the
-    # constant and proved only self-consistency: mutating 4096 to 4095 SURVIVED
-    # it. 4096 is Linux's PATH_MAX in bytes including the terminating NUL
-    # (``linux/limits.h``), and a UTF-8 string never has more characters than
-    # bytes, so no path the kernel accepts can exceed it.
-    assert _MAX_ORIGIN_CHARS == 4096
-    assert _MAX_ORIGIN_CHARS >= os.pathconf("/", "PC_PATH_MAX")
-    at_cap = "/" + "a" * 4095
-    over_cap = "/" + "a" * 4096
-
-    for origin, expected in ((at_cap, at_cap), (over_cap, None)):
-        (tmp_path / RECORD_NAME).write_text(
-            json.dumps({"schema": 1, "origin": origin, "moved": "folder"}), encoding="ascii"
-        )
-        record = read_trash_origin(tmp_path)
-        assert (record.origin if record else None) == expected
-
-
 def test_a_non_utf8_origin_still_gets_its_exact_restore(tmp_path: Path) -> None:
-    """The control for the character guard: surrogates are NOT rejected.
+    """Lone surrogates round-trip: the ``ensure_ascii`` property, at the unit.
 
-    U+DC80-U+DCFF is how a non-UTF-8 POSIX filename survives ``os.fsdecode``, so
-    a guard that swept them up with the control characters would deny an exact
-    restore to precisely the paths this app takes the most care over — and would
-    look identical to a correct one on every test above.
+    U+DC80-U+DCFF is how a non-UTF-8 POSIX filename survives ``os.fsdecode``, and
+    the whole read path has to carry it: the file is written and read as pure
+    ASCII precisely so that such an origin survives a sink
+    (``write_atomic_text``) that encodes STRICT UTF-8 and would raise on it. The
+    end-to-end half is
+    ``test_a_non_utf8_folder_name_round_trips_through_the_ascii_record``; this
+    is the unit, and it is the one that would still catch a reader switched to
+    ``encoding="utf-8"``.
     """
     origin = os.fsdecode(os.fsencode(str(tmp_path / "music")) + b"/Caf\xe9 Album")
-    (tmp_path / RECORD_NAME).write_text(
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    origin_file(origins, "Dummy").write_text(
         json.dumps({"schema": 1, "origin": origin, "moved": "folder"}), encoding="ascii"
     )
 
-    record = read_trash_origin(tmp_path)
+    record = read_trash_origin(origins, "Dummy")
     assert record is not None
     assert record.origin == origin
     assert move_back_target(record, music_dir=str(tmp_path / "music")) == Path(origin)
@@ -1146,7 +1171,9 @@ def test_a_move_back_refuses_an_origin_that_appeared_in_the_window(
     before = sorted(p.name for p in origin.iterdir())
 
     monkeypatch.setattr("app.beets.trash_manage.exists", lambda _p: False)
-    result = _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash")
+    result = _restore_to_origin(
+        lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+    )
 
     assert result == RestoreResult(restored=False, reason="origin_occupied")
     assert not (origin / entry.name).exists(), "the album was buried one level down"
@@ -1221,7 +1248,9 @@ def test_a_failed_return_to_trash_cannot_forge_a_log_line(
         # import's ``RuntimeError``; the import is still reachable as ``__cause__``.
         pytest.raises(TrashRestoreIncompleteError) as ei,
     ):
-        _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash")
+        _restore_to_origin(
+            lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+        )
 
     assert isinstance(ei.value.__cause__, RuntimeError)
     assert any("could not return" in r.getMessage() for r in caplog.records)
@@ -1257,7 +1286,11 @@ def test_a_failed_restore_whose_undo_also_fails_says_where_the_folder_went(
     album = _dummy(lib)
     album_id = _require_id(album.id)
     with lib.transaction():
-        entry = Path(trash_album_folder(lib, album, trash_dir=tmp_path / "trash"))
+        entry = Path(
+            trash_album_folder(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+            )
+        )
 
     def _import_fails_after_something_retakes_the_trash_entry(
         *_a: object, **_k: object
@@ -1271,7 +1304,7 @@ def test_a_failed_restore_whose_undo_also_fails_says_where_the_folder_went(
         _import_fails_after_something_retakes_the_trash_entry,
     )
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        restore_album(lib, str(entry), trash_dir=tmp_path / "trash")
+        restore_album(lib, str(entry), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
 
     message = str(ei.value)
     assert str(origin) in message, "the path the files are actually at"
@@ -1283,10 +1316,13 @@ def test_a_failed_restore_whose_undo_also_fails_says_where_the_folder_went(
     # The state the sentence describes, asserted rather than assumed.
     assert len(list(origin.glob("*.flac"))) == 2
     assert lib.get_album(album_id) is None
-    # The record has nothing left to say and would outlive the folder: it names
-    # the folder it is now inside, and it would keep the source dir alive
-    # through the re-import the message asks for.
-    assert not (origin / RECORD_NAME).exists()
+    # The entry is no longer in Trash, so the record describes nothing and its
+    # NAME is free again — left behind it would be inherited by the next folder
+    # to earn that name. (Under the sidecar this deletion also stopped beets
+    # refusing to prune the source dir through the re-import the message asks
+    # for; a sibling store cannot cause that, which is part of why it replaced
+    # the sidecar.) Keyed on the TRASH entry's name, not the stranded folder's.
+    assert read_trash_origin(_origins(tmp_path), entry.name) is None
 
 
 def test_a_media_album_whose_import_lands_nothing_still_goes_back_to_trash(
@@ -1312,13 +1348,19 @@ def test_a_media_album_whose_import_lands_nothing_still_goes_back_to_trash(
     origin = tmp_path / "music" / "Weird Folder"
     album = _dummy(lib)
     with lib.transaction():
-        entry = Path(trash_album_folder(lib, album, trash_dir=tmp_path / "trash"))
+        entry = Path(
+            trash_album_folder(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+            )
+        )
 
     monkeypatch.setattr(
         "app.beets.trash_manage._restore_by_import",
         lambda *_a, **_k: RestoreResult(restored=False, reason="could_not_restore"),
     )
-    result = restore_album(lib, str(entry), trash_dir=tmp_path / "trash")
+    result = restore_album(
+        lib, str(entry), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+    )
 
     assert result == RestoreResult(restored=False, reason="could_not_restore")
     assert sorted(p.name for p in entry.glob("*.flac")) == [
@@ -1326,7 +1368,9 @@ def test_a_media_album_whose_import_lands_nothing_still_goes_back_to_trash(
         "02 Sour Times.flac",
     ]
     assert not origin.exists(), "nothing may be left in the music library"
-    assert read_trash_origin(entry) is not None, "and the row keeps its exact restore"
+    assert read_trash_origin(_origins(tmp_path), entry.name) is not None, (
+        "and the row keeps its exact restore"
+    )
 
 
 def test_a_part_way_cross_filesystem_move_says_the_folder_may_be_in_both(
@@ -1361,7 +1405,9 @@ def test_a_part_way_cross_filesystem_move_says_the_folder_may_be_in_both(
     monkeypatch.setattr(shutil, "copytree", _half_a_copy)
 
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash")
+        _restore_to_origin(
+            lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+        )
 
     message = str(ei.value)
     assert str(origin) in message
@@ -1416,7 +1462,9 @@ def test_a_dangling_symlink_at_the_origin_keeps_the_files_in_trash(tmp_path: Pat
 
     assert exists(origin) is False, "the pre-filter is blind to a dangling link"
 
-    result = _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash")
+    result = _restore_to_origin(
+        lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+    )
 
     assert result == RestoreResult(restored=False, reason="origin_occupied")
     assert (entry / "01 a.flac").is_file()
@@ -1424,45 +1472,21 @@ def test_a_dangling_symlink_at_the_origin_keeps_the_files_in_trash(tmp_path: Pat
     assert not origin.exists()
 
 
-# ----- a record file is untrusted INPUT, and reading one must not block -----
-
-
-def test_a_fifo_at_the_record_name_cannot_hang_the_listing(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    """``is_file()`` is the only thing between a planted FIFO and a hung request.
-
-    ``GET /api/trash`` is ungated and reads one record per top-level entry on a
-    threadpool worker. A FIFO passes the size cap — ``st_size`` is 0 on a pipe
-    with no writer — and ``read_text`` then blocks FOREVER, holding that worker.
-    Anyone who can create a file in the music library can plant one, and
-    ``shutil.move`` carries it into Trash with the folder.
-
-    The deadline is the oracle, and it has to be: without the guard this test
-    does not fail, it hangs — which reads as a suite that is still running.
-    """
-    os.mkfifo(tmp_path / RECORD_NAME)
-
-    with _deadline(5), caplog.at_level(logging.WARNING, logger="app.beets.trash_record"):
-        assert read_trash_origin(tmp_path) is None
-
-    (record,) = caplog.records
-    assert "not a regular file" in record.getMessage()
-
-
-def test_a_non_utf8_folder_name_round_trips_through_the_ascii_sidecar(tmp_path: Path) -> None:
+def test_a_non_utf8_folder_name_round_trips_through_the_ascii_record(tmp_path: Path) -> None:
     """The exact restore this app takes the most care over, end to end.
 
-    ``json.dumps``'s default ``ensure_ascii`` escapes the lone surrogates
-    ``os.fsdecode`` produces for a non-UTF-8 POSIX name into ``\\udcXX``, which
-    is what lets the record be written AND read as pure ASCII. Drop it and the
-    write raises ``UnicodeEncodeError`` inside the swallow-and-log arm: no record
-    is left at all, the row degrades to an import-restore with the "trashed
-    before origins were recorded" note, and the folder never goes back to the
-    name it had.
+    ``ensure_ascii=True`` escapes the lone surrogates ``os.fsdecode`` produces
+    for a non-UTF-8 POSIX name into ``\\udcXX``, which is what lets the record be
+    written AND read as pure ASCII. Drop it and ``write_atomic_text``'s STRICT
+    UTF-8 encode raises ``UnicodeEncodeError`` inside the swallow-and-log arm: no
+    record is left at all, the row degrades to an import-restore with the
+    "trashed before origins were recorded" note, and the folder never goes back
+    to the name it had.
 
-    Both halves are asserted: the FILE is ASCII with the undecodable byte
-    escaped, and the folder comes back at the byte-exact path it left.
+    Three halves now, not two: the KEY is also non-UTF-8 (the Trash entry's own
+    name carries the lone surrogate), which the sidecar's fixed filename never
+    exercised. The FILE is ASCII with the undecodable byte escaped, and the
+    folder comes back at the byte-exact path it left.
     """
     lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
     music = tmp_path / "music"
@@ -1471,16 +1495,466 @@ def test_a_non_utf8_folder_name_round_trips_through_the_ascii_sidecar(tmp_path: 
     husk.mkdir()
     (husk / "booklet.jpg").write_bytes(b"\x00")
 
-    dest = trash_folder(husk, trash_dir=tmp_path / "trash")
+    dest = trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
 
-    raw = (dest / RECORD_NAME).read_bytes()
+    record_path = origin_file(_origins(tmp_path), dest.name)
+    assert record_path.is_file(), "the key itself carries the undecodable byte"
+    raw = record_path.read_bytes()
     raw.decode("ascii")  # the whole point of encoding="ascii": this cannot be assumed
     assert rb"\udce9" in raw, "the undecodable byte must survive as an escape"
-    assert _record(dest).origin == os.fsdecode(husk_bytes)
+    assert _record(tmp_path, dest).origin == os.fsdecode(husk_bytes)
+    # The LISTING has to find it too, and that is a separate way to get this
+    # wrong: the store's key must be the RAW on-disk name, never the display
+    # form. ``display_path`` replaces the undecodable byte with U+FFFD, which is
+    # a different key entirely — the row would silently read as an import with
+    # every unit test above still green.
+    (row,) = list_trashed_albums(
+        tmp_path / "trash", origins_dir=_origins(tmp_path), music_dir=str(music)
+    )
+    assert row.restore_mode == "move_back"
 
-    result = restore_album(lib, str(dest), trash_dir=tmp_path / "trash")
+    result = restore_album(
+        lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+    )
 
     assert result.restored is True
     assert (husk / "booklet.jpg").is_file()
     assert not dest.exists()
     assert os.fsencode(str(husk)) == husk_bytes  # byte-exact, not a lookalike
+
+
+# ----- the store is a SIBLING of the Trash dir, and both resolve the same way -----
+
+
+def test_the_origin_store_defaults_to_a_sibling_of_the_trash_dir(tmp_path: Path) -> None:
+    """Sibling, never child — and that is a correctness rule, not tidiness.
+
+    ``list_trashed_albums`` walks every top-level entry under ``trash_dir`` and
+    surfaces each one as a row (``_audio_free_entries``), so a ``trash-origins/``
+    directory living inside it would list as a trashed album of its own, be
+    offered for Restore and Empty, and be destroyed by Empty-all along with every
+    record it holds. Empty settings resolve BOTH under the handle's already-
+    absolute ``beets_dir``, which sidesteps the cwd-relative gotcha.
+    """
+    lib = build_library(str(tmp_path / "library.db"), str(tmp_path / "music"))
+    handle = make_test_handle(lib, tmp_path)
+    settings = Settings(trash_dir="", trash_origins_dir="")
+
+    trash = resolve_trash_dir(settings, handle)
+    origins = resolve_trash_origins_dir(settings, handle)
+
+    assert trash == tmp_path / "trash"
+    assert origins == tmp_path / "trash-origins"
+    assert origins.parent == trash.parent
+    assert not origins.is_relative_to(trash)
+    assert not trash.is_relative_to(origins)
+
+
+def test_a_configured_origins_dir_overrides_the_default(tmp_path: Path) -> None:
+    """The override exists so the store can be moved OFF a volume, independently.
+
+    Deliberately not derived from ``trash_dir``: a user-configured Trash dir may
+    point anywhere, including inside the music library, and a record reachable
+    from ``/music`` is the whole thing this store exists to avoid.
+    """
+    lib = build_library(str(tmp_path / "library.db"), str(tmp_path / "music"))
+    handle = make_test_handle(lib, tmp_path)
+    elsewhere = tmp_path / "elsewhere" / "origins"
+
+    resolved = resolve_trash_origins_dir(
+        Settings(trash_dir=str(tmp_path / "music" / ".trash"), trash_origins_dir=str(elsewhere)),
+        handle,
+    )
+
+    assert resolved == elsewhere
+
+
+# ----- every exit from Trash takes the record with it -----
+
+
+def test_empty_one_removes_the_origin_record(tmp_path: Path) -> None:
+    """Invariant 5b, which the sidecar got for free from ``rmtree``.
+
+    Keyed on the entry NAME in a directory of its own, this is a rule instead:
+    a record outliving its entry is litter at best, and the name it holds is one
+    the allocator will then refuse to hand out again.
+    """
+    husk = tmp_path / "music" / "Old Name"
+    husk.mkdir(parents=True)
+    (husk / "cover.jpg").write_bytes(b"\x00")
+    dest = trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+    assert read_trash_origin(_origins(tmp_path), dest.name) is not None
+
+    assert empty_one(str(dest), origins_dir=_origins(tmp_path)).removed == 1
+
+    assert not dest.exists()
+    assert read_trash_origin(_origins(tmp_path), dest.name) is None
+
+
+def test_empty_one_keeps_the_record_when_the_removal_itself_fails(tmp_path: Path) -> None:
+    """Ordering, pinned: the entry goes FIRST, the record only after.
+
+    A failed ``rmtree`` leaves the folder sitting in Trash. Dropping its record
+    on the way past would permanently downgrade a row that still exists to an
+    import-restore — the one thing this feature must never do.
+    """
+    husk = tmp_path / "music" / "Old Name"
+    husk.mkdir(parents=True)
+    (husk / "cover.jpg").write_bytes(b"\x00")
+    dest = trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+    (tmp_path / "trash").chmod(0o500)  # rmtree cannot unlink out of a read-only dir
+
+    try:
+        with pytest.raises(OSError):
+            empty_one(str(dest), origins_dir=_origins(tmp_path))
+    finally:
+        (tmp_path / "trash").chmod(0o700)
+
+    assert dest.is_dir()
+    assert read_trash_origin(_origins(tmp_path), dest.name) is not None
+
+
+def test_empty_all_removes_every_origin_record_including_a_symlinked_entry(
+    tmp_path: Path,
+) -> None:
+    """Per child, inside the loop — and the symlinked leaf is not an exception.
+
+    ``empty_all``'s symlink branch unlinks the link without following it; its
+    record (which only a hand edit or an older version could have written, since
+    ``_record_origin`` declines a symlinked entry) has to go with it, or the name
+    stays burnt for good.
+    """
+    trash, origins = tmp_path / "trash", _origins(tmp_path)
+    for name in ("A", "B"):
+        husk = tmp_path / "music" / name
+        husk.mkdir(parents=True)
+        (husk / "cover.jpg").write_bytes(b"\x00")
+        trash_folder(husk, trash_dir=trash, origins_dir=origins)
+    (tmp_path / "linked").mkdir()
+    (trash / "C").symlink_to(tmp_path / "linked", target_is_directory=True)
+    write_trash_origin(origins, "C", origin=str(tmp_path / "music" / "C"), moved="folder")
+
+    assert empty_all(trash, origins_dir=origins).removed == 3
+
+    assert list(trash.iterdir()) == []
+    assert (tmp_path / "linked").is_dir(), "the link was unlinked, not followed"
+    assert sorted(p.name for p in origins.glob("*.json")) == []
+
+
+def test_empty_all_leaves_a_record_whose_entry_was_removed_outside_the_app(
+    tmp_path: Path,
+) -> None:
+    """The accepted residual, pinned so it is a decision rather than a surprise.
+
+    A hand ``rm -rf`` of a Trash entry leaves its record behind, and nothing
+    reaps it: the obvious sweep ("unlink every record with no matching entry")
+    cannot tell an empty Trash dir from a Trash dir whose share has just dropped,
+    and would destroy every remaining origin in that state. The orphan is
+    harmless because ``_unique_trash_dest`` treats a recorded name as occupied —
+    it costs a burnt name, never a wrong restore.
+    """
+    trash, origins = tmp_path / "trash", _origins(tmp_path)
+    trash.mkdir()
+    write_trash_origin(
+        origins, "Gone By Hand", origin=str(tmp_path / "music" / "X"), moved="folder"
+    )
+
+    assert empty_all(trash, origins_dir=origins).removed == 0
+
+    assert read_trash_origin(origins, "Gone By Hand") is not None
+
+
+# ----- the name key: what makes it safe, and what it refuses -----
+
+
+def test_a_name_whose_record_survives_is_never_handed_to_another_folder(tmp_path: Path) -> None:
+    """The name-key analogue of the inode-reuse hazard, closed at the allocator.
+
+    An entry deleted outside MusicDrop leaves its record. Nothing in Trash
+    answers to that name any more, so without this the next folder to earn it
+    would inherit a stale origin — and that origin steers a ``rename()`` into the
+    music library for the WRONG folder. Strictly worse than losing an origin,
+    which is exactly why inode keys were rejected; the answer is that a recorded
+    name is not free.
+    """
+    origins = _origins(tmp_path)
+    stale = str(tmp_path / "music" / "somewhere else entirely")
+    write_trash_origin(origins, "Old Name", origin=stale, moved="folder")
+    husk = tmp_path / "music" / "Old Name"
+    husk.mkdir(parents=True)
+    (husk / "cover.jpg").write_bytes(b"\x00")
+
+    dest = trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=origins)
+
+    assert dest.name == "Old Name (1)", "the recorded name was still taken"
+    assert _record(tmp_path, dest).origin == str(husk)
+    stale_record = read_trash_origin(origins, "Old Name")
+    assert stale_record is not None
+    assert stale_record.origin == stale, "and the stranger's record was not overwritten"
+
+
+def test_the_key_must_be_a_single_path_component(tmp_path: Path) -> None:
+    """Traversal is unreachable today, and the guarantee is incidental.
+
+    ``_trash_container_name`` replaces both separators and
+    ``_unique_trash_dest``'s collision loop can never settle on ``.`` or ``..``
+    (both always exist) — but that is two functions agreeing by accident, and
+    this key names a file on the ``/data`` side beside ``library.db``. Same
+    reason ``app/bank/store.py`` keeps ``_VALID_ID``. All three public entry
+    points must refuse rather than escape, and none of them may raise at a
+    caller that cannot handle it.
+    """
+    origins = tmp_path / "trash-origins"
+    for key in ("", ".", "..", "../escape", "a/b"):
+        with pytest.raises(ValueError):
+            origin_file(origins, key)
+        # Every PUBLIC entry point degrades instead: the two on the delete path
+        # are contractually never-raising (a delete must not fail because its
+        # bookkeeping did), and the allocator must not blow up choosing a name.
+        assert read_trash_origin(origins, key) is None
+        write_trash_origin(origins, key, origin="/music/A", moved="folder")  # swallowed
+        delete_trash_origin(origins, key)  # swallowed
+        assert origin_recorded(origins, key) is False
+    assert not (tmp_path / "escape.json").exists()
+    assert not (tmp_path / "trash-origins.json").exists()
+
+
+def test_deleting_a_record_that_was_never_written_is_silent(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``missing_ok=True``, and the SILENCE is the point rather than the no-raise.
+
+    Every Trash row that predates the feature, and every row whose record write
+    failed, reaches ``delete_trash_origin`` with nothing to delete — once per
+    entry on ``empty_all``, and on every import-restore. Raising there is caught
+    by the handler either way, so the cost of getting this wrong is not a crash:
+    it is a WARNING per absent record, which buries the warnings that mean
+    something (a record present but unusable is how a failing ``/data`` volume
+    announces itself).
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        delete_trash_origin(origins, "never written")
+        delete_trash_origin(tmp_path / "no-such-dir", "never written")
+
+    assert caplog.records == []
+
+
+def test_an_entry_name_too_long_for_a_json_suffix_still_gets_its_record(tmp_path: Path) -> None:
+    """The longest album folders must not silently lose their exact restore.
+
+    ``NAME_MAX`` is 255 bytes, so ``<entry>.json`` is unwritable for any entry
+    within 5 bytes of the limit: the Trash entry creates fine and its record
+    cannot, forever (a retry can never succeed). The failure would be swallowed
+    and the row would degrade to an import-restore with no hint why.
+
+    The real budget is TIGHTER than ``NAME_MAX`` and this test is what found
+    that: the shared atomic writer creates ``.<name>.<pid>.<16 hex>.tmp`` beside
+    the target, so a record filename truncated to exactly 255 bytes still raised
+    ENAMETOOLONG on the TEMP file and the record was lost with a perfectly legal
+    target name. Hence :data:`_MAX_KEY_BYTES`.
+
+    The bound is pinned in BOTH directions, because a test that derived its
+    inputs from the constant would move with it and prove only self-consistency:
+    the literal catches a value lowered below what the app assumes, and the
+    ``pathconf`` floor catches one raised above what the filesystem accepts.
+    """
+    assert _NAME_MAX == 255
+    assert _NAME_MAX <= os.pathconf(str(tmp_path), "PC_NAME_MAX")
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    name = "L" * 251  # 251 + len(".json") = 256
+
+    with pytest.raises(OSError):  # the naive spelling really is unwritable
+        (origins / f"{name}.json").write_text("x")
+
+    record_path = origin_file(origins, name)
+    assert len(os.fsencode(record_path.name)) <= _MAX_KEY_BYTES
+    write_trash_origin(origins, name, origin="/music/A", moved="folder")
+
+    record = read_trash_origin(origins, name)
+    assert record is not None, "a long entry name must still earn its origin"
+    assert record.origin == "/music/A"
+    assert read_trash_origin(origins, "L" * 250) is None, "and the key is not truncated to a stem"
+    # End to end, so the whole mover chain is proved and not just the store: an
+    # entry name at the filesystem's own limit still earns an exact restore.
+    husk = tmp_path / "music" / ("H" * 255)
+    husk.mkdir(parents=True)
+    (husk / "cover.jpg").write_bytes(b"\x00")
+    dest = trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+    assert _record(tmp_path, dest).origin == str(husk)
+
+
+# ----- a mover that relocated nothing must record nothing -----
+
+
+def test_a_ghost_album_leaves_no_record_for_a_container_that_was_removed(
+    tmp_path: Path,
+) -> None:
+    """The ghost arm returns normally having moved nothing, and ``rmdir``s the
+    container it made. A record written then would name an entry that does not
+    exist — an orphan manufactured on purpose, and one whose name the allocator
+    would then refuse to a real album.
+
+    This was masked while the record lived inside the container: the write failed
+    because the directory was gone. On the ``/data`` side it would succeed.
+    """
+    lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
+    shutil.rmtree(tmp_path / "music" / "Portishead" / "Dummy")  # the files are genuinely gone
+    album = _dummy(lib)
+    album_id = _require_id(album.id)
+
+    with lib.transaction():
+        trash_album(lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+
+    assert lib.get_album(album_id) is None, "the ghost's rows are dropped — that is the point"
+    assert list((tmp_path / "trash").iterdir()) == [], "nothing was moved, so there is no entry"
+    assert sorted(p.name for p in _origins(tmp_path).glob("*.json")) == []
+
+
+def test_a_landed_restore_drops_the_record_keyed_on_the_TRASH_name(tmp_path: Path) -> None:
+    """The key is the TRASH entry's name, never the folder's own basename.
+
+    They are the same string in the ordinary case, which is why every other test
+    here passes either way. A collision suffix separates them: the entry is
+    ``Weird Folder (1)`` while the origin's basename is ``Weird Folder``. Keying
+    the clean-up on the folder in front of you — which is what the sidecar
+    version effectively did, deleting a file INSIDE the restored folder — then
+    leaves the real record behind AND unlinks a stranger's.
+
+    The decoy is not decoration: it is the record of the entry that already owns
+    ``Weird Folder``, and it must be untouched afterwards.
+    """
+    lib = _seeded_library(tmp_path, folder="Weird Folder")
+    origins = _origins(tmp_path)
+    decoy_origin = str(tmp_path / "music" / "Some Other Album")
+    write_trash_origin(origins, "Weird Folder", origin=decoy_origin, moved="folder")
+    (tmp_path / "trash" / "Weird Folder").mkdir(parents=True)
+    album = _dummy(lib)
+
+    with lib.transaction():
+        dest = Path(
+            trash_album_folder(lib, album, trash_dir=tmp_path / "trash", origins_dir=origins)
+        )
+    assert dest.name == "Weird Folder (1)", "the names must really differ for this to test anything"
+
+    result = restore_album(lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=origins)
+
+    assert result.restored is True
+    assert read_trash_origin(origins, dest.name) is None, "the entry's own record must go"
+    survivor = read_trash_origin(origins, "Weird Folder")
+    assert survivor is not None, "a stranger's record must not be unlinked"
+    assert survivor.origin == decoy_origin
+
+
+def test_the_row_shows_a_normalised_origin(tmp_path: Path) -> None:
+    """``normpath`` in the parse, which nothing else would notice.
+
+    Every origin this app WRITES is already normalised (``os.path.abspath`` or
+    ``dirname`` of one), so only a hand-edited or corrupted record can carry
+    ``/a/./b``. ``move_back_target`` normalises again before it moves anything,
+    so the move is safe either way — what this pins is the TEXT, which is the
+    field whose entire job is telling the user where their files will go.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    entry = tmp_path / "trash" / "Dummy"
+    entry.mkdir(parents=True)
+    origin_file(origins, "Dummy").write_text(
+        json.dumps(
+            {"schema": 1, "origin": f"{tmp_path}/music/./Portishead//Dummy", "moved": "folder"}
+        ),
+        encoding="ascii",
+    )
+
+    (row,) = list_trashed_albums(
+        tmp_path / "trash", origins_dir=origins, music_dir=str(tmp_path / "music")
+    )
+
+    assert row.origin == str(tmp_path / "music" / "Portishead" / "Dummy")
+
+
+def test_an_unusable_record_cannot_forge_a_log_line_through_its_own_filename(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``%r`` on the record path, and it got MORE load-bearing with the move.
+
+    The key is the Trash entry's NAME, which comes from the album's own tags —
+    ``_trash_container_name`` neutralises path separators and nothing else — so a
+    newline or an ANSI escape in an ``albumartist`` now reaches this log line
+    inside the record's own FILENAME. Interpolated with ``%s`` that lets a
+    crafted album name write whatever it likes into the server log, on the one
+    line an operator reads when a record has gone bad. The sidecar's fixed
+    filename could not carry any of this.
+    """
+    forged = "Dummy\x1b[31m\nCRITICAL:app:all clear"
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    origin_file(origins, forged).write_text("{ not json", encoding="ascii")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        assert read_trash_origin(origins, forged) is None
+
+    assert "\x1b" not in caplog.text, "an ANSI escape reached the log"
+    assert "\nCRITICAL" not in caplog.text, "a forged log line reached the log"
+    # Escaped, not dropped: the operator still gets the path they have to look at.
+    assert "\\x1b" in caplog.text
+    assert "\\n" in caplog.text
+
+
+def test_a_name_that_only_the_temp_file_overflows_still_gets_its_record(tmp_path: Path) -> None:
+    """The band between the two limits, which is where this is easy to get wrong.
+
+    A 240-byte entry name makes a 245-byte ``<name>.json`` — a filename the
+    kernel accepts, so a threshold of ``NAME_MAX`` looks correct and every test
+    at 251+ bytes still passes. The ATOMIC write then fails anyway, because
+    ``write_atomic_bytes`` puts ``.<name>.<pid>.<16 hex>.tmp`` beside the target,
+    and the record is silently lost with a perfectly legal target name.
+
+    Both halves: the plain spelling really would be accepted as a filename (so
+    the threshold cannot be justified by ``NAME_MAX``), and the record really
+    lands.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    name = "M" * 240
+    (origins / f"{name}.probe").write_text("x")  # the kernel accepts this length
+
+    write_trash_origin(origins, name, origin="/music/A", moved="folder")
+
+    record = read_trash_origin(origins, name)
+    assert record is not None, "the temp file overflowed and the record was lost"
+    assert record.origin == "/music/A"
+    assert len(os.fsencode(origin_file(origins, name).name)) <= _MAX_KEY_BYTES
+
+
+def test_an_import_restore_drops_an_UNREADABLE_record_too(tmp_path: Path) -> None:
+    """The clean-up is gated on ``result.restored`` ALONE, not on a usable record.
+
+    ``read_trash_origin`` collapses "no file" and "a file we cannot trust" onto
+    the same ``None``, so a corrupt record takes the import branch — and gating
+    the delete on ``record is not None`` (which is what the sidecar version did,
+    harmlessly, because the file rode out of Trash inside the folder) leaves that
+    file behind forever on the ``/data`` side. It is exactly the record a later
+    entry of the same name would inherit: unreadable, so it steers nothing, but
+    it burns the name for good because the allocator treats it as occupied.
+    """
+    lib = build_library(str(tmp_path / "library.db"), str(tmp_path / "music"))
+    trash, origins = tmp_path / "trash", _origins(tmp_path)
+    _tagged_flac(
+        trash / "Weird Folder" / "01 Mysterons.flac",
+        artist="Portishead",
+        album="Dummy",
+        title="Mysterons",
+        track=1,
+    )
+    origins.mkdir()
+    origin_file(origins, "Weird Folder").write_text("{ not json at all", encoding="ascii")
+    assert read_trash_origin(origins, "Weird Folder") is None  # unusable, not absent
+
+    result = restore_album(lib, str(trash / "Weird Folder"), trash_dir=trash, origins_dir=origins)
+
+    assert result.restored is True
+    assert not origin_file(origins, "Weird Folder").exists(), "the unusable record must go too"

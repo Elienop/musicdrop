@@ -27,7 +27,7 @@ from app.beets.library import (
     _require_id,
     require_library_root,
 )
-from app.beets.trash import resolve_trash_dir, trash_album_folder
+from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir, trash_album_folder
 from app.library_busy import library_job_active
 from app.models.delete import DeleteResult
 
@@ -54,6 +54,7 @@ def delete_album(
     album_id: int,
     *,
     trash_dir: Path,
+    origins_dir: Path,
     dropped_item_ids: set[int] | None = None,
 ) -> DeleteResult:
     """Move one album's whole folder to Trash and drop it. 404 on unknown id.
@@ -76,7 +77,9 @@ def delete_album(
         if dropped_item_ids is not None:
             dropped_item_ids.update(_require_id(i.id) for i in album.items())
         with lib.transaction():
-            trash_path = trash_album_folder(lib, album, trash_dir=trash_dir)
+            trash_path = trash_album_folder(
+                lib, album, trash_dir=trash_dir, origins_dir=origins_dir
+            )
     return DeleteResult(trashed_albums=1, trash_path=trash_path)
 
 
@@ -85,6 +88,7 @@ def delete_artist(
     artist_name: str,
     *,
     trash_dir: Path,
+    origins_dir: Path,
     dropped_item_ids: set[int] | None = None,
 ) -> DeleteResult:
     """Move EVERY album of ``artist_name`` (matched on albumartist) to Trash.
@@ -132,7 +136,7 @@ def delete_artist(
                 if dropped_item_ids is not None:
                     dropped_item_ids.update(_require_id(i.id) for i in album.items())
                 try:
-                    trash_album_folder(lib, album, trash_dir=trash_dir)
+                    trash_album_folder(lib, album, trash_dir=trash_dir, origins_dir=origins_dir)
                 except LibraryRootUnavailableError as exc:
                     if trashed == 0:
                         raise  # nothing mutated yet — the honest 503 still holds
@@ -189,6 +193,7 @@ async def delete_album_op(
                 handle.lib,
                 album_id,
                 trash_dir=trash_dir,
+                origins_dir=resolve_trash_origins_dir(_settings(app), handle),
                 dropped_item_ids=dropped_item_ids,
             )
         except AlbumNotFoundError as exc:
@@ -229,6 +234,7 @@ async def delete_artist_op(
                 handle.lib,
                 artist_name,
                 trash_dir=trash_dir,
+                origins_dir=resolve_trash_origins_dir(_settings(app), handle),
                 dropped_item_ids=dropped_item_ids,
             )
         # Same 503-before-the-blanket-500 ordering as delete_album_op above,

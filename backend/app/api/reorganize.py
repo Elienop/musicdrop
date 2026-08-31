@@ -18,7 +18,7 @@ from app.api.albums import get_library
 from app.beets.config_editor import _settings
 from app.beets.library import LibraryHandle, album_exists
 from app.beets.reorganize import album_scope_label, plan_reorganize
-from app.beets.trash import resolve_trash_dir
+from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
 from app.events.emit import emit_library_changed
 from app.library_busy import raise_if_library_busy
 from app.models.errors import ErrorDetail
@@ -62,16 +62,31 @@ def _trash_dir(app: object) -> Path:
     return resolve_trash_dir(_settings(app), handle)  # type: ignore[arg-type]  # app duck-typed (object)
 
 
+def _origins_dir(app: object) -> Path:
+    """The Trash origin store, resolved like the trash API. Its sibling."""
+    handle: LibraryHandle = app.state.beets_library  # type: ignore[attr-defined]  # app duck-typed (object)
+    return resolve_trash_origins_dir(_settings(app), handle)  # type: ignore[arg-type]  # app duck-typed (object)
+
+
 def _ignore_dirs(app: object) -> tuple[Path, ...]:
     """Dirs under the music root the orphan sweep must never trash — the resolved
-    playlists export dir (defaults to <music>/.playlists). Dotdirs/NAS dirs are handled
-    name-based in the scanner; this covers a configured non-dotfile export dir."""
+    playlists export dir (defaults to <music>/.playlists) and the Trash origin store.
+    Dotdirs/NAS dirs are handled name-based in the scanner; this covers a configured
+    non-dotfile export dir.
+
+    The origin store earns its place the moment it stops being a sidecar: it is a
+    non-dotfile directory holding only ``.json`` files, so it is audio-empty BY
+    DEFINITION, and if ``beets_dir`` (or a configured ``trash_origins_dir``) ever
+    sits under the music root the sweep would relocate the whole store into Trash
+    — taking every row's exact restore with it. The Trash dir itself is already
+    excluded by ``find_orphan_folders``; this one is new because it is no longer
+    inside it."""
     handle: LibraryHandle = app.state.beets_library  # type: ignore[attr-defined]  # app duck-typed (object)
     configured = _settings(app).playlists_export_dir.strip()  # type: ignore[arg-type]  # app duck-typed (object)
     export_dir = (
         Path(configured) if configured else Path(os.fsdecode(handle.lib.directory)) / ".playlists"
     )
-    return (export_dir,)
+    return (export_dir, _origins_dir(app))
 
 
 @router.get("/reorganize/preview")
@@ -142,6 +157,7 @@ async def start_reorganize(
         artist=artist,
         album_id=None,
         trash_dir=_trash_dir(app),
+        trash_origins_dir=_origins_dir(app),
         ignore_dirs=_ignore_dirs(app),
         playlists_dir=playlists_dir,
         on_complete=lambda: emit_library_changed(app),
@@ -177,6 +193,7 @@ async def start_album_reorganize(
         artist=None,
         album_id=album_id,
         trash_dir=_trash_dir(app),
+        trash_origins_dir=_origins_dir(app),
         ignore_dirs=_ignore_dirs(app),
         playlists_dir=playlists_dir,
         on_complete=lambda: emit_library_changed(app),

@@ -129,13 +129,14 @@ def test_runner_passes_trash_dir_to_session(monkeypatch: pytest.MonkeyPatch) -> 
         # positional capture (trash_dir = args[5]) is unaffected.
         def __init__(self, *args: object, **kwargs: object) -> None:
             captured["trash_dir"] = args[5]
+            captured["trash_origins_dir"] = kwargs["trash_origins_dir"]
 
     monkeypatch.setattr(runner_mod, "WebImportSession", _FakeSession)
     monkeypatch.setattr(
         runner_mod, "run_import_worker", lambda s, *, move=None, sweep=False, directive=None: None
     )
 
-    BeetsImportRunner(lib=object(), trash_dir=Path("/tmp/t")).run(
+    BeetsImportRunner(lib=object(), trash_dir=Path("/tmp/t"), trash_origins_dir=Path("/tmp/o")).run(
         ["/music"], ImportBridge(), on_finish=lambda: None, on_error=lambda m: None
     )
     # The daemon thread sets it; poll briefly.
@@ -146,6 +147,10 @@ def test_runner_passes_trash_dir_to_session(monkeypatch: pytest.MonkeyPatch) -> 
             break
         time.sleep(0.01)
     assert captured["trash_dir"] == Path("/tmp/t")
+    # The origin store rides with it. Threaded as a PAIR: the post-run Replace
+    # pass skips entirely unless BOTH are set, so a runner wired for Trash but
+    # not for origins silently stops trashing replaced copies.
+    assert captured["trash_origins_dir"] == Path("/tmp/o")
 
 
 @pytest.mark.parametrize(

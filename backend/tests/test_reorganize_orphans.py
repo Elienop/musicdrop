@@ -75,7 +75,7 @@ def test_registry_records_orphans() -> None:
 def test_sweep_trashes_library_orphans(reorganize_lib: Library, tmp_path: Path) -> None:
     from app.reorganize_jobs.registry import ReorganizeRegistry
     from app.reorganize_jobs.runner import sweep
-    from tests.conftest import make_test_handle
+    from tests.conftest import make_test_handle, origins_for
 
     music_dir = Path(os.fsdecode(reorganize_lib.directory))
     husk = music_dir / "Ghost Artist"
@@ -86,7 +86,13 @@ def test_sweep_trashes_library_orphans(reorganize_lib: Library, tmp_path: Path) 
     handle = make_test_handle(reorganize_lib, tmp_path)
     reg = ReorganizeRegistry()
     reg.start(scope="library", artist=None, album_id=None, scope_label="library")
-    sweep(reg, handle, scope="library", trash_dir=trash)
+    sweep(
+        reg,
+        handle,
+        scope="library",
+        trash_dir=trash,
+        trash_origins_dir=origins_for(trash),
+    )
 
     assert reg.state().orphans_trashed == 1
     assert not husk.exists()
@@ -271,7 +277,7 @@ def test_sweep_leaves_live_multidisc_scans_alone(tmp_path: Path) -> None:
     from app.beets.reorganize import plan_reorganize
     from app.reorganize_jobs.registry import ReorganizeRegistry
     from app.reorganize_jobs.runner import sweep
-    from tests.conftest import make_test_handle
+    from tests.conftest import make_test_handle, origins_for
 
     lib = _library(tmp_path, path_format=_DISC_FORMAT)
     music = Path(os.fsdecode(lib.directory))
@@ -294,7 +300,13 @@ def test_sweep_leaves_live_multidisc_scans_alone(tmp_path: Path) -> None:
 
     reg = ReorganizeRegistry()
     reg.start(scope="library", artist=None, album_id=None, scope_label="library")
-    sweep(reg, make_test_handle(lib, tmp_path), scope="library", trash_dir=trash)
+    sweep(
+        reg,
+        make_test_handle(lib, tmp_path),
+        scope="library",
+        trash_dir=trash,
+        trash_origins_dir=origins_for(trash),
+    )
 
     assert reg.state().moved == 0  # the fixture is already in place: nothing flattened
     assert reg.state().orphans_trashed == 1
@@ -338,3 +350,44 @@ def test_live_album_roots_keeps_an_album_dir_that_nests_another_album(tmp_path: 
         music, seeds=None, trash_dir=tmp_path / "trash", protected_dirs=roots
     )
     assert found == [husk]
+
+
+def test_the_orphan_pass_is_skipped_when_only_the_trash_dir_is_wired(
+    reorganize_lib: Library, tmp_path: Path
+) -> None:
+    """Both dirs or neither — and the skip is LOUD rather than silent.
+
+    A husk relocated without a recorded origin has no exit from Trash but
+    permanent deletion, which is the exact gap the record exists to close. So a
+    caller that wires the Trash dir and forgets the origin store must not collect
+    husks it can never hand back; the pass is skipped, which fails visibly (no
+    orphans collected) instead of quietly filling Trash with unrestorable rows.
+    """
+    from app.reorganize_jobs.registry import ReorganizeRegistry
+    from app.reorganize_jobs.runner import sweep
+    from tests.conftest import make_test_handle
+
+    music_dir = Path(os.fsdecode(reorganize_lib.directory))
+    husk = music_dir / "Ghost Artist"
+    husk.mkdir(parents=True, exist_ok=True)
+    (husk / "artist-poster.jpg").write_bytes(b"x")
+    reg = ReorganizeRegistry()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+
+    sweep(
+        reg,
+        make_test_handle(reorganize_lib, tmp_path),
+        scope="library",
+        trash_dir=tmp_path / "trash",
+        trash_origins_dir=None,
+    )
+
+    assert reg.state().orphans_trashed == 0
+    assert husk.is_dir(), "the husk must be left in the library, not trashed unrestorably"
+    # SKIPPED, not crashed: the reorganize itself still succeeded, and a run that
+    # merely declined the orphan pass must not surface as a failed job. Without
+    # this the guard can be deleted and the test still passes — the pass then
+    # dies inside ``trash_folder`` and ``sweep`` turns it into ``fail``, which
+    # also collects nothing.
+    assert reg.state().phase == "done"
+    assert reg.state().failures == []

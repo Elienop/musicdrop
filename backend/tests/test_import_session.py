@@ -1198,7 +1198,7 @@ def test_run_import_worker_trashes_replace_ids_after_run(monkeypatch: pytest.Mon
 
     trashed: list[int] = []
 
-    def fake_trash(lib: Any, album: Any, *, trash_dir: Path) -> str:
+    def fake_trash(lib: Any, album: Any, *, trash_dir: Path, origins_dir: Path) -> str:
         trashed.append(int(album.id))
         return str(trash_dir)
 
@@ -1226,6 +1226,9 @@ def test_run_import_worker_trashes_replace_ids_after_run(monkeypatch: pytest.Mon
         paths: ClassVar[list[bytes]] = []
         _replace_album_ids: ClassVar[set[int]] = {11, 22}
         _trash_dir = Path("/tmp/trash")
+        # Wired as a PAIR with _trash_dir: the post-run pass skips unless both
+        # are set, so a fake with only one silently stops trashing.
+        _trash_origins_dir = Path("/tmp/trash-origins")
         # Unwired playlist store -> the post-trash `.m3u8` re-export is skipped
         # (it is pinned in tests/test_playlist_reexport_movers.py instead).
         _playlists_dir = None
@@ -2035,7 +2038,7 @@ def test_worker_trashes_a_seeded_copy_end_to_end(tmp_path: Path, monkeypatch: An
 
     trashed: list[int] = []
 
-    def fake_trash(lib: Any, album: Any, *, trash_dir: Path) -> str:
+    def fake_trash(lib: Any, album: Any, *, trash_dir: Path, origins_dir: Path) -> str:
         trashed.append(int(album.id))
         return str(trash_dir)
 
@@ -2044,6 +2047,7 @@ def test_worker_trashes_a_seeded_copy_end_to_end(tmp_path: Path, monkeypatch: An
 
     session, existing_id = _replace_seed_setup(tmp_path)
     session._trash_dir = tmp_path / "trash"
+    session._trash_origins_dir = tmp_path / "trash-origins"
     session._playlists_dir = None
     session._directive = _replace_directive(_existing_album_model(existing_id))
     session._landed_album_ids = {existing_id + 500}

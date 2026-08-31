@@ -470,6 +470,15 @@ def test_lifespan_opens_library_from_settings(
     body = resp.json()
     assert body["total"] == 1
     assert body["items"][0]["album_artist"] == "ABBA"
+    # The lifespan is also where the import runner gets its dirs, and the Trash
+    # origin store is wired as a PAIR with the Trash dir: the post-run Replace
+    # pass skips ENTIRELY unless both arrive, so a lifespan that forgets this one
+    # silently stops trashing superseded copies. Asserted here because the
+    # ``client`` fixture skips the lifespan, so nothing else can see it.
+    from app.import_jobs.registry import registry as import_registry
+
+    assert import_registry._trash_origins_dir == tmp_path / "trash-origins"
+    assert import_registry._trash_dir == tmp_path / "trash"
 
 
 def test_album_detail_exposes_musicbrainz_ids(edit_lib: "Library") -> None:

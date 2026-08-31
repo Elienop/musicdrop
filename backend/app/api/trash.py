@@ -19,7 +19,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.beets.config_editor import _settings, _swap_lock
 from app.beets.library import LibraryHandle, LibraryRootUnavailableError, _music_dir
-from app.beets.trash import resolve_trash_dir
+from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
 from app.beets.trash_manage import (
     empty_all,
     empty_one,
@@ -105,8 +105,14 @@ async def list_trash(request: Request) -> TrashListing:
     handle: LibraryHandle = app.state.beets_library
     trash_dir = resolve_trash_dir(_settings(app), handle)
     albums = await run_in_threadpool(
-        list_trashed_albums, trash_dir, music_dir=_music_dir(handle.lib)
+        list_trashed_albums,
+        trash_dir,
+        origins_dir=resolve_trash_origins_dir(_settings(app), handle),
+        music_dir=_music_dir(handle.lib),
     )
+    # The origins dir is deliberately NOT on the wire beside ``trash_path``: it
+    # is an implementation detail of where the records live, and adding a field
+    # here would be a contract change for something no UI shows.
     return TrashListing(albums=albums, trash_path=str(trash_dir))
 
 
@@ -128,7 +134,11 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
         trash_dir = resolve_trash_dir(_settings(app), handle)
         try:
             result = await run_in_threadpool(
-                restore_album, handle.lib, str(dest), trash_dir=trash_dir
+                restore_album,
+                handle.lib,
+                str(dest),
+                trash_dir=trash_dir,
+                origins_dir=resolve_trash_origins_dir(_settings(app), handle),
             )
             emit_library_changed(app)
             return result
@@ -151,9 +161,11 @@ async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> 
     """Permanently remove one trashed album folder. 409 if busy, 404 if not in Trash."""
     app = request.app
     _gate(app)
-    _handle, dest = _child_or_404(app, folder)
+    handle, dest = _child_or_404(app, folder)
     async with _swap_lock(app):
-        result = await run_in_threadpool(empty_one, str(dest))
+        result = await run_in_threadpool(
+            empty_one, str(dest), origins_dir=resolve_trash_origins_dir(_settings(app), handle)
+        )
         emit_library_changed(app)
     return result
 
@@ -180,6 +192,8 @@ async def empty_trash_all(request: Request) -> EmptyResult:
     handle: LibraryHandle = app.state.beets_library
     trash_dir = resolve_trash_dir(_settings(app), handle)
     async with _swap_lock(app):
-        result = await run_in_threadpool(empty_all, trash_dir)
+        result = await run_in_threadpool(
+            empty_all, trash_dir, origins_dir=resolve_trash_origins_dir(_settings(app), handle)
+        )
         emit_library_changed(app)
     return result

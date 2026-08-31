@@ -63,9 +63,11 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   per removal and accepted the same residual for itself. A share
   dropping part-way through an artist delete reports how many albums were trashed before it
   dropped — those stay recoverable in Trash, the rest untouched.
-- **Restore knows where things came from.** Every folder moved to Trash carries a small
-  `.musicdrop-trash.json` record of the folder it came from, so each row in **Settings →
-  Trash** says what Restore will do before you click:
+- **Restore knows where things came from.** When MusicDrop moves a folder to Trash it
+  records where that folder came from in a small JSON file alongside — one per Trash entry,
+  under `<beets dir>/trash-origins/`, deliberately outside the trashed folder and outside
+  your music library — so each row in **Settings → Trash** says what Restore will do before
+  you click:
   - **Exact restore** — the folder goes straight back to its own path. This is the only way
     back for an art/booklet leftover the reorganize sweep collected, which has no audio and
     therefore cannot be re-imported at all.
@@ -77,7 +79,9 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 
   Two consequences worth knowing. A row trashed by an older version has no record and never
   will, so a media-free one (art/booklet leftovers with no audio) still has Empty as its only
-  exit. And a Restore whose original folder exists again is refused rather than merged —
+  exit. (If you move or delete a Trash entry outside MusicDrop, its record is left behind as
+  a harmless leftover; the next folder with that name simply gets a `(1)` suffix. Emptying
+  the entry through the app clears both.) And a Restore whose original folder exists again is refused rather than merged —
   nothing moves, the files stay in Trash, and the row tells you to clear that folder first.
   A Trash row listed at zero tracks only means MusicDrop couldn't read audio tags there;
   beets' importer reads more formats than the listing does, so Restore may still work.

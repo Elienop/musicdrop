@@ -141,7 +141,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.event_broker = EventBroker(loop=asyncio.get_running_loop())
 
-    from app.beets.trash import resolve_trash_dir
+    from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
     from app.import_jobs.registry import registry as import_registry
 
     # The import runner builds a WebImportSession from a beets Library, so feed
@@ -153,6 +153,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         resolve_trash_dir(settings, handle),
         bank_dir=get_bank_dir(),
         playlists_dir=get_playlists_dir(),
+        trash_origins_dir=resolve_trash_origins_dir(settings, handle),
     )
     import_registry.attach_event_broker(app.state.event_broker)
 

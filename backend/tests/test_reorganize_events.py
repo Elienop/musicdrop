@@ -68,6 +68,12 @@ def test_sweep_stop_during_orphan_pass_reports_stopped(
         yield tmp / "husk"
 
     monkeypatch.setattr(reorg_runner, "find_orphan_folders", fake_orphans)
-    sweep(reg, handle, scope="library", trash_dir=tmp / "trash")
+    sweep(
+        reg,
+        handle,
+        scope="library",
+        trash_dir=tmp / "trash",
+        trash_origins_dir=tmp / "trash-origins",
+    )
 
     assert reg.state().phase == "stopped"

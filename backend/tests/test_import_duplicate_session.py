@@ -69,6 +69,9 @@ def _session(bridge: ImportBridge, *, trash_dir: Path | None = None) -> WebImpor
     session.bridge = bridge
     session._album_index = 0
     session._trash_dir = trash_dir
+    # Wired as a PAIR with _trash_dir (see WebImportSession): the post-run
+    # Replace pass skips entirely unless both are set.
+    session._trash_origins_dir = None if trash_dir is None else trash_dir.parent / "trash-origins"
     session._replace_album_ids = set()
     # __init__ is skipped, so default the library the shared ExistingAlbum mapper
     # reads. None is safe: these fakes carry no items, so folder resolves to "".
