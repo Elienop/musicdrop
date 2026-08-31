@@ -134,9 +134,11 @@
 // `defineConfig`/`globalIgnores` come from ESLint core, not from `tseslint.config`.
 // typescript-eslint deprecated its own helper once core shipped the same functionality
 // (`config-helper.d.ts:67`), and the deprecated signature is a `javascript:S1874` — the
-// very family #200 regrew. Caught by the server scan, because this file is one of the few
-// the gate below cannot lint: every block needs the typed parser, and no tsconfig includes
-// a `.js` file at the frontend root.
+// very family #200 regrew. That one was caught by the server scan, because at the time
+// this file escaped the gate: no block matched a `.js` file and no tsconfig included it,
+// so the type-aware rules could not run on it. That hole is now closed: the block below
+// scoped to `eslint.config.js` pins the deprecation family on this file itself, and
+// `tsconfig.node.json` includes it so the typed parser can resolve what the rule points at.
 import { defineConfig, globalIgnores } from "eslint/config";
 import tseslint from "typescript-eslint";
 import sonarjs from "eslint-plugin-sonarjs";
@@ -513,13 +515,13 @@ export default defineConfig(
   // particular is regenerated from the OpenAPI schema and must not be hand-edited.
   //
   // `eslint.config.js` used to be listed here, under that same "generated or vendored"
-  // heading, which it plainly is not. Removed rather than reworded: no block below has a
-  // `files` pattern matching `.js`, so it is unlinted either way and the entry only
-  // implied a decision nobody made. Linting it is not currently possible — every block
-  // needs the typed parser, and the project service rejects the file because no tsconfig
-  // includes it (verified: "was not found by the project service"). That gap is not
-  // theoretical: the server scan found an S1874 in this very file, on the
-  // `tseslint.config` call the header above now explains.
+  // heading, which it plainly is not. Removed rather than reworded: at the time no block
+  // had a `files` pattern matching `.js`, so it was unlinted either way and the entry
+  // only implied a decision nobody made. That has since changed — the block below scoped
+  // to `eslint.config.js` lints it for the deprecation family, and `tsconfig.node.json`
+  // includes it so the typed parser can resolve the file — which matters because the
+  // server scan found an S1874 in this very file, on the `tseslint.config` call the
+  // header above now explains. It stays out of this ignore list because it is ours to lint.
   globalIgnores(["dist/**", "coverage/**", "node_modules/**", "src/api/schema.d.ts"]),
 
   {
@@ -559,6 +561,29 @@ export default defineConfig(
         tsconfigRootDir: import.meta.dirname,
       },
     },
+  },
+
+  {
+    // The gate linting itself. This file used to be the one file SonarQube scans that
+    // zero ESLint rules reached — every rule block needs the typed parser, and it took a
+    // server-scan `javascript:S1874` (the deprecated `tseslint.config` call, header above)
+    // to prove the gap was live. That cannot happen twice: the deprecation family is now
+    // pinned here on this file, so the same escape reddens the build instead of the scan.
+    // It is deliberately narrower than the MAIN block: only the one family #200 regrew
+    // in this file, not the full allowlist, which was never agreed for a `.js` config.
+    // `tsconfig.node.json` must keep `allowJs: true` and list this file, or the typed
+    // parser drops it and the rule goes inert — the mutation case in
+    // `eslint.config.test.ts` is what says so if that happens.
+    files: ["eslint.config.js"],
+    extends: [tseslint.configs.base],
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    plugins: { sonarjs },
+    rules: { "sonarjs/deprecation": "error" }, // S1874 — the family that escaped via this file
   },
 
   {

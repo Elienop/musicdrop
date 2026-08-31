@@ -234,6 +234,19 @@ export const A = () => <C.Provider value={{ a: 1 }}><i /></C.Provider>;\n`,
   ["sonar-mirror/no-empty-function", MAIN_FILE, `export class K { run() {} }\n`],
   ["sonar-mirror/no-empty-function", MAIN_FILE, `export const handler = function () {};\n`],
 
+  // --- The self-lint block (scoped to `eslint.config.js` itself) ---------------
+  // No constant for this path on purpose: the rule is scoped to that one file, and the
+  // literal path keeps the entry honest — a fixture pointed at MAIN_FILE would trip the
+  // MAIN block's copy of the same rule and pass while the self-lint block goes inert
+  // (e.g. `allowJs` dropped from `tsconfig.node.json`). The deprecated symbol must be
+  // resolvable through the project, so the fixture imports the real package; the known
+  // deprecated call is `tseslint.config` (the very shape #200's S1874 escaped as).
+  [
+    "sonarjs/deprecation",
+    "eslint.config.js",
+    `import tseslint from "typescript-eslint";\nexport const c = tseslint.config({});\n`,
+  ],
+
   // --- TEST scope ---------------------------------------------------------------
   [
     "testing-library/prefer-find-by",
@@ -515,6 +528,7 @@ describe("eslint.config.js", () => {
         path.join(FRONTEND_ROOT, "vite.config.ts"),
         path.join(FRONTEND_ROOT, "vitest.config.ts"),
         path.join(FRONTEND_ROOT, "eslint.config.test.ts"),
+        path.join(FRONTEND_ROOT, "eslint.config.js"),
       ];
       expect(sources.length).toBeGreaterThan(100); // the walk itself must not silently empty
 
