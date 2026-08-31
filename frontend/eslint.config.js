@@ -374,7 +374,7 @@ function reportOnlyNamedEmptyFunctionShapes(rule) {
   // `onclick` is still reported), `noop` is unanchored and case-INSENSITIVE (so
   // `makeNoopHandler` is exempt).
   const isHandlerOrNoopName = (id) =>
-    id != null && id.type === "Identifier" && (/^on[A-Z]/.test(id.name) || /noop/i.test(id.name));
+    id?.type === "Identifier" && (/^on[A-Z]/.test(id.name) || /noop/i.test(id.name));
   // Mirrors `_Mf`, kept as the same three-way disjunction rather than an early return per
   // shape, so a future reader can diff it against the minified original line for line.
   const isSonarReportedShape = (node) => {
@@ -583,7 +583,18 @@ export default defineConfig(
       },
     },
     plugins: { sonarjs },
-    rules: { "sonarjs/deprecation": "error" }, // S1874 — the family that escaped via this file
+    rules: {
+      "sonarjs/deprecation": "error", // S1874 — the family that escaped via this file
+      // Added after the first branch scan that ran WITH this file linted: Sonar reported a
+      // `javascript:S6582` here, at the `id != null && id.type === "Identifier"` in the
+      // S1186 mirror, which this block did not cover because it pinned only S1874. The
+      // asymmetry is in the safe direction — a gate narrower than the server never fails a
+      // build the server would pass — but it means the file that configures the gate is
+      // held to a lower standard than every file the gate checks, which is backwards. Sonar
+      // scans this file with the full profile; these are the two families it has actually
+      // reported here.
+      "@typescript-eslint/prefer-optional-chain": "error", // S6582 — reported here by the scan
+    },
   },
 
   {
