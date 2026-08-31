@@ -774,9 +774,11 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   stroke, so the check answers "is this still my library", not "is this safe" — and a hostile
   sidecar needs write access to the Trash dir, which is strictly more than this path grants.
 
-  **Still open:** the frontend still disables Restore on `track_count == 0`, which is now
-  wrong for a recorded husk — the row this feature exists for. `TrashedAlbum`'s docstring
-  states the new rule.
+  **Still open:** the frontend does not yet surface `restore_mode` / `restore_note` /
+  `origin`, so a user cannot tell before clicking whether Restore is exact. (Corrected: an
+  earlier draft of this note, and the backend comment it came from, claimed the UI disables
+  Restore at `track_count == 0`. It does not and must not — `SettingsTrashPage.tsx` shows a
+  "may still work" hint precisely because 0 means "no readable tags", not "no music".)
 
 - ~~**The delete-path mount predicate accepts a root with ANY entry, so a stray file on a
   local mountpoint masks a dropped share.**~~ **FIXED** on `fix/undoable-deletes`

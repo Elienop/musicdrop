@@ -34,10 +34,11 @@ class TrashedAlbum(BaseModel):
     ``"import"`` with a note stating that — visible and explained, never a
     Restore that silently lands somewhere else.
 
-    Note for the UI: the existing "disable Restore when ``track_count == 0``"
-    rule must now also require ``restore_mode != "move_back"``. An audio-free
-    art/booklet husk relocated by the orphan sweep is exactly a 0-track row
-    that CAN be restored exactly, and it is the row this record was added for.
+    Note for the UI: it does NOT disable Restore on ``track_count == 0`` and must
+    not start — ``SettingsTrashPage.tsx`` deliberately shows a "may still work"
+    hint instead, because 0 there means "no readable tags", not "no music". A
+    recorded audio-free husk is exactly such a row AND is restorable exactly,
+    which is the case this record was added for.
     """
 
     folder: str

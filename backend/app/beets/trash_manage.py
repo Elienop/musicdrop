@@ -201,9 +201,10 @@ def _audio_free_entries(
                     # takes every non-ignored file in the folder as a candidate
                     # (``albums_in_dir``, importer/tasks.py:1184-1216, no
                     # extension or media filter). So a folder listed at 0 tracks
-                    # can still restore. The UI disables the affordance on this
-                    # count, which is the honest place for a hint; do NOT
-                    # "strengthen" it into a backend refusal — that would make a
+                    # can still restore. The UI shows a "may still work" hint on
+                    # this count and deliberately does NOT disable Restore
+                    # (``SettingsTrashPage.tsx``); do NOT "strengthen" it into a
+                    # backend refusal or a disabled control — that would make a
                     # restorable folder permanently unrestorable. It is also why
                     # ``restore_mode`` has no "unavailable" value: this count is
                     # not evidence a row cannot restore, and a contract field
