@@ -241,9 +241,21 @@ def move_back_target(record: TrashOrigin | None, *, music_dir: str) -> Path | No
     with a symlinked subtree (``music/artists -> /mnt/big/artists``) would have
     every one of its rows refused, because the user's own idea of "inside the
     library" is the lexical one. So this is NOT a hostile-sidecar guard, and must
-    not be described as one: a sidecar is only hostile if someone can already
-    write into the Trash directory, and that is strictly more access than this
-    path grants. It answers "is this still my library", not "is this safe".
+    not be described as one: it answers "is this still my library", not "is this
+    safe".
+
+    **What makes that acceptable is :func:`write_trash_origin`'s atomic replace,
+    not this function.** An earlier version of this note claimed a hostile
+    sidecar "requires write access to the Trash directory, which is more access
+    than this path grants". That was FALSE as written, and a security audit
+    disproved it: the record write swallows its errors, so a plant plain
+    ``chmod 444``'d in the MUSIC library survived the app's failed overwrite and
+    its origin won — measured, with the app running as the file's own owner
+    (0444 refuses write even to the owner on Linux). Since the write became
+    ``mkstemp`` + ``os.replace``, ``rename`` needs write permission on the
+    DIRECTORY rather than the file, so the app's record now always wins and the
+    precondition really is Trash-directory write. Do not weaken that write
+    without re-reading this paragraph — the lexical check leans on it.
     """
     if record is None or record.moved != "folder":
         return None

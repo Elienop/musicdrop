@@ -775,8 +775,14 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   **Residual, stated in the code, not a bug:** the origin-inside-the-library test is
   LEXICAL. An origin under a symlink that escapes the library passes it (measured). Resolving
   both sides would close that and break a legitimate symlinked-subtree layout in the same
-  stroke, so the check answers "is this still my library", not "is this safe" — and a hostile
-  sidecar needs write access to the Trash dir, which is strictly more than this path grants.
+  stroke, so the check answers "is this still my library", not "is this safe".
+  **Corrected 2026-08-31 by the branch's security audit:** the sentence that used to follow —
+  "a hostile sidecar needs write access to the Trash dir, which is strictly more than this
+  path grants" — was FALSE when written. The record write swallows its errors, so a plant
+  merely `chmod 444`'d in the MUSIC library survived the app's failed overwrite and its origin
+  won. It is true only because the write is now `mkstemp` + `os.replace`, where `rename` needs
+  write permission on the DIRECTORY rather than the file, so the app's record always wins.
+  The lexical check leans on that write; do not weaken one without re-reading the other.
 
   **UI shipped in the same slice:** each row states its outlook before the user clicks — a
   quiet "Exact restore. Goes back to <path>" or an amber-flagged "Approximate restore."
