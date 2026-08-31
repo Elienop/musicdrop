@@ -8,6 +8,7 @@
     "skipLibCheck": true,
 
     "moduleResolution": "bundler",
+    "allowJs": true,
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",
@@ -22,5 +23,5 @@
 
     "types": ["node"]
   },
-  "include": ["vite.config.ts", "vitest.config.ts", "eslint.config.test.ts"]
+  "include": ["vite.config.ts", "vitest.config.ts", "eslint.config.test.ts", "eslint.config.js"]
 }

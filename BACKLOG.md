@@ -279,14 +279,44 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   Reverted to presence-only. The a11y argument is real and belongs upstream at Sonar, not
   in a mirror.
 
-  Scoped out, deliberately: **10 of the 28 cleared frontend families have no twin enabled.**
-  Nine (`S7780`, `S6479`, `S1186`, `S7776`, `S7755`, `S6772`, `S6478`, `S7760`, `S6481` — 21
-  issues between them) map to `eslint-plugin-unicorn` and `eslint-plugin-react`, neither
-  installed; adding them is a follow-up worth doing, and the config's allowlist shape means
-  it costs one line per rule. The tenth is `css:S8776`, a CSS rule with no JS twin. Also
-  unchanged: the 7 `role="status"` sites themselves — converting them to `<output>` is a
-  real UI change needing browser verification, and `SlskdPanel.tsx:304` is an always-mounted
-  live region that the earlier a11y wave already flagged as needing its own thought.
+  Scoped out at the time: 10 of the 28 cleared frontend families had no twin enabled — nine
+  mapping to `eslint-plugin-unicorn` and `eslint-plugin-react`, neither then installed, plus
+  `css:S8776`, a CSS rule with no JS twin. **Seven of those nine were pinned in the
+  follow-up** (`S7780`, `S7776`, `S7760`, `S6772`, `S6481`, `S6478`, `S1186` — 16 of the 21
+  issues), taking the gate to 26 rules over 25 of the 27 JS/TS families. Both plugins are
+  pinned to the versions the analyzer itself runs — `eslint-plugin-unicorn@65.0.1` (which
+  needs no peer override; it peers `eslint >=9.38.0`) and `eslint-plugin-react@7.37.5`
+  (which does, same scoped shape as `jsx-a11y`) — because a newer major is a different
+  linter from the one being mirrored.
+
+  **Three residuals, and they are decisions rather than omissions.** `css:S8776` still has
+  no JS twin. `S7755` (`unicorn/prefer-at`, 2 issues) and `S6479`
+  (`react/no-array-index-key`, 3 issues) are deliberately OFF: both are `decorated` with
+  suppressions that cannot be mirrored cheaply, so the raw rules are STRICTER than Sonar,
+  and a gate stricter than the server fails CI on code the server passes. S6479 is the
+  measured case — raw it reports **9 sites on `main`** that Sonar accepts, every one the
+  `` key={`${x.label}-${i}`} `` composite-key idiom that Sonar drops on its `LBg` arm. Both
+  reasons are written out in `frontend/eslint.config.js` under "DELIBERATELY OFF"; do not
+  re-derive them, and do not enable either rule without porting the suppression first.
+
+  **The gate now lints its own config, which it could not before.**
+  `frontend/eslint.config.js` used to resolve to ZERO enabled rules — every block needed the
+  typed parser and no tsconfig included a `.js` file at the frontend root — so the one `.js`
+  file SonarQube scans sat outside the gate entirely. That was not theoretical: the server
+  scan found a `javascript:S1874` in that very file during #202, on the deprecated
+  `tseslint.config` call, precisely because the gate could not check itself. Closed with
+  `allowJs` plus the file in `tsconfig.node.json` (verified: `tsc -b` does not cascade) and
+  one narrowly scoped block. Two families are pinned there, and BOTH were chosen from
+  evidence rather than taste: `sonarjs/deprecation` (S1874, the one that escaped) and
+  `@typescript-eslint/prefer-optional-chain` (S6582), added after the first branch scan run
+  with the file linted reported one in the S1186 mirror. The block stays narrower than the
+  MAIN allowlist on purpose — narrower than the server is the safe direction — so widen it
+  only when a scan shows a family actually firing here.
+
+  Also unchanged: the 7 `role="status"` sites themselves — converting them to `<output>` is
+  a real UI change needing browser verification, and `SlskdPanel.tsx:304` is an
+  always-mounted live region that the earlier a11y wave already flagged as needing its own
+  thought.
 
   One self-inflicted hazard is worth recording because it passed every green check.
   `eslint-plugin-jsx-a11y@6.10.2` peers `eslint` at `^9`, and installing it with
@@ -341,14 +371,73 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `getProp`/`getLiteralPropValue` from `jsx-ast-utils`, with both packages promoted to direct
   devDependencies since this file imports them. Eleven differential cases now match Sonar
   exactly. Two rules are knowingly still unmirrored and named in the config: S6582 and S9020
-  are also `decorated`, with type-directed suppressions that would need porting.
+  are also `decorated`, with suppressions that would need porting.
 
-  **Not fixed, and deliberately: the npm Dependabot lane has no release-age `cooldown:`**,
-  so future frontend updates land the day they publish — `eslint` and `typescript-eslint`
-  were both 5 days old when pinned here. A `cooldown: { default-days: 7 }` is the standard
-  defence against a compromised-publish event. It is NOT applied because editing
-  `.github/dependabot.yml` is forbidden by the standing 2026-07-25 ruling (decisions #1),
-  which names that file specifically. Raising it for the owner to decide, not proposing it.
+  **That last sentence used to say "type-directed suppressions", and half of it was wrong.**
+  Corrected in the follow-up, against the bundle: S9020's registration sets
+  `requiresTypeChecking: false` — it is not type-directed at all. What its decorator does is
+  shadow `context.settings` with three `eslint-plugin-testing-library` entries, all `"off"`
+  (`utils-module`, `custom-renders`, `custom-queries`), which switches off that plugin's
+  Aggressive Reporting; those are now mirrored on the config's TEST block. That change is
+  pure narrowing — it can only make the gate report less — and costs 0 findings today. One
+  arm remains unported and is named in the config: Sonar also drops a report whose queried
+  receiver resolves to a module outside `@testing-library.`.
+
+  S6582's description was closer but still wrong in its arithmetic: only **4 of its 6**
+  suppression arms use the contextual type of the logical chain. A fifth reads
+  `getTypeAtLocation` of an assignment TARGET, and a sixth uses no type context at all — a
+  null-comparison predicate whose operator set is `!== != < > <= >=`, notably **without**
+  `===`. That precision is load-bearing, not pedantry: on Dependabot PR #204 (package.json
+  and package-lock.json only, no source) this raw rule reports 3 errors it does not report
+  on `main`, all `X && X.prop === literal` inside a JSX expression container. No arm covers
+  a JSX expression container and arm 6 excludes `===`, so Sonar would report them too — the
+  gate is working, and the fix belongs in the source rather than in a suppression.
+
+  ~~**Not fixed, and deliberately: the npm Dependabot lane has no release-age
+  `cooldown:`**~~ — **FIXED in #203, 2026-08-30** (`be186e2` = v0.47.3). The gap was real:
+  frontend updates landed the day they published, and `eslint` and `typescript-eslint` were
+  both 5 days old when pinned here. `cooldown: { default-days: 7 }` now applies to all three
+  lanes (uv, npm, github-actions), i.e. a MINIMUM RELEASE AGE — the one supply-chain control
+  green CI cannot substitute for, since a compromised publish behaves normally and the
+  payload runs at install time. Such releases are typically yanked within 24–72h.
+
+  Three things this entry got wrong or left unstated, corrected here so the next reader does
+  not re-derive them. **`interval: weekly` is not a cooldown** — it bounds how often
+  Dependabot checks, not how old a version may be, so the lane was less protected than a
+  reader might assume. **There was already a default of 3 days** (`default-days` defaults to
+  3 when unset), so this was 3 → 7, not 0 → 7. And **security updates are exempt** by
+  design, so a known-vulnerable dependency is still bumped immediately.
+
+  On the ruling: the owner authorised this edit explicitly. Decisions #1 forbids changes
+  that would make the parked frontend-deps PR go green **by narrowing what Dependabot
+  proposes**; a release-age gate narrows nothing, so the park stands. Entry #1 now records
+  the distinction. The 29-line header in `.github/dependabot.yml` carries the full reasoning
+  in-repo.
+
+  **Measured afterwards: editing this file CAN close and recreate already-open PRs — but
+  which ones is not predictable, and two repos disagreed.** Here, within four minutes of
+  #203 merging (17:17:42Z), Dependabot closed the parked #137 (17:20:26Z) and opened #204 in
+  its place (17:21:27Z): *"Looks like these dependencies are updatable in another way, so
+  this is no longer needed."* The lineage moved again
+  (#102 → #116 → #121 → #128 → #133 → #137 → **#204**), which is why decisions #1 says never
+  to quote the number.
+
+  The mechanism is **not** the age gate rejecting anything — an edit to
+  `.github/dependabot.yml` re-runs the update jobs, and a PR can be superseded when its job
+  re-runs under changed config. But the blast radius is narrower than "expect the park to
+  move": SpenDrop merged the identical change twenty minutes later and **its** parked PR
+  survived untouched, while an ordinary dev-dep PR was superseded instead. Five of six of
+  its open PRs survived. Group-vs-individual does not explain the split either. So: the
+  supersede is real, it is triggered by the edit rather than the cooldown value, and
+  **anything more specific than that is unsupported by two observations.** Do not infer from
+  #204 carrying *more* updates than #137 that the age gate is or is not filtering; that was
+  not measured.
+
+  **The operational form, which does not depend on predicting any of it:** after any
+  `dependabot.yml` change, re-derive which PRs exist, and verify the park by **content** —
+  grep for the actual bump (`typescript` major) — never by number. A closed park with a
+  successor is the normal lineage move; a closed park with none is the real problem, and
+  only a content check tells them apart.
 
 - ~~**`GET /api/health` publishes the exact backend version to unauthenticated callers
   (2026-08-30 security audit of auth slice 1, finding L6 — deferred to auth slice 2).**~~

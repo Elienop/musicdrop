@@ -31,12 +31,67 @@
 // exempt under the rule's own DOCUMENTATION_HOSTS. All three read as passing.
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 
 import { ESLint } from "eslint";
 import { beforeAll, describe, expect, test } from "vitest";
 
 const FRONTEND_ROOT = import.meta.dirname;
+
+/**
+ * The plugin versions the SonarJS analyzer itself executes. RECORDED, and checked in BOTH
+ * directions by the two tests at the bottom of this file — because drift has two sources
+ * and guarding only one is worse than guarding neither, since it reads as covered:
+ *
+ *   npm moves ahead  — a Dependabot bump installs a newer plugin than the analyzer runs.
+ *   SONAR moves ahead — `docker pull` lands a newer SonarQube whose analyzer bundles newer
+ *                       plugins than these. Nothing on the npm side changes, so nothing in
+ *                       a lockfile or a dependency PR ever mentions it.
+ *
+ * The second is the quiet one, and it was unguarded when these constants were introduced:
+ * they were compared only against `node_modules`, so a Sonar upgrade left the gate mirroring
+ * a bundle that no longer existed while every test stayed green.
+ */
+const ANALYZER_PLUGIN_VERSIONS: Record<string, string> = {
+  "eslint-plugin-unicorn": "65.0.1",
+  "eslint-plugin-react": "7.37.5",
+  "eslint-plugin-jsx-a11y": "6.10.2",
+  "eslint-plugin-testing-library": "7.16.2",
+};
+
+/**
+ * Re-derive the versions from the analyzer bundle actually on this machine, or return null
+ * where it cannot be reached (CI runners, a fresh clone, a box with no scanner cache).
+ * Null means UNKNOWN and the caller skips; it must never read as agreement.
+ */
+function analyzerBundleVersions(): Record<string, string> | null {
+  const root = "/mnt/data/sonarqube/scanner-cache";
+  if (!existsSync(root)) return null;
+  for (const entry of readdirSync(root)) {
+    const jar = path.join(root, entry, "sonar-javascript-plugin.jar");
+    if (!existsSync(jar)) continue;
+    try {
+      // The jar embeds the analyzer tarball; the tarball's package.json is the manifest.
+      const tgz = execFileSync("unzip", ["-p", jar, "sonarjs-*.tgz"], {
+        maxBuffer: 256 * 1024 * 1024,
+      });
+      const manifest = execFileSync("tar", ["xzO", "package/package.json"], {
+        input: tgz,
+        maxBuffer: 64 * 1024 * 1024,
+        encoding: "utf8",
+      });
+      const parsed = JSON.parse(manifest) as {
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
+      return { ...parsed.dependencies, ...parsed.devDependencies };
+    } catch {
+      return null; // no unzip/tar, or an unreadable jar — unknown, not clean
+    }
+  }
+  return null;
+}
 
 // Real, existing files: `lintText` supplies the CONTENT, but typescript-eslint's project
 // service still resolves the PATH against the tsconfig to build type information, and the
@@ -188,6 +243,64 @@ export const f = (a: number, b: number) => (a ? (b ? 1 : 2) : 3);\n`,
     `export const A = () => <img src="x.png" alt="picture of a cat" />;\n`,
   ],
   ["jsx-a11y/no-noninteractive-tabindex", MAIN_FILE, `export const A = () => <div tabIndex={0} />;\n`],
+  [
+    // The fixture must contain a REAL escaped backslash once the template literal is
+    // resolved — `"a\\b"` in the linted source, not `"a\b"`. Written with `\\\\` here for
+    // exactly that reason; halving it produces a `\b` escape, which the rule ignores.
+    "unicorn/prefer-string-raw",
+    MAIN_FILE,
+    `export const s = "a\\\\b";\n`,
+  ],
+  [
+    // The array must be `const` and used ONLY for membership tests: the rule is about an
+    // array that should have been a Set, so any other use of `known` makes it silent.
+    "unicorn/prefer-set-has",
+    MAIN_FILE,
+    `const known = ["a", "b", "c"];\nexport const f = (x: string) => known.includes(x);\n`,
+  ],
+  [
+    "unicorn/prefer-default-parameters",
+    MAIN_FILE,
+    `export function f(a?: number) { a = a ?? 1; return a; }\n`,
+  ],
+  [
+    // Two inline elements separated by nothing but a newline — the whitespace HTML would
+    // render and JSX silently drops. It has to be a literal line break inside the element.
+    "react/jsx-child-element-spacing",
+    MAIN_FILE,
+    `export const A = () => <p><a href="#">x</a>\ny</p>;\n`,
+  ],
+  [
+    "react/jsx-no-constructed-context-values",
+    MAIN_FILE,
+    `import { createContext } from "react";
+const C = createContext<{ a: number } | null>(null);
+export const A = () => <C.Provider value={{ a: 1 }}><i /></C.Provider>;\n`,
+  ],
+  [
+    "react/no-unstable-nested-components",
+    MAIN_FILE,
+    `export const A = () => { const B = () => <i />; return <div><B /></div>; };\n`,
+  ],
+  // S1186 has three reported SHAPES and the decorator recognises them one at a time, so
+  // each gets its own case: deleting any single arm of `isSonarReportedShape` must redden
+  // something. A single fixture would leave two arms free to be dropped in silence.
+  ["sonar-mirror/no-empty-function", MAIN_FILE, `export function doNothing() {}\n`],
+  ["sonar-mirror/no-empty-function", MAIN_FILE, `export class K { run() {} }\n`],
+  ["sonar-mirror/no-empty-function", MAIN_FILE, `export const handler = function () {};\n`],
+
+  // --- The self-lint block (scoped to `eslint.config.js` itself) ---------------
+  // No constant for this path on purpose: the rule is scoped to that one file, and the
+  // literal path keeps the entry honest — a fixture pointed at MAIN_FILE would trip the
+  // MAIN block's copy of the same rule and pass while the self-lint block goes inert
+  // (e.g. `allowJs` dropped from `tsconfig.node.json`). The deprecated symbol must be
+  // resolvable through the project, so the fixture imports the real package; the known
+  // deprecated call is `tseslint.config` (the very shape #200's S1874 escaped as).
+  [
+    "sonarjs/deprecation",
+    "eslint.config.js",
+    `import tseslint from "typescript-eslint";\nexport const c = tseslint.config({});\n`,
+  ],
 
   // --- TEST scope ---------------------------------------------------------------
   [
@@ -289,6 +402,79 @@ export const B = () => <Alert role="navigation" />;\n`,
     MAIN_FILE,
     "export const B = () => <p ROLE={`status`} aria-live=\"polite\">x</p>;\n",
   ],
+  // The six `no-empty-function` cases below split into two groups that fail for different
+  // reasons, and both groups need pinning. The first four are the DECORATOR
+  // (`reportOnlyNamedEmptyFunctionShapes`); the last two are Sonar's `allow` OPTIONS. Every
+  // one was checked against the undecorated, unoptioned rule first — all six report there,
+  // so none of these passes vacuously.
+  [
+    // `lCn`: an `Identifier` matching `/noop/i` anywhere in the name.
+    "an empty function named noop is exempt (SonarJS lCn)",
+    "no-empty-function",
+    MAIN_FILE,
+    `export function noop() {}\n`,
+  ],
+  [
+    // `lCn`'s other half, `/^on[A-Z]/` — anchored and case-sensitive.
+    "an empty function named onSelect is exempt (SonarJS lCn)",
+    "no-empty-function",
+    MAIN_FILE,
+    `export function onSelect() {}\n`,
+  ],
+  [
+    // `_Mf` arm 2 is `MethodDefinition`, which an object literal is not — its function sits
+    // under a `Property`. Sonar is silent; the raw rule calls it an empty "method".
+    "an empty object-literal method is exempt (not a MethodDefinition)",
+    "no-empty-function",
+    MAIN_FILE,
+    `export const o = { m() {} };\n`,
+  ],
+  [
+    // The shape that makes this decorator worth having: an empty function passed straight
+    // to a call is none of `_Mf`'s three arms, and it is what every test double looks like.
+    "an empty callback argument is exempt (none of _Mf's three shapes)",
+    "no-empty-function",
+    MAIN_FILE,
+    `declare function run(cb: () => void): void;\nrun(function () {});\n`,
+  ],
+  [
+    'Sonar\'s allow list covers arrow functions',
+    "no-empty-function",
+    MAIN_FILE,
+    `export const a = () => {};\n`,
+  ],
+  [
+    'Sonar\'s allow list covers constructors',
+    "no-empty-function",
+    MAIN_FILE,
+    `export class K { constructor() {} }\n`,
+  ],
+  // Two react-intl arms of S6478's `RBg`, plus the widened `propNamePattern`. MusicDrop
+  // uses none of these today; they pin the mirror, not the codebase.
+  [
+    "a react-intl `values` render prop is exempt (SonarJS OBg)",
+    "no-unstable-nested-components",
+    MAIN_FILE,
+    `declare const FormattedMessage: (p: { id: string; values: Record<string, unknown> }) => null;
+export const A = () => <FormattedMessage id="x" values={{ b: (c: string) => <b>{c}</b> }} />;\n`,
+  ],
+  [
+    "the second argument of formatMessage is exempt (SonarJS FBg)",
+    "no-unstable-nested-components",
+    MAIN_FILE,
+    `declare const intl: { formatMessage: (d: object, v: object) => string };
+export const A = () => { const s = intl.formatMessage({ id: "x" }, { b: (c: string) => <b>{c}</b> }); return <p>{s}</p>; };\n`,
+  ],
+  [
+    // Sonar's `propNamePattern` default is `{render*,*Enhancer,*Renderer}`; the plugin's own
+    // is the narrower `render*`, under which `itemRenderer` reports. Dropping the option
+    // object reddens this and nothing else.
+    "a *Renderer prop counts as a render prop under Sonar's wider propNamePattern",
+    "no-unstable-nested-components",
+    MAIN_FILE,
+    `declare const Grid: (p: { itemRenderer: () => unknown }) => null;
+export const A = () => <Grid itemRenderer={() => <i />} />;\n`,
+  ],
   [
     "a MAIN-scope rule stays off in test files",
     "no-clear-text-protocols",
@@ -373,10 +559,22 @@ describe("eslint.config.js", () => {
       // there still gave `npm run lint` exit 0. The ESLint file count is not a signal
       // either — the parsing-only block keeps visiting ignored files, it just applies no
       // rules to them.
+      // `ui/**` is in `sonar.exclusions` (sonar-project.properties:22), which that file's
+      // own header says filters the SOURCE scope ONLY — `sonar.test.exclusions` (line 19)
+      // does not list it. So Sonar DOES analyse the `*.test.tsx` files under `ui/`, and
+      // SONAR_TEST does lint them. Skipping the directory wholesale hid three of them
+      // (`card`, `popover`, `segmented-control`) from this assertion: adding
+      // `src/components/ui/**` to SONAR_TEST's `ignores` left all 53 tests green while
+      // those files stopped being reached by every TEST rule — `prefer-find-by` (S9020)
+      // among them, one of the three families #200 regrew. Keep the tests, drop the rest.
       const walk = (dir: string): string[] =>
         readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
           const full = path.join(dir, e.name);
-          if (e.isDirectory()) return e.name === "ui" ? [] : walk(full); // ui/** = sonar.exclusions
+          if (e.isDirectory()) {
+            return e.name === "ui"
+              ? walk(full).filter((f) => /\.test\.tsx?$/.test(f))
+              : walk(full);
+          }
           return /\.tsx?$/.test(e.name) && !full.endsWith(".d.ts") ? [full] : [];
         });
 
@@ -385,6 +583,7 @@ describe("eslint.config.js", () => {
         path.join(FRONTEND_ROOT, "vite.config.ts"),
         path.join(FRONTEND_ROOT, "vitest.config.ts"),
         path.join(FRONTEND_ROOT, "eslint.config.test.ts"),
+        path.join(FRONTEND_ROOT, "eslint.config.js"),
       ];
       expect(sources.length).toBeGreaterThan(100); // the walk itself must not silently empty
 
@@ -400,6 +599,63 @@ describe("eslint.config.js", () => {
     60_000,
   );
 
+  test(
+    "the react version setting is the analyzer's sentinel, not the installed react",
+    async () => {
+      const config = await eslint.calculateConfigForFile(MAIN_FILE);
+      const settings = config.settings as { react?: { version?: string } };
+      // `999.999.999` is `ULTIMATE_LATEST_SEMVER` in `eslint-plugin-react`, and it is what
+      // SonarJS writes into every file's config (`settings:{react:{version:"999.999.999"}}`
+      // in the analyzer bundle). Two wrong-looking-right edits are what this pins.
+      //
+      // `"detect"` is the first. It CRASHES on ESLint 10 — `resolveBasedir` calls the
+      // removed `context.getFilename()` — taking down every rule that routes through
+      // `Components.detect`, which here is `no-unstable-nested-components` and
+      // `jsx-no-constructed-context-values`. Their MUST_TRIP cases above would catch that
+      // one, loudly.
+      //
+      // Pinning the INSTALLED react version is the second, and NOTHING else here would
+      // catch it: the rules keep loading and keep firing, they just stop agreeing with the
+      // server on anything version-sensitive. So the assertion below is deliberately
+      // inverted from the obvious "keep these two in sync" test — they must NOT match, and
+      // a future sync is the bug, not the fix.
+      expect(settings.react?.version).toBe("999.999.999");
+      const pkg = JSON.parse(readFileSync(path.join(FRONTEND_ROOT, "package.json"), "utf8")) as {
+        dependencies: Record<string, string>;
+      };
+      expect(pkg.dependencies.react).toBeTruthy();
+      expect(pkg.dependencies.react.replace(/^[^\d]*/, "")).not.toBe(settings.react?.version);
+    },
+    30_000,
+  );
+
+  test(
+    "the testing-library aggressive-reporting settings are all off, as SonarJS injects them",
+    async () => {
+      const config = await eslint.calculateConfigForFile(TEST_FILE);
+      const settings = config.settings as Record<string, unknown>;
+      // Transcribed from `yAh` in the analyzer bundle. All three, or the mirror is partial:
+      // each switches off a different half of Aggressive Reporting (modules, renders,
+      // queries), and leaving one on lets the gate report a custom wrapper the server
+      // never looks at.
+      expect(settings["testing-library/utils-module"]).toBe("off");
+      expect(settings["testing-library/custom-renders"]).toBe("off");
+      expect(settings["testing-library/custom-queries"]).toBe("off");
+      // And they must NOT leak into the MAIN block: `settings` in flat config is per-block,
+      // and a stray copy there would be a silent claim that a TEST-scope rule runs on
+      // source files.
+      // `?? {}` on purpose: without it this throws a TypeError rather than failing an
+      // assertion whenever the MAIN block carries no `settings` at all, which makes the
+      // diagnostic opaque AND makes the pass quietly depend on the react sentinel keeping
+      // `settings` non-empty. The assertion should hold on its own terms either way.
+      const mainConfig = await eslint.calculateConfigForFile(MAIN_FILE);
+      expect(
+        ((mainConfig.settings ?? {}) as Record<string, unknown>)["testing-library/utils-module"],
+      ).toBeUndefined();
+    },
+    30_000,
+  );
+
   test("the npm script runs the gate the way CI needs it to", () => {
     // Nothing else here reads `package.json`. Narrowing `eslint .` to `eslint src` would
     // drop `vite.config.ts`, `vitest.config.ts` and this file from CI while every
@@ -410,5 +666,75 @@ describe("eslint.config.js", () => {
     };
     expect(pkg.scripts.lint).toContain("--max-warnings 0");
     expect(pkg.scripts.lint).toMatch(/eslint\s+\.(\s|$)/);
+  });
+
+  test("the mirrored plugins are still at the exact versions the analyzer runs", () => {
+    // Five of the enabled rules are justified as "raw is faithful" — the claim that a
+    // `decorated` Sonar rule reports the same set as the bare ESLint rule. Every one of
+    // those claims was read out of ONE build of the analyzer bundle and holds only at the
+    // versions that build ships. `package.json` carries caret ranges, so a routine minor
+    // satisfies them; nothing else in this file would notice.
+    //
+    // The concrete failing scenario, and the reason this is an assertion rather than a
+    // comment: `propNamePattern` — the option the S6478 mirror depends on — was itself
+    // added to `no-unstable-nested-components` in a 7.3x MINOR, and the plugin's own
+    // default is the narrower `render*`. So a minor CAN move a mirrored rule. Ship
+    // `eslint-plugin-react@7.38.0` with a widened `jsx-child-element-spacing`, let
+    // Dependabot land it, and the gate starts reporting code the analyzer (still on
+    // 7.37.5) accepts — the one property this config must never have — with all other
+    // tests green.
+    //
+    // Re-derive when this fails, do NOT just bump the constant. The bundle declares them:
+    //   unzip -p /mnt/data/sonarqube/scanner-cache/*/sonar-javascript-plugin.jar sonarjs-*.tgz \
+    //     | tar xzO package/package.json | python3 -m json.tool
+    // A failure means the gate and the server have drifted apart: read the new bundle's
+    // rule bodies, confirm each "raw is faithful" claim still holds, THEN update both.
+    for (const [name, expected] of Object.entries(ANALYZER_PLUGIN_VERSIONS)) {
+      const installed = (
+        JSON.parse(
+          readFileSync(path.join(FRONTEND_ROOT, "node_modules", name, "package.json"), "utf8"),
+        ) as { version: string }
+      ).version;
+      expect(
+        installed,
+        `${name} is ${installed}, the analyzer runs ${expected} — re-read the bundle before changing this`,
+      ).toBe(expected);
+    }
+  });
+
+  test("the recorded analyzer versions still match the analyzer bundle on disk", () => {
+    // The OTHER direction of drift, and the one nothing else can see. The test above only
+    // proves `node_modules` agrees with the constants above; it says nothing about whether
+    // those constants still describe the analyzer. Upgrade the SonarQube container and the
+    // bundled plugins move on their own — no lockfile change, no dependency PR, nothing for
+    // Dependabot to report — and the gate quietly stops mirroring the server while every
+    // other test here stays green. That is the failure this test exists to make loud.
+    //
+    // It is LOCAL-ONLY by necessity: the scanner cache is a machine path, so CI cannot see
+    // it. Skipping is honest (the answer is unknown there); passing would not be. The event
+    // it guards — pulling a new SonarQube image — happens on this machine anyway, so the
+    // check fires where the change actually lands.
+    //
+    // Re-derive by hand with:
+    //   unzip -p /mnt/data/sonarqube/scanner-cache/*/sonar-javascript-plugin.jar 'sonarjs-*.tgz' \
+    //     | tar xzO package/package.json | python3 -m json.tool
+    //
+    // When this fails, do NOT just update the constants. The versions moving means the rules
+    // may have moved: re-read each "raw is faithful" claim in eslint.config.js against the
+    // NEW bundle, then update the constants and `package.json` together.
+    const bundle = analyzerBundleVersions();
+    if (bundle === null) {
+      console.warn(
+        "[analyzer pin] bundle not reachable on this machine — recorded versions UNVERIFIED against it",
+      );
+      return;
+    }
+
+    for (const [name, recorded] of Object.entries(ANALYZER_PLUGIN_VERSIONS)) {
+      expect(
+        bundle[name],
+        `the analyzer bundle now runs ${name}@${bundle[name]}, but this file records ${recorded} — SonarQube was upgraded; re-verify the mirrored rules before bumping`,
+      ).toBe(recorded);
+    }
   });
 });

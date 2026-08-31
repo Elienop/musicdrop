@@ -55,6 +55,26 @@ updates:
     cooldown:
       default-days: 7
     groups:
+      # ORDER MATTERS: Dependabot assigns a dependency to the FIRST group it matches, so
+      # this must stay above the catch-all below or it never matches anything.
+      #
+      # These four are not ordinary dependencies. `frontend/eslint.config.js` mirrors the
+      # SonarJS analyzer, and a mirror is only faithful at the versions the analyzer itself
+      # runs — `eslint.config.test.ts` asserts exactly that, in both directions. So the right
+      # response to "unicorn 74 is available" is almost always NO: the pin moves when
+      # SonarQube moves, not when npm does.
+      #
+      # They are grouped rather than `ignore`d on purpose. Ignoring would hide the
+      # information; this keeps Dependabot telling us npm has moved, while stopping one
+      # permanently-declined bump from reddening the shared PR and blocking ~20 unrelated
+      # frontend updates behind it. Expect this PR to be red and to stay open — that is the
+      # design, and its failure message names both versions.
+      sonar-mirrored-lint-plugins:
+        patterns:
+          - "eslint-plugin-unicorn"
+          - "eslint-plugin-react"
+          - "eslint-plugin-jsx-a11y"
+          - "eslint-plugin-testing-library"
       frontend-deps:
         patterns: ["*"]
 
