@@ -19,11 +19,20 @@ entry carries a dated correction block where the pass changed it._
 
 ## Next up
 
-1. **The data-safety slice** — the 2026-08-28 data-loss findings that destroy user files or
-   rows with no confirmation and no in-app recovery: the lyrics-backfill sidecar deletion
-   (critical, first entry below), the unmounted-share ghost delete, and the Trash rows
-   Restore can never restore (with the orphan-sweep feeder that fills them). All in the
-   beets adapter.
+1. **The data-safety slice — now TWO findings, not three.** The 2026-08-28 data-loss findings
+   that destroy user files or rows with no confirmation and no in-app recovery. Its *critical*
+   member, the lyrics-backfill sidecar deletion, **shipped in #189** and is struck below; this
+   item still described it as open and pointed at it as "first entry below", a cross-reference
+   that stopped resolving when other entries closed above it. Corrected 2026-08-31 — re-derive
+   before picking this up, do not trust this sentence either. What remains, both open, both in
+   the beets adapter and both on the delete path:
+   * **the unmounted-share ghost delete** — the delete-path mount predicate accepts a root with
+     ANY entry, so a stray file on an unmounted share reads as "mounted" and the delete lands
+     in the mountpoint instead of the library;
+   * **the Trash rows Restore can never restore** — no origin path is recorded at trash time,
+     so a move-back restore is impossible (with the orphan-sweep feeder that fills those rows).
+   They are one slice because they are the same code path and the same failure mode: a delete
+   that cannot be undone.
 2. ~~**The small-fix slice**~~ — **SHIPPED as #191** (2026-08-28), grown mid-slice by the
    owner's advisory-channel pick and the NaN clamp: read postures (purge-unless-applying
    decided), `static_dir` warning, disk-sync album root, import restore leak + singletons
@@ -92,8 +101,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   and must be corrected when this merges.
   *(Original entry below, kept because its history and bisection are the record — but read its
   blast-radius claim against the re-measurement above.)*
-- **(historic) The same test** writes to `~/.config/beets/state.pickle` on every
-  full-suite run — bisected as the only offender, and present at least as far back as `643783f`,
+  *(historic detail, FIXED — kept for the bisection record)* The same test wrote to
+  `~/.config/beets/state.pickle` on every full-suite run — bisected as the only offender, and present at least as far back as `643783f`,
   so it predates the path-binding branch. Bounded: only beets' importer scratch state is written,
   the personal `library.db` md5 is unchanged and no `.bak` appears. Same class as the sibling entry
   above and as the 2026-08-15 incident where an agent's unguarded `beet --version` ran two pending
@@ -737,15 +746,35 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   wants a short design look at where the record lives (per-folder file vs one manifest)
   and what Empty does with it.
 
-- **The delete-path mount predicate accepts a root with ANY entry, so a stray file on a
-  local mountpoint masks a dropped share.** (Deferred 2026-08-28 by design call, from the
-  #189 security review.) `.stfolder`, `lost+found` or an empty leftover dir on the
-  mountpoint makes `require_library_root` pass while the share is gone, re-opening the
-  ghost drop for exactly that state — though #189's post-condition in `trash_album` now
-  catches the damage for the moved-nothing case. Proposal on file: a
-  `require_library_present()` variant sampling K live album dirs from the DB — strictly
-  stronger for delete; must NOT replace the shared default (disk-sync calls the predicate
-  per removal). Disk-sync accepted the identical residual for itself.
+- ~~**The delete-path mount predicate accepts a root with ANY entry, so a stray file on a
+  local mountpoint masks a dropped share.**~~ **FIXED** on `fix/undoable-deletes`
+  (deferred 2026-08-28 by design call, from the #189 security review). `.stfolder`,
+  `lost+found` or an empty leftover dir on the mountpoint made `require_library_root` pass
+  while the share was gone, re-opening the ghost drop for exactly that state.
+  **What shipped differs from the proposal on file in three ways — read this, not the old
+  wording:**
+  * **One hit, never "some/all".** The proposal said "sampling K live album dirs … some/all
+    must exist". Requiring all K would lock the user out of deleting the very ghost row they
+    are cleaning up: one legitimately-deleted album in the sample and the delete is refused.
+    Accepting the FIRST surviving folder is the max-power/min-false-positive rule — with the
+    share gone every album misses at once, so the true positive is unweakened.
+  * **The sample is re-rolled (`ORDER BY RANDOM()`), not the first K rowids.** A fixed sample
+    makes a false refusal *permanent*; a re-rolled one lets a healthy-but-stale library
+    recover on the next attempt.
+  * **Two call sites, not the whole delete path** — `trash_album_folder`'s missing-folder
+    ghost branch and `_require_move_happened`'s ghost arm. Those are the only arms that drop
+    rows on nothing but an absence. `trash_album`'s pre-check and `delete_artist`'s up-front
+    check deliberately keep the cheap predicate (the post-condition covers them, and
+    upgrading them would pay the sample per album in a fan-out).
+
+  Direct mount checks were evaluated and **rejected on measurement, not taste**:
+  `os.path.ismount()` is `False` for a healthy library on a plain local dir *and* for the
+  very common "library is a subdirectory of the mount" layout, and `True` for the Docker
+  bind mount (`docker-compose.yml:32`) whether or not the share behind it is alive. It
+  discriminates in neither direction; `st_dev`-vs-parent is the same computation. The
+  shared default was NOT made stricter — `require_library_root` is byte-identical, pinned
+  by `test_require_library_root_never_samples_the_database` and a syscall-count assertion,
+  because disk-sync calls it per removal and accepted the identical residual for itself.
 
 - **`useDiskSync.ts:45` throws a hardcoded "Library folder unavailable…" for ANY 503,
   discarding the server's message.** (Found during #189.) The backend now differentiates

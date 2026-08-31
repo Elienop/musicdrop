@@ -561,3 +561,84 @@ def test_trash_album_ghost_files_gone_still_drops_rows(
 
     assert duplicates_lib.get_album(album_id) is None  # ghost rows dropped
     assert list(trash.iterdir()) == []  # and no empty container left in Trash
+
+
+# ----- A dropped share masked by a stray entry on the local mountpoint -----
+#
+# ``require_library_root`` treats a root with ANY entry as mounted, so a
+# ``.stfolder``/``lost+found``/empty leftover directory sitting on the local
+# mountpoint keeps it passing while the share is gone. Both row-dropping ghost
+# arms therefore read every album as deleted, and the library goes one delete at
+# a time — which is why they ask ``require_library_present`` instead. This is a
+# DIFFERENT cause from the post-condition above: there the files were still
+# sitting there, here they are all genuinely absent for one shared reason.
+
+
+def _mountpoint_with_only_a_stray(lib: Library, stray: str = ".stfolder") -> Path:
+    root = Path(os.fsdecode(lib.directory))
+    shutil.rmtree(root)
+    root.mkdir(parents=True)
+    (root / stray).mkdir()
+    return root
+
+
+def test_trash_album_folder_refuses_a_dropped_share_masked_by_a_stray(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    """The whole-folder ghost branch: the folder is missing because the SHARE is."""
+    trash = tmp_path / "trash"
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = _require_id(album.id)
+    total_before = len(list(duplicates_lib.albums()))
+    _mountpoint_with_only_a_stray(duplicates_lib)
+    require_library_root(duplicates_lib)  # the cheap predicate is happy — the bug
+
+    with pytest.raises(LibraryRootUnavailableError), duplicates_lib.transaction():
+        trash_album_folder(duplicates_lib, album, trash_dir=trash)
+
+    assert duplicates_lib.get_album(album_id) is not None  # rows kept
+    assert len(list(duplicates_lib.albums())) == total_before
+    assert not trash.exists()
+
+
+def test_trash_album_refuses_a_dropped_share_masked_by_a_stray(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    """The per-item ghost arm of the post-condition, same cause.
+
+    ``Album.move`` skips every missing source and returns normally, so nothing
+    moves, nothing is present, and the ghost arm would concede — dropping the
+    rows of an album whose files are merely unreachable.
+    """
+    trash = tmp_path / "trash"
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = _require_id(album.id)
+    _mountpoint_with_only_a_stray(duplicates_lib)
+
+    with pytest.raises(LibraryRootUnavailableError), duplicates_lib.transaction():
+        trash_album(duplicates_lib, album, trash_dir=trash)
+
+    assert duplicates_lib.get_album(album_id) is not None  # rows kept
+    assert list(trash.iterdir()) == []  # no phantom container left behind
+
+
+def test_delete_artist_fan_out_stops_on_the_first_masked_drop(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    """The fan-out must not erase album after album through the masked drop.
+
+    Radiohead holds two albums; a guard that fired only after the first
+    ``album.remove`` would leave one row committed and unrecoverable (beets
+    commits on the way out of the transaction even while unwinding).
+    """
+    from app.beets.delete import delete_artist
+
+    trash = tmp_path / "trash"
+    total_before = len(list(duplicates_lib.albums()))
+    _mountpoint_with_only_a_stray(duplicates_lib, "lost+found")
+
+    with pytest.raises(LibraryRootUnavailableError):
+        delete_artist(duplicates_lib, "Radiohead", trash_dir=trash)
+
+    assert len(list(duplicates_lib.albums())) == total_before
+    assert not trash.exists()

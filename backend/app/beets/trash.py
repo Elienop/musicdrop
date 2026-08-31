@@ -28,6 +28,7 @@ from app.beets.library import (
     _abs_path,
     _coerce_int,
     _coerce_optional_str,
+    require_library_present,
     require_library_root,
 )
 from app.config import Settings
@@ -105,7 +106,10 @@ def _require_move_happened(
       album. Moving nothing is correct here and dropping the rows is the point
       (the deliberate cleanup ``trash_album_folder`` spells out in its own ghost
       branch; reached through this path by import Replace and duplicates
-      resolve). Allowed through, exactly as before.
+      resolve). Allowed through — but only once
+      ``require_library_present`` has shown some OTHER album is still on disk,
+      because a dropped share with a stray entry on its mountpoint produces this
+      exact state for every album at once.
     * **root healthy and the files are still SITTING THERE** — they did not
       move and nobody can say why: a permission fault on the container, a beets
       change, a bug here. Dropping the rows would be the silent data loss this
@@ -124,6 +128,15 @@ def _require_move_happened(
         return
     present = [it for it in items if it.path and os.path.exists(_abs_path(lib, it.path))]
     if not present:
+        # Ghost arm — the ONE exit that lets the caller drop rows having moved
+        # nothing, so the root guard above is not enough here: it accepts a
+        # dropped share whose local mountpoint still holds a stray entry
+        # (``.stfolder``, ``lost+found``), and in that state EVERY album looks
+        # exactly like this one. Ask for positive proof before conceding the
+        # album is a ghost. Complementary to the raise below, not redundant with
+        # it: that covers files still SITTING THERE, this covers files that are
+        # all gone for the same reason.
+        require_library_present(lib)
         return  # ghost album: nothing to move because nothing is there
     raise TrashMoveIncompleteError(
         f"'{_trash_container_name(album)}' did not move to Trash: {len(present)} of its"
@@ -316,8 +329,11 @@ def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path) -> str:
     Caller owns the transaction.
 
     Raises :class:`~app.beets.library.LibraryRootUnavailableError` when the
-    album's folder is missing AND the music root itself is unavailable — an
-    unmounted share, not a deleted album. See the branch below.
+    album's folder is missing AND the library's music cannot be found — an
+    unmounted share, not a deleted album. The missing-folder branch uses
+    :func:`~app.beets.library.require_library_present`, not the cheap root
+    predicate, because that branch is the one that drops rows on nothing but an
+    absence. See the branch below.
     """
     items = list(album.items())
     if not items:
@@ -348,7 +364,14 @@ def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path) -> str:
         # file as a deletion. Raising before ``remove`` is what makes it safe: a
         # beets transaction commits on the way out even while unwinding an
         # exception (``beets/dbcore/db.py:924-941``).
-        require_library_root(lib)
+        #
+        # The STRONGER predicate, not the shared default: "the root has an entry"
+        # is satisfied by a ``.stfolder``/``lost+found``/empty leftover dir on a
+        # local mountpoint whose share has dropped, and this branch would then
+        # read every album in the library as a ghost and erase it one delete at a
+        # time. Disk sync keeps the cheap O(1) default on purpose; the delete
+        # path can afford a handful of stats to be sure.
+        require_library_present(lib)
         album.remove(delete=False)
         return str(trash_dir)
     if _folder_is_shared(lib, album, album_root):

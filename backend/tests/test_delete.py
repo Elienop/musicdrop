@@ -217,6 +217,45 @@ def test_delete_artist_op_503_root_unavailable(duplicates_lib: Library, tmp_path
     assert len(list(duplicates_lib.albums())) == before
 
 
+def test_delete_album_op_503_masked_drop_says_what_to_do(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    """The wire answer for a drop the ROOT check cannot see.
+
+    A ``.stfolder`` on the local mountpoint keeps ``require_library_root``
+    passing, so without the stronger predicate this request would answer
+    ``200 trashed_albums=1`` having moved nothing and dropped the rows. It must
+    be a 503 whose sentence tells the user what to check — and which names no
+    filesystem path, because the detail is rendered straight into the dialog.
+    """
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = _require_id(album.id)
+    handle = make_test_handle(duplicates_lib, tmp_path)
+    root = Path(os.fsdecode(duplicates_lib.directory))
+    shutil.rmtree(root)
+    root.mkdir(parents=True)
+    (root / ".stfolder").mkdir()
+
+    class _App:
+        state = SimpleNamespace(beets_library=handle)
+
+    class _Req:
+        app = _App()
+
+    req = _Req()
+    coro = delete_album_op(req, album_id)  # type: ignore[arg-type]  # duck-typed stub
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(coro)
+
+    assert ei.value.status_code == 503
+    assert ei.value.detail == (
+        "Library folder is present but holds none of the library's albums."
+        " Is the music share mounted?"
+    )
+    assert duplicates_lib.get_album(album_id) is not None  # rows kept
+    assert str(root) not in str(ei.value.detail)
+
+
 def test_delete_artist_root_gone_raises_before_the_transaction(
     duplicates_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
