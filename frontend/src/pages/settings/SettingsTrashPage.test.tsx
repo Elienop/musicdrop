@@ -28,11 +28,21 @@ const album: TrashedAlbum = {
 };
 
 /** The backend writes three distinct why-sentences; the page must render
- * whatever arrives, so the tests carry one verbatim rather than a shape. */
+ * whatever arrives, so the tests carry one VERBATIM rather than a shape — a
+ * component that ignored `restore_note` and printed its own copy would pass a
+ * shape assertion and fail this one.
+ *
+ * It is NOT a contract, and it does not have to track the backend: any
+ * realistic sentence does that job. This copy went stale once already (the
+ * backend widened the sentence to admit a failed write, and nothing here
+ * noticed, because the fixture defines its own input). Refreshed rather than
+ * left, so it does not read as the current wording to the next person — but
+ * do not chase a backend rewording here. */
 const NO_RECORD_NOTE =
-  "MusicDrop has no record of where this came from — it was moved to Trash before" +
-  " origins were recorded. Restoring re-imports it, so beets files it under your" +
-  " current naming rules rather than putting it back.";
+  "MusicDrop has no usable record of where this came from — either it was moved to" +
+  " Trash before origins were recorded, or writing that record failed (the server log" +
+  " says which). Restoring re-imports it, so beets files it under your current naming" +
+  " rules rather than putting it back.";
 
 /** The other arm. Shared, because several tests need to assert that the two
  * arms differ — an assertion one fixture cannot make on its own. */
@@ -220,9 +230,12 @@ describe("SettingsTrashPage", () => {
     expect(screen.getByText(NO_RECORD_NOTE)).toBeInTheDocument();
     // origin survives an import row so the user can put it back by hand.
     expect(screen.getByText("/old-library/Old Band/Demos")).toBeInTheDocument();
-    expect(restore).toHaveAccessibleDescription(
-      /no record of where this came from/i,
-    );
+    // A distinctive FRAGMENT, not the whole sentence and not a phrase the
+    // backend is likely to reword: this assertion pinned "no record of where
+    // this came from" and silently stopped matching the day the backend widened
+    // it to "no usable record of…". What it needs to prove is that the note
+    // reaches the button's accessible description at all.
+    expect(restore).toHaveAccessibleDescription(/where this came from/i);
     expect(restore).toHaveAccessibleDescription(
       /Was at\s+\/old-library\/Old Band\/Demos/,
     );
@@ -420,7 +433,9 @@ describe("SettingsTrashPage", () => {
     const icon = importOutlook?.querySelector("svg");
     expect(icon).toBeInTheDocument();
     expect(icon).toHaveAttribute("aria-hidden", "true");
-    expect(screen.getByText("Approximate restore.")).toHaveClass("text-warning");
+    expect(screen.getByText("Approximate restore.")).toHaveClass(
+      "text-warning",
+    );
     unmount();
 
     server.use(
