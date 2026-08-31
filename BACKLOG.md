@@ -299,6 +299,20 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   reasons are written out in `frontend/eslint.config.js` under "DELIBERATELY OFF"; do not
   re-derive them, and do not enable either rule without porting the suppression first.
 
+  **The gate now lints its own config, which it could not before.**
+  `frontend/eslint.config.js` used to resolve to ZERO enabled rules — every block needed the
+  typed parser and no tsconfig included a `.js` file at the frontend root — so the one `.js`
+  file SonarQube scans sat outside the gate entirely. That was not theoretical: the server
+  scan found a `javascript:S1874` in that very file during #202, on the deprecated
+  `tseslint.config` call, precisely because the gate could not check itself. Closed with
+  `allowJs` plus the file in `tsconfig.node.json` (verified: `tsc -b` does not cascade) and
+  one narrowly scoped block. Two families are pinned there, and BOTH were chosen from
+  evidence rather than taste: `sonarjs/deprecation` (S1874, the one that escaped) and
+  `@typescript-eslint/prefer-optional-chain` (S6582), added after the first branch scan run
+  with the file linted reported one in the S1186 mirror. The block stays narrower than the
+  MAIN allowlist on purpose — narrower than the server is the safe direction — so widen it
+  only when a scan shows a family actually firing here.
+
   Also unchanged: the 7 `role="status"` sites themselves — converting them to `<output>` is
   a real UI change needing browser verification, and `SlskdPanel.tsx:304` is an
   always-mounted live region that the earlier a11y wave already flagged as needing its own
