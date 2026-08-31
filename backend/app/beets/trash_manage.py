@@ -56,7 +56,10 @@ class TrashRestoreIncompleteError(Exception):
     for which of the two runs), or the folder had to be put back in Trash after a
     failed import and that move failed too.
     Carries both paths, because the person reading it is the one who has to look
-    at them.
+    at them — and the person reading it is the USER, not an operator: the API
+    puts this message straight into the 500's ``detail`` and the Trash page
+    renders that in an alert. Write the sentence for someone standing in front
+    of their own files, and say which path to look at.
     """
 
 
@@ -317,10 +320,22 @@ def _restore_to_origin(
       :func:`_move_no_merge`, which cannot be raced. Both answer
       ``origin_occupied``, so the window is invisible to the caller.
     * the import did not land the album — put the folder back in Trash and report
-      the import's own answer, so a duplicate reads exactly as it does today.
+      the import's own answer, so a duplicate reads exactly as it does today. If
+      that return ALSO fails, the folder is in neither place and the error says
+      so (see the handler); it is the only path here that does not end with the
+      files back in Trash.
 
     The parent is created because beets prunes an empty artist folder on the way
     out; that is the normal case, not an anomaly.
+
+    One residual in the occupancy answer, stated rather than hidden: ``exists``
+    follows symlinks, so a DANGLING link at the origin (``music/X -> /gone``)
+    reads as absent, the move is attempted, and ``os.rename`` answers ENOTDIR —
+    which :func:`_move_no_merge` normalises to the same ``origin_occupied`` the
+    user is told about a path ``ls`` shows as broken. The FILES are safe (still
+    in Trash, nothing moved) and the answer is right for the wrong-looking
+    reason, so this is a wording problem and not a data one; ``origin_occupied``
+    is a contract value the UI renders, so widening it is a contract change.
     """
     require_library_present(lib)
     if exists(origin):
@@ -338,20 +353,26 @@ def _restore_to_origin(
         # No undo attempted: a same-filesystem rename either happened or did
         # not, and a cross-filesystem one that failed part-way has left a
         # partial copy whose relationship to the source only a human can judge.
-        # Naming both paths beats guessing.
+        # Naming both paths beats guessing — and saying they may BOTH hold the
+        # folder now beats "check both paths", which reads as "one of them".
+        # ``_move_no_merge``'s EXDEV branch copies before it removes, so a
+        # failure mid-copy leaves a partial copy at the origin with the Trash
+        # entry intact, and a failure mid-``rmtree`` leaves a complete copy at
+        # the origin with a partial entry still in Trash.
         raise TrashRestoreIncompleteError(
             f"could not move {display_path(entry)!r} back to {display_path(origin)!r}:"
-            f" {exc}. Check both paths before retrying."
+            f" {exc}. Across filesystems this copies before it removes, so the folder may"
+            f" now be in BOTH places — look at both before retrying. Retrying cannot make"
+            f" it worse: a restore refuses while anything is at the destination."
         ) from exc
     try:
         result = _restore_by_import(lib, str(origin), trash_dir=trash_dir, in_place=True)
-    except Exception:
+    except Exception as exc:
         # The import failed outright. Undo the move so the caller's error is
-        # about a folder still safely in Trash — and if the undo ALSO fails, say
-        # so here rather than replacing the original exception with it.
+        # about a folder still safely in Trash.
         try:
             _return_to_trash(origin, entry)
-        except TrashRestoreIncompleteError:
+        except TrashRestoreIncompleteError as undo:
             # ``%r``, not ``%s``, and the same in the message this logs the
             # traceback of. A Trash folder's name comes from the album's own
             # tags, and ``_trash_container_name`` neutralises only path
@@ -363,16 +384,63 @@ def _restore_to_origin(
             logger.exception(
                 "could not return %r to Trash after a failed restore", display_path(origin)
             )
+            # The record rode out of Trash inside the folder and now sits in the
+            # music library naming the folder it is inside, so it has nothing
+            # left to say. Removing it is the same clean-up a landed restore
+            # does, for the reason ``write_trash_origin`` refuses to write on
+            # the source side at all: a stray record in the music library is one
+            # nothing will clean up, and it would outlive this folder — the
+            # re-import this error asks for moves the media out and beets' own
+            # source pruning then refuses the dir because the record is still in
+            # it, leaving a husk for the orphan sweep to relocate. Deleting it
+            # costs only the contrived recovery of hand-moving the folder BACK
+            # to Trash, which is the one thing the message below does not ask
+            # for. Never raises, so it cannot make this path worse.
+            delete_trash_origin(origin)
+            # The propagating error is the UNDO's story, not the import's. The
+            # import's exception alone answers "Restore failed: <beets error>",
+            # which sends the user to look in Trash — where there is now
+            # nothing. This is the one state the folder is in neither place the
+            # user can act on, so the sentence has to name both paths and say
+            # which one to look at. Chained on the import error, so its
+            # traceback is still reachable; the undo's is in the log above.
+            raise TrashRestoreIncompleteError(
+                f"the restore could not be completed and could not be undone."
+                f" {display_path(entry)!r} is no longer in Trash: it was moved to"
+                f" {display_path(origin)!r} and was NOT added to the library database."
+                f" Check that path — importing the folder there is what finishes putting"
+                f" the album back. The import failed with: {exc}. Returning it to Trash"
+                f" then failed with: {undo}."
+            ) from exc
         raise
     if not result.restored and result.reason == "could_not_restore" and not _holds_media(origin):
         # The art/booklet husk the orphan sweep relocates: there was never a
         # library row to recreate, so the move IS the restore and an empty import
         # is beets agreeing there was nothing to import — it builds an album task
         # only once at least one file reads as an ``Item``
-        # (``importer/tasks.py:1084-1089``). Classified AFTER the import rather
-        # than skipping it on the same probe up front, so a file beets can read
-        # and this cannot (it runs ``fix_extension`` first, so an extensionless
-        # media file is beets' to find) still gets its album back.
+        # (``importer/tasks.py:1084-1089``).
+        #
+        # Classified AFTER the import rather than skipping it on the same probe
+        # up front, because beets' discovery is the AUTHORITY on "was there an
+        # album here" and :func:`_holds_media` is a heuristic that does not
+        # replicate it: beets applies ``ignore``/``ignore_hidden``, extracts
+        # archives, and remuxes before reading (``importer/tasks.py:1141-1168``).
+        # Asking the probe only once beets has already answered "nothing landed"
+        # makes it a tie-breaker on a decided question instead of a gate that
+        # could decide it alone, and the import costs nothing on a folder with
+        # no media. (An earlier version of this comment justified the ordering
+        # with "a file beets can read and this cannot — it runs ``fix_extension``
+        # first, so an extensionless media file is beets' to find". That was
+        # FALSE: ``fix_extension`` only ADDS an extension where there is none
+        # (``beets/util/extension.py:83-95``) and ``Item.from_path`` sniffs by
+        # content — measured, an extensionless FLAC reads fine. The decision was
+        # right; the reason was not.)
+        #
+        # ``result.reason == "could_not_restore"`` is a stated precondition, not
+        # a live branch: ``already_in_library`` needs an outcome from an album
+        # task, an album task needs at least one ``Item``, and this arm runs only
+        # where there is none. No test can kill it; it is kept so the arm does
+        # not silently depend on that beets-internal fact.
         result = RestoreResult(restored=True, reason="restored")
     if not result.restored:
         _return_to_trash(origin, entry)
@@ -461,6 +529,14 @@ def _return_to_trash(origin: Path, entry: Path) -> None:
     folder INSIDE it and bury the album one level down under its own name. The
     ``exists`` check is the cheap pre-filter; :func:`_move_no_merge` is what
     makes the refusal hold when something creates ``entry`` in the window.
+
+    Only ONE half of that pre-filter is a guard. ``exists(entry)`` is: nothing
+    below it would otherwise refuse an occupied entry in time, and the burial it
+    stops is silent. ``not exists(origin)`` is a MESSAGE — ``_move_no_merge`` on
+    a missing source raises ``FileNotFoundError``, which is an ``OSError`` the
+    arm below already turns into this same exception type, so removing it
+    changes only the wording the operator reads. Both are kept, and saying which
+    is which beats letting the next reader treat them as one guard.
     """
     if exists(entry) or not exists(origin):
         raise TrashRestoreIncompleteError(
@@ -474,7 +550,11 @@ def _return_to_trash(origin: Path, entry: Path) -> None:
             f"the restore did not land and {display_path(origin)!r} could not be returned"
             f" to Trash at {display_path(entry)!r}: {exc}. Check both paths."
         ) from exc
-    # Only removes the artist folder if the restore is what created it.
+    # Removes the parent when it is EMPTY, which is broader than "only if the
+    # restore created it" — a pre-existing artist folder the failed restore has
+    # left empty goes too. That is deliberate and matches what beets' own source
+    # pruning does: an empty artist folder is not state the library wants back,
+    # and ``rmdir`` cannot touch one that still holds another album.
     with contextlib.suppress(OSError):
         origin.parent.rmdir()
 

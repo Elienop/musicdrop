@@ -7,12 +7,18 @@ must never be able to make a delete fail.
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import json
 import logging
 import os
 import shutil
+import signal
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
+from types import FrameType
+from typing import Any, NoReturn
 
 import pytest
 from beets import config
@@ -105,6 +111,27 @@ def _record(entry: Path) -> TrashOrigin:
     return record
 
 
+@contextlib.contextmanager
+def _deadline(seconds: float) -> Iterator[None]:
+    """Turn a HANG into a failure, so a missing guard cannot pass as a green run.
+
+    ``SIGALRM`` rather than a thread or a plugin: it is the only thing that
+    interrupts a blocking read on a FIFO. PEP 475 retries an interrupted syscall
+    unless the handler raises, so the handler raises.
+    """
+
+    def _fire(_signum: int, _frame: FrameType | None) -> NoReturn:
+        raise TimeoutError(f"blocked for more than {seconds}s")
+
+    previous = signal.signal(signal.SIGALRM, _fire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 # ----- the record is written by every mover that relocates something -----
 
 
@@ -152,6 +179,35 @@ def test_trash_album_records_the_source_folder_as_items(tmp_path: Path) -> None:
     assert record.origin == source
     assert record.moved == "items"
     assert move_back_target(record, music_dir=str(tmp_path / "music")) is None
+
+
+def test_the_record_carries_a_trash_time_nothing_else_on_disk_keeps(tmp_path: Path) -> None:
+    """``trashed_at`` has no reader, and this test is what keeps it on disk.
+
+    It is written for the human who ``cat``s the sidecar, and because the move is
+    a rename — which preserves the folder's OWN mtime — so once a folder is in
+    Trash this file is the only place the time it got there survives. A field
+    with no reader greps as dead code, and the class docstring saying "do not
+    clean it up" loses that argument to anyone who greps first; a failing test
+    wins it. Without this, deleting the write passes all 2891 tests (measured),
+    and the gap would be permanent for every row trashed before anyone noticed.
+
+    Read from the raw JSON on purpose: :class:`TrashOrigin` deliberately does
+    NOT surface the field, so going through ``read_trash_origin`` would pin
+    nothing.
+    """
+    husk = tmp_path / "music" / "Portishead" / "Dummy"
+    husk.mkdir(parents=True)
+    (husk / "cover.jpg").write_bytes(b"\x00")
+    before = datetime.now(UTC)
+
+    dest = trash_folder(husk, trash_dir=tmp_path / "trash")
+
+    payload = json.loads((dest / RECORD_NAME).read_text(encoding="ascii"))
+    stamped = datetime.fromisoformat(payload["trashed_at"])
+    # Offset-aware, or it cannot be read on a machine in another zone later.
+    assert stamped.tzinfo is not None
+    assert before <= stamped <= datetime.now(UTC)
 
 
 # ----- recording must never be able to fail a delete -----
@@ -255,8 +311,8 @@ def test_read_trash_origin_refuses_an_oversized_file(tmp_path: Path) -> None:
 def test_move_back_target_refuses_an_origin_outside_the_library(tmp_path: Path) -> None:
     # A record is a path we are about to shutil.move a folder ONTO. It is also
     # what a re-pointed library looks like, and both answers are the same.
-    outside = TrashOrigin(origin="/etc/cron.d", moved="folder", trashed_at=None)
-    inside = TrashOrigin(origin=str(tmp_path / "music" / "A"), moved="folder", trashed_at=None)
+    outside = TrashOrigin(origin="/etc/cron.d", moved="folder")
+    inside = TrashOrigin(origin=str(tmp_path / "music" / "A"), moved="folder")
     music = str(tmp_path / "music")
     assert move_back_target(outside, music_dir=music) is None
     assert move_back_target(inside, music_dir=music) == tmp_path / "music" / "A"
@@ -401,15 +457,31 @@ def test_restore_recreates_an_artist_folder_that_was_swept_away(tmp_path: Path) 
     assert (artist_dir / "Dummy" / "01 Mysterons.flac").stat().st_ino == inode
 
 
-def test_restore_does_not_symlink_the_album_when_the_user_config_asks_for_links(
-    tmp_path: Path,
+@pytest.mark.parametrize("flag", ["link", "hardlink", "reflink"])
+def test_restore_never_links_the_album_when_the_user_config_asks_for_links(
+    tmp_path: Path, flag: str
 ) -> None:
-    # beets picks the file operation by falling through move, copy, link,
-    # hardlink, reflink in order (importer/stages.py:278-291). The in-place
-    # import turns move and copy OFF, so a user config of ``link: yes`` would
-    # otherwise take over and symlink the album into the TEMPLATED path — files
-    # at the origin, library rows pointing somewhere else.
-    config["import"]["link"] = True
+    """All THREE link flags, because only ``link`` was ever tested.
+
+    beets picks the file operation by falling through move, copy, link,
+    hardlink, reflink in order (importer/stages.py:278-291). The in-place import
+    turns move and copy OFF, so whichever of the three the user has on takes
+    over and files the album at the TEMPLATED path — files at the origin,
+    library rows pointing somewhere else. That is the whole feature defeated,
+    and it was pinned for one flag out of three.
+
+    Measured with the forcing removed: ``hardlink: yes`` links the album into
+    ``Portishead/Dummy`` and the rows follow it; ``reflink: yes`` raises
+    ``ModuleNotFoundError: No module named 'reflink'`` out of the restore and
+    takes the request down. The module genuinely is not installed here, and that
+    is recorded rather than asserted — an environment that HAS it still fails
+    this test in the mutant, because a reflink copy lands at the templated path
+    like the other two.
+
+    ``st_nlink`` is the oracle ``is_symlink`` cannot be: a hardlink leaves the
+    source a perfectly ordinary regular file with a second name.
+    """
+    config["import"][flag] = True
     lib = _seeded_library(tmp_path, folder="Weird Folder")
     source = tmp_path / "music" / "Weird Folder"
     album = _dummy(lib)
@@ -419,8 +491,9 @@ def test_restore_does_not_symlink_the_album_when_the_user_config_asks_for_links(
     result = restore_album(lib, str(dest), trash_dir=tmp_path / "trash")
 
     assert result.restored is True
-    assert not (tmp_path / "music" / "Portishead").exists()
+    assert not (tmp_path / "music" / "Portishead").exists()  # nothing was filed by template
     assert all(not p.is_symlink() for p in source.glob("*.flac"))
+    assert all(p.stat().st_nlink == 1 for p in source.glob("*.flac"))
     assert {os.path.dirname(os.fsdecode(i.path)) for i in _dummy(lib).items()} == {str(source)}
 
 
@@ -428,7 +501,11 @@ def test_in_place_and_move_are_mutually_exclusive_and_leak_no_config(tmp_path: P
     # The raise sits ABOVE the snapshots for the reason the surrounding code
     # spells out: anything assigned before an early exit leaks into the
     # process-global beets config, because the finally that restores it never
-    # runs.
+    # runs. The three link flags are asserted for the same ordering reason as
+    # copy/move — this arm cannot reach the finally at all, so nothing below the
+    # raise may have been assigned yet.
+    config["import"]["link"] = True
+    config["import"]["hardlink"] = True
     lib = _seeded_library(tmp_path, folder="Weird Folder")
     session = WebImportSession(
         lib,
@@ -445,6 +522,43 @@ def test_in_place_and_move_are_mutually_exclusive_and_leak_no_config(tmp_path: P
 
     assert config["import"]["copy"].get(bool) is True  # the fixture's value, untouched
     assert config["import"]["move"].get(bool) is False
+    assert config["import"]["link"].get(bool) is True
+    assert config["import"]["hardlink"].get(bool) is True
+
+
+def test_a_landed_in_place_restore_hands_the_link_flags_back(tmp_path: Path) -> None:
+    """The ``finally`` restores link/hardlink/reflink, and only this can prove it.
+
+    ``config["import"]`` is a process-global confuse singleton, so a forced value
+    that is never put back holds for the lifetime of the PROCESS: every later
+    manual import files by the wrong operation, and the "Effective config" panel
+    (which flattens the live global) shows the wrong thing until a restart.
+
+    Nothing catches that incidentally — ``tests/conftest.py``'s autouse
+    ``_clear_beets_globals`` scrubs the config between tests, so a leak is
+    invisible to every later test. It has to be asserted in the same test that
+    triggers the forcing, which is why this is not folded into the exclusion test
+    above: that one never reaches the ``finally``.
+
+    All three are set to NON-defaults first, so "they came back" cannot be
+    satisfied by a default that happens to match; ``reflink`` is given the string
+    ``"auto"`` because it is a bool-OR-string and the snapshot restores it
+    verbatim.
+    """
+    config["import"]["link"] = True
+    config["import"]["hardlink"] = True
+    config["import"]["reflink"] = "auto"
+    lib = _seeded_library(tmp_path, folder="Weird Folder")
+    album = _dummy(lib)
+    with lib.transaction():
+        dest = Path(trash_album_folder(lib, album, trash_dir=tmp_path / "trash"))
+
+    result = restore_album(lib, str(dest), trash_dir=tmp_path / "trash")
+
+    assert result.restored is True  # the forcing really ran, so the finally really fired
+    assert config["import"]["link"].get(bool) is True
+    assert config["import"]["hardlink"].get(bool) is True
+    assert config["import"]["reflink"].get() == "auto"
 
 
 def test_return_to_trash_refuses_to_bury_the_folder_inside_an_occupied_entry(
@@ -957,13 +1071,270 @@ def test_a_failed_return_to_trash_cannot_forge_a_log_line(
     )
     with (
         caplog.at_level(logging.WARNING, logger="app.beets.trash_manage"),
-        pytest.raises(RuntimeError),
+        # The double failure now propagates as the UNDO's story rather than the
+        # import's ``RuntimeError``; the import is still reachable as ``__cause__``.
+        pytest.raises(TrashRestoreIncompleteError) as ei,
     ):
         _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash")
 
+    assert isinstance(ei.value.__cause__, RuntimeError)
     assert any("could not return" in r.getMessage() for r in caplog.records)
     assert "\x1b" not in caplog.text, "an ANSI escape reached the log"
     assert "\nCRITICAL" not in caplog.text, "a forged log line reached the log"
     # Escaped, not dropped: the operator still gets the path they have to look at.
     assert "\\x1b" in caplog.text
     assert "\\n" in caplog.text
+
+
+# ----- the double failure: neither in Trash nor in the library -----
+
+
+def test_a_failed_restore_whose_undo_also_fails_says_where_the_folder_went(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one state the move-back's all-or-nothing promise does not cover.
+
+    Import fails, the return to Trash fails too, and the album is left in the
+    MUSIC LIBRARY with no library rows and no Trash row. Propagating the
+    import's own exception answered "Restore failed: <beets error>" and sent the
+    user to look in Trash, where there is now nothing — the one error whose
+    class docstring promises to carry both paths was logged and discarded in the
+    one state where that mattered.
+
+    The re-taken Trash entry is what makes the undo fail, deterministically and
+    without a permission trick: a sync client, an ``*arr`` or the user putting
+    something back at that path is exactly the window ``_return_to_trash``
+    refuses to move into.
+    """
+    lib = _seeded_library(tmp_path, folder="Weird Folder")
+    origin = tmp_path / "music" / "Weird Folder"
+    album = _dummy(lib)
+    album_id = _require_id(album.id)
+    with lib.transaction():
+        entry = Path(trash_album_folder(lib, album, trash_dir=tmp_path / "trash"))
+
+    def _import_fails_after_something_retakes_the_trash_entry(
+        *_a: object, **_k: object
+    ) -> RestoreResult:
+        entry.mkdir(parents=True)
+        (entry / "stranger.flac").write_bytes(b"\x00")
+        raise RuntimeError("beets could not read the album")
+
+    monkeypatch.setattr(
+        "app.beets.trash_manage._restore_by_import",
+        _import_fails_after_something_retakes_the_trash_entry,
+    )
+    with pytest.raises(TrashRestoreIncompleteError) as ei:
+        restore_album(lib, str(entry), trash_dir=tmp_path / "trash")
+
+    message = str(ei.value)
+    assert str(origin) in message, "the path the files are actually at"
+    assert str(entry) in message, "and the one they are no longer at"
+    assert "no longer in Trash" in message
+    assert "NOT added to the library database" in message
+    assert "beets could not read the album" in message, "the import's own cause"
+    assert "the source is gone or the Trash entry is occupied" in message, "and the undo's"
+    # The state the sentence describes, asserted rather than assumed.
+    assert len(list(origin.glob("*.flac"))) == 2
+    assert lib.get_album(album_id) is None
+    # The record has nothing left to say and would outlive the folder: it names
+    # the folder it is now inside, and it would keep the source dir alive
+    # through the re-import the message asks for.
+    assert not (origin / RECORD_NAME).exists()
+
+
+def test_a_media_album_whose_import_lands_nothing_still_goes_back_to_trash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_holds_media`` is the whole difference between a husk and a failure.
+
+    The husk branch turns "beets imported nothing" into ``restored=True``,
+    because for an audio-free art/booklet folder the move IS the restore. That
+    flip has to be gated on the folder really holding no media: with the gate
+    open, an album whose import failed is reported RESTORED while it sits in the
+    music library un-imported — no library rows, no Trash row, and a UI that has
+    just told the user it worked.
+
+    The exact pair of ``test_restore_puts_an_audio_free_husk_back``: same
+    ``could_not_restore`` from beets, opposite answers, and only ``_holds_media``
+    separates them.
+
+    The stub is what a real failed import leaves — beets looked, landed nothing,
+    and touched no file.
+    """
+    lib = _seeded_library(tmp_path, folder="Weird Folder")
+    origin = tmp_path / "music" / "Weird Folder"
+    album = _dummy(lib)
+    with lib.transaction():
+        entry = Path(trash_album_folder(lib, album, trash_dir=tmp_path / "trash"))
+
+    monkeypatch.setattr(
+        "app.beets.trash_manage._restore_by_import",
+        lambda *_a, **_k: RestoreResult(restored=False, reason="could_not_restore"),
+    )
+    result = restore_album(lib, str(entry), trash_dir=tmp_path / "trash")
+
+    assert result == RestoreResult(restored=False, reason="could_not_restore")
+    assert sorted(p.name for p in entry.glob("*.flac")) == [
+        "01 Mysterons.flac",
+        "02 Sour Times.flac",
+    ]
+    assert not origin.exists(), "nothing may be left in the music library"
+    assert read_trash_origin(entry) is not None, "and the row keeps its exact restore"
+
+
+def test_a_part_way_cross_filesystem_move_says_the_folder_may_be_in_both(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The message has to say BOTH — "check both paths" reads as "one of them".
+
+    ``_move_no_merge`` cannot rename across filesystems, so it copies and then
+    removes — and a failure mid-copy leaves a partial copy at the origin while
+    the whole folder is still in Trash. No undo is attempted there, deliberately,
+    which makes the sentence the only thing the user has: it has to say both
+    places may hold the folder, and that a retry refuses rather than compounding
+    it.
+
+    EXDEV is forced at ``os.rename`` so the real cross-device branch runs.
+    """
+    lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
+    origin = tmp_path / "music" / "Restored Here"
+    entry = tmp_path / "trash" / "Weird Folder"
+    entry.mkdir(parents=True)
+    (entry / "01 Mysterons.flac").write_bytes(b"\x00")
+
+    def _across_a_device_boundary(*_a: object, **_k: object) -> NoReturn:
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    def _half_a_copy(src: Any, dst: Any, **_k: Any) -> NoReturn:
+        os.makedirs(dst)
+        (Path(dst) / "01 Mysterons.flac").write_bytes(b"\x00")
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(os, "rename", _across_a_device_boundary)
+    monkeypatch.setattr(shutil, "copytree", _half_a_copy)
+
+    with pytest.raises(TrashRestoreIncompleteError) as ei:
+        _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash")
+
+    message = str(ei.value)
+    assert str(origin) in message
+    assert str(entry) in message
+    assert "BOTH places" in message
+    assert "retrying cannot make it worse" in message.lower()
+    # The claim the sentence makes, measured: it really is in both.
+    assert (entry / "01 Mysterons.flac").is_file()
+    assert (origin / "01 Mysterons.flac").is_file()
+
+
+def test_return_to_trash_names_a_vanished_source_rather_than_the_syscall(
+    tmp_path: Path,
+) -> None:
+    """The half of that guard nothing tested, and the only thing it changes.
+
+    ``not exists(origin)`` is a MESSAGE, not a guard: ``_move_no_merge`` on a
+    missing source raises ``FileNotFoundError``, an ``OSError`` the arm below
+    turns into this same exception type. Only the wording differs — and the
+    wording is all the operator has, because this runs only when a restore has
+    already gone wrong and the sentence is the last thing pointing at where the
+    files went. Dropping the clause replaces it with a bare errno.
+    """
+    origin = tmp_path / "music" / "Dummy"  # never created: the import consumed it
+    entry = tmp_path / "trash" / "Dummy"
+
+    with pytest.raises(TrashRestoreIncompleteError) as ei:
+        _return_to_trash(origin, entry)
+
+    message = str(ei.value)
+    assert "the source is gone or the Trash entry is occupied" in message
+    assert "Errno" not in message, "a raw errno is not an answer to this question"
+
+
+def test_a_dangling_symlink_at_the_origin_keeps_the_files_in_trash(tmp_path: Path) -> None:
+    """``exists`` follows links, so the occupancy pre-filter cannot see this one.
+
+    A dangling ``music/X -> /gone`` reads as ABSENT, the move is attempted, and
+    ``os.rename`` answers ENOTDIR — which ``_move_no_merge`` normalises to the
+    same ``origin_occupied`` the pre-filter would have given. The user is then
+    told a path "exists" that ``ls`` shows as broken, which is a wording problem
+    and not a data one: nothing moved and the files are still in Trash. Pinned
+    because ENOTDIR is what keeps it that way — without it the ``OSError``
+    escapes as an incomplete-restore error about a move that never happened.
+    """
+    lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
+    origin = tmp_path / "music" / "Weird Folder"
+    origin.symlink_to(tmp_path / "gone")
+    entry = tmp_path / "trash" / "Weird Folder"
+    entry.mkdir(parents=True)
+    (entry / "01 a.flac").write_bytes(b"\x00")
+
+    assert exists(origin) is False, "the pre-filter is blind to a dangling link"
+
+    result = _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash")
+
+    assert result == RestoreResult(restored=False, reason="origin_occupied")
+    assert (entry / "01 a.flac").is_file()
+    assert origin.is_symlink()
+    assert not origin.exists()
+
+
+# ----- a record file is untrusted INPUT, and reading one must not block -----
+
+
+def test_a_fifo_at_the_record_name_cannot_hang_the_listing(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``is_file()`` is the only thing between a planted FIFO and a hung request.
+
+    ``GET /api/trash`` is ungated and reads one record per top-level entry on a
+    threadpool worker. A FIFO passes the size cap — ``st_size`` is 0 on a pipe
+    with no writer — and ``read_text`` then blocks FOREVER, holding that worker.
+    Anyone who can create a file in the music library can plant one, and
+    ``shutil.move`` carries it into Trash with the folder.
+
+    The deadline is the oracle, and it has to be: without the guard this test
+    does not fail, it hangs — which reads as a suite that is still running.
+    """
+    os.mkfifo(tmp_path / RECORD_NAME)
+
+    with _deadline(5), caplog.at_level(logging.WARNING, logger="app.beets.trash_record"):
+        assert read_trash_origin(tmp_path) is None
+
+    (record,) = caplog.records
+    assert "not a regular file" in record.getMessage()
+
+
+def test_a_non_utf8_folder_name_round_trips_through_the_ascii_sidecar(tmp_path: Path) -> None:
+    """The exact restore this app takes the most care over, end to end.
+
+    ``json.dumps``'s default ``ensure_ascii`` escapes the lone surrogates
+    ``os.fsdecode`` produces for a non-UTF-8 POSIX name into ``\\udcXX``, which
+    is what lets the record be written AND read as pure ASCII. Drop it and the
+    write raises ``UnicodeEncodeError`` inside the swallow-and-log arm: no record
+    is left at all, the row degrades to an import-restore with the "trashed
+    before origins were recorded" note, and the folder never goes back to the
+    name it had.
+
+    Both halves are asserted: the FILE is ASCII with the undecodable byte
+    escaped, and the folder comes back at the byte-exact path it left.
+    """
+    lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
+    music = tmp_path / "music"
+    husk_bytes = os.fsencode(str(music)) + b"/Caf\xe9 Album"
+    husk = Path(os.fsdecode(husk_bytes))
+    husk.mkdir()
+    (husk / "booklet.jpg").write_bytes(b"\x00")
+
+    dest = trash_folder(husk, trash_dir=tmp_path / "trash")
+
+    raw = (dest / RECORD_NAME).read_bytes()
+    raw.decode("ascii")  # the whole point of encoding="ascii": this cannot be assumed
+    assert rb"\udce9" in raw, "the undecodable byte must survive as an escape"
+    assert _record(dest).origin == os.fsdecode(husk_bytes)
+
+    result = restore_album(lib, str(dest), trash_dir=tmp_path / "trash")
+
+    assert result.restored is True
+    assert (husk / "booklet.jpg").is_file()
+    assert not dest.exists()
+    assert os.fsencode(str(husk)) == husk_bytes  # byte-exact, not a lookalike

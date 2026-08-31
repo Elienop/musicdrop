@@ -76,7 +76,35 @@ def test_refusal_message_leaks_no_path(duplicates_lib: Library) -> None:
     message = str(ei.value)
     assert str(root) not in message
     assert os.sep not in message
-    assert "Is the music share mounted?" in message
+    assert "the music share is not mounted" in message
+
+
+def test_the_refusal_names_the_other_cause_it_cannot_tell_apart(
+    duplicates_lib: Library,
+) -> None:
+    """A library whose album folders were ALL removed reaches the same refusal.
+
+    Not a hypothetical: a ``library.db`` restored from backup onto a re-pointed
+    music dir produces exactly this, and the check cannot distinguish it from a
+    dropped share — with every folder gone, every draw misses. Nor does it clear
+    on the next attempt at ``_PRESENCE_SAMPLE_SIZE`` albums or fewer, where the
+    re-rolled sample is exhaustive and returns the same set forever, so the user
+    cannot delete even the one row they are looking at.
+
+    Naming only the mount sent them to check a mount that is fine. The message
+    has to carry the cause they can act on; this test is what keeps it there.
+    """
+    root = _music_root(duplicates_lib)
+    for child in root.iterdir():
+        shutil.rmtree(child)
+    (root / ".stfolder").mkdir()  # the root itself must still look mounted
+
+    with pytest.raises(LibraryRootUnavailableError) as ei:
+        require_library_present(duplicates_lib)
+
+    message = str(ei.value)
+    assert "removed outside MusicDrop" in message
+    assert "the music share is not mounted" in message
 
 
 # ----- Negative control: healthy / empty / legitimately-deleted must pass -----

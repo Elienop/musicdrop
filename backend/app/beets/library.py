@@ -151,10 +151,18 @@ def require_library_root(lib: Library) -> None:
 #:
 #: * **False lockout.** Let ``f`` be the fraction of live album rows whose folder
 #:   is legitimately missing (deleted outside MusicDrop, never synced back). The
-#:   check refuses only when ALL sampled albums are missing, i.e. ``f**K``. At a
-#:   pathological ``f = 0.5`` — half the library already ghosts — K=4 gives 6.3%,
-#:   K=5 gives 3.1%, K=6 gives 1.6%. At a realistic ``f = 0.05`` even K=3 is
-#:   0.01%. The curve has flattened by 5; more samples buy almost nothing.
+#:   check refuses only when ALL sampled albums are missing — but the rate is
+#:   ``f**(K-1)``, not ``f**K``, and the difference is a whole factor of ``f``.
+#:   The sample is drawn from a population that still holds the row this call is
+#:   about: every caller runs the check BEFORE ``album.remove()``, and the delete
+#:   path's two callers reach it precisely because that album's folder is already
+#:   gone. So one draw is a guaranteed miss whenever the sampler happens to draw
+#:   it — which at ``N <= K`` albums it always does, the draw being exhaustive.
+#:   Measured in a 2-album library: the sampler returned the ghost's own folder
+#:   plus the bystander. At a pathological ``f = 0.5`` — half the library already
+#:   ghosts — K=4 gives 12.5%, K=5 gives 6.3%, K=6 gives 3.1%. At a realistic
+#:   ``f = 0.05``, K=5 is 0.000625%. The curve has flattened by 5; more samples
+#:   buy almost nothing.
 #: * **Blocking cost.** Each sample is one ``isdir``. On a *hung* (rather than
 #:   dropped) NFS/SMB mount a stat blocks for the mount's timeout, so K is also
 #:   the worst-case number of timeouts a user waits through. That caps K low.
@@ -166,11 +174,20 @@ _PRESENCE_SAMPLE_SIZE = 5
 # One item path per sampled album. ``ORDER BY RANDOM()`` rather than the first K
 # rowids on purpose: a FIXED sample makes a false refusal permanent (the same
 # few long-deleted albums are re-checked forever), while a re-rolled sample lets
-# a healthy-but-stale library recover on the next attempt. It cannot weaken the
-# true positive — with the share gone EVERY album folder is missing, so every
-# draw refuses. Cost is O(rows in `albums`), which is the small table (an item
-# scan at 75k rows is what this deliberately avoids), and it is paid only on the
-# rare arm that is about to drop rows having moved nothing. That cost rests on
+# a healthy-but-stale library recover on the next attempt — but ONLY where the
+# library has more albums than ``_PRESENCE_SAMPLE_SIZE``. At ``N <= K`` the draw
+# is exhaustive, so re-rolling returns the same set forever and a refusal is
+# permanent until the library itself changes. That is not a hedge on a rare
+# shape: a library whose album folders were all removed outside MusicDrop is
+# refused at every size, and measured at N = 1, 2, 3, 5 and 6 the user then
+# cannot clean up a single row through the app. The message says so (see
+# ``require_library_present``) rather than blaming a mount that is fine. None of
+# that can weaken the true positive — with the share gone EVERY album folder is
+# missing, so every draw refuses.
+#
+# Cost is O(rows in `albums`), which is the small table (an item scan at 75k rows
+# is what this deliberately avoids), and it is paid only on the rare arm that is
+# about to drop rows having moved nothing. That cost rests on
 # beets' own ``idx_item_album_id`` (``CREATE INDEX idx_item_album_id ON items
 # (album_id)``), which turns the outer query into a SEARCH: measured 0.18 ms at
 # 5k albums / 75k items with it, 2.1 ms without. Named because it is otherwise
@@ -256,9 +273,13 @@ def require_library_present(lib: Library) -> None:
     * a genuinely EMPTY library — no rows, nothing to verify, and nothing a
       wrong answer could cost;
     * a library whose sampled albums are all legitimately gone — improbable by
-      construction (see ``_PRESENCE_SAMPLE_SIZE``), self-correcting on the next
-      attempt (see ``_SAMPLE_ALBUM_PATHS_SQL``), and failing toward a kept 503
-      rather than lost rows.
+      construction (see ``_PRESENCE_SAMPLE_SIZE``), and failing toward a kept 503
+      rather than lost rows. It is NOT self-correcting on the next attempt below
+      ``_PRESENCE_SAMPLE_SIZE`` albums, where the re-rolled draw is exhaustive
+      and returns the same set forever; the refusal then stands until the library
+      changes, which is reachable from a ``library.db`` restored onto a
+      re-pointed music dir. That is why the message names both causes instead of
+      blaming a mount.
     """
     require_library_root(lib)
     sample = _sampled_library_dirs(lib, _PRESENCE_SAMPLE_SIZE)
@@ -272,7 +293,8 @@ def require_library_present(lib: Library) -> None:
             return
     raise LibraryRootUnavailableError(
         "Library folder is present but holds none of the library's albums."
-        " Is the music share mounted?"
+        " Either the music share is not mounted, or every album's folder has been"
+        " removed outside MusicDrop."
     )
 
 

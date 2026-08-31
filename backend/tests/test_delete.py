@@ -250,7 +250,8 @@ def test_delete_album_op_503_masked_drop_says_what_to_do(
     assert ei.value.status_code == 503
     assert ei.value.detail == (
         "Library folder is present but holds none of the library's albums."
-        " Is the music share mounted?"
+        " Either the music share is not mounted, or every album's folder has been"
+        " removed outside MusicDrop."
     )
     assert duplicates_lib.get_album(album_id) is not None  # rows kept
     assert str(root) not in str(ei.value.detail)

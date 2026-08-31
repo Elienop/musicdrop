@@ -26,6 +26,37 @@ def test_get_trash_empty(client: TestClient) -> None:
     assert body["trash_path"]
 
 
+def test_list_trash_reports_the_move_back_a_real_sidecar_offers(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The one argument the ROUTE contributes: which music dir the record is judged against.
+
+    ``restore_mode`` / ``restore_note`` / ``origin`` were exercised only below
+    the API, and ``list_trash`` supplies the value that decides all three —
+    whether a recorded origin is still inside the library. Point it anywhere
+    else and every row degrades to ``"import"`` carrying the "not inside the
+    current music library" note, with every unit test still green and the UI
+    quietly telling the user their exact restore is gone.
+
+    The sidecar is written by the real writer under the client's own music dir,
+    so the row is produced end to end rather than from a hand-built model.
+    """
+    trash = _trash_dir(client)
+    entry = trash / "Weird Folder"
+    entry.mkdir(parents=True)
+    (entry / "cover.jpg").write_bytes(b"\x00")
+    origin = tmp_path / "music" / "Weird Folder"
+    write_trash_origin(entry, origin=str(origin), moved="folder")
+
+    r = client.get("/api/trash")
+
+    assert r.status_code == 200
+    (row,) = r.json()["albums"]
+    assert row["restore_mode"] == "move_back"
+    assert row["restore_note"] is None  # nothing to warn about on an exact restore
+    assert row["origin"] == str(origin)
+
+
 def test_empty_one_removes_folder(client: TestClient) -> None:
     trash = _trash_dir(client)
     (trash / "Album").mkdir(parents=True)

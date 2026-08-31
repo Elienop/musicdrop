@@ -109,12 +109,21 @@ class TrashOrigin:
 
     Only ever constructed by :func:`read_trash_origin`, which validates every
     field — so ``origin`` is always an absolute path string and ``moved`` is
-    always one of the two shapes. ``trashed_at`` is informational only.
+    always one of the two shapes.
+
+    The payload's ``trashed_at`` is deliberately NOT a field here. It was: read
+    back, type-checked, carried through every caller, and never consulted by
+    anything. Surfacing it ("trashed 3 days ago" beside the origin) would be a
+    contract change and a UI change; validating a value nobody reads is code
+    that only looks like it does something. It is still WRITTEN, because the
+    sidecar is a file a human opens and a rename preserves the folder's own
+    mtime — so the record is the only place the trash TIME survives at all, and
+    keeping it on disk means a later decision to show it has no data gap to
+    apologise for.
     """
 
     origin: str
     moved: MovedShape
-    trashed_at: str | None
 
 
 def write_trash_origin(entry: Path, *, origin: str, moved: MovedShape) -> None:
@@ -152,6 +161,11 @@ def write_trash_origin(entry: Path, *, origin: str, moved: MovedShape) -> None:
     the plant one step. It also makes the write atomic, so a reader can no
     longer see a half-written record.
     """
+    # ``trashed_at`` has no reader by design — see :class:`TrashOrigin`. It is
+    # written for the human who opens the file, and because a rename preserves
+    # the folder's own mtime, so nothing else on disk records when the move
+    # happened. Do not "clean it up" as unused; do not add a reader without
+    # deciding what shows it.
     payload = {
         "schema": _SCHEMA,
         "trashed_at": datetime.now(UTC).isoformat(),
@@ -311,12 +325,7 @@ def _parse(raw: object) -> TrashOrigin | None:
         moved = "items"
     else:
         return None
-    trashed_at = raw.get("trashed_at")
-    return TrashOrigin(
-        origin=os.path.normpath(origin),
-        moved=moved,
-        trashed_at=trashed_at if isinstance(trashed_at, str) else None,
-    )
+    return TrashOrigin(origin=os.path.normpath(origin), moved=moved)
 
 
 def delete_trash_origin(folder: Path) -> None:
