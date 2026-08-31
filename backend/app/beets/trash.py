@@ -7,6 +7,11 @@ action (``app.beets.import_session``). Reversible by design: files are
 *relocated* (never deleted) and the DB rows dropped with ``delete=False`` —
 exactly ``beet dup --move <trash> --remove`` for albums.
 
+Every mover here also drops an origin record inside the folder it leaves in
+Trash (``app.beets.trash_record``), so Restore can put it back where it came
+from instead of re-filing it by path template. Writing that record can never
+fail a delete — see ``trash_record.write_trash_origin``.
+
 Lives in its own module so both features import it without forming the
 ``import_session -> duplicates -> registry -> import_session`` cycle. Imports
 only beets + the base adapter + settings (no registry/duplicates import).
@@ -31,6 +36,7 @@ from app.beets.library import (
     require_library_present,
     require_library_root,
 )
+from app.beets.trash_record import write_trash_origin
 from app.config import Settings
 
 
@@ -158,6 +164,11 @@ def trash_album(lib: Library, album: Any, *, trash_dir: Path) -> str:
     the whole-folder DELETE then wiped wholesale. Returns the album's new Trash
     folder. Caller controls the transaction (so a batch can be atomic).
 
+    Records the album's source folder on the container for display, marked
+    ``moved="items"`` — this mover takes tracked files out of a folder that may
+    hold other music, so Restore falls back to re-importing rather than offering
+    a move-back that could put files back among a stranger's.
+
     Guarded on BOTH sides of the move, because neither half is enough alone.
     beets 2.12's ``Item.move`` silently skips a source file that is not there
     ("If the source file is missing, skip the move", ``log.warning`` then
@@ -184,6 +195,10 @@ def trash_album(lib: Library, album: Any, *, trash_dir: Path) -> str:
     trash_dir.mkdir(parents=True, exist_ok=True)
     container = _unique_trash_dest(trash_dir, _trash_container_name(album))
     container.mkdir(parents=True, exist_ok=True)
+    # BEFORE the move: ``Album.move`` rewrites every item's stored path, so this
+    # is the last moment the album's own folder can be read off the rows.
+    pre_move_items = list(album.items())
+    source_root = _album_root(lib, pre_move_items) if pre_move_items else ""
     basedir = bytestring_path(str(container))
     album.move(basedir=basedir)  # relocate under the container + prune source dir
     items = list(album.items())
@@ -206,6 +221,14 @@ def trash_album(lib: Library, album: Any, *, trash_dir: Path) -> str:
     trash_path = (
         os.path.dirname(_abs_path(lib, first.path)) if first is not None else str(container)
     )
+    # Recorded on the CONTAINER, not on ``trash_path``: the container is the
+    # top-level Trash entry the listing keys on and the restore/empty endpoints
+    # resolve, while ``trash_path`` is a template level deeper inside it.
+    # ``moved="items"`` because this mover relocates tracked FILES out of a
+    # folder that may hold other music — the origin is worth showing, a
+    # move-back is not on offer. See ``trash_record.MovedShape``.
+    if source_root:
+        write_trash_origin(container, origin=source_root, moved="items")
     album.remove(delete=False)  # drop DB rows; files stay in Trash
     return trash_path
 
@@ -328,6 +351,11 @@ def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path) -> str:
     folder is shared with another album, so a sibling is never collateral.
     Caller owns the transaction.
 
+    The whole-folder branch records its origin, so Restore moves the folder
+    straight back to it. The shared-folder fallback records what
+    :func:`trash_album` records, and the two row-dropping branches below move
+    nothing, so neither has an origin to record.
+
     Raises :class:`~app.beets.library.LibraryRootUnavailableError` when the
     album's folder is missing AND the library's music cannot be found — an
     unmounted share, not a deleted album. The missing-folder branch uses
@@ -379,6 +407,12 @@ def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path) -> str:
     trash_dir.mkdir(parents=True, exist_ok=True)
     dest = _unique_trash_dest(trash_dir, os.path.basename(os.path.normpath(album_root)))
     shutil.move(album_root, str(dest))
+    # The folder moved whole, so ``dest`` maps 1:1 back onto ``album_root`` and a
+    # true restore is a single move. Written after the move (the destination is
+    # in Trash, so a failure here cannot leave anything in the music library) and
+    # before the rows are dropped, so the record exists from the moment the
+    # physical fact it describes is true.
+    write_trash_origin(dest, origin=album_root, moved="folder")
     album.remove(delete=False)  # drop DB rows; files now live under Trash
     return str(dest)
 
@@ -390,10 +424,19 @@ def trash_folder(folder: Path, *, trash_dir: Path) -> Path:
     a collision-free name and returns the destination. No DB interaction — these
     folders hold only art/sidecars, never library items (unlike
     :func:`trash_album_folder`). Caller owns guard/selection (``find_orphan_folders``).
+
+    The origin record matters most here: a folder with no audio cannot be
+    imported, so before it these husks had no exit from Trash except permanent
+    deletion.
     """
     trash_dir.mkdir(parents=True, exist_ok=True)
     dest = _unique_trash_dest(trash_dir, folder.name)
+    origin = os.path.abspath(str(folder))
     shutil.move(str(folder), str(dest))
+    # The husk's ONLY exit from Trash. An audio-free folder cannot be imported,
+    # so before this record it could be permanently deleted and nothing else;
+    # with it, Restore moves it straight back where the sweep took it from.
+    write_trash_origin(dest, origin=origin, moved="folder")
     return dest
 
 

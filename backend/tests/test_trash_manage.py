@@ -68,7 +68,7 @@ def test_list_groups_whole_folder_album(tmp_path: Path) -> None:
         title="Come",
         track=2,
     )
-    albums = list_trashed_albums(trash)
+    albums = list_trashed_albums(trash, music_dir=str(tmp_path / "music"))
     assert len(albums) == 1
     assert albums[0].album_artist == "2 Brothers"
     assert albums[0].album == "Dreams"
@@ -94,7 +94,7 @@ def test_list_groups_per_item_layout_and_multidisc(tmp_path: Path) -> None:
     _tagged_flac(
         trash / "Adele - 25" / "CD2" / "01 b.flac", artist="Adele", album="25", title="b", track=1
     )
-    albums = {a.album: a for a in list_trashed_albums(trash)}
+    albums = {a.album: a for a in list_trashed_albums(trash, music_dir=str(tmp_path / "music"))}
     assert set(albums) == {"Amnesiac", "25"}
     # Per-item layout keys on the top dir under trash (the $albumartist dir
     # holding the one album) — still reachable for restore/empty.
@@ -138,7 +138,7 @@ def test_trash_album_same_artist_siblings_stay_distinct(tmp_path: Path) -> None:
     with lib.transaction():
         trash_album(lib, third, trash_dir=trash)
 
-    albums = list_trashed_albums(trash)
+    albums = list_trashed_albums(trash, music_dir=str(music))
     by_album = {a.album: a for a in albums}
     assert set(by_album) == {"Dummy", "Third"}
     assert len(albums) == 2
@@ -163,13 +163,13 @@ def test_list_keeps_same_tagged_siblings_distinct(tmp_path: Path) -> None:
             title="Dreams",
             track=1,
         )
-    albums = list_trashed_albums(trash)
+    albums = list_trashed_albums(trash, music_dir=str(tmp_path / "music"))
     assert {a.folder for a in albums} == {"Dreams", "Dreams (1)"}
     assert all(a.folder != "." for a in albums)
 
 
 def test_list_missing_dir_is_empty(tmp_path: Path) -> None:
-    assert list_trashed_albums(tmp_path / "nope") == []
+    assert list_trashed_albums(tmp_path / "nope", music_dir=str(tmp_path / "music")) == []
 
 
 def test_restore_imports_as_is_and_empties_folder(tmp_path: Path) -> None:

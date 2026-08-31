@@ -738,13 +738,45 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   query-keyed path formats disagreeing about disc nesting are read through the first
   album's shape (less protection, never more).
 
-- **Record the origin path at trash time so a move-back restore becomes possible.**
-  (Follow-up from #189.) The trash layer is a bare `shutil.move` with no metadata anywhere
-  — origin is verifiably unrecoverable, which is why a genuinely media-free Trash row's
-  only exit is permanent Empty. One sidecar record (or a manifest) at trash time makes a
-  true restore possible for every future row; old rows stay import-restore-only. Small,
-  wants a short design look at where the record lives (per-folder file vs one manifest)
-  and what Empty does with it.
+- ~~**Record the origin path at trash time so a move-back restore becomes possible.**~~
+  **FIXED** on `fix/undoable-deletes` (follow-up from #189). Every mover now writes a
+  `.musicdrop-trash.json` sidecar INSIDE the trashed folder (owner's design call, recorded
+  as `decisions.md` 27: a sidecar over a central manifest, so `Empty` needs no extra logic
+  and a failure to record one folder cannot touch another's).
+
+  **Re-derive before quoting the old framing — "the Trash rows Restore can never restore"
+  was imprecise.** A Restore already existed; it re-imports through beets. The genuine gaps
+  were narrower: an audio-free folder (the art/booklet husks the orphan sweep relocates)
+  cannot be imported *at all*, so permanent Empty really was its only exit — that is the row
+  this feature rescues — and an album that CAN be imported was re-filed by the current path
+  templates rather than returned to where it came from.
+
+  What shipped:
+  * `restore_mode` on each row is `"move_back"` or `"import"`, with `restore_note` carrying
+    a distinct sentence for each of the three ways a row loses its move-back (no record /
+    files taken from a shared folder / origin no longer inside the library) and `origin`
+    shown either way so the user can put it back by hand. Old rows are Restore-visible and
+    explained, never a silent re-file.
+  * **No third `"unavailable"` mode**, deliberately: `track_count == 0` means "nothing
+    parsed as an Item", not "no music", and encoding that guess as a contract value would
+    turn a UI hint into a promise. `trash_manage.py:110` already warned against exactly this.
+  * `trash_album` records `moved="items"` and never offers a move-back — its files came out
+    of a possibly-shared folder, and the re-import that must follow takes a DIRECTORY
+    (`ImportTaskFactory.paths` makes one album task per file when handed files), so it would
+    sweep the neighbours into the album.
+  * The record is written on the DESTINATION after the move: writing into the source would
+    mutate a folder in the user's library and strand a file there if the move then failed.
+    A failed record write can never fail a delete — it degrades the row to import-restore.
+
+  **Residual, stated in the code, not a bug:** the origin-inside-the-library test is
+  LEXICAL. An origin under a symlink that escapes the library passes it (measured). Resolving
+  both sides would close that and break a legitimate symlinked-subtree layout in the same
+  stroke, so the check answers "is this still my library", not "is this safe" — and a hostile
+  sidecar needs write access to the Trash dir, which is strictly more than this path grants.
+
+  **Still open:** the frontend still disables Restore on `track_count == 0`, which is now
+  wrong for a recorded husk — the row this feature exists for. `TrashedAlbum`'s docstring
+  states the new rule.
 
 - ~~**The delete-path mount predicate accepts a root with ANY entry, so a stray file on a
   local mountpoint masks a dropped share.**~~ **FIXED** on `fix/undoable-deletes`

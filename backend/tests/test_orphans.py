@@ -164,7 +164,7 @@ def test_art_only_husk_is_listed_for_visibility(tmp_path: Path) -> None:
     # Audio-free trashed folders (husks the orphan sweep moves here) must appear in
     # the listing as zero-track entries — otherwise the Trash UI never shows them
     # and Empty-all deletes them silently. Now visible + individually empty-able.
-    listed = list_trashed_albums(trash)
+    listed = list_trashed_albums(trash, music_dir=str(tmp_path / "music"))
     assert [a.folder for a in listed] == ["Old Name"]
     assert listed[0].track_count == 0
 

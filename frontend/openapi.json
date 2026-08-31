@@ -9113,7 +9113,7 @@
           "trash"
         ],
         "summary": "Restore Trash",
-        "description": "Re-import a trashed folder as-is. 409 if busy, 404 if not in Trash.",
+        "description": "Put a trashed folder back. 409 if busy, 404 if not in Trash, 503 if unmounted.",
         "operationId": "restore_trash_api_trash_restore_post",
         "requestBody": {
           "content": {
@@ -9158,6 +9158,16 @@
           },
           "500": {
             "description": "The restore failed because re-importing the trashed folder failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The music library folder is unavailable, so the folder was not moved out of Trash.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15470,7 +15480,8 @@
             "enum": [
               "restored",
               "already_in_library",
-              "could_not_restore"
+              "could_not_restore",
+              "origin_occupied"
             ],
             "title": "Reason"
           },
@@ -15492,7 +15503,7 @@
           "reason"
         ],
         "title": "RestoreResult",
-        "description": "Outcome of an as-is restore. ``already_in_library`` = a matching album is\nalready present, so beets safely skipped (files stay in Trash)."
+        "description": "Outcome of a restore.\n\n``already_in_library`` = a matching album is already present, so beets safely\nskipped; ``origin_occupied`` = the folder it came from exists again, so the\nmove-back would have had to overwrite or land beside it. In both cases the\nfiles are back in Trash, untouched."
       },
       "ReviewInboxResponse": {
         "properties": {
@@ -16382,6 +16393,36 @@
               }
             ],
             "title": "Format"
+          },
+          "restore_mode": {
+            "type": "string",
+            "enum": [
+              "move_back",
+              "import"
+            ],
+            "title": "Restore Mode"
+          },
+          "restore_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restore Note"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin"
           }
         },
         "type": "object",
@@ -16391,10 +16432,13 @@
           "album",
           "year",
           "track_count",
-          "format"
+          "format",
+          "restore_mode",
+          "restore_note",
+          "origin"
         ],
         "title": "TrashedAlbum",
-        "description": "One album sitting in Trash (no beets DB row \u2014 read off disk).\n\n``folder`` is the album's path RELATIVE to the Trash dir; it is the key the\nrestore/empty endpoints take (resolved + traversal-checked server-side)."
+        "description": "One album sitting in Trash (no beets DB row \u2014 read off disk).\n\n``folder`` is the album's path RELATIVE to the Trash dir; it is the key the\nrestore/empty endpoints take (resolved + traversal-checked server-side).\n\n``restore_mode`` / ``restore_note`` / ``origin`` describe what Restore would\ndo to THIS row, so the UI can say it before the user clicks rather than\ndiscovering it in the result. A row trashed before origins were recorded is\n``\"import\"`` with a note stating that \u2014 visible and explained, never a\nRestore that silently lands somewhere else.\n\nNote for the UI: the existing \"disable Restore when ``track_count == 0``\"\nrule must now also require ``restore_mode != \"move_back\"``. An audio-free\nart/booklet husk relocated by the orphan sweep is exactly a 0-track row\nthat CAN be restored exactly, and it is the row this record was added for."
       },
       "TypedSearchPage": {
         "properties": {

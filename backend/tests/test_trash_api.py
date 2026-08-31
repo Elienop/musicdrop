@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.beets.trash_record import write_trash_origin
 from app.models.trash import EmptyResult
 
 
@@ -73,6 +75,25 @@ def test_restore_overlong_folder_404_not_500(client: TestClient) -> None:
     r = client.post("/api/trash/restore", json={"folder": "x" * 300})
     assert r.status_code == 404
     assert (trash / "A").exists()
+
+
+def test_restore_503_when_the_music_share_is_unavailable(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """A move-back writes INTO the music library, so a dropped share is a 503 —
+    the same answer delete gives — and not the blanket 500. The guard fires
+    before anything leaves Trash, so the folder is still there afterwards."""
+    trash = _trash_dir(client)
+    entry = trash / "Dummy"
+    entry.mkdir(parents=True)
+    (entry / "cover.jpg").write_bytes(b"\x00")
+    write_trash_origin(entry, origin=str(tmp_path / "music" / "Dummy"), moved="folder")
+    shutil.rmtree(tmp_path / "music")
+
+    r = client.post("/api/trash/restore", json={"folder": "Dummy"})
+
+    assert r.status_code == 503
+    assert (entry / "cover.jpg").exists()
 
 
 def test_restore_409_when_a_library_job_is_active(

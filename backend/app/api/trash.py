@@ -1,6 +1,7 @@
 """Trash management API: list / restore / empty (Settings → Trash).
 
-Mirrors the delete op's mutual exclusion. Restore runs a move-import and empty
+Mirrors the delete op's mutual exclusion. Restore moves a folder out of Trash
+(back to its recorded origin, or through a move-import) and empty
 rm -rf's trashed folders, so the two must never touch the same tree at once: both
 refuse (409) while any library job runs OR the beets swap lock is held, and both
 hold that lock across their synchronous file work — so a restore and an empty (in
@@ -17,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 
 from app.beets.config_editor import _settings, _swap_lock
-from app.beets.library import LibraryHandle
+from app.beets.library import LibraryHandle, LibraryRootUnavailableError, _music_dir
 from app.beets.trash import resolve_trash_dir
 from app.beets.trash_manage import (
     empty_all,
@@ -53,6 +54,15 @@ _TRASH_NOT_FOUND_RESPONSE: Final = {
 _TRASH_RESTORE_FAILED_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": "The restore failed because re-importing the trashed folder failed.",
+}
+#: A move-back restore writes INTO the music library, so it answers an
+#: unavailable music share the way delete does — a 503 that says nothing was
+#: moved — rather than falling into the blanket 500 below it.
+_TRASH_LIBRARY_UNAVAILABLE_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": (
+        "The music library folder is unavailable, so the folder was not moved out of Trash."
+    ),
 }
 
 
@@ -94,7 +104,9 @@ async def list_trash(request: Request) -> TrashListing:
     app = request.app
     handle: LibraryHandle = app.state.beets_library
     trash_dir = resolve_trash_dir(_settings(app), handle)
-    albums = await run_in_threadpool(list_trashed_albums, trash_dir)
+    albums = await run_in_threadpool(
+        list_trashed_albums, trash_dir, music_dir=_music_dir(handle.lib)
+    )
     return TrashListing(albums=albums, trash_path=str(trash_dir))
 
 
@@ -104,10 +116,11 @@ async def list_trash(request: Request) -> TrashListing:
         409: _TRASH_CONFLICT_RESPONSE,
         404: _TRASH_NOT_FOUND_RESPONSE,
         500: _TRASH_RESTORE_FAILED_RESPONSE,
+        503: _TRASH_LIBRARY_UNAVAILABLE_RESPONSE,
     },
 )
 async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult:
-    """Re-import a trashed folder as-is. 409 if busy, 404 if not in Trash."""
+    """Put a trashed folder back. 409 if busy, 404 if not in Trash, 503 if unmounted."""
     app = request.app
     _gate(app)
     async with _swap_lock(app):
@@ -119,6 +132,13 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
             )
             emit_library_changed(app)
             return result
+        # Ahead of the blanket 500, and for the same reason delete_album_op puts
+        # it there: this guard fires BEFORE anything leaves Trash, so "the
+        # restore failed" would be true but useless while "the share is not
+        # mounted" is actionable. Raised inline so the status stays a literal
+        # tests/test_route_status_declarations.py can see.
+        except LibraryRootUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Restore failed: {exc}") from exc
 

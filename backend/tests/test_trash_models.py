@@ -15,8 +15,12 @@ def test_trashed_album_minimal() -> None:
         year=None,
         track_count=0,
         format=None,
+        restore_mode="import",
+        restore_note="no record of where this came from",
+        origin=None,
     )
     assert a.folder == "Artist - Album"
+    assert a.restore_mode == "import"
 
 
 def test_listing_and_results() -> None:
@@ -29,6 +33,9 @@ def test_listing_and_results() -> None:
                 year=1994,
                 track_count=3,
                 format="FLAC",
+                restore_mode="move_back",
+                restore_note=None,
+                origin="/music/A/B",
             )
         ],
         trash_path="/data/beets/trash",
@@ -37,4 +44,6 @@ def test_listing_and_results() -> None:
     assert RestoreRequest(folder="x").folder == "x"
     assert RestoreResult(restored=True, reason="restored", album_id=7).album_id == 7
     assert RestoreResult(restored=False, reason="already_in_library").album_id is None
+    assert RestoreResult(restored=False, reason="origin_occupied").restored is False
+    assert listing.albums[0].origin == "/music/A/B"
     assert EmptyResult(removed=2).removed == 2

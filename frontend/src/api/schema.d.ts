@@ -2031,7 +2031,7 @@ export interface paths {
         put?: never;
         /**
          * Restore Trash
-         * @description Re-import a trashed folder as-is. 409 if busy, 404 if not in Trash.
+         * @description Put a trashed folder back. 409 if busy, 404 if not in Trash, 503 if unmounted.
          */
         post: operations["restore_trash_api_trash_restore_post"];
         delete?: never;
@@ -4707,8 +4707,12 @@ export interface components {
         };
         /**
          * RestoreResult
-         * @description Outcome of an as-is restore. ``already_in_library`` = a matching album is
-         *     already present, so beets safely skipped (files stay in Trash).
+         * @description Outcome of a restore.
+         *
+         *     ``already_in_library`` = a matching album is already present, so beets safely
+         *     skipped; ``origin_occupied`` = the folder it came from exists again, so the
+         *     move-back would have had to overwrite or land beside it. In both cases the
+         *     files are back in Trash, untouched.
          */
         RestoreResult: {
             /** Restored */
@@ -4717,7 +4721,7 @@ export interface components {
              * Reason
              * @enum {string}
              */
-            reason: "restored" | "already_in_library" | "could_not_restore";
+            reason: "restored" | "already_in_library" | "could_not_restore" | "origin_occupied";
             /** Album Id */
             album_id?: number | null;
         };
@@ -5092,6 +5096,17 @@ export interface components {
          *
          *     ``folder`` is the album's path RELATIVE to the Trash dir; it is the key the
          *     restore/empty endpoints take (resolved + traversal-checked server-side).
+         *
+         *     ``restore_mode`` / ``restore_note`` / ``origin`` describe what Restore would
+         *     do to THIS row, so the UI can say it before the user clicks rather than
+         *     discovering it in the result. A row trashed before origins were recorded is
+         *     ``"import"`` with a note stating that — visible and explained, never a
+         *     Restore that silently lands somewhere else.
+         *
+         *     Note for the UI: the existing "disable Restore when ``track_count == 0``"
+         *     rule must now also require ``restore_mode != "move_back"``. An audio-free
+         *     art/booklet husk relocated by the orphan sweep is exactly a 0-track row
+         *     that CAN be restored exactly, and it is the row this record was added for.
          */
         TrashedAlbum: {
             /** Folder */
@@ -5106,6 +5121,15 @@ export interface components {
             track_count: number;
             /** Format */
             format: string | null;
+            /**
+             * Restore Mode
+             * @enum {string}
+             */
+            restore_mode: "move_back" | "import";
+            /** Restore Note */
+            restore_note: string | null;
+            /** Origin */
+            origin: string | null;
         };
         /**
          * TypedSearchPage
@@ -12509,6 +12533,15 @@ export interface operations {
             };
             /** @description The restore failed because re-importing the trashed folder failed. */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The music library folder is unavailable, so the folder was not moved out of Trash. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -174,7 +174,7 @@ def test_list_trashed_albums_emits_a_display_safe_husk_folder(tmp_path: Path) ->
     raw = _mkdir_raw(trash, BAD_BYTES)
     with open(os.path.join(raw, b"cover.jpg"), "wb") as fh:
         fh.write(b"\x00")
-    rows = list_trashed_albums(trash)
+    rows = list_trashed_albums(trash, music_dir=str(tmp_path / "music"))
     assert [(album.folder, album.track_count) for album in rows] == [(BAD_DISPLAY, 0)]
 
 
@@ -191,7 +191,7 @@ def test_list_trashed_albums_emits_a_display_safe_folder_for_a_real_album(tmp_pa
     shutil.copyfile(
         Path(__file__).parent / "fixtures" / "silent.flac", os.path.join(raw, b"01.flac")
     )
-    rows = list_trashed_albums(trash)
+    rows = list_trashed_albums(trash, music_dir=str(tmp_path / "music"))
     assert [(album.folder, album.track_count) for album in rows] == [(BAD_DISPLAY, 1)]
 
 
