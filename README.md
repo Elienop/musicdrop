@@ -54,10 +54,13 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   under **Settings → Trash**. If the music root is missing, empty or unreadable (an unmounted
   share), deletes are refused with a 503 — nothing is moved and no library rows are dropped —
   so a genuinely emptied library needs a remount (or beets' own CLI) before its leftover
-  entries can be cleared. That check also covers the case a stray file used to hide: a
-  `.stfolder`, a `lost+found` or an empty leftover directory sitting on a local mountpoint
-  whose share has dropped makes the folder look mounted, so before dropping any rows
-  MusicDrop confirms that at least one album it believes it owns is actually on disk. A share
+  entries can be cleared. **Deleting an album** additionally covers the case a stray
+  file used to hide: a `.stfolder`, a `lost+found` or an empty leftover directory sitting on
+  a local mountpoint whose share has dropped makes the folder look mounted, so before a
+  delete drops rows having moved nothing, MusicDrop confirms that at least one album it
+  believes it owns is really on disk. That stronger check is on the delete path only —
+  disk sync deliberately keeps the cheap "is the root there" test, because it runs it once
+  per removal and accepted the same residual for itself. A share
   dropping part-way through an artist delete reports how many albums were trashed before it
   dropped — those stay recoverable in Trash, the rest untouched.
 - **Restore knows where things came from.** Every folder moved to Trash carries a small
