@@ -57,7 +57,11 @@ describe("SettingsTrashPage", () => {
   });
 
   test("shows an empty state when Trash is empty", async () => {
-    server.use(http.get(TRASH_URL, () => HttpResponse.json({ albums: [], trash_path: "/t" })));
+    server.use(
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [], trash_path: "/t" }),
+      ),
+    );
     renderPage();
     expect(await screen.findByText(/Trash is empty/i)).toBeInTheDocument();
   });
@@ -65,7 +69,9 @@ describe("SettingsTrashPage", () => {
   test("Empty confirms then DELETEs that folder", async () => {
     let deleted: string | null = null;
     server.use(
-      http.get(TRASH_URL, () => HttpResponse.json({ albums: [album], trash_path: "/t" })),
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [album], trash_path: "/t" }),
+      ),
       http.delete(TRASH_URL, ({ request }) => {
         deleted = new URL(request.url).searchParams.get("folder");
         return HttpResponse.json({ removed: 1 });
@@ -74,7 +80,9 @@ describe("SettingsTrashPage", () => {
     const user = userEvent.setup();
     renderPage();
 
-    await user.click(await screen.findByRole("button", { name: /Empty Dreams/i }));
+    await user.click(
+      await screen.findByRole("button", { name: /Empty Dreams/i }),
+    );
     const dialog = await screen.findByRole("alertdialog");
     await user.click(within(dialog).getByRole("button", { name: "Delete" }));
 
@@ -84,7 +92,9 @@ describe("SettingsTrashPage", () => {
   test("Empty all DELETEs /api/trash/all", async () => {
     let called = false;
     server.use(
-      http.get(TRASH_URL, () => HttpResponse.json({ albums: [album], trash_path: "/t" })),
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [album], trash_path: "/t" }),
+      ),
       http.delete(ALL_URL, () => {
         called = true;
         return HttpResponse.json({ removed: 1 });
@@ -103,18 +113,28 @@ describe("SettingsTrashPage", () => {
   test("Restore posts the folder and shows the restored result", async () => {
     let posted: unknown = null;
     server.use(
-      http.get(TRASH_URL, () => HttpResponse.json({ albums: [album], trash_path: "/t" })),
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [album], trash_path: "/t" }),
+      ),
       http.post(RESTORE_URL, async ({ request }) => {
         posted = await request.json();
-        return HttpResponse.json({ restored: true, reason: "restored", album_id: 7 });
+        return HttpResponse.json({
+          restored: true,
+          reason: "restored",
+          album_id: 7,
+        });
       }),
     );
     const user = userEvent.setup();
     renderPage();
 
     await user.click(await screen.findByRole("button", { name: /^Restore$/ }));
-    await waitFor(() => expect(posted).toEqual({ folder: "2 Brothers - Dreams" }));
-    expect(await screen.findByText(/Restored to your library/i)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(posted).toEqual({ folder: "2 Brothers - Dreams" }),
+    );
+    expect(
+      await screen.findByText(/Restored to your library/i),
+    ).toBeInTheDocument();
   });
 
   test("a zero-track row keeps Restore enabled and explains the uncertainty", async () => {
@@ -150,7 +170,9 @@ describe("SettingsTrashPage", () => {
 
   test("a move-back row names the folder Restore returns it to", async () => {
     server.use(
-      http.get(TRASH_URL, () => HttpResponse.json({ albums: [album], trash_path: "/t" })),
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [album], trash_path: "/t" }),
+      ),
     );
     renderPage();
 
@@ -179,7 +201,9 @@ describe("SettingsTrashPage", () => {
       origin: "/old-library/Old Band/Demos",
     };
     server.use(
-      http.get(TRASH_URL, () => HttpResponse.json({ albums: [reimported], trash_path: "/t" })),
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [reimported], trash_path: "/t" }),
+      ),
     );
     renderPage();
 
@@ -189,8 +213,12 @@ describe("SettingsTrashPage", () => {
     expect(screen.getByText(NO_RECORD_NOTE)).toBeInTheDocument();
     // origin survives an import row so the user can put it back by hand.
     expect(screen.getByText("/old-library/Old Band/Demos")).toBeInTheDocument();
-    expect(restore).toHaveAccessibleDescription(/no record of where this came from/i);
-    expect(restore).toHaveAccessibleDescription(/Was at\s+\/old-library\/Old Band\/Demos/);
+    expect(restore).toHaveAccessibleDescription(
+      /no record of where this came from/i,
+    );
+    expect(restore).toHaveAccessibleDescription(
+      /Was at\s+\/old-library\/Old Band\/Demos/,
+    );
     expect(screen.queryByText("Exact restore.")).not.toBeInTheDocument();
   });
 
@@ -211,7 +239,9 @@ describe("SettingsTrashPage", () => {
       origin: "/music/Some Artist/Some Album/Scans (LP)",
     };
     server.use(
-      http.get(TRASH_URL, () => HttpResponse.json({ albums: [husk], trash_path: "/t" })),
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [husk], trash_path: "/t" }),
+      ),
     );
     renderPage();
 
@@ -220,14 +250,22 @@ describe("SettingsTrashPage", () => {
     expect(await screen.findByText(/no track details/i)).toBeInTheDocument();
     expect(screen.queryByText(/may still work/i)).not.toBeInTheDocument();
     expect(restore).toHaveAccessibleDescription(/Goes back to/);
-    expect(restore).toHaveAccessibleDescription(/not a sign Restore won’t work/);
+    expect(restore).toHaveAccessibleDescription(
+      /not a sign Restore won’t work/,
+    );
   });
 
   test("Restore explains an occupied origin instead of failing generically", async () => {
     server.use(
-      http.get(TRASH_URL, () => HttpResponse.json({ albums: [album], trash_path: "/t" })),
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [album], trash_path: "/t" }),
+      ),
       http.post(RESTORE_URL, () =>
-        HttpResponse.json({ restored: false, reason: "origin_occupied", album_id: null }),
+        HttpResponse.json({
+          restored: false,
+          reason: "origin_occupied",
+          album_id: null,
+        }),
       ),
     );
     const user = userEvent.setup();
@@ -247,7 +285,9 @@ describe("SettingsTrashPage", () => {
     // instead. jsdom computes no layout, so this pins the pair that makes the
     // 390px reflow possible — the reflow itself is a browser check.
     server.use(
-      http.get(TRASH_URL, () => HttpResponse.json({ albums: [album], trash_path: "/t" })),
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [album], trash_path: "/t" }),
+      ),
     );
     renderPage();
 
@@ -256,9 +296,43 @@ describe("SettingsTrashPage", () => {
     expect(row?.firstElementChild).toHaveClass("basis-64", "grow");
   });
 
+  test("an approximate row can shrink below its longest unbreakable path segment", async () => {
+    // The warning arm nests the note in a flex item, which defaults to
+    // `min-width: auto` — a floor set by the longest token inside it.
+    // `overflow-wrap` (the `break-words` on the path) picks where LINES break
+    // and does NOT lower that floor, so without `min-w-0` an origin with no
+    // separator to break at pushes the whole page sideways. Measured at 320px
+    // with an 85-character space-free path: scrollWidth 633 vs clientWidth 305,
+    // and 305 once this class is present. jsdom computes no layout, so this
+    // pins the class; the overflow itself is a browser check.
+    const unbreakable = {
+      ...album,
+      restore_mode: "import" as const,
+      restore_note: "No record of where this came from.",
+      origin:
+        "/music/Godspeed_You_Black_Emperor_Lift_Your_Skinny_Fists_Like_Antennas/Disc_One",
+    };
+    server.use(
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [unbreakable], trash_path: "/t" }),
+      ),
+    );
+    renderPage();
+
+    const path = await screen.findByText(unbreakable.origin);
+    expect(path).toHaveClass("break-words");
+    // The flex item between the warning icon and the path must have a floor of
+    // zero, or the path's min-content width becomes the row's.
+    expect(path.closest("p")?.querySelector(":scope > span")).toHaveClass(
+      "min-w-0",
+    );
+  });
+
   test("the header points at the per-row promise instead of making one", async () => {
     server.use(
-      http.get(TRASH_URL, () => HttpResponse.json({ albums: [album], trash_path: "/t" })),
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [album], trash_path: "/t" }),
+      ),
     );
     renderPage();
 
@@ -270,15 +344,23 @@ describe("SettingsTrashPage", () => {
 
   test("Restore surfaces the already-in-library result", async () => {
     server.use(
-      http.get(TRASH_URL, () => HttpResponse.json({ albums: [album], trash_path: "/t" })),
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [album], trash_path: "/t" }),
+      ),
       http.post(RESTORE_URL, () =>
-        HttpResponse.json({ restored: false, reason: "already_in_library", album_id: null }),
+        HttpResponse.json({
+          restored: false,
+          reason: "already_in_library",
+          album_id: null,
+        }),
       ),
     );
     const user = userEvent.setup();
     renderPage();
 
     await user.click(await screen.findByRole("button", { name: /^Restore$/ }));
-    expect(await screen.findByText(/Already in your library/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Already in your library/i),
+    ).toBeInTheDocument();
   });
 });

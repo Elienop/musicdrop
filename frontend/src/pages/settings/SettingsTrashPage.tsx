@@ -55,14 +55,16 @@ export function SettingsTrashPage() {
         <div className="flex flex-col gap-1">
           <h2 className="text-lg font-semibold">Trash</h2>
           {/* NOT "Restore puts one back as-is": only a `move_back` row goes back
-            * to its own folder — an `import` row is re-filed by the current
-            * naming rules. The promise lives per row now, so the header points
-            * at it instead of making it for every row. */}
+           * to its own folder — an `import` row is re-filed by the current
+           * naming rules. The promise lives per row now, so the header points
+           * at it instead of making it for every row. */}
           <p className="text-muted-foreground text-sm">
             Deleted albums are moved here. Each row says where Restore will put
             it; emptying is permanent.
           </p>
-          <p className="text-muted-foreground text-xs break-all">{trash_path}</p>
+          <p className="text-muted-foreground text-xs break-all">
+            {trash_path}
+          </p>
         </div>
         {albums.length > 0 && (
           <ConfirmAction
@@ -76,7 +78,9 @@ export function SettingsTrashPage() {
             confirmLabel="Empty all"
             pending={emptyAll.isPending}
             error={emptyAll.isError ? emptyAll.error.message : null}
-            onConfirm={(close) => emptyAll.mutate(undefined, { onSuccess: close })}
+            onConfirm={(close) =>
+              emptyAll.mutate(undefined, { onSuccess: close })
+            }
           />
         )}
       </div>
@@ -123,7 +127,10 @@ function restoreResultMessage(result: RestoreResult): string {
  * distinct ones, so this must render whatever arrives rather than branch on
  * which. The warning icon is the glance-level tell and the run-in label the
  * readable one; neither carries the meaning alone. */
-function RestoreOutlook({ album, id }: Readonly<{ album: TrashedAlbum; id: string }>) {
+function RestoreOutlook({
+  album,
+  id,
+}: Readonly<{ album: TrashedAlbum; id: string }>) {
   if (album.restore_mode === "move_back") {
     return (
       <p id={id} className="text-muted-foreground text-xs">
@@ -139,9 +146,23 @@ function RestoreOutlook({ album, id }: Readonly<{ album: TrashedAlbum; id: strin
     );
   }
   return (
-    <p id={id} className="text-muted-foreground flex items-start gap-1.5 text-xs">
-      <Warning className="text-warning mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-      <span>
+    <p
+      id={id}
+      className="text-muted-foreground flex items-start gap-1.5 text-xs"
+    >
+      <Warning
+        className="text-warning mt-0.5 size-3.5 shrink-0"
+        aria-hidden="true"
+      />
+      {/* `min-w-0` is load-bearing, not tidiness. This span is a flex item of
+       * the <p> above, so it defaults to `min-width: auto` and takes its floor
+       * from the longest unbreakable token inside it. `overflow-wrap` on the
+       * path chooses where LINES break; it does not lower that floor (only
+       * `word-break: break-all` or this does). Without it an origin whose
+       * segment has no separator to break at pushes the page sideways —
+       * measured at 320px with an 85-character space-free path: scrollWidth
+       * 633 vs clientWidth 305, and 305 with this class. */}
+      <span className="min-w-0">
         <span className="text-warning font-medium">Approximate restore.</span>{" "}
         {album.restore_note}
         {album.origin && (
@@ -197,9 +218,12 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
     <li className="flex flex-wrap items-center gap-3 px-4 py-3">
       <div className="flex min-w-0 grow basis-64 flex-col">
         <span className="truncate text-sm font-medium">
-          {album.album_artist ?? "Unknown artist"} - {album.album ?? album.folder}
+          {album.album_artist ?? "Unknown artist"} -{" "}
+          {album.album ?? album.folder}
         </span>
-        <span className="text-muted-foreground truncate text-xs">{meta || album.folder}</span>
+        <span className="text-muted-foreground truncate text-xs">
+          {meta || album.folder}
+        </span>
         <div className="mt-1 flex flex-col gap-1">
           <RestoreOutlook album={album} id={outlookId} />
           {noTracks && (
@@ -276,7 +300,7 @@ function ConfirmAction({
   pending: boolean;
   error: string | null;
   onConfirm: (close: () => void) => void;
-}> ) {
+}>) {
   const [open, setOpen] = useState(false);
   return (
     <AlertDialog open={open} onOpenChange={setOpen}>
