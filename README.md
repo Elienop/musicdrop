@@ -54,12 +54,30 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   under **Settings → Trash**. If the music root is missing, empty or unreadable (an unmounted
   share), deletes are refused with a 503 — nothing is moved and no library rows are dropped —
   so a genuinely emptied library needs a remount (or beets' own CLI) before its leftover
-  entries can be cleared. A share dropping part-way through an artist delete reports how
-  many albums were trashed before it dropped — those stay recoverable in Trash, the rest
-  untouched. A Trash row listed at zero tracks means MusicDrop
-  couldn't read audio tags there — Restore may still work (beets' importer reads more
-  formats than the listing does); a genuinely media-free folder (art/booklet leftovers)
-  reports "couldn't restore" and Empty is its only exit.
+  entries can be cleared. That check also covers the case a stray file used to hide: a
+  `.stfolder`, a `lost+found` or an empty leftover directory sitting on a local mountpoint
+  whose share has dropped makes the folder look mounted, so before dropping any rows
+  MusicDrop confirms that at least one album it believes it owns is actually on disk. A share
+  dropping part-way through an artist delete reports how many albums were trashed before it
+  dropped — those stay recoverable in Trash, the rest untouched.
+- **Restore knows where things came from.** Every folder moved to Trash carries a small
+  `.musicdrop-trash.json` record of the folder it came from, so each row in **Settings →
+  Trash** says what Restore will do before you click:
+  - **Exact restore** — the folder goes straight back to its own path. This is the only way
+    back for an art/booklet leftover the reorganize sweep collected, which has no audio and
+    therefore cannot be re-imported at all.
+  - **Approximate restore** — no usable origin, so beets re-imports the folder and files it
+    under your *current* naming rules rather than putting it back. The row says which of the
+    three reasons applies: it was trashed before MusicDrop recorded origins, its files came
+    out of a folder shared with other music, or its origin is no longer inside the library.
+    Restore stays available in every case; the row just tells you it will not be exact.
+
+  Two consequences worth knowing. A row trashed by an older version has no record and never
+  will, so a media-free one (art/booklet leftovers with no audio) still has Empty as its only
+  exit. And a Restore whose original folder exists again is refused rather than merged —
+  nothing moves, the files stay in Trash, and the row tells you to clear that folder first.
+  A Trash row listed at zero tracks only means MusicDrop couldn't read audio tags there;
+  beets' importer reads more formats than the listing does, so Restore may still work.
 - **beets config** — viewer + writable editor, with advisory notices for import keys MusicDrop forces (a saved value that only affects CLI runs is flagged, not silently accepted).
 - **Naming** — edit beets path/replace rules with a live preview. **Reorganize** — re-apply them to existing files, and sweep emptied leftover folders into the Trash — the sweep only ever offers folders with no audio anywhere beneath them, and never an art/booklet/scans folder sitting at a live album's own filed location. A move that would silently rename an album's cover (a stray file already holds the cover's name at the destination) is refused instead: the preview flags it as an art conflict, and apply holds back just that album.
 - **Disk sync** — a `beet update` equivalent: preview-first removal of library entries whose files were deleted outside the app, plus tag refresh for files changed on disk.

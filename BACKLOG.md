@@ -19,7 +19,11 @@ entry carries a dated correction block where the pass changed it._
 
 ## Next up
 
-1. **The data-safety slice — now TWO findings, not three.** The 2026-08-28 data-loss findings
+1. ~~**The data-safety slice**~~ — **SHIPPED on `fix/undoable-deletes`** (2026-08-31): the
+   unmounted-share ghost delete and the unrestorable Trash rows, both closed below, plus the
+   README and `decisions.md` 27 (amended). Original entry kept for its correction record.
+
+   **The data-safety slice — now TWO findings, not three.** The 2026-08-28 data-loss findings
    that destroy user files or rows with no confirmation and no in-app recovery. Its *critical*
    member, the lyrics-backfill sidecar deletion, **shipped in #189** and is struck below; this
    item still described it as open and pointed at it as "first entry below", a cross-reference
@@ -774,11 +778,17 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   stroke, so the check answers "is this still my library", not "is this safe" — and a hostile
   sidecar needs write access to the Trash dir, which is strictly more than this path grants.
 
-  **Still open:** the frontend does not yet surface `restore_mode` / `restore_note` /
-  `origin`, so a user cannot tell before clicking whether Restore is exact. (Corrected: an
-  earlier draft of this note, and the backend comment it came from, claimed the UI disables
-  Restore at `track_count == 0`. It does not and must not — `SettingsTrashPage.tsx` shows a
-  "may still work" hint precisely because 0 means "no readable tags", not "no music".)
+  **UI shipped in the same slice:** each row states its outlook before the user clicks — a
+  quiet "Exact restore. Goes back to <path>" or an amber-flagged "Approximate restore."
+  carrying the backend's own sentence, wired to the button via `aria-describedby`. Restore
+  stays ENABLED on every row (owner, 2026-08-31: *"Keep it enabled, warn clearly"*, amending
+  `decisions.md` 27 — see that note for why the original DISABLE ruling rested on a false
+  premise). The page header no longer promises "puts one back as-is", which was only ever true
+  for some rows. (Corrected: an earlier draft of this note, and the backend comment it came
+  from, claimed the UI disables Restore at `track_count == 0`. It does not and must not —
+  `SettingsTrashPage.tsx` shows a "may still work" hint precisely because 0 means "no readable
+  tags", not "no music". That 0-track hint is now re-worded rather than stacked on an exact
+  row, where it would have contradicted the promise one line above it.)
 
 - ~~**The delete-path mount predicate accepts a root with ANY entry, so a stray file on a
   local mountpoint masks a dropped share.**~~ **FIXED** on `fix/undoable-deletes`

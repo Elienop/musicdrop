@@ -7,7 +7,7 @@ import {
   useRestoreTrash,
   useTrashList,
 } from "@/api/useTrash";
-import { Remove, Spinner } from "@/components/icons";
+import { Remove, Spinner, Warning } from "@/components/icons";
 import { EmptyState } from "@/components/system/EmptyState";
 import { IconAction } from "@/components/system/IconAction";
 import {
@@ -23,8 +23,11 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { plural } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
-/** Settings → Trash: list deleted albums, restore one as-is, or empty (forever). */
+/** Settings → Trash: list deleted albums, restore one — exactly where it came
+ * from, or re-filed by the current naming rules, per `restore_mode` — or empty
+ * (forever). */
 export function SettingsTrashPage() {
   const { data, isPending, isError, refetch } = useTrashList();
   const emptyAll = useEmptyAllTrash();
@@ -51,9 +54,13 @@ export function SettingsTrashPage() {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex flex-col gap-1">
           <h2 className="text-lg font-semibold">Trash</h2>
+          {/* NOT "Restore puts one back as-is": only a `move_back` row goes back
+            * to its own folder — an `import` row is re-filed by the current
+            * naming rules. The promise lives per row now, so the header points
+            * at it instead of making it for every row. */}
           <p className="text-muted-foreground text-sm">
-            Deleted albums are moved here. Restore puts one back as-is; emptying
-            is permanent.
+            Deleted albums are moved here. Each row says where Restore will put
+            it; emptying is permanent.
           </p>
           <p className="text-muted-foreground text-xs break-all">{trash_path}</p>
         </div>
@@ -99,7 +106,60 @@ function restoreResultMessage(result: RestoreResult): string {
   if (result.reason === "already_in_library") {
     return "Already in your library; not restored";
   }
+  if (result.reason === "origin_occupied") {
+    // A move-back that refused rather than merging: something is at the origin
+    // again, so nothing moved. Say where the files ARE (still in Trash, so the
+    // row and its Restore are unchanged) and the one thing that unblocks it —
+    // the folder itself is named on the row's own "Goes back to" line.
+    return "Its original folder exists again; nothing moved and the files are still in Trash. Clear that folder, then try again.";
+  }
   return "Couldn’t restore";
+}
+
+/** What Restore will DO to this row, said before the user commits to it.
+ *
+ * `move_back` is a promise about WHERE (its own folder, named); `import` hands
+ * over the backend's own sentence for why that is not on offer — three
+ * distinct ones, so this must render whatever arrives rather than branch on
+ * which. The warning icon is the glance-level tell and the run-in label the
+ * readable one; neither carries the meaning alone. */
+function RestoreOutlook({ album, id }: Readonly<{ album: TrashedAlbum; id: string }>) {
+  if (album.restore_mode === "move_back") {
+    return (
+      <p id={id} className="text-muted-foreground text-xs">
+        <span className="text-foreground font-medium">Exact restore.</span>{" "}
+        {album.origin ? (
+          <>
+            Goes back to <span className="break-words">{album.origin}</span>
+          </>
+        ) : (
+          "Goes back to the folder it came from"
+        )}
+      </p>
+    );
+  }
+  return (
+    <p id={id} className="text-muted-foreground flex items-start gap-1.5 text-xs">
+      <Warning className="text-warning mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+      <span>
+        <span className="text-warning font-medium">Approximate restore.</span>{" "}
+        {album.restore_note}
+        {album.origin && (
+          // The wrap goes on the PATH ONLY, never the label around it.
+          // `break-words`, not the `break-all` PlexSettingsPanel needs: that
+          // one has no `min-w-0` ancestor, so a long segment sets the flex
+          // item's min-content width and pushes the page sideways. Here the
+          // text column IS `min-w-0`, so `overflow-wrap` alone holds — measured
+          // at 320px with an 85-char space-free origin, scrollWidth stayed
+          // equal to clientWidth. It breaks at the separators first and only
+          // splits a token that cannot fit on its own.
+          <span className="mt-0.5 block">
+            Was at <span className="break-words">{album.origin}</span>
+          </span>
+        )}
+      </span>
+    </p>
+  );
 }
 
 /** One trashed album: name + meta, a Restore button, and a destructive Empty. */
@@ -122,32 +182,55 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
   // (trash_manage.py) — beets' importer reads more than Item.from_path, so a
   // 0-track folder can still restore. Explain the uncertainty; never disable.
   const noTracks = album.track_count === 0;
+  const exact = album.restore_mode === "move_back";
   const reasonId = useId();
+  const outlookId = useId();
 
+  // Row layout: `flex-wrap` + a 16rem basis on the text column, NOT `flex-1`
+  // (whose basis is 0). The outlook line can carry a three-sentence note, and
+  // squeezed into the ~200px left beside the two actions on a phone it wrapped
+  // to nine lines. Below the basis the actions take their own row and the text
+  // gets the full width; above it nothing wraps, and since the text column is
+  // the ONLY growable child it still ends up exactly as wide as `flex-1` made
+  // it — desktop is unchanged.
   return (
-    <li className="flex items-center gap-3 px-4 py-3">
-      <div className="flex min-w-0 flex-1 flex-col">
+    <li className="flex flex-wrap items-center gap-3 px-4 py-3">
+      <div className="flex min-w-0 grow basis-64 flex-col">
         <span className="truncate text-sm font-medium">
           {album.album_artist ?? "Unknown artist"} - {album.album ?? album.folder}
         </span>
         <span className="text-muted-foreground truncate text-xs">{meta || album.folder}</span>
-        {noTracks && (
-          <span id={reasonId} className="text-muted-foreground text-xs">
-            MusicDrop couldn&rsquo;t read audio tags here — Restore may still work; Empty
-            removes it permanently.
-          </span>
-        )}
-        {result && (
-          <output className="text-muted-foreground text-xs">
-            {restoreResultMessage(result)}
-          </output>
-        )}
+        <div className="mt-1 flex flex-col gap-1">
+          <RestoreOutlook album={album} id={outlookId} />
+          {noTracks && (
+            <span id={reasonId} className="text-muted-foreground text-xs">
+              {exact
+                ? // The husk this feature exists for: an audio-free folder WITH a
+                  // record is moved back whole, so the old "may still work" hedge
+                  // would now contradict the exact promise one line above. What is
+                  // left to explain is the empty meta line, not the outcome.
+                  "MusicDrop couldn’t read audio tags here — that’s why there are no track details, not a sign Restore won’t work."
+                : "MusicDrop couldn’t read audio tags here — Restore may still work; Empty removes it permanently."}
+            </span>
+          )}
+          {result && (
+            <output
+              className={cn(
+                "text-xs",
+                // A refusal must not read like the success directly above it.
+                result.restored ? "text-muted-foreground" : "text-warning",
+              )}
+            >
+              {restoreResultMessage(result)}
+            </output>
+          )}
+        </div>
       </div>
       <Button
         variant="outline"
         size="sm"
         disabled={restore.isPending}
-        aria-describedby={noTracks ? reasonId : undefined}
+        aria-describedby={noTracks ? `${outlookId} ${reasonId}` : outlookId}
         onClick={() => restore.mutate(album.folder, { onSuccess: setResult })}
       >
         {restore.isPending ? (
