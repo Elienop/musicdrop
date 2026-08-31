@@ -20,6 +20,12 @@ adapter:
 The third load-bearing thing here is not a fixture at all — see
 ``_install_session_cookie_on_every_test_client`` below, which is what keeps the
 session gate (``app/auth/gate.py``) from 401-ing the whole suite.
+
+The fourth is not in this file: ``backend/conftest.py`` (the ROOT conftest,
+imported before this one) pins ``BEETSDIR`` at a throwaway sandbox for the whole
+process, so nothing here can resolve beets' config against the developer's
+personal ``~/.config/beets``. Read its docstring before changing anything that
+touches ``BEETSDIR``.
 """
 
 import os
@@ -297,6 +303,13 @@ def _clear_beets_globals() -> Iterator[None]:
     NOT reset ``_materialized``; without flipping it back to False the next
     ``setup_beets()`` force-resolve short-circuits at ``LazyConfig.resolve()``'s
     guard (core.py:728) and the user's ``config.yaml`` is silently ignored.
+
+    The env loop below SAVES AND RESTORES; it does not redirect. That is safe
+    only because ``backend/conftest.py`` sets ``BEETSDIR`` at import, before any
+    fixture runs — so the saved value is always the suite sandbox and the
+    ``v is None`` branch (which would ``pop`` the variable and re-expose the
+    developer's platform beets dir to the next test) can never fire for it.
+    Do not move the floor into a fixture without re-checking that.
     """
     from app.beets.setup import reset_beets_globals
 

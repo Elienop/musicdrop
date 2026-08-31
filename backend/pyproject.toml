@@ -48,7 +48,12 @@ select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF", "PT001", "PT012", "PT018", "
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["app", "tests", "scripts"]
+# conftest.py is listed explicitly: it is the ROOT conftest (backend/conftest.py,
+# not tests/conftest.py) and holds the suite's BEETSDIR floor. Defence in depth
+# rather than load-bearing today — follow-imports already checks it because
+# tests/test_beetsdir_isolation.py imports it, so this only starts to matter if
+# that import ever goes away.
+files = ["app", "tests", "scripts", "conftest.py"]
 
 [[tool.mypy.overrides]]
 module = ["beets.*", "beetsplug.*", "mediafile", "yaml", "requests.*", "plexapi.*"]

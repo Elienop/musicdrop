@@ -49,8 +49,50 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 ## Open bugs / hardening
 
-- **`tests/test_import_session.py::test_attended_astracks_lands_the_singletons_full_pipeline`
-  writes to the developer's PERSONAL beets config dir** (`~/.config/beets/state.pickle`) on every
+- ~~**`tests/test_import_session.py::test_attended_astracks_lands_the_singletons_full_pipeline`
+  writes to the developer's PERSONAL beets config dir**~~ — **FIXED on branch
+  `fix/test-suite-beets-dir-isolation`, 2026-08-31.** (No sha cited: a branch-local one is
+  destroyed by the squash-merge, which `tests/test_cited_shas.py` caught when this note first
+  tried it.)
+  **This entry's measured blast radius was UNDERSTATED, and the reason is worth keeping.** It
+  read "bounded: only beets' importer scratch state is written, the personal `library.db` md5
+  is unchanged and no `.bak` appears". That is true only on a machine with **no personal
+  `~/.config/beets/config.yaml`** — which is what every measurement so far happened to be taken
+  on. Re-measured 2026-08-31 by running the pre-fix suite under a throwaway `HOME`:
+  * no personal config → **1** file written (`state.pickle`), suite green;
+  * personal config present → **14** files written, including a real `library.db` and
+    **eleven** `library.db-before-*.bak` schema-migration backups, AND a red suite
+    (`tests/test_albums.py::test_lifespan_opens_library_from_settings` fails).
+  Those `.bak` files are beets running pending migrations against a real personal library —
+  the same accident as the 2026-08-15 `beet --version` incident cited below. Since MusicDrop
+  is a beets web UI, the "personal config present" case is the NORMAL one for a contributor,
+  so the damaging configuration was the one nobody had measured.
+  **The fix is a `BEETSDIR` floor**: a new ROOT conftest (`backend/conftest.py`, set at import
+  so no later import can out-order it) pointing at one throwaway dir per pytest process, plus
+  three tests that pin it. Session-scoped is correct, not a shortcut — confuse's `config_dir()`
+  memoises nothing and re-reads the environment on every call, so one env var set once suffices
+  and is immune to fixture ordering. Measured: only `--noconftest` and `--confcutdir` defeat it;
+  `--rootdir`, `-c`, cwd changes, path args and `pytest-xdist` all keep it live.
+  **Why a floor and not a per-test fix** (the shape this entry originally proposed, and the
+  shape SpenDrop uses): "the only offender" holds only on a machine with no beets config.
+  Otherwise at least two tests reach the platform dir and *which* ones depends on machine
+  state. This class has already been patched per-test twice — the two
+  `test_artist_image_endpoint.py` lifespan tests, via `_pin_settings_at` — and grew back. The
+  floor is O(1). Per-test isolation stays the default everywhere else (~2,600 `tmp_path` uses).
+  **An autouse write-detector was built alongside it and then CUT**, on the owner's challenge
+  that it was over-engineering. A deep review agreed with the owner and supplied the evidence:
+  7 mutations of the detector survived the full 2810-test suite (including `autouse=False`,
+  `assert after == after`, and an empty watch-list), it crashed the whole session on a dangling
+  symlink because `entry.stat()` sat outside its `except OSError`, it compared only one side of
+  a symlink-normalised membership test, and it was blind to session-scoped, import-time and
+  subdirectory writes — the very routes it was meant to back up. Recorded so it is not rebuilt:
+  a second mechanism that nothing pins is not defence in depth.
+  **Consequence elsewhere:** `make coverage` is now safe locally, so `SONAR_SKIP_COVERAGE=1` is
+  no longer needed *for safety* — the vault rules note still says it is, correctly for `main`,
+  and must be corrected when this merges.
+  *(Original entry below, kept because its history and bisection are the record — but read its
+  blast-radius claim against the re-measurement above.)*
+- **(historic) The same test** writes to `~/.config/beets/state.pickle` on every
   full-suite run — bisected as the only offender, and present at least as far back as `643783f`,
   so it predates the path-binding branch. Bounded: only beets' importer scratch state is written,
   the personal `library.db` md5 is unchanged and no `.bak` appears. Same class as the sibling entry
