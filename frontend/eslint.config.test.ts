@@ -31,12 +31,67 @@
 // exempt under the rule's own DOCUMENTATION_HOSTS. All three read as passing.
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 
 import { ESLint } from "eslint";
 import { beforeAll, describe, expect, test } from "vitest";
 
 const FRONTEND_ROOT = import.meta.dirname;
+
+/**
+ * The plugin versions the SonarJS analyzer itself executes. RECORDED, and checked in BOTH
+ * directions by the two tests at the bottom of this file — because drift has two sources
+ * and guarding only one is worse than guarding neither, since it reads as covered:
+ *
+ *   npm moves ahead  — a Dependabot bump installs a newer plugin than the analyzer runs.
+ *   SONAR moves ahead — `docker pull` lands a newer SonarQube whose analyzer bundles newer
+ *                       plugins than these. Nothing on the npm side changes, so nothing in
+ *                       a lockfile or a dependency PR ever mentions it.
+ *
+ * The second is the quiet one, and it was unguarded when these constants were introduced:
+ * they were compared only against `node_modules`, so a Sonar upgrade left the gate mirroring
+ * a bundle that no longer existed while every test stayed green.
+ */
+const ANALYZER_PLUGIN_VERSIONS: Record<string, string> = {
+  "eslint-plugin-unicorn": "65.0.1",
+  "eslint-plugin-react": "7.37.5",
+  "eslint-plugin-jsx-a11y": "6.10.2",
+  "eslint-plugin-testing-library": "7.16.2",
+};
+
+/**
+ * Re-derive the versions from the analyzer bundle actually on this machine, or return null
+ * where it cannot be reached (CI runners, a fresh clone, a box with no scanner cache).
+ * Null means UNKNOWN and the caller skips; it must never read as agreement.
+ */
+function analyzerBundleVersions(): Record<string, string> | null {
+  const root = "/mnt/data/sonarqube/scanner-cache";
+  if (!existsSync(root)) return null;
+  for (const entry of readdirSync(root)) {
+    const jar = path.join(root, entry, "sonar-javascript-plugin.jar");
+    if (!existsSync(jar)) continue;
+    try {
+      // The jar embeds the analyzer tarball; the tarball's package.json is the manifest.
+      const tgz = execFileSync("unzip", ["-p", jar, "sonarjs-*.tgz"], {
+        maxBuffer: 256 * 1024 * 1024,
+      });
+      const manifest = execFileSync("tar", ["xzO", "package/package.json"], {
+        input: tgz,
+        maxBuffer: 64 * 1024 * 1024,
+        encoding: "utf8",
+      });
+      const parsed = JSON.parse(manifest) as {
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
+      return { ...parsed.dependencies, ...parsed.devDependencies };
+    } catch {
+      return null; // no unzip/tar, or an unreadable jar — unknown, not clean
+    }
+  }
+  return null;
+}
 
 // Real, existing files: `lintText` supplies the CONTENT, but typescript-eslint's project
 // service still resolves the PATH against the tsconfig to build type information, and the
@@ -634,13 +689,6 @@ describe("eslint.config.js", () => {
     //     | tar xzO package/package.json | python3 -m json.tool
     // A failure means the gate and the server have drifted apart: read the new bundle's
     // rule bodies, confirm each "raw is faithful" claim still holds, THEN update both.
-    const ANALYZER_PLUGIN_VERSIONS: Record<string, string> = {
-      "eslint-plugin-unicorn": "65.0.1",
-      "eslint-plugin-react": "7.37.5",
-      "eslint-plugin-jsx-a11y": "6.10.2",
-      "eslint-plugin-testing-library": "7.16.2",
-    };
-
     for (const [name, expected] of Object.entries(ANALYZER_PLUGIN_VERSIONS)) {
       const installed = (
         JSON.parse(
@@ -651,6 +699,42 @@ describe("eslint.config.js", () => {
         installed,
         `${name} is ${installed}, the analyzer runs ${expected} — re-read the bundle before changing this`,
       ).toBe(expected);
+    }
+  });
+
+  test("the recorded analyzer versions still match the analyzer bundle on disk", () => {
+    // The OTHER direction of drift, and the one nothing else can see. The test above only
+    // proves `node_modules` agrees with the constants above; it says nothing about whether
+    // those constants still describe the analyzer. Upgrade the SonarQube container and the
+    // bundled plugins move on their own — no lockfile change, no dependency PR, nothing for
+    // Dependabot to report — and the gate quietly stops mirroring the server while every
+    // other test here stays green. That is the failure this test exists to make loud.
+    //
+    // It is LOCAL-ONLY by necessity: the scanner cache is a machine path, so CI cannot see
+    // it. Skipping is honest (the answer is unknown there); passing would not be. The event
+    // it guards — pulling a new SonarQube image — happens on this machine anyway, so the
+    // check fires where the change actually lands.
+    //
+    // Re-derive by hand with:
+    //   unzip -p /mnt/data/sonarqube/scanner-cache/*/sonar-javascript-plugin.jar 'sonarjs-*.tgz' \
+    //     | tar xzO package/package.json | python3 -m json.tool
+    //
+    // When this fails, do NOT just update the constants. The versions moving means the rules
+    // may have moved: re-read each "raw is faithful" claim in eslint.config.js against the
+    // NEW bundle, then update the constants and `package.json` together.
+    const bundle = analyzerBundleVersions();
+    if (bundle === null) {
+      console.warn(
+        "[analyzer pin] bundle not reachable on this machine — recorded versions UNVERIFIED against it",
+      );
+      return;
+    }
+
+    for (const [name, recorded] of Object.entries(ANALYZER_PLUGIN_VERSIONS)) {
+      expect(
+        bundle[name],
+        `the analyzer bundle now runs ${name}@${bundle[name]}, but this file records ${recorded} — SonarQube was upgraded; re-verify the mirrored rules before bumping`,
+      ).toBe(recorded);
     }
   });
 });
