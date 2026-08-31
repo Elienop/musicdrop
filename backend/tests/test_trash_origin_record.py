@@ -573,3 +573,68 @@ def test_restore_without_a_record_still_re_imports_as_before(tmp_path: Path) -> 
     assert result.album_id is not None
     assert (tmp_path / "music" / "Portishead" / "Dummy").is_dir()
     assert not (tmp_path / "music" / "Weird Folder").exists()
+
+
+# ----- The record write must never follow a planted symlink -----
+#
+# ``shutil.move`` preserves symlinks, so a trashed folder holds whatever the
+# SOURCE folder held. Anyone who can write into the music library — a household
+# Samba export, an *arr container on the same media volume, a second user — can
+# pre-plant the record name as a link to any file this process can write. The
+# delete then truncates it, and because the write SUCCEEDS the swallow-and-log
+# arm never fires: silent by construction. Measured before the fix: one album
+# delete overwrote beets' config.yaml and truncated library.db 4112 -> 148 bytes.
+
+
+def _plant_a_symlink_bomb(tmp_path: Path) -> tuple[Path, Path, str]:
+    """A staged album whose record name is a link to a file outside the library."""
+    album = tmp_path / "music" / "Artist" / "Album"
+    album.mkdir(parents=True)
+    outside = tmp_path / "data"
+    outside.mkdir()
+    victim = outside / "config.yaml"
+    victim.write_text("directory: /music\nlibrary: /data/beets/library.db\n")
+
+    (album / RECORD_NAME).symlink_to(victim)
+    (album / "01 track.mp3").write_bytes(b"\x00" * 16)
+    return album, victim, victim.read_text()
+
+
+def test_write_trash_origin_never_writes_through_a_planted_symlink(tmp_path: Path) -> None:
+    """The record replaces the link; it does not write down it.
+
+    Both halves asserted together: the plant really does survive the move (so
+    the test is exercising the real shape, not a strawman), and the victim is
+    untouched afterwards.
+    """
+    album, victim, before = _plant_a_symlink_bomb(tmp_path)
+    trash = tmp_path / "trash"
+    trash.mkdir()
+    dest = trash / "Album"
+    shutil.move(str(album), str(dest))
+    assert (dest / RECORD_NAME).is_symlink(), "the plant must survive the move"
+
+    write_trash_origin(dest, origin=str(album), moved="folder")
+
+    assert victim.read_text() == before, "a file outside the library was overwritten"
+    record = dest / RECORD_NAME
+    assert record.is_file()
+    assert not record.is_symlink()
+    assert json.loads(record.read_text())["moved"] == "folder"
+    assert [p.name for p in dest.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def test_trash_folder_does_not_detonate_a_planted_symlink(tmp_path: Path) -> None:
+    """End to end through the orphan sweep's mover, not just the primitive.
+
+    ``trash_folder`` is the reorganize sweep's path and takes no library at all,
+    so it is the cheapest whole-mover proof that the fix is wired in rather than
+    only unit-tested.
+    """
+    album, victim, before = _plant_a_symlink_bomb(tmp_path)
+    trash = tmp_path / "trash"
+
+    dest = trash_folder(album, trash_dir=trash)
+
+    assert victim.read_text() == before, "an album delete overwrote a file outside the library"
+    assert read_trash_origin(dest) is not None, "the record still has to be written"

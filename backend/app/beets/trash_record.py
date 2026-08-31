@@ -20,9 +20,11 @@ the floor this whole feature has to stay above.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -93,6 +95,25 @@ def write_trash_origin(entry: Path, *, origin: str, moved: MovedShape) -> None:
     Swallows every exception by design: this is a new write on the delete path,
     and a delete that fails because its bookkeeping failed would be a worse
     outcome than the unrecoverable-but-completed delete it replaces.
+
+    **Never writes through a symlink, and that is a security property, not
+    tidiness.** ``entry`` holds whatever the source folder held, because
+    ``shutil.move`` preserves symlinks — so anyone who can write into the MUSIC
+    library can pre-plant ``.musicdrop-trash.json`` as a link to any file this
+    process can write, and an ordinary album delete would then truncate it.
+    Measured before this was fixed: deleting one album overwrote beets'
+    ``config.yaml`` and truncated ``library.db`` from 4112 bytes to 148 — files
+    on the ``/data`` side of a deployment whose whole point is that ``/music``
+    cannot reach them. The attacker needs no HTTP access and no session; a
+    household Samba export or an ``*arr`` container on the same media volume is
+    enough, and the trigger is the owner deleting an album.
+
+    ``mkstemp`` + ``os.replace`` closes it: ``mkstemp`` opens ``O_CREAT|O_EXCL``
+    on an unpredictable name, so it cannot follow a link, and ``os.replace``
+    swaps the DIRECTORY ENTRY rather than writing through whatever sits there.
+    The random name is load-bearing — a fixed ``.tmp`` suffix would just move
+    the plant one step. It also makes the write atomic, so a reader can no
+    longer see a half-written record.
     """
     payload = {
         "schema": _SCHEMA,
@@ -107,7 +128,25 @@ def write_trash_origin(entry: Path, *, origin: str, moved: MovedShape) -> None:
         # that ``os.fsencode`` needs. Writing with encoding="ascii" makes that a
         # checked property rather than an assumption.
         text = json.dumps(payload, indent=2, sort_keys=True)
-        (entry / RECORD_NAME).write_text(text, encoding="ascii")
+        fd, tmp = tempfile.mkstemp(dir=entry, prefix=".musicdrop-trash-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="ascii") as handle:
+                # ``fchmod`` on the open descriptor, never ``chmod`` on the path:
+                # a path would be resolved a second time, which is one more
+                # moment for something to be swapped underneath it. mkstemp
+                # creates 0600; the record is not secret and sits among the
+                # user's own music files, so match what the previous plain write
+                # produced under a normal umask.
+                os.fchmod(handle.fileno(), 0o644)
+                handle.write(text)
+            os.replace(tmp, entry / RECORD_NAME)
+        except BaseException:
+            # Includes KeyboardInterrupt on purpose: clean up the temp file, then
+            # let it keep propagating (the ``except Exception`` below will not
+            # swallow a BaseException, which is correct).
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
     except Exception:
         logger.warning(
             "could not record the Trash origin for %r; the folder is still in Trash but"
