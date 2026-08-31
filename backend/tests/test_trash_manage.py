@@ -303,6 +303,35 @@ def test_empty_one_and_all(tmp_path: Path) -> None:
     assert list(trash.iterdir()) == []
 
 
+def test_empty_all_clears_a_symlinked_entry_without_following_it(tmp_path: Path) -> None:
+    """One symlinked entry used to make Trash impossible to empty, permanently.
+
+    ``is_dir()`` follows symlinks and ``shutil.rmtree`` refuses one, so the loop
+    raised ``OSError`` and every retry raised it again -- and ``empty_one``
+    cannot clear it either, because ``resolve_trash_child`` resolves the child
+    and refuses anything landing outside Trash. Nothing hostile is needed to get
+    one there: an album whose own folder is a symlink into another volume is
+    trashed as a symlink, since ``shutil.move`` preserves them.
+
+    Both halves are asserted, and the second is the one that matters more: the
+    link is REMOVED, and the directory it pointed at still has its contents.
+    Following it would ``rm -rf`` a directory that merely happens to be pointed
+    at, which is worse than the wedge this fixes.
+    """
+    trash, elsewhere = tmp_path / "trash", tmp_path / "elsewhere"
+    trash.mkdir()
+    elsewhere.mkdir()
+    (elsewhere / "keepme.txt").write_text("not Trash's to delete")
+    (trash / "Real Album").mkdir()
+    (trash / "Real Album" / "a.flac").write_bytes(b"\x00")
+    (trash / "Symlinked Album").symlink_to(elsewhere, target_is_directory=True)
+
+    assert empty_all(trash).removed == 2
+
+    assert list(trash.iterdir()) == []
+    assert (elsewhere / "keepme.txt").is_file()
+
+
 def test_empty_one_removes_a_loose_file(tmp_path: Path) -> None:
     # A loose audio file directly under trash_dir lists with folder=<filename>;
     # emptying it must unlink the file, not 500 on rmtree (NotADirectoryError).

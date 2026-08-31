@@ -589,12 +589,28 @@ def empty_one(folder_abs: str) -> EmptyResult:
 
 
 def empty_all(trash_dir: Path) -> EmptyResult:
-    """Permanently remove everything under ``trash_dir``."""
+    """Permanently remove everything under ``trash_dir``.
+
+    ``is_dir()`` FOLLOWS symlinks and ``shutil.rmtree`` refuses one, so a
+    symlinked entry used to raise ``OSError`` here and wedge the whole
+    operation: nothing after it in ``iterdir`` order was removed, and every
+    retry failed identically, leaving Trash impossible to empty through the app.
+    ``empty_one`` cannot clear it either -- ``resolve_trash_child`` resolves the
+    child and 404s anything landing outside Trash, which is a guard worth
+    keeping -- so the entry was unremovable by any route.
+
+    An entry gets there without anything hostile: ``_album_root`` is
+    ``dirname(item.path)``, so an album whose own folder is a symlink into
+    another volume is trashed as a symlink, because ``shutil.move`` preserves
+    them. Treating it as a leaf is also the only safe reading of "remove
+    everything under ``trash_dir``" -- following it would ``rm -rf`` a directory
+    that merely happens to be pointed at.
+    """
     if not trash_dir.exists():
         return EmptyResult(removed=0)
     removed = 0
     for child in trash_dir.iterdir():
-        if child.is_dir():
+        if child.is_dir() and not child.is_symlink():
             shutil.rmtree(child)
         else:
             child.unlink()

@@ -181,6 +181,20 @@ def write_trash_origin(entry: Path, *, origin: str, moved: MovedShape) -> None:
         # that ``os.fsencode`` needs. Writing with encoding="ascii" makes that a
         # checked property rather than an assumption.
         text = json.dumps(payload, indent=2, sort_keys=True)
+        # ``mkstemp``'s O_EXCL protects the FINAL component only; ``dir=`` is
+        # resolved normally, so a symlinked Trash entry sends both the temp file
+        # and the ``os.replace`` straight out of Trash. Measured: an album whose
+        # own folder is a symlink lands in Trash still a symlink (``shutil.move``
+        # preserves them, and ``_album_root`` is just ``dirname(item.path)``), and
+        # the record was written into the linked-to directory beside beets'
+        # ``config.yaml``. Benign content at a fixed hidden name, so this is
+        # litter rather than the overwrite primitive above -- but "touches only
+        # Trash" has to be true, not nearly true. Raising here rather than
+        # returning: the arm below is exactly the right degradation (no record,
+        # folder still in Trash, restorable by re-import) and this is the one
+        # place that decision is written down.
+        if entry.is_symlink():
+            raise OSError(f"{RECORD_NAME} would be written through a symlinked Trash entry")
         fd, tmp = tempfile.mkstemp(dir=entry, prefix=".musicdrop-trash-", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="ascii") as handle:

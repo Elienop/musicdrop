@@ -842,6 +842,39 @@ def test_write_trash_origin_never_writes_through_a_planted_symlink(tmp_path: Pat
     assert [p.name for p in dest.iterdir() if p.name.endswith(".tmp")] == []
 
 
+def test_the_record_is_not_written_through_a_symlinked_trash_entry(tmp_path: Path) -> None:
+    """The plant one level up: the ENTRY is the link, not the record name.
+
+    ``mkstemp``'s ``O_CREAT|O_EXCL`` -- the fix for the test above -- protects
+    the FINAL component only. ``dir=`` is resolved normally, so if the Trash
+    entry itself is a symlink both the temp file and the ``os.replace`` land in
+    whatever it points at. Measured before this was fixed: the record was
+    written into the directory beside beets' ``config.yaml``.
+
+    Nothing hostile is required, which is why this is a real case and not a lab
+    one: ``_album_root`` is ``dirname(item.path)``, so an album whose own folder
+    is a symlink into another volume arrives in Trash still a symlink, because
+    ``shutil.move`` preserves them.
+
+    The right answer is to decline, not to fail: the folder is in Trash either
+    way and stays restorable by re-import. Impact was litter at a fixed hidden
+    name rather than an overwrite -- but "the write touches only Trash" is an
+    invariant this module states, so it has to be true rather than nearly true.
+    """
+    trash, elsewhere = tmp_path / "trash", tmp_path / "data"
+    trash.mkdir()
+    elsewhere.mkdir()
+    (elsewhere / "config.yaml").write_text("directory: /music\n")
+    entry = trash / "Album"
+    entry.symlink_to(elsewhere, target_is_directory=True)
+
+    write_trash_origin(entry, origin="/music/Artist/Album", moved="folder")
+
+    assert not (elsewhere / RECORD_NAME).exists(), "the record escaped Trash"
+    assert [p.name for p in elsewhere.iterdir()] == ["config.yaml"]
+    assert read_trash_origin(entry) is None  # declined, so the row degrades to a re-import
+
+
 def test_trash_folder_does_not_detonate_a_planted_symlink(tmp_path: Path) -> None:
     """End to end through the orphan sweep's mover, not just the primitive.
 
