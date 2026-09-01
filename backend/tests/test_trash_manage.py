@@ -54,6 +54,29 @@ def _new_library(tmp_path: Path) -> Library:
     return build_library(str(tmp_path / "library.db"), str(tmp_path / "music"))
 
 
+def _with_bystander(lib: Library, tmp_path: Path) -> Library:
+    """``lib`` plus one unrelated album that really exists on disk.
+
+    Every restore writes INTO the music library, so it runs behind
+    ``require_library_present`` — and a library with no album anywhere on disk
+    is indistinguishable from one whose share has dropped, which is exactly what
+    that guard refuses. A library with nothing in it is therefore not a neutral
+    fixture for a restore; it is the unmounted-share fixture, and a test that
+    used one was asserting restore behaviour through a guard that should have
+    stopped it.
+
+    The bystander is what a real library has and this one did not. Added here
+    rather than inside ``_new_library`` because the listing tests that share
+    that helper count albums, and a silent extra row would change what they mean.
+    """
+    dst = tmp_path / "music" / "Bystander" / "Album" / "01 t.flac"
+    _tagged_flac(dst, artist="Bystander", album="Album", title="T", track=1)
+    item = Item(album="Album", albumartist="Bystander", artist="Bystander", title="T", track=1)
+    item.path = os.fsencode(str(dst))
+    lib.add_album([item]).store()
+    return lib
+
+
 def test_list_groups_whole_folder_album(tmp_path: Path) -> None:
     trash = tmp_path / "trash"
     _tagged_flac(
@@ -191,7 +214,7 @@ def test_list_missing_dir_is_empty(tmp_path: Path) -> None:
 
 
 def test_restore_imports_as_is_and_empties_folder(tmp_path: Path) -> None:
-    lib = _new_library(tmp_path)
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
     trash = tmp_path / "trash"
     folder = trash / "2 Brothers - Dreams"
     _tagged_flac(
@@ -217,7 +240,7 @@ def test_restore_lands_the_album_when_the_user_config_disables_autotag(tmp_path:
     # zero outcomes and reports could_not_restore: a successful restore the UI
     # tells the user failed, with the files already gone from Trash.
     config["import"]["autotag"] = False
-    lib = _new_library(tmp_path)
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
     trash = tmp_path / "trash"
     folder = trash / "2 Brothers - Dreams"
     _tagged_flac(
@@ -240,7 +263,7 @@ def test_restore_lands_an_album_whose_folder_name_is_not_valid_utf8(tmp_path: Pa
     # paths, the move — has to stay bytes-exact, or an album is strandable in
     # Trash with no way to get it back. Asserts the FILES landed, not just the
     # status field.
-    lib = _new_library(tmp_path)
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
     trash = tmp_path / "trash"
     trash.mkdir(parents=True)
     raw_folder = os.path.join(os.fsencode(str(trash)), b"Old Caf\xe9")
@@ -266,7 +289,7 @@ def test_restore_lands_an_album_whose_folder_name_is_not_valid_utf8(tmp_path: Pa
 
 
 def test_restore_duplicate_skips_and_keeps_files(tmp_path: Path) -> None:
-    lib = _new_library(tmp_path)
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
     # An album with the same identity is already in the library.
     existing = Item(
         album="Dreams", albumartist="2 Brothers", artist="2 Brothers", title="Dreams", track=1

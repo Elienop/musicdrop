@@ -143,6 +143,22 @@ def _record(tmp_path: Path, entry: Path) -> TrashOrigin:
 # ----- the record is written by every mover that relocates something -----
 
 
+def _bystander(lib: Library, tmp_path: Path) -> None:
+    """One unrelated album really on disk, so the library does not look unmounted.
+
+    A restore writes INTO the music library and so runs behind
+    ``require_library_present``. A library with no album anywhere on disk IS the
+    dropped-share fixture, so a restore test built on one was asserting through
+    a guard that should have refused it. ``_seeded_library`` already carries a
+    bystander for exactly this reason; the two tests below build theirs directly.
+    """
+    dst = tmp_path / "music" / "Bystander" / "Album" / "01 t.flac"
+    _tagged_flac(dst, artist="Bystander", album="Album", title="T", track=1)
+    item = Item(album="Album", albumartist="Bystander", artist="Bystander", title="T", track=1)
+    item.path = os.fsencode(str(dst))
+    lib.add_album([item]).store()
+
+
 def test_trash_album_folder_records_the_folder_it_came_from(tmp_path: Path) -> None:
     lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
     source = str(tmp_path / "music" / "Portishead" / "Dummy")
@@ -836,6 +852,42 @@ def test_restore_returns_the_folder_to_trash_when_the_album_is_already_in_the_li
     assert not source.exists()
 
 
+def test_a_row_with_NO_record_also_refuses_an_unavailable_music_share(tmp_path: Path) -> None:
+    """The guard has to cover BOTH restore arms, and it used to cover one.
+
+    ``restore_album`` branches on the record: a usable one moves the folder
+    back, anything else re-imports. Only the move-back arm was behind
+    ``require_library_present``, so a row with NO record — every row trashed
+    before origins existed, and every row whose record write failed — answered a
+    dropped share with ``200 restored``. Measured before the guard moved up:
+    beets filed the album onto the bare mountpoint at ``<music>/__/00.flac`` and
+    emptied the Trash entry, while the byte-identical move-back row returned
+    503 and moved nothing. The share then remounts OVER that path: the files are
+    visible nowhere and the library holds a row whose files "vanished".
+
+    Deliberately paired with the move-back case below rather than folded into
+    it: what failed here was the ASYMMETRY, and a single-arm test cannot see an
+    asymmetry. This one deletes the record to reach the other arm on otherwise
+    identical state.
+    """
+    lib = _seeded_library(tmp_path, folder="Weird Folder")
+    trash = tmp_path / "trash"
+    origins = origins_for(trash)
+    album = _dummy(lib)
+    with lib.transaction():
+        dest = Path(trash_album_folder(lib, album, trash_dir=trash, origins_dir=origins))
+    delete_trash_origin(origins, dest.name)  # a pre-feature row
+    assert read_trash_origin(origins, dest.name) is None
+    shutil.rmtree(tmp_path / "music")
+    (tmp_path / "music").mkdir()  # the mountpoint survives a dropped share
+
+    with pytest.raises(LibraryRootUnavailableError):
+        restore_album(lib, str(dest), trash_dir=trash, origins_dir=origins)
+
+    assert len(list(dest.glob("*.flac"))) == 2, "the files must not have left Trash"
+    assert list((tmp_path / "music").iterdir()) == [], "nothing may land on the bare mountpoint"
+
+
 def test_restore_refuses_to_move_into_an_unavailable_music_share(tmp_path: Path) -> None:
     # The move-back WRITES into the music library, so it answers a dropped share
     # the way delete does. The stronger predicate, not the cheap root check:
@@ -861,6 +913,7 @@ def test_restore_without_a_record_still_re_imports_as_before(tmp_path: Path) -> 
     # rows predating the record keep the behaviour they have always had: beets
     # files the album under the CURRENT path template, not at "Weird Folder".
     lib = build_library(str(tmp_path / "library.db"), str(tmp_path / "music"))
+    _bystander(lib, tmp_path)
     trash = tmp_path / "trash"
     _tagged_flac(
         trash / "Weird Folder" / "01 Mysterons.flac",
@@ -1942,6 +1995,7 @@ def test_an_import_restore_drops_an_UNREADABLE_record_too(tmp_path: Path) -> Non
     it burns the name for good because the allocator treats it as occupied.
     """
     lib = build_library(str(tmp_path / "library.db"), str(tmp_path / "music"))
+    _bystander(lib, tmp_path)
     trash, origins = tmp_path / "trash", _origins(tmp_path)
     _tagged_flac(
         trash / "Weird Folder" / "01 Mysterons.flac",

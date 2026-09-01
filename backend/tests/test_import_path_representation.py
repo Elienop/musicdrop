@@ -152,6 +152,9 @@ def test_trash_restore_stores_music_dir_relative_paths(tmp_path: Path) -> None:
     music.mkdir()
     db_path = tmp_path / "library.db"
     lib = build_library(str(db_path), str(music))
+    # One album really on disk: a restore runs behind ``require_library_present``,
+    # and a music dir with nothing in it is what a dropped share looks like.
+    _seed_album(music / "Bystander" / "Album")
     trash = tmp_path / "trash"
     trash.mkdir()
     trashed = _seed_album(trash / "Artist - Album")

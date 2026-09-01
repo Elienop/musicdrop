@@ -284,7 +284,16 @@ def require_library_present(lib: Library) -> None:
     require_library_root(lib)
     sample = _sampled_library_dirs(lib, _PRESENCE_SAMPLE_SIZE)
     if not sample:
-        return  # an empty library owns no folder that could be missing
+        # An empty library owns no folder that could be missing — but the root
+        # check above still ran, and that is deliberate. An empty library cannot
+        # tell a fresh install from a dropped share, and the two want opposite
+        # answers: allowing the write puts the user's files on a bare mountpoint
+        # that the real share then shadows, while refusing leaves them safely
+        # where they are. Measured cost of refusing: delete your ONLY album and
+        # Restore answers "Is the music share mounted?" about a share that is
+        # fine, until any other music exists. That is a recoverable annoyance
+        # against an unrecoverable loss, so it fails toward the annoyance.
+        return
     # ``os.path.isdir`` swallows OSError itself, so a permission fault or a
     # stale handle on one folder reads as "not there" and the loop moves on —
     # the same fail-closed posture as the root check's unreadable arm.

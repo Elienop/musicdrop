@@ -286,8 +286,26 @@ def restore_album(
     "put this back" and the record decides how much of that is possible. A row
     with no usable origin gets exactly the behaviour it has always had, so the
     fallback is the old function unchanged rather than a degraded new one.
+
+    The unmounted-share guard sits HERE, above the branch, because BOTH arms
+    write into the music library and an unmounted share is the same catastrophe
+    for either. It used to sit inside the move-back arm only, which meant a row
+    with no record — every row trashed before origins existed, and every row
+    whose record write failed — answered a dropped share with ``200 restored``
+    while beets filed the album onto the bare mountpoint and emptied the Trash
+    entry. The share then remounts OVER it: the files are visible nowhere and
+    the library holds a row whose files "vanished". Measured on an empty
+    mountpoint before this moved: the no-record row returned
+    ``restored=True`` and left one file at ``<music>/__/00.flac``, while the
+    byte-identical move-back row returned 503 and moved nothing.
+
+    That asymmetry also made the route lie: ``api/trash.py`` declares 503 "the
+    music library folder is unavailable, so the folder was not moved out of
+    Trash", and README says the same. One guard at the entry point is what
+    makes that sentence true for the endpoint rather than for one of its arms.
     """
     entry = Path(folder_abs)
+    require_library_present(lib)
     record = read_trash_origin(origins_dir, entry.name)
     origin = move_back_target(record, music_dir=_music_dir(lib))
     if origin is None:
@@ -389,7 +407,9 @@ def _restore_to_origin(
     reason, so this is a wording problem and not a data one; ``origin_occupied``
     is a contract value the UI renders, so widening it is a contract change.
     """
-    require_library_present(lib)
+    # No ``require_library_present`` here: it moved up to ``restore_album``, the
+    # only caller, so it covers the import arm too. Re-adding it here would be a
+    # second check no test could kill.
     # The store's key, named ONCE so the two clean-ups below cannot drift apart.
     # Both run at a point where the entry is no longer in Trash, and the obvious
     # thing to reach for there is the folder actually in front of you —
