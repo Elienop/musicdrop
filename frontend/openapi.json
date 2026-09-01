@@ -9235,7 +9235,7 @@
           "trash"
         ],
         "summary": "Empty Trash All",
-        "description": "Permanently clear the whole Trash dir. 409 if busy.",
+        "description": "Permanently clear the whole Trash dir. 409 if busy, 500 if partly cleared.",
         "operationId": "empty_trash_all_api_trash_all_delete",
         "responses": {
           "200": {
@@ -9250,6 +9250,16 @@
           },
           "409": {
             "description": "The operation was refused because a library operation is in progress or the beets swap lock is held.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Some Trash entries were removed and others could not be; the message names which are still there.",
             "content": {
               "application/json": {
                 "schema": {

@@ -2052,7 +2052,7 @@ export interface paths {
         post?: never;
         /**
          * Empty Trash All
-         * @description Permanently clear the whole Trash dir. 409 if busy.
+         * @description Permanently clear the whole Trash dir. 409 if busy, 500 if partly cleared.
          */
         delete: operations["empty_trash_all_api_trash_all_delete"];
         options?: never;
@@ -12599,6 +12599,15 @@ export interface operations {
             };
             /** @description The operation was refused because a library operation is in progress or the beets swap lock is held. */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Some Trash entries were removed and others could not be; the message names which are still there. */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

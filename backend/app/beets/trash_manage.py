@@ -48,6 +48,22 @@ from app.wire import display_path, resolve_display_path
 logger = logging.getLogger(__name__)
 
 
+class TrashEmptyPartialError(Exception):
+    """Empty removed some entries and could not remove others.
+
+    Like :class:`TrashRestoreIncompleteError`, the message is USER-facing — the
+    API puts it straight into the 500's ``detail`` and the Trash page renders
+    that — so it is written for someone standing in front of their own files.
+
+    Raised at the END of the sweep rather than at the first failure, which is
+    the whole point: aborting mid-loop left the user with no idea whether one
+    entry had been removed or eleven, and the count was lost with the exception.
+    Nothing is at risk either way — every entry is either gone or still in
+    Trash — so the honest answer is to finish the ones that can be finished and
+    then say exactly which could not.
+    """
+
+
 class TrashRestoreIncompleteError(Exception):
     """A move-back restore left the folder neither in Trash nor in the library.
 
@@ -677,11 +693,34 @@ def empty_all(trash_dir: Path, *, origins_dir: Path) -> EmptyResult:
     if not trash_dir.exists():
         return EmptyResult(removed=0)
     removed = 0
+    failed: list[str] = []
+    first: OSError | None = None
     for child in trash_dir.iterdir():
-        if child.is_dir() and not child.is_symlink():
-            shutil.rmtree(child)
-        else:
-            child.unlink()
+        try:
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        except OSError as exc:
+            # Carry on. One entry the app cannot remove -- a root-owned file, a
+            # permission bit, a share that dropped half way -- used to abort the
+            # whole sweep and take the count with it, so the user was told
+            # nothing and could not tell 1-of-12 from 11-of-12. The entry stays
+            # in Trash either way; only the reporting was ever at stake.
+            failed.append(display_path(child.name))
+            first = first or exc
+            continue
         delete_trash_origin(origins_dir, child.name)
         removed += 1
+    if failed:
+        # Named, not just counted: the user's next move is to look at them, and
+        # a bare number does not say which. Capped because Trash can be large
+        # and this lands in an HTTP body a browser renders.
+        shown = ", ".join(repr(n) for n in failed[:5])
+        more = f" and {len(failed) - 5} more" if len(failed) > 5 else ""
+        raise TrashEmptyPartialError(
+            f"removed {removed} of {removed + len(failed)}."
+            f" {len(failed)} could not be removed and are still in Trash: {shown}{more}."
+            f" The first failure was: {first}"
+        )
     return EmptyResult(removed=removed)

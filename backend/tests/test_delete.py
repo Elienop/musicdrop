@@ -302,6 +302,51 @@ def test_delete_artist_root_gone_raises_before_the_transaction(
     assert len(list(duplicates_lib.albums())) == before
 
 
+def test_delete_artist_op_reports_partial_progress_for_ANY_cause(
+    duplicates_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same two tiers, for a cause that is not the unmounted share.
+
+    The test below pins this for ``LibraryRootUnavailableError``, and until now
+    that was the ONLY cause that got it: a permission error, a full disk or a DB
+    fault mid-fan-out reached the user as a bare message with no count, while
+    beets had already committed every album before it. Same state, strictly
+    worse reporting, and nothing said which.
+
+    ``PermissionError`` here stands for the whole class -- what matters is that
+    it is not the one exception type the arm above already names.
+    """
+    trash = tmp_path / "trash"
+    handle = make_test_handle(duplicates_lib, tmp_path)
+    real = trash_album_folder
+    calls = {"n": 0}
+
+    def _fails_on_the_second(
+        lib: Library, album: object, *, trash_dir: Path, origins_dir: Path
+    ) -> str:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise PermissionError(13, "Permission denied")
+        return str(real(lib, album, trash_dir=trash_dir, origins_dir=origins_dir))
+
+    monkeypatch.setattr(delete_mod, "trash_album_folder", _fails_on_the_second)
+
+    class _App:
+        state = SimpleNamespace(beets_library=handle, settings=Settings(trash_dir=str(trash)))
+
+    class _Req:
+        app = _App()
+
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(delete_artist_op(_Req(), "Radiohead"))  # type: ignore[arg-type]
+
+    assert ei.value.status_code == 500
+    detail = ei.value.detail
+    assert isinstance(detail, dict)
+    assert "1 of 2" in detail["message"]  # the count survives, which it did not before
+    assert "Permission denied" in detail["message"]  # and the real cause is still named
+
+
 def test_delete_artist_op_mid_flight_drop_reports_partial_progress(
     duplicates_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

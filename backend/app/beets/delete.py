@@ -145,6 +145,25 @@ def delete_artist(
                         f"{len(album_ids)} albums had been moved to Trash; the rest are "
                         f"untouched ({exc})"
                     ) from exc
+                except Exception as exc:
+                    # The same two tiers for ANY other cause. Only the unmounted
+                    # share used to get them, so a permission error, a full disk
+                    # or a DB fault mid-fan-out reached the user as a bare
+                    # message with no idea how far the delete had got — while
+                    # beets had already committed every album before it.
+                    #
+                    # "The rest are untouched" is true of the album this stopped
+                    # ON as well, which is not obvious and is worth stating: the
+                    # only step between the folder move and the row drop is the
+                    # origin record, and ``_record_origin`` swallows everything
+                    # by design, so there is no window that leaves an album's
+                    # files in Trash while its rows survive.
+                    if trashed == 0:
+                        raise  # nothing mutated yet — the caller's own error still holds
+                    raise ArtistDeletePartialError(
+                        f"the delete stopped after {trashed} of {len(album_ids)} albums had"
+                        f" been moved to Trash; the rest are untouched ({exc})"
+                    ) from exc
                 trashed += 1
     return DeleteResult(trashed_albums=len(album_ids), trash_path=str(trash_dir))
 

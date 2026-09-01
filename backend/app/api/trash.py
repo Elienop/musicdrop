@@ -21,6 +21,7 @@ from app.beets.config_editor import _settings, _swap_lock
 from app.beets.library import LibraryHandle, LibraryRootUnavailableError, _music_dir
 from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
 from app.beets.trash_manage import (
+    TrashEmptyPartialError,
     empty_all,
     empty_one,
     list_trashed_albums,
@@ -58,6 +59,13 @@ _TRASH_RESTORE_FAILED_RESPONSE: Final = {
 #: A move-back restore writes INTO the music library, so it answers an
 #: unavailable music share the way delete does — a 503 that says nothing was
 #: moved — rather than falling into the blanket 500 below it.
+_TRASH_EMPTY_PARTIAL_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": (
+        "Some Trash entries were removed and others could not be; the message names"
+        " which are still there."
+    ),
+}
 _TRASH_LIBRARY_UNAVAILABLE_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": (
@@ -183,17 +191,25 @@ async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> 
                 " progress or the beets swap lock is held."
             ),
         },
+        500: _TRASH_EMPTY_PARTIAL_RESPONSE,
     },
 )
 async def empty_trash_all(request: Request) -> EmptyResult:
-    """Permanently clear the whole Trash dir. 409 if busy."""
+    """Permanently clear the whole Trash dir. 409 if busy, 500 if partly cleared."""
     app = request.app
     _gate(app)
     handle: LibraryHandle = app.state.beets_library
     trash_dir = resolve_trash_dir(_settings(app), handle)
     async with _swap_lock(app):
-        result = await run_in_threadpool(
-            empty_all, trash_dir, origins_dir=resolve_trash_origins_dir(_settings(app), handle)
-        )
+        try:
+            result = await run_in_threadpool(
+                empty_all, trash_dir, origins_dir=resolve_trash_origins_dir(_settings(app), handle)
+            )
+        # A partial sweep still CHANGED the library, so the event fires before
+        # the error propagates — the page must not keep showing entries that are
+        # now gone just because the ones after them could not be removed.
+        except TrashEmptyPartialError as exc:
+            emit_library_changed(app)
+            raise HTTPException(status_code=500, detail=f"Empty Trash: {exc}") from exc
         emit_library_changed(app)
     return result

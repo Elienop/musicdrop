@@ -11,12 +11,14 @@ from beets.library import Item, Library
 
 from app.beets.trash import trash_album
 from app.beets.trash_manage import (
+    TrashEmptyPartialError,
     empty_all,
     empty_one,
     list_trashed_albums,
     resolve_trash_child,
     restore_album,
 )
+from app.beets.trash_origins import read_trash_origin, write_trash_origin
 from tests.conftest import build_library, origins_for
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
@@ -319,6 +321,42 @@ def test_empty_one_and_all(tmp_path: Path) -> None:
     assert not (trash / "A").exists()
     assert empty_all(trash, origins_dir=origins_for(trash)).removed == 1  # B remains
     assert list(trash.iterdir()) == []
+
+
+def test_empty_all_finishes_what_it_can_and_names_what_it_could_not(tmp_path: Path) -> None:
+    """One unremovable entry used to abort the sweep AND lose the count.
+
+    Measured before this: three entries, one of them mode 0500, and the loop
+    raised ``PermissionError`` with one entry removed, one still there, and one
+    never reached — the user told nothing at all about which. Nothing was ever
+    at risk (every entry is either gone or still in Trash); the count was.
+
+    Asserts the two things the message has to carry: how many really went, and
+    WHICH are still there — a bare number does not tell the user where to look.
+    The removed entries' records go with them and the survivor keeps its own, or
+    a later retry would restore into a folder whose origin had been forgotten.
+    """
+    trash, origins = tmp_path / "trash", tmp_path / "origins"
+    trash.mkdir()
+    origins.mkdir()
+    for name in ("A Album", "B Album", "C Album"):
+        (trash / name).mkdir()
+        (trash / name / "t.flac").write_bytes(b"\x00")
+        write_trash_origin(origins, name, origin=f"/music/{name}", moved="folder")
+    (trash / "B Album").chmod(0o500)
+
+    try:
+        with pytest.raises(TrashEmptyPartialError) as ei:
+            empty_all(trash, origins_dir=origins)
+    finally:
+        (trash / "B Album").chmod(0o700)  # or the tmp_path teardown cannot clean up
+
+    assert "removed 2 of 3" in str(ei.value)
+    assert "'B Album'" in str(ei.value)
+    assert [p.name for p in trash.iterdir()] == ["B Album"]
+    assert read_trash_origin(origins, "B Album") is not None  # the survivor keeps its origin
+    assert read_trash_origin(origins, "A Album") is None
+    assert read_trash_origin(origins, "C Album") is None
 
 
 def test_empty_all_clears_a_symlinked_entry_without_following_it(tmp_path: Path) -> None:
