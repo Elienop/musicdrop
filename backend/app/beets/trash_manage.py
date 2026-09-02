@@ -736,6 +736,21 @@ def _occupied(path: Path) -> bool:
 
     Answers "occupied" for anything it cannot read, which is the conservative
     side: a refusal leaves the files in Trash.
+
+    ``is_symlink`` is a TRIPWIRE and NO TEST CAN KILL IT (measured: dropping it
+    leaves the whole suite green). Everything below refuses a symlink anyway —
+    ``os.rename`` answers ENOTDIR, the copy branch's ``rmdir`` answers ENOTDIR
+    and ``copytree`` then refuses a destination that exists — so today it changes
+    no outcome. It is kept because this function's ANSWER is what a future caller
+    would act on: read without it, "an empty directory" includes a link to one,
+    and acting on that (removing it, or moving into it) leaves the library
+    through a link the user never named. The order matters for the same reason:
+    ``is_dir`` and ``scandir`` both FOLLOW links.
+
+    That layering is also why the refusals need no per-branch test: this runs
+    ABOVE the branch, so a file / a non-empty directory / a symlink is refused
+    before either move is chosen. Only the ACCEPT is branch-specific, and it is
+    pinned on both.
     """
     if not exists(path):
         return False

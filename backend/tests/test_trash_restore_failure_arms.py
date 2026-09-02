@@ -257,6 +257,52 @@ def test_the_origin_record_goes_once_the_trash_name_is_really_free(
     assert read_trash_origin(origins_for(tmp_path / "trash"), entry.name) is None
 
 
+def test_a_failed_undo_says_the_folder_is_at_the_origin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The state the old message ASSERTED, now reached honestly.
+
+    The forward move landed, the import declined, and the undo could not put the
+    folder back because the Trash volume stopped accepting writes — a read-only
+    remount, a full disk, a permission bit. The entry is gone, the album is at
+    the origin, and the sentence has to say so in that order, name the library
+    database, and give the one action that finishes the job. Here the record's
+    name IS free again, which is the half of the rule this pins: it goes.
+
+    ``chmod`` on the Trash dir rather than a patched mover, so the real
+    ``os.rename`` produces the real EACCES; restored in a ``finally`` or the
+    ``tmp_path`` teardown cannot clean up.
+    """
+    lib = _seeded_library(tmp_path)
+    origin = tmp_path / "music" / "Weird Folder"
+    trash = tmp_path / "trash"
+    entry = _trash_the_album(lib, tmp_path)
+
+    def _declines_after_trash_goes_read_only(*_a: object, **_k: object) -> RestoreResult:
+        trash.chmod(0o500)
+        return RestoreResult(restored=False, reason="already_in_library")
+
+    monkeypatch.setattr(
+        "app.beets.trash_manage._restore_by_import", _declines_after_trash_goes_read_only
+    )
+    try:
+        with pytest.raises(TrashRestoreIncompleteError) as ei:
+            _restore(lib, entry, tmp_path)
+    finally:
+        trash.chmod(0o700)
+
+    message = str(ei.value)
+    assert f"no longer in Trash at '{entry}'" in message
+    assert f"at the origin '{origin}'" in message
+    assert "NOT added to the library database" in message
+    assert "Importing that folder is what finishes putting the album back" in message
+    assert len(list(origin.glob("*.flac"))) == 2, "the sentence's claim, measured"
+    assert not entry.exists()
+    # The Trash name is free again, so a record left here would be inherited by
+    # whatever earns that name next — and it steers a rename().
+    assert read_trash_origin(origins_for(trash), entry.name) is None
+
+
 # ----- a failure BEFORE anything moved -----
 
 
