@@ -449,17 +449,72 @@ def delete_trash_origin(origins_dir: Path, entry_name: str) -> None:
     burnt name rather than a wrong restore — but that is a second line of
     defence, not a reason to skip this one.)
 
+    **The one file this must not take is another entry's**, which the truncated
+    key makes possible: two names can share a record file (:func:`origin_file`),
+    and the loser's ``read_trash_origin`` already answers ``None``, so BOTH of
+    the callers that run this after a read collapsed to ``None`` — the import
+    arm of ``trash_manage.restore_album`` and ``trash_manage.empty_one`` — would
+    otherwise unlink the WINNER's record while its folder is still sitting in
+    Trash, downgrading a row that exists to an import-restore for good.
+    Measured at this tip before the guard below: ``delete_trash_origin(short)``
+    left ``read_trash_origin(long)`` answering ``None``. So the payload's own
+    ``name`` is read first, and a record that names a different entry is kept.
+
+    Everything else still goes: absent, unreadable, unparseable, not an object,
+    or carrying no ``name`` at all. That is deliberate and is what keeps the
+    import arm's "an unreadable record must not be left to be adopted" true —
+    an unreadable record steers nothing but burns its name forever.
+
     Failing it is worth a log line, never worth failing a restore that has
     already landed.
     """
     try:
-        origin_file(origins_dir, entry_name).unlink(missing_ok=True)
+        path = origin_file(origins_dir, entry_name)
+        if _names_a_different_entry(path, entry_name):
+            logger.warning(
+                "kept the Trash origin record at %r instead of dropping it with %r: the"
+                " record is for a different Trash entry, which is still in Trash and still"
+                " needs it. The two names share one record file — see origin_file.",
+                os.fsdecode(path),
+                display_path(entry_name),
+            )
+            return
+        path.unlink(missing_ok=True)
     except (OSError, ValueError):
         logger.warning(
             "could not remove the Trash origin record for %r",
             display_path(entry_name),
             exc_info=True,
         )
+
+
+def _names_a_different_entry(path: Path, entry_name: str) -> bool:
+    """Whether the file at ``path`` is positively SOME OTHER entry's record.
+
+    ``True`` only for a payload that reads back, is an object, and names an
+    entry that is not this one. Every "we cannot say whose this is" — no file,
+    unreadable, not ASCII JSON, not an object, no ``name``, a ``name`` that is
+    not a string — answers ``False``, because the caller's alternative is to
+    leave a file the store can never explain on the ``/data`` side, where the
+    allocator burns its name for good and a later entry could adopt it.
+
+    Not :func:`_names_entry`, which answers the READ's question ("may I use this
+    for this entry?") and so treats a nameless payload as usable-by-nobody.
+    Here a nameless payload has to be unlinked, so the two predicates are not
+    each other's negation and are deliberately kept apart. It also does no
+    schema or origin validation: a record for another entry is that entry's to
+    lose whether or not THIS version can parse the rest of it.
+
+    Never raises, which is :func:`delete_trash_origin`'s whole contract.
+    """
+    try:
+        raw: object = json.loads(path.read_text(encoding="ascii"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(raw, dict):
+        return False
+    name = raw.get("name")
+    return isinstance(name, str) and name != entry_name
 
 
 def move_back_target(record: TrashOrigin | None, *, music_dir: str) -> Path | None:

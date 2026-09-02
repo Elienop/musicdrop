@@ -376,11 +376,19 @@ def restore_album(
             # A record that is no longer about anything: beets has moved the
             # files out from under it. Left in place it outlives its subject —
             # and because the key is the entry NAME, a later folder taking that
-            # name would inherit it. Unconditional, deliberately: an UNREADABLE
-            # record also reaches here (``read_trash_origin`` collapses it to
-            # ``None``) and it is exactly the file that must not be left to be
-            # adopted. In the sidecar design it rode out inside the folder and
-            # was inert either way; on the /data side it survives forever.
+            # name would inherit it. Called unconditionally, deliberately: an
+            # UNREADABLE record also reaches here (``read_trash_origin``
+            # collapses it to ``None``) and it is exactly the file that must not
+            # be left to be adopted. In the sidecar design it rode out inside the
+            # folder and was inert either way; on the /data side it survives
+            # forever.
+            #
+            # Unconditional HERE is not unconditional on disk: ``None`` also
+            # covers the one case where the file at this entry's key belongs to
+            # a DIFFERENT entry (two long names can share one record file), and
+            # ``delete_trash_origin`` keeps that one — it reads the payload's own
+            # ``name`` before unlinking. Its docstring owns that exception; this
+            # call site deliberately does not repeat the test.
             delete_trash_origin(origins_dir, entry.name)
         return result
     return _restore_to_origin(lib, entry, origin, trash_dir=trash_dir, origins_dir=origins_dir)

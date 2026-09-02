@@ -1,12 +1,13 @@
 """The origin STORE's own promises: whose record it hands back, and never raising.
 
 ``test_trash_origin_record.py`` covers the feature — a trashed folder keeps
-enough to be put back exactly. This file covers the three properties of the store
+enough to be put back exactly. This file covers the properties of the store
 underneath it that the feature quietly assumes, each of which survived a mutation
 of its own production line before these tests existed:
 
-* a record is only ever read back for the entry it was written FOR, which the
-  truncated key makes a real question rather than a tautology;
+* a record is only ever read back for the entry it was written FOR, and is only
+  ever DELETED for the entry it was written for, which the truncated key makes a
+  real question rather than a tautology;
 * :func:`delete_trash_origin` really never raises — every one of its callers runs
   it AFTER irreversible work, so an escaping exception 500s an operation that
   fully succeeded;
@@ -19,11 +20,15 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import shutil
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from beets import config
+from beets.library import Item, Library
 
-from app.beets.trash_manage import list_trashed_albums
+from app.beets.trash_manage import empty_one, list_trashed_albums, restore_album
 from app.beets.trash_origins import (
     delete_trash_origin,
     origin_file,
@@ -31,6 +36,49 @@ from app.beets.trash_origins import (
     read_trash_origin,
     write_trash_origin,
 )
+from tests.conftest import build_library
+
+SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
+
+
+@pytest.fixture(autouse=True)
+def _serial() -> Iterator[None]:
+    # Same posture as test_trash_origin_record: single-threaded, and the
+    # starter's copy:yes as the manual default. Only the restore test below
+    # imports anything, but an import session reads these globals and the
+    # cheapest way to say so is once, for the module.
+    config["threaded"] = False
+    config["import"]["copy"] = True
+    config["import"]["move"] = False
+    yield
+    config["threaded"] = False
+
+
+def _tagged_flac(dst: Path, *, artist: str, album: str, title: str, track: int) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(SAMPLE, dst)
+    item = Item(album=album, albumartist=artist, artist=artist, title=title, track=track)
+    item.path = os.fsencode(str(dst))
+    item.write()
+
+
+def _with_bystander(tmp_path: Path) -> Library:
+    """A library holding one unrelated album that is really on disk.
+
+    Copied from ``test_trash_origin_record._bystander`` rather than shared: a
+    restore writes INTO the music library and so runs behind
+    ``require_library_present``, and a library with no album anywhere on disk IS
+    the dropped-share fixture — a restore test built on one would assert through
+    a guard that should have refused it.
+    """
+    lib = build_library(str(tmp_path / "library.db"), str(tmp_path / "music"))
+    dst = tmp_path / "music" / "Bystander" / "Album" / "01 t.flac"
+    _tagged_flac(dst, artist="Bystander", album="Album", title="T", track=1)
+    item = Item(album="Album", albumartist="Bystander", artist="Bystander", title="T", track=1)
+    item.path = os.fsencode(str(dst))
+    lib.add_album([item]).store()
+    return lib
+
 
 # ----- a record belongs to ONE entry -----
 
@@ -151,6 +199,129 @@ def test_the_allocator_still_sees_a_colliding_key_as_occupied(tmp_path: Path) ->
     assert read_trash_origin(origins, short_name) is None
     assert origin_recorded(origins, short_name) is True
     assert origin_recorded(origins, long_name) is True
+
+
+# ----- ...and a record is only ever DELETED for the entry it was written for -----
+
+
+def test_dropping_the_losing_rows_record_keeps_the_winners(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The read refuses the loser's key; the DELETE must refuse it too.
+
+    ``read_trash_origin`` answering ``None`` for the losing name is exactly what
+    sends both delete sites down their "no record / unreadable record" path, so
+    the refusal at the read is what creates this hazard rather than something
+    separate from it. Unlinking by key alone destroys the WINNER's record while
+    its folder is still sitting in Trash — measured before this guard existed:
+    ``delete(short)`` left ``read(long)`` answering ``None``. That is a row that
+    exists losing its exact restore permanently, which for an audio-free husk is
+    no way back at all.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    short_name, long_name = _colliding_pair()
+    write_trash_origin(origins, long_name, origin="/music/A/Long", moved="folder")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        delete_trash_origin(origins, short_name)
+
+    survivor = read_trash_origin(origins, long_name)
+    assert survivor is not None, "the other entry's record was unlinked by key alone"
+    assert survivor.origin == "/music/A/Long"
+    assert origin_file(origins, long_name).exists()
+    assert any("kept the Trash origin record" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("label", "payload"),
+    [
+        ("no name at all", '{"schema": 1, "origin": "/music/A", "moved": "folder"}'),
+        ("not an object", '["schema", 1]'),
+        ("not JSON", "{ not json at all"),
+        ("a name that is not a string", '{"schema": 1, "name": 7, "origin": "/music/A"}'),
+    ],
+)
+def test_a_record_that_does_not_name_another_entry_is_still_dropped(
+    tmp_path: Path, label: str, payload: str
+) -> None:
+    """Only a positively identified STRANGER survives; every doubt still unlinks.
+
+    ``restore_album``'s import arm relies on this: an unreadable record reaches
+    ``delete_trash_origin`` precisely because ``read_trash_origin`` collapsed it
+    to ``None``, and leaving it behind burns its name forever (the allocator
+    reads it as occupied) for a file that steers nothing. So "keep what I cannot
+    parse" is the wrong safe side here, and the four shapes below are the ones a
+    pre-feature record, a truncated write and a hand edit actually produce.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    origin_file(origins, "Dummy").write_text(payload, encoding="ascii")
+
+    delete_trash_origin(origins, "Dummy")
+
+    assert not origin_file(origins, "Dummy").exists(), f"{label} must not be left behind"
+
+
+def test_emptying_the_losing_row_keeps_the_other_entrys_record(tmp_path: Path) -> None:
+    """Through ``empty_one``, one of the two callers that reach this on a ``None``.
+
+    Both folders are really in Trash under their own names (both fit
+    ``NAME_MAX``). Emptying the short one is an ordinary user action on an
+    ordinary row — its own record was never written, which the store lists as
+    the pre-feature/failed-write case — and it must not take the long row's
+    record with it, because that row is still there and still restorable.
+    """
+    trash = tmp_path / "trash"
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    short_name, long_name = _colliding_pair()
+    for name in (short_name, long_name):
+        (trash / name).mkdir(parents=True)
+    write_trash_origin(origins, long_name, origin="/music/A/Long", moved="folder")
+
+    assert empty_one(str(trash / short_name), origins_dir=origins).removed == 1
+
+    assert not (trash / short_name).exists()
+    survivor = read_trash_origin(origins, long_name)
+    assert survivor is not None, "the row still in Trash lost its exact restore"
+    assert survivor.origin == "/music/A/Long"
+
+
+def test_an_import_restore_of_the_losing_row_keeps_the_other_entrys_record(
+    tmp_path: Path,
+) -> None:
+    """Through ``restore_album``'s import arm, the other caller — end to end.
+
+    The losing row reads as an import-restore (its key holds somebody else's
+    record), the import lands, and the arm then drops "the record this restore
+    outlived" unconditionally. Unconditional is right for the file this entry
+    owns and wrong for this one file, and the difference is made inside
+    ``delete_trash_origin`` rather than at the call site.
+    """
+    lib = _with_bystander(tmp_path)
+    trash = tmp_path / "trash"
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    short_name, long_name = _colliding_pair()
+    (trash / long_name).mkdir(parents=True)
+    _tagged_flac(
+        trash / short_name / "01 Mysterons.flac",
+        artist="Portishead",
+        album="Dummy",
+        title="Mysterons",
+        track=1,
+    )
+    write_trash_origin(origins, long_name, origin=str(tmp_path / "music" / "Long"), moved="folder")
+    assert read_trash_origin(origins, short_name) is None, "the losing row has no record of its own"
+
+    result = restore_album(lib, str(trash / short_name), trash_dir=trash, origins_dir=origins)
+
+    assert result.restored is True
+    assert (tmp_path / "music" / "Portishead" / "Dummy").is_dir()
+    survivor = read_trash_origin(origins, long_name)
+    assert survivor is not None, "a restore of one row destroyed another row's record"
+    assert survivor.origin == str(tmp_path / "music" / "Long")
 
 
 # ----- delete_trash_origin is contractually incapable of raising -----
