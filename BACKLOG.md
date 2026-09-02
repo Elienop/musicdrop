@@ -1080,7 +1080,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 - ~~**A FLAT library layout defeats the delete path's presence check — it samples the music
   root against itself.**~~ (Found 2026-09-02, on `fix/undoable-deletes`, while re-reading the
   check that entry-above's sibling shipped.) —
-  **FIXED in this branch** (PR number to be filled in on merge). Trigger: a
+  **FIXED in #209**. Trigger: a
   `paths.default` template with no directory component — beets' own `$title` is the shortest,
   and the template is editable from the app (**Settings → Naming**, `config_editor` writes
   `paths:` straight back into `config.yaml`), so this is a supported layout and not a damaged
@@ -1138,7 +1138,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - ~~**An unreachable origins store makes the allocator hand out a recorded name, and the next
   folder inherits the first one's origin.**~~ —
-  **FIXED in this branch** (PR number to be filled in on merge), 2026-09-02, per the owner's
+  **FIXED in #209**, 2026-09-02, per the owner's
   ruling in `decisions.md` 28 item 3: the delete is REFUSED while the store cannot be used. What shipped, by symbol:
   `trash_origins.require_usable_store` asks the store the three questions a delete asks it —
   `mkdir(parents=True, exist_ok=True)`, `scandir` plus a `stat` of a key that is never there,
@@ -1180,7 +1180,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - ~~**A plugin listener that raises on `album_removed` leaves the folder in Trash with its
   album row already gone.**~~ —
-  **FIXED in this branch** (PR number to be filled in on merge), 2026-09-02, per the owner's
+  **FIXED in #209**, 2026-09-02, per the owner's
   ruling in `decisions.md` 28 item 4, WITH a residual
   that is stated below rather than closed. What shipped: `trash.trash_album_folder`'s
   whole-folder branch wraps `album.remove`; on a raise the folder is moved back to
