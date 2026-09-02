@@ -540,6 +540,41 @@ def test_an_empty_directory_at_the_origin_is_replaced_on_the_copy_branch(
     assert not entry.exists()
 
 
+def test_the_restore_result_schema_does_not_call_an_empty_folder_occupied(
+    tmp_path: Path,
+) -> None:
+    """The wire model's own words, read against the restore they describe.
+
+    ``RestoreResult``'s docstring IS the description the generated TypeScript
+    client carries, and it defined ``origin_occupied`` as "the folder it came
+    from exists again" — which is exactly the disk state the two tests above put
+    down and then watch the restore GO AHEAD from. The behaviour was pinned and
+    the sentence describing it was not, so the contract documented a refusal the
+    wire does not make.
+
+    Two halves, neither evidence on its own: a real restore into an empty
+    leftover (a wrong description passes it) and the LIVE spec's description (a
+    wrong behaviour passes any assertion about the spec).
+    ``tests/test_openapi_spec_guard.py`` is not evidence about either — it only
+    fires on a dump that was not regenerated.
+    """
+    from app.main import app
+
+    lib = _seeded_library(tmp_path)
+    origin = tmp_path / "music" / "Weird Folder"
+    entry = _trash_the_album(lib, tmp_path)
+    origin.mkdir(parents=True)
+
+    result = _restore(lib, entry, tmp_path)
+
+    assert result.restored is True, "an empty leftover at the origin is replaced, not refused"
+    description = app.openapi()["components"]["schemas"]["RestoreResult"]["description"]
+    assert "empty" in description.lower(), (
+        "the description defines origin_occupied without ever saying an EMPTY folder at the"
+        f" origin is not one — this restore answered {result.reason!r} with one there"
+    )
+
+
 def test_a_directory_the_app_cannot_read_is_treated_as_occupied(tmp_path: Path) -> None:
     """:func:`_occupied`'s ``except OSError`` arm, which nothing reached.
 

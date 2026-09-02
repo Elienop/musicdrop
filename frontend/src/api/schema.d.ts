@@ -4710,9 +4710,14 @@ export interface components {
          * @description Outcome of a restore.
          *
          *     ``already_in_library`` = a matching album is already present, so beets safely
-         *     skipped; ``origin_occupied`` = the folder it came from exists again, so the
-         *     move-back would have had to overwrite or land beside it. In both cases the
-         *     files are back in Trash, untouched.
+         *     skipped; ``origin_occupied`` = the folder it came from exists again with
+         *     anything in it, so the move-back would have had to overwrite or land beside
+         *     it. In both cases the files are back in Trash, untouched.
+         *
+         *     An EMPTY leftover folder at the origin is NOT occupied: it is replaced and
+         *     the restore goes ahead. That is what a pruning beets or a half-finished sync
+         *     leaves behind, and refusing it would strand exactly the rows the origin
+         *     record exists for.
          */
         RestoreResult: {
             /** Restored */
