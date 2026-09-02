@@ -346,10 +346,11 @@ def _recovery(exc: Exception) -> str:
     read the answer out for the user as well — "if the album's folder is there it
     can be restored from there; if it is not, nothing moved and there is nothing
     to restore" — and the second bullet's state falsifies both halves at once.
-    Measured on 2026-09-02 (``tests/test_delete.py`` ``_shared_folder_two_track_
-    library`` with ``Item.move`` raising on the album's second item): what sits
-    in Trash is the CONTAINER, holding the one item that made it, not the
-    album's folder; no origin record was written, because ``trash_album`` writes
+    Measured on 2026-09-02, with ``Item.move`` raising on the second item of an
+    album in a shared folder (``tests/test_delete.py``'s
+    ``_shared_folder_two_track_library``): what sits in Trash is the CONTAINER,
+    holding the one item that made it, not the album's folder; no origin record
+    was written, because ``trash_album`` writes
     one only after the move; and the album is still in the library with that
     item's row pointing inside Trash. Telling that user their files can be
     restored from Trash is as wrong as telling the previous one there is nothing
