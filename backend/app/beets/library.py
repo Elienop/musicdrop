@@ -401,7 +401,10 @@ def require_library_present(lib: Library) -> None:
     # sitting at that path is not evidence the music came back. Both follow
     # symlinks and both cost one stat, so the only behavioural difference beyond
     # the type test is none — a symlinked library reads present, a DANGLING link
-    # reads absent, which is the fail-closed direction.
+    # reads absent, which is the fail-closed direction. The type test is pinned
+    # behaviourally, not only by name: ``test_library_presence_sampling.py::
+    # test_a_directory_where_the_track_should_be_is_not_the_music_coming_back``
+    # puts a directory at a single album's sampled path and fails on the swap.
     for path in sample:
         if os.path.isfile(path):
             return

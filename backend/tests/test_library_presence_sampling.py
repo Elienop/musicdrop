@@ -542,3 +542,38 @@ def test_a_flat_layout_does_not_sample_the_music_root_against_itself(tmp_path: P
     sample = _sampled_library_files(lib, _PRESENCE_SAMPLE_SIZE)
     assert len(sample) == _PRESENCE_SAMPLE_SIZE, sample
     assert not [p for p in sample if os.path.normpath(p) == str(music)], sample
+
+
+def test_a_directory_where_the_track_should_be_is_not_the_music_coming_back(
+    tmp_path: Path,
+) -> None:
+    """``os.path.isfile``, not ``os.path.exists`` — the only shape that separates them.
+
+    The predicate asks whether the FILE the library named is there. ``exists``
+    answers True for a DIRECTORY (or a socket, or a FIFO) sitting at that path,
+    and none of those is the music coming back: an interrupted sync, a restore
+    tool, or a mount that was laid down over the track's own name all leave
+    something that is not a track where a track should be.
+
+    Single-album so the draw is exhaustive and the answer is deterministic. The
+    ``exists`` control is asserted first, or this test would pass for the wrong
+    reason — with nothing at all at the path both predicates refuse, and the
+    swap would survive.
+    """
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+    folder = music / "A" / "Album"
+    track = folder / "01 Track.mp3"
+    folder.mkdir(parents=True)
+    track.mkdir()  # a DIRECTORY at the item path
+    item = Item(album="Album", albumartist="A", artist="A", title="Track", track=1)
+    item.path = os.fsencode(str(track))
+    lib.add_album([item]).store()
+
+    assert _sampled_library_files(lib, _PRESENCE_SAMPLE_SIZE) == [str(track)]
+    assert os.path.exists(track), "the control: ``exists`` would accept this library"
+    require_library_root(lib)  # the tree is all there, so the cheap check passes
+
+    with pytest.raises(LibraryRootUnavailableError) as excinfo:
+        require_library_present(lib)
+    assert "none of the music files the library names" in str(excinfo.value)

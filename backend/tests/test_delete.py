@@ -260,7 +260,11 @@ def _store_fault_req(lib: Library, tmp_path: Path, trash: Path) -> object:
 @pytest.mark.parametrize("artist", [None, "Radiohead"], ids=["album", "artist"])
 @pytest.mark.parametrize(
     ("shape", "says"),
-    [("file", "is not a usable folder"), ("unsearchable", "cannot be read")],
+    [
+        ("file", "is not a usable folder"),
+        ("unsearchable", "cannot be read"),
+        ("unreadable", "cannot be read"),
+    ],
 )
 def test_delete_op_503_when_the_origin_store_cannot_be_used(
     duplicates_lib: Library, tmp_path: Path, artist: str | None, shape: str, says: str
@@ -282,6 +286,15 @@ def test_delete_op_503_when_the_origin_store_cannot_be_used(
     none either — ``test_refusal_message_leaks_no_path``), and only asserting
     one of the two lets the other regress.
 
+    ``unreadable`` — mode 0300, ``-wx`` — is the third, and it is the only shape
+    the ``scandir`` probe answers by itself: measured at 0300, the ``mkdir``
+    succeeds, the ``stat`` of the never-there key answers ENOENT (healthy) and
+    the ``mkstemp`` write succeeds, so with the ``scandir`` dropped the whole
+    guard passes and the delete runs. It is the mode a store gets when the Empty
+    all sweep can no longer list it, which is the half of the probe the other
+    two rows do not reach. Skips under root for the same reason as the row
+    above.
+
     ``says`` pins WHICH of the three probes answered, and it is not decoration:
     an unsearchable store fails the write probe too, so without it the search
     probe is a line no test can kill (measured — dropping it left 59 tests
@@ -289,8 +302,8 @@ def test_delete_op_503_when_the_origin_store_cannot_be_used(
     "cannot be read" to "cannot be written"). The two sentences send an operator
     at different permission bits.
     """
-    if shape == "unsearchable" and os.getuid() == 0:
-        pytest.skip("running as root: an unsearchable directory denies nothing")
+    if shape != "file" and os.getuid() == 0:
+        pytest.skip("running as root: a mode bit on a directory denies nothing")
     trash = tmp_path / "trash"
     origins = origins_for(trash)
     album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
@@ -302,11 +315,13 @@ def test_delete_op_503_when_the_origin_store_cannot_be_used(
     else:
         origins.mkdir()
         (origins / "Someone Elses.json").write_text("{}", encoding="utf-8")
-        # 0600, not 0000: this shape LISTS fine and only fails a lookup of a
-        # child, which is the fault ``origin_recorded`` meets and the only one
-        # the search probe is there for. At 0000 the ``scandir`` probe answers
-        # first, and the ``stat`` becomes a line no test can kill (measured).
-        origins.chmod(0o600)
+        # 0600, not 0000: the ``unsearchable`` shape LISTS fine and only fails a
+        # lookup of a child, which is the fault ``origin_recorded`` meets and the
+        # only one the search probe is there for. At 0000 the ``scandir`` probe
+        # answers first, and the ``stat`` becomes a line no test can kill
+        # (measured). 0300 is the mirror: it cannot be LISTED and everything
+        # else about it works.
+        origins.chmod(0o600 if shape == "unsearchable" else 0o300)
 
     req = _store_fault_req(duplicates_lib, tmp_path, trash)
     op = (
@@ -318,7 +333,7 @@ def test_delete_op_503_when_the_origin_store_cannot_be_used(
         with pytest.raises(HTTPException) as ei:
             asyncio.run(op)
     finally:
-        if shape == "unsearchable":
+        if shape != "file":
             origins.chmod(0o700)
 
     assert ei.value.status_code == 503

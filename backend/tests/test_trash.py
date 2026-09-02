@@ -1019,6 +1019,46 @@ def test_the_undo_reports_from_the_DISK_when_the_trash_name_is_retaken(
     assert (origins / f"{entry.name}.json").is_file(), "so its record must be kept"
 
 
+def test_a_failed_undo_destroys_the_record_once_the_trash_entry_is_gone(
+    duplicates_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The OTHER half of the record decision, and the one that burns a name.
+
+    The test above pins "keep the record while the entry is still in Trash":
+    that row's record is still the truth. This pins the opposite arm — once
+    nothing is at the entry, the record describes nothing, and leaving it makes
+    the next folder to earn that name inherit a stranger's origin and be offered
+    an exact restore to it. Measured on the sibling path, leaving it also burns
+    the name outright: the retry lands on ``<name> (1)``.
+
+    Staged with the undo taking the folder somewhere else before it fails, which
+    is the shipped layout's own failure mode: ``/data`` and ``/music`` are
+    separate mounts, so ``move_no_merge`` falls back to copy-then-remove and can
+    fail with the entry already gone from Trash.
+    """
+    trash = tmp_path / "trash"
+    origins = origins_for(trash)
+    elsewhere = tmp_path / "elsewhere"
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_root = Path(album_folder(duplicates_lib, list(album.items())))
+
+    def _takes_the_entry_away_then_fails(entry: Path, _dest: Path) -> None:
+        shutil.move(str(entry), str(elsewhere))
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    monkeypatch.setattr(trash_mod, "move_no_merge", _takes_the_entry_away_then_fails)
+    _rows_wont_go(monkeypatch, album)
+
+    with pytest.raises(TrashDeleteIncompleteError) as ei, duplicates_lib.transaction():
+        trash_album_folder(duplicates_lib, album, trash_dir=trash, origins_dir=origins)
+
+    assert "can no longer find the folder at EITHER path" in str(ei.value), "read from the disk"
+    assert list(trash.iterdir()) == [], "nothing is at the Trash entry any more"
+    assert not album_root.exists(), "...and nothing came back to the album's own folder"
+    assert (elsewhere / "01 Track 1.mp3").is_file(), "the fixture really moved it away"
+    assert list(origins.iterdir()) == [], "so the record must go: the name is free again"
+
+
 def test_a_swallowed_record_write_does_not_trigger_the_undo(
     duplicates_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

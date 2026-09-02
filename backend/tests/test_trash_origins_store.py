@@ -783,6 +783,39 @@ def test_a_store_that_cannot_be_searched_refuses_instead_of_reading_as_free(
     assert read_trash_origin(origins, "Dummy") is not None
 
 
+def test_the_store_refusal_covers_EPERM_as_well_as_EACCES(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second errno in ``_STORE_CLASS_ERRNOS``, which no filesystem here produces.
+
+    The set is a pair — EACCES and EPERM — and the test above only reaches the
+    first: a mode bit gives EACCES, and EPERM off this lookup wants something
+    this suite cannot stage locally (a mandatory-access-control layer, or a
+    filesystem the container is not allowed to traverse regardless of the mode).
+    Injected rather than skipped, because "dropped from the set" is otherwise a
+    change no test can see and the arm it belongs to is a REFUSAL: with EPERM
+    out, this store reads as free and the allocator hands out a name whose
+    record is on disk.
+
+    ``Path.exists`` is the exact call ``origin_recorded`` makes, so the stub
+    puts the errno where the real one would arrive.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    write_trash_origin(origins, "Dummy", origin="/music/Portishead/Dummy", moved="folder")
+
+    def _eperm(_self: Path) -> bool:
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(Path, "exists", _eperm)
+
+    with pytest.raises(TrashOriginsStoreUnusableError) as ei:
+        origin_recorded(origins, "Dummy")
+
+    assert "cannot be read" in str(ei.value), "the same sentence the EACCES half gets"
+    assert str(origins) not in str(ei.value), "...and no absolute path in it either"
+
+
 def test_a_store_that_cannot_be_written_refuses_before_anything_moves(tmp_path: Path) -> None:
     """A READ-ONLY store is the same class of fault one permission bit along.
 
