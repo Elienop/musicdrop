@@ -404,6 +404,12 @@ def test_empty_all_finishes_what_it_can_and_names_what_it_could_not(tmp_path: Pa
 
     assert "removed 2 of 3" in str(ei.value)
     assert "'B Album'" in str(ei.value)
+    # The tail quotes an OSError's own words, so the sentence is finished here
+    # (``_one_full_stop``) rather than left open or given a second stop. Written
+    # against the stripped tail so BOTH failures are caught in one assert: no
+    # stop at all, and the ".." an unconditional append renders.
+    said = str(ei.value)
+    assert said == f"{said.rstrip('.')}.", "the message must end in exactly one full stop"
     assert [p.name for p in trash.iterdir()] == ["B Album"]
     assert read_trash_origin(origins, "B Album") is not None  # the survivor keeps its origin
     assert read_trash_origin(origins, "A Album") is None

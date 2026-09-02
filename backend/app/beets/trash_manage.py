@@ -1205,7 +1205,7 @@ def empty_all(trash_dir: Path, *, origins_dir: Path) -> EmptyResult:
         raise TrashEmptyPartialError(
             f"removed {removed} of {removed + len(failed)}."
             f" {len(failed)} could not be removed and are still in Trash: {shown}{more}."
-            f" The first failure was: {first}"
+            f" The first failure was: {_one_full_stop(str(first))}"
         )
     # Suppressed rather than allowed to escape: everything above has already
     # happened, so a ``trash_dir`` that stopped answering between the loop and
