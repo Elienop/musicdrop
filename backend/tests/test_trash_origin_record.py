@@ -1340,6 +1340,12 @@ def test_a_failed_restore_whose_undo_also_fails_says_where_the_folder_went(
     without a permission trick: a sync client, an ``*arr`` or the user putting
     something back at that path is exactly the window ``_return_to_trash``
     refuses to move into.
+
+    That retaken entry is also why the sentence talks about BOTH paths rather
+    than "no longer in Trash": ``_whereabouts`` reads the DISK, and the disk has
+    something at each path. Nothing can tell a stranger's folder from a
+    half-finished copy of ours, so the message says so and the record survives —
+    see ``test_the_record_survives_a_trash_entry_that_still_exists``.
     """
     lib = _seeded_library(tmp_path, folder="Weird Folder")
     origin = tmp_path / "music" / "Weird Folder"
@@ -1367,22 +1373,23 @@ def test_a_failed_restore_whose_undo_also_fails_says_where_the_folder_went(
         restore_album(lib, str(entry), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
 
     message = str(ei.value)
-    assert str(origin) in message, "the path the files are actually at"
-    assert str(entry) in message, "and the one they are no longer at"
-    assert "no longer in Trash" in message
+    assert f"at the origin '{origin}'" in message, "the path the files are actually at"
+    assert f"in Trash at '{entry}'" in message, "and the one they are no longer at"
+    assert "BOTH places" in message
     assert "NOT added to the library database" in message
     assert "beets could not read the album" in message, "the import's own cause"
-    assert "the source is gone or the Trash entry is occupied" in message, "and the undo's"
+    assert f"Trash entry '{entry}' again" in message, "and the undo's"
     # The state the sentence describes, asserted rather than assumed.
     assert len(list(origin.glob("*.flac"))) == 2
     assert lib.get_album(album_id) is None
-    # The entry is no longer in Trash, so the record describes nothing and its
-    # NAME is free again — left behind it would be inherited by the next folder
-    # to earn that name. (Under the sidecar this deletion also stopped beets
-    # refusing to prune the source dir through the re-import the message asks
-    # for; a sibling store cannot cause that, which is part of why it replaced
-    # the sidecar.) Keyed on the TRASH entry's name, not the stranded folder's.
-    assert read_trash_origin(_origins(tmp_path), entry.name) is None
+    # The record SURVIVES: something is sitting at the Trash entry, and no
+    # observation can say whether it is a stranger's folder or a half-removed
+    # piece of ours. Deleting it on the guess costs a real row its exact restore
+    # forever; keeping it costs a wrong "Exact restore" promise on a row that
+    # ``_restore_to_origin`` refuses on the spot, because the origin it names is
+    # occupied by this very album. Keyed on the TRASH entry's name, not the
+    # stranded folder's.
+    assert read_trash_origin(_origins(tmp_path), entry.name) is not None
 
 
 def test_a_media_album_whose_import_lands_nothing_still_goes_back_to_trash(
@@ -1498,7 +1505,8 @@ def test_return_to_trash_names_a_vanished_source_rather_than_the_syscall(
         _return_to_trash(origin, entry)
 
     message = str(ei.value)
-    assert "the source is gone or the Trash entry is occupied" in message
+    assert f"nothing at the origin '{origin}'" in message
+    assert f"Trash at '{entry}'" in message
     assert "Errno" not in message, "a raw errno is not an answer to this question"
 
 
