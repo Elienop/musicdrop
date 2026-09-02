@@ -534,7 +534,9 @@ def _names_a_different_entry(path: Path, entry_name: str) -> bool:
     schema or origin validation: a record for another entry is that entry's to
     lose whether or not THIS version can parse the rest of it.
 
-    Never raises, which is :func:`delete_trash_origin`'s whole contract.
+    Never raises, and the reason is the shape rather than a promise: the only
+    two statements here that can are the read and the parse, and both arms
+    below catch them. That is :func:`delete_trash_origin`'s whole contract.
     """
     try:
         raw: object = json.loads(path.read_text(encoding="ascii"))
