@@ -323,6 +323,31 @@ describe("SettingsTrashPage", () => {
     );
   });
 
+  test("a row that has tracks is not told its tags were unreadable", async () => {
+    // The other direction of the same guard, and the direction nothing pinned:
+    // dropping `album.track_count === 0` from it left the whole frontend suite
+    // green (measured on this branch: 1338 passed) while this row rendered
+    // "2 tracks · FLAC · 1994" directly above "MusicDrop couldn't read audio
+    // tags here — that's why there are no track details". The hint explains an
+    // EMPTY meta line; on a row that has one it contradicts what it sits under.
+    server.use(
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [album], trash_path: "/t" }),
+      ),
+    );
+    renderPage();
+
+    const restore = await screen.findByRole("button", { name: /^Restore$/ });
+    expect(screen.getByText("2 tracks · FLAC · 1994")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/couldn.t read audio tags here/i),
+    ).not.toBeInTheDocument();
+    expect(restore).not.toHaveAccessibleDescription(/no track details/i);
+    // Positive control for the matcher: this row IS described — by its outlook
+    // line — so the assertion above cannot be passing on an empty description.
+    expect(restore).toHaveAccessibleDescription(/Goes back to/);
+  });
+
   test("Restore explains an occupied origin instead of failing generically", async () => {
     server.use(
       http.get(TRASH_URL, () =>
