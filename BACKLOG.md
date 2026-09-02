@@ -794,14 +794,19 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     read a record, so the user can put it back by hand. The first three are still an
     `"import"` and stay Restore-visible and explained, never a silent re-file; the fourth is
     `"refused"` — Restore does nothing and neither does that row's own Empty, because
-    `resolve_trash_child` turns both per-row routes down before any work starts, so the UI
-    disables both controls (`trash_manage._restore_fields`, `models/trash.TrashRestoreMode`).
+    at this tip (2026-09-02) `resolve_trash_child` asks `_is_symlinked_entry` about every
+    component from the Trash dir down BEFORE it resolves anything, and both per-row routes
+    take their child from `api/trash._child_or_404`, which runs ahead of any move or
+    removal — so both answer 404 and the UI disables both controls
+    (`trash_manage._restore_fields`, `models/trash.TrashRestoreMode`).
   * **No `"unavailable"` mode for `track_count == 0`**, deliberately: 0 means "nothing
     parsed as an Item", not "no music", and encoding that guess as a contract value would
     turn a UI hint into a promise. `trash_manage._audio_free_entries` warns against exactly
     this. (The rule is about a GUESS. A third value `"refused"` was added later for the one
     row whose refusal is KNOWN — a symlinked entry, which `resolve_trash_child` turns down
-    on both per-row routes before any work starts. See the symlink residual below.)
+    on both per-row routes, on the link itself and before anything is resolved. Known at
+    this tip; it was NOT known at the previous one, where a link pointing at a SIBLING
+    entry resolved inside Trash and passed. See the symlink residual below.)
   * `trash_album` records `moved="items"` and never offers a move-back — its files came out
     of a possibly-shared folder, and the re-import that must follow takes a DIRECTORY
     (`ImportTaskFactory.paths` makes one album task per file when handed files), so it would
@@ -821,11 +826,15 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   is moot: there is no plantable filename left. It is kept in the git history, not here.)
 
   **Second residual, unchanged in substance:** a symlinked Trash entry gets NO record.
-  `resolve_trash_child` refuses a child resolving outside Trash, so such a row can never be
-  restored by any route, and a record would make the listing offer an "Exact restore" whose
-  button 404s. The row reads as `restore_mode: "refused"` instead, carrying a note that says
-  where the album's files really are — the SAME guard turns down this row's own Empty, so
-  the UI disables both per-row controls and only `DELETE /api/trash/all` removes the link.
+  At this tip (2026-09-02) `resolve_trash_child` refuses a child that IS a link, or any
+  path through one, on `_is_symlinked_entry` and before it resolves anything — so no route
+  in the app restores such a row, and a record would make the listing offer an "Exact
+  restore" whose button 404s. (The mechanism this sentence used to name — "refuses a child
+  resolving outside Trash" — was the weaker predicate, and it passed a link pointing at a
+  SIBLING entry, whose resolved path is inside Trash. Do not restore that wording.) The row
+  reads as `restore_mode: "refused"` instead, carrying a note that says where the album's
+  files really are — the SAME guard turns down this row's own Empty, so the UI disables
+  both per-row controls and only `DELETE /api/trash/all` removes the link.
 
   **UI shipped in the same slice:** each row states its outlook before the user clicks — a
   quiet "Exact restore. Goes back to <path>" or an amber-flagged "Approximate restore."
@@ -839,13 +848,15 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   **That one exception sits outside the ruling's own reason, and the owner has NOT been
   asked about it.** The amendment reasons that disabling Restore *"would have deleted a
   working recovery path in the name of safety"* — true of an `"import"` row, where the
-  re-import IS the recovery path and works. A symlinked row has no such path:
-  `resolve_trash_child` answers 404 to the Restore route AND to the per-row Empty route
-  before either does any work (measured; pinned in
-  `backend/tests/test_trash_listing_symlink_rows.py`), so the only reachable outcome of
-  either live control was an error, and disabling them deletes nothing. That is an argument
-  for the carve-out, not an approval of it — put it to the owner and record the answer here
-  and in `decisions.md` 27.
+  re-import IS the recovery path and works. A symlinked row has no such path: at this tip
+  (2026-09-02) `resolve_trash_child` answers 404 to the Restore route AND to the per-row
+  Empty route, on the link itself and before either route moves or removes anything
+  (measured; pinned in `backend/tests/test_trash_listing_symlink_rows.py`), so the only
+  reachable outcome of either live control was an error, and disabling them deletes
+  nothing. That was NOT true at the previous tip, where the routes resolved first and a
+  link to a sibling entry got acted on — so the carve-out rests on this tip's guard, not on
+  a property the row always had. That is an argument for the carve-out, not an approval of
+  it — put it to the owner and record the answer here and in `decisions.md` 27.
 
   The page header no longer promises "puts one back as-is", which was only ever true
   for some rows. (Corrected: an earlier draft of this note, and the backend comment it came

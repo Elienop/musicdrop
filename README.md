@@ -82,12 +82,15 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
     out of a folder shared with other music, or its origin is no longer inside the library.
     Restore stays available in all three; the row just tells you it will not be exact.
   - **Can't be restored** — the fourth way a row loses its exact move-back, and the only one
-    with no restore of any kind: the Trash entry is itself a *link* to a folder on another
-    volume, so following it would import files that were never in Trash. The album's own
-    files were never moved — they are still where the link points, and adding that folder
-    through Import is what puts it back in the library. Both of the row's own buttons are
-    disabled, because both refuse it; **Empty all** is the only control that removes such an
-    entry, and it removes the link alone.
+    with no restore of any kind: the Trash entry is itself a *link* (usually to a folder on
+    another volume, which is how an album whose own folder is a link gets here), so
+    following it would import files that were never in Trash. The album's own files were
+    never moved — they are still where the link points, and adding that folder through
+    Import is what puts it back in the library. Both of the row's own buttons are disabled,
+    because as of this version MusicDrop turns both down on the link itself, without ever
+    following it — so Restore and that row's own Empty both answer "not in Trash" and change
+    nothing. **Empty all** is the only control that removes such an entry, and it removes
+    the link alone.
 
   Two consequences worth knowing. A row trashed by an older version has no record and never
   will, so a media-free one (art/booklet leftovers with no audio) still has Empty as its only
