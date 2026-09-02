@@ -964,6 +964,30 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `orphans._excluded_predicate`); the trash root has none. Small: refuse at startup when
   trash resolves inside or equal to the music dir or the beets dir.
 
+- **The orphan sweep's ignore list does not protect an ignored dir's ANCESTORS.** (Found
+  2026-09-02, same class as the entry above: a missing containment check between the
+  music root and a `/data`-side directory.) Trigger: `MUSICDROP_BEETS_DIR` (or
+  `MUSICDROP_TRASH_ORIGINS_DIR` / `MUSICDROP_PLAYLISTS_EXPORT_DIR`) pointed at a path
+  *inside* the music library, plus a library-scope Reorganize. Symbols, not line numbers:
+  `reorganize._ignore_dirs` hands the store and the export dir to
+  `orphans.find_orphan_folders`, whose `_excluded_predicate` skips those subtrees — and
+  `_library_orphans` then reports the TOP-MOST audio-empty dir, which is their parent.
+  Measured on `fix/undoable-deletes` with `beets_dir` under the music root: the sweep returns
+  `beets_dir` itself, identically with and without the exclusion. Blast radius depends on
+  where Trash sits, and `_ignore_dirs`' docstring states both outcomes: in the DEFAULT
+  layout (`trash_dir` = `<beets_dir>/trash`) the move is a directory into its own subtree,
+  `shutil.move` raises, and `reorganize_jobs.runner`'s `except OSError: continue` swallows
+  it — nothing is lost; with `MUSICDROP_TRASH_DIR` pointing outside `beets_dir`,
+  `library.db`, `config.yaml` and every origin record land under Trash in one pass.
+  **Not reachable in the shipped image**: `Dockerfile` sets `MUSICDROP_BEETS_DIR=/data/beets`
+  and `docker-compose.yml` mounts music at `/music`, so the two are separate volumes; it
+  needs an operator override. Not fixed on `fix/undoable-deletes`, and the docstring argues
+  against the obvious fix — sparing every ancestor only moves the report one level up when
+  the ignored dir is nested deeper, so it changes what the finder REPORTS rather than
+  adding a guard. If it is worth closing, the cheap version is the same shape as the entry
+  above: refuse at startup when `beets_dir` (or either configured store) resolves inside
+  the music dir.
+
 - **Vacuous-pin audit: sized 2026-08-28; the four confirmed pins FIXED in #190** (two dead
   absence needles in the reorganize adapter replaced with positive pins on the exact
   emitted strings — the divert message is pinned verbatim — and three frontend absence
