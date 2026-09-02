@@ -66,8 +66,11 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   residual for itself. A share
   dropping part-way through an artist delete reports how many of the artist's albums were
   moved to Trash before it stopped — those are recoverable there, the rest untouched. A run
-  that never moved anything says so instead of sending you to Trash: an artist whose albums
-  were all rows with no files left to move reports that nothing reached the Trash folder.
+  that moved nothing does not claim a count it cannot back: it says how many albums it
+  dropped that had no files left to move, and its advice is to *check* the Trash folder
+  rather than a promise that anything is in it. That hedge is deliberate — the album a
+  delete stops on can have reached Trash without this end being able to see it, so the
+  honest instruction is to look.
 - **Restore knows where things came from.** When MusicDrop moves a folder to Trash it
   records where that folder came from in a small JSON file alongside — one per Trash entry,
   under `<beets dir>/trash-origins/`, deliberately outside the trashed folder and outside
@@ -78,9 +81,11 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
     therefore cannot be re-imported at all.
   - **Approximate restore** — no usable origin, so beets re-imports the folder and files it
     under your *current* naming rules rather than putting it back. The row says which of the
-    three reasons applies: it was trashed before MusicDrop recorded origins, its files came
-    out of a folder shared with other music, or its origin is no longer inside the library.
-    Restore stays available in all three; the row just tells you it will not be exact.
+    three reasons applies: there is no record MusicDrop can use (either it was trashed
+    before origins were recorded, or writing the record failed — the server log says which),
+    its files came out of a folder shared with other music, or its origin is no longer
+    inside the library. Restore stays available in all three; the row just tells you it will
+    not be exact.
   - **Can't be restored** — the fourth way a row loses its exact move-back, and the only one
     with no restore of any kind: the Trash entry is itself a *link* (usually to a folder on
     another volume, which is how an album whose own folder is a link gets here), so
@@ -94,14 +99,19 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 
   Two consequences worth knowing. A row trashed by an older version has no record and never
   will, so a media-free one (art/booklet leftovers with no audio) still has Empty as its only
-  exit. (If you move or delete a Trash entry outside MusicDrop, its record is left behind as
-  a harmless leftover; the next album MusicDrop trashes under that name simply gets a `(1)`
-  suffix. Removing the entry through the app clears both together — except for a link entry,
-  which only **Empty all** can remove, and which has no record to clear because MusicDrop
-  never writes one for a link.) And a Restore whose original folder exists again *with
-  anything in it* is refused rather than merged — nothing moves, the files stay in Trash, and
-  the row tells you to clear that folder first; an empty leftover folder is not in the way
-  and gets replaced. A Trash row listed at zero tracks only means MusicDrop couldn't read
+  exit. (If you move or delete a Trash entry outside MusicDrop, its record is left behind.
+  For anything MusicDrop itself puts in Trash that is harmless — it treats a recorded name
+  as taken, so the next album it trashes under that name simply gets a `(1)` suffix. A
+  folder that arrives in Trash by some *other* route — a hand copy, a restored backup, a
+  sync client writing into the volume — asks nothing, so it can land on that name and its
+  row will then offer an exact restore to the *previous* folder's path. Nothing detects
+  that today; if you put folders into the Trash directory by hand, check what the row
+  promises before clicking Restore. Removing the entry through the app clears both together
+  — except for a link entry, which only **Empty all** can remove, and which has no record to
+  clear because MusicDrop never writes one for a link.) And a Restore whose original folder
+  exists again *with anything in it* is refused rather than merged — nothing moves, the
+  files stay in Trash, and the row tells you to clear that folder first; an empty leftover
+  folder is not in the way and gets replaced. A Trash row listed at zero tracks only means MusicDrop couldn't read
   audio tags there; beets' importer reads more formats than the listing does, so Restore may
   still work — except on a link entry, which lists at zero tracks because nothing under the
   link is ever read, and which says outright that it can't be restored.
