@@ -551,9 +551,12 @@ def _restore_to_origin(
       one. This writes into the music library, and the state it has to refuse is
       a dropped share whose local mountpoint still holds a stray entry: the cheap
       check passes there, and the restore would move the album onto a phantom
-      directory that disappears the moment the share comes back. Its one residual
-      is an EMPTY library, which has no album to sample and so passes on the root
-      check alone.
+      directory that disappears the moment the share comes back. It passes an
+      EMPTY library, which has no file to sample and so answers on the root check
+      alone; and since each slot is now the FILE rather than its folder, it also
+      costs one false refusal — a single-album library whose sampled track was
+      removed by hand while its folder stayed (measured 20 of 20 draws; the
+      figures are in ``require_library_present``'s docstring).
     * the origin is OCCUPIED — refuse rather than merge or divert. A restore
       that lands beside the thing it was meant to be is not a restore, and
       ``shutil.move`` onto an existing directory moves the folder INSIDE it. The

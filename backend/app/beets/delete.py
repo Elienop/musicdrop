@@ -146,10 +146,11 @@ def delete_artist(
 
     One arm for every cause, and it quotes the error it caught rather than
     naming one: an unmounted share used to be diagnosed here as fact, and the
-    predicate that raises it cannot tell that apart from an artist whose folders
-    were removed outside MusicDrop while the share is fine (its own message
-    offers both). Passing the cause through in its own words is the only version
-    of this sentence that is true in both states.
+    predicate that raises it cannot tell that apart from a library whose FILES
+    were removed outside MusicDrop while the share is fine — its own message
+    offers both ("Either the music share is not mounted, or those files have
+    been removed outside MusicDrop"). Passing the cause through in its own words
+    is the only version of this sentence that is true in both states.
 
     ``dropped_item_ids`` collects the ids this fan-out removes (see
     :func:`delete_album`), filled PER ALBUM inside the loop rather than up front:
@@ -203,8 +204,8 @@ def delete_artist(
                     # LibraryRootUnavailableError half reported "the music share
                     # became unavailable" as fact — a diagnosis the error it
                     # caught had not made (``require_library_present`` refuses
-                    # for a dropped share OR an artist whose folders were
-                    # removed outside MusicDrop, and says so). The remaining arm
+                    # for a dropped share OR for music files removed outside
+                    # MusicDrop, and its message says both). The remaining arm
                     # relays the cause instead of naming it, which is true for
                     # both, and a permission error, a full disk or a DB fault
                     # gets the same two tiers rather than a bare message with no

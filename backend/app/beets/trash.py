@@ -136,9 +136,9 @@ def _require_move_happened(
       (the deliberate cleanup ``trash_album_folder`` spells out in its own ghost
       branch; reached through this path by import Replace and duplicates
       resolve). Allowed through — but only once
-      ``require_library_present`` has shown some OTHER album is still on disk,
-      because a dropped share with a stray entry on its mountpoint produces this
-      exact state for every album at once.
+      ``require_library_present`` has shown some other sampled FILE the library
+      names is still on disk, because a dropped share with a stray entry on its
+      mountpoint produces this exact state for every album at once.
     * **root healthy and the files are still SITTING THERE** — they did not
       move and nobody can say why: a permission fault on the container, a beets
       change, a bug here. Dropping the rows would be the silent data loss this
@@ -633,11 +633,15 @@ def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path, origins_dir
     the two that move something.
 
     Raises :class:`~app.beets.library.LibraryRootUnavailableError` when the
-    album's folder is missing AND the library's music cannot be found — an
-    unmounted share, not a deleted album. The missing-folder branch uses
-    :func:`~app.beets.library.require_library_present`, not the cheap root
-    predicate, because that branch is the one that drops rows on nothing but an
-    absence. See the branch below.
+    library's music cannot be found — an unmounted share, not a deleted album.
+    TWO arms can raise it, and both use
+    :func:`~app.beets.library.require_library_present` rather than the cheap root
+    predicate, because both drop rows on nothing but an absence: the
+    missing-folder branch below, and the shared-folder fallback into
+    :func:`trash_album`, whose ghost arm (:func:`_require_move_happened`) asks
+    the same question after the moves. The second is not a corner case — on a
+    FLAT layout every album's folder IS the music root, so the folder is never
+    missing and the fallback is the arm that fires. See the branch below.
     """
     # AHEAD of every branch, including the two that drop rows having moved
     # nothing: the invariant the owner ruled on is that a delete drops no LIBRARY
