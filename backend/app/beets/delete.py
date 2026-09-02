@@ -124,8 +124,10 @@ def delete_artist(
     * **before the first mutation** — the check below runs ahead of the
       transaction, and the primitive re-checks per album, so a root that is
       already unavailable (or drops before the first move) raises
-      ``LibraryRootUnavailableError``, which the op answers with a 503 that
-      truthfully says nothing was moved or dropped;
+      ``LibraryRootUnavailableError``, which the op answers with a 503. Nothing
+      has been DROPPED whenever that fires; nothing has moved either, unless the
+      share went during one album's own move, which the primitive catches with
+      that album's rows kept and part of its folder under the Trash container;
     * **after at least one album** — the SAME error is re-raised as
       :class:`ArtistDeletePartialError`, because the 503's promise is no longer
       true. It reaches the user as the 500, naming how far the fan-out got.
@@ -197,6 +199,18 @@ def delete_artist(
                     # has counted it — both count returns from the primitive —
                     # so the fan-out cannot name it and ``_recovery``'s fallback
                     # tells the user to look rather than not to.
+                    #
+                    # A move that fails PART-WAY sits outside that window in the
+                    # other direction — the rows are KEPT, which is the safe
+                    # side. Two ways in: ``trash.py``'s post-condition re-checks
+                    # the root BEFORE it checks whether anything landed, so a
+                    # share dropping mid-move raises with some items already
+                    # under the Trash container, and a cross-filesystem
+                    # ``shutil.move`` is copy-then-delete, so a failure between
+                    # the two leaves the folder at both ends. Both are relayed
+                    # in the cause's own words, which is all this end can offer:
+                    # the second names the paths it was working on, the first
+                    # names the mount rather than the half-moved album.
                     if mutated == 0:
                         # Nothing mutated yet, so the caller's own error still
                         # holds and the 503 tier stays open. It does NOT follow
@@ -357,9 +371,12 @@ async def delete_album_op(
         except AlbumNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         # Ahead of the blanket except on purpose: ``_failed``'s recovery line
-        # promises the files are in Trash, which is exactly false here — the
-        # guard fires before anything moves or is dropped, so nothing is in
-        # Trash and nothing needs recovering. 503 with the guard's own flat
+        # sends the user to the Trash folder, and this error's ordinary shape is
+        # a share that was already gone — the guard fires before anything moves
+        # or is dropped, so there is nothing there to find. (The one shape that
+        # does leave files there, a share dropping DURING an album's move, keeps
+        # the rows and is named by the primitive's own error; see
+        # :func:`delete_artist`.) 503 with the guard's own flat
         # sentence instead, matching what the disk-sync preview already answers
         # for this same cause (app/api/disk_sync.py). Raised inline rather than
         # through a helper like ``_failed`` so the status stays a literal that
