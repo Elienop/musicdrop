@@ -370,13 +370,18 @@ describe("SettingsTrashPage", () => {
     renderPage();
 
     await user.click(await screen.findByRole("button", { name: /^Restore$/ }));
-    const message = await screen.findByText(/original folder exists again/i);
+    const message = await screen.findByText(
+      /something is at its original path again/i,
+    );
     expect(message).toHaveTextContent(/still in Trash/i);
-    // The qualifier is the difference between this message and a wrong one: an
-    // EMPTY folder at the origin is replaced and the restore goes ahead
-    // (`trash_manage._occupied`), so "exists again" on its own would send the
-    // user to clear something that was never the blocker.
-    expect(message).toHaveTextContent(/with anything in it/i);
+    // The backend answers this one reason for every occupant, including a
+    // DANGLING symlink at the origin — nothing is "in" that and it is not a
+    // folder, so a message promising a "folder" with something "in" it is false
+    // for it and sends the user to clear a path `ls` shows as a dead link. The
+    // word is what the previous wording got wrong, so pin its absence, and pin
+    // the instruction that has to name the same thing.
+    expect(message).not.toHaveTextContent(/folder/i);
+    expect(message).toHaveTextContent(/Clear that path/i);
     expect(screen.queryByText(/^Couldn’t restore$/)).not.toBeInTheDocument();
     // A refusal must not be painted like the success it replaces.
     expect(message).toHaveClass("text-warning");
@@ -483,7 +488,7 @@ describe("SettingsTrashPage", () => {
 
     await user.click(await screen.findByRole("button", { name: /^Restore$/ }));
     expect(
-      await screen.findByText(/original folder exists again/i),
+      await screen.findByText(/something is at its original path again/i),
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /^Restore$/ }));
@@ -491,7 +496,7 @@ describe("SettingsTrashPage", () => {
       /Server fell over/,
     );
     expect(
-      screen.queryByText(/original folder exists again/i),
+      screen.queryByText(/something is at its original path again/i),
     ).not.toBeInTheDocument();
   });
 

@@ -42,6 +42,7 @@ from app.beets.trash import (
 )
 from app.beets.trash_manage import (
     TrashRestoreIncompleteError,
+    _occupied,
     _restore_to_origin,
     _return_to_trash,
     empty_all,
@@ -1536,11 +1537,26 @@ def test_a_dangling_symlink_at_the_origin_keeps_the_files_in_trash(tmp_path: Pat
 
     A dangling ``music/X -> /gone`` reads as ABSENT, the move is attempted, and
     ``os.rename`` answers ENOTDIR — which ``_move_no_merge`` normalises to the
-    same ``origin_occupied`` the pre-filter would have given. The user is then
-    told a path "exists" that ``ls`` shows as broken, which is a wording problem
-    and not a data one: nothing moved and the files are still in Trash. Pinned
-    because ENOTDIR is what keeps it that way — without it the ``OSError``
-    escapes as an incomplete-restore error about a move that never happened.
+    same ``origin_occupied`` the pre-filter would have given. The cross-device
+    branch reaches the same answer by its own route: ``copytree``'s ``makedirs``
+    sees the link and raises EEXIST (both errnos measured 2026-09-02). Pinned
+    because that normalisation is what keeps it an ANSWER — without it the
+    ``OSError`` escapes as an incomplete-restore error about a move that never
+    happened.
+
+    Two layers, and which one refuses is the fact the UI copy rests on: this is
+    the one occupant :func:`_occupied` calls FREE, so the message shown for
+    ``origin_occupied`` cannot describe only what the pre-filter catches. It
+    used to say a "folder exists again with anything in it", which for this
+    shape is false twice — nothing is in it and it is not a folder — and sent
+    the user to clear a path ``ls`` shows as broken. It now says something is at
+    the original path again, which is true here too; ``SettingsTrashPage``
+    carries the same sentence and the reasoning.
+
+    The premise is asserted on :func:`_occupied` itself rather than on ``exists``
+    below it, because it is the function's ANSWER the restore acts on: a future
+    reordering that made ``exists`` no longer first would leave an ``exists``
+    assertion passing while the thing it stands for had changed.
     """
     lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
     origin = tmp_path / "music" / "Weird Folder"
@@ -1549,7 +1565,8 @@ def test_a_dangling_symlink_at_the_origin_keeps_the_files_in_trash(tmp_path: Pat
     entry.mkdir(parents=True)
     (entry / "01 a.flac").write_bytes(b"\x00")
 
-    assert exists(origin) is False, "the pre-filter is blind to a dangling link"
+    assert exists(origin) is False, "nothing resolves at that path"
+    assert not _occupied(origin), "and the pre-filter is blind to it: the move must refuse"
 
     result = _restore_to_origin(
         lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)

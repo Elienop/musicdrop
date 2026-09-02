@@ -93,9 +93,10 @@ class RestoreResult(BaseModel):
     """Outcome of a restore.
 
     ``already_in_library`` = a matching album is already present, so beets safely
-    skipped; ``origin_occupied`` = the folder it came from exists again with
-    anything in it, so the move-back would have had to overwrite or land beside
-    it. In both cases the files are back in Trash, untouched.
+    skipped; ``origin_occupied`` = something is at the path it came from again —
+    a folder with anything in it, a file, or a symlink INCLUDING a broken one —
+    so the move-back would have had to overwrite it, merge into it, or land
+    beside it. In both cases the files are back in Trash, untouched.
 
     An EMPTY leftover folder at the origin is NOT occupied: it is replaced and
     the restore goes ahead. That is what a pruning beets or a half-finished sync

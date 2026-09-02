@@ -15513,7 +15513,7 @@
           "reason"
         ],
         "title": "RestoreResult",
-        "description": "Outcome of a restore.\n\n``already_in_library`` = a matching album is already present, so beets safely\nskipped; ``origin_occupied`` = the folder it came from exists again with\nanything in it, so the move-back would have had to overwrite or land beside\nit. In both cases the files are back in Trash, untouched.\n\nAn EMPTY leftover folder at the origin is NOT occupied: it is replaced and\nthe restore goes ahead. That is what a pruning beets or a half-finished sync\nleaves behind, and refusing it would strand exactly the rows the origin\nrecord exists for."
+        "description": "Outcome of a restore.\n\n``already_in_library`` = a matching album is already present, so beets safely\nskipped; ``origin_occupied`` = something is at the path it came from again \u2014\na folder with anything in it, a file, or a symlink INCLUDING a broken one \u2014\nso the move-back would have had to overwrite it, merge into it, or land\nbeside it. In both cases the files are back in Trash, untouched.\n\nAn EMPTY leftover folder at the origin is NOT occupied: it is replaced and\nthe restore goes ahead. That is what a pruning beets or a half-finished sync\nleaves behind, and refusing it would strand exactly the rows the origin\nrecord exists for."
       },
       "ReviewInboxResponse": {
         "properties": {

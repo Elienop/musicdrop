@@ -114,31 +114,30 @@ function restoreResultMessage(result: RestoreResult): string {
     // A move-back that refused rather than merging: something is at the origin
     // again, so nothing moved. Say where the files ARE (still in Trash, so the
     // row and its Restore are unchanged) and the one thing that unblocks it —
-    // the folder itself is named on the row's own "Goes back to" line.
+    // the path itself is named on the row's own "Goes back to" line.
     //
-    // "with anything in it" carries the rest of the reason. An EMPTY leftover
-    // folder at the origin is NOT what refuses: `trash_manage._occupied` calls
-    // it free and `_move_no_merge` replaces it, which is how a pruning beets or
-    // a half-finished sync leaves the path. Saying only "exists again" named a
-    // blocker the backend does not have, and sent the user to clear a folder
-    // that would not have stopped them. Worded to match the contract and the
-    // docs to the letter ("exists again with anything in it" in `RestoreResult`
-    // and in README), so a user grepping for what they saw on screen finds the
-    // explanation — this line said "something" against their "anything" until
-    // 2026-09-02.
+    // "something is at ... again" is the widest true description of the
+    // occupant, and it has to be: the backend answers this ONE reason for a
+    // non-empty folder, a plain FILE, a symlink that RESOLVES (even one
+    // pointing at an empty directory), anything it cannot read, AND a DANGLING
+    // link. That last shape is not what `trash_manage._occupied` calls
+    // occupied — its `exists` follows the link and reads the path as absent, so
+    // the pre-check passes and it is the MOVE that refuses (`os.rename` answers
+    // ENOTDIR, the cross-device copy branch EEXIST; both measured 2026-09-02),
+    // normalised to this same reason. So the sentence must not promise a
+    // "folder" with something "in" it: for a broken link nothing is in it and
+    // it is not a folder, and the user was being sent to clear a folder that
+    // `ls` shows as a dead link. Matched word-for-word by `RestoreResult`'s
+    // description and by README, so a user grepping what they saw on screen
+    // finds the explanation.
     //
-    // "Restore is refused while ..." is what licenses "anything": the word is
-    // negative-polarity and reads as an error in a plain declarative ("its
-    // folder exists again with anything in it"). The conditional frame is
-    // carrying the shared wording, so do not flatten it back to a statement
-    // without changing `RestoreResult` and README in the same breath.
-    //
-    // The ordinary occupant, not every one: `_occupied` also answers occupied
-    // for a FILE at that path, for a symlink that RESOLVES (even one pointing
-    // at an empty directory), and for anything it cannot read. A DANGLING link
-    // is not occupied — the backend's `exists` follows it and reads it as
-    // absent.
-    return "Restore is refused while its original folder exists again with anything in it; nothing moved and the files are still in Trash. Clear that folder, then try again.";
+    // Said as a statement about THIS refusal, not as a rule about every
+    // occupant, because one thing at the origin does NOT refuse: an EMPTY
+    // leftover folder, which `_occupied` calls free and `_move_no_merge`
+    // replaces — how a pruning beets or a half-finished sync leaves the path.
+    // A "Restore is refused while anything is there" frame would claim that one
+    // too, and it is exactly the case the user never sees this message for.
+    return "Restore stopped because something is at its original path again; nothing moved and the files are still in Trash. Clear that path, then try again.";
   }
   return "Couldn’t restore";
 }

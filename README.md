@@ -112,10 +112,11 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   that today; if you put folders into the Trash directory by hand, check what the row
   promises before clicking Restore. Removing the entry through the app clears both together
   — except for a link entry, which only **Empty all** can remove, and which has no record to
-  clear because MusicDrop never writes one for a link.) And a Restore whose original folder
-  exists again *with anything in it* is refused rather than merged — nothing moves, the
-  files stay in Trash, and the row tells you to clear that folder first; an empty leftover
-  folder is not in the way and gets replaced. A Trash row listed at zero tracks only means MusicDrop couldn't read
+  clear because MusicDrop never writes one for a link.) And a Restore is refused rather than
+  merged when *something is at the album's original path again* — a folder with anything in
+  it, a file, or a symlink including a broken one — nothing moves, the files stay in Trash,
+  and the row tells you to clear that path first; an empty leftover folder is not in the way
+  and gets replaced. A Trash row listed at zero tracks only means MusicDrop couldn't read
   audio tags there; beets' importer reads more formats than the listing does, so Restore may
   still work — except on a link entry, which says outright that it can’t be restored. A link
   to a *folder* lists at zero tracks too, because nothing under it is read; a link a hand has
