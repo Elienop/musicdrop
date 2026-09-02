@@ -1679,7 +1679,14 @@ def test_empty_one_keeps_the_record_when_the_removal_itself_fails(tmp_path: Path
     A failed ``rmtree`` leaves the folder sitting in Trash. Dropping its record
     on the way past would permanently downgrade a row that still exists to an
     import-restore — the one thing this feature must never do.
+
+    Skipped as root, where the mode bit denies nothing and the ``rmtree`` simply
+    succeeds. (Its sibling above uses a real FILE where the origins dir belongs
+    for exactly that reason; there is no equivalent trick for "``rmtree`` must
+    fail", so this one takes the guard.)
     """
+    if os.getuid() == 0:
+        pytest.skip("running as root: a read-only dir does not deny writes")
     husk = tmp_path / "music" / "Old Name"
     husk.mkdir(parents=True)
     (husk / "cover.jpg").write_bytes(b"\x00")

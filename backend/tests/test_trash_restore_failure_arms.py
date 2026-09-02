@@ -275,8 +275,11 @@ def test_a_failed_undo_says_the_folder_is_at_the_origin(
 
     ``chmod`` on the Trash dir rather than a patched mover, so the real
     ``os.rename`` produces the real EACCES; restored in a ``finally`` or the
-    ``tmp_path`` teardown cannot clean up.
+    ``tmp_path`` teardown cannot clean up. Skipped as root, where the mode bit
+    denies nothing and the undo would simply succeed.
     """
+    if os.getuid() == 0:
+        pytest.skip("running as root: a read-only dir does not deny writes")
     lib = _seeded_library(tmp_path)
     origin = tmp_path / "music" / "Weird Folder"
     trash = tmp_path / "trash"
@@ -498,6 +501,38 @@ def test_an_empty_directory_at_the_origin_is_replaced_on_the_copy_branch(
         "02 Sour Times.flac",
     ]
     assert not entry.exists()
+
+
+def test_a_directory_the_app_cannot_read_is_treated_as_occupied(tmp_path: Path) -> None:
+    """:func:`_occupied`'s ``except OSError`` arm, which nothing reached.
+
+    A directory the app can stat but not READ — a mode bit, a share that came
+    back with different ownership, a fault mid-``scandir`` — leaves "is anything
+    in it?" unanswered, and the docstring's promise is that an unanswered
+    question counts as occupied. That is the only conservative reading: a
+    refusal leaves the album in Trash, while letting the ``OSError`` out turns a
+    refusal the user can act on into a 500 from a route whose contract says
+    nothing about permissions.
+
+    The directory is EMPTY, so this cannot pass for the ordinary reason: with
+    the arm removed, the same fixture would either restore into it (if the read
+    succeeded) or raise. Skipped as root, where mode 000 denies nothing.
+    """
+    if os.getuid() == 0:
+        pytest.skip("running as root: mode 000 does not deny a scandir")
+    lib = _seeded_library(tmp_path)
+    origin = tmp_path / "music" / "Weird Folder"
+    entry = _trash_the_album(lib, tmp_path)
+    origin.mkdir(parents=True)
+    origin.chmod(0o000)
+
+    try:
+        result = _restore(lib, entry, tmp_path)
+    finally:
+        origin.chmod(0o700)  # or the tmp_path teardown cannot clean up
+
+    assert result == RestoreResult(restored=False, reason="origin_occupied")
+    assert len(list(entry.glob("*.flac"))) == 2, "still in Trash, untouched"
 
 
 @pytest.mark.parametrize("occupant", ["files", "file", "symlink"])

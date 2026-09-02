@@ -359,6 +359,8 @@ def test_empty_all_finishes_what_it_can_and_names_what_it_could_not(tmp_path: Pa
     The removed entries' records go with them and the survivor keeps its own, or
     a later retry would restore into a folder whose origin had been forgotten.
     """
+    if os.getuid() == 0:
+        pytest.skip("running as root: a read-only dir does not deny writes")
     trash, origins = tmp_path / "trash", tmp_path / "origins"
     trash.mkdir()
     origins.mkdir()
