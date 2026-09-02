@@ -1056,6 +1056,98 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   above: refuse at startup when `beets_dir` (or either configured store) resolves inside
   the music dir.
 
+- **A FLAT library layout defeats the delete path's presence check — it samples the music
+  root against itself.** (Found 2026-09-02, on `fix/undoable-deletes`, while re-reading the
+  check that entry-above's sibling shipped.) Trigger: a `paths.default` template with no
+  directory component — beets' own `$title` is the shortest, and the template is editable
+  from the app (**Settings → Naming**, `config_editor` writes `paths:` straight back into
+  `config.yaml`), so this is a supported layout and not a damaged install. Mechanism, by
+  symbol: `library._sampled_library_dirs` takes `os.path.dirname` of each sampled item
+  path, which for a single-component path IS the library root, so
+  `require_library_present` ends up asking `os.path.isdir(<music root>)` — the very
+  question `require_library_root` already answered, and the one a stray entry on a dropped
+  share's mountpoint answers wrongly.
+  **Measured on shipped code** (no monkeypatching; a 200-row library built through beets'
+  own `Album`/`Item`, `.stfolder` the only thing on the mountpoint): flat layout →
+  `_sampled_library_dirs` returns the music root 5 times out of 5 and
+  `require_library_present` ACCEPTS; the same 200 rows re-filed under
+  `$albumartist/$album/$title` → `LibraryRootUnavailableError`. Blast radius: the two arms
+  that drop rows on nothing but an absence — `trash.trash_album_folder`'s missing-folder
+  branch and `trash._require_move_happened`'s ghost arm — so on a dropped share a flat
+  library is erased one delete at a time, keeping nothing in Trash. It needs the share to
+  drop AND the mountpoint to hold an entry AND a flat layout; each is ordinary on its own.
+  **Not fixed here, because the obvious fix has a cost that needs a design call.** Skipping
+  rows whose `dirname` is the library root leaves a flat library with an EMPTY sample, and
+  the empty-sample arm accepts by design (it has no evidence either way) — so the "fix"
+  silently downgrades a flat library to the cheap root predicate, i.e. removes its presence
+  check rather than correcting it. The alternatives all cost something too: sampling the
+  item FILE rather than its folder makes the check stricter for every layout (a single
+  legitimately-deleted track then fails a sample slot, and the short-circuit hides how
+  often); refusing flat layouts outright is a product decision. **Ask the owner which
+  trade to take** before writing any of them.
+
+- **An unreachable origins store makes the allocator hand out a recorded name, and the next
+  folder inherits the first one's origin.** (Found 2026-09-02, on `fix/undoable-deletes`;
+  the code states it as a residual — this entry is the tracker's copy, not a second
+  finding.) Trigger: an origins directory that exists but cannot be searched — a bad
+  `PUID`/`PGID`, a restored backup, a stray `chmod`. Mechanism, by symbol:
+  `trash_origins.origin_recorded` catches `OSError` from `Path.exists()` and answers
+  `False`, and `trash_origins.read_trash_origin` returns `None` for the same fault, so the
+  store's two questions AGREE on "nothing here"; `trash._unique_trash_dest` then hands out
+  a name whose record is still on disk, and once the permissions are repaired that second
+  folder's row reads the FIRST folder's record and offers to move it there. Measured at
+  mode `0600` as a non-root user, driven through `_unique_trash_dest`: `Dummy (1)` with the
+  store readable, `Dummy` under the fault. Blast radius: one wrong "Exact restore" per name
+  reused while the fault lasts — the move-back writes into the music library, so the wrong
+  answer is a folder landing at a stranger's path. The payload's `name` guard cannot catch
+  it: the two folders share a name.
+  **Not fixed here, and failing closed was measured worse:** answering `True` on `OSError`
+  leaves the allocator with no exit at all, since every candidate then reads occupied
+  (measured: 111,939 candidates in one second, still climbing). At this tip the case gets a
+  `logger.warning` on that arm and nothing else, which is a trace, not a close. **Design
+  call for the owner:** refuse the delete outright while the store is unreachable (a
+  permission bug then blocks deleting anything), or give each record a fingerprint of the
+  entry it describes so a mismatched pair is detectable on read (a schema change, and it
+  does not help the case above, where the names match). Neither is obviously right.
+
+- **A plugin listener that raises on `album_removed` leaves the folder in Trash with its
+  album row already gone.** (Found 2026-09-02, on `fix/undoable-deletes`.) Trigger: a
+  loaded beets plugin listening on `album_removed` and raising. **Measured how far away
+  that is**: no plugin bundled with beets 2.13.1 listens on it (`album_removed` appears in
+  the installed tree only at the emitter and in the event list), and the app's own editor
+  offers a 13-name allowlist (`models/config_editor.PluginName`) containing none — so it
+  takes a third-party plugin installed into the image and enabled by editing `config.yaml`
+  by hand (unknown keys survive the editor's round-trip). Listed anyway because the
+  consequence is the one state the delete path cannot name. Mechanism, by symbol:
+  `beets.library.Album.remove` deletes the album row (`super().remove()`) and THEN calls
+  `plugins.send("album_removed", ...)`, and `beets.plugins.send` wraps no handler in
+  `try/except` (beets 2.13.1) — so a raising listener unwinds out of
+  `trash.trash_album_folder` AFTER `shutil.move` and `_record_origin` have both run, and
+  the beets transaction commits on the way out even while unwinding. Blast radius: that
+  album's folder is in Trash with a valid origin record, its album row is gone and its item
+  rows are still there (they are removed after the signal). Nothing in `delete.py` can see
+  it — both `mutated` and `moved` count RETURNS from the primitive, so the fan-out's
+  message cannot name it. **What shipped is the honest sentence, not the fix**:
+  `delete._recovery`'s fallback tells the user to *check* the Trash folder and what each
+  answer means, instead of the old wording that said nothing had moved. **Not fixed here**:
+  putting the folder back on this failure means an undo path in the primitive, and a failed
+  undo has to replace the original error rather than hide it. **Design call for the owner:**
+  is an automatic move-back worth that machinery for a fault only a third-party plugin can
+  cause, or is "check Trash" the right answer? Ask before building it.
+
+- **The "keep Restore enabled on every row" ruling now has a carve-out the owner has not
+  been asked about.** (Raised 2026-09-02, on `fix/undoable-deletes`.) `decisions.md` 27, as
+  amended by the owner on 2026-08-31 (*"Keep it enabled, warn clearly"*), reasons that
+  disabling Restore *"would have deleted a working recovery path in the name of safety"*.
+  That reason holds for an `"import"` row and does not reach a **symlinked** row, whose
+  per-row Restore and per-row Empty are both refused by `trash_manage.resolve_trash_child`
+  at this tip — so the row ships with both controls disabled, which is the shape the ruling
+  otherwise forbids. The argument for the carve-out is written out in the Trash feature
+  block above (the only reachable outcome of either live control was a 404, so disabling
+  them deletes nothing). **That is an argument, not an approval: the owner has NOT been
+  asked, and no answer is on file.** Put it to them and record the answer here and in
+  `decisions.md` 27 — the ruling's own words currently say "every row".
+
 - **Vacuous-pin audit: sized 2026-08-28; the four confirmed pins FIXED in #190** (two dead
   absence needles in the reorganize adapter replaced with positive pins on the exact
   emitted strings — the divert message is pinned verbatim — and three frontend absence
