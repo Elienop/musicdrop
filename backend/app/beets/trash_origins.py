@@ -356,7 +356,10 @@ def _names_entry(raw: object, entry_name: str) -> bool:
     "corrupt" and "this is somebody else's record" send an operator to different
     places, and the second is the only signal a truncated key has collided. A
     payload that is not an object at all falls through to :func:`_parse`, which
-    owns that sentence.
+    owns that sentence — pinned by the ``not-an-object`` arm of
+    ``test_every_unusable_record_names_its_own_cause``. Without it the routing
+    disjunct is free: ``not isinstance(raw, dict) or`` -> ``isinstance(raw, dict)
+    and`` logs a corrupt file as a different entry's record and nothing goes red.
     """
     return not isinstance(raw, dict) or raw.get("name") == entry_name
 

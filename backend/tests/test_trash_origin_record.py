@@ -1034,6 +1034,18 @@ def test_a_present_but_unusable_record_is_logged_and_an_absent_one_is_not(
             "not a record this version can trust",
             id="rejected-payload",
         ),
+        # ``_names_entry`` ROUTES, it does not judge: a payload that is not an
+        # object at all has no ``name`` to disagree with, so it must fall through
+        # to ``_parse`` and be called corrupt. Its ``not isinstance(raw, dict)``
+        # disjunct exists for exactly this arm — flipped to
+        # ``isinstance(raw, dict) and``, this file is logged as "the record for a
+        # different Trash entry", which relabels corruption as a key collision
+        # and sends an operator hunting a second entry that does not exist.
+        pytest.param(
+            lambda p: p.write_text(json.dumps([1, 2, 3]), encoding="ascii"),
+            "not a record this version can trust",
+            id="not-an-object",
+        ),
         # No ``is_file()`` preamble survives, so a directory at the name comes
         # back as the OSError it really is rather than a hand-written sentence —
         # the arm is kept to pin that it degrades instead of escaping.
@@ -1046,11 +1058,13 @@ def test_every_unusable_record_names_its_own_cause(
     plant: Callable[[Path], object],
     why: str,
 ) -> None:
-    """Three ways to be unusable, three different sentences.
+    """Four ways to be unusable, and the sentence each one earns.
 
     One generic "could not read the record" would leave the reader no better off
     than the collapsed ``None`` did: a truncated write, a hand-edited payload and
-    an I/O fault need different actions.
+    an I/O fault need different actions. Two arms share a sentence deliberately —
+    a payload that is not an object at all is CORRUPT, not somebody else's
+    record — and that sameness is the routing the ``not-an-object`` arm pins.
     """
     origins = tmp_path / "trash-origins"
     origins.mkdir()
