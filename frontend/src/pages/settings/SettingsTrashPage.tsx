@@ -115,7 +115,19 @@ function restoreResultMessage(result: RestoreResult): string {
     // again, so nothing moved. Say where the files ARE (still in Trash, so the
     // row and its Restore are unchanged) and the one thing that unblocks it —
     // the folder itself is named on the row's own "Goes back to" line.
-    return "Its original folder exists again; nothing moved and the files are still in Trash. Clear that folder, then try again.";
+    //
+    // "with something in it" carries the rest of the reason. An EMPTY leftover
+    // folder at the origin is NOT what refuses: `trash_manage._occupied` calls
+    // it free and `_move_no_merge` replaces it, which is how a pruning beets or
+    // a half-finished sync leaves the path. Saying only "exists again" named a
+    // blocker the backend does not have, and sent the user to clear a folder
+    // that would not have stopped them. Same distinction the contract makes
+    // ("exists again with anything in it", `RestoreResult`) and README.
+    //
+    // The ordinary occupant, not every one: `_occupied` also answers occupied
+    // for a FILE at that path, for a symlink of any kind (even one pointing at
+    // an empty directory), and for anything it cannot read.
+    return "Its original folder exists again with something in it; nothing moved and the files are still in Trash. Clear that folder, then try again.";
   }
   return "Couldn’t restore";
 }

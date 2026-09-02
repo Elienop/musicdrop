@@ -367,6 +367,11 @@ describe("SettingsTrashPage", () => {
     await user.click(await screen.findByRole("button", { name: /^Restore$/ }));
     const message = await screen.findByText(/original folder exists again/i);
     expect(message).toHaveTextContent(/still in Trash/i);
+    // The qualifier is the difference between this message and a wrong one: an
+    // EMPTY folder at the origin is replaced and the restore goes ahead
+    // (`trash_manage._occupied`), so "exists again" on its own would send the
+    // user to clear something that was never the blocker.
+    expect(message).toHaveTextContent(/with something in it/i);
     expect(screen.queryByText(/^Couldn’t restore$/)).not.toBeInTheDocument();
     // A refusal must not be painted like the success it replaces.
     expect(message).toHaveClass("text-warning");
