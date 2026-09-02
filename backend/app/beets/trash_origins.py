@@ -35,10 +35,25 @@ which is the floor this whole feature has to stay above.
 The key is the Trash entry's NAME. Inode keys were rejected: inode numbers are
 REUSED, so a stale origin bound to a recycled inode would hand folder A's origin
 to folder B, and that origin steers a ``rename()``. The name key has the same
-shape of hazard (an entry deleted OUTSIDE the app leaves an origin whose name a
-later entry could take), and it is closed at the allocator instead:
-``trash._unique_trash_dest`` treats a recorded name as occupied, so a name is
-never reused while its origin file is still there.
+shape of hazard — an entry that leaves Trash without this app noticing (a file
+manager, an SMB client, ``docker volume rm``) leaves its record behind for
+whatever takes that name next — and two mechanisms narrow it:
+
+* **The allocator**, for the names MusicDrop hands out.
+  ``trash._unique_trash_dest`` treats a recorded name as occupied, so this app
+  never gives a second folder a name whose record is still on disk. That is the
+  whole of what it covers. An entry that reaches ``trash_dir`` by ANOTHER route
+  — a hand copy, a restored backup, a sync client writing into the volume — asks
+  the allocator nothing, so it can land on a name whose record outlived its
+  entry and inherit it: the listing offers "Exact restore" to a stranger's
+  origin and Restore renames the folder there. Nothing here detects that today;
+  it is a stated residual, not a closed hazard.
+* **The record names its own entry.** ``name`` is in the payload and
+  :func:`read_trash_origin` refuses a record whose ``name`` is not the entry it
+  was asked about. That does nothing for the adoption case above (an adopted
+  folder carries the very same name), and everything for the TRUNCATED key,
+  where two DIFFERENT entry names share one record file — see
+  :func:`origin_file`.
 """
 
 from __future__ import annotations
@@ -64,6 +79,15 @@ logger = logging.getLogger(__name__)
 #: Docker app shipped on release tags: pinning an older image after an upgrade
 #: is a real downgrade path, and the field a stale reader would misread steers a
 #: ``rename()`` rather than filling in a listing.
+#:
+#: Adding ``name`` did NOT earn a bump, and the test is the definition above: an
+#: older reader handed a record WITH a name reads ``origin``/``moved`` exactly as
+#: it always did — it simply keeps the collision this version refuses, which is
+#: its own pre-existing behaviour rather than a misreading of new data. The other
+#: direction needs no version at all: a record with no ``name`` is not the record
+#: for any entry, so it already reads as "no record" and degrades to
+#: import-restore. Only this branch's own earlier commits ever wrote one, and the
+#: branch is unmerged, so no such file exists outside a developer's ``/data``.
 _SCHEMA = 1
 
 #: The longest filename to attempt, in BYTES. ``NAME_MAX`` is 255 on ext4/xfs/
@@ -143,6 +167,16 @@ def origin_file(origins_dir: Path, entry_name: str) -> Path:
     name instead — deterministic, so the reader recomputes the same key. The
     budget is :data:`_MAX_KEY_BYTES`, not ``NAME_MAX``, because the atomic write
     needs room for its own temp name.
+
+    **The truncated key is not injective, and not by 2^64 either.** For any long
+    name ``N2`` the SHORT name ``N1 = N2[:201] + "." + sha256(N2)[:16]`` is 218
+    bytes, so it is NOT truncated, and ``N1 + ".json"`` is character-for-character
+    the key ``N2`` is given — one construction, no search. Both are legal Trash
+    entry names (they fit ``NAME_MAX``), and the loser's record would be read
+    back for the winner: a listing row offering "Exact restore" to a stranger's
+    folder. Closed at the READ, which compares the ``name`` stored in the payload
+    (see :func:`read_trash_origin`); the allocator cannot close it, because it
+    only sees the names it is asked to hand out.
     """
     if not entry_name or entry_name in {".", ".."} or os.sep in entry_name or "/" in entry_name:
         raise ValueError(f"{entry_name!r} is not a single path component")
@@ -166,6 +200,14 @@ def origin_recorded(origins_dir: Path, entry_name: str) -> bool:
     never handed to a DIFFERENT folder — see the module docstring. False for a
     key this store could not build a path for, which is the same answer the
     allocator would get from a name nothing recorded.
+
+    EXISTENCE of the key file, deliberately, and not "would
+    :func:`read_trash_origin` answer for this name". They differ for exactly the
+    colliding pair in :func:`origin_file`: the record belongs to the other name,
+    so the read refuses it while this still says True. Occupied is the safe side
+    — the allocator moves on to ``<name> (1)`` and the pair never shares a file
+    in the first place — and the cost is the same burnt name a manual deletion
+    already costs.
     """
     try:
         return origin_file(origins_dir, entry_name).exists()
@@ -191,9 +233,15 @@ def write_trash_origin(
     """
     # ``trashed_at`` has no reader by design — see :class:`TrashOrigin`. Do not
     # "clean it up" as unused; do not add a reader without deciding what shows it.
+    #
+    # ``name`` is the opposite: it is written to be READ BACK and compared. The
+    # key is a filename and :func:`origin_file` truncates a long one, so two
+    # different entry names can be handed the same file; carrying the name INSIDE
+    # the payload is what lets the reader tell whose record it is holding.
     payload = {
         "schema": _SCHEMA,
         "trashed_at": datetime.now(UTC).isoformat(),
+        "name": entry_name,
         "origin": origin,
         "moved": moved,
     }
@@ -250,6 +298,17 @@ def read_trash_origin(origins_dir: Path, entry_name: str) -> TrashOrigin | None:
     WARNING is the only place the difference is visible, and it is MORE
     diagnostic here than it was for a sidecar: on the trusted side, unusable
     means hardware or capacity, not a plant.
+
+    **A record is only ever read back for the entry it was written for.** The
+    payload names its own entry, and a record naming a different one — or naming
+    none, which is every record written before this field existed — reads as no
+    record. Two entry names can share a file (:func:`origin_file` truncates a
+    long key, and landing on the same one takes a construction rather than a
+    birthday search), and the wrong answer there is not a missing origin but a
+    WRONG one: a ``rename()`` of the loser's folder into the winner's origin. The
+    refusal is at the READ rather than the write because the write cannot see the
+    clash — it would have to read the file it is about to replace, and lose the
+    race anyway.
     """
     try:
         path = origin_file(origins_dir, entry_name)
@@ -281,10 +340,25 @@ def read_trash_origin(origins_dir: Path, entry_name: str) -> TrashOrigin | None:
     except ValueError:
         _warn_unusable(path, "it is not the ASCII JSON this writes", exc_info=True)
         return None
+    if not _names_entry(raw, entry_name):
+        _warn_unusable(path, "it is the record for a different Trash entry")
+        return None
     record = _parse(raw)
     if record is None:
         _warn_unusable(path, "its contents are not a record this version can trust")
     return record
+
+
+def _names_entry(raw: object, entry_name: str) -> bool:
+    """Whether the decoded payload says it was written for ``entry_name``.
+
+    Kept out of :func:`_parse` so the two refusals keep their own log sentences:
+    "corrupt" and "this is somebody else's record" send an operator to different
+    places, and the second is the only signal a truncated key has collided. A
+    payload that is not an object at all falls through to :func:`_parse`, which
+    owns that sentence.
+    """
+    return not isinstance(raw, dict) or raw.get("name") == entry_name
 
 
 def _warn_unusable(path: Path, why: str, *, exc_info: bool = False) -> None:

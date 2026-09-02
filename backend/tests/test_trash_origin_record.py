@@ -373,15 +373,18 @@ def test_an_album_still_reaches_trash_when_the_record_cannot_be_written(
         pytest.param("not json at all", id="unparseable"),
         pytest.param(json.dumps([1, 2, 3]), id="not-an-object"),
         pytest.param(
-            json.dumps({"schema": 2, "origin": "/music/A", "moved": "folder"}), id="future-schema"
+            json.dumps({"schema": 2, "name": "Dummy", "origin": "/music/A", "moved": "folder"}),
+            id="future-schema",
         ),
         pytest.param(
-            json.dumps({"schema": 1, "origin": "music/A", "moved": "folder"}), id="relative-origin"
+            json.dumps({"schema": 1, "name": "Dummy", "origin": "music/A", "moved": "folder"}),
+            id="relative-origin",
         ),
         pytest.param(
-            json.dumps({"schema": 1, "origin": "/music/A", "moved": "sideways"}), id="unknown-shape"
+            json.dumps({"schema": 1, "name": "Dummy", "origin": "/music/A", "moved": "sideways"}),
+            id="unknown-shape",
         ),
-        pytest.param(json.dumps({"schema": 1, "moved": "folder"}), id="no-origin"),
+        pytest.param(json.dumps({"schema": 1, "name": "Dummy", "moved": "folder"}), id="no-origin"),
         # The one member of the deleted hostile-character filter that is kept.
         # A POSIX path cannot hold a NUL, so only corruption produces this — but
         # ``Path.exists()`` swallows the ValueError it raises and answers False,
@@ -389,7 +392,9 @@ def test_an_album_still_reaches_trash_when_the_record_cannot_be_written(
         # a ValueError no ``except OSError`` catches: a blanket 500 on a row the
         # UI had just labelled "Exact restore".
         pytest.param(
-            json.dumps({"schema": 1, "origin": "/music/A\x00B", "moved": "folder"}),
+            json.dumps(
+                {"schema": 1, "name": "Dummy", "origin": "/music/A\x00B", "moved": "folder"}
+            ),
             id="nul-in-origin",
         ),
     ],
@@ -1023,7 +1028,7 @@ def test_a_present_but_unusable_record_is_logged_and_an_absent_one_is_not(
         pytest.param(lambda p: p.write_text("{ nope", encoding="ascii"), "JSON", id="unparseable"),
         pytest.param(
             lambda p: p.write_text(
-                json.dumps({"schema": 1, "origin": "relative", "moved": "folder"}),
+                json.dumps({"schema": 1, "name": "Dummy", "origin": "relative", "moved": "folder"}),
                 encoding="ascii",
             ),
             "not a record this version can trust",
@@ -1120,7 +1125,8 @@ def test_a_nul_in_the_origin_cannot_reach_the_move(tmp_path: Path) -> None:
     origins = _origins(tmp_path)
     origins.mkdir()
     origin_file(origins, entry.name).write_text(
-        json.dumps({"schema": 1, "origin": poisoned, "moved": "folder"}), encoding="ascii"
+        json.dumps({"schema": 1, "name": entry.name, "origin": poisoned, "moved": "folder"}),
+        encoding="ascii",
     )
 
     assert exists(Path(poisoned)) is False, "the occupancy guard fails OPEN on a NUL"
@@ -1189,7 +1195,8 @@ def test_a_non_utf8_origin_still_gets_its_exact_restore(tmp_path: Path) -> None:
     origins = tmp_path / "trash-origins"
     origins.mkdir()
     origin_file(origins, "Dummy").write_text(
-        json.dumps({"schema": 1, "origin": origin, "moved": "folder"}), encoding="ascii"
+        json.dumps({"schema": 1, "name": "Dummy", "origin": origin, "moved": "folder"}),
+        encoding="ascii",
     )
 
     record = read_trash_origin(origins, "Dummy")
@@ -1917,7 +1924,12 @@ def test_the_row_shows_a_normalised_origin(tmp_path: Path) -> None:
     entry.mkdir(parents=True)
     origin_file(origins, "Dummy").write_text(
         json.dumps(
-            {"schema": 1, "origin": f"{tmp_path}/music/./Portishead//Dummy", "moved": "folder"}
+            {
+                "schema": 1,
+                "name": "Dummy",
+                "origin": f"{tmp_path}/music/./Portishead//Dummy",
+                "moved": "folder",
+            }
         ),
         encoding="ascii",
     )
