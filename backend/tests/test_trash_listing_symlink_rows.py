@@ -371,7 +371,7 @@ def test_a_folder_argument_outside_trash_is_refused_by_both_per_row_routes(
 def _seed_a_dangling_entry(client: TestClient, tmp_path: Path) -> tuple[Path, Path]:
     """A symlinked Trash entry whose target is not there — the unmounted case.
 
-    The same ordinary provenance as every other symlinked entry (an album folder
+    The same ordinary provenance as the symlinked entries above (an album folder
     that was already a link when it was deleted), in the state the note beside
     such a row describes out loud: the volume it points at is not mounted, so
     nothing follows. An ordinary sibling is seeded with it, so a change that
@@ -390,7 +390,7 @@ def _seed_a_dangling_entry(client: TestClient, tmp_path: Path) -> tuple[Path, Pa
 
 
 def test_a_dangling_symlinked_entry_still_gets_a_row(client: TestClient, tmp_path: Path) -> None:
-    """It used to be invisible, which is the one state the user cannot act on.
+    """It used to produce no row at all, and an invisible entry cannot be acted on.
 
     ``_audio_free_entries`` asked ``is_dir()``, which FOLLOWS the link: a
     dangling one answered False and produced no row at all. The entry was in

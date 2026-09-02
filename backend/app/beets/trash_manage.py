@@ -350,9 +350,15 @@ def _audio_free_entries(
 ) -> list[TrashedAlbum]:
     """Zero-track rows for top-level entries that produced no audio group.
 
-    A directory or a symlink; hidden/system names skipped. Loose FILES are not
-    here because ``_walk_trash_groups`` already lists any it can read as an
-    ``Item``, and an unreadable one is not an album.
+    A directory or a symlink; hidden/system names skipped.
+
+    Loose FILES are left to ``_walk_trash_groups``, which lists any it can read
+    as an ``Item`` (``test_empty_one_removes_a_loose_file`` is such a row). One
+    it CANNOT read — a stray sidecar dropped straight into the Trash dir — is
+    listed by neither, and stays as invisible as the dangling link below used to
+    be. Stated as a residual rather than closed here: what the app's own trashing
+    moves is an album FOLDER (``trash._album_root``) or the container it makes
+    for a shared one, so a loose unreadable file arrives by some other route.
     """
     # Audio-free trashed folders (art/sidecar husks the orphan sweep relocates here)
     # carry no Item rows, so the tag-grouping above never lists them. Surface each
@@ -1063,18 +1069,19 @@ def resolve_trash_child(trash_dir: Path, rel: str) -> Path:
     These paths are ``rm -rf`` / import targets, so reject traversal (``../``),
     the Trash root itself, and a non-existent child by raising ``ValueError``.
 
-    TWO refusals run before anything is resolved, and both are lexical — they
-    are asked of the path as WRITTEN, so what a link points at is never
-    consulted to decide whether the request is legitimate:
+    TWO refusals run before anything is resolved, and both are lexical — asked
+    of the path as WRITTEN, so neither of THEM consults what a link points at
+    (the containment check further down does, and that is the point of having
+    all three):
 
     * the path must be under ``trash_dir`` as written. ``resolve_display_path``
       returns ``trash_dir / rel``, and an absolute ``rel`` replaces the base
       entirely, so ``folder=<abs>/Sneak`` arrives as a path this module never
       handed out. Measured on this branch before this check existed, with
-      ``Sneak -> <trash>/RealAlbum``:
-      this resolver returned ``<trash>/RealAlbum``, ``DELETE /api/trash`` answered
-      ``200 {"removed": 1}``, and the album that row belonged to was gone while
-      ``Sneak`` itself stayed put.
+      ``Sneak -> <trash>/RealAlbum``: this resolver returned
+      ``<trash>/RealAlbum``, ``DELETE /api/trash?folder=<abs>/Sneak`` answered
+      ``200 {"removed": 1}``, and ``RealAlbum`` — a row with its own Restore —
+      was gone while ``Sneak`` itself was still a link.
     * no component between ``trash_dir`` and the target may be a link
       (:func:`_reaches_through_a_link`, asking the listing's own
       :func:`_is_symlinked_entry`), so a row rendered ``"refused"`` and a request
