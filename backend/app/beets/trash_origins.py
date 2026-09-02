@@ -576,6 +576,60 @@ def _names_a_different_entry(path: Path, entry_name: str) -> bool:
     return isinstance(name, str) and name != entry_name
 
 
+def clear_trash_origins(origins_dir: Path) -> None:
+    """Drop EVERY record, for a caller that knows none of them describes anything.
+
+    One caller: ``trash_manage.empty_all``, once it has removed at least one
+    entry AND found ``trash_dir`` empty afterwards. Both halves of that are
+    load-bearing, and the caller owns them because both are questions about the
+    Trash directory rather than about this one.
+
+    What the sweep closes is the litter :func:`delete_trash_origin` cannot
+    reach. A record whose entry left Trash without this app noticing — a file
+    manager, an SMB client, ``docker volume rm`` — is never handed to that
+    function at all, so it survived every per-row action for good; the cost of
+    one is a burnt name (:func:`origin_recorded`), and, for a folder that
+    reaches Trash by another route and adopts it, the residual the module
+    docstring states. An emptied Trash is the one moment the whole store can be
+    answered at once instead of one key at a time.
+
+    Failures are logged per file and the sweep carries on, the same posture as
+    :func:`delete_trash_origin` and for the same reason: it runs after the
+    entries are already gone, so an exception escaping would 500 an Empty that
+    succeeded. Measured against a store that was never created and against a
+    directory planted at a record's own name — see
+    ``tests/test_trash_origins_store.py``.
+    """
+    try:
+        # Materialised before the first unlink: removing entries from a
+        # directory while iterating it is not a walk this module wants to
+        # reason about.
+        records = list(origins_dir.iterdir())
+    except FileNotFoundError:
+        return  # nothing was ever recorded, which is every pre-feature store
+    except OSError:
+        logger.warning(
+            "could not list the Trash origin records to clear them after Trash was"
+            " emptied; any that are there will be left behind, and each one holds its"
+            " name against a future album",
+            exc_info=True,
+        )
+        return
+    for path in records:
+        try:
+            path.unlink()
+        except OSError:
+            # ``%r`` on the path for the same reason :func:`_warn_unusable`
+            # uses it: the filename is a Trash entry's name, which comes from
+            # the album's own tags.
+            logger.warning(
+                "could not remove the Trash origin record at %r while clearing the store;"
+                " it is left behind and holds its name against a future album",
+                os.fsdecode(path),
+                exc_info=True,
+            )
+
+
 def move_back_target(record: TrashOrigin | None, *, music_dir: str) -> Path | None:
     """The folder a trashed entry can be moved back to, or ``None``.
 

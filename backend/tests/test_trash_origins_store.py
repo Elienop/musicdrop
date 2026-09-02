@@ -36,6 +36,7 @@ from beets.library import Item, Library
 
 from app.beets.trash_manage import empty_all, empty_one, list_trashed_albums, restore_album
 from app.beets.trash_origins import (
+    clear_trash_origins,
     delete_trash_origin,
     origin_file,
     origin_recorded,
@@ -494,6 +495,47 @@ def test_a_record_the_json_parser_gives_up_on_does_not_abort_empty_all(
     assert empty_all(trash, origins_dir=origins).removed == 3
 
     assert list(trash.iterdir()) == []
+
+
+# ----- clearing the whole store -----
+
+
+def test_clearing_the_store_carries_on_past_a_record_it_cannot_remove(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``clear_trash_origins`` runs after Trash is already empty, so it may not raise.
+
+    Same position as :func:`delete_trash_origin` and the same posture: every
+    entry is gone by the time this runs, so an exception escaping would report a
+    completed Empty all as a 500, and one unremovable file would take every
+    other record's cleanup with it.
+
+    Staged with a DIRECTORY at a record's name (``EISDIR`` on ``unlink``) rather
+    than a ``chmod``, because CI runs the suite as ``runner`` on one machine and
+    as root elsewhere, where a mode bit denies nothing and the test would report
+    green having exercised no failure at all.
+
+    The name is also the log line's own pin: a record's filename is a Trash
+    entry's name, which comes from the album's tags, so an ANSI escape or a
+    newline in an ``albumartist`` reaches this warning through the path. ``%r``
+    is what stops it forging a line.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    forged = "Dummy\x1b[31m\nCRITICAL:app:all clear"
+    write_trash_origin(origins, "Ordinary", origin="/music/A/Ordinary", moved="folder")
+    origin_file(origins, forged).mkdir()
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        clear_trash_origins(origins)  # must return, not raise
+
+    assert not origin_file(origins, "Ordinary").exists(), "one bad file stopped the sweep"
+    assert origin_file(origins, forged).is_dir()
+    assert any("could not remove the Trash origin record" in r.getMessage() for r in caplog.records)
+    assert "\x1b" not in caplog.text, "an ANSI escape reached the log"
+    assert "\nCRITICAL" not in caplog.text, "a forged log line reached the log"
+    assert "\\x1b" in caplog.text  # escaped, not dropped
+    assert "\\n" in caplog.text
 
 
 # ----- a store the app cannot reach -----

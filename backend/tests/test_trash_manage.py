@@ -384,6 +384,66 @@ def test_empty_all_finishes_what_it_can_and_names_what_it_could_not(tmp_path: Pa
     assert read_trash_origin(origins, "C Album") is None
 
 
+def test_empty_all_clears_the_store_once_trash_is_empty(tmp_path: Path) -> None:
+    """The one class of leftover record no per-row action can reach.
+
+    ``delete_trash_origin`` is owed by every route that takes an entry OUT of
+    Trash, so it covers every entry MusicDrop itself removes. An entry that
+    leaves by ANOTHER route — a file manager, an SMB client, ``docker volume
+    rm`` — never reaches it, and its record then survived every Empty and every
+    Restore for good, holding its name against a future album
+    (``trash._unique_trash_dest`` reads a recorded name as occupied) and
+    standing ready to be adopted by a folder that lands on that name.
+
+    An Empty all that finishes is the one moment the answer is known for the
+    whole store: nothing is in Trash, so no record describes anything. The live
+    entry beside it is what keeps the assertion from being about the orphan
+    alone — the sweep has to be the LAST thing, after the per-child drops, or
+    the row that was really there loses its record while its folder is still in
+    Trash.
+    """
+    trash, origins = tmp_path / "trash", tmp_path / "origins"
+    trash.mkdir()
+    origins.mkdir()
+    (trash / "Live Album").mkdir()
+    write_trash_origin(origins, "Live Album", origin="/music/Live Album", moved="folder")
+    # Its entry left Trash without this app noticing, so nothing ever dropped it.
+    write_trash_origin(origins, "Gone Album", origin="/music/Gone Album", moved="folder")
+
+    assert empty_all(trash, origins_dir=origins).removed == 1
+
+    assert list(trash.iterdir()) == []
+    assert list(origins.iterdir()) == [], "an emptied Trash must leave an empty store"
+
+
+def test_empty_all_keeps_every_record_when_it_removed_nothing(tmp_path: Path) -> None:
+    """Emptiness alone must NOT authorise the sweep, and this is the case that says why.
+
+    A ``trash_dir`` on a share that has dropped presents as an empty directory,
+    so a sweep gated on "Trash is empty afterwards" alone would run here and
+    destroy the origins of every entry still sitting on the real volume — the
+    exact loss the per-child drop was written to avoid. Having REMOVED an entry
+    is the evidence that the directory walked was the real one.
+
+    Modelled at the only thing ``empty_all`` can see, an empty ``trash_dir``: it
+    takes no library and asks nothing about mounts, so there is no
+    ``require_library_present`` in this path to build a bystander album for. A
+    user who has already emptied Trash produces the identical call, and keeping
+    the records is the right answer for them too — the next Empty all that
+    removes something clears them.
+    """
+    trash, origins = tmp_path / "trash", tmp_path / "origins"
+    trash.mkdir()
+    origins.mkdir()
+    write_trash_origin(origins, "Real Album", origin="/music/Real Album", moved="folder")
+
+    assert empty_all(trash, origins_dir=origins).removed == 0
+
+    record = read_trash_origin(origins, "Real Album")
+    assert record is not None, "a Trash dir that reads as empty is not proof that it is"
+    assert record.origin == "/music/Real Album"
+
+
 def test_empty_all_clears_a_symlinked_entry_without_following_it(tmp_path: Path) -> None:
     """One symlinked entry used to make Trash impossible to empty, permanently.
 

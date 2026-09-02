@@ -38,7 +38,12 @@ from app.beets.library import (
     _music_dir,
     require_library_present,
 )
-from app.beets.trash_origins import delete_trash_origin, move_back_target, read_trash_origin
+from app.beets.trash_origins import (
+    clear_trash_origins,
+    delete_trash_origin,
+    move_back_target,
+    read_trash_origin,
+)
 from app.fsutil import exists
 from app.models.bank import BankApplyDirective
 from app.models.import_models import AlbumOutcomeStatus
@@ -1088,14 +1093,26 @@ def empty_all(trash_dir: Path, *, origins_dir: Path) -> EmptyResult:
 
     Each entry's origin record is dropped INSIDE the loop, right after that entry
     is removed, so a fault part-way through leaves a consistent pair rather than
-    a set of records for entries that are still there. Deliberately per-child and
-    not "wipe the origins dir at the end": a ``trash_dir`` whose share has
-    dropped presents as an empty directory, and emptying it would then destroy
-    the origins of every entry that is still on the real volume. The records left
-    behind by an entry deleted outside MusicDrop stay as litter, and the cost of
-    one is a burnt name: ``trash._unique_trash_dest`` will not hand that name out
-    again. It cannot stop a folder that reaches Trash by another route from
-    adopting the record — a residual ``trash_origins`` states rather than closes.
+    a set of records for entries that are still there: the survivors keep theirs.
+
+    Then the whole store is swept (``clear_trash_origins``), but only when this
+    call REMOVED something and ``trash_dir`` is empty afterwards. Neither
+    condition is enough alone. Emptiness alone is not: a ``trash_dir`` whose
+    share has dropped presents as an empty directory, and a sweep reading that
+    as "Trash is empty" would destroy the origins of every entry still on the
+    real volume — having removed an entry is the evidence that the directory
+    walked was the real one. "Removed something" alone is not either: a partial
+    failure leaves entries that still need their records, which is why the sweep
+    sits past the raise.
+
+    That is what now clears the litter the per-child drop cannot reach — a
+    record whose entry left Trash without this app noticing (a file manager, an
+    SMB client, ``docker volume rm``), which is never handed to
+    ``delete_trash_origin`` at all and used to survive every per-row action for
+    good. Until an Empty all lands, such a record still costs a burnt name
+    (``trash._unique_trash_dest`` will not hand that name out again) and can
+    still be adopted by a folder that reaches Trash by another route — a
+    residual ``trash_origins`` states rather than closes.
     """
     if not trash_dir.exists():
         return EmptyResult(removed=0)
@@ -1130,4 +1147,11 @@ def empty_all(trash_dir: Path, *, origins_dir: Path) -> EmptyResult:
             f" {len(failed)} could not be removed and are still in Trash: {shown}{more}."
             f" The first failure was: {first}"
         )
+    # Suppressed rather than allowed to escape: everything above has already
+    # happened, so a ``trash_dir`` that stopped answering between the loop and
+    # this re-read must not turn a completed Empty into a 500. Not sweeping is
+    # the same conservative side the dropped-share case takes.
+    with contextlib.suppress(OSError):
+        if removed and not any(trash_dir.iterdir()):
+            clear_trash_origins(origins_dir)
     return EmptyResult(removed=removed)
