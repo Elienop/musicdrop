@@ -391,7 +391,7 @@ def _trash_dir_over_path_max(tmp_path: Path) -> Path:
 def test_a_trash_path_over_PATH_MAX_fails_at_the_MOVE_and_not_at_the_allocator(
     tmp_path: Path,
 ) -> None:
-    """The occupancy test's never-raising half, reached with nothing injected.
+    """The occupancy test's errno-36-absorbing half, reached with nothing injected.
 
     ``_NAME_MAX`` bounds one COMPONENT; PATH_MAX bounds the whole path — so a
     name the shortener rightly leaves alone is still unlookupable once the Trash
