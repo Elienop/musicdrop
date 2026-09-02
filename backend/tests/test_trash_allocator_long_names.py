@@ -323,14 +323,26 @@ def test_fit_name_leaves_a_name_that_already_fits_alone(tmp_path: Path) -> None:
     """The ordinary case, which every other test here would pass without.
 
     A shortener that trimmed a byte off every name would rename every Trash entry
-    in the library and nothing above would notice — the assertions are all "<=
-    255". This is the one that says the untouched case is untouched.
+    in the library and nothing above would notice — the assertions above are all
+    "<= 255". This is the one that says the untouched case is untouched.
+
+    AT the budget, not merely under it. A short name proves nothing about the
+    arithmetic: ``name[: budget - 1]`` leaves an 18-character name whole and only
+    shows itself where the slice can actually bite, so the 255-byte name is the
+    input that separates "fits" from "fits after a byte was taken off it" — and
+    end to end, with an empty store and an empty Trash, that byte would be the
+    difference between the entry keeping its own name and silently being renamed
+    on its way in.
     """
     assert _fit_name("Portishead - Dummy", 255) == "Portishead - Dummy"
     assert _fit_name(_FULLWIDTH_A * 2, 255) == _FULLWIDTH_A * 2
+    assert _fit_name(LONGEST, 255) == LONGEST, "a name exactly at the budget is not shortened"
     trash, origins = _dirs(tmp_path)
     husk = _husk(tmp_path, "Portishead - Dummy")
+    longest_husk = _husk(tmp_path, LONGEST)
 
     dest = trash_folder(husk, trash_dir=trash, origins_dir=origins)
+    longest_dest = trash_folder(longest_husk, trash_dir=trash, origins_dir=origins)
 
     assert dest.name == "Portishead - Dummy"
+    assert longest_dest.name == LONGEST, "nothing was in the way, so nothing may be trimmed"
