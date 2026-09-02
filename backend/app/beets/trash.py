@@ -37,8 +37,14 @@ from app.beets.library import (
     require_library_present,
     require_library_root,
 )
-from app.beets.trash_origins import MovedShape, origin_recorded, write_trash_origin
+from app.beets.trash_origins import (
+    _NAME_MAX,
+    MovedShape,
+    origin_recorded,
+    write_trash_origin,
+)
 from app.config import Settings
+from app.fsutil import exists
 
 
 class TrashMoveIncompleteError(Exception):
@@ -355,14 +361,64 @@ def _unique_trash_dest(trash_dir: Path, origins_dir: Path, name: str) -> Path:
     The cost is a burnt name: after a manual deletion the record is litter, and
     an album that would have been ``<name>`` becomes ``<name> (1)``. Litter is
     the accepted residual; a wrong restore is not.
+
+    **Every candidate is kept inside ``NAME_MAX``, and the occupancy test is the
+    never-raising one.** ``Path.exists()`` does not absorb ENAMETOOLONG
+    (``pathlib._IGNORED_ERRNOS`` is ENOENT/ENOTDIR/EBADF/ELOOP — errno 36 is not
+    in it), so appending the first ``" (1)"`` — four bytes — turned any name of
+    252 to 255 bytes into an ``OSError(36)`` escaping this function on the very
+    first iteration. Measured: 251 passed, 252 and 255 raised, both with a real
+    entry in the way and with only an orphaned RECORD in the way. The delete
+    then 500s with "Files are recoverable in the Trash folder. Retry." while
+    nothing has moved and every retry fails identically, and the orphan sweep
+    (whose ``except OSError`` is meant for one bad folder) skips such a folder in
+    silence. Shortening the HEAD to make room for the suffix is the answer rather
+    than refusing or truncating elsewhere: a Trash entry's name is only a
+    container, and what a restore reads to put the folder back is the origin
+    RECORD, never the name. :func:`~app.fsutil.exists` then answers "free"
+    instead of raising for the limits this constant cannot see — a filesystem
+    with a smaller ``NAME_MAX``, or a Trash path close to ``PATH_MAX`` — leaving
+    the failure to the move, which can at least name the path.
+
+    Long names are not only an accident of the source folder: ``beets.util``
+    caps a path component it generates at 200 bytes by default
+    (``MAX_FILENAME_LENGTH``, raisable via the ``max_filename_length`` config),
+    but :func:`_trash_container_name` builds a name out of the album's own tags
+    with no truncation at all, so it can hand this function one that is over the
+    line before any suffix is added.
     """
-    base = name or "album"
+    base = _fit_name(name or "album", _NAME_MAX)
     dest = trash_dir / base
     counter = 1
-    while dest.exists() or origin_recorded(origins_dir, dest.name):
-        dest = trash_dir / f"{base} ({counter})"
+    while exists(dest) or origin_recorded(origins_dir, dest.name):
+        # The suffix is ASCII, so its byte cost is its length. The head is
+        # re-shortened from ``base`` every time and never from the previous
+        # candidate, so reaching " (10)" takes its extra byte out of the head
+        # instead of off the end of a name that already fit.
+        suffix = f" ({counter})"
+        dest = trash_dir / (_fit_name(base, _NAME_MAX - len(suffix)) + suffix)
         counter += 1
     return dest
+
+
+def _fit_name(name: str, budget: int) -> str:
+    """``name`` shortened from the end until it encodes to at most ``budget`` bytes.
+
+    BYTES, because bytes are what the kernel limits: a CJK or fullwidth album
+    title costs three bytes a character, so a 90-character name can be over the
+    line while ``len()`` says it is nowhere near it.
+
+    Whole CODEPOINTS, because every folder name here arrived through
+    ``os.fsdecode``. Slicing the ENCODED form would cut a multi-byte character in
+    half and leave the Trash entry named a different string from the one written
+    to the origin record's key; dropping trailing codepoints cannot, and that
+    holds for a non-UTF-8 folder name too — its undecodable bytes are carried as
+    one lone surrogate each, which ``os.fsencode`` puts back as one byte each.
+    """
+    text = name[:budget]  # every codepoint costs >= 1 byte, so this bounds the loop
+    while len(os.fsencode(text)) > budget:
+        text = text[:-1]
+    return text
 
 
 def _record_origin(origins_dir: Path, dest: Path, *, origin: str, moved: MovedShape) -> None:
