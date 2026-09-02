@@ -44,7 +44,6 @@ from app.beets.trash import (
 )
 from app.beets.trash_manage import (
     TrashRestoreIncompleteError,
-    _occupied,
     _restore_to_origin,
     _return_to_trash,
     empty_all,
@@ -65,7 +64,7 @@ from app.beets.trash_origins import (
     write_trash_origin,
 )
 from app.config import Settings
-from app.fsutil import exists
+from app.fsutil import exists, occupied
 from app.models.bank import BankApplyDirective
 from app.models.trash import RestoreResult
 from tests.conftest import build_library, make_test_handle, origins_for
@@ -408,7 +407,7 @@ def test_move_back_target_refuses_an_origin_outside_the_library(tmp_path: Path) 
     assert move_back_target(inside, music_dir=music) == tmp_path / "music" / "A"
     # The library ROOT itself is refused separately from "outside the library",
     # and it is the one that costs something: a corrupt or empty origin that
-    # normalises to the music root would hand ``_move_no_merge`` the whole
+    # normalises to the music root would hand ``move_no_merge`` the whole
     # library as a move destination.
     assert move_back_target(TrashOrigin(origin=music, moved="folder"), music_dir=music) is None
     assert (
@@ -1469,7 +1468,7 @@ def test_a_part_way_cross_filesystem_move_says_the_folder_may_be_in_both(
 ) -> None:
     """The message has to say BOTH — "check both paths" reads as "one of them".
 
-    ``_move_no_merge`` cannot rename across filesystems, so it copies and then
+    ``move_no_merge`` cannot rename across filesystems, so it copies and then
     removes — and a failure mid-copy leaves a partial copy at the origin while
     the whole folder is still in Trash. No undo is attempted there, deliberately,
     which makes the sentence the only thing the user has: it has to say both
@@ -1515,7 +1514,7 @@ def test_return_to_trash_names_a_vanished_source_rather_than_the_syscall(
 ) -> None:
     """The half of that guard nothing tested, and the only thing it changes.
 
-    ``not exists(origin)`` is a MESSAGE, not a guard: ``_move_no_merge`` on a
+    ``not exists(origin)`` is a MESSAGE, not a guard: ``move_no_merge`` on a
     missing source raises ``FileNotFoundError``, an ``OSError`` the arm below
     turns into this same exception type. Only the wording differs — and the
     wording is all the operator has, because this runs only when a restore has
@@ -1538,7 +1537,7 @@ def test_a_dangling_symlink_at_the_origin_keeps_the_files_in_trash(tmp_path: Pat
     """``exists`` follows links, so the occupancy pre-filter cannot see this one.
 
     A dangling ``music/X -> /gone`` reads as ABSENT, the move is attempted, and
-    ``os.rename`` answers ENOTDIR — which ``_move_no_merge`` normalises to the
+    ``os.rename`` answers ENOTDIR — which ``move_no_merge`` normalises to the
     same ``origin_occupied`` the pre-filter would have given. The cross-device
     branch reaches the same answer by its own route: ``copytree``'s ``makedirs``
     sees the link and raises EEXIST (both errnos measured 2026-09-02). Pinned
@@ -1547,7 +1546,7 @@ def test_a_dangling_symlink_at_the_origin_keeps_the_files_in_trash(tmp_path: Pat
     happened.
 
     Two layers, and which one refuses is the fact the UI copy rests on: this is
-    the one occupant :func:`_occupied` calls FREE, so the message shown for
+    the one occupant :func:`occupied` calls FREE, so the message shown for
     ``origin_occupied`` cannot describe only what the pre-filter catches. It
     used to say a "folder exists again with anything in it", which for this
     shape is false twice — nothing is in it and it is not a folder — and sent
@@ -1555,7 +1554,7 @@ def test_a_dangling_symlink_at_the_origin_keeps_the_files_in_trash(tmp_path: Pat
     the original path again, which is true here too; ``SettingsTrashPage``
     carries the same sentence and the reasoning.
 
-    The premise is asserted on :func:`_occupied` itself rather than on ``exists``
+    The premise is asserted on :func:`occupied` itself rather than on ``exists``
     below it, because it is the function's ANSWER the restore acts on: a future
     reordering that made ``exists`` no longer first would leave an ``exists``
     assertion passing while the thing it stands for had changed.
@@ -1568,7 +1567,7 @@ def test_a_dangling_symlink_at_the_origin_keeps_the_files_in_trash(tmp_path: Pat
     (entry / "01 a.flac").write_bytes(b"\x00")
 
     assert exists(origin) is False, "nothing resolves at that path"
-    assert not _occupied(origin), "and the pre-filter is blind to it: the move must refuse"
+    assert not occupied(origin), "and the pre-filter is blind to it: the move must refuse"
 
     result = _restore_to_origin(
         lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)

@@ -21,7 +21,6 @@ beets imports allowed here (inside app/beets/, CLAUDE.md rule 3).
 from __future__ import annotations
 
 import contextlib
-import errno
 import logging
 import os
 import shutil
@@ -44,7 +43,7 @@ from app.beets.trash_origins import (
     move_back_target,
     read_trash_origin,
 )
-from app.fsutil import exists
+from app.fsutil import exists, move_no_merge, occupied
 from app.models.bank import BankApplyDirective
 from app.models.import_models import AlbumOutcomeStatus
 from app.models.trash import EmptyResult, RestoreResult, TrashedAlbum, TrashRestoreMode
@@ -74,7 +73,7 @@ class TrashRestoreIncompleteError(Exception):
 
     Raised when the file work itself failed: the destination folder could not be
     created, the forward move failed (part-way, across filesystems, where a copy
-    precedes the remove — see :func:`_move_no_merge`), or the folder had to be
+    precedes the remove — see :func:`move_no_merge`), or the folder had to be
     put back in Trash after a failed import and that move failed too. NOT raised
     for an import that merely declined (a duplicate); that is a ``RestoreResult``.
 
@@ -558,18 +557,18 @@ def _restore_to_origin(
     * the origin is OCCUPIED — refuse rather than merge or divert. A restore
       that lands beside the thing it was meant to be is not a restore, and
       ``shutil.move`` onto an existing directory moves the folder INSIDE it. The
-      :func:`_occupied` call below answers that cheaply, but it is a PRE-FILTER
+      :func:`occupied` call below answers that cheaply, but it is a PRE-FILTER
       and not the guard: it and the move are two syscalls, so the promise is kept
-      by :func:`_move_no_merge`, which cannot be raced. Both answer
+      by :func:`move_no_merge`, which cannot be raced. Both answer
       ``origin_occupied``, so the window is invisible to the caller — and both
       answer an EMPTY DIRECTORY at the origin the same way too (it is removed and
-      the restore proceeds; see :func:`_occupied` for why that is not a hole).
+      the restore proceeds; see :func:`occupied` for why that is not a hole).
     * the import did not land the album — put the folder back in Trash and report
       the import's own answer, so a duplicate reads exactly as it does today. If
       that return ALSO fails, :func:`_undo_failure` looks at the disk and says
       where the folder actually ended up. That is one of TWO paths here that can
       end with the files not wholly back in Trash; the other is the forward move
-      failing part-way (the ``except OSError`` after :func:`_move_no_merge`
+      failing part-way (the ``except OSError`` after :func:`move_no_merge`
       below), where a fault mid-``rmtree`` on the copy branch leaves a complete
       copy at the origin with a partial entry still in Trash. Both answer by
       looking at the disk (:func:`_whereabouts`) rather than by guessing.
@@ -584,7 +583,7 @@ def _restore_to_origin(
     One residual in the occupancy answer, stated rather than hidden: ``exists``
     follows symlinks, so a DANGLING link at the origin (``music/X -> /gone``)
     reads as absent, the move is attempted, and ``os.rename`` answers ENOTDIR —
-    which :func:`_move_no_merge` normalises to the same ``origin_occupied`` the
+    which :func:`move_no_merge` normalises to the same ``origin_occupied`` the
     user is told about a path ``ls`` shows as broken. The FILES are safe (still
     in Trash, nothing moved) and the answer is right for the wrong-looking
     reason, so this is a wording problem and not a data one; ``origin_occupied``
@@ -601,7 +600,7 @@ def _restore_to_origin(
     # the sweep renamed) and belongs to no Trash entry at all. Not load-bearing
     # as a capture: ``Path.name`` is a string and does not follow the file.
     entry_name = entry.name
-    if _occupied(origin):
+    if occupied(origin):
         return RestoreResult(restored=False, reason="origin_occupied")
     try:
         origin.parent.mkdir(parents=True, exist_ok=True)
@@ -617,7 +616,7 @@ def _restore_to_origin(
             f" full, or a file may be sitting at one of those names. {where}"
         ) from exc
     try:
-        _move_no_merge(entry, origin)
+        move_no_merge(entry, origin)
     except FileExistsError:
         # The origin appeared between the check above and the move — a
         # sync client, an *arr or the user. Same answer as the pre-filter's,
@@ -730,7 +729,7 @@ def _whereabouts(entry: Path, origin: Path) -> tuple[bool, str]:
 
     Every failure inside a move-back has to answer the same question — *where
     are my files?* — and the honest answer comes from the DISK, not from which
-    arm raised. The arms cannot know: ``_move_no_merge``'s EXDEV branch (the only
+    arm raised. The arms cannot know: ``move_no_merge``'s EXDEV branch (the only
     one the shipped Docker layout ever takes, ``/data`` and ``/music`` being
     separate mounts) copies before it removes, so the same exception covers
     "nothing was copied", "half a copy at the origin", and "a whole copy at the
@@ -896,134 +895,17 @@ def _holds_media(folder: Path) -> bool:
     return False
 
 
-#: ``rename``'s ways of saying "something is already at the destination". POSIX
-#: lets an implementation answer a non-empty destination directory with either
-#: EEXIST or ENOTEMPTY (Linux picks ENOTEMPTY), and a destination that is a FILE
-#: while the source is a directory answers ENOTDIR. All three mean the same thing
-#: here, and none of them moved anything.
-_DEST_OCCUPIED = frozenset({errno.EEXIST, errno.ENOTEMPTY, errno.ENOTDIR})
-
-
-def _occupied(path: Path) -> bool:
-    """Whether something is at ``path`` that a move-back must refuse.
-
-    An EMPTY DIRECTORY is not, and that is the whole reason this is a function
-    rather than a bare ``exists``. ``os.rename`` REPLACES an empty destination
-    directory, which is the answer :func:`_move_no_merge` documents as the wanted
-    one — a pruning beets or a half-finished sync leaves empty folders behind,
-    and refusing to restore into one would strand exactly the albums this feature
-    exists for. A bare ``exists`` pre-filter refused what the move would have
-    performed, so one input had two answers depending on which layer saw it.
-
-    Nothing is buried or merged by replacing an empty directory: there is nothing
-    in it. Everything else — a non-empty directory, a file, a symlink that
-    RESOLVES — is occupied, and such a symlink is occupied even when it points
-    at an empty directory: ``rename`` refuses it (ENOTDIR) and following it would
-    move the album somewhere the user never named. A DANGLING link reads as
-    absent, because the ``exists`` above follows it and answers False; the move
-    then meets whatever ``rename`` makes of it.
-
-    Answers "occupied" for anything it cannot read, which is the conservative
-    side: a refusal leaves the files in Trash.
-
-    ``is_symlink`` is a TRIPWIRE and NO TEST CAN KILL IT (measured: dropping it
-    leaves the whole suite green). Everything below refuses a symlink anyway —
-    ``os.rename`` answers ENOTDIR, the copy branch's ``rmdir`` answers ENOTDIR
-    and ``copytree`` then refuses a destination that exists — so today it changes
-    no outcome. It is kept because this function's ANSWER is what a future caller
-    would act on: read without it, "an empty directory" includes a link to one,
-    and acting on that (removing it, or moving into it) leaves the library
-    through a link the user never named. The order matters for the same reason:
-    ``is_dir`` and ``scandir`` both FOLLOW links.
-
-    That layering is also why the refusals need no per-branch test: this runs
-    ABOVE the branch, so a file / a non-empty directory / a symlink is refused
-    before either move is chosen. Only the ACCEPT is branch-specific, and it is
-    pinned on both.
-    """
-    if not exists(path):
-        return False
-    try:
-        if path.is_symlink() or not path.is_dir():
-            return True
-        with os.scandir(path) as entries:
-            return next(entries, None) is not None
-    except OSError:
-        return True
-
-
-def _move_no_merge(src: Path, dest: Path) -> None:
-    """Move ``src`` onto ``dest``, refusing rather than moving INSIDE it.
-
-    ``shutil.move`` treats an existing DIRECTORY destination as a container: it
-    puts the source in there under its own name. Both callers check ``exists``
-    first, but a check and a move are two syscalls, so anything that creates the
-    destination in the window between them — a sync client, an ``*arr``, the
-    user — turns a documented refusal into a silent burial one level down.
-    Measured: the album ends up at ``<origin>/<trash entry name>/``, still
-    present, still complete, and in a place nothing looks for it.
-
-    ``rename`` closes the window because the kernel makes the check and the move
-    one operation, so it goes first and only a cross-filesystem move falls back
-    to a copy. The refusal is normalised to ``FileExistsError`` whatever errno
-    the kernel chose, so a caller can tell "the destination was taken" apart from
-    a move that half-happened.
-
-    An EMPTY DIRECTORY at the destination is REPLACED rather than refused, on
-    BOTH branches, because that is what ``os.rename`` does and what the callers
-    want: nothing is buried or merged (there is nothing in it), and an empty
-    folder is what a pruning beets or a half-finished sync leaves behind. The
-    two branches have to agree — the deployment that takes the copy branch has
-    ``/data`` and ``/music`` on separate mounts and takes it for EVERY restore,
-    so a copy branch that refused would refuse every restore the rename branch
-    performs. :func:`_occupied` is the same answer one layer up.
-
-    One residual, stated rather than hidden: both callers move a DIRECTORY, and
-    the EXDEV branch is written for that. A file source raises
-    ``NotADirectoryError`` here instead of quietly taking ``shutil.move``'s file
-    path, which would bury it the same way.
-    """
-    try:
-        os.rename(src, dest)
-    except OSError as exc:
-        if exc.errno == errno.EXDEV:
-            # Different filesystems, so no rename can do it and the move has to
-            # copy. ``copytree``'s own ``os.makedirs(..., exist_ok=False)`` is
-            # the atomic refusal ``shutil.move`` skips: one ``mkdir`` syscall
-            # that raises ``FileExistsError`` rather than descending into a
-            # destination that appeared. ``symlinks=True`` + ``copy2`` are what
-            # ``shutil.move`` itself uses for a directory, so the copy is
-            # unchanged — only the container behaviour is dropped.
-            #
-            # ``rmdir`` first is this branch's half of the empty-directory rule
-            # above, and it is exactly one syscall wide: it removes the
-            # destination only while it is an EMPTY DIRECTORY and answers
-            # ENOTEMPTY / ENOTDIR / ENOENT otherwise, so a non-empty directory, a
-            # file and a symlink all fall through untouched to ``copytree``'s own
-            # atomic refusal. Suppressed rather than inspected for the same
-            # reason: every failure it can have means "not an empty directory",
-            # and the refusal one line down is the answer.
-            with contextlib.suppress(OSError):
-                os.rmdir(dest)
-            shutil.copytree(src, dest, symlinks=True)
-            shutil.rmtree(src)
-            return
-        if exc.errno in _DEST_OCCUPIED:
-            raise FileExistsError(exc.errno, os.strerror(exc.errno), str(dest)) from exc
-        raise
-
-
 def _return_to_trash(origin: Path, entry: Path) -> None:
     """Undo a move-back whose import did not land. Raises if it cannot.
 
     Refuses to move onto an existing ``entry``: ``shutil.move`` would put the
     folder INSIDE it and bury the album one level down under its own name. The
-    ``exists`` check is the cheap pre-filter; :func:`_move_no_merge` is what
+    ``exists`` check is the cheap pre-filter; :func:`move_no_merge` is what
     makes the refusal hold when something creates ``entry`` in the window.
 
     Only ONE half of that pre-filter is a guard. ``exists(entry)`` is: nothing
     below it would otherwise refuse an occupied entry in time, and the burial it
-    stops is silent. ``not exists(origin)`` is a MESSAGE — ``_move_no_merge`` on
+    stops is silent. ``not exists(origin)`` is a MESSAGE — ``move_no_merge`` on
     a missing source raises ``FileNotFoundError``, which is an ``OSError`` the
     arm below already turns into this same exception type, so removing it
     changes only the wording the operator reads. Both are kept, and saying which
@@ -1048,7 +930,7 @@ def _return_to_trash(origin: Path, entry: Path) -> None:
             f" Trash at {display_path(entry)!r}."
         )
     try:
-        _move_no_merge(origin, entry)
+        move_no_merge(origin, entry)
     except OSError as exc:
         raise TrashRestoreIncompleteError(
             f"the restore did not land and the folder at the origin"

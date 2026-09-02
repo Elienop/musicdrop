@@ -843,7 +843,7 @@ def move_back_target(record: TrashOrigin | None, *, music_dir: str) -> Path | No
     not inside the current music library" — a change to ``restore_mode`` and
     ``restore_note`` on the wire. The ``origin == root`` refusal is load-bearing
     for a different reason: a corrupt or empty origin resolving to the music root
-    would hand ``_move_no_merge`` the library itself.
+    would hand ``move_no_merge`` the library itself.
     """
     if record is None or record.moved != "folder":
         return None

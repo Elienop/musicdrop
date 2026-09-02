@@ -141,7 +141,7 @@ def test_a_record_is_never_read_back_for_a_different_entry(tmp_path: Path) -> No
 
     One sha256 call produces a second, shorter name with the same record file, so
     the two entries take turns owning it — and the loser's row does not lose an
-    origin, it gains the WRONG one. That answer steers ``_move_no_merge``: the
+    origin, it gains the WRONG one. That answer steers ``move_no_merge``: the
     listing offers "Exact restore", and Restore renames the loser's folder into
     the winner's origin, on top of nothing that was ever there.
 
