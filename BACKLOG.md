@@ -777,7 +777,11 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   module docstring in `trash_origins` states it too), not a closed hazard. Deliberately NOT
   closed by a reaper on the listing: "unlink every record with no matching entry" cannot tell
   an empty Trash dir from one whose share just dropped, and would destroy every origin in
-  that state.
+  that state. The store IS swept, but only by `trash_manage.empty_all`, and only when that
+  call removed at least one entry AND found Trash empty afterwards — a Trash it emptied
+  itself, which is not the reading the listing would have to guess. So a record whose entry
+  left Trash outside MusicDrop waits for the next Empty all instead of being reaped where it
+  is noticed.
 
   **Re-derive before quoting the old framing — "the Trash rows Restore can never restore"
   was imprecise.** A Restore already existed; it re-imports through beets. The genuine gaps
@@ -1014,9 +1018,17 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   *inside* the music library, plus a library-scope Reorganize. Symbols, not line numbers:
   `reorganize._ignore_dirs` hands the store and the export dir to
   `orphans.find_orphan_folders`, whose `_excluded_predicate` skips those subtrees — and
-  `_library_orphans` then reports the TOP-MOST audio-empty ancestor of the excluded dir —
-  the climb stops only where a parent holds audio directly or is the root, so the dir that
-  gets reported need not be the one holding the content that made it non-empty.
+  `_library_orphans` then reports the TOP-MOST audio-empty ancestor of the excluded dir.
+  There is no upward climb in library scope (read at `backend/app/beets/orphans.py:130-150`,
+  2026-09-02): every dir the walk recorded is judged on its own, and it is reported when it
+  holds a file, holds no audio anywhere beneath it, is not named in `ART_DIR_NAMES` (`:136`),
+  its parent holds no audio DIRECTLY (`:144` — the multi-disc art guard, so an album's own
+  `Scans/` is spared), and its parent is either the root or holds audio somewhere beneath it
+  (`:148`). "Top-most" falls out of that last condition rather than out of a walk: an
+  audio-empty parent gets reported instead of its child. So the dir that gets reported need
+  not be the one holding the content that made it non-empty. (Seeds mode `_seed_orphan`
+  (`:170-191`) IS a climb, and this trigger — a library-scope Reorganize — takes the other
+  path.)
   **Which var triggers it alone, measured on `fix/undoable-deletes`** (probe: build a music
   tree with one healthy album, then call `find_orphan_folders(music, seeds=None, ...)` — one
   call per layout, so re-deriving it costs nothing):
@@ -1135,8 +1147,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   is an automatic move-back worth that machinery for a fault only a third-party plugin can
   cause, or is "check Trash" the right answer? Ask before building it.
 
-- **The "keep Restore enabled on every row" ruling now has a carve-out the owner has not
-  been asked about.** (Raised 2026-09-02, on `fix/undoable-deletes`.) `decisions.md` 27, as
+- **The "keep Restore enabled" ruling now has a carve-out the owner has not been asked
+  about.** (Raised 2026-09-02, on `fix/undoable-deletes`.) `decisions.md` 27, as
   amended by the owner on 2026-08-31 (*"Keep it enabled, warn clearly"*), reasons that
   disabling Restore *"would have deleted a working recovery path in the name of safety"*.
   That reason holds for an `"import"` row and does not reach a **symlinked** row, whose
@@ -1146,7 +1158,12 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   block above (the only reachable outcome of either live control was a 404, so disabling
   them deletes nothing). **That is an argument, not an approval: the owner has NOT been
   asked, and no answer is on file.** Put it to them and record the answer here and in
-  `decisions.md` 27 — the ruling's own words currently say "every row".
+  `decisions.md` 27. Quote 27 accurately when you do: the phrase "every row" is nowhere in
+  it (grepped 2026-09-02). Its amendment is headed *"old rows keep Restore ENABLED, with the
+  warning stated"* and states the shipped shape as *"`restore_mode` is `"move_back"` or
+  `"import"`, Restore stays clickable in both"* — it names no third value, so a `"refused"`
+  row is outside what 27 decided rather than something it forbids. What the carve-out still
+  has to clear is 27's REASON, quoted above, not its wording.
 
 - **Vacuous-pin audit: sized 2026-08-28; the four confirmed pins FIXED in #190** (two dead
   absence needles in the reorganize adapter replaced with positive pins on the exact

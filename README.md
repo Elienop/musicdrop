@@ -65,12 +65,12 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   cheap "is the root there" test, because it runs it once per removal and accepted the same
   residual for itself. A share
   dropping part-way through an artist delete reports how many of the artist's albums were
-  moved to Trash before it stopped — those are recoverable there, the rest untouched. A run
-  that moved nothing does not claim a count it cannot back: it says how many albums it
-  dropped that had no files left to move, and its advice is to *check* the Trash folder
-  rather than a promise that anything is in it. That hedge is deliberate — the album a
-  delete stops on can have reached Trash without this end being able to see it, so the
-  honest instruction is to look.
+  moved to Trash before it stopped — those are recoverable there, and the albums it never
+  reached are untouched. A run that moved nothing does not claim a count it cannot back: it
+  says how many albums it dropped that had no files left to move, and its advice is to
+  *check* the Trash folder rather than a promise that anything is in it. That hedge is
+  deliberate — the album a delete stops on can have reached Trash without this end being
+  able to see it, so the honest instruction is to look.
 - **Restore knows where things came from.** When MusicDrop moves a folder to Trash it
   records where that folder came from in a small JSON file alongside — one per Trash entry,
   under `<beets dir>/trash-origins/`, deliberately outside the trashed folder and outside

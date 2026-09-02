@@ -125,8 +125,10 @@ function restoreResultMessage(result: RestoreResult): string {
     // ("exists again with anything in it", `RestoreResult`) and README.
     //
     // The ordinary occupant, not every one: `_occupied` also answers occupied
-    // for a FILE at that path, for a symlink of any kind (even one pointing at
-    // an empty directory), and for anything it cannot read.
+    // for a FILE at that path, for a symlink that RESOLVES (even one pointing
+    // at an empty directory), and for anything it cannot read. A DANGLING link
+    // is not occupied — the backend's `exists` follows it and reads it as
+    // absent.
     return "Its original folder exists again with something in it; nothing moved and the files are still in Trash. Clear that folder, then try again.";
   }
   return "Couldn’t restore";
