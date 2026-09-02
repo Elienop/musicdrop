@@ -397,6 +397,12 @@ def origin_recorded(origins_dir: Path, entry_name: str) -> bool:
             # PATH_MAX, and a filesystem whose own NAME_MAX is below this
             # module's guess), where a permissions hunt finds nothing wrong.
             # The errno's own message is in the traceback and says which.
+            #
+            # STALE CLAUSE, left for a code change rather than a docs pass: the
+            # sentence's "an origins directory the app cannot search" can no
+            # longer reach this line. That shape is EACCES, and EACCES is in
+            # ``_STORE_CLASS_ERRNOS``, so it raises above. ENAMETOOLONG is the
+            # only cause left here today.
             "could not tell whether a Trash origin record exists for %r, so the name is"
             " being treated as free: if a record IS there, a second folder can take that"
             " name and inherit it. The error below says why the check could not be made;"
