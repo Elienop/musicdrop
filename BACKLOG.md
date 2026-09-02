@@ -999,15 +999,30 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - **The orphan sweep's ignore list does not protect an ignored dir's ANCESTORS.** (Found
   2026-09-02, same class as the entry above: a missing containment check between the
-  music root and a `/data`-side directory.) Trigger: `MUSICDROP_BEETS_DIR` (or
-  `MUSICDROP_TRASH_ORIGINS_DIR` / `MUSICDROP_PLAYLISTS_EXPORT_DIR`) pointed at a path
+  music root and a `/data`-side directory.) Trigger: `MUSICDROP_BEETS_DIR` pointed at a path
   *inside* the music library, plus a library-scope Reorganize. Symbols, not line numbers:
   `reorganize._ignore_dirs` hands the store and the export dir to
   `orphans.find_orphan_folders`, whose `_excluded_predicate` skips those subtrees — and
-  `_library_orphans` then reports the TOP-MOST audio-empty dir, which is their parent.
-  Measured on `fix/undoable-deletes` with `beets_dir` under the music root: the sweep returns
-  `beets_dir` itself, identically with and without the exclusion. Blast radius depends on
-  where Trash sits, and `_ignore_dirs`' docstring states both outcomes: in the DEFAULT
+  `_library_orphans` then reports the nearest ancestor that has content of its OWN.
+  **Which var triggers it alone, measured on `fix/undoable-deletes`** (probe: build a music
+  tree with one healthy album, then call `find_orphan_folders(music, seeds=None, ...)` — one
+  call per layout, so re-deriving it costs nothing):
+  * `MUSICDROP_BEETS_DIR=<music>/beets` → `['beets']`. It is the only one that fires
+    unaided, and not really as an ancestor: beets plants `library.db` and `config.yaml`
+    directly in that dir, so `beets_dir` has content of its own and is reported DIRECTLY —
+    identically with and without the store exclusion.
+  * `MUSICDROP_TRASH_ORIGINS_DIR=<music>/origins` → `[]`. Its parent is the root, and the
+    root is skipped.
+  * `MUSICDROP_TRASH_ORIGINS_DIR=<music>/data/origins` → `[]`. An excluded subtree is never
+    recorded, so an only-child parent contributes no `has_file` and reads as empty; empty
+    dirs are skipped.
+  * the same placement with one file of the parent's own (`<music>/data/notes.txt`) →
+    `['data']`. That is the hole: an ancestor with other content.
+  * `MUSICDROP_PLAYLISTS_EXPORT_DIR=<music>/exports` → `[]`, for the reason above.
+
+  So the two pure-container vars need an ancestor that has content of its own before
+  anything is reported at all. Blast radius depends on where Trash sits, and
+  `_ignore_dirs`' docstring states both outcomes: in the DEFAULT
   layout (`trash_dir` = `<beets_dir>/trash`) the move is a directory into its own subtree,
   `shutil.move` raises, and `reorganize_jobs.runner`'s `except OSError: continue` swallows
   it — nothing is lost; with `MUSICDROP_TRASH_DIR` pointing outside `beets_dir`,
