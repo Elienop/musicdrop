@@ -449,6 +449,16 @@ def test_delete_album_op_records_an_origin_the_listing_can_offer_a_move_back_on(
 
 _GHOST_ARTIST = "Ghosty"
 
+# The recovery line every failure that is not a partial fan-out with files in
+# Trash gets. Spelled once here, asserted at each of the four states that reach
+# it: three where nothing moved, and the album.remove window where the folder is
+# in Trash and this code cannot tell (see ``delete._recovery``). Conditional on
+# purpose — the two directions are what make it true in both.
+_LOOK_IN_TRASH = (
+    "Check the Trash folder: if the album's folder is there it can be restored from"
+    " there; if it is not, nothing moved and there is nothing to restore. Retry."
+)
+
 
 def _ghost_artist_library(tmp_path: Path, *, real_album: bool, bystander: bool) -> Library:
     """A library whose ``Ghosty`` albums are ROWS ONLY — their folders are gone.
@@ -592,9 +602,7 @@ def test_delete_artist_partial_counts_moves_not_row_drops(
     # The physical fact the wording has to match: there is no Trash folder at
     # all, so a line telling the user to look in it points at nothing.
     assert not trash.exists()
-    assert detail["recovery"] == (
-        "Nothing reached the Trash folder, so there is nothing to restore. Retry."
-    )
+    assert detail["recovery"] == _LOOK_IN_TRASH
     assert len([a for a in lib.albums() if a.albumartist == _GHOST_ARTIST]) == 1
 
 
@@ -681,12 +689,77 @@ def test_delete_artist_500_on_the_FIRST_album_does_not_promise_trash(
     assert isinstance(detail, dict)
     assert "Permission denied" in detail["message"]  # the cause is still relayed
     assert "recoverable in the Trash folder" not in detail["recovery"]
-    assert detail["recovery"] == (
-        "Nothing reached the Trash folder, so there is nothing to restore. Retry."
-    )
+    assert detail["recovery"] == _LOOK_IN_TRASH
     # The disk agrees with the sentence: there is no Trash folder to look in.
     assert not trash.exists()
     assert len([a for a in duplicates_lib.albums() if a.albumartist == "Radiohead"]) == 2
+
+
+@pytest.mark.parametrize("artist", [None, "Daft Punk"])
+def test_delete_500_does_not_deny_a_Trash_entry_it_never_looked_for(
+    duplicates_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, artist: str | None
+) -> None:
+    """``album.remove`` is itself a step, and it can raise with the folder in Trash.
+
+    beets deletes the album row and THEN sends ``album_removed`` to plugins
+    (``beets/library/models.py:391-394``), and ``beets.plugins.send`` wraps no
+    handler in try/except (``beets/plugins.py:614-627``) — so a listener that
+    raises unwinds the delete with the folder already under Trash, its origin
+    record written, and the album row gone. The recovery line answered that with
+    "Nothing reached the Trash folder, so there is nothing to restore": the one
+    user whose album really IS recoverable was told to stop looking, on the page
+    whose next button empties the Trash for good.
+
+    Both entry points, because they reach that sentence by different routes: the
+    single-album delete lets the exception through, and the fan-out meets it on
+    its first album and re-raises it bare (``mutated == 0`` — that counter counts
+    returns from the primitive, and this album never returned).
+
+    The listener is the real mechanism rather than a patched ``album.remove``, so
+    the day beets wraps its handlers this test says so instead of passing.
+    """
+    from collections import defaultdict
+
+    from beets.plugins import BeetsPlugin
+
+    def _boom(**_kwargs: object) -> None:
+        raise RuntimeError("plugin listener blew up")
+
+    monkeypatch.setattr(BeetsPlugin, "listeners", defaultdict(list, {"album_removed": [_boom]}))
+    trash = tmp_path / "trash"
+    handle = make_test_handle(duplicates_lib, tmp_path)
+    album_id = _require_id(
+        next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk").id
+    )
+
+    class _App:
+        state = SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins_for(trash))),
+        )
+
+    class _Req:
+        app = _App()
+
+    op = (
+        delete_artist_op(_Req(), artist)  # type: ignore[arg-type]  # stub req
+        if artist is not None
+        else delete_album_op(_Req(), album_id)  # type: ignore[arg-type]  # ditto
+    )
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(op)
+
+    assert ei.value.status_code == 500
+    detail = ei.value.detail
+    assert isinstance(detail, dict)
+    assert "plugin listener blew up" in detail["message"]  # the cause is relayed
+    assert detail["recovery"] == _LOOK_IN_TRASH
+    # The state the old sentence denied, asserted on the disk and in the DB: the
+    # folder is in Trash with its files, the record that makes Restore an exact
+    # move-back is written, and the library no longer has the album to re-delete.
+    assert (trash / "Discovery" / "01 Track 1.mp3").is_file()
+    assert (origins_for(trash) / "Discovery.json").is_file()
+    assert duplicates_lib.get_album(album_id) is None
 
 
 def _shared_folder_ghost_library(tmp_path: Path) -> Library:
@@ -781,9 +854,7 @@ def test_delete_artist_does_not_count_a_shared_folder_ghost_as_moved(
     assert isinstance(detail, dict)
     assert "1 of 2" in detail["message"]  # one album's rows went, and it says so
     assert "moved to Trash" not in detail["message"]  # but nothing was moved
-    assert detail["recovery"] == (
-        "Nothing reached the Trash folder, so there is nothing to restore. Retry."
-    )
+    assert detail["recovery"] == _LOOK_IN_TRASH
     # The premise of the whole test, asserted rather than assumed: the ghost went
     # through the SHARED-folder fallback, whose sibling is still sitting in the
     # folder it was never allowed to move wholesale — and Trash is empty.
@@ -846,8 +917,8 @@ def test_the_delete_routes_500_description_does_not_deny_its_own_body(
         asyncio.run(op)
     detail = ei.value.detail
     assert isinstance(detail, dict)
-    assert "Nothing reached the Trash folder" in detail["recovery"]
-    assert not trash.exists()  # the body is telling the truth about the disk
+    assert detail["recovery"] == _LOOK_IN_TRASH
+    assert not trash.exists()  # nothing moved here, and the body promises nothing
 
     description = app.openapi()["paths"][path]["delete"]["responses"]["500"]["description"]
     assert "recoverable in the Trash folder" not in description, (

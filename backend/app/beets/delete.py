@@ -57,7 +57,9 @@ class ArtistDeletePartialError(Exception):
     relocated — because the 500's recovery line offers to find them in Trash,
     and two of the primitive's branches drop an album's rows having moved
     nothing at all (an album with no item rows, and a ghost whose folder is
-    already gone). See :func:`_recovery`.
+    already gone). Counted on the primitive's RETURN, so it is a floor and not a
+    census: the album this stopped on is never in it, even in the one window
+    where its folder did reach Trash. See :func:`_recovery`.
     """
 
     def __init__(self, message: str, *, moved: int) -> None:
@@ -182,17 +184,24 @@ def delete_artist(
                     # gets the same two tiers rather than a bare message with no
                     # idea how far the delete had got.
                     #
-                    # "The rest are untouched" is true of the album this stopped
-                    # ON as well, which is not obvious and is worth stating: the
-                    # only step between the folder move and the row drop is the
-                    # origin record, and ``_record_origin`` swallows everything
-                    # by design, so there is no window that leaves an album's
-                    # files in Trash while its rows survive.
+                    # "The rest are untouched" speaks of the albums this never
+                    # reached. It holds for the album it stopped ON too between
+                    # a COMPLETED folder move and the row drop — the only step
+                    # there is the origin record, and ``_record_origin`` swallows
+                    # everything by design — but ``album.remove`` is itself a
+                    # step that can raise, and that is a window, not a gap:
+                    # beets deletes the album row and THEN sends
+                    # ``album_removed`` to plugins, with no try/except around the
+                    # handlers, so a listener that raises leaves that album's
+                    # folder in Trash with its row gone. Neither counter below
+                    # has counted it — both count returns from the primitive —
+                    # so the fan-out cannot name it and ``_recovery``'s fallback
+                    # tells the user to look rather than not to.
                     if mutated == 0:
                         # Nothing mutated yet, so the caller's own error still
-                        # holds — and by the paragraph above nothing MOVED
-                        # either, which is why ``_recovery`` may not treat an
-                        # unrecognised exception as one with files in Trash.
+                        # holds and the 503 tier stays open. It does NOT follow
+                        # that nothing MOVED: the window above reaches here as
+                        # well, since ``mutated`` counts returns and not rows.
                         raise
                     raise _partial(exc, moved=moved, mutated=mutated, total=len(album_ids)) from exc
                 mutated += 1
@@ -225,8 +234,15 @@ def _partial(exc: Exception, *, moved: int, mutated: int, total: int) -> ArtistD
 
     "N of M albums had been moved to Trash" is simply false for a run that only
     dropped ghost rows, and it is the sentence a user reads before going to look
-    for their files — so a run with nothing in Trash says that instead, and the
-    500 it becomes drops the recovery line that would send them there.
+    for their files — so a run with nothing in Trash says what it did instead,
+    and the 500 it becomes drops the recovery line that would send them there.
+
+    Both shapes speak only of the albums this fan-out finished with: the counts
+    are of returns from the primitive, so neither says anything about the album
+    it stopped ON. That silence is deliberate — the album it stopped on is the
+    one case nothing here can observe (see :func:`_recovery`), and the second
+    shape used to fill it in with "nothing reached the Trash folder", which is
+    the album.remove window's exact opposite.
     """
     if moved:
         return ArtistDeletePartialError(
@@ -236,7 +252,7 @@ def _partial(exc: Exception, *, moved: int, mutated: int, total: int) -> ArtistD
         )
     return ArtistDeletePartialError(
         f"the delete stopped after dropping {mutated} of {total} albums that had no files"
-        f" left to move; nothing reached the Trash folder and the rest are untouched ({exc})",
+        f" left to move; the rest are untouched ({exc})",
         moved=0,
     )
 
@@ -255,19 +271,19 @@ def _gate() -> None:
 
 
 def _recovery(exc: Exception) -> str:
-    """The 500's recovery hint. It may only point at Trash if something is IN Trash.
+    """The 500's recovery hint. It may PROMISE Trash only if something is IN Trash.
 
     Asked the other way round from how it started, because listing the failures
-    that moved nothing kept missing one. Exactly ONE failure here can show a
+    that moved nothing kept missing one. Exactly ONE failure here can be shown a
     Trash entry — a fan-out that got past its first album and really relocated
     files (``ArtistDeletePartialError`` with ``moved`` above zero) — so that is
-    the arm that names Trash, and everything else falls to a hint that does not.
-    Enumerating the other direction meant a new "moved nothing" path was
-    silently welcomed into the promise: a fan-out that fails on its FIRST album
-    re-raises the cause bare (nothing mutated, so the caller's own error still
-    holds), which is neither of the two cases the old list named, and the user of
-    a delete that touched nothing was sent to look in a Trash folder that had
-    never been created.
+    the arm that states Trash as a fact, and everything else falls to a hint that
+    does not. Enumerating the other direction meant a new "moved nothing" path
+    was silently welcomed into the promise: a fan-out that fails on its FIRST
+    album re-raises the cause bare (nothing mutated, so the caller's own error
+    still holds), which is neither of the two cases the old list named, and the
+    user of a delete that touched nothing was sent to look in a Trash folder that
+    had never been created.
 
     The three states, and the sentence each gets:
 
@@ -275,23 +291,36 @@ def _recovery(exc: Exception) -> str:
     * ``TrashMoveIncompleteError``, raised precisely BECAUSE the files did not
       move; its own message already says the library rows were kept, so the hint
       says where the album still is;
-    * everything else — a fan-out that stopped before its first album, one whose
-      albums were all ghosts or empty rows, and any fault inside a single-album
-      delete. None of them has an album in Trash: the primitive drops rows only
-      after the files are provably relocated, so a failure inside it leaves the
-      album in the library.
+    * everything else — the arm that cannot know, so it ASKS rather than tells.
+      Most of what lands here moved nothing: a fan-out stopped before its first
+      album, one whose albums were all ghosts or empty rows, most faults inside a
+      single-album delete. Two windows land here with the folder really under
+      Trash, and neither is visible from the exception:
 
-    One imprecision, stated rather than hidden: a cross-filesystem
-    ``shutil.move`` that fails after copying leaves BYTES under Trash, so the
-    default's first clause is not literally true there. The clause the user acts
-    on is the second one, and it holds — the rows were kept, the album never left
-    the library, and there is nothing to restore.
+      * ``album.remove`` raising after the folder moved. beets deletes the album
+        row and THEN sends ``album_removed`` to plugins
+        (``beets/library/models.py:391-394``), and ``beets.plugins.send`` wraps
+        no handler in try/except (``beets/plugins.py:614-627``), so a listener
+        that raises leaves the folder in Trash with its origin record written,
+        the album row gone and its item rows still there (they are removed after
+        the signal). The Trash page offers that entry an exact move-back while
+        this line used to be telling its owner there was nothing to look for —
+        and Empty is one click away;
+      * a cross-filesystem ``shutil.move`` that fails after copying, which
+        leaves the bytes at both ends.
+
+    So the fallback names Trash as a place to CHECK and says what each answer
+    means. That is one look for the user who moved nothing, against a lost album
+    for the user who did.
     """
     if isinstance(exc, ArtistDeletePartialError) and exc.moved:
         return "Files are recoverable in the Trash folder. Retry."
     if isinstance(exc, TrashMoveIncompleteError):
         return "The files were not moved and the library still has the album. Retry."
-    return "Nothing reached the Trash folder, so there is nothing to restore. Retry."
+    return (
+        "Check the Trash folder: if the album's folder is there it can be restored from"
+        " there; if it is not, nothing moved and there is nothing to restore. Retry."
+    )
 
 
 def _failed(exc: Exception) -> HTTPException:
