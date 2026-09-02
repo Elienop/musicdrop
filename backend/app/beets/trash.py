@@ -416,10 +416,19 @@ def _fit_name(name: str, budget: int) -> str:
 
     Whole CODEPOINTS, because every folder name here arrived through
     ``os.fsdecode``. Slicing the ENCODED form would cut a multi-byte character in
-    half and leave the Trash entry named a different string from the one written
-    to the origin record's key; dropping trailing codepoints cannot, and that
-    holds for a non-UTF-8 folder name too — its undecodable bytes are carried as
-    one lone surrogate each, which ``os.fsencode`` puts back as one byte each.
+    half, which turns a name that DECODES into one that does not: the severed
+    bytes come back as lone surrogates, so the entry renders with U+FFFD
+    placeholders everywhere it is shown and joins the set of names a display
+    string can no longer be mapped back to on its own — two of them displaying
+    alike is ``AmbiguousDisplayName``, a 409 on that row's Restore and Empty
+    (``app.wire._match_display_child``). Dropping trailing codepoints cannot do
+    that, and it holds for a name that was ALREADY undecodable too — its bytes
+    are carried as one lone surrogate each, which ``os.fsencode`` puts back as
+    one byte each.
+
+    The origin record's key is not the reason: it and the payload ``name`` are
+    both taken from ``dest.name`` AFTER this has run, so they agree with the
+    entry whatever this returns.
     """
     text = name[:budget]  # every codepoint costs >= 1 byte, so this bounds the loop
     while len(os.fsencode(text)) > budget:
@@ -443,6 +452,14 @@ def _record_origin(origins_dir: Path, dest: Path, *, origin: str, moved: MovedSh
     followed the link straight out of Trash. On the ``/data`` side there is no
     such escape left; only the unkeepable promise.)
     """
+    # ``Path.is_symlink`` here and ``os.path.islink`` in ``trash_manage``'s
+    # listing, on purpose and not by drift. The two differ only for a name the
+    # kernel refuses to stat, and ``dest`` is a path this module has just made
+    # the kernel accept — ``shutil.move`` in the two folder movers, ``mkdir`` in
+    # the per-item one — so an overlong ``dest`` has already failed that step and
+    # never reaches this line. The listing has no such guarantee, which is why it
+    # takes the spelling that answers False instead of raising; do not "fix"
+    # either one to match the other.
     if dest.is_symlink():
         return
     write_trash_origin(origins_dir, dest.name, origin=origin, moved=moved)
