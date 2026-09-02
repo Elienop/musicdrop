@@ -216,9 +216,12 @@ def origin_recorded(origins_dir: Path, entry_name: str) -> bool:
     ``name``, corrupt JSON, a future schema, a truncated write, a non-ASCII
     byte. Measured at this tip: read ``None`` and recorded ``True`` for all
     five. Occupied is the safe side in each of them — the allocator moves on to
-    ``<name> (1)``, so the pair never shares a file in the first place and such
-    a record is not handed to a second folder — and the cost is the same burnt
-    name a manual deletion already costs.
+    ``<name> (1)``, so AS LONG AS THIS ANSWERS the pair does not come to share a
+    file and such a record is not handed to a second folder — and the cost is
+    the same burnt name a manual deletion already costs. That qualification is
+    not decoration: the paragraph below is the case where it does not answer,
+    where this returns ``False`` for a record that is really there and the
+    allocator hands the name on.
 
     **When the STORE itself cannot be reached the two AGREE, and that is a
     stated residual.** An origins directory that is present but unsearchable —

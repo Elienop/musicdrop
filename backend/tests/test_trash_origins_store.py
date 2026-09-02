@@ -675,13 +675,22 @@ def test_a_store_that_cannot_be_reached_reads_as_free_and_says_so(
 ) -> None:
     """``origin_recorded`` and ``read_trash_origin`` AGREE here, and that is the residual.
 
-    Everywhere else the two differ on a record that is present and refused, and
-    "occupied" is the safe side. An origins directory that is present but
-    unsearchable takes that safety net away: ``exists()`` raises ``EACCES``, the
-    name reads as free, and the allocator can hand it to a second folder whose
-    row will later read the FIRST folder's origin. Answering "occupied" instead
-    would leave the allocator's loop with no exit (every candidate occupied), so
-    the honest answer is the unsafe one and this log line is its only trace.
+    The two DIFFER on a record that is present, reachable and refused — the five
+    shapes ``origin_recorded`` lists — and there "occupied" is the safe side.
+    They agree in plenty of harmless ways too, including one that looks like this
+    case and is not: a symlink LOOP at the key with a healthy store, where
+    ``exists()`` swallows ELOOP and answers False while the read logs and returns
+    ``None`` (measured in
+    :func:`test_a_symlink_loop_at_the_key_reads_as_free_on_both_sides`).
+
+    What makes THIS agreement the residual is not the agreement, it is that a
+    record really is on disk and the name is handed out anyway. An origins
+    directory that is present but unsearchable takes the safety net away:
+    ``exists()`` raises ``EACCES``, the name reads as free, and the allocator can
+    hand it to a second folder whose row will later read the FIRST folder's
+    origin. Answering "occupied" instead would leave the allocator's loop with no
+    exit (every candidate occupied), so the honest answer is the unsafe one and
+    this log line is its only trace.
 
     Skipped as root, where the mode bit denies nothing and the test would report
     green having exercised no fault at all. CI's pytest job runs as "runner".
@@ -708,6 +717,37 @@ def test_a_store_that_cannot_be_reached_reads_as_free_and_says_so(
     # ...and the record really was there all along, so what the allocator would
     # hand out is a name that is still spoken for.
     assert read_trash_origin(origins, "Dummy") is not None
+
+
+def test_a_symlink_loop_at_the_key_reads_as_free_on_both_sides(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A healthy store where the two AGREE anyway, and nothing is at stake.
+
+    Written because the test above used to open "everywhere else the two
+    differ", and this is a counter-example with no fault injected and no mode
+    bit: a link pointing at itself makes ``Path.exists`` answer False (it
+    ignores ELOOP) while ``read_text`` raises it, so the allocator is told the
+    name is free and the reader logs an unusable record. That is the same PAIR
+    of answers as the unsearchable store and none of the consequence, because
+    there is no record here for a second folder to inherit.
+
+    Also the last of the file-content shapes ``delete_trash_origin`` is measured
+    against: a link the store cannot follow still has to go, and it goes as a
+    link rather than as whatever it points at.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    key = origin_file(origins, "Dummy")
+    key.symlink_to(key)
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        assert read_trash_origin(origins, "Dummy") is None
+        assert origin_recorded(origins, "Dummy") is False
+        delete_trash_origin(origins, "Dummy")  # must return, not raise
+
+    assert any("present but unusable" in r.getMessage() for r in caplog.records)
+    assert not key.is_symlink(), "the loop was left behind, holding its name"
 
 
 # ----- the write path's own %r, the third of three -----
