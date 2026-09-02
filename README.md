@@ -88,9 +88,12 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   covers a narrower set: a move that stops PART-WAY — a copy across filesystems that fails
   between the copy and the delete, or an album taken out of a shared folder file by file — can
   leave some of it under Trash without this end being able to see it, so the honest instruction
-  is to look. **If the library rows cannot be removed after the whole folder reached Trash,
-  MusicDrop moves the folder back where it came from and reports the error**, so the disk and
-  the library do not disagree and there is nothing in Trash for that album to find. In the rare
+  is to look. **If removing the library rows fails after the whole folder reached Trash,
+  MusicDrop moves the folder back where it came from and reports the error**, so the files are
+  where the library last said they were and there is nothing in Trash for that album to find.
+  The message says only that much about the library: beets commits what it had already done on
+  the way out of a failed transaction, so the album may be untouched or may already be gone from
+  it, and the error says so and asks you to check before retrying. In the rare
   case that moving it back fails too, the error names both paths, read from the disk, and tells
   you not to empty Trash before comparing them.
 - **Restore knows where things came from.** When MusicDrop moves a folder to Trash it

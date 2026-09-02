@@ -525,7 +525,7 @@
             }
           },
           "500": {
-            "description": "Deleting the album failed. The structured body's recovery line says what state the files are in \u2014 it promises recovery from the Trash folder only when something really reached it, and a delete that failed on the way there leaves the album in the library. A failure AFTER the whole folder reached Trash, where the library rows would not go, moves the folder back to where it came from: that body then says the files are in the music folder and Trash holds nothing for this album. Only if the move back ALSO fails does the message name both paths, read from the disk.",
+            "description": "Deleting the album failed. The structured body's recovery line says what state the files are in \u2014 it promises recovery from the Trash folder only when something really reached it, and a delete that failed on the way there leaves the album in the library. A failure AFTER the whole folder reached Trash, where removing the library rows raised, moves the folder back to where it came from: that body then says the files are in the music folder and Trash holds nothing for this album, and says it cannot tell whether the album is still listed \u2014 beets commits what it had already done on the way out of the transaction, so the same failure covers an album left intact and one whose row is already gone. Only if the move back ALSO fails does the message name both paths, from the disk.",
             "content": {
               "application/json": {
                 "schema": {

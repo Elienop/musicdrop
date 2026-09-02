@@ -392,7 +392,10 @@ def _recovery(exc: Exception) -> str:
     if isinstance(exc, TrashMoveIncompleteError):
         return "The files were not moved and the library still has the album. Retry."
     if isinstance(exc, TrashRowsNotRemovedError):
-        return "The files were moved back, so there is nothing in Trash for this album. Retry."
+        return (
+            "The files were moved back, so there is nothing in Trash for this album."
+            " Check whether the album is still listed before retrying."
+        )
     if isinstance(exc, TrashDeleteIncompleteError):
         return (
             "Do NOT empty the Trash folder before reading the message above: it says"

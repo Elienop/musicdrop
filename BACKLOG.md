@@ -1187,9 +1187,13 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   deletes the album row and THEN sends the signal, and the transaction commits on the way
   out, so after the move-back the files are at the album's own folder while the album row is
   gone and its item rows remain. MusicDrop does NOT try to rebuild those rows: the user
-  re-imports the folder, which is where it now is. The error says nothing about the library
+  re-imports the folder, which is where it now is. The error does not claim the rows survived
   for that reason — the same exception type covers a `DBAccessError`, which raises BEFORE any
-  row is written and leaves the album intact.
+  row is written and leaves the album intact — so it names the step that failed, states the two
+  disk facts it measured, and says it cannot tell whether the album is still listed. Pinned in
+  both states: `test_trash.py::test_trash_album_folder_puts_the_folder_back_when_the_rows_will_not_go`
+  (the DB shape) and `::test_the_move_back_says_nothing_about_rows_a_listener_already_took`
+  (the listener shape, where the album row is measured gone and its 14 item rows remain).
   **RESIDUAL 2 — the per-item mover `trash_album` gets no undo** (duplicates resolve, import
   Replace, and the shared-folder fallback of the front-door delete). A raise at its own
   `album.remove` still leaves an album the library LISTS whose item rows point inside the

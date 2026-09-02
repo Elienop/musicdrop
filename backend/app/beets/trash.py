@@ -175,7 +175,7 @@ def _require_move_happened(
 
 
 class TrashRowsNotRemovedError(Exception):
-    """The folder reached Trash, its library rows did not go, and the files are BACK.
+    """``album.remove`` raised after the folder reached Trash, and the files are BACK.
 
     Owner ruling, ``decisions.md`` 28 item 4: after any delete returns, the
     album's files and the library agree. ``album.remove`` is a step that can
@@ -185,13 +185,17 @@ class TrashRowsNotRemovedError(Exception):
     the rows unremoved: an album the library still listed whose files were one
     Empty click from gone.
 
-    The message is USER-facing (it reaches the 500's ``message``) and it may
-    NOT say what became of the library rows. Measured: a ``DBAccessError``
-    raises before the album row is written, so the album is intact, while a
-    plugin listener raising on ``album_removed`` fires AFTER beets deleted that
-    row (``beets/library/models.py:391`` before ``:394``) and the transaction
-    commits on the way out regardless. Same exception type here, opposite DB
-    states — so this says what it can show, which is the disk.
+    The message is USER-facing (it reaches the 500's ``message``) and it does
+    NOT say what became of the library rows: it names the step that failed,
+    states the two disk facts it measured, and says in so many words that
+    MusicDrop cannot tell whether the album is still listed. Measured: a
+    ``DBAccessError`` raises before the album row is written, so the album is
+    intact, while a plugin listener raising on ``album_removed`` fires AFTER
+    beets deleted that row (``beets/library/models.py:391`` before ``:394``)
+    and the transaction commits on the way out regardless — the album row is
+    gone and its item rows remain. Same exception type here, opposite DB states,
+    so the only claims it can make are about the disk. The hedge is the same
+    sentence :class:`TrashDeleteIncompleteError` carries, for the same reason.
     """
 
 
@@ -743,9 +747,12 @@ def _undo_folder_move(
         )
     delete_trash_origin(origins_dir, entry.name)
     return TrashRowsNotRemovedError(
-        f"the album's library rows could not be removed, so its folder was moved back to"
-        f" {display_path(album_root)!r} where it came from and nothing was left in Trash."
-        f" The removal failed with: {cause}"
+        f"removing the album's library rows failed after its folder had already moved to"
+        f" Trash, so the folder was moved back to {display_path(album_root)!r} where it"
+        f" came from and nothing was left in Trash. MusicDrop cannot say whether the album"
+        f" is still in the library: beets commits what it had already done on the way out"
+        f" of the transaction, even while unwinding — check whether the album is still"
+        f" listed before retrying. The removal failed with: {cause}"
     )
 
 
@@ -798,8 +805,8 @@ def _delete_undo_failure(
 
     Both failures are named, in the order they happened, and the disk's own
     answer sits between them — a failed undo must REPLACE the original error's
-    story rather than hide it, or the user is told "the rows could not be
-    removed" about files that are in neither place they would look.
+    story rather than hide it, or the user is told the folder "was moved back
+    where it came from" about files that are in neither place they would look.
 
     ``%r`` on the paths and on what this logs. A Trash folder's name comes from
     the album's own tags, ``_trash_container_name`` neutralises path separators
@@ -808,14 +815,14 @@ def _delete_undo_failure(
     interpolated raw, forges log lines.
     """
     logger.exception(
-        "could not move %r back out of Trash after its library rows would not go",
+        "could not move %r back out of Trash after removing its library rows failed",
         display_path(album_root),
     )
     in_trash, where = _delete_whereabouts(entry, album_root)
     if not in_trash:
         delete_trash_origin(origins_dir, entry.name)  # never raises
     return TrashDeleteIncompleteError(
-        f"the album's folder was moved to Trash, its library rows could not be removed,"
+        f"the album's folder was moved to Trash, removing its library rows failed,"
         f" and moving the folder back then failed too. {where} MusicDrop cannot say"
         f" whether the album is still in the library: beets commits what it had already"
         f" done on the way out of the transaction, even while unwinding."

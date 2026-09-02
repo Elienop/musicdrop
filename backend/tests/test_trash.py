@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from typing import NoReturn
 
 import pytest
+from beets import plugins as beets_plugins
 from beets.dbcore.query import Query
 from beets.dbcore.sort import Sort
 from beets.library import Item, Library
@@ -912,15 +913,69 @@ def test_trash_album_folder_puts_the_folder_back_when_the_rows_will_not_go(
         trash_album_folder(duplicates_lib, album, trash_dir=trash, origins_dir=origins)
 
     # The cause is relayed. The string is deliberately NOT a paraphrase of the
-    # message's own prose: with the fixture raising "library rows could not be
-    # removed", dropping the cause from the message left this very assert green
-    # (measured), because those words are in the sentence around it.
+    # message's own prose: with the fixture raising "removing the album's
+    # library rows failed", dropping the cause from the message left this very
+    # assert green (measured), because those words are in the sentence around it.
     assert "disk I/O error, forced by the fixture" in str(ei.value)
     assert album_root.is_dir(), "the folder is back where the library says it is"
     assert sorted(p.name for p in album_root.iterdir()) == before
     assert list(trash.iterdir()) == [], "nothing is left in Trash"
     assert list(origins.iterdir()) == [], "and no record survives to burn the name"
     assert duplicates_lib.get_album(album_id) is not None, "the rows were never removed"
+
+
+def test_the_move_back_says_nothing_about_rows_a_listener_already_took(
+    duplicates_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The OTHER mechanism behind the same exception, in the opposite DB state.
+
+    ``_rows_wont_go`` patches ``Album.remove`` itself — the ``DBAccessError``
+    shape, where nothing was written and the album really is intact afterwards.
+    A plugin listener raising on ``album_removed`` is the shape the closed
+    BACKLOG entry names, and it is the reverse: beets deletes the album row and
+    THEN sends the signal (``beets/library/models.py:391`` before ``:394``),
+    wrapping no handler in try/except, and the transaction commits on the way
+    out even while unwinding. So the row is gone and the item rows remain.
+
+    One exception type covers both, and the message is what the browser shows
+    (``frontend/src/api/useDeleteLibrary.ts`` renders ``detail.message`` and
+    drops ``recovery``) — so it may not claim the rows survived, and it has to
+    say out loud that it cannot tell. The disk half it CAN claim is asserted
+    alongside, because that is what makes the hedge a hedge rather than a shrug.
+    """
+    trash = tmp_path / "trash"
+    origins = origins_for(trash)
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = _require_id(album.id)
+    album_root = Path(album_folder(duplicates_lib, list(album.items())))
+    before = sorted(p.name for p in album_root.iterdir())
+
+    def _refuse_album_removed(event: str, **_kwargs: object) -> list[object]:
+        if event == "album_removed":
+            raise RuntimeError("a plugin listener refused, forced by the fixture")
+        return []
+
+    monkeypatch.setattr(beets_plugins, "send", _refuse_album_removed)
+
+    with pytest.raises(TrashRowsNotRemovedError) as ei, duplicates_lib.transaction():
+        trash_album_folder(duplicates_lib, album, trash_dir=trash, origins_dir=origins)
+
+    message = str(ei.value)
+    assert "a plugin listener refused, forced by the fixture" in message, "the cause is named"
+    assert "cannot say whether the album is still in the library" in message, "and the hedge"
+    assert "could not be removed" not in message, "the rows here WERE removed"
+    assert "rows were kept" not in message, "...and the sibling error's claim is not this one"
+    # The two disk facts the sentence does state, both true in this state too.
+    assert album_root.is_dir(), "the folder is back at the album's own folder"
+    assert sorted(p.name for p in album_root.iterdir()) == before
+    assert list(trash.iterdir()) == [], "and nothing was left in Trash"
+    assert list(origins.iterdir()) == [], "so no record survives to burn the name"
+    # ...and this is the state the hedge exists for: the row went with the
+    # listener's raise, and its item rows did not.
+    assert duplicates_lib.get_album(album_id) is None, "beets had already deleted the album row"
+    with duplicates_lib.transaction() as tx:
+        orphans = tx.query("SELECT COUNT(*) FROM items WHERE album_id = ?", (album_id,))[0][0]
+    assert orphans == len(before) == 14, "its item rows remain, one per file that came back"
 
 
 def test_the_undo_reports_from_the_DISK_when_the_trash_name_is_retaken(
