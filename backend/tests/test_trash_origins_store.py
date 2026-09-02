@@ -11,6 +11,8 @@ of its own production line before these tests existed:
 * :func:`delete_trash_origin` really never raises — every one of its callers runs
   it AFTER irreversible work, so an escaping exception 500s an operation that
   fully succeeded;
+* a store the app cannot reach reads as "nothing recorded" and says so in the
+  log, which is the one place that residual is visible;
 * a crafted Trash entry name cannot forge a log line on the write path, the one
   of the module's three ``%r`` sites that nothing pinned.
 """
@@ -368,6 +370,49 @@ def test_a_record_that_cannot_be_unlinked_is_logged_and_swallowed(
     # becomes the placeholder, which is what tells an operator which entry it is.
     assert "Café" in record.getMessage()
     assert "�" in record.getMessage()
+
+
+# ----- a store the app cannot reach -----
+
+
+def test_a_store_that_cannot_be_reached_reads_as_free_and_says_so(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``origin_recorded`` and ``read_trash_origin`` AGREE here, and that is the residual.
+
+    Everywhere else the two differ on a record that is present and refused, and
+    "occupied" is the safe side. An origins directory that is present but
+    unsearchable takes that safety net away: ``exists()`` raises ``EACCES``, the
+    name reads as free, and the allocator can hand it to a second folder whose
+    row will later read the FIRST folder's origin. Answering "occupied" instead
+    would leave the allocator's loop with no exit (every candidate occupied), so
+    the honest answer is the unsafe one and this log line is its only trace.
+
+    Skipped as root, where the mode bit denies nothing and the test would report
+    green having exercised no fault at all. CI's pytest job runs as "runner".
+    """
+    if os.getuid() == 0:
+        pytest.skip("running as root: an unsearchable directory denies nothing")
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    write_trash_origin(origins, "Dummy", origin="/music/Portishead/Dummy", moved="folder")
+    origins.chmod(0o600)  # present, listable, not searchable: stat on a child is EACCES
+
+    try:
+        with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+            recorded = origin_recorded(origins, "Dummy")
+            assert read_trash_origin(origins, "Dummy") is None
+    finally:
+        origins.chmod(0o700)
+
+    assert recorded is False, "the allocator must not be told 'occupied' here — see the docstring"
+    assert any(
+        "could not tell whether a Trash origin record exists" in r.getMessage()
+        for r in caplog.records
+    )
+    # ...and the record really was there all along, so what the allocator would
+    # hand out is a name that is still spoken for.
+    assert read_trash_origin(origins, "Dummy") is not None
 
 
 # ----- the write path's own %r, the third of three -----

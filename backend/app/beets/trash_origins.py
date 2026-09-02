@@ -40,14 +40,16 @@ manager, an SMB client, ``docker volume rm``) leaves its record behind for
 whatever takes that name next — and two mechanisms narrow it:
 
 * **The allocator**, for the names MusicDrop hands out.
-  ``trash._unique_trash_dest`` treats a recorded name as occupied, so this app
-  never gives a second folder a name whose record is still on disk. That is the
-  whole of what it covers. An entry that reaches ``trash_dir`` by ANOTHER route
-  — a hand copy, a restored backup, a sync client writing into the volume — asks
-  the allocator nothing, so it can land on a name whose record outlived its
-  entry and inherit it: the listing offers "Exact restore" to a stranger's
-  origin and Restore renames the folder there. Nothing here detects that today;
-  it is a stated residual, not a closed hazard.
+  ``trash._unique_trash_dest`` treats a recorded name as occupied, so as long as
+  the store can be READ, this app does not give a second folder a name whose
+  record is still on disk. A store it cannot reach reads as empty and the name
+  is handed on — measured, and stated as a residual at :func:`origin_recorded`.
+  That is the whole of what it covers. An entry that reaches ``trash_dir`` by
+  ANOTHER route — a hand copy, a restored backup, a sync client writing into
+  the volume — asks the allocator nothing, so it can land on a name whose
+  record outlived its entry and inherit it: the listing offers "Exact restore"
+  to a stranger's origin and Restore renames the folder there. Nothing here
+  detects that today; it is a stated residual, not a closed hazard.
 * **The record names its own entry.** ``name`` is in the payload and
   :func:`read_trash_origin` refuses a record whose ``name`` is not the entry it
   was asked about. That does nothing for the adoption case above (an adopted
@@ -207,21 +209,47 @@ def origin_recorded(origins_dir: Path, entry_name: str) -> bool:
     allocator would get from a name nothing recorded.
 
     EXISTENCE of the key file, deliberately, and not "would
-    :func:`read_trash_origin` answer for this name". They differ for every record
-    that is on disk and refused, which is more than the colliding pair in
-    :func:`origin_file` (whose record belongs to the other name): it is also
-    every UNUSABLE one — a pre-feature payload carrying no ``name``, corrupt
-    JSON, a future schema, a truncated write, a non-ASCII byte. Measured at this
-    tip: read ``None`` and recorded ``True`` for all five. Occupied is the safe
-    side in all of them — the allocator moves on to ``<name> (1)``, so the pair
-    never shares a file in the first place and a record nobody can read is never
-    inherited by a second folder — and the cost is the same burnt name a manual
-    deletion already costs.
+    :func:`read_trash_origin` answer for this name". The two answers differ
+    whenever the key file is REACHABLE and refused, which is more than the
+    colliding pair in :func:`origin_file` (whose record belongs to the other
+    name): it is also every UNUSABLE one — a pre-feature payload carrying no
+    ``name``, corrupt JSON, a future schema, a truncated write, a non-ASCII
+    byte. Measured at this tip: read ``None`` and recorded ``True`` for all
+    five. Occupied is the safe side in each of them — the allocator moves on to
+    ``<name> (1)``, so the pair never shares a file in the first place and such
+    a record is not handed to a second folder — and the cost is the same burnt
+    name a manual deletion already costs.
+
+    **When the STORE itself cannot be reached the two AGREE, and that is a
+    stated residual.** An origins directory that is present but unsearchable —
+    measured at mode 0600 as a non-root user, the shape a bad ``PUID``/``PGID``
+    or a restored backup produces — makes ``exists()`` raise ``EACCES``:
+    :func:`read_trash_origin` logs "it could not be read" and returns ``None``,
+    and the arm below answers ``False``. Both say "nothing here", so the
+    allocator hands out a name whose record is still on disk; once the
+    permissions are repaired, that second folder's row reads the FIRST folder's
+    origin and offers to move it there. Measured through
+    ``trash._unique_trash_dest``: ``Dummy (1)`` with the store readable,
+    ``Dummy`` under the fault. The payload's ``name`` guard cannot catch this
+    one — the two folders share a name — and answering ``True`` on ``OSError``
+    would leave the allocator with no exit at all, since every candidate then
+    reads occupied (measured: 111,939 candidates in one second, still climbing).
+    So the warning below is what this case gets: it is the only trace, and it
+    runs exactly where the residual is created.
     """
     try:
         return origin_file(origins_dir, entry_name).exists()
-    except (OSError, ValueError):
+    except OSError:
+        logger.warning(
+            "could not tell whether a Trash origin record exists for %r, so the name is"
+            " being treated as free: if a record IS there, a second folder can take that"
+            " name and inherit it. Check the permissions on the Trash origins directory.",
+            display_path(entry_name),
+            exc_info=True,
+        )
         return False
+    except ValueError:
+        return False  # not a key this store can hold, so nothing was ever recorded
 
 
 def write_trash_origin(
@@ -444,10 +472,11 @@ def delete_trash_origin(origins_dir: Path, entry_name: str) -> None:
     move-back, a failed undo that stranded the folder in the library, and both
     Empty routes. Not tidiness: the name key is free again the moment the entry
     goes, and a record left behind would be inherited by whatever takes that name
-    next, steering a ``rename()`` for the wrong folder. (The allocator refuses to
-    reuse a recorded name, so the failure mode of NOT deleting is a permanently
-    burnt name rather than a wrong restore — but that is a second line of
-    defence, not a reason to skip this one.)
+    next, steering a ``rename()`` for the wrong folder. (The allocator usually
+    refuses to reuse a recorded name, so the failure mode of NOT deleting is
+    normally a burnt name rather than a wrong restore — but it is a second line
+    of defence that has holes of its own, described at
+    :func:`origin_recorded`, and not a reason to skip this one.)
 
     **The one file this must not take is another entry's**, which the truncated
     key makes possible: two names can share a record file (:func:`origin_file`),
