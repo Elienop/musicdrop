@@ -1036,7 +1036,10 @@ def _start(
                 " it never reached are untouched. The structured body's recovery line"
                 " promises recovery from the Trash folder only when albums really reached"
                 " it — a fan-out that stops on its first album, and one whose albums were"
-                " all rows with no files left to move, both moved nothing."
+                " all rows with no files left to move, both moved nothing. That promise"
+                " covers the albums BEFORE the one it stopped on, which cannot be taken"
+                " back; the album it stopped on has its own folder moved back out of Trash"
+                " when what failed was removing its library rows."
             ),
         },
         # Flat ErrorDetail, unlike the 500 beside it: this one is raised only
@@ -1047,13 +1050,18 @@ def _start(
         503: {
             "model": ErrorDetail,
             "description": (
-                "The music library root is missing, empty or unreadable, so the delete is"
-                " refused (the guard against an unmounted share). None of the artist's"
+                "One of the two setup faults a delete refuses on. Either the music library"
+                " root is missing, empty or unreadable (the guard against an unmounted"
+                " share), or the folder MusicDrop records Trash origins in cannot be read"
+                " or written — a bad PUID/PGID, a restored backup, a read-only /data. The"
+                " message says which. None of the artist's"
                 " albums has been dropped from the library: once one has, the same cause"
                 " is reported as the 500 instead, which names how far the fan-out got."
-                " Files are a separate question — a share that drops during the move of"
-                " the album the fan-out is on can leave part of it under the Trash"
-                " folder, so check there before retrying."
+                " Files are a separate question for the FIRST cause only — a share that"
+                " drops during the move of the album the fan-out is on can leave part of"
+                " it under the Trash folder, so check there before retrying. The"
+                " origin-store refusal fires on the first album before anything is"
+                " created, moved or dropped."
             ),
         },
     },

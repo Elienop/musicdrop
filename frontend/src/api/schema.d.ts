@@ -5737,7 +5737,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description Deleting the album failed. The structured body's recovery line says what state the files are in — it promises recovery from the Trash folder only when something really reached it, and a delete that failed on the way there leaves the album in the library. */
+            /** @description Deleting the album failed. The structured body's recovery line says what state the files are in — it promises recovery from the Trash folder only when something really reached it, and a delete that failed on the way there leaves the album in the library. A failure AFTER the whole folder reached Trash, where the library rows would not go, moves the folder back to where it came from: that body then says the files are in the music folder and Trash holds nothing for this album. Only if the move back ALSO fails does the message name both paths, read from the disk. */
             500: {
                 headers: {
                     [name: string]: unknown;
@@ -5746,7 +5746,7 @@ export interface operations {
                     "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
-            /** @description The music library root is missing, empty or unreadable, so the delete is refused (the guard against an unmounted share). The album is still in the library. Its files are a separate question: the same guard answers a share that drops DURING the move, and that can leave part of the album under the Trash folder — check there before retrying. */
+            /** @description One of the two setup faults a delete refuses on. Either the music library root is missing, empty or unreadable (the guard against an unmounted share), or the folder MusicDrop records Trash origins in cannot be read or written — a bad PUID/PGID, a restored backup, a read-only /data. The message says which. The album is still in the library. Its files are a separate question for the FIRST cause only: that guard also answers a share that drops DURING the move, and that can leave part of the album under the Trash folder — check there before retrying. The origin-store refusal runs before anything is created, moved or dropped, so nothing needs checking after it. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -6407,7 +6407,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description Deleting the artist failed. Also the status for a fault PART-WAY through the fan-out: the message then names how far it got, and says the albums it never reached are untouched. The structured body's recovery line promises recovery from the Trash folder only when albums really reached it — a fan-out that stops on its first album, and one whose albums were all rows with no files left to move, both moved nothing. */
+            /** @description Deleting the artist failed. Also the status for a fault PART-WAY through the fan-out: the message then names how far it got, and says the albums it never reached are untouched. The structured body's recovery line promises recovery from the Trash folder only when albums really reached it — a fan-out that stops on its first album, and one whose albums were all rows with no files left to move, both moved nothing. That promise covers the albums BEFORE the one it stopped on, which cannot be taken back; the album it stopped on has its own folder moved back out of Trash when what failed was removing its library rows. */
             500: {
                 headers: {
                     [name: string]: unknown;
@@ -6416,7 +6416,7 @@ export interface operations {
                     "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
-            /** @description The music library root is missing, empty or unreadable, so the delete is refused (the guard against an unmounted share). None of the artist's albums has been dropped from the library: once one has, the same cause is reported as the 500 instead, which names how far the fan-out got. Files are a separate question — a share that drops during the move of the album the fan-out is on can leave part of it under the Trash folder, so check there before retrying. */
+            /** @description One of the two setup faults a delete refuses on. Either the music library root is missing, empty or unreadable (the guard against an unmounted share), or the folder MusicDrop records Trash origins in cannot be read or written — a bad PUID/PGID, a restored backup, a read-only /data. The message says which. None of the artist's albums has been dropped from the library: once one has, the same cause is reported as the 500 instead, which names how far the fan-out got. Files are a separate question for the FIRST cause only — a share that drops during the move of the album the fan-out is on can leave part of it under the Trash folder, so check there before retrying. The origin-store refusal fires on the first album before anything is created, moved or dropped. */
             503: {
                 headers: {
                     [name: string]: unknown;

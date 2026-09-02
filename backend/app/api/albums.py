@@ -454,7 +454,11 @@ async def fetch_album_lyrics_endpoint(
                 "Deleting the album failed. The structured body's recovery line says what"
                 " state the files are in — it promises recovery from the Trash folder only"
                 " when something really reached it, and a delete that failed on the way"
-                " there leaves the album in the library."
+                " there leaves the album in the library. A failure AFTER the whole folder"
+                " reached Trash, where the library rows would not go, moves the folder"
+                " back to where it came from: that body then says the files are in the"
+                " music folder and Trash holds nothing for this album. Only if the move"
+                " back ALSO fails does the message name both paths, read from the disk."
             ),
         },
         # Flat ErrorDetail, unlike the 500 beside it: what this status carries is
@@ -463,11 +467,16 @@ async def fetch_album_lyrics_endpoint(
         503: {
             "model": ErrorDetail,
             "description": (
-                "The music library root is missing, empty or unreadable, so the delete is"
-                " refused (the guard against an unmounted share). The album is still in"
-                " the library. Its files are a separate question: the same guard answers"
-                " a share that drops DURING the move, and that can leave part of the"
-                " album under the Trash folder — check there before retrying."
+                "One of the two setup faults a delete refuses on. Either the music library"
+                " root is missing, empty or unreadable (the guard against an unmounted"
+                " share), or the folder MusicDrop records Trash origins in cannot be read"
+                " or written — a bad PUID/PGID, a restored backup, a read-only /data. The"
+                " message says which. The album is still in the library. Its files are a"
+                " separate question for the FIRST cause only: that guard also answers a"
+                " share that drops DURING the move, and that can leave part of the album"
+                " under the Trash folder — check there before retrying. The origin-store"
+                " refusal runs before anything is created, moved or dropped, so nothing"
+                " needs checking after it."
             ),
         },
     },
