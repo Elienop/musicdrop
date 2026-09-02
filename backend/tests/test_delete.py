@@ -1073,6 +1073,10 @@ def test_delete_500_when_the_rows_will_not_go_says_the_files_came_BACK(
     assert duplicates_lib.get_album(album_id) is not None
     recovery = detail["recovery"]
     assert recovery != _LOOK_IN_TRASH, "this state is no longer one the fallback has to cover"
+    assert recovery == (
+        "The files were moved back, so there is nothing in Trash for this album."
+        " Check whether the album is still listed before retrying."
+    ), "the hint half of the hedge: the message cannot tell, so the line says to look"
     assert "moved back" in recovery
     assert "nothing in Trash for this album" in recovery
 

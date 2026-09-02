@@ -211,10 +211,10 @@ def delete_artist(
         # first non-docstring node of the body — ahead of every branch of it, so
         # the first album already refuses with nothing dropped. A copy here
         # changes no outcome any test can see: adding it back left the whole
-        # suite green (measured, 3037 passed). That is not an argument that the
+        # suite green (measured). That is not an argument that the
         # delete tests would have caught one if it did, and the difference has
         # been measured too — ``origin_recorded``'s refusing arm survives
-        # tests/test_delete.py + tests/test_trash.py (74 passed) and is killed
+        # tests/test_delete.py + tests/test_trash.py and is killed
         # only in tests/test_trash_origins_store.py, so this file's own pins are
         # not where every delete-path guard lives. It would also refuse a
         # fan-out over an artist with NO albums, which mutates nothing at all.

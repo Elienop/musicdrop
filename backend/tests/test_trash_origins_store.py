@@ -908,6 +908,10 @@ def test_a_symlink_loop_at_the_key_reads_as_free_on_both_sides(
         delete_trash_origin(origins, "Dummy")  # must return, not raise
 
     assert any("present but unusable" in r.getMessage() for r in caplog.records)
+    # The allocator's "could not tell" warning names what reaches its OSError
+    # arm; a loop at the key is not among them, because ``Path.exists`` absorbs
+    # ELOOP. This pins the warning's text against the claim.
+    assert not any("could not tell" in r.getMessage() for r in caplog.records)
     assert not key.is_symlink(), "the loop was left behind, holding its name"
 
 

@@ -1014,6 +1014,7 @@ def test_the_undo_reports_from_the_DISK_when_the_trash_name_is_retaken(
     assert f"at the album's own folder {display_path(album_root)!r}" in message
     assert "disk I/O error, forced by the fixture" in message, "the FIRST failure is still named"
     assert "The move back failed with" in message, "...and so is the second"
+    assert "removing its library rows failed" in message, "the row failure is named as one"
     assert "cannot say whether the album is still in the library" in message
     assert (entry / "01 Track 1.mp3").is_file(), "the album is still in Trash"
     assert (origins / f"{entry.name}.json").is_file(), "so its record must be kept"
