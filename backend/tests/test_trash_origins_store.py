@@ -1,20 +1,31 @@
-"""The origin STORE's own promises, underneath the feature that relies on them.
+"""The origin STORE's own promises: whose record it hands back, and never raising.
 
 ``test_trash_origin_record.py`` covers the feature — a trashed folder keeps
-enough to be put back exactly. This file covers a property of the store beneath
-it that the feature quietly assumes: a record is only ever read back for the
-entry it was written FOR, which the truncated key makes a real question rather
-than a tautology.
+enough to be put back exactly. This file covers the three properties of the store
+underneath it that the feature quietly assumes, each of which survived a mutation
+of its own production line before these tests existed:
+
+* a record is only ever read back for the entry it was written FOR, which the
+  truncated key makes a real question rather than a tautology;
+* :func:`delete_trash_origin` really never raises — every one of its callers runs
+  it AFTER irreversible work, so an escaping exception 500s an operation that
+  fully succeeded;
+* a crafted Trash entry name cannot forge a log line on the write path, the one
+  of the module's three ``%r`` sites that nothing pinned.
 """
 
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from pathlib import Path
 
+import pytest
+
 from app.beets.trash_manage import list_trashed_albums
 from app.beets.trash_origins import (
+    delete_trash_origin,
     origin_file,
     origin_recorded,
     read_trash_origin,
@@ -137,3 +148,85 @@ def test_the_allocator_still_sees_a_colliding_key_as_occupied(tmp_path: Path) ->
     assert read_trash_origin(origins, short_name) is None
     assert origin_recorded(origins, short_name) is True
     assert origin_recorded(origins, long_name) is True
+
+
+# ----- delete_trash_origin is contractually incapable of raising -----
+
+
+def test_a_record_that_cannot_be_unlinked_is_logged_and_swallowed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Both halves of "NEVER raises", on the one call that runs after the point of no return.
+
+    Every caller is past irreversible work when it gets here — the folder has
+    been moved back into the library, or emptied, or stranded by a failed undo
+    ("Never raises, so it cannot make this path worse"). An exception escaping
+    turns an operation that fully SUCCEEDED into a bare 500, and the user is told
+    a restore failed that did not.
+
+    Two ways to escape, and this pins both at once:
+
+    * ``unlink(missing_ok=True)`` swallows ``FileNotFoundError`` and nothing
+      else, so a read-only, full or damaged ``/data`` raises through it. Staged
+      with a DIRECTORY at the record's own name (``EISDIR``) rather than
+      ``chmod``: CI images run as root, where a read-only directory denies
+      nothing and the test would report green having executed no failure.
+    * the handler itself. The entry name is a real filesystem name, so it can be
+      non-UTF-8, and the obvious escape spelling
+      (``.encode("utf-8", "backslashreplace").decode("ascii")``) raises
+      ``UnicodeDecodeError`` on ordinary accented text — inside the one handler
+      that may not raise. Hence ``display_path``, and hence a name carrying both
+      an accent and an undecodable byte.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    name = os.fsdecode(b"Caf\xc3\xa9 \xff Dummy")
+    assert not name.isascii(), "the accent that breaks the naive escape spelling"
+    assert "\udcff" in name, "and the undecodable byte that display_path is for"
+    origin_file(origins, name).mkdir()
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        delete_trash_origin(origins, name)  # must return, not raise
+
+    (record,) = caplog.records
+    assert "could not remove the Trash origin record" in record.getMessage()
+    # Readable, not mangled: the accent survives and only the undecodable byte
+    # becomes the placeholder, which is what tells an operator which entry it is.
+    assert "Café" in record.getMessage()
+    assert "�" in record.getMessage()
+
+
+# ----- the write path's own %r, the third of three -----
+
+
+def test_a_failed_write_cannot_forge_a_log_line_through_the_entry_name(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``%r`` on the entry name, pinned exactly as its two siblings are.
+
+    The other two are ``_warn_unusable`` (the record path) and ``trash_manage``'s
+    failed-undo line; this one had no test, so ``%r`` -> ``%s`` survived here
+    while being killed at both of them. A Trash entry's name comes from the
+    album's own tags and ``_trash_container_name`` neutralises path separators
+    and nothing else, so a newline or an ANSI escape in an ``albumartist``
+    reaches this line — the line an operator reads when a delete has just lost
+    its origin. Interpolated raw, a crafted album name writes whatever it likes
+    into the server log at exactly that moment.
+
+    The write is failed structurally (a regular FILE where the store's directory
+    belongs, so the parent cannot be created), which is root-safe and is what a
+    read-only ``/data`` looks like from here.
+    """
+    forged = "Dummy\x1b[31m\nCRITICAL:app:all clear"
+    origins = tmp_path / "trash-origins"
+    origins.write_bytes(b"not a directory")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        write_trash_origin(origins, forged, origin="/music/A", moved="folder")
+
+    assert any("could not record the Trash origin" in r.getMessage() for r in caplog.records)
+    assert "\x1b" not in caplog.text, "an ANSI escape reached the log"
+    assert "\nCRITICAL" not in caplog.text, "a forged log line reached the log"
+    # Escaped, not dropped: the operator still gets the entry they have to look at.
+    assert "\\x1b" in caplog.text
+    assert "\\n" in caplog.text
