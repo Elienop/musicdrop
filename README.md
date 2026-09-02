@@ -96,7 +96,8 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
     buttons are disabled, because as of this version MusicDrop turns both down on the link
     itself, without ever following it — so Restore and that row's own Empty both answer
     "not in Trash" and change nothing. **Empty all** is the only control that removes such an
-    entry, and it removes the link alone.
+    entry, and it removes the link alone. The row is listed whether or not the link's target
+    is reachable — an unmounted one used to show nothing at all.
 
   Two consequences worth knowing. A row trashed by an older version has no record and never
   will, so a media-free one (art/booklet leftovers with no audio) still has Empty as its only

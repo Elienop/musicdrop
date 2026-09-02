@@ -366,3 +366,54 @@ def test_a_folder_argument_outside_trash_is_refused_by_both_per_row_routes(
     assert restore.status_code == 404
     assert (real / "01 Mysterons.flac").is_file(), "the row it resolved onto was not touched"
     assert sneak.is_symlink(), "and the path the request named is still there"
+
+
+def _seed_a_dangling_entry(client: TestClient, tmp_path: Path) -> tuple[Path, Path]:
+    """A symlinked Trash entry whose target is not there — the unmounted case.
+
+    The same ordinary provenance as every other symlinked entry (an album folder
+    that was already a link when it was deleted), in the state the note beside
+    such a row describes out loud: the volume it points at is not mounted, so
+    nothing follows. An ordinary sibling is seeded with it, so a change that
+    emptied the whole listing cannot pass for this row appearing.
+
+    Returns ``(the dangling link, the ordinary sibling entry)``.
+    """
+    trash = _client_trash(client)
+    trash.mkdir(parents=True, exist_ok=True)
+    real = trash / "RealAlbum"
+    real.mkdir()
+    (real / "01 Mysterons.flac").write_bytes(b"\x00")
+    entry = trash / "Portishead - Dummy"
+    entry.symlink_to(tmp_path / "other volume" / "Portishead - Dummy", target_is_directory=True)
+    return entry, real
+
+
+def test_a_dangling_symlinked_entry_still_gets_a_row(client: TestClient, tmp_path: Path) -> None:
+    """It used to be invisible, which is the one state the user cannot act on.
+
+    ``_audio_free_entries`` asked ``is_dir()``, which FOLLOWS the link: a
+    dangling one answered False and produced no row at all. The entry was in
+    Trash, took up its name, and the page showed nothing — no Restore, no Empty,
+    and no sentence saying where the album's files are. Only ``Empty all``
+    cleared it, and only if the user emptied everything.
+
+    The row is asserted together with what the routes do to it, because a row
+    that appears and then behaves differently from what it claims is the failure
+    this file exists for.
+    """
+    entry, real = _seed_a_dangling_entry(client, tmp_path)
+
+    rows = {row["folder"]: row for row in client.get("/api/trash").json()["albums"]}
+    empty = client.delete("/api/trash", params={"folder": entry.name})
+    restore = client.post("/api/trash/restore", json={"folder": entry.name})
+
+    assert set(rows) == {"Portishead - Dummy", "RealAlbum"}, "the dangling entry is listed"
+    assert rows[entry.name]["restore_mode"] == "refused"
+    assert rows[entry.name]["restore_note"] is not None, "and says why, like any other link"
+    assert rows[entry.name]["track_count"] == 0, "nothing is followed to count tracks"
+    assert empty.status_code == 404, "the routes answer what the row promises"
+    assert restore.status_code == 404
+    assert entry.is_symlink(), "and the entry is still there to be seen"
+    assert not entry.exists(), "still dangling: nothing was created behind it"
+    assert (real / "01 Mysterons.flac").is_file()

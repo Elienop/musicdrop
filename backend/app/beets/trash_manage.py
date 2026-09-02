@@ -348,16 +348,34 @@ def _restore_fields(
 def _audio_free_entries(
     trash_dir: Path, groups: dict[str, list[Any]], *, origins_dir: Path, music_dir: str
 ) -> list[TrashedAlbum]:
-    """Zero-track entries for top-level trash dirs that produced no audio group."""
+    """Zero-track rows for top-level entries that produced no audio group.
+
+    A directory or a symlink; hidden/system names skipped. Loose FILES are not
+    here because ``_walk_trash_groups`` already lists any it can read as an
+    ``Item``, and an unreadable one is not an album.
+    """
     # Audio-free trashed folders (art/sidecar husks the orphan sweep relocates here)
     # carry no Item rows, so the tag-grouping above never lists them. Surface each
     # top-level trash dir that produced no audio group as a zero-track entry —
     # otherwise it is invisible in the Trash UI, has no per-entry Restore/Empty
     # affordance, and Empty-all deletes it silently (the page under-reporting what
-    # it destroys). Dirs only; hidden/system names skipped.
+    # it destroys).
+    #
+    # ``os.path.islink`` is asked BESIDE ``is_dir``, not left to it: ``is_dir``
+    # FOLLOWS the link, so a DANGLING one answered False and produced no row at
+    # all — and a dangling link is exactly the state ``_SYMLINKED_ENTRY_NOTE``
+    # describes, the volume it points at not being mounted. That entry was then
+    # invisible: nothing to click, and only ``DELETE /api/trash/all`` removed it
+    # (silently, and only if the user emptied everything). It lists as
+    # ``"refused"`` like any other link, from the same predicate the two per-row
+    # routes turn it down with.
     albums: list[TrashedAlbum] = []
     for entry in sorted(trash_dir.iterdir()):
-        if entry.is_dir() and not entry.name.startswith(".") and entry.name not in groups:
+        if (
+            (os.path.islink(entry) or entry.is_dir())
+            and not entry.name.startswith(".")
+            and entry.name not in groups
+        ):
             mode, note, origin = _restore_fields(
                 entry, origins_dir=origins_dir, music_dir=music_dir
             )
