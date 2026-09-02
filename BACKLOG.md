@@ -853,18 +853,19 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   enabled, warn clearly"*, amending `decisions.md` 27 — see that note for why the original
   DISABLE ruling rested on a false premise).
 
-  **That one exception sits outside the ruling's own reason, and the owner has NOT been
-  asked about it.** The amendment reasons that disabling Restore *"would have deleted a
-  working recovery path in the name of safety"* — true of an `"import"` row, where the
-  re-import IS the recovery path and works. A symlinked row has no such path: at this tip
-  (2026-09-02) `resolve_trash_child` answers 404 to the Restore route AND to the per-row
-  Empty route, on the link itself and before either route moves or removes anything
-  (measured; pinned in `backend/tests/test_trash_listing_symlink_rows.py`), so the only
-  reachable outcome of either live control was an error, and disabling them deletes
-  nothing. That was NOT true at the previous tip, where the routes resolved first and a
-  link to a sibling entry got acted on — so the carve-out rests on this tip's guard, not on
-  a property the row always had. That is an argument for the carve-out, not an approval of
-  it — put it to the owner and record the answer here and in `decisions.md` 27.
+  **That one exception sits outside the ruling's own reason, and the owner settled it**
+  (2026-09-02: *"Keep them disabled"*, `decisions.md` 28 item 1). The amendment reasons that
+  disabling Restore *"would have deleted a working recovery path in the name of safety"* —
+  true of an `"import"` row, where the re-import IS the recovery path and works. A symlinked
+  row has no such path: its files never moved into Trash, so restoring it would import
+  whatever the link points at rather than undo anything. At this tip (2026-09-02)
+  `resolve_trash_child` answers 404 to the Restore route AND to the per-row Empty route, on
+  the link itself and before either route moves or removes anything (measured; pinned in
+  `backend/tests/test_trash_listing_symlink_rows.py`), so the only reachable outcome of
+  either live control was an error, and disabling them deletes nothing. That was NOT true at
+  the previous tip, where the routes resolved first and a link to a sibling entry got acted
+  on — so the carve-out rests on this tip's guard, not on a property the row always had. The
+  standing record is the Accepted-residuals entry of the same name.
 
   The page header no longer promises "puts one back as-is", which was only ever true
   for some rows. (Corrected: an earlier draft of this note, and the backend comment it came
@@ -1078,7 +1079,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - ~~**A FLAT library layout defeats the delete path's presence check — it samples the music
   root against itself.**~~ (Found 2026-09-02, on `fix/undoable-deletes`, while re-reading the
-  check that entry-above's sibling shipped.) — **FIXED in this branch.** Trigger: a
+  check that entry-above's sibling shipped.) —
+  **FIXED in this branch** (PR number to be filled in on merge). Trigger: a
   `paths.default` template with no directory component — beets' own `$title` is the shortest,
   and the template is editable from the app (**Settings → Naming**, `config_editor` writes
   `paths:` straight back into `config.yaml`), so this is a supported layout and not a damaged
@@ -1127,9 +1129,9 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   restoring `dirname` + `isdir`.
 
 - ~~**An unreachable origins store makes the allocator hand out a recorded name, and the next
-  folder inherits the first one's origin.**~~ — **FIXED in this branch** (PR number to be
-  filled in on merge), 2026-09-02, per the owner's ruling in `decisions.md` 28 item 3: the
-  delete is REFUSED while the store cannot be used. What shipped, by symbol:
+  folder inherits the first one's origin.**~~ —
+  **FIXED in this branch** (PR number to be filled in on merge), 2026-09-02, per the owner's
+  ruling in `decisions.md` 28 item 3: the delete is REFUSED while the store cannot be used. What shipped, by symbol:
   `trash_origins.require_usable_store` asks the store the three questions a delete asks it —
   `mkdir(parents=True, exist_ok=True)`, `scandir` plus a `stat` of a key that is never there,
   and `mkstemp` — and every mover (`trash_album`, `trash_album_folder`, `trash_folder`) calls
@@ -1169,8 +1171,9 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   a check above the allocator and from `origin_recorded`'s own arm — never an "occupied".
 
 - ~~**A plugin listener that raises on `album_removed` leaves the folder in Trash with its
-  album row already gone.**~~ — **FIXED in this branch** (PR number to be filled in on
-  merge), 2026-09-02, per the owner's ruling in `decisions.md` 28 item 4, WITH a residual
+  album row already gone.**~~ —
+  **FIXED in this branch** (PR number to be filled in on merge), 2026-09-02, per the owner's
+  ruling in `decisions.md` 28 item 4, WITH a residual
   that is stated below rather than closed. What shipped: `trash.trash_album_folder`'s
   whole-folder branch wraps `album.remove`; on a raise the folder is moved back to
   `album_root` with `fsutil.move_no_merge`, the origin record is destroyed only once the
@@ -1219,24 +1222,6 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   answer means, instead of the old wording that said nothing had moved. That was the state
   when the owner was asked; the move-back described above is what the answer produced, and a
   failed undo does replace the original error rather than hide it.
-
-- **The "keep Restore enabled" ruling now has a carve-out the owner has not been asked
-  about.** (Raised 2026-09-02, on `fix/undoable-deletes`.) `decisions.md` 27, as
-  amended by the owner on 2026-08-31 (*"Keep it enabled, warn clearly"*), reasons that
-  disabling Restore *"would have deleted a working recovery path in the name of safety"*.
-  That reason holds for an `"import"` row and does not reach a **symlinked** row, whose
-  per-row Restore and per-row Empty are both refused by `trash_manage.resolve_trash_child`
-  at this tip — so the row ships with both controls disabled, which is the shape the ruling
-  otherwise forbids. The argument for the carve-out is written out in the Trash feature
-  block above (the only reachable outcome of either live control was a 404, so disabling
-  them deletes nothing). **That is an argument, not an approval: the owner has NOT been
-  asked, and no answer is on file.** Put it to them and record the answer here and in
-  `decisions.md` 27. Quote 27 accurately when you do: the phrase "every row" is nowhere in
-  it (grepped 2026-09-02). Its amendment is headed *"old rows keep Restore ENABLED, with the
-  warning stated"* and states the shipped shape as *"`restore_mode` is `"move_back"` or
-  `"import"`, Restore stays clickable in both"* — it names no third value, so a `"refused"`
-  row is outside what 27 decided rather than something it forbids. What the carve-out still
-  has to clear is 27's REASON, quoted above, not its wording.
 
 - **Vacuous-pin audit: sized 2026-08-28; the four confirmed pins FIXED in #190** (two dead
   absence needles in the reorganize adapter replaced with positive pins on the exact
@@ -1696,6 +1681,32 @@ the condition it names has changed.
   residual, and names the eventual fix (removing the persistent overlay). Genuinely
   narrow: single user, requires an Apply mid-fetch. Recorded so "documented" is true for
   someone who has not read that function.
+
+- **A symlinked Trash row keeps Restore and its own Empty DISABLED — the carve-out from
+  `decisions.md` 27, now settled** (owner, 2026-09-02: *"Keep them disabled"*, recorded as
+  `decisions.md` 28 item 1). 27's amendment (*"Keep it enabled, warn clearly"*) reasons that
+  disabling Restore *"would have deleted a working recovery path in the name of safety"*,
+  which is true of an `"import"` row: its files ARE in Trash, so the re-import is a real
+  recovery. A symlinked row's files never moved, so a restore would import whatever the link
+  points at rather than undo anything — that is the owner's stated reason — and
+  `trash_manage.resolve_trash_child` already answers 404 to the per-row Restore and the
+  per-row Empty alike, so disabling both controls deletes nothing that worked.
+  `DELETE /api/trash/all` removes the link, and only the link. Quote 27 accurately if this
+  is ever revisited: the phrase "every row" is nowhere in it (grepped 2026-09-02), and its
+  amendment names only `"move_back"` and `"import"` — a `"refused"` row is outside what 27
+  decided rather than something it forbids. Full shape: the shipped "Record the origin path
+  at trash time" entry under *Open bugs / hardening*.
+
+- **A dangling link at an album's original path REFUSES the restore, and MusicDrop does not
+  replace it** (owner, 2026-09-02: *"Keep refusing"*, recorded as `decisions.md` 28 item 2).
+  Replacing a broken link automatically was offered and declined: a restore never removes
+  anything sitting at the origin. The occupancy answer (`fsutil.occupied`) uses `exists`,
+  which follows symlinks, so a dangling link reads as absent, the move is attempted, and
+  `os.rename` answers ENOTDIR — one of `fsutil.DEST_OCCUPIED`, which `move_no_merge`
+  normalises to `FileExistsError` and `_restore_to_origin` reports as `origin_occupied`.
+  The files stay in Trash and nothing moves, so the residual is the wording rather than the
+  data; it is stated in `trash_manage._restore_to_origin`'s docstring, which also says why
+  widening `origin_occupied` to name the broken link is a contract change.
 
 - **Wire-safety net coverage caveats** (by design, recorded so nobody assumes otherwise):
   SSE `/api/events` bypasses the response class (scopes are tag-derived today, never paths);

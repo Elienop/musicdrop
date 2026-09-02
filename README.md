@@ -51,45 +51,48 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 - **Duplicates** — find & resolve duplicate albums (resolve one, or resolve-all).
 - **Release identity** — which release an album is (source · label · country · media · disambiguation), with view-release links.
 - **Delete & Trash** — delete albums or artists into a reversible Trash; restore or empty it
-  under **Settings → Trash**. Two setup faults refuse a delete with a 503, and in both cases
-  nothing is moved and no library rows are dropped. The first is the music root being
-  missing, empty or unreadable (an unmounted share), so a genuinely emptied library needs a
-  remount (or beets' own CLI) before its leftover entries can be cleared. The second is the
-  origin-records folder — `<beets dir>/trash-origins/`, described below — being unusable:
-  not there and not creatable, something other than a folder in its place, or not readable
-  or writable by the container's user (a wrong `PUID`/`PGID`, a restored backup, a read-only
-  `/data`). MusicDrop will not delete an album it cannot record the origin of, because the
-  name it would hand that folder in Trash may still be spoken for by a record it cannot see.
-  The message says which of the two it is; fix that folder's permissions or its mount and
-  retry. **Deleting an album** additionally covers the case a stray
-  file used to hide: a `.stfolder`, a `lost+found` or an empty leftover directory sitting on
-  a local mountpoint whose share has dropped makes the folder look mounted, so before a
-  delete drops rows having moved nothing, MusicDrop confirms that at least one of the music
-  *files* the library names is really on disk. It checks the file rather than the folder
-  holding it because a naming template with no folder in it (**Settings → Naming**, beets'
-  own `$title`) puts every track straight in the music root — and asking whether the music
-  root exists is the question the stray file already answered wrongly. The cost of the
-  stricter test is one shape: a library with a single album whose first track was removed
-  by hand, its folder left behind, is now refused too. **Restore** runs that same stronger
-  check, above both of the ways it can put a folder back — it writes *into* the music library, so an unmounted
-  share is the same catastrophe there, and a restore that hits one is refused with a 503
-  having moved nothing out of Trash. Disk sync is the deliberate exception: it keeps the
-  cheap "is the root there" test, because it runs it once per removal and accepted the same
-  residual for itself. A share
-  dropping part-way through an artist delete reports how many of the artist's albums were
-  moved to Trash before it stopped — those are recoverable there, and the albums it never
-  reached are untouched. A run that moved nothing does not claim a count it cannot back: it
-  says how many albums it dropped that had no files left to move, and its advice is to
-  *check* the Trash folder rather than a promise that anything is in it. That hedge is
-  deliberate, and it now covers a narrower set: a move that stops PART-WAY — a copy across
-  filesystems that fails between the copy and the delete, or an album taken out of a shared
-  folder file by file — can leave some of it under Trash without this end being able to see
-  it, so the honest instruction is to look. **If the library rows cannot be removed after
-  the whole folder reached Trash, MusicDrop moves the folder back where it came from and
-  reports the error**, so the disk and the library do not disagree and there is nothing in
-  Trash for that album to find. In the rare case that moving it back fails too, the error
-  names both paths, read from the disk, and tells you not to empty Trash before comparing
-  them.
+  under **Settings → Trash**. Two setup faults refuse a delete with a 503, and neither drops a
+  library row. The first is the music root being missing, empty or unreadable (an unmounted
+  share), so a genuinely emptied library needs a remount (or beets' own CLI) before its
+  leftover entries can be cleared. It is checked before the delete starts and again per album,
+  so nothing has moved when it refuses — with one narrow exception, a share that drops during
+  an album's own move, which keeps that album's rows and can leave part of its folder under the
+  Trash container. The second is the origin-records folder — `<beets dir>/trash-origins/`,
+  described below — being unusable: not there and not creatable, something other than a folder
+  in its place, or not readable or writable by the container's user (a wrong `PUID`/`PGID`, a
+  restored backup, a read-only `/data`). That one is asked ahead of every branch of a delete,
+  so nothing has moved when it refuses. MusicDrop will not delete an album it cannot record the
+  origin of, because the name it would hand that folder in Trash may still be spoken for by a
+  record it cannot see. The message says which of the two it is; fix that folder's permissions
+  or its mount and retry. **Deleting an album** additionally covers the case a stray file used
+  to hide: a `.stfolder`, a `lost+found` or an empty leftover directory sitting on a local
+  mountpoint whose share has dropped makes the folder look mounted, so before a delete drops
+  rows having moved nothing, MusicDrop confirms that at least one of the music *files* the
+  library names is really on disk. It checks the file rather than the folder holding it because
+  a naming template with no folder in it (**Settings → Naming**, beets' own `$title`) puts
+  every track straight in the music root — and asking whether the music root exists is the
+  question the stray file already answered wrongly. The cost of the stricter test is one shape:
+  a library with a single album whose first track was removed by hand, its folder left behind,
+  is now refused too. **Restore** runs that same stronger check, above both of the ways it can
+  put a folder back — it writes *into* the music library, so an unmounted share is the same
+  catastrophe there, and a restore that hits one is refused with a 503 having moved nothing out
+  of Trash. Disk sync is the deliberate exception: it keeps the cheap "is the root there" test,
+  because it runs it once per removal and accepted the same residual for itself. Either fault
+  appearing part-way through an artist delete — the share dropping, or the origin-records
+  folder becoming unusable — is reported rather than refused, because the 503's promise is no
+  longer true by then: the answer says how many of the artist's albums were moved to Trash
+  before it stopped — those are recoverable there, and the albums it never reached are
+  untouched. A run that moved nothing does not claim a count it cannot back: it says how many
+  albums it dropped that had no files left to move, and its advice is to *check* the Trash
+  folder rather than a promise that anything is in it. That hedge is deliberate, and it now
+  covers a narrower set: a move that stops PART-WAY — a copy across filesystems that fails
+  between the copy and the delete, or an album taken out of a shared folder file by file — can
+  leave some of it under Trash without this end being able to see it, so the honest instruction
+  is to look. **If the library rows cannot be removed after the whole folder reached Trash,
+  MusicDrop moves the folder back where it came from and reports the error**, so the disk and
+  the library do not disagree and there is nothing in Trash for that album to find. In the rare
+  case that moving it back fails too, the error names both paths, read from the disk, and tells
+  you not to empty Trash before comparing them.
 - **Restore knows where things came from.** When MusicDrop moves a folder to Trash it
   records where that folder came from in a small JSON file alongside — one per Trash entry,
   under `<beets dir>/trash-origins/`, deliberately outside the trashed folder and outside
@@ -123,9 +126,8 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   exit. (If you move or delete a Trash entry outside MusicDrop, its record is left behind.
   For anything MusicDrop itself puts in Trash that is harmless: it treats a recorded name as
   taken, so the next album it trashes under that name simply gets a `(1)` suffix. A store it
-  cannot use does not make that name go out again — it refuses the delete instead (the 503
-  above), because handing the name on is how the next folder would inherit the first one's
-  origin. A folder that arrives in Trash by some *other* route — a hand copy, a
+  cannot use does not send that name out again either — it refuses the delete instead (the
+  503 above). A folder that arrives in Trash by some *other* route — a hand copy, a
   restored backup, a sync client writing into the volume — asks nothing, so it can land on that name and its
   row will then offer an exact restore to the *previous* folder's path. Nothing detects
   that today; if you put folders into the Trash directory by hand, check what the row
