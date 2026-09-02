@@ -27,10 +27,14 @@ const album: TrashedAlbum = {
   origin: "/music/2 Brothers/Dreams",
 };
 
-/** The backend writes three distinct why-sentences; the page must render
- * whatever arrives, so the tests carry one VERBATIM rather than a shape — a
- * component that ignored `restore_note` and printed its own copy would pass a
- * shape assertion and fail this one.
+/** The backend writes three distinct why-sentences for an IMPORT row
+ * (`_NO_RECORD_NOTE` / `_SHARED_FOLDER_NOTE` / `_OUTSIDE_LIBRARY_NOTE`) and a
+ * fourth for the `refused` mode, which is `REFUSED_NOTE` below — four
+ * sentences out of `trash_manage._restore_fields`, of which this file's
+ * fixtures carry two. The page must render whatever arrives, so the tests
+ * carry one VERBATIM rather than a shape — a component that ignored
+ * `restore_note` and printed its own copy would pass a shape assertion and
+ * fail this one.
  *
  * It is NOT a contract, and it does not have to track the backend: any
  * realistic sentence does that job. This copy went stale once already (the
