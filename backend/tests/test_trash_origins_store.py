@@ -1,4 +1,4 @@
-"""The origin STORE's own promises: whose record it hands back, and never raising.
+"""The origin STORE's own promises: whose record it hands back, and what it swallows.
 
 ``test_trash_origin_record.py`` covers the feature — a trashed folder keeps
 enough to be put back exactly. This file covers the properties of the store
@@ -8,9 +8,12 @@ of its own production line before these tests existed:
 * a record is only ever read back for the entry it was written FOR, and is only
   ever DELETED for the entry it was written for, which the truncated key makes a
   real question rather than a tautology;
-* :func:`delete_trash_origin` really never raises — every one of its callers runs
-  it AFTER irreversible work, so an escaping exception 500s an operation that
-  fully succeeded;
+* :func:`delete_trash_origin` swallows rather than raising, and the claim is the
+  LIST rather than the word "never": every one of its callers runs it AFTER
+  irreversible work, so an escaping exception 500s an operation that fully
+  succeeded, and the file shapes it has been put in front of are the ones this
+  file plants — unparseable, not an object, nameless, another entry's, nested
+  past the JSON parser's limit, a directory at the key;
 * a store the app cannot reach reads as "nothing recorded" and says so in the
   log, which is the one place that residual is visible;
 * a crafted Trash entry name cannot forge a log line on the write path, the one
@@ -20,6 +23,7 @@ of its own production line before these tests existed:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -30,7 +34,7 @@ import pytest
 from beets import config
 from beets.library import Item, Library
 
-from app.beets.trash_manage import empty_one, list_trashed_albums, restore_album
+from app.beets.trash_manage import empty_all, empty_one, list_trashed_albums, restore_album
 from app.beets.trash_origins import (
     delete_trash_origin,
     origin_file,
@@ -326,7 +330,7 @@ def test_an_import_restore_of_the_losing_row_keeps_the_other_entrys_record(
     assert survivor.origin == str(tmp_path / "music" / "Long")
 
 
-# ----- delete_trash_origin is contractually incapable of raising -----
+# ----- delete_trash_origin swallows what its callers cannot handle -----
 
 
 def test_a_record_that_cannot_be_unlinked_is_logged_and_swallowed(
@@ -370,6 +374,126 @@ def test_a_record_that_cannot_be_unlinked_is_logged_and_swallowed(
     # becomes the placeholder, which is what tells an operator which entry it is.
     assert "Café" in record.getMessage()
     assert "�" in record.getMessage()
+
+
+# ----- ...including a file the JSON parser gives up on -----
+
+
+def _deeply_nested_json() -> str:
+    """A legal-ASCII, legal-JSON file that ``json.loads`` refuses to finish.
+
+    60,000 nested arrays. The depth is not a threshold this suite owns — CPython
+    trips its own C recursion limit long before here — so the premise is
+    asserted rather than assumed: if the parser ever gets deep enough to swallow
+    this, the line below goes red instead of the tests going quietly green.
+
+    The trigger is corruption, a hand edit, or a restored backup on the trusted
+    ``/data`` side, not a plant: nothing in ``/music`` can write into this
+    directory (see the module docstring of ``app.beets.trash_origins``). What is
+    new is not that the file is unusable — the store has always had unusable
+    shapes — but that reading it raised AFTER the entry was already destroyed.
+    """
+    text = "[" * 60_000 + "]" * 60_000
+    with pytest.raises(RecursionError):
+        json.loads(text)
+    return text
+
+
+def test_a_record_the_json_parser_gives_up_on_reads_as_no_record(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``RecursionError`` is a ``RuntimeError``, so the parse arm walked past it.
+
+    Measured at the previous tip: this file at the key raised straight out of
+    ``read_trash_origin``, which is called once per row by
+    ``list_trashed_albums`` — so one corrupt record 500'd the whole Trash page,
+    including every other row on it. Asserted through the listing for that
+    reason, and not only at the store.
+
+    The bystander row is what makes the 500 visible as a blast radius rather
+    than as one bad row: it has a perfectly good record and must still be listed
+    with its exact restore.
+    """
+    trash = tmp_path / "trash"
+    origins = tmp_path / "trash-origins"
+    music = tmp_path / "music"
+    origins.mkdir()
+    for name in ("Deep", "Fine"):
+        (trash / name).mkdir(parents=True)
+    write_trash_origin(origins, "Fine", origin=str(music / "Fine"), moved="folder")
+    origin_file(origins, "Deep").write_text(_deeply_nested_json(), encoding="ascii")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        assert read_trash_origin(origins, "Deep") is None
+        rows = {
+            row.folder: row
+            for row in list_trashed_albums(trash, origins_dir=origins, music_dir=str(music))
+        }
+
+    assert rows["Deep"].restore_mode == "import"
+    assert rows["Fine"].restore_mode == "move_back", "one bad record took the whole listing"
+    assert any("present but unusable" in r.getMessage() for r in caplog.records)
+    assert any("nests deeper" in r.getMessage() for r in caplog.records), (
+        "the operator gets this record's own cause, not the parse arm's sentence"
+    )
+
+
+def test_a_record_the_json_parser_gives_up_on_does_not_escape_empty_one(
+    tmp_path: Path,
+) -> None:
+    """The raise that landed AFTER the irreversible work, which is what makes it a bug.
+
+    ``empty_one`` rmtree's the entry and drops its record on the next line, and
+    ``delete_trash_origin`` reads the payload first to see whose record it is
+    holding. Measured at the previous tip: the folder was gone, the record was
+    still there, and the route answered 500 — the user is told the empty failed
+    while the album is already unrecoverable, and every retry says the same.
+
+    The record goes, which is the same answer every other shape this store
+    cannot identify gets (``test_a_record_that_does_not_name_another_entry_is_
+    still_dropped``): it names nobody, so it steers nothing, and leaving it
+    would burn its name for good.
+    """
+    trash = tmp_path / "trash"
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    (trash / "Deep").mkdir(parents=True)
+    (trash / "Deep" / "01 t.flac").write_bytes(b"\x00")
+    origin_file(origins, "Deep").write_text(_deeply_nested_json(), encoding="ascii")
+
+    assert empty_one(str(trash / "Deep"), origins_dir=origins).removed == 1
+
+    assert not (trash / "Deep").exists()
+    assert not origin_file(origins, "Deep").exists()
+
+
+def test_a_record_the_json_parser_gives_up_on_does_not_abort_empty_all(
+    tmp_path: Path,
+) -> None:
+    """The same raise in the loop, where it takes the entries it has not reached yet.
+
+    ``empty_all``'s per-entry ``except OSError`` is what lets one unremovable
+    folder be reported rather than abort the sweep, and a ``RecursionError``
+    from the record drop is outside it. Measured at the previous tip on this
+    fixture: the sweep destroyed the first entry, raised, and left the other two
+    in Trash with the operation reported as a failure.
+
+    ``iterdir`` order is not defined, so the bad record is put on EVERY entry —
+    the assertion is then about the sweep finishing, not about which child
+    happened to come first.
+    """
+    trash = tmp_path / "trash"
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    deep = _deeply_nested_json()
+    for name in ("A Album", "B Album", "C Album"):
+        (trash / name).mkdir(parents=True)
+        (trash / name / "01 t.flac").write_bytes(b"\x00")
+        origin_file(origins, name).write_text(deep, encoding="ascii")
+
+    assert empty_all(trash, origins_dir=origins).removed == 3
+
+    assert list(trash.iterdir()) == []
 
 
 # ----- a store the app cannot reach -----

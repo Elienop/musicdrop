@@ -320,7 +320,8 @@ def read_trash_origin(origins_dir: Path, entry_name: str) -> TrashOrigin | None:
     """The origin recorded for ``entry_name``, or ``None`` when there is none we trust.
 
     Every rejection collapses to ``None`` — a missing file, an unreadable one, a
-    truncated write, a future schema, a hand-edited payload — because the
+    truncated write, a future schema, a hand-edited payload, one nested past the
+    JSON parser's own limit — because the
     caller's answer is the same in all of them: fall back to the import-restore
     that Trash rows have always had. Never a refusal: a record we cannot read
     must never leave a folder worse off than a record that was never written, and
@@ -376,6 +377,15 @@ def read_trash_origin(origins_dir: Path, entry_name: str) -> TrashOrigin | None:
         return None
     except ValueError:
         _warn_unusable(path, "it is not the ASCII JSON this writes", exc_info=True)
+        return None
+    except RecursionError:
+        # Its own arm because it is neither of the two above: ``RecursionError``
+        # is a ``RuntimeError``, so ``except ValueError`` walks straight past it
+        # and a 60k-deep ``[[[...]]]`` at the key 500s the whole Trash listing
+        # (measured at the previous tip). The file is legal ASCII and legal JSON;
+        # what it is not is a record, so it earns a sentence of its own rather
+        # than borrowing the parse arm's.
+        _warn_unusable(path, "it nests deeper than the JSON parser will go", exc_info=True)
         return None
     if not _names_entry(raw, entry_name):
         _warn_unusable(path, "it is the record for a different Trash entry")
@@ -466,7 +476,21 @@ def _parse(raw: object) -> TrashOrigin | None:
 
 
 def delete_trash_origin(origins_dir: Path, entry_name: str) -> None:
-    """Drop the record for a Trash entry that is no longer there. NEVER raises.
+    """Drop the record for a Trash entry that is no longer there. Swallows and logs.
+
+    **What "swallows" covers, since it is a list and not a promise.** Every
+    caller runs this AFTER irreversible work — the folder has been moved back
+    into the library, emptied, or stranded by a failed undo — so an exception
+    escaping here turns an operation that fully SUCCEEDED into a bare 500.
+    Caught: ``OSError`` and ``ValueError`` from the key, the read and the
+    unlink, plus the ``RecursionError`` ``json.loads`` raises on a deeply nested
+    file. That third one is in the list because it was NOT: at the previous tip
+    a 60k-deep ``[[[...]]]`` at the key escaped ``empty_one`` with the folder
+    already rmtree'd, and aborted ``empty_all`` part-way (measured: 1 of 2
+    entries destroyed, the sweep abandoned past its own ``except OSError``).
+    The file shapes this has been measured against are listed in
+    ``tests/test_trash_origins_store.py``; a shape nobody has tried is a shape
+    nobody has measured.
 
     Owed by every path that takes an entry OUT of Trash — a landed restore, a
     move-back, a failed undo that stranded the folder in the library, and both
@@ -534,13 +558,17 @@ def _names_a_different_entry(path: Path, entry_name: str) -> bool:
     schema or origin validation: a record for another entry is that entry's to
     lose whether or not THIS version can parse the rest of it.
 
-    Never raises, and the reason is the shape rather than a promise: the only
-    two statements here that can are the read and the parse, and both arms
-    below catch them. That is :func:`delete_trash_origin`'s whole contract.
+    The two statements that can fail here are the read and the parse, and the
+    arm below names all three of the exception types they have been measured to
+    raise. It is not a proof that nothing else can: ``json.loads`` reached this
+    module with a fourth (``RecursionError``, on a deeply nested file) that
+    ``except (OSError, ValueError)`` walked straight past, and that escaped out
+    of :func:`delete_trash_origin` after the entry was already gone. The shapes
+    this arm is measured against are listed at that function.
     """
     try:
         raw: object = json.loads(path.read_text(encoding="ascii"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return False
     if not isinstance(raw, dict):
         return False
