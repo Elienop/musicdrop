@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 from beets.dbcore.query import Query
 from beets.dbcore.sort import Sort
-from beets.library import Library
+from beets.library import Item, Library
 from fastapi import HTTPException
 
 from app.beets import trash as trash_mod
@@ -31,7 +31,7 @@ from app.beets.trash import (
     trash_album,
     trash_album_folder,
 )
-from tests.conftest import make_test_handle, origins_for
+from tests.conftest import build_library, make_test_handle, origins_for
 
 
 def test_trash_album_moves_files_and_drops_db(duplicates_lib: Library, tmp_path: Path) -> None:
@@ -684,3 +684,72 @@ def test_delete_artist_fan_out_stops_on_the_first_masked_drop(
 
     assert len(list(duplicates_lib.albums())) == total_before
     assert not trash.exists()
+
+
+# ----- The same dropped share, under a FLAT path template -----
+#
+# A ``paths.default`` with no directory component (beets' own ``$title``,
+# editable from Settings -> Naming) files every track directly in the music
+# root, so the delete path reaches this state by a DIFFERENT arm than the two
+# tests above: ``_album_root`` is the music root, which exists, and it is shared
+# with every other album, so ``trash_album_folder`` falls through to the
+# per-item ``trash_album`` and the drop would happen in
+# ``_require_move_happened``'s ghost arm. Measured on the folder-based sampler:
+# 20 album rows became 19 with Trash empty. A test that only called
+# ``require_library_present`` would not prove the arm that actually fires is
+# guarded.
+
+
+def _flat_library_on_a_dropped_share(tmp_path: Path) -> tuple[Library, Path]:
+    """One flat library, its files placed by beets, then the share drops."""
+    music = tmp_path / "music"
+    music.mkdir()
+    lib = build_library(str(tmp_path / "library.db"), str(music), path_format="$title")
+
+    for a in range(4):
+        item = Item(
+            album=f"Album {a:03d}",
+            albumartist=f"Artist {a:03d}",
+            artist=f"Artist {a:03d}",
+            title=f"Song {a:03d}",
+            track=1,
+        )
+        item.path = os.fsencode(str(music / f"provisional-{a:03d}.mp3"))
+        lib.add_album([item]).store()
+        dest = Path(os.fsdecode(item.destination()))
+        assert dest.parent == music, f"the template must be flat, got {dest}"
+        dest.write_bytes(b"\x00")  # placeholder bytes; tests never read audio
+        item.path = os.fsencode(str(dest))
+        item.store()
+
+    shutil.rmtree(music)
+    music.mkdir()
+    (music / ".stfolder").mkdir()
+    return lib, music
+
+
+def test_trash_album_folder_refuses_a_dropped_flat_share_masked_by_a_stray(
+    tmp_path: Path,
+) -> None:
+    """A flat library on a dropped share must keep its rows, like a nested one.
+
+    The regression: while the presence sampler took ``os.path.dirname`` of each
+    sampled path, a flat library's every sample WAS the music root — a directory
+    the stray ``.stfolder`` keeps alive — so the check accepted and this call
+    dropped the album row having moved nothing into Trash.
+    """
+    trash = tmp_path / "trash"
+    lib, music = _flat_library_on_a_dropped_share(tmp_path)
+    album = next(iter(lib.albums()))
+    album_id = _require_id(album.id)
+    total_before = len(list(lib.albums()))
+
+    require_library_root(lib)  # the cheap predicate is happy — this is the gap
+
+    with pytest.raises(LibraryRootUnavailableError), lib.transaction():
+        trash_album_folder(lib, album, trash_dir=trash, origins_dir=origins_for(trash))
+
+    assert lib.get_album(album_id) is not None  # rows kept
+    assert len(list(lib.albums())) == total_before
+    assert not trash.exists() or list(trash.iterdir()) == []  # nothing reached Trash
+    assert list(music.iterdir()) == [music / ".stfolder"]  # and nothing was written back

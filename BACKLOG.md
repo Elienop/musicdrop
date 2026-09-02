@@ -1075,35 +1075,55 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   above: refuse at startup when `beets_dir` (or either configured store) resolves inside
   the music dir.
 
-- **A FLAT library layout defeats the delete path's presence check — it samples the music
-  root against itself.** (Found 2026-09-02, on `fix/undoable-deletes`, while re-reading the
-  check that entry-above's sibling shipped.) Trigger: a `paths.default` template with no
-  directory component — beets' own `$title` is the shortest, and the template is editable
-  from the app (**Settings → Naming**, `config_editor` writes `paths:` straight back into
-  `config.yaml`), so this is a supported layout and not a damaged install. Mechanism, by
-  symbol: `library._sampled_library_dirs` takes `os.path.dirname` of each sampled item
-  path, which for a single-component path IS the library root, so
-  `require_library_present` ends up asking `os.path.isdir(<music root>)` — the very
-  question `require_library_root` already answered, and the one a stray entry on a dropped
-  share's mountpoint answers wrongly.
-  **Measured on shipped code** (no monkeypatching; a 200-row library built through beets'
-  own `Album`/`Item`, `.stfolder` the only thing on the mountpoint): flat layout →
-  `_sampled_library_dirs` returns the music root 5 times out of 5 and
-  `require_library_present` ACCEPTS; the same 200 rows re-filed under
+- ~~**A FLAT library layout defeats the delete path's presence check — it samples the music
+  root against itself.**~~ (Found 2026-09-02, on `fix/undoable-deletes`, while re-reading the
+  check that entry-above's sibling shipped.) — **FIXED in this branch.** Trigger: a
+  `paths.default` template with no directory component — beets' own `$title` is the shortest,
+  and the template is editable from the app (**Settings → Naming**, `config_editor` writes
+  `paths:` straight back into `config.yaml`), so this is a supported layout and not a damaged
+  install. Mechanism, by symbol: `library._sampled_library_dirs` took `os.path.dirname` of
+  each sampled item path, which for a single-component path IS the library root, so
+  `require_library_present` ended up asking `os.path.isdir(<music root>)` — the very
+  question `require_library_root` had already answered, and the one a stray entry on a
+  dropped share's mountpoint answers wrongly.
+  **Measured on the shipped code before the fix** (no monkeypatching; a 200-row library built
+  through beets' own `Album`/`Item`, `.stfolder` the only thing on the mountpoint): flat
+  layout → `_sampled_library_dirs` returned the music root 5 times out of 5 and
+  `require_library_present` ACCEPTED; the same 200 rows re-filed under
   `$albumartist/$album/$title` → `LibraryRootUnavailableError`. Blast radius: the two arms
   that drop rows on nothing but an absence — `trash.trash_album_folder`'s missing-folder
   branch and `trash._require_move_happened`'s ghost arm — so on a dropped share a flat
-  library is erased one delete at a time, keeping nothing in Trash. It needs the share to
-  drop AND the mountpoint to hold an entry AND a flat layout; each is ordinary on its own.
-  **Not fixed here, because the obvious fix has a cost that needs a design call.** Skipping
-  rows whose `dirname` is the library root leaves a flat library with an EMPTY sample, and
-  the empty-sample arm accepts by design (it has no evidence either way) — so the "fix"
-  silently downgrades a flat library to the cheap root predicate, i.e. removes its presence
-  check rather than correcting it. The alternatives all cost something too: sampling the
-  item FILE rather than its folder makes the check stricter for every layout (a single
-  legitimately-deleted track then fails a sample slot, and the short-circuit hides how
-  often); refusing flat layouts outright is a product decision. **Ask the owner which
-  trade to take** before writing any of them.
+  library was erased one delete at a time, keeping nothing in Trash. End to end it was the
+  GHOST arm that fired, not the missing-folder branch: with every album's folder equal to the
+  music root, the root exists and is shared, so the front door falls through to the per-item
+  mover (measured: 20 album rows became 19 with Trash empty).
+  **What shipped.** `_sampled_library_dirs` is now `_sampled_library_files` and returns the
+  sampled path itself; `require_library_present` stats it with `os.path.isfile`. The two
+  draws are unchanged (`MIN(path)` per drawn album, one item row per drawn row on the
+  fallback), and so is the cost — one `os.stat` per sample, measured identical for `isdir`,
+  `isfile` and `exists`, with the same first-hit short-circuit. `isfile` rather than `exists`
+  so that a directory sitting where a track should be is not read as the music coming back;
+  both follow symlinks, so a symlinked library reads present while a **dangling** link reads
+  absent, which is the fail-closed direction. The refusal message names files instead of
+  "every album's folder", and its four pins moved with it.
+  **The trade, measured rather than argued.** Keying each slot to a FILE is stricter in
+  exactly one shape: an album whose folder survives with its sampled track removed by hand is
+  now a miss where the folder was a hit. At 200 albums with 1 file, 5 files or a whole folder
+  removed it refused 0 times in 1000 draws each; at 2 albums with one file gone, 0 of 200; at
+  5 albums with four gone, 0 of 200; on the singleton fallback arm, 0 of 1000. It refuses only
+  where there is no other album to draw and the missing file is the sampled one — N=1 album
+  with its only (or its lowest-named) track removed while the folder stays: 20 of 20 refusals
+  against 0 of 20 before. That is the shape `_PRESENCE_SAMPLE_SIZE`'s own note already
+  documented as refused-by-design for a removed FOLDER at or below the sample size, extended
+  to a removed file, and it is stated in `require_library_present`'s docstring and in README.
+  The alternative that was NOT taken: skipping rows whose `dirname` is the library root, which
+  leaves a flat library with an empty sample and the empty-sample arm accepts by design —
+  i.e. it removes a flat library's presence check rather than correcting it.
+  Regression: `test_library_presence_sampling.py::test_a_flat_layout_does_not_sample_the_music_root_against_itself`
+  (the predicate, with the flatness of the fixture asserted from `Item.destination()`) and
+  `test_trash.py::test_trash_album_folder_refuses_a_dropped_flat_share_masked_by_a_stray`
+  (end to end, so the ghost arm is what is proven guarded). Both were mutation-tested by
+  restoring `dirname` + `isdir`.
 
 - **An unreachable origins store makes the allocator hand out a recorded name, and the next
   folder inherits the first one's origin.** (Found 2026-09-02, on `fix/undoable-deletes`;

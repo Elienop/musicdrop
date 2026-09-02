@@ -264,9 +264,9 @@ def test_delete_album_op_503_masked_drop_says_what_to_do(
 
     assert ei.value.status_code == 503
     assert ei.value.detail == (
-        "Library folder is present but holds none of the library's albums."
-        " Either the music share is not mounted, or every album's folder has been"
-        " removed outside MusicDrop."
+        "Library folder is present but none of the music files the library names"
+        " are in it. Either the music share is not mounted, or those files have"
+        " been removed outside MusicDrop."
     )
     assert duplicates_lib.get_album(album_id) is not None  # rows kept
     assert str(root) not in str(ei.value.detail)
@@ -565,7 +565,7 @@ def test_delete_artist_partial_does_not_diagnose_an_unmounted_share(tmp_path: Pa
     assert "1 of 5" in message  # how far it got, unchanged
     assert "became unavailable" not in message  # the cause it was never told
     # ...and the words the error DID use, both of its causes intact.
-    assert "Either the music share is not mounted, or every album's folder has been" in message
+    assert "Either the music share is not mounted, or those files have been" in message
     # The share really was mounted the whole time: this file never stopped being
     # readable, so a message blaming the mount would have been false, not unlucky.
     assert (tmp_path / "music" / "Not In The Library" / "sleeve.jpg").is_file()

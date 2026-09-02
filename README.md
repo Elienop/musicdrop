@@ -57,9 +57,14 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   entries can be cleared. **Deleting an album** additionally covers the case a stray
   file used to hide: a `.stfolder`, a `lost+found` or an empty leftover directory sitting on
   a local mountpoint whose share has dropped makes the folder look mounted, so before a
-  delete drops rows having moved nothing, MusicDrop confirms that at least one album it
-  believes it owns is really on disk. **Restore** runs that same stronger check, above both
-  of the ways it can put a folder back — it writes *into* the music library, so an unmounted
+  delete drops rows having moved nothing, MusicDrop confirms that at least one of the music
+  *files* the library names is really on disk. It checks the file rather than the folder
+  holding it because a naming template with no folder in it (**Settings → Naming**, beets'
+  own `$title`) puts every track straight in the music root — and asking whether the music
+  root exists is the question the stray file already answered wrongly. The cost of the
+  stricter test is one shape: a library with a single album whose first track was removed
+  by hand, its folder left behind, is now refused too. **Restore** runs that same stronger
+  check, above both of the ways it can put a folder back — it writes *into* the music library, so an unmounted
   share is the same catastrophe there, and a restore that hits one is refused with a 503
   having moved nothing out of Trash. Disk sync is the deliberate exception: it keeps the
   cheap "is the root there" test, because it runs it once per removal and accepted the same

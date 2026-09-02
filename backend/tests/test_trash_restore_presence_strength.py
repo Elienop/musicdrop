@@ -62,10 +62,12 @@ def _tagged_flac(dst: Path, *, artist: str, album: str, title: str, track: int) 
 def _library_whose_music_is_gone(tmp_path: Path) -> Library:
     """A library holding one real album, then the share it lives on drops.
 
-    No bystander on purpose: this IS the dropped-share scenario, so EVERY album
-    the library believes it owns has to be missing — a surviving album is
-    exactly what ``require_library_present`` samples for, and seeding one would
-    make the guard pass and the test assert nothing.
+    No bystander on purpose: this IS the dropped-share scenario, so EVERY file
+    the library believes it owns has to be missing — a surviving FILE (one per
+    sampled album, its ``MIN(path)``) is exactly what ``require_library_present``
+    looks for, and seeding one would make the guard pass and the test assert
+    nothing. ``rmtree`` of the whole music dir is what makes that true here
+    regardless of the path template's depth.
     """
     music = tmp_path / "music"
     lib = build_library(str(tmp_path / "library.db"), str(music))
