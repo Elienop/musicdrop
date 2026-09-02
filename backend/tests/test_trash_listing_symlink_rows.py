@@ -159,9 +159,9 @@ def test_the_symlinked_note_is_true_of_every_button_beside_it(
     """Each claim in the note, read against what the real route did.
 
     The row renders two controls, and until this test only ONE of them had been
-    checked against the sentence. Both per-row routes resolve the child and
-    refuse anything landing outside Trash, so both answer 404 — the Empty
-    beside the note included, which the note used to describe as working.
+    checked against the sentence. Both per-row routes refuse a child that is a
+    link, so both answer 404 — the Empty beside the note included, which the
+    note used to describe as working.
 
     ``restore_mode`` is asserted here too, because it is what the page keys the
     two disabled states off: a row that 404s twice must not arrive carrying a
