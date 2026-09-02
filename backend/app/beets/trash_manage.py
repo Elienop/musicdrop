@@ -1014,9 +1014,10 @@ def _reaches_through_a_link(trash_dir: Path, child: Path) -> bool:
     clears and ``resolve`` then follows into the row the link points at.
 
     A ``child`` that is not lexically under ``trash_dir`` — an absolute ``rel``,
-    or one starting ``../`` — answers False and is left to the containment check
-    in the caller. Two guards, each with one job; this must not grow into a
-    second, weaker traversal check.
+    or one starting ``../`` — has no components to walk and answers False. The
+    caller refuses that shape itself, in the same ``or``, rather than leaving it
+    to the resolved containment check: this must not grow into a second, weaker
+    traversal check.
     """
     try:
         parts = child.relative_to(trash_dir).parts
@@ -1036,12 +1037,27 @@ def resolve_trash_child(trash_dir: Path, rel: str) -> Path:
     These paths are ``rm -rf`` / import targets, so reject traversal (``../``),
     the Trash root itself, and a non-existent child by raising ``ValueError``.
 
-    The LINK refusal comes first, before anything is resolved, and it is the
-    listing's own predicate (:func:`_is_symlinked_entry`) so that a row rendered
-    ``"refused"`` and a request naming that row cannot disagree. Containment
-    alone did not refuse a link pointing INTO Trash: it resolved to a real entry,
-    passed, and the caller then acted on a DIFFERENT row than the one the request
-    named. Nothing behind a link is ever the thing the user clicked.
+    TWO refusals run before anything is resolved, and both are lexical — they
+    are asked of the path as WRITTEN, so what a link points at is never
+    consulted to decide whether the request is legitimate:
+
+    * the path must be under ``trash_dir`` as written. ``resolve_display_path``
+      returns ``trash_dir / rel``, and an absolute ``rel`` replaces the base
+      entirely, so ``folder=<abs>/Sneak`` arrives as a path this module never
+      handed out. Measured at ``34893e7``, with ``Sneak -> <trash>/RealAlbum``:
+      this resolver returned ``<trash>/RealAlbum``, ``DELETE /api/trash`` answered
+      ``200 {"removed": 1}``, and the album that row belonged to was gone while
+      ``Sneak`` itself stayed put.
+    * no component between ``trash_dir`` and the target may be a link
+      (:func:`_reaches_through_a_link`, asking the listing's own
+      :func:`_is_symlinked_entry`), so a row rendered ``"refused"`` and a request
+      naming that row cannot disagree. Containment alone did not refuse a link
+      pointing INTO Trash: it resolved to a real entry, passed, and the caller
+      then acted on a DIFFERENT row than the one the request named.
+
+    The resolved containment check below is neither of those and is not made
+    redundant by them: ``is_relative_to`` is lexical, so ``trash_dir/../Sibling``
+    is "under" ``trash_dir`` until ``resolve`` normalises the ``..`` away.
 
     ``rel`` is the ``folder`` the listing emitted, which is display-safe — so a
     folder whose real name is not valid UTF-8 comes back carrying placeholders.
@@ -1050,7 +1066,7 @@ def resolve_trash_child(trash_dir: Path, rel: str) -> Path:
     keeping such an album restorable instead of stranding it in Trash.
     """
     child = resolve_display_path(trash_dir, rel)
-    if _reaches_through_a_link(trash_dir, child):
+    if not child.is_relative_to(trash_dir) or _reaches_through_a_link(trash_dir, child):
         raise ValueError(f"{rel!r} is not a trashed album")
     base = trash_dir.resolve()
     dest = child.resolve()

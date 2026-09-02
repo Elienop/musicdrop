@@ -316,3 +316,53 @@ def test_empty_all_still_clears_a_link_that_points_at_a_sibling(client: TestClie
     assert not alias.is_symlink()
     assert not real.exists()
     assert list(_client_trash(client).iterdir()) == []
+
+
+def _seed_an_outside_link_pointing_back_into_trash(
+    client: TestClient, tmp_path: Path
+) -> tuple[Path, Path]:
+    """``<tmp>/outside/Sneak -> <trash>/RealAlbum``: a link Trash never handed out.
+
+    ``folder`` is a request string, so it can be ABSOLUTE — and an absolute one
+    replaces the base entirely (``trash_dir / "/outside/Sneak"`` is
+    ``/outside/Sneak``). The link resolves back INTO Trash, so a containment
+    check asked of the RESOLVED path says yes and the request acts on a row the
+    user never named.
+
+    Returns ``(the link outside Trash, the real entry it points at)``.
+    """
+    trash = _client_trash(client)
+    trash.mkdir(parents=True, exist_ok=True)
+    real = trash / "RealAlbum"
+    real.mkdir()
+    (real / "01 Mysterons.flac").write_bytes(b"\x00")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sneak = outside / "Sneak"
+    sneak.symlink_to(real, target_is_directory=True)
+    return sneak, real
+
+
+def test_a_folder_argument_outside_trash_is_refused_by_both_per_row_routes(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """A path that is not lexically under the Trash dir is not a Trash entry.
+
+    The link refusal cannot see this one: ``_reaches_through_a_link`` walks the
+    components BETWEEN the Trash dir and the target, and a path that is not under
+    it has none — so it answers False and the resolved containment check was the
+    only thing left, which this shape passes.
+
+    Both per-row routes are driven, and the assertion that matters is not the
+    status: it is that the entry the request reached THROUGH is still on disk.
+    """
+    sneak, real = _seed_an_outside_link_pointing_back_into_trash(client, tmp_path)
+
+    empty = client.delete("/api/trash", params={"folder": str(sneak)})
+    restore = client.post("/api/trash/restore", json={"folder": str(sneak)})
+
+    assert empty.status_code == 404, "the per-row Empty must not act on a path outside Trash"
+    assert empty.json()["detail"] == "Not in Trash"
+    assert restore.status_code == 404
+    assert (real / "01 Mysterons.flac").is_file(), "the row it resolved onto was not touched"
+    assert sneak.is_symlink(), "and the path the request named is still there"

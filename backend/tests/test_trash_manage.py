@@ -324,6 +324,30 @@ def test_resolve_trash_child_guards_traversal(tmp_path: Path) -> None:
         resolve_trash_child(trash, ".")  # the Trash root itself
 
 
+def test_resolve_trash_child_refuses_a_traversal_whose_target_exists(tmp_path: Path) -> None:
+    """The traversal above is refused by the EXISTENCE check, not by containment.
+
+    ``../escape`` names nothing on disk, so ``not exists(dest)`` answers it and
+    the resolved ``is_relative_to`` check is never the reason — measured on this
+    file at ``34893e7``: with that check deleted the whole suite stayed green,
+    and ``resolve_trash_child(trash, "../..")`` returned ``/tmp``.
+
+    A sibling of the Trash dir that really exists is the input only containment
+    can refuse. It is the ordinary shape too: ``<beets dir>`` holds ``trash`` and
+    ``trash-origins`` side by side, so ``../trash-origins`` is a real directory
+    one ``..`` away from every Trash entry the UI lists.
+    """
+    trash = tmp_path / "trash"
+    (trash / "Album").mkdir(parents=True)
+    sibling = tmp_path / "trash-origins"
+    sibling.mkdir()
+
+    with pytest.raises(ValueError):
+        resolve_trash_child(trash, "../trash-origins")
+
+    assert sibling.is_dir(), "and the refusal happened before anything touched it"
+
+
 def test_resolve_trash_child_refuses_an_overlong_name(tmp_path: Path) -> None:
     # A >255-byte name component: Path.exists() RAISES OSError(ENAMETOOLONG) —
     # it only swallows ENOENT/ENOTDIR/EBADF/ELOOP. The resolver's contract is
