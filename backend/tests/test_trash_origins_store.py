@@ -216,9 +216,17 @@ def test_a_failed_write_cannot_forge_a_log_line_through_the_entry_name(
     its origin. Interpolated raw, a crafted album name writes whatever it likes
     into the server log at exactly that moment.
 
-    The write is failed structurally (a regular FILE where the store's directory
-    belongs, so the parent cannot be created), which is root-safe and is what a
-    read-only ``/data`` looks like from here.
+    The write is failed structurally: a regular FILE where the store's directory
+    belongs, so ``write_atomic_bytes``'s ``mkdir(parents=True, exist_ok=True)``
+    raises ``FileExistsError`` before a byte is written. That needs no ``chmod``,
+    so it cannot quietly pass by failing nothing when the suite runs as root.
+
+    It is NOT the read-only ``/data`` case, and must not be described as one:
+    there the origins directory already exists, the ``exist_ok=True`` mkdir
+    succeeds, and the failure lands one step later at the temp file's
+    ``os.open`` (measured: ``PermissionError`` on the ``.tmp`` name). Both land
+    in the same ``except Exception``, and this test is about what that handler
+    does with the NAME, so the fixture that runs everywhere is the right one.
     """
     forged = "Dummy\x1b[31m\nCRITICAL:app:all clear"
     origins = tmp_path / "trash-origins"
