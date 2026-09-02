@@ -521,8 +521,10 @@ def _ghost_artist_library(tmp_path: Path, *, real_album: bool, bystander: bool) 
     return lib
 
 
-def _artist_op_500(lib: Library, tmp_path: Path, trash: Path) -> HTTPException:
-    """Run ``delete_artist_op`` for the ghost artist and return the 500 it raises."""
+def _artist_op_500(
+    lib: Library, tmp_path: Path, trash: Path, artist: str = _GHOST_ARTIST
+) -> HTTPException:
+    """Run ``delete_artist_op`` for an artist and return the 500 it raises."""
     handle = make_test_handle(lib, tmp_path)
 
     class _App:
@@ -535,7 +537,7 @@ def _artist_op_500(lib: Library, tmp_path: Path, trash: Path) -> HTTPException:
         app = _App()
 
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(delete_artist_op(_Req(), _GHOST_ARTIST))  # type: ignore[arg-type]  # stub req
+        asyncio.run(delete_artist_op(_Req(), artist))  # type: ignore[arg-type]  # stub req
     assert ei.value.status_code == 500
     return ei.value
 
@@ -610,6 +612,102 @@ def test_delete_artist_partial_counts_moves_not_row_drops(
     assert not trash.exists()
     assert detail["recovery"] == _LOOK_IN_TRASH
     assert len([a for a in lib.albums() if a.albumartist == _GHOST_ARTIST]) == 1
+
+
+def _two_album_artist_library(tmp_path: Path, *, first_on_disk: bool) -> Library:
+    """``Twosome``'s two albums, the second of them always really on disk.
+
+    Drives BOTH shapes of the partial message from one construction, since the
+    clause under test is the same in both: with ``first_on_disk`` the fan-out
+    really moves album one (``moved`` = 1, the "had been moved to Trash" shape);
+    without it album one is a ghost row whose folder was removed outside
+    MusicDrop (``moved`` = 0, the "no files left to move" shape).
+
+    ``A First`` sorts before ``B Second`` under the same albumartist, so the
+    fan-out's order is the fixture's order and the album it stops on is known. A
+    bystander album on disk keeps ``require_library_present`` a certainty rather
+    than a draw: three albums against a sample of five is an exhaustive draw.
+    """
+    from beets.library import Item
+
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+
+    def add(*, artist: str, album: str, name: str, on_disk: bool) -> None:
+        base = music / artist / album
+        base.mkdir(parents=True, exist_ok=True)
+        f = base / name
+        f.write_bytes(b"\x00")
+        item = Item(album=album, albumartist=artist, artist=artist, title="Track", track=1)
+        item.path = os.fsencode(str(f))
+        lib.add_album([item]).store()
+        if not on_disk:
+            shutil.rmtree(base)  # removed outside MusicDrop; the row survives
+
+    add(artist="Twosome", album="A First", name="01 First.mp3", on_disk=first_on_disk)
+    add(artist="Twosome", album="B Second", name="01 Second.mp3", on_disk=True)
+    add(artist="Bystander", album="Still Here", name="01 t.mp3", on_disk=True)
+    return lib
+
+
+@pytest.mark.parametrize(
+    ("first_on_disk", "expected"),
+    [
+        (True, "stopped after 1 of 2 albums had been moved to Trash"),
+        (False, "stopped after dropping 1 of 2 albums that had no files left to move"),
+    ],
+)
+def test_delete_artist_partial_speaks_only_of_the_albums_it_never_reached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_on_disk: bool, expected: str
+) -> None:
+    """Both partial messages ended "the rest are untouched". The rest includes this one.
+
+    "The rest" takes in the album the fan-out stopped ON, and that album can be
+    the most touched of all: ``album.remove`` deletes the row and THEN sends
+    ``album_removed`` to plugins, wrapping no handler in try/except
+    (``beets/library/models.py:391-394``, ``beets/plugins.py:614-627``), so a
+    listener that raises there leaves the album's folder in Trash with its row
+    gone. Neither counter can see it — both count returns from the primitive —
+    so the message says what it does know: the albums it never reached.
+
+    Read beside the recovery line in the same body the old clause was a
+    contradiction as well as a falsehood: that line sends this user to the Trash
+    folder, to look for the album the message has just called untouched.
+
+    Both shapes, because the clause was the same sentence in both and a fix to
+    one of them is not a fix.
+    """
+    from collections import defaultdict
+
+    from beets.plugins import BeetsPlugin
+
+    calls = {"n": 0}
+
+    def _boom_on_the_second(**_kwargs: object) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("plugin listener blew up")
+
+    monkeypatch.setattr(
+        BeetsPlugin, "listeners", defaultdict(list, {"album_removed": [_boom_on_the_second]})
+    )
+    lib = _two_album_artist_library(tmp_path, first_on_disk=first_on_disk)
+    trash = tmp_path / "trash"
+    second_id = _require_id(next(a for a in lib.albums() if a.album == "B Second").id)
+
+    detail = _artist_op_500(lib, tmp_path, trash, "Twosome").detail
+
+    assert isinstance(detail, dict)
+    message = detail["message"]
+    assert expected in message  # how far it got, unchanged
+    assert "the rest are untouched" not in message
+    assert "the albums it never reached are untouched" in message
+    # The album it stopped on, the one "the rest" called untouched: its folder is
+    # in Trash with its file, and the library has forgotten it.
+    assert (trash / "B Second" / "01 Second.mp3").is_file()
+    assert lib.get_album(second_id) is None
+    # ...while the same body sends its reader to Trash to look for it.
+    assert "Trash" in detail["recovery"]
 
 
 def test_delete_album_500_does_not_promise_trash_for_files_that_did_not_move(

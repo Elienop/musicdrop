@@ -190,19 +190,22 @@ def delete_artist(
                     # gets the same two tiers rather than a bare message with no
                     # idea how far the delete had got.
                     #
-                    # "The rest are untouched" speaks of the albums this never
-                    # reached. It holds for the album it stopped ON too between
-                    # a COMPLETED folder move and the row drop — the only step
-                    # there is the origin record, and ``_record_origin`` swallows
-                    # everything by design — but ``album.remove`` is itself a
-                    # step that can raise, and that is a window, not a gap:
-                    # beets deletes the album row and THEN sends
+                    # The message says "the albums it never reached are
+                    # untouched", and it says that rather than "the rest"
+                    # because the album it stopped ON can be touched. Between a
+                    # COMPLETED folder move and the row drop it is not — the only
+                    # step there is the origin record, and ``_record_origin``
+                    # swallows everything by design — but ``album.remove`` is
+                    # itself a step that can raise, and that is a window, not a
+                    # gap: beets deletes the album row and THEN sends
                     # ``album_removed`` to plugins, with no try/except around the
                     # handlers, so a listener that raises leaves that album's
                     # folder in Trash with its row gone. Neither counter below
                     # has counted it — both count returns from the primitive —
-                    # so the fan-out cannot name it and ``_recovery``'s fallback
-                    # tells the user to look rather than not to.
+                    # so the fan-out cannot name that album, which is why the
+                    # message speaks only of the ones it never got to and
+                    # ``_recovery``'s fallback tells the user to look rather than
+                    # not to.
                     #
                     # A move that fails PART-WAY sits outside that window in the
                     # other direction — the rows are KEPT, which is the safe
@@ -261,16 +264,22 @@ def _partial(exc: Exception, *, moved: int, mutated: int, total: int) -> ArtistD
     one case nothing here can observe (see :func:`_recovery`), and the second
     shape used to fill it in with "nothing reached the Trash folder", which is
     the album.remove window's exact opposite.
+
+    The closing clause is qualified for the same reason. It read "the rest are
+    untouched", and "the rest" takes in the album this stopped on: with
+    ``album.remove`` raising after the folder moved, that album's files are in
+    Trash and its row is gone — while the recovery line in the same body is
+    sending the user to Trash to look for them.
     """
     if moved:
         return ArtistDeletePartialError(
             f"the delete stopped after {moved} of {total} albums had been moved to Trash;"
-            f" the rest are untouched ({exc})",
+            f" the albums it never reached are untouched ({exc})",
             moved=moved,
         )
     return ArtistDeletePartialError(
         f"the delete stopped after dropping {mutated} of {total} albums that had no files"
-        f" left to move; the rest are untouched ({exc})",
+        f" left to move; the albums it never reached are untouched ({exc})",
         moved=0,
     )
 
