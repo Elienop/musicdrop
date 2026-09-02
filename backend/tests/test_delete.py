@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from beets.library import Library
+from beets.library import Album, Library
 from fastapi import HTTPException
 
 from app.beets import delete as delete_mod
@@ -560,14 +560,18 @@ def test_delete_album_op_records_an_origin_the_listing_can_offer_a_move_back_on(
 
 _GHOST_ARTIST = "Ghosty"
 
-# The recovery line every failure that is not a partial fan-out with files in
-# Trash gets. Spelled once here, asserted at each of the five states that reach
-# it: three where nothing moved, the album.remove window where the whole folder
-# is in Trash, and the per-item fallback stopping mid-album (see
-# ``delete._recovery``). It states no disk fact in either direction, which is
-# what lets one sentence stand in all five — so an equality against this
-# constant is a SPELLING check, and each state's test carries its own
-# direction-asserting line beside its disk asserts.
+# The recovery line every failure that is not one of the four the ``_recovery``
+# chain names gets. Spelled once here, asserted at each of the FOUR states that
+# reach it: three where nothing moved, and the per-item fallback stopping
+# mid-album (see ``delete._recovery``). It was five — the fifth was the
+# ``album.remove`` window with the whole folder in Trash, and that state has its
+# own sentence now that the primitive moves the folder back
+# (``decisions.md`` 28 item 4), pinned in
+# ``test_delete_500_when_the_rows_will_not_go_says_the_files_came_BACK``, which
+# asserts INEQUALITY against this constant. The sentence states no disk fact in
+# either direction, which is what lets one stand in all four — so an equality
+# against this constant is a SPELLING check, and each state's test carries its
+# own direction-asserting line beside its disk asserts.
 _LOOK_IN_TRASH = (
     "Check the Trash folder before retrying: a delete that stops part-way can"
     " leave some or all of the files there. Retry."
@@ -771,37 +775,42 @@ def test_delete_artist_partial_speaks_only_of_the_albums_it_never_reached(
     """Both partial messages ended "the rest are untouched". The rest includes this one.
 
     "The rest" takes in the album the fan-out stopped ON, and that album can be
-    the most touched of all: ``album.remove`` deletes the row and THEN sends
-    ``album_removed`` to plugins, wrapping no handler in try/except
-    (``beets/library/models.py:391-394``, ``beets/plugins.py:614-627``), so a
-    listener that raises there leaves the album's folder in Trash with its row
-    gone. Neither counter can see it — both count returns from the primitive —
-    so the message says what it does know: the albums it never reached.
+    the most touched of all. Neither counter can see it — both count returns
+    from the primitive — so the message says what it does know: the albums it
+    never reached.
 
-    Read beside the recovery line in the same body the old clause was a
-    contradiction as well as a falsehood: that line sends this user to the Trash
-    folder, to look for the album the message has just called untouched.
+    The clause stays qualified now that the whole-folder path undoes its own
+    ``album.remove`` window (``decisions.md`` 28 item 4), because the undo
+    narrows the set rather than emptying it. What this test now pins is the
+    boundary the undo draws across a fan-out: the album it stopped on is BACK
+    where it came from with nothing of it in Trash, while the album before it
+    stays deleted with its files in Trash — beets commits on the way out of the
+    transaction even while unwinding, so nothing already done can be taken back,
+    and a message claiming otherwise would be the same falsehood in the other
+    direction.
 
-    Both shapes, because the clause was the same sentence in both and a fix to
-    one of them is not a fix.
+    The fault is a patched ``Album.remove`` on the SECOND album, not a plugin
+    listener: a listener fires after beets deleted the album row
+    (``beets/library/models.py:391`` before ``:394``), so it could not support
+    the "still in the library" assert below. Both message shapes, because the
+    clause was the same sentence in both and a fix to one of them is not a fix.
     """
-    from collections import defaultdict
-
-    from beets.plugins import BeetsPlugin
-
-    calls = {"n": 0}
-
-    def _boom_on_the_second(**_kwargs: object) -> None:
-        calls["n"] += 1
-        if calls["n"] == 2:
-            raise RuntimeError("plugin listener blew up")
-
-    monkeypatch.setattr(
-        BeetsPlugin, "listeners", defaultdict(list, {"album_removed": [_boom_on_the_second]})
-    )
     lib = _two_album_artist_library(tmp_path, first_on_disk=first_on_disk)
     trash = tmp_path / "trash"
-    second_id = _require_id(next(a for a in lib.albums() if a.album == "B Second").id)
+    second = next(a for a in lib.albums() if a.album == "B Second")
+    second_id = _require_id(second.id)
+    second_root = Path(album_folder(lib, list(second.items())))
+    first_id = _require_id(next(a for a in lib.albums() if a.album == "A First").id)
+    calls = {"n": 0}
+    real_remove = type(second).remove
+
+    def _boom_on_the_second(self: Album, delete: bool = False, with_items: bool = True) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("disk I/O error, forced by the fixture")
+        real_remove(self, delete, with_items)
+
+    monkeypatch.setattr(type(second), "remove", _boom_on_the_second)
 
     detail = _artist_op_500(lib, tmp_path, trash, "Twosome").detail
 
@@ -810,12 +819,15 @@ def test_delete_artist_partial_speaks_only_of_the_albums_it_never_reached(
     assert expected in message  # how far it got, unchanged
     assert "the rest are untouched" not in message
     assert "the albums it never reached are untouched" in message
-    # The album it stopped on, the one "the rest" called untouched: its folder is
-    # in Trash with its file, and the library has forgotten it.
-    assert (trash / "B Second" / "01 Second.mp3").is_file()
-    assert lib.get_album(second_id) is None
-    # ...while the same body sends its reader to Trash to look for it.
-    assert "Trash" in detail["recovery"]
+    # The album it stopped on: back where it came from, nothing of it in Trash.
+    assert (second_root / "01 Second.mp3").is_file()
+    assert not (trash / "B Second").exists()
+    assert lib.get_album(second_id) is not None
+    # ...and the album BEFORE it is still gone, which no undo can change.
+    assert lib.get_album(first_id) is None
+    if first_on_disk:
+        assert (trash / "A First" / "01 First.mp3").is_file()
+        assert "Trash" in detail["recovery"], "that one really is recoverable from there"
 
 
 def test_delete_album_500_does_not_promise_trash_for_files_that_did_not_move(
@@ -908,40 +920,47 @@ def test_delete_artist_500_on_the_FIRST_album_does_not_promise_trash(
 
 
 @pytest.mark.parametrize("artist", [None, "Daft Punk"])
-def test_delete_500_does_not_deny_a_Trash_entry_it_never_looked_for(
+def test_delete_500_when_the_rows_will_not_go_says_the_files_came_BACK(
     duplicates_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, artist: str | None
 ) -> None:
-    """``album.remove`` is itself a step, and it can raise with the folder in Trash.
+    """``album.remove`` is itself a step, and this is the state it used to leave.
 
-    beets deletes the album row and THEN sends ``album_removed`` to plugins
-    (``beets/library/models.py:391-394``), and ``beets.plugins.send`` wraps no
-    handler in try/except (``beets/plugins.py:614-627``) — so a listener that
-    raises unwinds the delete with the folder already under Trash, its origin
-    record written, and the album row gone. The recovery line answered that with
-    "Nothing reached the Trash folder, so there is nothing to restore": the one
-    user whose album really IS recoverable was told to stop looking, on the page
-    whose next button empties the Trash for good.
+    It used to leave the folder in Trash with its origin record written and the
+    album row gone, and the recovery line answered "Nothing reached the Trash
+    folder, so there is nothing to restore" — the one user whose album really
+    WAS recoverable told to stop looking, on the page whose next button empties
+    Trash for good. That sentence was fixed first; the owner then ruled the
+    state itself out (``decisions.md`` 28 item 4), so this test asserts the
+    opposite of what it used to: the folder is back where it came from and
+    there is nothing in Trash at all.
 
-    Both entry points, because they reach that sentence by different routes: the
+    The mechanism is a patched ``Album.remove``, NOT a plugin listener, and the
+    swap is the point rather than convenience. A listener raising on
+    ``album_removed`` fires after beets has already deleted the album row
+    (``beets/library/models.py:391`` before ``:394``) and the transaction commits
+    on the way out, so the final assert below — the album still queryable —
+    would be false there for a reason that has nothing to do with the undo. The
+    patched remove is the DB-fault shape (a locked or read-only ``library.db``
+    raises ``DBAccessError`` before any row is written), which is the realistic
+    cause and the one where a move-back yields full consistency. The listener
+    case is a recorded residual; see ``BACKLOG.md``.
+
+    Both entry points, because they reach the sentence by different routes: the
     single-album delete lets the exception through, and the fan-out meets it on
     its first album and re-raises it bare (``mutated == 0`` — that counter counts
     returns from the primitive, and this album never returned).
-
-    The listener is the real mechanism rather than a patched ``album.remove``, so
-    the day beets wraps its handlers this test says so instead of passing.
     """
-    from collections import defaultdict
-
-    from beets.plugins import BeetsPlugin
-
-    def _boom(**_kwargs: object) -> None:
-        raise RuntimeError("plugin listener blew up")
-
-    monkeypatch.setattr(BeetsPlugin, "listeners", defaultdict(list, {"album_removed": [_boom]}))
     trash = tmp_path / "trash"
     handle = make_test_handle(duplicates_lib, tmp_path)
-    album_id = _require_id(
-        next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk").id
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = _require_id(album.id)
+    album_root = Path(album_folder(duplicates_lib, list(album.items())))
+    monkeypatch.setattr(
+        type(album),
+        "remove",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            RuntimeError("disk I/O error, forced by the fixture")
+        ),
     )
 
     class _App:
@@ -964,24 +983,70 @@ def test_delete_500_does_not_deny_a_Trash_entry_it_never_looked_for(
     assert ei.value.status_code == 500
     detail = ei.value.detail
     assert isinstance(detail, dict)
-    assert "plugin listener blew up" in detail["message"]  # the cause is relayed
-    assert detail["recovery"] == _LOOK_IN_TRASH
-    # The state the old sentence denied, asserted on the disk and in the DB: the
-    # folder is in Trash with its files, the record that makes Restore an exact
-    # move-back is written, and the library no longer has the album to re-delete.
-    assert (trash / "Discovery" / "01 Track 1.mp3").is_file()
-    assert (origins_for(trash) / "Discovery.json").is_file()
-    assert duplicates_lib.get_album(album_id) is None
-    # The equality above is a SPELLING check and travels with the constant: put
-    # the denial back in ``_recovery`` and in ``_LOOK_IN_TRASH`` together and
-    # this test still passed. That lockstep pair was this branch's own wording
-    # until the commit adding these two lines, so the measurement is the suite
-    # at its parent: 2026-09-02, 2995 passed, 0 failed. These are the lines that
-    # read the BODY against the disk above — whatever the sentence says, it may
-    # not deny what the three asserts just found.
+    # The cause is relayed. The string is deliberately NOT a paraphrase of the
+    # message's own prose: with the fixture raising "library rows could not be
+    # removed", dropping the cause from the message left this very assert green
+    # (measured), because those words are in the sentence around it.
+    assert "disk I/O error, forced by the fixture" in detail["message"]
+    # The disk and the body agree, and the body no longer sends this reader to
+    # Trash for a folder that is not in it.
+    assert (album_root / "01 Track 1.mp3").is_file()
+    assert list(trash.iterdir()) == []
+    assert list(origins_for(trash).iterdir()) == []
+    assert duplicates_lib.get_album(album_id) is not None
     recovery = detail["recovery"]
-    assert "nothing to restore" not in recovery
-    assert "nothing moved" not in recovery
+    assert recovery != _LOOK_IN_TRASH, "this state is no longer one the fallback has to cover"
+    assert "moved back" in recovery
+    assert "nothing in Trash for this album" in recovery
+
+
+def test_delete_500_when_the_undo_ALSO_fails_does_not_send_the_reader_to_empty_trash(
+    duplicates_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The double failure's own recovery line, which nothing else pins.
+
+    The primitive's message is asserted where it is composed
+    (``test_trash.py``); what is asserted here is the sentence wrapped round it,
+    because the two are chosen independently and the wrong one is dangerous in
+    a specific way: the files really ARE in Trash in this state, and the page
+    this body renders has an Empty button on it. The fallback hint — "a delete
+    that stops part-way can leave some or all of the files there" — reads as
+    permission to go and tidy up.
+    """
+    trash = tmp_path / "trash"
+    handle = make_test_handle(duplicates_lib, tmp_path)
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = _require_id(album.id)
+    album_root = Path(album_folder(duplicates_lib, list(album.items())))
+
+    def _retake_the_origin_then_fail(_self: Album, *_a: object, **_k: object) -> None:
+        album_root.mkdir(parents=True)
+        (album_root / "a stranger.mp3").write_bytes(b"\x00")
+        raise RuntimeError("disk I/O error, forced by the fixture")
+
+    monkeypatch.setattr(type(album), "remove", _retake_the_origin_then_fail)
+
+    class _App:
+        state = SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins_for(trash))),
+        )
+
+    class _Req:
+        app = _App()
+
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(delete_album_op(_Req(), album_id))  # type: ignore[arg-type]  # stub req
+
+    assert ei.value.status_code == 500
+    detail = ei.value.detail
+    assert isinstance(detail, dict)
+    assert "There is something at BOTH places now" in detail["message"]
+    recovery = detail["recovery"]
+    assert recovery != _LOOK_IN_TRASH, "the fallback reads as permission to tidy Trash up"
+    assert "Do NOT empty the Trash folder" in recovery
+    # ...and the state that makes that sentence matter is really on the disk.
+    assert (trash / "Discovery" / "01 Track 1.mp3").is_file()
 
 
 def _shared_folder_two_track_library(tmp_path: Path) -> Library:

@@ -29,7 +29,9 @@ from app.beets.library import (
     require_library_root,
 )
 from app.beets.trash import (
+    TrashDeleteIncompleteError,
     TrashMoveIncompleteError,
+    TrashRowsNotRemovedError,
     resolve_trash_dir,
     resolve_trash_origins_dir,
     trash_album_folder,
@@ -60,11 +62,13 @@ class ArtistDeletePartialError(Exception):
     nothing at all (an album with no item rows, and a ghost whose folder is
     already gone). Counted on the primitive's RETURN, so it is a floor and not a
     census: the album this stopped on is never in it, and it can have files in
-    Trash all the same. :func:`_recovery` names two ways — ``album.remove``
-    raising after the folder moved, and a move that stops part-way — as the ones
-    this file can point at, not as the whole list; nothing here distinguishes
-    them from a failure that moved nothing, which is why that hint asks rather
-    than tells.
+    Trash all the same. :func:`_recovery` names the ways this file can point at,
+    not the whole list; nothing here distinguishes them from a failure that moved
+    nothing, which is why that hint asks rather than tells. The
+    ``album.remove``-after-the-move window used to be the worst of them and is
+    no longer in the set for the whole-folder path — the primitive puts the
+    folder back (``decisions.md`` 28 item 4) — but a move that stops part-way
+    and the per-item mover's own row-drop window still are.
     """
 
     def __init__(self, message: str, *, moved: int) -> None:
@@ -206,20 +210,20 @@ def delete_artist(
                     #
                     # The message says "the albums it never reached are
                     # untouched", and it says that rather than "the rest"
-                    # because the album it stopped ON can be touched. Between a
-                    # COMPLETED folder move and the row drop it is not — the only
-                    # step there is the origin record, and ``_record_origin``
-                    # swallows everything by design — but ``album.remove`` is
-                    # itself a step that can raise, and that is a window, not a
-                    # gap: beets deletes the album row and THEN sends
-                    # ``album_removed`` to plugins, with no try/except around the
-                    # handlers, so a listener that raises leaves that album's
-                    # folder in Trash with its row gone. Neither counter below
-                    # has counted it — both count returns from the primitive —
-                    # so the fan-out cannot name that album, which is why the
-                    # message speaks only of the ones it never got to and
-                    # ``_recovery``'s fallback tells the user to look rather than
-                    # not to.
+                    # because the album it stopped ON can be touched. The
+                    # ``album.remove`` window used to be how: beets deletes the
+                    # album row and THEN sends ``album_removed`` to plugins with
+                    # no try/except around the handlers, so a listener that
+                    # raised left that album's folder in Trash with its row
+                    # gone. The primitive now moves that folder BACK
+                    # (``decisions.md`` 28 item 4), which does not make the
+                    # album untouched — its rows can be half-removed and beets
+                    # commits that on the way out — it only means the files are
+                    # no longer somewhere the message never mentions. Neither
+                    # counter below has counted that album either way: both
+                    # count returns from the primitive, so the fan-out cannot
+                    # name it, which is why the message speaks only of the ones
+                    # it never got to.
                     #
                     # A move that fails PART-WAY sits outside that window in the
                     # other direction — the rows are KEPT, which is the safe
@@ -280,10 +284,15 @@ def _partial(exc: Exception, *, moved: int, mutated: int, total: int) -> ArtistD
     the album.remove window's exact opposite.
 
     The closing clause is qualified for the same reason. It read "the rest are
-    untouched", and "the rest" takes in the album this stopped on: with
-    ``album.remove`` raising after the folder moved, that album's files are in
-    Trash and its row is gone — while the recovery line in the same body is
-    sending the user to Trash to look for them.
+    untouched", and "the rest" takes in the album this stopped on, which can be
+    the most touched of all. The clause is STILL qualified now that the
+    whole-folder path undoes its own ``album.remove`` window
+    (:class:`~app.beets.trash.TrashRowsNotRemovedError`), because that undo
+    narrows the set rather than emptying it: the album can be half-moved with
+    its rows kept, it can have come back from Trash with the library's memory of
+    it already gone, and on the per-item path (a shared folder) it can be listed
+    with its files inside the Trash container. "Untouched" is false in all
+    three, and none of them is a state either counter can see.
     """
     if moved:
         return ArtistDeletePartialError(
@@ -326,35 +335,39 @@ def _recovery(exc: Exception) -> str:
     user of a delete that touched nothing was sent to look in a Trash folder that
     had never been created.
 
-    The three states, and the sentence each gets:
+    The five states, and the sentence each gets:
 
     * a partial fan-out with files in Trash — the only Trash promise;
     * ``TrashMoveIncompleteError``, raised precisely BECAUSE the files did not
       move; its own message already says the library rows were kept, so the hint
       says where the album still is;
+    * ``TrashRowsNotRemovedError`` — ``album.remove`` raised after the whole
+      folder had moved, and the folder was moved BACK. This one used to be the
+      worst inhabitant of the fallback below: the folder sat in Trash with its
+      origin record written and the album row already gone (beets deletes it and
+      THEN sends ``album_removed`` to plugins, ``beets/library/models.py:391-394``,
+      wrapping no handler in try/except, ``beets/plugins.py:614-627``), so the
+      Trash page offered an exact move-back on an entry whose owner this line
+      was telling there was nothing to look for — with Empty one click away.
+      Owner ruling ``decisions.md`` 28 item 4 closed it at the source, and the
+      sentence now says where the files really are: back in the music folder;
+    * ``TrashDeleteIncompleteError`` — that undo failed too. Its own message is
+      composed from the disk and names both paths, so this line's whole job is
+      to stop the reader emptying Trash before they have read it;
     * everything else — the arm that cannot know, so it ASKS rather than tells.
       Most of what lands here moved nothing: a fan-out stopped before its first
       album, one whose albums were all ghosts or empty rows, most faults inside a
-      single-album delete. But this is also where every failure lands that left
-      bytes under Trash without anything here being able to see it, and there is
-      more than one — no exception type separates them, which is the whole
-      reason the sentence stopped asserting:
-
-      * ``album.remove`` raising after the folder moved. beets deletes the album
-        row and THEN sends ``album_removed`` to plugins
-        (``beets/library/models.py:391-394``), and ``beets.plugins.send`` wraps
-        no handler in try/except (``beets/plugins.py:614-627``), so a listener
-        that raises leaves the folder in Trash with its origin record written,
-        the album row gone and its item rows still there (they are removed after
-        the signal). The Trash page offers that entry an exact move-back while
-        this line used to be telling its owner there was nothing to look for —
-        and Empty is one click away. The only one of these that drops rows;
-      * a move that stops PART-WAY, which keeps the rows: a cross-filesystem
-        ``shutil.move`` is copy-then-delete and a failure between the two leaves
-        the bytes at both ends, and the per-item fallback moves item by item, so
-        a fault mid-loop (or a share dropping there — see
-        :func:`~app.beets.trash._require_move_happened`) leaves some of them
-        under the Trash container.
+      single-album delete. What is left in it that DID leave bytes under Trash is
+      now one case rather than two — a move that stops PART-WAY, which keeps the
+      rows: a cross-filesystem ``shutil.move`` is copy-then-delete and a failure
+      between the two leaves the bytes at both ends, and the per-item fallback
+      moves item by item, so a fault mid-loop (or a share dropping there — see
+      :func:`~app.beets.trash._require_move_happened`) leaves some of them under
+      the Trash container. That fallback is also the one the per-item mover's own
+      ``album.remove`` window lands in: ``trash_album`` commits each item's path
+      INTO the Trash container before it removes the rows, and it gets no undo
+      (see :func:`~app.beets.trash.trash_album`), so this sentence still has to
+      ask rather than tell.
 
     So the fallback names Trash as a place to CHECK, and stops there. It used to
     read the answer out for the user as well — "if the album's folder is there it
@@ -375,6 +388,13 @@ def _recovery(exc: Exception) -> str:
         return "Files are recoverable in the Trash folder. Retry."
     if isinstance(exc, TrashMoveIncompleteError):
         return "The files were not moved and the library still has the album. Retry."
+    if isinstance(exc, TrashRowsNotRemovedError):
+        return "The files were moved back, so there is nothing in Trash for this album. Retry."
+    if isinstance(exc, TrashDeleteIncompleteError):
+        return (
+            "Do NOT empty the Trash folder before reading the message above: it says"
+            " where the files are now, from the disk. Compare both paths first."
+        )
     return (
         "Check the Trash folder before retrying: a delete that stops part-way can"
         " leave some or all of the files there. Retry."

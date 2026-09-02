@@ -31,6 +31,7 @@ only beets + the base adapter + settings (no registry/duplicates import).
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import shutil
 from pathlib import Path
@@ -50,12 +51,16 @@ from app.beets.library import (
 from app.beets.trash_origins import (
     _NAME_MAX,
     MovedShape,
+    delete_trash_origin,
     origin_recorded,
     require_usable_store,
     write_trash_origin,
 )
 from app.config import Settings
-from app.fsutil import exists
+from app.fsutil import exists, move_no_merge
+from app.wire import display_path
+
+logger = logging.getLogger(__name__)
 
 
 class TrashMoveIncompleteError(Exception):
@@ -169,6 +174,43 @@ def _require_move_happened(
     )
 
 
+class TrashRowsNotRemovedError(Exception):
+    """The folder reached Trash, its library rows did not go, and the files are BACK.
+
+    Owner ruling, ``decisions.md`` 28 item 4: after any delete returns, the
+    album's files and the library agree. ``album.remove`` is a step that can
+    raise — beets sends ``album_removed`` to plugins with no try/except around
+    the handlers, and the sqlite write underneath it can fail on a locked or
+    read-only database — and until this the folder simply stayed in Trash with
+    the rows unremoved: an album the library still listed whose files were one
+    Empty click from gone.
+
+    The message is USER-facing (it reaches the 500's ``message``) and it may
+    NOT say what became of the library rows. Measured: a ``DBAccessError``
+    raises before the album row is written, so the album is intact, while a
+    plugin listener raising on ``album_removed`` fires AFTER beets deleted that
+    row (``beets/library/models.py:391`` before ``:394``) and the transaction
+    commits on the way out regardless. Same exception type here, opposite DB
+    states — so this says what it can show, which is the disk.
+    """
+
+
+class TrashDeleteIncompleteError(Exception):
+    """The rows would not go AND the folder could not be moved back.
+
+    The delete-side twin of
+    :class:`~app.beets.trash_manage.TrashRestoreIncompleteError`, and written to
+    the same rule: a failed undo REPLACES the original error's story rather than
+    hiding it, and the sentence is composed from the DISK
+    (:func:`_delete_whereabouts`) rather than from whichever arm raised. The
+    arms cannot know — ``move_no_merge``'s EXDEV branch is the only one the
+    shipped Docker layout ever takes (``/data`` and ``/music`` are separate
+    mounts) and it copies before it removes, so one exception covers "nothing
+    came back", "half a copy at the origin" and "a whole copy at the origin with
+    a half-emptied entry still in Trash".
+    """
+
+
 def trash_album(lib: Library, album: Any, *, trash_dir: Path, origins_dir: Path) -> str:
     """Relocate one album's files under ``trash_dir`` and drop it from the library.
 
@@ -211,6 +253,24 @@ def trash_album(lib: Library, album: Any, *, trash_dir: Path, origins_dir: Path)
       for which shortfalls raise (``LibraryRootUnavailableError`` when the root is
       the cause, :class:`TrashMoveIncompleteError` otherwise) and which one is
       tolerated.
+
+    **No undo of the ``album.remove`` window here, unlike
+    :func:`trash_album_folder`, and it is a stated residual.** A raise on that
+    last line leaves an album the library still LISTS whose item rows point
+    inside the Trash container — the state ``decisions.md`` 28 item 4 closed for
+    the whole-folder path. It is not closed here because the undo is not one
+    move. Measured on a two-track album sharing its folder: ``Album.move``
+    re-files each item under the container by PATH TEMPLATE (``<container>/
+    $albumartist/$album/$track $title``, not a copy of the source layout), moves
+    ``album.artpath`` with it, commits each new path as it goes, and prunes the
+    source folder AND the artist folder above it — the music tree came back
+    empty. Putting that back is: recreate two pruned directories, move N files
+    from template paths to N recorded originals, move the art, rewrite N stored
+    paths and ``artpath``, and remove the container — and a failure anywhere in
+    THAT leaves the album's files split across ``/music`` and Trash with its rows
+    pointing at both, which is worse than the single state it replaces. Nothing
+    in this file's messages, or in ``delete._recovery``, claims the undo for this
+    path; see ``BACKLOG.md``.
     """
     require_library_root(lib)
     require_usable_store(origins_dir)
@@ -557,6 +617,16 @@ def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path, origins_dir
     :func:`trash_album` records, and the two row-dropping branches below move
     nothing, so neither has an origin to record.
 
+    **The whole-folder branch UNDOES itself if the rows will not go.** Owner
+    ruling, ``decisions.md`` 28 item 4: after any delete returns, the album's
+    files and the library agree. ``album.remove`` can raise with the folder
+    already in Trash, so it is wrapped — the folder goes back to ``album_root``,
+    the record written for it is destroyed once it has landed, and the caller
+    gets :class:`TrashRowsNotRemovedError` (or
+    :class:`TrashDeleteIncompleteError`, whose message reads the disk, if the
+    move back failed as well). The shared-folder fallback gets no such undo; see
+    :func:`trash_album`.
+
     Raises :class:`~app.beets.trash_origins.TrashOriginsStoreUnusableError`
     before ANY branch runs when the origin-records store cannot be used, which
     covers the two branches below that drop rows having moved nothing as well as
@@ -627,8 +697,126 @@ def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path, origins_dir
     # before the rows are dropped, so the record exists from the moment the
     # physical fact it describes is true.
     _record_origin(origins_dir, dest, origin=album_root, moved="folder")
-    album.remove(delete=False)  # drop DB rows; files now live under Trash
+    try:
+        album.remove(delete=False)  # drop DB rows; files now live under Trash
+    except Exception as exc:
+        # ``Exception``, not a named type, and that is measured rather than
+        # defensive: ``Album.remove`` can raise from three listener points
+        # (``database_change``, ``album_removed``, ``item_removed`` per item),
+        # from sqlite as ``DBAccessError`` for two messages and as a raw
+        # ``sqlite3.OperationalError`` for the rest, and from
+        # ``Transaction.__exit__`` itself. Nothing narrower covers the set, and
+        # the thing that must not survive here is a folder in Trash with rows
+        # that were not removed.
+        raise _undo_folder_move(dest, Path(album_root), origins_dir=origins_dir, cause=exc) from exc
     return str(dest)
+
+
+def _undo_folder_move(
+    entry: Path, album_root: Path, *, origins_dir: Path, cause: Exception
+) -> Exception:
+    """Put the folder back where it came from, and say what happened either way.
+
+    The record is destroyed only ONCE THE FOLDER HAS LANDED, which is the same
+    rule ``trash_manage._undo_failure`` follows and for the same reason: while
+    anything is still at the Trash entry, that entry is a row whose record is
+    still the truth, and dropping it downgrades the row to an import-restore for
+    good. Once the name IS free the record describes nothing and would be
+    inherited by whatever earns that name next — measured, leaving it burns the
+    name and the retry lands on ``<name> (1)``.
+
+    ``move_no_merge`` rather than ``shutil.move``: something can retake the
+    origin in the window (a sync client, an ``*arr``, the user), and
+    ``shutil.move`` onto an existing directory puts the folder INSIDE it — the
+    album ends up complete, at a path nothing looks for. The kernel's rename
+    makes the check and the move one operation, so it cannot be raced.
+    """
+    try:
+        move_no_merge(entry, album_root)
+    except OSError as undo:
+        return _delete_undo_failure(
+            entry, album_root, origins_dir=origins_dir, cause=cause, undo=undo
+        )
+    delete_trash_origin(origins_dir, entry.name)
+    return TrashRowsNotRemovedError(
+        f"the album's library rows could not be removed, so its folder was moved back to"
+        f" {display_path(album_root)!r} where it came from and nothing was left in Trash."
+        f" The removal failed with: {cause}"
+    )
+
+
+def _delete_whereabouts(entry: Path, album_root: Path) -> tuple[bool, str]:
+    """``(the folder is still in Trash, a sentence saying where it is NOW)``.
+
+    The delete-side twin of ``trash_manage._whereabouts``, and NOT a call into
+    it: every one of those sentences ends "It was NOT added to the library
+    database", which is knowable on the restore side and is exactly what this
+    side cannot say (see :class:`TrashRowsNotRemovedError`). The shape is
+    copied deliberately — both booleans read ONCE so the sentence and the
+    record decision cannot disagree, and every sentence naming BOTH paths each
+    in its own phrase, because they are interchangeable-looking absolute paths
+    and a reader who acts on them the wrong way round moves the wrong folder.
+    """
+    in_trash = exists(entry)
+    at_origin = exists(album_root)
+    if in_trash and at_origin:
+        return in_trash, (
+            f"There is something at BOTH places now: in Trash at"
+            f" {display_path(entry)!r}, and at the album's own folder"
+            f" {display_path(album_root)!r}. One of them may be an incomplete copy — a"
+            f" move across filesystems copies before it removes — or something outside"
+            f" MusicDrop may have taken the Trash name. Compare them before removing"
+            f" either."
+        )
+    if at_origin:
+        return in_trash, (
+            f"The folder is no longer in Trash at {display_path(entry)!r}: it is back at"
+            f" the album's own folder {display_path(album_root)!r}, where it came from."
+        )
+    if in_trash:
+        return in_trash, (
+            f"The folder is still in Trash at {display_path(entry)!r} and nothing is at"
+            f" the album's own folder {display_path(album_root)!r}. Restoring that Trash"
+            f" row is what puts it back."
+        )
+    return in_trash, (
+        f"MusicDrop can no longer find the folder at EITHER path: not in Trash at"
+        f" {display_path(entry)!r}, and not at the album's own folder"
+        f" {display_path(album_root)!r}. Look at both paths — something outside MusicDrop"
+        f" moved or removed it."
+    )
+
+
+def _delete_undo_failure(
+    entry: Path, album_root: Path, *, origins_dir: Path, cause: Exception, undo: OSError
+) -> TrashDeleteIncompleteError:
+    """Compose the error for a delete that failed AND could not be undone.
+
+    Both failures are named, in the order they happened, and the disk's own
+    answer sits between them — a failed undo must REPLACE the original error's
+    story rather than hide it, or the user is told "the rows could not be
+    removed" about files that are in neither place they would look.
+
+    ``%r`` on the paths and on what this logs. A Trash folder's name comes from
+    the album's own tags, ``_trash_container_name`` neutralises path separators
+    and nothing else, and ``display_path`` replaces only UNDECODABLE bytes — so
+    a newline or an ANSI escape in an ``albumartist`` survives to here and,
+    interpolated raw, forges log lines.
+    """
+    logger.exception(
+        "could not move %r back out of Trash after its library rows would not go",
+        display_path(album_root),
+    )
+    in_trash, where = _delete_whereabouts(entry, album_root)
+    if not in_trash:
+        delete_trash_origin(origins_dir, entry.name)  # never raises
+    return TrashDeleteIncompleteError(
+        f"the album's folder was moved to Trash, its library rows could not be removed,"
+        f" and moving the folder back then failed too. {where} MusicDrop cannot say"
+        f" whether the album is still in the library: beets commits what it had already"
+        f" done on the way out of the transaction, even while unwinding."
+        f" The rows failed with: {cause}. The move back failed with: {undo}"
+    )
 
 
 def trash_folder(folder: Path, *, trash_dir: Path, origins_dir: Path) -> Path:
