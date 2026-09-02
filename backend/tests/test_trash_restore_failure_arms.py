@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import errno
 import os
+import re
 import shutil
 from collections.abc import Iterator
 from pathlib import Path
@@ -244,6 +245,44 @@ def test_a_raised_import_whose_undo_fails_keeps_one_full_stop(
     assert "beets could not read the folder." in message, "the import's own words, intact"
     assert ".." not in message, "one full stop, not two"
     assert "Returning it to Trash then failed with:" in message, "and the undo's story after it"
+    assert message.endswith("."), "and not none either"
+
+
+def test_an_import_error_ending_in_a_newline_leaves_no_stray_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same double stop, one character further along, where nothing saw it.
+
+    The test above quotes an error ending "folder." and the composer leaves it
+    alone. An error ending "folder.\\n" — a plugin quoting a subprocess's output,
+    which keeps its line ending — ended in a NEWLINE, so the last-character test
+    said "unfinished" and appended: the sentence the Trash page renders then
+    carried a full stop standing on its own, after the break, in the middle of
+    the message.
+
+    Asserted as the invariant rather than as one rendering: no full stop in the
+    composed message stands after whitespace. A substring assertion on the join
+    would pin the two clauses' exact wording instead.
+    """
+    lib = _seeded_library(tmp_path)
+    entry = _trash_the_album(lib, tmp_path)
+
+    def _raises_after_something_retakes_the_trash_entry(*_a: object, **_k: object) -> RestoreResult:
+        entry.mkdir(parents=True)
+        (entry / "stranger.flac").write_bytes(b"\x00")
+        raise RuntimeError("beets could not read the folder.\n")
+
+    monkeypatch.setattr(
+        "app.beets.trash_manage._restore_by_import",
+        _raises_after_something_retakes_the_trash_entry,
+    )
+    with pytest.raises(TrashRestoreIncompleteError) as ei:
+        _restore(lib, entry, tmp_path)
+
+    message = str(ei.value)
+    assert "beets could not read the folder." in message, "the import's own words, intact"
+    assert re.search(r"\s\.", message) is None, "no stop standing on its own after whitespace"
+    assert ".." not in message, "one full stop, not two"
     assert message.endswith("."), "and not none either"
 
 

@@ -823,7 +823,7 @@ def _undo_failure(
 
 
 def _one_full_stop(text: str) -> str:
-    """``text`` ending in exactly one full stop.
+    """``text``, trailing whitespace dropped, ending in exactly one full stop.
 
     Anywhere a message is composed out of somebody else's words, the words may
     already end their own sentence — and a stop appended on top renders ".." in
@@ -834,10 +834,18 @@ def _one_full_stop(text: str) -> str:
     — measured, an import that failed with "beets could not read the folder."
     rendered "...read the folder.. Returning it to Trash...".
 
+    The whitespace goes FIRST, and it is the same defect one character along: a
+    message ending in a newline is already finished, and testing the last
+    character alone put the stop AFTER the newline — a stop standing on its own
+    in the middle of the sentence the page renders. An exception carrying one is
+    ordinary rather than exotic: a plugin quoting a subprocess's output keeps its
+    line ending.
+
     Only "." counts as an ending. A message finishing "!" or "?" gets a stop
     after it, which reads oddly and has never been seen from these two sources;
     widening the set on that guess would let a message end without one.
     """
+    text = text.rstrip()
     return text if text.endswith(".") else f"{text}."
 
 
