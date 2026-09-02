@@ -398,16 +398,16 @@ def origin_recorded(origins_dir: Path, entry_name: str) -> bool:
             # module's guess), where a permissions hunt finds nothing wrong.
             # The errno's own message is in the traceback and says which.
             #
-            # STALE CLAUSE, left for a code change rather than a docs pass: the
-            # sentence's "an origins directory the app cannot search" can no
-            # longer reach this line. That shape is EACCES, and EACCES is in
-            # ``_STORE_CLASS_ERRNOS``, so it raises above. ENAMETOOLONG is the
-            # only cause left here today.
+            # An origins directory the app cannot search (EACCES) no longer reaches
+            # this line: it is in ``_STORE_CLASS_ERRNOS`` and raises above. What
+            # lands here is a KEY the filesystem refuses — measured: a record path
+            # over PATH_MAX (ENAMETOOLONG) and a symlink loop at the key (ELOOP).
             "could not tell whether a Trash origin record exists for %r, so the name is"
             " being treated as free: if a record IS there, a second folder can take that"
-            " name and inherit it. The error below says why the check could not be made;"
-            " an origins directory the app cannot search and a path the filesystem"
-            " refuses are both measured causes.",
+            " name and inherit it. The error below says why the check could not be made:"
+            " a record path the filesystem refuses, such as one over PATH_MAX or a"
+            " symlink loop at the key. An origins directory the app cannot search is"
+            " refused before this point.",
             display_path(entry_name),
             exc_info=True,
         )
