@@ -13,6 +13,7 @@ from beets.library import Album, Library
 from fastapi import HTTPException
 
 from app.beets import delete as delete_mod
+from app.beets import trash as trash_mod
 from app.beets.delete import (
     AlbumNotFoundError,
     delete_album,
@@ -22,6 +23,7 @@ from app.beets.delete import (
 )
 from app.beets.library import LibraryRootUnavailableError, _require_id
 from app.beets.trash import album_folder, trash_album_folder
+from app.beets.trash_origins import require_usable_store
 from app.config import Settings
 from tests.conftest import build_library, make_test_handle, origins_for
 
@@ -338,6 +340,60 @@ def test_delete_op_503_when_the_origin_store_cannot_be_used(
         assert origins.read_bytes() == b"not a directory", "the store is as it was"
     else:
         assert sorted(p.name for p in origins.iterdir()) == ["Someone Elses.json"]
+
+
+def test_a_fanout_that_already_moved_one_album_does_not_promise_nothing_was_deleted(
+    duplicates_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The store going unusable BETWEEN two albums answers 500 without the promise.
+
+    "Nothing has been deleted" used to live in the store refusal's own sentence
+    (``trash_origins._STORE_FIX``), which every mover relays. The fan-out asks
+    the store once PER ALBUM, so album 2's refusal was relayed into a body that
+    said, forty words apart, that one album had been moved to Trash and that
+    nothing had been deleted — in the one field the browser renders. The promise
+    now belongs to the two 503 arms, which fire only before anything is created,
+    moved or dropped, and this is the run that must not have it.
+
+    The seam is placed by wrapping the guard, but the refusal itself is REAL: the
+    wrapper replaces the store with a regular FILE between the two albums and
+    then calls the guard, so the sentence the 500 relays is the store's own —
+    which is the only way this test can see where that sentence puts the promise.
+    The FILE shape rather than a chmod because it denies for uid 0 too, so the
+    test does not self-skip in the shipped image, where the app runs as root.
+    """
+    trash = tmp_path / "trash"
+    calls: list[Path] = []
+    real = require_usable_store  # the same object ``trash`` imported, before the patch
+
+    def _breaks_the_store_before_the_second_album(origins_dir: Path) -> None:
+        calls.append(origins_dir)
+        if len(calls) > 1:
+            shutil.rmtree(origins_dir)
+            origins_dir.write_bytes(b"not a directory")
+        real(origins_dir)
+
+    monkeypatch.setattr(
+        trash_mod, "require_usable_store", _breaks_the_store_before_the_second_album
+    )
+    req = _store_fault_req(duplicates_lib, tmp_path, trash)
+
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(delete_artist_op(req, "Radiohead"))  # type: ignore[arg-type]  # stub req
+
+    assert len(calls) == 2, "one ask per album, and the fan-out stopped on the second"
+    assert ei.value.status_code == 500, "the 503 tier closed the moment an album was dropped"
+    detail = ei.value.detail
+    assert isinstance(detail, dict), "the structured body, not the 503's flat sentence"
+    message = detail["message"]
+    assert "Nothing has been deleted" not in message, "one album HAS been"
+    assert "trash-origins" in message, "the cause is still relayed, in the store's own words"
+    assert "is not a usable folder" in message, "...naming which question the store failed"
+    assert "1 of 2 albums had been moved to Trash" in message, "...and how far it got"
+    # ...and the disk agrees with the half the message does claim.
+    assert len(list(trash.iterdir())) == 1, "the first album really is in Trash"
+    remaining = [a.album for a in duplicates_lib.albums() if a.albumartist == "Radiohead"]
+    assert len(remaining) == 1, "the second album kept its rows"
 
 
 def test_delete_album_op_503_masked_drop_says_what_to_do(

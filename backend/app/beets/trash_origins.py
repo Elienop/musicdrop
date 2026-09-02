@@ -216,10 +216,17 @@ class TrashOriginsStoreUnusableError(Exception):
     AFTER irreversible work and a record we cannot write must never make a delete
     fail. This one runs BEFORE any of it.
 
-    The message is USER-facing — the delete routes put it straight into a 503's
-    flat ``detail`` — so it names the store the way the README names it and NOT
-    by absolute path. The absolute path is logged at WARNING beside every raise,
+    The message is USER-facing — the delete routes put it into a 503's flat
+    ``detail`` — so it names the store the way the README names it and NOT by
+    absolute path. The absolute path is logged at WARNING beside every raise,
     which is where an operator reading ``docker logs`` needs it.
+
+    It is relayed UNCHANGED by callers that are not on the 503 tier: the artist
+    fan-out folds it into its partial-progress 500 and duplicates' resolve-all
+    into its own, both of which can have moved albums already. That is why the
+    sentence claims nothing about what has been deleted — see :data:`_STORE_FIX`
+    and ``app.beets.delete._NOTHING_DELETED``, which is added by the two arms
+    that can back it.
     """
 
 
@@ -228,10 +235,16 @@ class TrashOriginsStoreUnusableError(Exception):
 #: (``test_refusal_message_leaks_no_path``), and the sentence reaches a browser.
 _STORE_WHERE = "The Trash origin-records folder (trash-origins under the beets data folder)"
 
-#: What to do about it. "Nothing has been deleted" is a promise the CALLERS keep
-#: by asking before they move or drop anything — see :func:`require_usable_store`
-#: for where each mover asks.
-_STORE_FIX = "Nothing has been deleted. Fix its permissions or its mount, then retry."
+#: What to do about it, and only that. The reassurance that used to open it —
+#: "Nothing has been deleted" — is NOT here, because this string is relayed by
+#: every caller, including the ones that reach it having already moved and
+#: dropped albums. Measured: the artist fan-out with the store going unusable
+#: between its two albums answers a 500 that says one album was moved to Trash
+#: and, forty words later, that nothing has been deleted; ``resolve_all_groups``
+#: does the same across groups. The promise belongs to the two arms where it is
+#: true and is appended there — the 503s in :mod:`app.beets.delete`, which fire
+#: only while nothing has been created, moved or dropped.
+_STORE_FIX = "Fix its permissions or its mount, then retry."
 
 #: A name no record can collide with: :func:`origin_file` always appends
 #: ``.json`` (the truncating branch too), and neither this key nor the

@@ -40,6 +40,18 @@ from app.beets.trash_origins import TrashOriginsStoreUnusableError
 from app.library_busy import library_job_active
 from app.models.delete import DeleteResult
 
+#: The promise the two 503 arms below add to the origin-store refusal, and the
+#: ONLY place it may be made. The store's own sentence carries no such clause
+#: (``trash_origins._STORE_FIX``): every mover relays that sentence, and the
+#: artist fan-out and duplicates' resolve-all reach it having already moved
+#: albums into Trash and dropped their rows — measured, a 500 that named one
+#: album moved to Trash and then said nothing had been deleted. Here it is a
+#: fact and not a hope: both arms sit above the transaction's first mutation,
+#: since ``require_usable_store`` is ``trash_album_folder``'s first statement,
+#: ahead of every branch of it, so the refusal reaches the first album and no
+#: further.
+_NOTHING_DELETED = "Nothing has been deleted."
+
 
 class AlbumNotFoundError(Exception):
     """A referenced album id is not in the library. Maps to 404."""
@@ -464,9 +476,12 @@ async def delete_album_op(
         # the 500 would attach ``_recovery``'s "check the Trash folder" to a
         # refusal that created no Trash folder. Raised inline, not through
         # ``_failed``, so the status stays a literal
-        # tests/test_route_status_declarations.py can see.
+        # tests/test_route_status_declarations.py can see. The promise is
+        # appended HERE and not carried by the store's own sentence, because
+        # every mover relays that sentence — including the ones that reach it
+        # having already moved albums (see ``_NOTHING_DELETED``).
         except TrashOriginsStoreUnusableError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            raise HTTPException(status_code=503, detail=f"{exc} {_NOTHING_DELETED}") from exc
         except Exception as exc:
             raise _failed(exc) from exc
 
@@ -502,8 +517,12 @@ async def delete_artist_op(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         # Its own arm, not a shared helper, for the reason the pair above has
         # one each: the route-status census reads the RAISE, so a missing arm
-        # here leaves a declared 503 nothing produces.
+        # here leaves a declared 503 nothing produces. It carries the same
+        # appended promise, and this is the fan-out where NOT putting it in the
+        # shared store sentence matters: once one album has been dropped the
+        # cause is re-raised as ArtistDeletePartialError and answered by the 500
+        # below, whose message names how far the fan-out got.
         except TrashOriginsStoreUnusableError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            raise HTTPException(status_code=503, detail=f"{exc} {_NOTHING_DELETED}") from exc
         except Exception as exc:
             raise _failed(exc) from exc
