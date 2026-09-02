@@ -618,7 +618,13 @@ def clear_trash_origins(origins_dir: Path) -> None:
     (:func:`origin_file`), so the sweep is keyed on that suffix rather than on
     "everything in this directory": owning the store dir is not the same as
     being the only writer, and an Empty all is no reason to delete an operator's
-    note or a backup directory left beside the records.
+    note or a backup directory left beside the records. The one non-record name
+    the suffix does not spare is a file called exactly ``.json`` — measured,
+    ``".json".endswith(".json")`` is True — which this store can never have
+    written (:func:`origin_file` refuses an empty ``entry_name``) and which the
+    sweep removes anyway. Stated, not fixed: it is one reserved name in a
+    directory this app owns, and it costs an operator nothing they could not
+    have named otherwise.
 
     Failures are logged per file and the sweep carries on, the same posture as
     :func:`delete_trash_origin` and for the same reason: it runs after the
