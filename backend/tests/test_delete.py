@@ -23,7 +23,7 @@ from app.beets.delete import (
 from app.beets.library import LibraryRootUnavailableError, _require_id
 from app.beets.trash import album_folder, trash_album_folder
 from app.config import Settings
-from tests.conftest import make_test_handle
+from tests.conftest import build_library, make_test_handle, origins_for
 
 
 def test_delete_album_trashes_whole_folder_and_drops(
@@ -35,7 +35,7 @@ def test_delete_album_trashes_whole_folder_and_drops(
     folder = album_folder(duplicates_lib, list(album.items()))
     (Path(folder) / "cover-extra.lrc").write_text("[00:01.00] x", encoding="utf-8")
 
-    result = delete_album(duplicates_lib, album_id, trash_dir=trash)
+    result = delete_album(duplicates_lib, album_id, trash_dir=trash, origins_dir=origins_for(trash))
 
     assert result.trashed_albums == 1
     assert str(trash) in result.trash_path
@@ -57,7 +57,7 @@ def test_delete_album_ghost_folder_already_gone(duplicates_lib: Library, tmp_pat
     folder = album_folder(duplicates_lib, list(album.items()))
     shutil.rmtree(folder)  # ghost: DB rows remain, the files are gone
 
-    result = delete_album(duplicates_lib, album_id, trash_dir=trash)
+    result = delete_album(duplicates_lib, album_id, trash_dir=trash, origins_dir=origins_for(trash))
 
     assert result.trashed_albums == 1
     assert duplicates_lib.get_album(album_id) is None  # ghost rows dropped
@@ -66,7 +66,12 @@ def test_delete_album_ghost_folder_already_gone(duplicates_lib: Library, tmp_pat
 
 def test_delete_album_unknown_id_raises(duplicates_lib: Library, tmp_path: Path) -> None:
     with pytest.raises(AlbumNotFoundError):
-        delete_album(duplicates_lib, 999_999, trash_dir=tmp_path / "trash")
+        delete_album(
+            duplicates_lib,
+            999_999,
+            trash_dir=tmp_path / "trash",
+            origins_dir=tmp_path / "trash-origins",
+        )
 
 
 def test_delete_artist_trashes_all_their_albums(duplicates_lib: Library, tmp_path: Path) -> None:
@@ -74,14 +79,21 @@ def test_delete_artist_trashes_all_their_albums(duplicates_lib: Library, tmp_pat
     before = [a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk"]
     assert before, "fixture should have at least one Daft Punk album"
 
-    result = delete_artist(duplicates_lib, "Daft Punk", trash_dir=trash)
+    result = delete_artist(
+        duplicates_lib, "Daft Punk", trash_dir=trash, origins_dir=origins_for(trash)
+    )
 
     assert result.trashed_albums == len(before)
     assert not [a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk"]
 
 
 def test_delete_artist_unknown_is_noop(duplicates_lib: Library, tmp_path: Path) -> None:
-    result = delete_artist(duplicates_lib, "Nobody At All", trash_dir=tmp_path / "trash")
+    result = delete_artist(
+        duplicates_lib,
+        "Nobody At All",
+        trash_dir=tmp_path / "trash",
+        origins_dir=tmp_path / "trash-origins",
+    )
     assert result.trashed_albums == 0
 
 
@@ -128,7 +140,7 @@ def test_delete_album_root_unavailable_keeps_rows(duplicates_lib: Library, tmp_p
     shutil.rmtree(os.fsdecode(duplicates_lib.directory))
 
     with pytest.raises(LibraryRootUnavailableError):
-        delete_album(duplicates_lib, album_id, trash_dir=trash)
+        delete_album(duplicates_lib, album_id, trash_dir=trash, origins_dir=origins_for(trash))
 
     assert duplicates_lib.get_album(album_id) is not None  # still queryable
     assert not trash.exists()
@@ -149,7 +161,7 @@ def test_delete_artist_root_unavailable_drops_nothing(
     shutil.rmtree(os.fsdecode(duplicates_lib.directory))
 
     with pytest.raises(LibraryRootUnavailableError):
-        delete_artist(duplicates_lib, "Radiohead", trash_dir=trash)
+        delete_artist(duplicates_lib, "Radiohead", trash_dir=trash, origins_dir=origins_for(trash))
 
     assert [_require_id(a.id) for a in duplicates_lib.albums() if a.albumartist == "Radiohead"] == (
         before
@@ -161,9 +173,11 @@ def test_delete_artist_root_unavailable_drops_nothing(
 def test_delete_album_op_503_root_unavailable(duplicates_lib: Library, tmp_path: Path) -> None:
     """The HTTP mapping: 503 + the flat honest sentence, not the structured 500.
 
-    The blanket ``except`` above would answer "Files are recoverable in the Trash
-    folder" for an operation that moved nothing, so the root-unavailable arm has
-    to sit in front of it. The stub request is enough because ``_swap_lock``
+    The blanket ``except`` above would answer with the 500's recovery line, which
+    sends the reader to check a Trash folder this operation never created (and
+    for most of this branch's life promised the files were already in it), so the
+    root-unavailable arm has to sit in front of it. The 503 says the one thing
+    that is known instead. The stub request is enough because ``_swap_lock``
     creates its lock lazily on whatever ``app.state`` it is handed
     (config_editor.py:624-630) and ``_settings`` falls back to the module
     singleton when ``state.settings`` is absent (:632-645).
@@ -195,7 +209,8 @@ def test_delete_artist_op_503_root_unavailable(duplicates_lib: Library, tmp_path
     Without this the artist half of the mapping is unpinned: the route-status
     census reads the RAISE and only flags a status raised-but-undeclared, so
     deleting the ``except`` here would leave a declared 503 nothing produces and
-    hand the fan-out back its "recoverable in the Trash folder" 500.
+    hand the fan-out back the blanket 500, whose recovery line can only tell the
+    user to go and look in Trash.
     """
     handle = make_test_handle(duplicates_lib, tmp_path)
     before = len(list(duplicates_lib.albums()))
@@ -215,6 +230,46 @@ def test_delete_artist_op_503_root_unavailable(duplicates_lib: Library, tmp_path
     assert ei.value.status_code == 503
     assert ei.value.detail == "Library folder unavailable. Is the music share mounted?"
     assert len(list(duplicates_lib.albums())) == before
+
+
+def test_delete_album_op_503_masked_drop_says_what_to_do(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    """The wire answer for a drop the ROOT check cannot see.
+
+    A ``.stfolder`` on the local mountpoint keeps ``require_library_root``
+    passing, so without the stronger predicate this request would answer
+    ``200 trashed_albums=1`` having moved nothing and dropped the rows. It must
+    be a 503 whose sentence tells the user what to check — and which names no
+    filesystem path, because the detail is rendered straight into the dialog.
+    """
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = _require_id(album.id)
+    handle = make_test_handle(duplicates_lib, tmp_path)
+    root = Path(os.fsdecode(duplicates_lib.directory))
+    shutil.rmtree(root)
+    root.mkdir(parents=True)
+    (root / ".stfolder").mkdir()
+
+    class _App:
+        state = SimpleNamespace(beets_library=handle)
+
+    class _Req:
+        app = _App()
+
+    req = _Req()
+    coro = delete_album_op(req, album_id)  # type: ignore[arg-type]  # duck-typed stub
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(coro)
+
+    assert ei.value.status_code == 503
+    assert ei.value.detail == (
+        "Library folder is present but holds none of the library's albums."
+        " Either the music share is not mounted, or every album's folder has been"
+        " removed outside MusicDrop."
+    )
+    assert duplicates_lib.get_album(album_id) is not None  # rows kept
+    assert str(root) not in str(ei.value.detail)
 
 
 def test_delete_artist_root_gone_raises_before_the_transaction(
@@ -239,10 +294,60 @@ def test_delete_artist_root_gone_raises_before_the_transaction(
     shutil.rmtree(os.fsdecode(duplicates_lib.directory))
 
     with pytest.raises(LibraryRootUnavailableError):
-        delete_artist(duplicates_lib, "Radiohead", trash_dir=tmp_path / "trash")
+        delete_artist(
+            duplicates_lib,
+            "Radiohead",
+            trash_dir=tmp_path / "trash",
+            origins_dir=tmp_path / "trash-origins",
+        )
 
     assert calls == []  # the fan-out never started
     assert len(list(duplicates_lib.albums())) == before
+
+
+def test_delete_artist_op_reports_partial_progress_for_ANY_cause(
+    duplicates_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same two tiers, for a cause that is not the unmounted share.
+
+    The test below pins this for ``LibraryRootUnavailableError``, and until now
+    that was the ONLY cause that got it: a permission error, a full disk or a DB
+    fault mid-fan-out reached the user as a bare message with no count, while
+    beets had already committed every album before it. Same state, strictly
+    worse reporting, and nothing said which.
+
+    ``PermissionError`` here stands for the whole class -- what matters is that
+    it is not the one exception type the arm above already names.
+    """
+    trash = tmp_path / "trash"
+    handle = make_test_handle(duplicates_lib, tmp_path)
+    real = trash_album_folder
+    calls = {"n": 0}
+
+    def _fails_on_the_second(
+        lib: Library, album: object, *, trash_dir: Path, origins_dir: Path
+    ) -> str:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise PermissionError(13, "Permission denied")
+        return str(real(lib, album, trash_dir=trash_dir, origins_dir=origins_dir))
+
+    monkeypatch.setattr(delete_mod, "trash_album_folder", _fails_on_the_second)
+
+    class _App:
+        state = SimpleNamespace(beets_library=handle, settings=Settings(trash_dir=str(trash)))
+
+    class _Req:
+        app = _App()
+
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(delete_artist_op(_Req(), "Radiohead"))  # type: ignore[arg-type]
+
+    assert ei.value.status_code == 500
+    detail = ei.value.detail
+    assert isinstance(detail, dict)
+    assert "1 of 2" in detail["message"]  # the count survives, which it did not before
+    assert "Permission denied" in detail["message"]  # and the real cause is still named
 
 
 def test_delete_artist_op_mid_flight_drop_reports_partial_progress(
@@ -261,13 +366,15 @@ def test_delete_artist_op_mid_flight_drop_reports_partial_progress(
     real = trash_album_folder  # from its own module: delete.py does not re-export it
     calls = {"n": 0}
 
-    def _drops_on_the_second(lib: Library, album: object, *, trash_dir: Path) -> str:
+    def _drops_on_the_second(
+        lib: Library, album: object, *, trash_dir: Path, origins_dir: Path
+    ) -> str:
         calls["n"] += 1
         if calls["n"] == 2:
             raise LibraryRootUnavailableError(
                 "Library folder unavailable. Is the music share mounted?"
             )
-        return str(real(lib, album, trash_dir=trash_dir))
+        return str(real(lib, album, trash_dir=trash_dir, origins_dir=origins_dir))
 
     monkeypatch.setattr(delete_mod, "trash_album_folder", _drops_on_the_second)
 
@@ -293,3 +400,880 @@ def test_delete_artist_op_mid_flight_drop_reports_partial_progress(
     # The library agrees with the message: one album trashed, one untouched.
     assert len([a for a in duplicates_lib.albums() if a.albumartist == "Radiohead"]) == 1
     assert trash.is_dir()
+
+
+def test_delete_album_op_records_an_origin_the_listing_can_offer_a_move_back_on(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    """The op resolves BOTH dirs, and only an end-to-end check sees the second.
+
+    Every unit test below the op passes ``origins_dir`` explicitly, so an op that
+    resolved it wrong — as the Trash dir, say, which would put the records inside
+    the entry namespace the listing walks — is invisible to all of them and
+    silently degrades every deleted album to an import-restore.
+    """
+    from app.beets.trash_manage import list_trashed_albums
+
+    trash = tmp_path / "trash"
+    origins = tmp_path / "trash-origins"
+    handle = make_test_handle(duplicates_lib, tmp_path)
+    album = next(iter(duplicates_lib.albums()))
+    album_id = _require_id(album.id)
+    album_root = os.path.dirname(os.fsdecode(next(iter(album.items())).path))
+
+    class _App:
+        state = SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins)),
+        )
+
+    class _Req:
+        app = _App()
+
+    asyncio.run(delete_album_op(_Req(), album_id))  # type: ignore[arg-type]  # duck-typed stub
+
+    assert list(origins.glob("*.json")), "the op resolved no origin store"
+    assert not list(trash.glob("*.json")), "records must not land in the entry namespace"
+    rows = list_trashed_albums(
+        trash, origins_dir=origins, music_dir=os.fsdecode(duplicates_lib.directory)
+    )
+    (row,) = [r for r in rows if r.origin == album_root]
+    assert row.restore_mode == "move_back"
+
+
+# --- the partial-failure message may only claim what really happened ---------
+# The fan-out's 500 is read by someone whose delete half-finished, and it used
+# to tell them two things it could not know: that "the music share became
+# unavailable" (the guard that refuses says it is EITHER that or an artist whose
+# folders were removed outside MusicDrop, and cannot tell which), and that N
+# albums are waiting in Trash (the primitive drops the rows of a ghost or an
+# empty album having moved nothing at all).
+
+
+_GHOST_ARTIST = "Ghosty"
+
+# The recovery line every failure that is not a partial fan-out with files in
+# Trash gets. Spelled once here, asserted at each of the five states that reach
+# it: three where nothing moved, the album.remove window where the whole folder
+# is in Trash, and the per-item fallback stopping mid-album (see
+# ``delete._recovery``). It states no disk fact in either direction, which is
+# what lets one sentence stand in all five — so an equality against this
+# constant is a SPELLING check, and each state's test carries its own
+# direction-asserting line beside its disk asserts.
+_LOOK_IN_TRASH = (
+    "Check the Trash folder before retrying: a delete that stops part-way can"
+    " leave some or all of the files there. Retry."
+)
+
+
+def _ghost_artist_library(tmp_path: Path, *, real_album: bool, bystander: bool) -> Library:
+    """A library whose ``Ghosty`` albums are ROWS ONLY — their folders are gone.
+
+    Built here rather than from ``duplicates_lib`` because the shape under test
+    is a specific one: albums whose folders were removed outside MusicDrop while
+    the share is perfectly fine.
+
+    Two knobs, and each is what makes one scenario DETERMINISTIC rather than a
+    coin flip on ``require_library_present``'s random sample:
+
+    * ``real_album`` adds one Ghosty album that is really on disk and sorts
+      FIRST (beets orders ``lib.albums()`` by ``albumartist+ album+``), so the
+      fan-out moves it and then meets a library whose every remaining album is a
+      ghost — the refusal is then certain, and it lands with progress already
+      made;
+    * ``bystander`` adds one album by another artist that is really on disk, so
+      the refusal never happens at all: the sample size is 5 and this library
+      holds 5 albums or fewer, which makes every draw exhaustive and therefore
+      always a hit.
+
+    An unrelated folder of real files sits in the music root either way. It is
+    what makes "the share is mounted" a fact of the fixture rather than an
+    assumption: the guard samples only albums the LIBRARY knows about, so this
+    folder cannot make it pass, and any test can stat it at the end.
+    """
+    from beets.library import Item
+
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+
+    def add(*, artist: str, album: str, on_disk: bool) -> None:
+        base = music / artist / album
+        base.mkdir(parents=True, exist_ok=True)
+        f = base / "01 Track.mp3"
+        f.write_bytes(b"\x00")
+        item = Item(album=album, albumartist=artist, artist=artist, title="Track", track=1)
+        item.path = os.fsencode(str(f))
+        lib.add_album([item]).store()
+        if not on_disk:
+            shutil.rmtree(base)  # removed outside MusicDrop; the rows survive
+
+    if real_album:
+        # Sorts before every "Ghost N" under the same albumartist.
+        add(artist=_GHOST_ARTIST, album="A Real Album", on_disk=True)
+    for n in range(1, 5):
+        add(artist=_GHOST_ARTIST, album=f"Ghost {n}", on_disk=False)
+    if bystander:
+        add(artist="Bystander", album="Still Here", on_disk=True)
+
+    proof = music / "Not In The Library" / "sleeve.jpg"
+    proof.parent.mkdir(parents=True, exist_ok=True)
+    proof.write_bytes(b"\x00")
+    return lib
+
+
+def _artist_op_500(
+    lib: Library, tmp_path: Path, trash: Path, artist: str = _GHOST_ARTIST
+) -> HTTPException:
+    """Run ``delete_artist_op`` for an artist and return the 500 it raises."""
+    handle = make_test_handle(lib, tmp_path)
+
+    class _App:
+        state = SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins_for(trash))),
+        )
+
+    class _Req:
+        app = _App()
+
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(delete_artist_op(_Req(), artist))  # type: ignore[arg-type]  # stub req
+    assert ei.value.status_code == 500
+    return ei.value
+
+
+def test_delete_artist_partial_does_not_diagnose_an_unmounted_share(tmp_path: Path) -> None:
+    """A refusal this fan-out CANNOT explain must be relayed, not diagnosed.
+
+    ``require_library_present`` refuses when none of the albums it sampled is on
+    disk, and its own message names two causes because it cannot tell them
+    apart. This artist's folders were removed outside MusicDrop and the share is
+    fine — provable here, since the fixture's unrelated folder is readable
+    throughout — so "the music share became unavailable" was a false statement
+    of fact printed to the one user who would act on it.
+    """
+    lib = _ghost_artist_library(tmp_path, real_album=True, bystander=False)
+    trash = tmp_path / "trash"
+    ghosty = [a.album for a in lib.albums() if a.albumartist == _GHOST_ARTIST]
+    assert ghosty[0] == "A Real Album", "the fan-out must reach the real album first"
+    assert len(ghosty) == 5
+
+    detail = _artist_op_500(lib, tmp_path, trash).detail
+
+    assert isinstance(detail, dict)
+    message = detail["message"]
+    assert "1 of 5" in message  # how far it got, unchanged
+    assert "became unavailable" not in message  # the cause it was never told
+    # ...and the words the error DID use, both of its causes intact.
+    assert "Either the music share is not mounted, or every album's folder has been" in message
+    # The share really was mounted the whole time: this file never stopped being
+    # readable, so a message blaming the mount would have been false, not unlucky.
+    assert (tmp_path / "music" / "Not In The Library" / "sleeve.jpg").is_file()
+    # One album's files really are in Trash, so that half of the promise stands.
+    assert (trash / "A Real Album" / "01 Track.mp3").is_file()
+    assert detail["recovery"] == "Files are recoverable in the Trash folder. Retry."
+
+
+def test_delete_artist_partial_counts_moves_not_row_drops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ghost rows are dropped, not trashed — so the message may not say "moved".
+
+    Every album here is a ghost, so the fan-out cleans rows and relocates
+    nothing; the bystander is what makes the presence guard pass every time
+    rather than at random. The old message offered "3 of 4 albums had been moved
+    to Trash" and the 500 offered to find them there, for a Trash folder that
+    does not exist.
+    """
+    lib = _ghost_artist_library(tmp_path, real_album=False, bystander=True)
+    trash = tmp_path / "trash"
+    real = trash_album_folder
+    calls = {"n": 0}
+
+    def _fails_on_the_fourth(
+        lib: Library, album: object, *, trash_dir: Path, origins_dir: Path
+    ) -> str:
+        calls["n"] += 1
+        if calls["n"] == 4:
+            raise PermissionError(13, "Permission denied")
+        return str(real(lib, album, trash_dir=trash_dir, origins_dir=origins_dir))
+
+    monkeypatch.setattr(delete_mod, "trash_album_folder", _fails_on_the_fourth)
+
+    detail = _artist_op_500(lib, tmp_path, trash).detail
+
+    assert isinstance(detail, dict)
+    message = detail["message"]
+    assert "3 of 4" in message  # three albums' rows are gone, and it says so
+    assert "moved to Trash" not in message  # but not one file was
+    assert "Permission denied" in message  # the real cause still names itself
+    # The physical fact the wording has to match: there is no Trash folder at
+    # all, so a line telling the user to look in it points at nothing.
+    assert not trash.exists()
+    assert detail["recovery"] == _LOOK_IN_TRASH
+    assert len([a for a in lib.albums() if a.albumartist == _GHOST_ARTIST]) == 1
+
+
+def _two_album_artist_library(tmp_path: Path, *, first_on_disk: bool) -> Library:
+    """``Twosome``'s two albums, the second of them always really on disk.
+
+    Drives BOTH shapes of the partial message from one construction, since the
+    clause under test is the same in both: with ``first_on_disk`` the fan-out
+    really moves album one (``moved`` = 1, the "had been moved to Trash" shape);
+    without it album one is a ghost row whose folder was removed outside
+    MusicDrop (``moved`` = 0, the "no files left to move" shape).
+
+    ``A First`` sorts before ``B Second`` under the same albumartist, so the
+    fan-out's order is the fixture's order and the album it stops on is known. A
+    bystander album on disk keeps ``require_library_present`` a certainty rather
+    than a draw: three albums against a sample of five is an exhaustive draw.
+    """
+    from beets.library import Item
+
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+
+    def add(*, artist: str, album: str, name: str, on_disk: bool) -> None:
+        base = music / artist / album
+        base.mkdir(parents=True, exist_ok=True)
+        f = base / name
+        f.write_bytes(b"\x00")
+        item = Item(album=album, albumartist=artist, artist=artist, title="Track", track=1)
+        item.path = os.fsencode(str(f))
+        lib.add_album([item]).store()
+        if not on_disk:
+            shutil.rmtree(base)  # removed outside MusicDrop; the row survives
+
+    add(artist="Twosome", album="A First", name="01 First.mp3", on_disk=first_on_disk)
+    add(artist="Twosome", album="B Second", name="01 Second.mp3", on_disk=True)
+    add(artist="Bystander", album="Still Here", name="01 t.mp3", on_disk=True)
+    return lib
+
+
+@pytest.mark.parametrize(
+    ("first_on_disk", "expected"),
+    [
+        (True, "stopped after 1 of 2 albums had been moved to Trash"),
+        (False, "stopped after dropping 1 of 2 albums that had no files left to move"),
+    ],
+)
+def test_delete_artist_partial_speaks_only_of_the_albums_it_never_reached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_on_disk: bool, expected: str
+) -> None:
+    """Both partial messages ended "the rest are untouched". The rest includes this one.
+
+    "The rest" takes in the album the fan-out stopped ON, and that album can be
+    the most touched of all: ``album.remove`` deletes the row and THEN sends
+    ``album_removed`` to plugins, wrapping no handler in try/except
+    (``beets/library/models.py:391-394``, ``beets/plugins.py:614-627``), so a
+    listener that raises there leaves the album's folder in Trash with its row
+    gone. Neither counter can see it — both count returns from the primitive —
+    so the message says what it does know: the albums it never reached.
+
+    Read beside the recovery line in the same body the old clause was a
+    contradiction as well as a falsehood: that line sends this user to the Trash
+    folder, to look for the album the message has just called untouched.
+
+    Both shapes, because the clause was the same sentence in both and a fix to
+    one of them is not a fix.
+    """
+    from collections import defaultdict
+
+    from beets.plugins import BeetsPlugin
+
+    calls = {"n": 0}
+
+    def _boom_on_the_second(**_kwargs: object) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("plugin listener blew up")
+
+    monkeypatch.setattr(
+        BeetsPlugin, "listeners", defaultdict(list, {"album_removed": [_boom_on_the_second]})
+    )
+    lib = _two_album_artist_library(tmp_path, first_on_disk=first_on_disk)
+    trash = tmp_path / "trash"
+    second_id = _require_id(next(a for a in lib.albums() if a.album == "B Second").id)
+
+    detail = _artist_op_500(lib, tmp_path, trash, "Twosome").detail
+
+    assert isinstance(detail, dict)
+    message = detail["message"]
+    assert expected in message  # how far it got, unchanged
+    assert "the rest are untouched" not in message
+    assert "the albums it never reached are untouched" in message
+    # The album it stopped on, the one "the rest" called untouched: its folder is
+    # in Trash with its file, and the library has forgotten it.
+    assert (trash / "B Second" / "01 Second.mp3").is_file()
+    assert lib.get_album(second_id) is None
+    # ...while the same body sends its reader to Trash to look for it.
+    assert "Trash" in detail["recovery"]
+
+
+def test_delete_album_500_does_not_promise_trash_for_files_that_did_not_move(
+    duplicates_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``TrashMoveIncompleteError`` is raised BECAUSE nothing moved.
+
+    Its own message ends "The library rows were kept", and the 500 wrapping it
+    answered "Files are recoverable in the Trash folder" — a contradiction
+    inside one body, about files still sitting in the music library.
+    """
+    from app.beets.trash import TrashMoveIncompleteError
+
+    def _refuses(*args: object, **kwargs: object) -> str:
+        raise TrashMoveIncompleteError("'X' did not move to Trash. The library rows were kept.")
+
+    monkeypatch.setattr(delete_mod, "trash_album_folder", _refuses)
+    handle = make_test_handle(duplicates_lib, tmp_path)
+    album_id = _require_id(next(iter(duplicates_lib.albums())).id)
+
+    class _App:
+        state = SimpleNamespace(beets_library=handle, settings=Settings())
+
+    class _Req:
+        app = _App()
+
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(delete_album_op(_Req(), album_id))  # type: ignore[arg-type]  # stub req
+
+    assert ei.value.status_code == 500
+    detail = ei.value.detail
+    assert isinstance(detail, dict)
+    assert "recoverable in the Trash folder" not in detail["recovery"]
+    assert detail["recovery"] == (
+        "The files were not moved and the library still has the album. Retry."
+    )
+
+
+def test_delete_artist_500_on_the_FIRST_album_does_not_promise_trash(
+    duplicates_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fan-out that fails on album 1 of 2 has moved nothing — and must say so.
+
+    The tests above cover the fan-out that got PAST its first album: it raises
+    ``ArtistDeletePartialError``, which carries the count the recovery line is
+    chosen from. A failure on the FIRST album never reaches that helper —
+    ``mutated == 0`` re-raises the cause bare so the 503 tier stays available —
+    so the 500 wrapping it took the blanket "Files are recoverable in the Trash
+    folder" while not one file had moved and the Trash folder did not exist. The
+    same wrong sentence as the ghost fan-out's, down the one path nothing
+    enumerated.
+
+    Pinned on the physical fact as well as the wording: the Trash dir is never
+    created, and both albums are still in the library.
+    """
+    trash = tmp_path / "trash"
+    handle = make_test_handle(duplicates_lib, tmp_path)
+
+    def _fails_on_the_first(
+        lib: Library, album: object, *, trash_dir: Path, origins_dir: Path
+    ) -> str:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(delete_mod, "trash_album_folder", _fails_on_the_first)
+
+    class _App:
+        state = SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins_for(trash))),
+        )
+
+    class _Req:
+        app = _App()
+
+    before = [a for a in duplicates_lib.albums() if a.albumartist == "Radiohead"]
+    assert len(before) == 2, "'the first album' only means something with more than one"
+
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(delete_artist_op(_Req(), "Radiohead"))  # type: ignore[arg-type]  # stub req
+
+    assert ei.value.status_code == 500
+    detail = ei.value.detail
+    assert isinstance(detail, dict)
+    assert "Permission denied" in detail["message"]  # the cause is still relayed
+    assert "recoverable in the Trash folder" not in detail["recovery"]
+    assert detail["recovery"] == _LOOK_IN_TRASH
+    # The disk agrees with the sentence: there is no Trash folder to look in.
+    assert not trash.exists()
+    assert len([a for a in duplicates_lib.albums() if a.albumartist == "Radiohead"]) == 2
+
+
+@pytest.mark.parametrize("artist", [None, "Daft Punk"])
+def test_delete_500_does_not_deny_a_Trash_entry_it_never_looked_for(
+    duplicates_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, artist: str | None
+) -> None:
+    """``album.remove`` is itself a step, and it can raise with the folder in Trash.
+
+    beets deletes the album row and THEN sends ``album_removed`` to plugins
+    (``beets/library/models.py:391-394``), and ``beets.plugins.send`` wraps no
+    handler in try/except (``beets/plugins.py:614-627``) — so a listener that
+    raises unwinds the delete with the folder already under Trash, its origin
+    record written, and the album row gone. The recovery line answered that with
+    "Nothing reached the Trash folder, so there is nothing to restore": the one
+    user whose album really IS recoverable was told to stop looking, on the page
+    whose next button empties the Trash for good.
+
+    Both entry points, because they reach that sentence by different routes: the
+    single-album delete lets the exception through, and the fan-out meets it on
+    its first album and re-raises it bare (``mutated == 0`` — that counter counts
+    returns from the primitive, and this album never returned).
+
+    The listener is the real mechanism rather than a patched ``album.remove``, so
+    the day beets wraps its handlers this test says so instead of passing.
+    """
+    from collections import defaultdict
+
+    from beets.plugins import BeetsPlugin
+
+    def _boom(**_kwargs: object) -> None:
+        raise RuntimeError("plugin listener blew up")
+
+    monkeypatch.setattr(BeetsPlugin, "listeners", defaultdict(list, {"album_removed": [_boom]}))
+    trash = tmp_path / "trash"
+    handle = make_test_handle(duplicates_lib, tmp_path)
+    album_id = _require_id(
+        next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk").id
+    )
+
+    class _App:
+        state = SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins_for(trash))),
+        )
+
+    class _Req:
+        app = _App()
+
+    op = (
+        delete_artist_op(_Req(), artist)  # type: ignore[arg-type]  # stub req
+        if artist is not None
+        else delete_album_op(_Req(), album_id)  # type: ignore[arg-type]  # ditto
+    )
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(op)
+
+    assert ei.value.status_code == 500
+    detail = ei.value.detail
+    assert isinstance(detail, dict)
+    assert "plugin listener blew up" in detail["message"]  # the cause is relayed
+    assert detail["recovery"] == _LOOK_IN_TRASH
+    # The state the old sentence denied, asserted on the disk and in the DB: the
+    # folder is in Trash with its files, the record that makes Restore an exact
+    # move-back is written, and the library no longer has the album to re-delete.
+    assert (trash / "Discovery" / "01 Track 1.mp3").is_file()
+    assert (origins_for(trash) / "Discovery.json").is_file()
+    assert duplicates_lib.get_album(album_id) is None
+    # The equality above is a SPELLING check and travels with the constant: put
+    # the denial back in ``_recovery`` and in ``_LOOK_IN_TRASH`` together and
+    # this test still passed. That lockstep pair was this branch's own wording
+    # until the commit adding these two lines, so the measurement is the suite
+    # at its parent: 2026-09-02, 2995 passed, 0 failed. These are the lines that
+    # read the BODY against the disk above — whatever the sentence says, it may
+    # not deny what the three asserts just found.
+    recovery = detail["recovery"]
+    assert "nothing to restore" not in recovery
+    assert "nothing moved" not in recovery
+
+
+def _shared_folder_two_track_library(tmp_path: Path) -> Library:
+    """An album of TWO tracks in a folder it shares, so a move can stop HALF done.
+
+    ``trash_album_folder``'s whole-folder branch is one ``shutil.move``: it
+    happened or it did not. The shared-folder fallback moves item by item and
+    beets stores each item's new path as it goes (``Album.move`` ->
+    ``item.move(..., store=True)``, ``beets/library/models.py:489-495``), so a
+    fault on the second item leaves the first under Trash with its row already
+    pointing there and the album still in the library.
+
+    * ``A Two`` and ``B Live`` are both ``Sharey``'s and share
+      ``music/Sharey/Both``, which is what makes ``_folder_is_shared`` refuse
+      the whole-folder move;
+    * ``A Two`` sorts first under the same albumartist, so the artist fan-out
+      meets it as its FIRST album — the tier where ``mutated == 0``;
+    * a bystander album on disk keeps ``require_library_present`` a certainty
+      rather than a draw: three albums against a sample of five is exhaustive.
+    """
+    from beets.library import Item
+
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+
+    def add(*, artist: str, album: str, at: Path, names: list[str]) -> None:
+        at.mkdir(parents=True, exist_ok=True)
+        items = []
+        for n, name in enumerate(names, 1):
+            f = at / name
+            f.write_bytes(b"\x00")
+            item = Item(album=album, albumartist=artist, artist=artist, title=f"T{n}", track=n)
+            item.path = os.fsencode(str(f))
+            items.append(item)
+        lib.add_album(items).store()
+
+    both = music / "Sharey" / "Both"
+    add(artist="Sharey", album="A Two", at=both, names=["01 A.mp3", "02 A.mp3"])
+    add(artist="Sharey", album="B Live", at=both, names=["03 B.mp3"])
+    add(
+        artist="Bystander",
+        album="Still Here",
+        at=music / "Bystander" / "Album",
+        names=["01 t.mp3"],
+    )
+    return lib
+
+
+def test_delete_album_500_does_not_read_the_answer_out_of_a_half_moved_album(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Something IS in Trash here, and none of the old sentence's reading holds.
+
+    The recovery line used to answer the user's question for them: "if the
+    album's folder is there it can be restored from there; if it is not, nothing
+    moved and there is nothing to restore". This is the state where the first
+    half is as wrong as the second. What reached Trash is the CONTAINER named
+    for the album, holding the one item that made it — not the album's folder;
+    no origin record was written, because ``trash_album`` writes one only after
+    the move; and the album is still in the library with that item's row
+    pointing inside Trash.
+
+    ``Item.move`` is patched rather than the primitive, so the half-moved state
+    is built by the real mover: item one really is relocated and stored before
+    item two raises.
+    """
+    from beets.library import Item
+    from beets.util import MoveOperation
+
+    lib = _shared_folder_two_track_library(tmp_path)
+    trash = tmp_path / "trash"
+    handle = make_test_handle(lib, tmp_path)
+    album_id = _require_id(next(a for a in lib.albums() if a.album == "A Two").id)
+    real_move = Item.move
+    calls = {"n": 0}
+
+    def _fails_on_the_second(
+        item: Item,
+        operation: MoveOperation = MoveOperation.MOVE,
+        basedir: bytes | None = None,
+        with_album: bool = True,
+        store: bool = True,
+    ) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise PermissionError(13, "Permission denied")
+        real_move(item, operation, basedir=basedir, with_album=with_album, store=store)
+
+    monkeypatch.setattr(Item, "move", _fails_on_the_second)
+
+    class _App:
+        state = SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins_for(trash))),
+        )
+
+    class _Req:
+        app = _App()
+
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(delete_album_op(_Req(), album_id))  # type: ignore[arg-type]  # stub req
+
+    assert ei.value.status_code == 500
+    detail = ei.value.detail
+    assert isinstance(detail, dict)
+    assert "Permission denied" in detail["message"]  # the cause is relayed
+    assert detail["recovery"] == _LOOK_IN_TRASH
+    # The direction, beside the state below: the sentence may point AT Trash and
+    # may not tell this user what finding something there means.
+    assert "can be restored" not in detail["recovery"]
+    assert "nothing to restore" not in detail["recovery"]
+    # The state itself. One file made it, under the container rather than under
+    # anything named like the album's folder; the row for it points into Trash;
+    # the album never left the library; and nothing recorded where it came from.
+    container = trash / "Sharey - A Two"
+    assert len(list(container.rglob("*.mp3"))) == 1
+    album = lib.get_album(album_id)
+    assert album is not None  # the rows were kept
+    rows = [os.fsdecode(i.path) for i in album.items()]
+    assert [r for r in rows if r.startswith(f"{container}{os.sep}")] != []
+    assert not list(origins_for(trash).glob("*.json"))
+    # ...and the album that only ever shared the folder is untouched.
+    assert (tmp_path / "music" / "Sharey" / "Both" / "03 B.mp3").is_file()
+
+
+def _shared_folder_ghost_library(tmp_path: Path) -> Library:
+    """Two albums of one artist in ONE folder, the first of them files-less.
+
+    The shape that reaches ``trash_album``'s ghost arm — the only branch that
+    hands ``_reached_trash`` a path in the MUSIC dir rather than at or under
+    Trash:
+
+    * ``A Ghost`` and ``B Live`` are both ``Sharey``'s and both live in
+      ``music/Sharey/Both``, so ``_folder_is_shared`` refuses the whole-folder
+      move and falls back to the per-item ``trash_album``;
+    * ``A Ghost``'s file is removed while ``B Live``'s stays, so the folder is
+      still a directory (the missing-folder branch is skipped) and yet nothing
+      of ``A Ghost``'s can move;
+    * a bystander album on disk keeps ``require_library_present`` a certainty —
+      three albums against a sample of five is an exhaustive draw, and two of
+      them are really there.
+
+    ``A Ghost`` sorts before ``B Live`` under the same albumartist, so the
+    fan-out meets it first.
+    """
+    from beets.library import Item
+
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+
+    def add(*, artist: str, album: str, at: Path, name: str) -> Path:
+        at.mkdir(parents=True, exist_ok=True)
+        f = at / name
+        f.write_bytes(b"\x00")
+        item = Item(album=album, albumartist=artist, artist=artist, title="Track", track=1)
+        item.path = os.fsencode(str(f))
+        lib.add_album([item]).store()
+        return f
+
+    both = music / "Sharey" / "Both"
+    gone = add(artist="Sharey", album="A Ghost", at=both, name="01 Ghost.mp3")
+    add(artist="Sharey", album="B Live", at=both, name="02 Live.mp3")
+    add(artist="Bystander", album="Still Here", at=music / "Bystander" / "Album", name="01 t.mp3")
+    gone.unlink()  # removed outside MusicDrop; the row and the shared folder survive
+    return lib
+
+
+def test_delete_artist_does_not_count_a_shared_folder_ghost_as_moved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A path OUTSIDE Trash is not a Trash entry, however unlike ``trash_dir`` it looks.
+
+    ``_reached_trash`` asks two things of the primitive's answer: that it is not
+    ``trash_dir`` itself, and that it is under it. The first alone is what the
+    two row-dropping branches of ``trash_album_folder`` need — they return
+    ``str(trash_dir)`` — and it is all the ghost test above exercises. This is
+    the case only the second catches: ``trash_album``'s own ghost arm returns
+    the album's folder in the MUSIC dir, which is neither ``trash_dir`` nor
+    inside it.
+
+    Counted as a move, the fan-out's 500 would say one album "had been moved to
+    Trash" and send its user to a Trash folder holding nothing at all — the
+    exact promise the two counters exist to keep apart.
+    """
+    lib = _shared_folder_ghost_library(tmp_path)
+    trash = tmp_path / "trash"
+    handle = make_test_handle(lib, tmp_path)
+    real = trash_album_folder
+    calls = {"n": 0}
+
+    def _fails_on_the_second(
+        lib: Library, album: object, *, trash_dir: Path, origins_dir: Path
+    ) -> str:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise PermissionError(13, "Permission denied")
+        return str(real(lib, album, trash_dir=trash_dir, origins_dir=origins_dir))
+
+    monkeypatch.setattr(delete_mod, "trash_album_folder", _fails_on_the_second)
+
+    class _App:
+        state = SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins_for(trash))),
+        )
+
+    class _Req:
+        app = _App()
+
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(delete_artist_op(_Req(), "Sharey"))  # type: ignore[arg-type]  # stub req
+
+    assert ei.value.status_code == 500
+    detail = ei.value.detail
+    assert isinstance(detail, dict)
+    assert "1 of 2" in detail["message"]  # one album's rows went, and it says so
+    assert "moved to Trash" not in detail["message"]  # but nothing was moved
+    assert detail["recovery"] == _LOOK_IN_TRASH
+    # The premise of the whole test, asserted rather than assumed: the ghost went
+    # through the SHARED-folder fallback, whose sibling is still sitting in the
+    # folder it was never allowed to move wholesale — and Trash is empty.
+    assert sorted(p.name for p in (tmp_path / "music" / "Sharey" / "Both").iterdir()) == [
+        "02 Live.mp3"
+    ]
+    assert list(trash.iterdir()) == []
+    assert [a.album for a in lib.albums() if a.albumartist == "Sharey"] == ["B Live"]
+
+
+@pytest.mark.parametrize(
+    ("path", "artist"),
+    [("/api/albums/{album_id}", None), ("/api/artists", "Radiohead")],
+)
+def test_the_delete_routes_500_description_does_not_deny_its_own_body(
+    duplicates_lib: Library,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    artist: str | None,
+) -> None:
+    """The schema's 500 may not promise what a real 500 body denies.
+
+    Both routes DECLARED "its files are recoverable in the Trash folder" flatly,
+    for a status whose structured body carries the recovery line that decides
+    exactly that — so the generated client's types documented one answer while
+    the wire sent the other. The tests above pin the body; this joins it to the
+    contract, so the two cannot drift apart again.
+
+    Two halves, and neither is evidence on its own: the LIVE spec's description
+    (a wrong one passes every behavioural test in this file) against a REAL 500
+    provoked with nothing moved (a wrong body passes any assertion about the
+    spec). ``tests/test_openapi_spec_guard.py`` is not evidence about either —
+    it only fires on a dump that was not regenerated.
+    """
+    from app.main import app
+
+    def _refuses(*args: object, **kwargs: object) -> str:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(delete_mod, "trash_album_folder", _refuses)
+    trash = tmp_path / "trash"
+    handle = make_test_handle(duplicates_lib, tmp_path)
+
+    class _App:
+        state = SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins_for(trash))),
+        )
+
+    class _Req:
+        app = _App()
+
+    op = (
+        delete_artist_op(_Req(), artist)  # type: ignore[arg-type]  # stub req
+        if artist is not None
+        else delete_album_op(_Req(), _require_id(next(iter(duplicates_lib.albums())).id))  # type: ignore[arg-type]  # ditto
+    )
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(op)
+    detail = ei.value.detail
+    assert isinstance(detail, dict)
+    assert detail["recovery"] == _LOOK_IN_TRASH
+    assert not trash.exists()  # nothing moved here, and the body promises nothing
+
+    description = app.openapi()["paths"][path]["delete"]["responses"]["500"]["description"]
+    assert "recoverable in the Trash folder" not in description, (
+        f"{path}'s 500 description promises Trash recovery for a status this route"
+        f" answers with {detail['recovery']!r}"
+    )
+    # The negative alone is happy with a paraphrase that drops the condition —
+    # "the body carries the cause and a recovery hint" passes it and tells the
+    # reader of the contract nothing about WHEN Trash gets named. The condition
+    # is the claim, so assert it directly.
+    #
+    # The verb is part of the claim. "points at the Trash folder only when" was
+    # false against this very body: ``_LOOK_IN_TRASH`` names the Trash folder for
+    # the moved-nothing case asserted above. What is conditional is the PROMISE,
+    # not the mention — ``_recovery``'s docstring draws the line as promise vs
+    # check — so both descriptions say "promises recovery from", and this asserts
+    # the whole phrase rather than the bare condition.
+    assert "promises recovery from the Trash folder only when" in description, (
+        f"{path}'s 500 description must keep the condition on its Trash promise;"
+        f" it reads {description!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "artist", "promise"),
+    [
+        ("/api/albums/{album_id}", None, "The album is still in the library"),
+        ("/api/artists", "Sharey", "None of the artist's albums has been dropped"),
+    ],
+)
+def test_the_delete_routes_503_description_does_not_deny_a_share_that_dropped_mid_move(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    artist: str | None,
+    promise: str,
+) -> None:
+    """Both 503s DECLARED "Nothing reached the Trash folder". This is a 503 that did.
+
+    The guard is not only a pre-check: ``trash.py``'s post-condition re-checks
+    the root BEFORE it asks whether anything landed, so a share that drops
+    part-way through the per-item move raises ``LibraryRootUnavailableError``
+    with items already under the Trash container — and both ops answer that with
+    the 503, ahead of the blanket 500. The artist route's own extra clause ("a
+    share that drops part-way through the fan-out is reported as the 500
+    instead") is wrong for the same run: the fan-out has dropped nothing yet, so
+    ``mutated == 0`` re-raises the cause bare and it lands here too.
+
+    What every 503 does share is the library: no rows are gone. That is what the
+    descriptions now claim, and this test holds both halves together — the LIVE
+    spec against a REAL 503 with files under Trash and the album still in the
+    library. Neither half is evidence on its own, and
+    ``tests/test_openapi_spec_guard.py`` is evidence about neither: it only
+    fires on a dump that was not regenerated.
+
+    The share is dropped by the real mover, between the first item and the
+    second, so nothing here decides where the raise comes from.
+    """
+    from beets.library import Item
+    from beets.util import MoveOperation
+
+    from app.main import app
+
+    lib = _shared_folder_two_track_library(tmp_path)
+    music = tmp_path / "music"
+    trash = tmp_path / "trash"
+    handle = make_test_handle(lib, tmp_path)
+    album_id = _require_id(next(a for a in lib.albums() if a.album == "A Two").id)
+    real_move = Item.move
+    calls = {"n": 0}
+
+    def _drops_the_share_after_the_first(
+        item: Item,
+        operation: MoveOperation = MoveOperation.MOVE,
+        basedir: bytes | None = None,
+        with_album: bool = True,
+        store: bool = True,
+    ) -> None:
+        real_move(item, operation, basedir=basedir, with_album=with_album, store=store)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            shutil.rmtree(music)  # the share goes between item one and item two
+
+    monkeypatch.setattr(Item, "move", _drops_the_share_after_the_first)
+
+    class _App:
+        state = SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins_for(trash))),
+        )
+
+    class _Req:
+        app = _App()
+
+    op = (
+        delete_artist_op(_Req(), artist)  # type: ignore[arg-type]  # stub req
+        if artist is not None
+        else delete_album_op(_Req(), album_id)  # type: ignore[arg-type]  # ditto
+    )
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(op)
+
+    assert ei.value.status_code == 503
+    # The root guard's own flat sentence, so this is the arm the descriptions
+    # below describe and not some other 503.
+    assert ei.value.detail == "Library folder unavailable. Is the music share mounted?"
+    # The state the old sentence denied: one item is under the Trash container.
+    assert len(list((trash / "Sharey - A Two").rglob("*.mp3"))) == 1
+    # ...and the state both descriptions may still promise: the rows are kept.
+    assert lib.get_album(album_id) is not None
+
+    description = app.openapi()["paths"][path]["delete"]["responses"]["503"]["description"]
+    assert "Nothing reached the Trash folder" not in description, (
+        f"{path}'s 503 description denies a Trash entry this same status leaves behind;"
+        f" it reads {description!r}"
+    )
+    # The negative alone is happy with a description that says nothing about
+    # either side. Both halves of the replacement are the claim, so assert them:
+    # what is known (no rows are gone) and what is not (go and look).
+    assert promise in description
+    assert "check there before retrying" in description

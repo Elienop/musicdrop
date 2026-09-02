@@ -567,6 +567,9 @@ def _replace_session(lib: Library, *, trash_dir: Path, playlists_dir: Path | Non
     session.bridge = ImportBridge()
     session.lib = lib
     session._trash_dir = trash_dir
+    # Wired as a PAIR with _trash_dir: the post-run pass skips entirely unless
+    # both are set, so a fake that sets only one stops trashing silently.
+    session._trash_origins_dir = trash_dir.parent / "trash-origins"
     session._playlists_dir = playlists_dir
     session._replace_album_ids = set()
     return session
@@ -671,12 +674,13 @@ def test_run_import_worker_post_run_pass_tolerates_a_minimal_session(
         paths: ClassVar[list[bytes]] = []
         _replace_album_ids: ClassVar[set[int]] = {11, 22}
         _trash_dir = Path("/tmp/trash")
+        _trash_origins_dir = Path("/tmp/trash-origins")
         _playlists_dir = None
 
         def run(self) -> None:
             pass
 
-    def fake_trash(lib: Any, album: Any, *, trash_dir: Path) -> str:
+    def fake_trash(lib: Any, album: Any, *, trash_dir: Path, origins_dir: Path) -> str:
         trashed.append(int(album.id))
         return str(trash_dir)
 
@@ -686,6 +690,32 @@ def test_run_import_worker_post_run_pass_tolerates_a_minimal_session(
 
     assert sorted(trashed) == [11, 22]
     assert [r.message for r in caplog.records] == []
+
+
+def test_the_post_run_trash_pass_is_skipped_when_only_the_trash_dir_is_wired(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    """Both dirs or neither, and the skip is deliberately LOUD.
+
+    A Replace that trashed the superseded copies without recording where they
+    came from leaves rows that can only ever be re-imported by template. The two
+    dirs are wired as a pair from one resolve point, so a half-wiring is a bug —
+    and stopping the Replace trash pass outright makes it fail visibly (the old
+    album is still in the library) rather than degrading every deleted duplicate
+    silently.
+    """
+    from app.beets.import_session import _trash_replaced_albums
+
+    superseded = _album_by_title(duplicates_lib, "Discovery")
+    album_id = _require_id(superseded.id)
+    session = _replace_session(duplicates_lib, trash_dir=tmp_path / "trash", playlists_dir=None)
+    session._trash_origins_dir = None
+    session._replace_album_ids = {album_id}
+
+    _trash_replaced_albums(session)
+
+    assert duplicates_lib.get_album(album_id) is not None, "nothing may be trashed unrecorded"
+    assert not (tmp_path / "trash").exists()
 
 
 # ----- the shared core's own guarantees, from a worker thread -----

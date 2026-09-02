@@ -59,6 +59,17 @@ class Settings(BaseSettings):
     # cwd-relative gotcha. Set an absolute path to override. (env MUSICDROP_TRASH_DIR)
     trash_dir: str = ""
 
+    # Where each trashed folder's origin record is kept — one JSON file per Trash
+    # entry, keyed on the entry's name. A SIBLING of the Trash dir, never inside
+    # it: the record must not be reachable from the music library (a folder
+    # arriving from /music carries whatever it holds into Trash), and inside
+    # trash_dir it would also collide with the entry namespace the listing walks.
+    # Empty string = default to <beets_dir>/trash-origins, computed at resolve
+    # time from the live library handle (already absolute), like trash_dir. Set
+    # an absolute path to override — one NOT under the music library.
+    # (env MUSICDROP_TRASH_ORIGINS_DIR)
+    trash_origins_dir: str = ""
+
     # Artist images (app/artwork/) — opt-in, conservative defaults.
     artist_images_enabled: bool = False
     artist_image_cache_dir: str = "data/cache/artist-images"

@@ -2031,7 +2031,7 @@ export interface paths {
         put?: never;
         /**
          * Restore Trash
-         * @description Re-import a trashed folder as-is. 409 if busy, 404 if not in Trash.
+         * @description Put a trashed folder back. 409 if busy, 404 if not in Trash, 503 if unmounted.
          */
         post: operations["restore_trash_api_trash_restore_post"];
         delete?: never;
@@ -2052,7 +2052,7 @@ export interface paths {
         post?: never;
         /**
          * Empty Trash All
-         * @description Permanently clear the whole Trash dir. 409 if busy.
+         * @description Permanently clear the whole Trash dir. 409 if busy, 500 if partly cleared.
          */
         delete: operations["empty_trash_all_api_trash_all_delete"];
         options?: never;
@@ -4707,8 +4707,18 @@ export interface components {
         };
         /**
          * RestoreResult
-         * @description Outcome of an as-is restore. ``already_in_library`` = a matching album is
-         *     already present, so beets safely skipped (files stay in Trash).
+         * @description Outcome of a restore.
+         *
+         *     ``already_in_library`` = a matching album is already present, so beets safely
+         *     skipped; ``origin_occupied`` = something is at the path it came from again —
+         *     a folder with anything in it, a file, or a symlink INCLUDING a broken one —
+         *     so the move-back would have had to overwrite it, merge into it, or land
+         *     beside it. In both cases the files are back in Trash, untouched.
+         *
+         *     An EMPTY leftover folder at the origin is NOT occupied: it is replaced and
+         *     the restore goes ahead. That is what a pruning beets or a half-finished sync
+         *     leaves behind, and refusing it would strand exactly the rows the origin
+         *     record exists for.
          */
         RestoreResult: {
             /** Restored */
@@ -4717,7 +4727,7 @@ export interface components {
              * Reason
              * @enum {string}
              */
-            reason: "restored" | "already_in_library" | "could_not_restore";
+            reason: "restored" | "already_in_library" | "could_not_restore" | "origin_occupied";
             /** Album Id */
             album_id?: number | null;
         };
@@ -5092,6 +5102,20 @@ export interface components {
          *
          *     ``folder`` is the album's path RELATIVE to the Trash dir; it is the key the
          *     restore/empty endpoints take (resolved + traversal-checked server-side).
+         *
+         *     ``restore_mode`` / ``restore_note`` / ``origin`` describe what Restore would
+         *     do to THIS row, so the UI can say it before the user clicks rather than
+         *     discovering it in the result. A row trashed before origins were recorded is
+         *     ``"import"`` with a note stating that — visible and explained, never a
+         *     Restore that silently lands somewhere else.
+         *
+         *     Note for the UI: it does NOT disable Restore on ``track_count == 0`` and must
+         *     not start — ``SettingsTrashPage.tsx`` deliberately shows a "may still work"
+         *     hint instead, because 0 there means "no readable tags", not "no music". A
+         *     recorded audio-free husk is exactly such a row AND is restorable exactly,
+         *     which is the case this record was added for. ``restore_mode == "refused"``
+         *     is the ONE signal that does disable a control, and it disables BOTH (Restore
+         *     and this row's Empty), because both of those routes refuse the row outright.
          */
         TrashedAlbum: {
             /** Folder */
@@ -5106,6 +5130,15 @@ export interface components {
             track_count: number;
             /** Format */
             format: string | null;
+            /**
+             * Restore Mode
+             * @enum {string}
+             */
+            restore_mode: "move_back" | "import" | "refused";
+            /** Restore Note */
+            restore_note: string | null;
+            /** Origin */
+            origin: string | null;
         };
         /**
          * TypedSearchPage
@@ -5704,7 +5737,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description Deleting the album failed, but its files are recoverable in the Trash folder. */
+            /** @description Deleting the album failed. The structured body's recovery line says what state the files are in — it promises recovery from the Trash folder only when something really reached it, and a delete that failed on the way there leaves the album in the library. */
             500: {
                 headers: {
                     [name: string]: unknown;
@@ -5713,7 +5746,7 @@ export interface operations {
                     "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
-            /** @description The music library root is missing, empty or unreadable, so the delete is refused before anything is moved or dropped (the guard against an unmounted share). Nothing reached the Trash folder. */
+            /** @description The music library root is missing, empty or unreadable, so the delete is refused (the guard against an unmounted share). The album is still in the library. Its files are a separate question: the same guard answers a share that drops DURING the move, and that can leave part of the album under the Trash folder — check there before retrying. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -6374,7 +6407,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description Deleting the artist failed, but its files are recoverable in the Trash folder. Also the status for a share that drops PART-WAY through the fan-out: the message then names how many of the artist's albums had been trashed before it did, and the rest are untouched. */
+            /** @description Deleting the artist failed. Also the status for a fault PART-WAY through the fan-out: the message then names how far it got, and says the albums it never reached are untouched. The structured body's recovery line promises recovery from the Trash folder only when albums really reached it — a fan-out that stops on its first album, and one whose albums were all rows with no files left to move, both moved nothing. */
             500: {
                 headers: {
                     [name: string]: unknown;
@@ -6383,7 +6416,7 @@ export interface operations {
                     "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
-            /** @description The music library root is missing, empty or unreadable, so the delete is refused before any of the artist's albums is moved or dropped (the guard against an unmounted share). Nothing reached the Trash folder; a share that drops part-way through the fan-out is reported as the 500 instead. */
+            /** @description The music library root is missing, empty or unreadable, so the delete is refused (the guard against an unmounted share). None of the artist's albums has been dropped from the library: once one has, the same cause is reported as the 500 instead, which names how far the fan-out got. Files are a separate question — a share that drops during the move of the album the fan-out is on can leave part of it under the Trash folder, so check there before retrying. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -12516,6 +12549,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description The music library folder is unavailable, so the folder was not moved out of Trash. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
         };
     };
     empty_trash_all_api_trash_all_delete: {
@@ -12565,6 +12607,15 @@ export interface operations {
             };
             /** @description The operation was refused because a library operation is in progress or the beets swap lock is held. */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Some Trash entries were removed and others could not be; the message names which are still there. */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

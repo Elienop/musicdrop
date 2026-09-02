@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.beets.orphans import find_orphan_folders
+from tests.conftest import origins_for
 
 
 def _touch(p: Path) -> None:
@@ -123,6 +124,45 @@ def test_ignore_dirs_excludes_a_configured_export_dir(tmp_path: Path) -> None:
     assert find_orphan_folders(root, seeds=None, trash_dir=trash) == [export]
 
 
+def test_ignore_dirs_excludes_the_trash_origin_store(tmp_path: Path) -> None:
+    """A new exposure the sidecar did not have, closed at ``api.reorganize._ignore_dirs``.
+
+    The origin store is a non-dotfile directory holding only ``.json`` files, so
+    it is audio-empty BY DEFINITION and the sweep reads it as a husk. While the
+    records lived INSIDE the trashed folders they sat under ``trash_dir``, which
+    ``find_orphan_folders`` already excludes; a separate store configured under
+    the music root does not get that for free, and sweeping it would take every
+    row's exact restore into Trash in one pass.
+
+    Both halves asserted, because the second is what makes the first mean
+    anything: without the exclusion the store really is flagged.
+    """
+    from types import SimpleNamespace
+
+    from app.api.reorganize import _ignore_dirs
+    from app.config import Settings
+    from tests.conftest import build_library, make_test_handle
+
+    root = tmp_path / "music"
+    _touch(root / "Real" / "Album" / "01.flac")
+    store = root / "trash-origins"  # a configured store, directly under the library
+    _touch(store / "Some Album.json")
+    trash = tmp_path / "trash"
+
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash) == [store]
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=(store,)) == []
+
+    # ...and the API layer really hands that dir to the sweep.
+    handle = make_test_handle(build_library(str(tmp_path / "library.db"), str(root)), tmp_path)
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_origins_dir=str(store), playlists_export_dir=""),
+        )
+    )
+    assert store in _ignore_dirs(app)
+
+
 def test_trash_folder_moves_whole_folder(tmp_path: Path) -> None:
     from app.beets.trash import trash_folder
 
@@ -131,7 +171,7 @@ def test_trash_folder_moves_whole_folder(tmp_path: Path) -> None:
     _touch(husk / "artist-background.jpg")
     trash = tmp_path / "trash"
 
-    dest = trash_folder(husk, trash_dir=trash)
+    dest = trash_folder(husk, trash_dir=trash, origins_dir=origins_for(trash))
 
     assert not husk.exists()  # source gone
     assert dest.parent == trash
@@ -147,7 +187,7 @@ def test_trash_folder_collision_gets_unique_name(tmp_path: Path) -> None:
     husk = tmp_path / "music" / "Old Name"
     _touch(husk / "cover.jpg")
 
-    dest = trash_folder(husk, trash_dir=trash)
+    dest = trash_folder(husk, trash_dir=trash, origins_dir=origins_for(trash))
     assert dest.name == "Old Name (1)"
     assert (dest / "cover.jpg").exists()
 
@@ -159,12 +199,14 @@ def test_art_only_husk_is_listed_for_visibility(tmp_path: Path) -> None:
     husk = tmp_path / "music" / "Old Name"
     _touch(husk / "artist-poster.jpg")  # no audio
     trash = tmp_path / "trash"
-    trash_folder(husk, trash_dir=trash)
+    trash_folder(husk, trash_dir=trash, origins_dir=origins_for(trash))
 
     # Audio-free trashed folders (husks the orphan sweep moves here) must appear in
     # the listing as zero-track entries — otherwise the Trash UI never shows them
     # and Empty-all deletes them silently. Now visible + individually empty-able.
-    listed = list_trashed_albums(trash)
+    listed = list_trashed_albums(
+        trash, origins_dir=origins_for(trash), music_dir=str(tmp_path / "music")
+    )
     assert [a.folder for a in listed] == ["Old Name"]
     assert listed[0].track_count == 0
 

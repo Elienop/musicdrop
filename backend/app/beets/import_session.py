@@ -308,6 +308,7 @@ class WebImportSession(ImportSession):
         bridge: ImportBridge,
         trash_dir: Path | None = None,
         *,
+        trash_origins_dir: Path | None = None,
         unattended: bool = False,
         sweep: bool = False,
         bank_dir: Path | None = None,
@@ -321,6 +322,12 @@ class WebImportSession(ImportSession):
         # Where Replace moves the old copies (reversible Trash). None = unwired
         # (the post-run trash pass is then skipped defensively).
         self._trash_dir = trash_dir
+        # Its sibling origin store. Wired as a PAIR with ``trash_dir`` from the
+        # one resolve point (the runner / the restore path), and the post-run
+        # pass below skips unless BOTH are set — a Replace that trashed the old
+        # copies without recording where they came from would leave rows that can
+        # only ever be re-imported.
+        self._trash_origins_dir = trash_origins_dir
         # Existing duplicate album ids recorded by Replace, trashed AFTER run().
         self._replace_album_ids: set[int] = set()
         # Library album ids beets actually ADDED during this run (filled by
@@ -1423,6 +1430,7 @@ def run_import_worker(
     session: WebImportSession,
     *,
     move: bool | None = None,
+    in_place: bool = False,
     sweep: bool = False,
     directive: BankApplyDirective | None = None,
 ) -> None:
@@ -1467,6 +1475,21 @@ def run_import_worker(
     ``InLibraryCopyError``): beets' no-duplicate guarantee is DB-based and does
     not protect files the DB doesn't know yet.
 
+    ``in_place`` is the third file operation the ``move`` flag cannot express:
+    NEITHER move nor copy, so beets adds the files exactly where they already
+    are. It exists for the Trash move-back restore, which has already put the
+    folder back at its recorded origin and must not then have beets re-file it
+    by path template — the whole point of recording the origin. Mutually
+    exclusive with ``move`` (``ValueError``), and it deliberately skips the
+    in-library move-forcing above: the source is in the library BY DESIGN here,
+    and the duplication that forcing prevents cannot happen when nothing is
+    copied. ``link``/``hardlink``/``reflink`` are snapshotted and forced off with
+    it, because beets' stage picks the operation by falling through those in
+    order (``importer/stages.py:278-291``) — with move and copy off, a user
+    config of ``link: yes`` would otherwise symlink the album into the templated
+    path. Nothing is deleted either way: ``ImportTask.cleanup`` removes originals
+    only when ``copy and delete`` (``importer/tasks.py:326-333``).
+
     ``sweep`` scopes the banking sweep's beets flags to this one run (same
     snapshot/restore discipline as move/copy): ``incremental`` on — beets'
     taghistory then skips every folder a previous sweep finished OR banked
@@ -1507,6 +1530,11 @@ def run_import_worker(
     # covered here: the job runner AND trash_manage.restore_album, which calls
     # this directly. Nesting is safe (beets binds via a ContextVar token).
     with session.lib.music_dir_context():
+        # Above the snapshots, with the other early exits: anything assigned
+        # before a raise leaks into the process-global beets config, because the
+        # finally that restores it never runs.
+        if in_place and move is not None:
+            raise ValueError("run_import_worker: in_place and move are mutually exclusive")
         # Snapshot BEFORE mutation, restore verbatim in the finally below.
         # The MUTATIONS all sit below the in-library guard: its raise is the
         # last early exit, and anything assigned above a raise leaks into the
@@ -1519,7 +1547,16 @@ def run_import_worker(
         # destination differs from its current path. Explicit copy is refused;
         # default/None and move pass through forced to move.
         sources = [os.fsdecode(p) for p in session.paths]
-        if any(is_in_library_source(session.lib.directory, src) for src in sources):
+        # ``not in_place`` is a REDUNDANCY, not a load-bearing branch, and saying
+        # so beats letting the next reader assume otherwise: the ``if in_place``
+        # arm below takes precedence over the ``elif move is not None`` this
+        # would feed, so the forcing has no effect on an in-place run either way.
+        # It is kept so the two modes do not silently depend on that ordering,
+        # and because probing every source's ancestry with ``samefile`` is work
+        # an in-place run has no use for. No test can kill it; it is equivalent.
+        if not in_place and any(
+            is_in_library_source(session.lib.directory, src) for src in sources
+        ):
             if move is False:
                 raise InLibraryCopyError(
                     "Refusing to copy-import a folder inside the music library: "
@@ -1533,6 +1570,9 @@ def run_import_worker(
         orig_singletons = config["import"]["singletons"].get(bool)
         orig_search_ids = config["import"]["search_ids"].get()  # restore verbatim
         orig_autotag = config["import"]["autotag"].get(bool)
+        orig_link = config["import"]["link"].get(bool)
+        orig_hardlink = config["import"]["hardlink"].get(bool)
+        orig_reflink = config["import"]["reflink"].get()  # bool OR "auto" - restore verbatim
         config["threaded"] = False
         config["import"]["duplicate_action"] = "ask"
         config["import"]["autotag"] = True
@@ -1541,7 +1581,13 @@ def run_import_worker(
         # ``singletons: yes`` user config it previously skipped every album
         # while recording import history.
         config["import"]["singletons"] = False
-        if move is not None:
+        if in_place:
+            config["import"]["move"] = False
+            config["import"]["copy"] = False
+            config["import"]["link"] = False
+            config["import"]["hardlink"] = False
+            config["import"]["reflink"] = False
+        elif move is not None:
             config["import"]["move"] = move
             config["import"]["copy"] = not move
         if sweep:
@@ -1563,6 +1609,9 @@ def run_import_worker(
             config["import"]["singletons"] = orig_singletons
             config["import"]["search_ids"] = orig_search_ids
             config["import"]["autotag"] = orig_autotag
+            config["import"]["link"] = orig_link
+            config["import"]["hardlink"] = orig_hardlink
+            config["import"]["reflink"] = orig_reflink
         # The album is in the library the moment session.run() returns; a failure
         # moving a Replace-superseded copy to Trash must annotate, not invalidate.
         # Reporting a committed import as failed would re-trigger duplicate
@@ -1609,7 +1658,8 @@ def _trash_replaced_albums(session: WebImportSession) -> None:
     the invariant; reporting it is not.
     """
     trash_dir = session._trash_dir
-    if trash_dir is None or not session._replace_album_ids:
+    origins_dir = session._trash_origins_dir
+    if trash_dir is None or origins_dir is None or not session._replace_album_ids:
         return
     lib = session.lib
     dropped_item_ids: set[int] = set()
@@ -1620,7 +1670,7 @@ def _trash_replaced_albums(session: WebImportSession) -> None:
                 continue  # already gone — nothing to trash
             dropped_item_ids.update(_require_id(i.id) for i in album.items())
             with lib.transaction():
-                trash_album(lib, album, trash_dir=trash_dir)
+                trash_album(lib, album, trash_dir=trash_dir, origins_dir=origins_dir)
     _reexport_replaced_playlists(session, dropped_item_ids)
 
 

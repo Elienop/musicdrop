@@ -16,6 +16,7 @@ from app.beets.duplicates import (
     resolve_duplicate_group,
 )
 from app.models.duplicates import DuplicateGroup, DuplicateMode, GroupDecision
+from tests.conftest import origins_for
 
 
 def _strict_group(lib: Library) -> DuplicateGroup:
@@ -38,6 +39,7 @@ def test_resolve_moves_losers_to_trash_and_drops_from_db(
         keep_album_id=keep,
         remove_album_ids=losers,
         trash_dir=trash,
+        origins_dir=origins_for(trash),
     )
 
     # Keeper survives in the library; losers are gone from the DB.
@@ -66,6 +68,7 @@ def test_resolve_rejects_stale_group(duplicates_lib: Library, tmp_path: Path) ->
             keep_album_id=keep,
             remove_album_ids=[*losers, 9999],
             trash_dir=tmp_path / "trash",
+            origins_dir=tmp_path / "trash-origins",
         )
 
 
@@ -77,6 +80,7 @@ def test_resolve_unknown_keep_is_stale(duplicates_lib: Library, tmp_path: Path) 
             keep_album_id=4242,
             remove_album_ids=[1],
             trash_dir=tmp_path / "trash",
+            origins_dir=tmp_path / "trash-origins",
         )
 
 
@@ -99,6 +103,7 @@ def test_resolve_all_moves_every_group(duplicates_lib: Library, tmp_path: Path) 
         mode=DuplicateMode.fuzzy,
         groups=[_decision_for(g) for g in report.groups],
         trash_dir=trash,
+        origins_dir=origins_for(trash),
     )
     assert result.group_count == 2
     assert result.moved_count == 2  # one loser per group
@@ -119,7 +124,11 @@ def test_resolve_all_skips_stale_and_resolves_the_rest(
         GroupDecision(keep_album_id=stale.suggested_keeper_id, remove_album_ids=[424242]),
     ]
     result = resolve_all_groups(
-        duplicates_lib, mode=DuplicateMode.fuzzy, groups=decisions, trash_dir=trash
+        duplicates_lib,
+        mode=DuplicateMode.fuzzy,
+        groups=decisions,
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
     )
     assert result.group_count == 1
     assert result.moved_count == 1
@@ -153,6 +162,7 @@ def test_resolve_runs_from_a_worker_thread(duplicates_lib: Library, tmp_path: Pa
             keep_album_id=keep,
             remove_album_ids=losers,
             trash_dir=trash,
+            origins_dir=origins_for(trash),
         ).result()
 
     assert len(result.moved) == len(losers)

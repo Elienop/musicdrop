@@ -46,7 +46,7 @@ from app.beets.trash_manage import restore_album
 from app.import_jobs.runner import BeetsImportRunner
 from app.models.bank import BankApplyDirective
 from app.models.import_models import ImportOptions
-from tests.conftest import build_library
+from tests.conftest import build_library, origins_for
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
 
@@ -152,13 +152,18 @@ def test_trash_restore_stores_music_dir_relative_paths(tmp_path: Path) -> None:
     music.mkdir()
     db_path = tmp_path / "library.db"
     lib = build_library(str(db_path), str(music))
+    # One album really on disk: a restore runs behind ``require_library_present``,
+    # and a music dir with nothing in it is what a dropped share looks like.
+    _seed_album(music / "Bystander" / "Album")
     trash = tmp_path / "trash"
     trash.mkdir()
     trashed = _seed_album(trash / "Artist - Album")
 
     result: list[object] = []
     thread = threading.Thread(
-        target=lambda: result.append(restore_album(lib, str(trashed), trash_dir=trash)),
+        target=lambda: result.append(
+            restore_album(lib, str(trashed), trash_dir=trash, origins_dir=origins_for(trash))
+        ),
         daemon=True,
     )
     thread.start()

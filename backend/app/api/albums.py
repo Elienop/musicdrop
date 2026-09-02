@@ -451,18 +451,23 @@ async def fetch_album_lyrics_endpoint(
         500: {
             "model": StructuredErrorDetail,
             "description": (
-                "Deleting the album failed, but its files are recoverable in the Trash folder."
+                "Deleting the album failed. The structured body's recovery line says what"
+                " state the files are in — it promises recovery from the Trash folder only"
+                " when something really reached it, and a delete that failed on the way"
+                " there leaves the album in the library."
             ),
         },
-        # Flat ErrorDetail, unlike the 500 beside it: this one aborts BEFORE any
-        # move or row drop, so there is no Trash state to describe and no
-        # recovery hint to give beyond remounting.
+        # Flat ErrorDetail, unlike the 500 beside it: what this status carries is
+        # one known fact (the album is still in the library) and one instruction,
+        # with no per-failure recovery line to choose between.
         503: {
             "model": ErrorDetail,
             "description": (
                 "The music library root is missing, empty or unreadable, so the delete is"
-                " refused before anything is moved or dropped (the guard against an"
-                " unmounted share). Nothing reached the Trash folder."
+                " refused (the guard against an unmounted share). The album is still in"
+                " the library. Its files are a separate question: the same guard answers"
+                " a share that drops DURING the move, and that can leave part of the"
+                " album under the Trash folder — check there before retrying."
             ),
         },
     },

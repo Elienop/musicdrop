@@ -208,7 +208,13 @@ def test_attended_replace_of_ghost_imports_new_and_drops_ghost(
     _patch_match(monkeypatch, artist="Radiohead", album="In Rainbows", rec=BeetsRec.medium)
 
     bridge = ImportBridge()
-    handle = _run_attended(BeetsImportRunner(lib, trash_dir=tmp_path / "trash"), source, bridge)
+    handle = _run_attended(
+        BeetsImportRunner(
+            lib, trash_dir=tmp_path / "trash", trash_origins_dir=tmp_path / "trash-origins"
+        ),
+        source,
+        bridge,
+    )
     _answer(bridge, _APPLY)
     handle.wait()
 
@@ -259,7 +265,13 @@ def test_attended_replace_two_ghost_albums_one_folder(
     _patch_match_per_item(monkeypatch)
 
     bridge = ImportBridge()
-    handle = _run_attended(BeetsImportRunner(lib, trash_dir=tmp_path / "trash"), src_artist, bridge)
+    handle = _run_attended(
+        BeetsImportRunner(
+            lib, trash_dir=tmp_path / "trash", trash_origins_dir=tmp_path / "trash-origins"
+        ),
+        src_artist,
+        bridge,
+    )
     for _ in range(2):
         _answer(bridge, _APPLY)
     handle.wait()
@@ -293,7 +305,13 @@ def test_attended_asis_replace_of_ghost(tmp_path: Path, monkeypatch: pytest.Monk
     _patch_match(monkeypatch, artist="blink-182", album="blink-182", rec=BeetsRec.none)
 
     bridge = ImportBridge()
-    handle = _run_attended(BeetsImportRunner(lib, trash_dir=tmp_path / "trash"), source, bridge)
+    handle = _run_attended(
+        BeetsImportRunner(
+            lib, trash_dir=tmp_path / "trash", trash_origins_dir=tmp_path / "trash-origins"
+        ),
+        source,
+        bridge,
+    )
     _answer(bridge, _ASIS)
     handle.wait()
 
@@ -330,7 +348,13 @@ def test_attended_replace_of_ghost_inlibrary_source(
     _patch_match(monkeypatch, artist="Radiohead", album="In Rainbows", rec=BeetsRec.medium)
 
     bridge = ImportBridge()
-    handle = _run_attended(BeetsImportRunner(lib, trash_dir=tmp_path / "trash"), source, bridge)
+    handle = _run_attended(
+        BeetsImportRunner(
+            lib, trash_dir=tmp_path / "trash", trash_origins_dir=tmp_path / "trash-origins"
+        ),
+        source,
+        bridge,
+    )
     _answer(bridge, _APPLY)
     handle.wait()
 
@@ -360,7 +384,11 @@ def test_attended_empty_source_after_prior_move(
 
     bridge = ImportBridge()
     handle = _run_attended(
-        BeetsImportRunner(lib, trash_dir=tmp_path / "trash"), empty_source, bridge
+        BeetsImportRunner(
+            lib, trash_dir=tmp_path / "trash", trash_origins_dir=tmp_path / "trash-origins"
+        ),
+        empty_source,
+        bridge,
     )
     handle.wait()
     # Nothing parked, nothing landed, ghost untouched: the confusing no-op retry.

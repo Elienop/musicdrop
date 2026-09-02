@@ -750,22 +750,34 @@ def test_attach_library_threads_bank_dir_to_resolved_runner(
             self,
             lib: object,
             trash_dir: object = None,
+            trash_origins_dir: object = None,
             bank_dir: object = None,
             playlists_dir: object = None,
         ) -> None:
             captured["lib"] = lib
             captured["trash_dir"] = trash_dir
+            captured["trash_origins_dir"] = trash_origins_dir
             captured["bank_dir"] = bank_dir
             captured["playlists_dir"] = playlists_dir
 
     monkeypatch.setattr(registry_mod, "BeetsImportRunner", _FakeRunner)
     reg = ImportJobRegistry()
     lib = object()
-    reg.attach_library(lib, Path("/t"), bank_dir=Path("/b"), playlists_dir=Path("/p"))
+    reg.attach_library(
+        lib,
+        Path("/t"),
+        bank_dir=Path("/b"),
+        playlists_dir=Path("/p"),
+        trash_origins_dir=Path("/o"),
+    )
     reg._resolve_runner()
     assert captured == {
         "lib": lib,
         "trash_dir": Path("/t"),
+        # Wired as a PAIR with trash_dir: the post-run Replace pass skips
+        # entirely unless both reach the session, so a registry that drops this
+        # one silently stops trashing replaced copies.
+        "trash_origins_dir": Path("/o"),
         "bank_dir": Path("/b"),
         "playlists_dir": Path("/p"),
     }

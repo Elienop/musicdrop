@@ -19,11 +19,24 @@ entry carries a dated correction block where the pass changed it._
 
 ## Next up
 
-1. **The data-safety slice** — the 2026-08-28 data-loss findings that destroy user files or
-   rows with no confirmation and no in-app recovery: the lyrics-backfill sidecar deletion
-   (critical, first entry below), the unmounted-share ghost delete, and the Trash rows
-   Restore can never restore (with the orphan-sweep feeder that fills them). All in the
-   beets adapter.
+1. ~~**The data-safety slice**~~ — **SHIPPED on `fix/undoable-deletes`** (2026-08-31): the
+   unmounted-share ghost delete and the unrestorable Trash rows, both closed below, plus the
+   README and `decisions.md` 27 (amended). Original entry kept for its correction record.
+
+   **The data-safety slice — now TWO findings, not three.** The 2026-08-28 data-loss findings
+   that destroy user files or rows with no confirmation and no in-app recovery. Its *critical*
+   member, the lyrics-backfill sidecar deletion, **shipped in #189** and is struck below; this
+   item still described it as open and pointed at it as "first entry below", a cross-reference
+   that stopped resolving when other entries closed above it. Corrected 2026-08-31 — re-derive
+   before picking this up, do not trust this sentence either. What remains, both open, both in
+   the beets adapter and both on the delete path:
+   * **the unmounted-share ghost delete** — the delete-path mount predicate accepts a root with
+     ANY entry, so a stray file on an unmounted share reads as "mounted" and the delete lands
+     in the mountpoint instead of the library;
+   * **the Trash rows Restore can never restore** — no origin path is recorded at trash time,
+     so a move-back restore is impossible (with the orphan-sweep feeder that fills those rows).
+   They are one slice because they are the same code path and the same failure mode: a delete
+   that cannot be undone.
 2. ~~**The small-fix slice**~~ — **SHIPPED as #191** (2026-08-28), grown mid-slice by the
    owner's advisory-channel pick and the NaN clamp: read postures (purge-unless-applying
    decided), `static_dir` warning, disk-sync album root, import restore leak + singletons
@@ -92,8 +105,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   and must be corrected when this merges.
   *(Original entry below, kept because its history and bisection are the record — but read its
   blast-radius claim against the re-measurement above.)*
-- **(historic) The same test** writes to `~/.config/beets/state.pickle` on every
-  full-suite run — bisected as the only offender, and present at least as far back as `643783f`,
+  *(historic detail, FIXED — kept for the bisection record)* The same test wrote to
+  `~/.config/beets/state.pickle` on every full-suite run — bisected as the only offender, and present at least as far back as `643783f`,
   so it predates the path-binding branch. Bounded: only beets' importer scratch state is written,
   the personal `library.db` md5 is unchanged and no `.bak` appears. Same class as the sibling entry
   above and as the 2026-08-15 incident where an agent's unguarded `beet --version` ran two pending
@@ -729,23 +742,172 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   query-keyed path formats disagreeing about disc nesting are read through the first
   album's shape (less protection, never more).
 
-- **Record the origin path at trash time so a move-back restore becomes possible.**
-  (Follow-up from #189.) The trash layer is a bare `shutil.move` with no metadata anywhere
-  — origin is verifiably unrecoverable, which is why a genuinely media-free Trash row's
-  only exit is permanent Empty. One sidecar record (or a manifest) at trash time makes a
-  true restore possible for every future row; old rows stay import-restore-only. Small,
-  wants a short design look at where the record lives (per-folder file vs one manifest)
-  and what Empty does with it.
+- ~~**Record the origin path at trash time so a move-back restore becomes possible.**~~
+  **FIXED** on `fix/undoable-deletes` (follow-up from #189). Every mover records the origin
+  in a SIBLING store — `<beets_dir>/trash-origins/<entry name>.json`, one file per Trash
+  entry, keyed on the entry's own name — mirroring freedesktop.org's `info/<name>.trashinfo`
+  beside `files/<name>`.
 
-- **The delete-path mount predicate accepts a root with ANY entry, so a stray file on a
-  local mountpoint masks a dropped share.** (Deferred 2026-08-28 by design call, from the
-  #189 security review.) `.stfolder`, `lost+found` or an empty leftover dir on the
-  mountpoint makes `require_library_root` pass while the share is gone, re-opening the
-  ghost drop for exactly that state — though #189's post-condition in `trash_album` now
-  catches the damage for the moved-nothing case. Proposal on file: a
-  `require_library_present()` variant sampling K live album dirs from the DB — strictly
-  stronger for delete; must NOT replace the shared default (disk-sync calls the predicate
-  per removal). Disk-sync accepted the identical residual for itself.
+  **SUPERSEDES the sidecar** this entry first recorded (`decisions.md` 27: "a sidecar over a
+  central manifest, so `Empty` needs no extra logic and a failure to record one folder cannot
+  touch another's"). Owner-approved 2026-09-01. `decisions.md` 27 needs amending in the same
+  breath so the next reader does not follow it back. What the sidecar got wrong: the folder
+  arrives from the music library, which the threat model treats as attacker-writable, and
+  `shutil.move` carries whatever it holds into Trash — so the record's own directory was
+  hostile, and every guard around it existed to buy back trust that a `/data` file gives for
+  free. The property the guard chain rested on ("our write wins the filename") failed twice
+  in three commits. It also broke beets' source pruning: a file left inside the folder makes
+  beets refuse to prune it, so the re-import a failed restore asks for left a husk behind.
+  Deleted with the sidecar: the symlink refusal, the `mkstemp`/`fchmod`/`os.replace`
+  choreography, the 64 KB size cap, the `PATH_MAX` origin-length cap and the
+  hostile-character denylist (~230 production lines, ~220 test lines). The NUL check is the
+  one member of that denylist kept — it is the only one whose consequence is a 500 rather
+  than a cosmetic one.
+
+  **What the name key costs, and where it is paid.** An entry removed OUTSIDE MusicDrop
+  leaves its record, and a later folder taking that name would inherit a stale origin that
+  steers a `rename()` — the same hazard inode keys were rejected for. Narrowed at the
+  ALLOCATOR: `trash._unique_trash_dest` treats a recorded name as occupied, so as long as the
+  store can be READ MusicDrop does not hand a second folder a name whose record is still on
+  disk, and for the names it hands out the residual is a burnt name (litter) rather than a
+  wrong restore. A store it cannot read reads as empty and the name goes out anyway — the
+  open entry below ("An unreachable origins store makes the allocator hand out a recorded
+  name") is that half, measured. **That is the whole of what it covers.** A folder reaching
+  `trash_dir` by ANOTHER route — a hand copy, a
+  restored backup, a sync client writing into the volume — asks the allocator nothing, so it
+  can land on a name whose record outlived its entry and adopt it: the row offers "Exact
+  restore" to a stranger's origin. Nothing detects that today; it is a stated residual (the
+  module docstring in `trash_origins` states it too), not a closed hazard. Deliberately NOT
+  closed by a reaper on the listing: "unlink every record with no matching entry" cannot tell
+  an empty Trash dir from one whose share just dropped, and would destroy every origin in
+  that state. The store IS swept, but only by `trash_manage.empty_all`, and only when that
+  call removed at least one entry AND found Trash empty afterwards — a Trash it emptied
+  itself, which is not the reading the listing would have to guess. So a record whose entry
+  left Trash outside MusicDrop waits for the next Empty all instead of being reaped where it
+  is noticed.
+
+  **Re-derive before quoting the old framing — "the Trash rows Restore can never restore"
+  was imprecise.** A Restore already existed; it re-imports through beets. The genuine gaps
+  were narrower: an audio-free folder (the art/booklet husks the orphan sweep relocates)
+  cannot be imported *at all*, so permanent Empty really was its only exit — that is the row
+  this feature rescues — and an album that CAN be imported was re-filed by the current path
+  templates rather than returned to where it came from.
+
+  What shipped:
+  * `restore_mode` on each row is `"move_back"`, `"import"` or `"refused"`, with
+    `restore_note` carrying a distinct sentence for each of the FOUR ways a row loses its
+    move-back (no record / files taken from a shared folder / origin no longer inside the
+    library / the Trash entry is itself a symlink) and `origin` shown for whichever of them
+    read a record, so the user can put it back by hand. The first three are still an
+    `"import"` and stay Restore-visible and explained, never a silent re-file; the fourth is
+    `"refused"` — Restore does nothing and neither does that row's own Empty, because
+    at this tip (2026-09-02) `resolve_trash_child` asks `_is_symlinked_entry` about every
+    component from the Trash dir down BEFORE it resolves anything, and both per-row routes
+    take their child from `api/trash._child_or_404`, which runs ahead of any move or
+    removal — so both answer 404 and the UI disables both controls
+    (`trash_manage._restore_fields`, `models/trash.TrashRestoreMode`).
+  * **No `"unavailable"` mode for `track_count == 0`**, deliberately: 0 means "nothing
+    parsed as an Item", not "no music", and encoding that guess as a contract value would
+    turn a UI hint into a promise. `trash_manage._audio_free_entries` warns against exactly
+    this. (The rule is about a GUESS. A third value `"refused"` was added later for the one
+    row whose refusal is KNOWN — a symlinked entry, which `resolve_trash_child` turns down
+    on both per-row routes, on the link itself and before anything is resolved. Known at
+    this tip; it was NOT known at the previous one, where a link pointing at a SIBLING
+    entry resolved inside Trash and passed. See the symlink residual below.)
+  * `trash_album` records `moved="items"` and never offers a move-back — its files came out
+    of a possibly-shared folder, and the re-import that must follow takes a DIRECTORY
+    (`ImportTaskFactory.paths` makes one album task per file when handed files), so it would
+    sweep the neighbours into the album.
+  * The record is written on the DESTINATION after the move: writing into the source would
+    mutate a folder in the user's library and strand a file there if the move then failed.
+    A failed record write can never fail a delete — it degrades the row to import-restore.
+
+  **Residual, stated in the code, not a bug:** the origin-inside-the-library test is
+  LEXICAL. An origin under a symlink that escapes the library passes it (measured). Resolving
+  both sides would close that and break a legitimate symlinked-subtree layout in the same
+  stroke, so the check answers "is this still my library", not "is this safe". It survives
+  the move to a trusted store on CONTRACT grounds rather than threat-model ones: deleting it
+  would start offering a `move_back` on rows that today carry the "not inside the current
+  music library" note, which is a wire change. (The 2026-08-31 audit note this replaces —
+  about a `chmod 444` plant in the MUSIC library winning against the app's failed overwrite —
+  is moot: there is no plantable filename left. It is kept in the git history, not here.)
+
+  **Second residual, unchanged in substance:** a symlinked Trash entry gets NO record.
+  At this tip (2026-09-02) `resolve_trash_child` refuses a child that IS a link, or any
+  path through one, on `_is_symlinked_entry` and before it resolves anything — so no route
+  in the app restores such a row, and a record would make the listing offer an "Exact
+  restore" whose button 404s. (The mechanism this sentence used to name — "refuses a child
+  resolving outside Trash" — was the weaker predicate, and it passed a link pointing at a
+  SIBLING entry, whose resolved path is inside Trash. Do not restore that wording.) The row
+  reads as `restore_mode: "refused"` instead, carrying a note that says where the album's
+  files really are — the SAME guard turns down this row's own Empty, so the UI disables
+  both per-row controls and only `DELETE /api/trash/all` removes the link.
+
+  **UI shipped in the same slice:** each row states its outlook before the user clicks — a
+  quiet "Exact restore. Goes back to <path>" or an amber-flagged "Approximate restore."
+  carrying the backend's own sentence, wired to the button via `aria-describedby`; a
+  `"refused"` row keeps that layout and swaps the label for "Can’t be restored.", since a
+  heading promising an approximate restore above a disabled button is the row contradicting
+  itself. Restore stays ENABLED on every row EXCEPT that one (owner, 2026-08-31: *"Keep it
+  enabled, warn clearly"*, amending `decisions.md` 27 — see that note for why the original
+  DISABLE ruling rested on a false premise).
+
+  **That one exception sits outside the ruling's own reason, and the owner has NOT been
+  asked about it.** The amendment reasons that disabling Restore *"would have deleted a
+  working recovery path in the name of safety"* — true of an `"import"` row, where the
+  re-import IS the recovery path and works. A symlinked row has no such path: at this tip
+  (2026-09-02) `resolve_trash_child` answers 404 to the Restore route AND to the per-row
+  Empty route, on the link itself and before either route moves or removes anything
+  (measured; pinned in `backend/tests/test_trash_listing_symlink_rows.py`), so the only
+  reachable outcome of either live control was an error, and disabling them deletes
+  nothing. That was NOT true at the previous tip, where the routes resolved first and a
+  link to a sibling entry got acted on — so the carve-out rests on this tip's guard, not on
+  a property the row always had. That is an argument for the carve-out, not an approval of
+  it — put it to the owner and record the answer here and in `decisions.md` 27.
+
+  The page header no longer promises "puts one back as-is", which was only ever true
+  for some rows. (Corrected: an earlier draft of this note, and the backend comment it came
+  from, claimed the UI disables Restore at `track_count == 0`. It does not and must not —
+  `SettingsTrashPage.tsx` shows a "may still work" hint precisely because 0 means "no readable
+  tags", not "no music". That 0-track hint is now re-worded rather than stacked on an exact
+  row, where it would have contradicted the promise one line above it. It is suppressed on a
+  `"refused"` row and nowhere else, and it keys on the REFUSAL rather than on the count.
+  Every refused row MusicDrop itself creates is 0-track — it trashes an album's own FOLDER
+  and `os.walk` does not descend a link — but a hand-placed link to a media FILE is listed
+  by `os.walk` among `files` and `Item.from_path` follows it, so that row arrives refused
+  with real tags (measured: `('linked.flac', 'refused', 1)`). Either shape gets the same
+  suppression, because the hint's stated cause — unreadable tags — is the wrong one on a
+  row that will not be restored at all.)
+
+- ~~**The delete-path mount predicate accepts a root with ANY entry, so a stray file on a
+  local mountpoint masks a dropped share.**~~ **FIXED** on `fix/undoable-deletes`
+  (deferred 2026-08-28 by design call, from the #189 security review). `.stfolder`,
+  `lost+found` or an empty leftover dir on the mountpoint made `require_library_root` pass
+  while the share was gone, re-opening the ghost drop for exactly that state.
+  **What shipped differs from the proposal on file in three ways — read this, not the old
+  wording:**
+  * **One hit, never "some/all".** The proposal said "sampling K live album dirs … some/all
+    must exist". Requiring all K would lock the user out of deleting the very ghost row they
+    are cleaning up: one legitimately-deleted album in the sample and the delete is refused.
+    Accepting the FIRST surviving folder is the max-power/min-false-positive rule — with the
+    share gone every album misses at once, so the true positive is unweakened.
+  * **The sample is re-rolled (`ORDER BY RANDOM()`), not the first K rowids.** A fixed sample
+    makes a false refusal *permanent*; a re-rolled one lets a healthy-but-stale library
+    recover on the next attempt.
+  * **Two call sites, not the whole delete path** — `trash_album_folder`'s missing-folder
+    ghost branch and `_require_move_happened`'s ghost arm. Those are the only arms that drop
+    rows on nothing but an absence. `trash_album`'s pre-check and `delete_artist`'s up-front
+    check deliberately keep the cheap predicate (the post-condition covers them, and
+    upgrading them would pay the sample per album in a fan-out).
+
+  Direct mount checks were evaluated and **rejected on measurement, not taste**:
+  `os.path.ismount()` is `False` for a healthy library on a plain local dir *and* for the
+  very common "library is a subdirectory of the mount" layout, and `True` for the Docker
+  bind mount (`docker-compose.yml:32`) whether or not the share behind it is alive. It
+  discriminates in neither direction; `st_dev`-vs-parent is the same computation. The
+  shared default was NOT made stricter — `require_library_root` is byte-identical, pinned
+  by `test_require_library_root_never_samples_the_database` and a syscall-count assertion,
+  because disk-sync calls it per removal and accepted the identical residual for itself.
 
 - **`useDiskSync.ts:45` throws a hardcoded "Library folder unavailable…" for ANY 503,
   discarding the server's message.** (Found during #189.) The backend now differentiates
@@ -845,15 +1007,170 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - **`MUSICDROP_TRASH_DIR` is an unvalidated `rmtree` root.** (Found 2026-08-28.)
   `resolve_trash_dir` returns `Path(settings.trash_dir).resolve()` with no containment
-  check (`app/beets/trash.py:245-247`), and `empty_all` then `shutil.rmtree`s every child
-  of whatever came back (`trash_manage.py:170-174`). Nothing asserts the trash dir is not
+  check (`app/beets/trash.py`), and `empty_all` then `shutil.rmtree`s every child
+  of whatever came back (`app/beets/trash_manage.py`). Symbols, not line numbers: both
+  functions have since moved by hundreds of lines. Nothing asserts the trash dir is not
   the music root, not inside it, and not the beets dir — and pointing trash at the music
   dataset (so deletes are same-filesystem renames instead of cross-device copies; the
-  default sits on the small `/data` volume per README:127) is a plausible operator move one
+  default sits on the small `/data` volume, which README's "Backup & restore" calls the
+  only GB-scale item there) is a plausible operator move one
   typo away from `MUSICDROP_TRASH_DIR=/music`. Every other destructive path here has a
   containment check (`resolve_trash_child`, `_folder_is_shared`,
   `orphans._excluded_predicate`); the trash root has none. Small: refuse at startup when
   trash resolves inside or equal to the music dir or the beets dir.
+
+- **The orphan sweep's ignore list does not protect an ignored dir's ANCESTORS.** (Found
+  2026-09-02, same class as the entry above: a missing containment check between the
+  music root and a `/data`-side directory.) Trigger: `MUSICDROP_BEETS_DIR` pointed at a path
+  *inside* the music library, plus a library-scope Reorganize. Symbols, not line numbers:
+  `reorganize._ignore_dirs` hands the store and the export dir to
+  `orphans.find_orphan_folders`, whose `_excluded_predicate` skips those subtrees — and
+  `_library_orphans` then reports the TOP-MOST audio-empty ancestor of the excluded dir.
+  There is no upward climb in library scope (read at `backend/app/beets/orphans.py:130-150`,
+  2026-09-02): every dir the walk recorded is judged on its own, and it is reported when it
+  holds a file, holds no audio anywhere beneath it, is not named in `ART_DIR_NAMES` (`:136`),
+  its parent holds no audio DIRECTLY (`:144` — the multi-disc art guard, so an album's own
+  `Scans/` is spared), and its parent is either the root or holds audio somewhere beneath it
+  (`:148`). "Top-most" falls out of that last condition rather than out of a walk: an
+  audio-empty parent gets reported instead of its child. So the dir that gets reported need
+  not be the one holding the content that made it non-empty. (Seeds mode `_seed_orphan`
+  (`:168-191`) IS a climb, and this trigger — a library-scope Reorganize — takes the other
+  path.)
+  **Which var triggers it alone, measured on `fix/undoable-deletes`** (probe: build a music
+  tree with one healthy album, then call `find_orphan_folders(music, seeds=None, ...)` — one
+  call per layout, so re-deriving it costs nothing):
+  * `MUSICDROP_BEETS_DIR=<music>/beets` → `['beets']`. It is the only one that fires
+    unaided, and not really as an ancestor: beets plants `library.db` and `config.yaml`
+    directly in that dir, so `beets_dir` has content of its own and is reported DIRECTLY —
+    identically with and without the store exclusion.
+  * `MUSICDROP_TRASH_ORIGINS_DIR=<music>/origins` → `[]`. Its parent is the root, and the
+    root is skipped.
+  * `MUSICDROP_TRASH_ORIGINS_DIR=<music>/data/origins` → `[]`. An excluded subtree is never
+    recorded, so an only-child parent contributes no `has_file` and reads as empty; empty
+    dirs are skipped.
+  * the same placement with one file of the parent's own (`<music>/data/notes.txt`) →
+    `['data']`. That is the hole: an ancestor with other content.
+  * `MUSICDROP_TRASH_ORIGINS_DIR=<music>/data/sub/origins` with the file one level DOWN
+    (`<music>/data/sub/notes.txt`) → `['data']`, **not** `['data/sub']` (measured
+    2026-09-02 at this tip). This is the case that tells the two readings apart: `data`
+    holds nothing of its own, so what is reported is the top of the audio-empty run, not
+    the dir the content sits in. Whatever ends up under Trash is that whole subtree.
+  * `MUSICDROP_PLAYLISTS_EXPORT_DIR=<music>/exports` → `[]`, for the reason above.
+
+  So the two pure-container vars need at least one non-excluded file somewhere under a
+  non-root ancestor before anything is reported at all — and what gets reported then is the
+  top of the audio-empty run above that file, which can be several levels higher than the
+  ignored dir. Blast radius depends on where Trash sits, and
+  `_ignore_dirs`' docstring states both outcomes: in the DEFAULT
+  layout (`trash_dir` = `<beets_dir>/trash`) the move is a directory into its own subtree,
+  `shutil.move` raises, and `reorganize_jobs.runner`'s `except OSError: continue` swallows
+  it — nothing is lost; with `MUSICDROP_TRASH_DIR` pointing outside `beets_dir`,
+  `library.db`, `config.yaml` and every origin record land under Trash in one pass.
+  **Not reachable in the shipped image**: `Dockerfile` sets `MUSICDROP_BEETS_DIR=/data/beets`
+  and `docker-compose.yml` mounts music at `/music`, so the two are separate volumes; it
+  needs an operator override. Not fixed on `fix/undoable-deletes`, and the docstring argues
+  against the obvious fix — sparing every ancestor only moves the report one level up when
+  the ignored dir is nested deeper, so it changes what the finder REPORTS rather than
+  adding a guard. If it is worth closing, the cheap version is the same shape as the entry
+  above: refuse at startup when `beets_dir` (or either configured store) resolves inside
+  the music dir.
+
+- **A FLAT library layout defeats the delete path's presence check — it samples the music
+  root against itself.** (Found 2026-09-02, on `fix/undoable-deletes`, while re-reading the
+  check that entry-above's sibling shipped.) Trigger: a `paths.default` template with no
+  directory component — beets' own `$title` is the shortest, and the template is editable
+  from the app (**Settings → Naming**, `config_editor` writes `paths:` straight back into
+  `config.yaml`), so this is a supported layout and not a damaged install. Mechanism, by
+  symbol: `library._sampled_library_dirs` takes `os.path.dirname` of each sampled item
+  path, which for a single-component path IS the library root, so
+  `require_library_present` ends up asking `os.path.isdir(<music root>)` — the very
+  question `require_library_root` already answered, and the one a stray entry on a dropped
+  share's mountpoint answers wrongly.
+  **Measured on shipped code** (no monkeypatching; a 200-row library built through beets'
+  own `Album`/`Item`, `.stfolder` the only thing on the mountpoint): flat layout →
+  `_sampled_library_dirs` returns the music root 5 times out of 5 and
+  `require_library_present` ACCEPTS; the same 200 rows re-filed under
+  `$albumartist/$album/$title` → `LibraryRootUnavailableError`. Blast radius: the two arms
+  that drop rows on nothing but an absence — `trash.trash_album_folder`'s missing-folder
+  branch and `trash._require_move_happened`'s ghost arm — so on a dropped share a flat
+  library is erased one delete at a time, keeping nothing in Trash. It needs the share to
+  drop AND the mountpoint to hold an entry AND a flat layout; each is ordinary on its own.
+  **Not fixed here, because the obvious fix has a cost that needs a design call.** Skipping
+  rows whose `dirname` is the library root leaves a flat library with an EMPTY sample, and
+  the empty-sample arm accepts by design (it has no evidence either way) — so the "fix"
+  silently downgrades a flat library to the cheap root predicate, i.e. removes its presence
+  check rather than correcting it. The alternatives all cost something too: sampling the
+  item FILE rather than its folder makes the check stricter for every layout (a single
+  legitimately-deleted track then fails a sample slot, and the short-circuit hides how
+  often); refusing flat layouts outright is a product decision. **Ask the owner which
+  trade to take** before writing any of them.
+
+- **An unreachable origins store makes the allocator hand out a recorded name, and the next
+  folder inherits the first one's origin.** (Found 2026-09-02, on `fix/undoable-deletes`;
+  the code states it as a residual — this entry is the tracker's copy, not a second
+  finding.) Trigger: an origins directory that exists but cannot be searched — a bad
+  `PUID`/`PGID`, a restored backup, a stray `chmod`. Mechanism, by symbol:
+  `trash_origins.origin_recorded` catches `OSError` from `Path.exists()` and answers
+  `False`, and `trash_origins.read_trash_origin` returns `None` for the same fault, so the
+  store's two questions AGREE on "nothing here"; `trash._unique_trash_dest` then hands out
+  a name whose record is still on disk, and once the permissions are repaired that second
+  folder's row reads the FIRST folder's record and offers to move it there. Measured at
+  mode `0600` as a non-root user, driven through `_unique_trash_dest`: `Dummy (1)` with the
+  store readable, `Dummy` under the fault. Blast radius: one wrong "Exact restore" per name
+  reused while the fault lasts — the move-back writes into the music library, so the wrong
+  answer is a folder landing at a stranger's path. The payload's `name` guard cannot catch
+  it: the two folders share a name.
+  **Not fixed here, and failing closed was measured worse:** answering `True` on `OSError`
+  leaves the allocator with no exit at all, since every candidate then reads occupied
+  (measured: 111,939 candidates in one second, still climbing). At this tip the case gets a
+  `logger.warning` on that arm and nothing else, which is a trace, not a close. **Design
+  call for the owner:** refuse the delete outright while the store is unreachable (a
+  permission bug then blocks deleting anything), or give each record a fingerprint of the
+  entry it describes so a mismatched pair is detectable on read (a schema change, and it
+  does not help the case above, where the names match). Neither is obviously right.
+
+- **A plugin listener that raises on `album_removed` leaves the folder in Trash with its
+  album row already gone.** (Found 2026-09-02, on `fix/undoable-deletes`.) Trigger: a
+  loaded beets plugin listening on `album_removed` and raising. **Measured how far away
+  that is**: no plugin bundled with beets 2.13.1 listens on it (`album_removed` appears in
+  the installed tree only at the emitter and in the event list), and the app's own editor
+  offers a 13-name allowlist (`models/config_editor.PluginName`) containing none — so it
+  takes a third-party plugin installed into the image and enabled by editing `config.yaml`
+  by hand (unknown keys survive the editor's round-trip). Listed anyway because the
+  consequence is the one state the delete path cannot name. Mechanism, by symbol:
+  `beets.library.Album.remove` deletes the album row (`super().remove()`) and THEN calls
+  `plugins.send("album_removed", ...)`, and `beets.plugins.send` wraps no handler in
+  `try/except` (beets 2.13.1) — so a raising listener unwinds out of
+  `trash.trash_album_folder` AFTER `shutil.move` and `_record_origin` have both run, and
+  the beets transaction commits on the way out even while unwinding. Blast radius: that
+  album's folder is in Trash with a valid origin record, its album row is gone and its item
+  rows are still there (they are removed after the signal). Nothing in `delete.py` can see
+  it — both `mutated` and `moved` count RETURNS from the primitive, so the fan-out's
+  message cannot name it. **What shipped is the honest sentence, not the fix**:
+  `delete._recovery`'s fallback tells the user to *check* the Trash folder and what each
+  answer means, instead of the old wording that said nothing had moved. **Not fixed here**:
+  putting the folder back on this failure means an undo path in the primitive, and a failed
+  undo has to replace the original error rather than hide it. **Design call for the owner:**
+  is an automatic move-back worth that machinery for a fault only a third-party plugin can
+  cause, or is "check Trash" the right answer? Ask before building it.
+
+- **The "keep Restore enabled" ruling now has a carve-out the owner has not been asked
+  about.** (Raised 2026-09-02, on `fix/undoable-deletes`.) `decisions.md` 27, as
+  amended by the owner on 2026-08-31 (*"Keep it enabled, warn clearly"*), reasons that
+  disabling Restore *"would have deleted a working recovery path in the name of safety"*.
+  That reason holds for an `"import"` row and does not reach a **symlinked** row, whose
+  per-row Restore and per-row Empty are both refused by `trash_manage.resolve_trash_child`
+  at this tip — so the row ships with both controls disabled, which is the shape the ruling
+  otherwise forbids. The argument for the carve-out is written out in the Trash feature
+  block above (the only reachable outcome of either live control was a 404, so disabling
+  them deletes nothing). **That is an argument, not an approval: the owner has NOT been
+  asked, and no answer is on file.** Put it to them and record the answer here and in
+  `decisions.md` 27. Quote 27 accurately when you do: the phrase "every row" is nowhere in
+  it (grepped 2026-09-02). Its amendment is headed *"old rows keep Restore ENABLED, with the
+  warning stated"* and states the shipped shape as *"`restore_mode` is `"move_back"` or
+  `"import"`, Restore stays clickable in both"* — it names no third value, so a `"refused"`
+  row is outside what 27 decided rather than something it forbids. What the carve-out still
+  has to clear is 27's REASON, quoted above, not its wording.
 
 - **Vacuous-pin audit: sized 2026-08-28; the four confirmed pins FIXED in #190** (two dead
   absence needles in the reorganize adapter replaced with positive pins on the exact

@@ -11,13 +11,15 @@ from beets.library import Item, Library
 
 from app.beets.trash import trash_album
 from app.beets.trash_manage import (
+    TrashEmptyPartialError,
     empty_all,
     empty_one,
     list_trashed_albums,
     resolve_trash_child,
     restore_album,
 )
-from tests.conftest import build_library
+from app.beets.trash_origins import read_trash_origin, write_trash_origin
+from tests.conftest import build_library, origins_for
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
 
@@ -52,6 +54,29 @@ def _new_library(tmp_path: Path) -> Library:
     return build_library(str(tmp_path / "library.db"), str(tmp_path / "music"))
 
 
+def _with_bystander(lib: Library, tmp_path: Path) -> Library:
+    """``lib`` plus one unrelated album that really exists on disk.
+
+    Every restore writes INTO the music library, so it runs behind
+    ``require_library_present`` — and a library with no album anywhere on disk
+    is indistinguishable from one whose share has dropped, which is exactly what
+    that guard refuses. A library with nothing in it is therefore not a neutral
+    fixture for a restore; it is the unmounted-share fixture, and a test that
+    used one was asserting restore behaviour through a guard that should have
+    stopped it.
+
+    The bystander is what a real library has and this one did not. Added here
+    rather than inside ``_new_library`` because the listing tests that share
+    that helper count albums, and a silent extra row would change what they mean.
+    """
+    dst = tmp_path / "music" / "Bystander" / "Album" / "01 t.flac"
+    _tagged_flac(dst, artist="Bystander", album="Album", title="T", track=1)
+    item = Item(album="Album", albumartist="Bystander", artist="Bystander", title="T", track=1)
+    item.path = os.fsencode(str(dst))
+    lib.add_album([item]).store()
+    return lib
+
+
 def test_list_groups_whole_folder_album(tmp_path: Path) -> None:
     trash = tmp_path / "trash"
     _tagged_flac(
@@ -68,7 +93,9 @@ def test_list_groups_whole_folder_album(tmp_path: Path) -> None:
         title="Come",
         track=2,
     )
-    albums = list_trashed_albums(trash)
+    albums = list_trashed_albums(
+        trash, origins_dir=origins_for(trash), music_dir=str(tmp_path / "music")
+    )
     assert len(albums) == 1
     assert albums[0].album_artist == "2 Brothers"
     assert albums[0].album == "Dreams"
@@ -94,7 +121,12 @@ def test_list_groups_per_item_layout_and_multidisc(tmp_path: Path) -> None:
     _tagged_flac(
         trash / "Adele - 25" / "CD2" / "01 b.flac", artist="Adele", album="25", title="b", track=1
     )
-    albums = {a.album: a for a in list_trashed_albums(trash)}
+    albums = {
+        a.album: a
+        for a in list_trashed_albums(
+            trash, origins_dir=origins_for(trash), music_dir=str(tmp_path / "music")
+        )
+    }
     assert set(albums) == {"Amnesiac", "25"}
     # Per-item layout keys on the top dir under trash (the $albumartist dir
     # holding the one album) — still reachable for restore/empty.
@@ -134,11 +166,11 @@ def test_trash_album_same_artist_siblings_stay_distinct(tmp_path: Path) -> None:
     third = next(a for a in lib.albums() if a.album == "Third")
 
     with lib.transaction():
-        trash_album(lib, dummy, trash_dir=trash)
+        trash_album(lib, dummy, trash_dir=trash, origins_dir=origins_for(trash))
     with lib.transaction():
-        trash_album(lib, third, trash_dir=trash)
+        trash_album(lib, third, trash_dir=trash, origins_dir=origins_for(trash))
 
-    albums = list_trashed_albums(trash)
+    albums = list_trashed_albums(trash, origins_dir=origins_for(trash), music_dir=str(music))
     by_album = {a.album: a for a in albums}
     assert set(by_album) == {"Dummy", "Third"}
     assert len(albums) == 2
@@ -163,24 +195,33 @@ def test_list_keeps_same_tagged_siblings_distinct(tmp_path: Path) -> None:
             title="Dreams",
             track=1,
         )
-    albums = list_trashed_albums(trash)
+    albums = list_trashed_albums(
+        trash, origins_dir=origins_for(trash), music_dir=str(tmp_path / "music")
+    )
     assert {a.folder for a in albums} == {"Dreams", "Dreams (1)"}
     assert all(a.folder != "." for a in albums)
 
 
 def test_list_missing_dir_is_empty(tmp_path: Path) -> None:
-    assert list_trashed_albums(tmp_path / "nope") == []
+    assert (
+        list_trashed_albums(
+            tmp_path / "nope",
+            origins_dir=tmp_path / "trash-origins",
+            music_dir=str(tmp_path / "music"),
+        )
+        == []
+    )
 
 
 def test_restore_imports_as_is_and_empties_folder(tmp_path: Path) -> None:
-    lib = _new_library(tmp_path)
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
     trash = tmp_path / "trash"
     folder = trash / "2 Brothers - Dreams"
     _tagged_flac(
         folder / "01 Dreams.flac", artist="2 Brothers", album="Dreams", title="Dreams", track=1
     )
 
-    result = restore_album(lib, str(folder), trash_dir=trash)
+    result = restore_album(lib, str(folder), trash_dir=trash, origins_dir=origins_for(trash))
 
     assert result.restored is True
     assert result.reason == "restored"
@@ -199,14 +240,14 @@ def test_restore_lands_the_album_when_the_user_config_disables_autotag(tmp_path:
     # zero outcomes and reports could_not_restore: a successful restore the UI
     # tells the user failed, with the files already gone from Trash.
     config["import"]["autotag"] = False
-    lib = _new_library(tmp_path)
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
     trash = tmp_path / "trash"
     folder = trash / "2 Brothers - Dreams"
     _tagged_flac(
         folder / "01 Dreams.flac", artist="2 Brothers", album="Dreams", title="Dreams", track=1
     )
 
-    result = restore_album(lib, str(folder), trash_dir=trash)
+    result = restore_album(lib, str(folder), trash_dir=trash, origins_dir=origins_for(trash))
 
     assert result.restored is True
     assert result.reason == "restored"
@@ -222,7 +263,7 @@ def test_restore_lands_an_album_whose_folder_name_is_not_valid_utf8(tmp_path: Pa
     # paths, the move — has to stay bytes-exact, or an album is strandable in
     # Trash with no way to get it back. Asserts the FILES landed, not just the
     # status field.
-    lib = _new_library(tmp_path)
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
     trash = tmp_path / "trash"
     trash.mkdir(parents=True)
     raw_folder = os.path.join(os.fsencode(str(trash)), b"Old Caf\xe9")
@@ -235,7 +276,9 @@ def test_restore_lands_an_album_whose_folder_name_is_not_valid_utf8(tmp_path: Pa
         track=1,
     )
 
-    result = restore_album(lib, os.fsdecode(raw_folder), trash_dir=trash)
+    result = restore_album(
+        lib, os.fsdecode(raw_folder), trash_dir=trash, origins_dir=origins_for(trash)
+    )
 
     assert result.restored is True
     assert result.reason == "restored"
@@ -246,7 +289,7 @@ def test_restore_lands_an_album_whose_folder_name_is_not_valid_utf8(tmp_path: Pa
 
 
 def test_restore_duplicate_skips_and_keeps_files(tmp_path: Path) -> None:
-    lib = _new_library(tmp_path)
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
     # An album with the same identity is already in the library.
     existing = Item(
         album="Dreams", albumartist="2 Brothers", artist="2 Brothers", title="Dreams", track=1
@@ -262,7 +305,7 @@ def test_restore_duplicate_skips_and_keeps_files(tmp_path: Path) -> None:
         folder / "01 Dreams.flac", artist="2 Brothers", album="Dreams", title="Dreams", track=1
     )
 
-    result = restore_album(lib, str(folder), trash_dir=trash)
+    result = restore_album(lib, str(folder), trash_dir=trash, origins_dir=origins_for(trash))
 
     assert result.restored is False
     assert result.reason == "already_in_library"
@@ -281,6 +324,32 @@ def test_resolve_trash_child_guards_traversal(tmp_path: Path) -> None:
         resolve_trash_child(trash, ".")  # the Trash root itself
 
 
+def test_resolve_trash_child_refuses_a_traversal_whose_target_exists(tmp_path: Path) -> None:
+    """The traversal above is refused by the EXISTENCE check, not by containment.
+
+    ``../escape`` names nothing on disk, so ``not exists(dest)`` answers it and
+    the resolved ``is_relative_to`` check is never the reason — measured on this
+    branch before this test existed: with that check deleted the rest of the
+    suite stayed green (2998 passed, this one deselected), and
+    ``resolve_trash_child(trash, "../..")`` handed back the Trash dir's
+    GRANDPARENT — ``<beets dir>``'s own parent in the shipped layout.
+
+    A sibling of the Trash dir that really exists is the input only containment
+    can refuse. It is the ordinary shape too: ``<beets dir>`` holds ``trash`` and
+    ``trash-origins`` side by side, so ``../trash-origins`` is a real directory
+    one ``..`` away from every Trash entry the UI lists.
+    """
+    trash = tmp_path / "trash"
+    (trash / "Album").mkdir(parents=True)
+    sibling = tmp_path / "trash-origins"
+    sibling.mkdir()
+
+    with pytest.raises(ValueError):
+        resolve_trash_child(trash, "../trash-origins")
+
+    assert sibling.is_dir(), "and the refusal happened before anything touched it"
+
+
 def test_resolve_trash_child_refuses_an_overlong_name(tmp_path: Path) -> None:
     # A >255-byte name component: Path.exists() RAISES OSError(ENAMETOOLONG) —
     # it only swallows ENOENT/ENOTDIR/EBADF/ELOOP. The resolver's contract is
@@ -297,10 +366,143 @@ def test_empty_one_and_all(tmp_path: Path) -> None:
     trash = tmp_path / "trash"
     (trash / "A").mkdir(parents=True)
     (trash / "B").mkdir(parents=True)
-    assert empty_one(str(trash / "A")).removed == 1
+    assert empty_one(str(trash / "A"), origins_dir=origins_for(trash)).removed == 1
     assert not (trash / "A").exists()
-    assert empty_all(trash).removed == 1  # B remains
+    assert empty_all(trash, origins_dir=origins_for(trash)).removed == 1  # B remains
     assert list(trash.iterdir()) == []
+
+
+def test_empty_all_finishes_what_it_can_and_names_what_it_could_not(tmp_path: Path) -> None:
+    """One unremovable entry used to abort the sweep AND lose the count.
+
+    Measured before this: three entries, one of them mode 0500, and the loop
+    raised ``PermissionError`` with one entry removed, one still there, and one
+    never reached — the user told nothing at all about which. Nothing was ever
+    at risk (every entry is either gone or still in Trash); the count was.
+
+    Asserts the two things the message has to carry: how many really went, and
+    WHICH are still there — a bare number does not tell the user where to look.
+    The removed entries' records go with them and the survivor keeps its own, or
+    a later retry would restore into a folder whose origin had been forgotten.
+    """
+    if os.getuid() == 0:
+        pytest.skip("running as root: a read-only dir does not deny writes")
+    trash, origins = tmp_path / "trash", tmp_path / "origins"
+    trash.mkdir()
+    origins.mkdir()
+    for name in ("A Album", "B Album", "C Album"):
+        (trash / name).mkdir()
+        (trash / name / "t.flac").write_bytes(b"\x00")
+        write_trash_origin(origins, name, origin=f"/music/{name}", moved="folder")
+    (trash / "B Album").chmod(0o500)
+
+    try:
+        with pytest.raises(TrashEmptyPartialError) as ei:
+            empty_all(trash, origins_dir=origins)
+    finally:
+        (trash / "B Album").chmod(0o700)  # or the tmp_path teardown cannot clean up
+
+    assert "removed 2 of 3" in str(ei.value)
+    assert "'B Album'" in str(ei.value)
+    # The tail quotes an OSError's own words, so the sentence is finished here
+    # (``_one_full_stop``) rather than left open or given a second stop. Written
+    # against the stripped tail so BOTH failures are caught in one assert: no
+    # stop at all, and the ".." an unconditional append renders.
+    said = str(ei.value)
+    assert said == f"{said.rstrip('.')}.", "the message must end in exactly one full stop"
+    assert [p.name for p in trash.iterdir()] == ["B Album"]
+    assert read_trash_origin(origins, "B Album") is not None  # the survivor keeps its origin
+    assert read_trash_origin(origins, "A Album") is None
+    assert read_trash_origin(origins, "C Album") is None
+
+
+def test_empty_all_clears_the_store_once_trash_is_empty(tmp_path: Path) -> None:
+    """The one class of leftover record no per-row action can reach.
+
+    ``delete_trash_origin`` is owed by every route that takes an entry OUT of
+    Trash, so it covers every entry MusicDrop itself removes. An entry that
+    leaves by ANOTHER route — a file manager, an SMB client, ``docker volume
+    rm`` — never reaches it, and its record then survived every Empty and every
+    Restore for good, holding its name against a future album
+    (``trash._unique_trash_dest`` reads a recorded name as occupied) and
+    standing ready to be adopted by a folder that lands on that name.
+
+    An Empty all that finishes is the one moment the answer is known for the
+    whole store: nothing is in Trash, so no record describes anything. The live
+    entry beside it is what keeps the assertion from being about the orphan
+    alone — the sweep has to be the LAST thing, after the per-child drops, or
+    the row that was really there loses its record while its folder is still in
+    Trash.
+    """
+    trash, origins = tmp_path / "trash", tmp_path / "origins"
+    trash.mkdir()
+    origins.mkdir()
+    (trash / "Live Album").mkdir()
+    write_trash_origin(origins, "Live Album", origin="/music/Live Album", moved="folder")
+    # Its entry left Trash without this app noticing, so nothing ever dropped it.
+    write_trash_origin(origins, "Gone Album", origin="/music/Gone Album", moved="folder")
+
+    assert empty_all(trash, origins_dir=origins).removed == 1
+
+    assert list(trash.iterdir()) == []
+    assert list(origins.iterdir()) == [], "an emptied Trash must leave an empty store"
+
+
+def test_empty_all_keeps_every_record_when_it_removed_nothing(tmp_path: Path) -> None:
+    """Emptiness alone must NOT authorise the sweep, and this is the case that says why.
+
+    A ``trash_dir`` on a share that has dropped presents as an empty directory,
+    so a sweep gated on "Trash is empty afterwards" alone would run here and
+    destroy the origins of every entry still sitting on the real volume — the
+    exact loss the per-child drop was written to avoid. Having REMOVED an entry
+    is the evidence that the directory walked was the real one.
+
+    Modelled at the only thing ``empty_all`` can see, an empty ``trash_dir``: it
+    takes no library and asks nothing about mounts, so there is no
+    ``require_library_present`` in this path to build a bystander album for. A
+    user who has already emptied Trash produces the identical call, and keeping
+    the records is the right answer for them too — the next Empty all that
+    removes something clears them.
+    """
+    trash, origins = tmp_path / "trash", tmp_path / "origins"
+    trash.mkdir()
+    origins.mkdir()
+    write_trash_origin(origins, "Real Album", origin="/music/Real Album", moved="folder")
+
+    assert empty_all(trash, origins_dir=origins).removed == 0
+
+    record = read_trash_origin(origins, "Real Album")
+    assert record is not None, "a Trash dir that reads as empty is not proof that it is"
+    assert record.origin == "/music/Real Album"
+
+
+def test_empty_all_clears_a_symlinked_entry_without_following_it(tmp_path: Path) -> None:
+    """One symlinked entry used to make Trash impossible to empty, permanently.
+
+    ``is_dir()`` follows symlinks and ``shutil.rmtree`` refuses one, so the loop
+    raised ``OSError`` and every retry raised it again -- and ``empty_one``
+    cannot clear it either, because ``resolve_trash_child`` refuses a child that
+    is a link before resolving it. Nothing hostile is needed to get
+    one there: an album whose own folder is a symlink into another volume is
+    trashed as a symlink, since ``shutil.move`` preserves them.
+
+    Both halves are asserted, and the second is the one that matters more: the
+    link is REMOVED, and the directory it pointed at still has its contents.
+    Following it would ``rm -rf`` a directory that merely happens to be pointed
+    at, which is worse than the wedge this fixes.
+    """
+    trash, elsewhere = tmp_path / "trash", tmp_path / "elsewhere"
+    trash.mkdir()
+    elsewhere.mkdir()
+    (elsewhere / "keepme.txt").write_text("not Trash's to delete")
+    (trash / "Real Album").mkdir()
+    (trash / "Real Album" / "a.flac").write_bytes(b"\x00")
+    (trash / "Symlinked Album").symlink_to(elsewhere, target_is_directory=True)
+
+    assert empty_all(trash, origins_dir=origins_for(trash)).removed == 2
+
+    assert list(trash.iterdir()) == []
+    assert (elsewhere / "keepme.txt").is_file()
 
 
 def test_empty_one_removes_a_loose_file(tmp_path: Path) -> None:
@@ -309,5 +511,5 @@ def test_empty_one_removes_a_loose_file(tmp_path: Path) -> None:
     trash = tmp_path / "trash"
     trash.mkdir()
     (trash / "loose.flac").write_bytes(b"x")
-    assert empty_one(str(trash / "loose.flac")).removed == 1
+    assert empty_one(str(trash / "loose.flac"), origins_dir=origins_for(trash)).removed == 1
     assert not (trash / "loose.flac").exists()

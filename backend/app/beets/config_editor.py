@@ -730,7 +730,7 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
         # api.bank → beets.duplicates → beets.config_editor cycle. Inside the
         # swap lock, after the state swap, mirroring the lifespan wiring.
         from app.api.bank import get_bank_dir
-        from app.beets.trash import resolve_trash_dir
+        from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
         from app.import_jobs.registry import get_registry
         from app.playlists.store import get_playlists_dir
 
@@ -739,6 +739,7 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
             resolve_trash_dir(settings, new),
             bank_dir=get_bank_dir(),
             playlists_dir=get_playlists_dir(),
+            trash_origins_dir=resolve_trash_origins_dir(settings, new),
         )
 
     return build_config_snapshot(new)

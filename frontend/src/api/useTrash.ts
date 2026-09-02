@@ -27,8 +27,12 @@ export function useTrashList() {
   });
 }
 
-/** Re-import a trashed album as-is. On success it may rejoin the library, so
- * blow the cache (roster/grids/stats) AND refresh the trash list. */
+/** Put a trashed album back. NOT always "as-is": the row's `restore_mode`
+ * decides whether the backend moves the folder to its recorded origin or
+ * re-imports it under the current naming rules — see `RestoreOutlook` in
+ * SettingsTrashPage, which says which before the user commits. On success it
+ * may rejoin the library, so blow the cache (roster/grids/stats) AND refresh
+ * the trash list. */
 export function useRestoreTrash() {
   const qc = useQueryClient();
   return useMutation<RestoreResult, Error, string>({

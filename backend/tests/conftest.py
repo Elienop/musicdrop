@@ -131,6 +131,19 @@ def _resolve_hosts_public(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(socket, "getaddrinfo", fake)
 
 
+def origins_for(trash_dir: Path) -> Path:
+    """The Trash origin store that belongs beside ``trash_dir``.
+
+    Production resolves the two independently from settings
+    (``app.beets.trash.resolve_trash_dir`` / ``resolve_trash_origins_dir``), both
+    defaulting under ``<beets_dir>``. Tests build the pair through this helper so
+    the shape is written down once: a SIBLING of the Trash dir, never a child —
+    inside it, a record file would land in the entry namespace ``iterdir`` walks
+    and show up as a trashed album of its own.
+    """
+    return trash_dir.parent / "trash-origins"
+
+
 def make_test_handle(lib: "Library", beets_dir: Path) -> LibraryHandle:
     """Snapshot fields are SENTINELS — use a real ``setup_beets()`` handle to assert on them.
 

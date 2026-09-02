@@ -7,6 +7,12 @@ action (``app.beets.import_session``). Reversible by design: files are
 *relocated* (never deleted) and the DB rows dropped with ``delete=False`` —
 exactly ``beet dup --move <trash> --remove`` for albums.
 
+Every mover here also records where the folder came from, in the SIBLING store
+``app.beets.trash_origins`` (``<origins_dir>/<entry name>.json``, never a file
+inside the trashed folder), so Restore can put it back where it came from
+instead of re-filing it by path template. Writing that record can never fail a
+delete — see ``trash_origins.write_trash_origin``.
+
 Lives in its own module so both features import it without forming the
 ``import_session -> duplicates -> registry -> import_session`` cycle. Imports
 only beets + the base adapter + settings (no registry/duplicates import).
@@ -28,9 +34,17 @@ from app.beets.library import (
     _abs_path,
     _coerce_int,
     _coerce_optional_str,
+    require_library_present,
     require_library_root,
 )
+from app.beets.trash_origins import (
+    _NAME_MAX,
+    MovedShape,
+    origin_recorded,
+    write_trash_origin,
+)
 from app.config import Settings
+from app.fsutil import exists
 
 
 class TrashMoveIncompleteError(Exception):
@@ -105,7 +119,10 @@ def _require_move_happened(
       album. Moving nothing is correct here and dropping the rows is the point
       (the deliberate cleanup ``trash_album_folder`` spells out in its own ghost
       branch; reached through this path by import Replace and duplicates
-      resolve). Allowed through, exactly as before.
+      resolve). Allowed through — but only once
+      ``require_library_present`` has shown some OTHER album is still on disk,
+      because a dropped share with a stray entry on its mountpoint produces this
+      exact state for every album at once.
     * **root healthy and the files are still SITTING THERE** — they did not
       move and nobody can say why: a permission fault on the container, a beets
       change, a bug here. Dropping the rows would be the silent data loss this
@@ -124,6 +141,15 @@ def _require_move_happened(
         return
     present = [it for it in items if it.path and os.path.exists(_abs_path(lib, it.path))]
     if not present:
+        # Ghost arm — the ONE exit that lets the caller drop rows having moved
+        # nothing, so the root guard above is not enough here: it accepts a
+        # dropped share whose local mountpoint still holds a stray entry
+        # (``.stfolder``, ``lost+found``), and in that state EVERY album looks
+        # exactly like this one. Ask for positive proof before conceding the
+        # album is a ghost. Complementary to the raise below, not redundant with
+        # it: that covers files still SITTING THERE, this covers files that are
+        # all gone for the same reason.
+        require_library_present(lib)
         return  # ghost album: nothing to move because nothing is there
     raise TrashMoveIncompleteError(
         f"'{_trash_container_name(album)}' did not move to Trash: {len(present)} of its"
@@ -132,7 +158,7 @@ def _require_move_happened(
     )
 
 
-def trash_album(lib: Library, album: Any, *, trash_dir: Path) -> str:
+def trash_album(lib: Library, album: Any, *, trash_dir: Path, origins_dir: Path) -> str:
     """Relocate one album's files under ``trash_dir`` and drop it from the library.
 
     Reversible: the album is moved into its OWN collision-free container dir
@@ -144,6 +170,11 @@ def trash_album(lib: Library, album: Any, *, trash_dir: Path) -> str:
     under one ``$albumartist`` folder, which ``list_trashed_albums`` keys on and
     the whole-folder DELETE then wiped wholesale. Returns the album's new Trash
     folder. Caller controls the transaction (so a batch can be atomic).
+
+    Records the album's source folder on the container for display, marked
+    ``moved="items"`` — this mover takes tracked files out of a folder that may
+    hold other music, so Restore falls back to re-importing rather than offering
+    a move-back that could put files back among a stranger's.
 
     Guarded on BOTH sides of the move, because neither half is enough alone.
     beets 2.12's ``Item.move`` silently skips a source file that is not there
@@ -169,8 +200,12 @@ def trash_album(lib: Library, album: Any, *, trash_dir: Path) -> str:
     """
     require_library_root(lib)
     trash_dir.mkdir(parents=True, exist_ok=True)
-    container = _unique_trash_dest(trash_dir, _trash_container_name(album))
+    container = _unique_trash_dest(trash_dir, origins_dir, _trash_container_name(album))
     container.mkdir(parents=True, exist_ok=True)
+    # BEFORE the move: ``Album.move`` rewrites every item's stored path, so this
+    # is the last moment the album's own folder can be read off the rows.
+    pre_move_items = list(album.items())
+    source_root = _album_root(lib, pre_move_items) if pre_move_items else ""
     basedir = bytestring_path(str(container))
     album.move(basedir=basedir)  # relocate under the container + prune source dir
     items = list(album.items())
@@ -193,6 +228,21 @@ def trash_album(lib: Library, album: Any, *, trash_dir: Path) -> str:
     trash_path = (
         os.path.dirname(_abs_path(lib, first.path)) if first is not None else str(container)
     )
+    # Recorded on the CONTAINER, not on ``trash_path``: the container is the
+    # top-level Trash entry the listing keys on and the restore/empty endpoints
+    # resolve, while ``trash_path`` is a template level deeper inside it.
+    # ``moved="items"`` because this mover relocates tracked FILES out of a
+    # folder that may hold other music — the origin is worth showing, a
+    # move-back is not on offer. See ``trash_origins.MovedShape``.
+    #
+    # Gated on ``moved`` as well as ``source_root``: the ghost arm of
+    # ``_require_move_happened`` ``rmdir``s the container and returns normally,
+    # so an empty ``moved`` means there is no Trash entry to describe. That used
+    # to be masked — a write INTO the deleted container failed harmlessly — but a
+    # write on the /data side would succeed and leave an origin file whose name
+    # nothing in Trash answers to.
+    if source_root and moved:
+        _record_origin(origins_dir, container, origin=source_root, moved="items")
     album.remove(delete=False)  # drop DB rows; files stay in Trash
     return trash_path
 
@@ -287,24 +337,187 @@ def _folder_is_shared(lib: Library, album: Any, album_root: str) -> bool:
         )
     root_with_sep = os.path.join(root, "")
     for row in weird:
-        path = os.path.normpath(_abs_path(lib, bytes(row[0])))
+        # ``os.fsencode``, never ``bytes(...)`` — see ``_sampled_library_dirs``
+        # for why a raw ``path`` row can come back as ``str``. Here the TypeError
+        # would 500 a delete that should have taken its ordinary answer.
+        path = os.path.normpath(_abs_path(lib, os.fsencode(row[0])))
         if path == root or path.startswith(root_with_sep):
             return True
     return False
 
 
-def _unique_trash_dest(trash_dir: Path, name: str) -> Path:
-    """A non-colliding ``trash_dir/<name>`` (append ``(n)`` if it already exists)."""
-    base = name or "album"
+def _unique_trash_dest(trash_dir: Path, origins_dir: Path, name: str) -> Path:
+    """A non-colliding ``trash_dir/<name>`` (append ``(n)`` if it already exists).
+
+    A name counts as taken when EITHER namespace holds it. The origins half is
+    what NARROWS the name key's hazard: an entry deleted outside MusicDrop (a
+    file manager, an SMB client, ``docker volume rm``) leaves its record behind,
+    and without this test the next album to earn that name would inherit a stale
+    origin — which steers a ``rename()`` for the wrong folder. That is the exact
+    hazard inode keys were rejected for, and it is strictly worse than losing an
+    origin, so it is narrowed here rather than by a reaper on the LISTING, which
+    would have to decide whether an empty Trash dir means "empty" or
+    "unmounted". (``trash_manage.empty_all`` does sweep the whole store, but only
+    once it has itself emptied Trash — a reading it does not have to guess.)
+
+    Narrowed and not CLOSED, and in two separate ways. This function's reach is
+    the names MusicDrop hands out, so a folder that arrives in ``trash_dir`` by
+    another route — a hand copy, a restored backup, a sync client writing into
+    the volume — asks the allocator nothing and can still land on a name whose
+    record outlived its entry. And for the names it DOES hand out, the test
+    below answers "free" for a recorded name whenever the store cannot be
+    reached: measured through this function as a non-root user with the origins
+    dir at mode 0600, ``Dummy`` where a readable store gives ``Dummy (1)``.
+    Both are stated residuals; ``trash_origins``'s module docstring and
+    :func:`~app.beets.trash_origins.origin_recorded` hold the full statement,
+    and this docstring must not out-claim them.
+
+    The cost of the test itself is a burnt name: after a manual deletion the
+    record is litter, and an album that would have been ``<name>`` becomes
+    ``<name> (1)``. Litter is the accepted price of taking that name out of the
+    allocator's hands.
+
+    **Every candidate is kept inside ``NAME_MAX``, and the occupancy test is the
+    spelling that absorbs errno 36 rather than raising it** (only that one: see
+    :mod:`app.fsutil`). ``Path.exists()`` does not absorb ENAMETOOLONG
+    (``pathlib._IGNORED_ERRNOS`` is ENOENT/ENOTDIR/EBADF/ELOOP — errno 36 is not
+    in it), so appending the first ``" (1)"`` — four bytes — turned any name of
+    252 to 255 bytes into an ``OSError(36)`` escaping this function on the very
+    first iteration. Measured: 251 passed, 252 and 255 raised, both with a real
+    entry in the way and with only an orphaned RECORD in the way. The delete
+    then 500s with nothing moved and every retry failing identically — and the
+    hint that 500 carries is composed from the exception (``delete._recovery``),
+    so whatever it says it can only tell the user to retry the thing that cannot
+    work. The orphan sweep (whose ``except OSError`` is meant for one bad folder)
+    skips such a folder in silence on every run. Shortening the HEAD to make room
+    for the suffix is the answer rather than refusing or truncating elsewhere: a
+    Trash entry's name is only a container, and what a restore reads to put the
+    folder back is the origin RECORD, never the name. :func:`~app.fsutil.exists`
+    then answers "free" instead of raising for the limits this constant cannot
+    see — a filesystem with a smaller ``NAME_MAX`` (eCryptfs stops at 143
+    bytes), or a Trash path close to ``PATH_MAX`` — leaving the failure to the
+    statement that was trying to do the work.
+
+    That is a smaller difference than it sounds, and the ``PATH_MAX`` half is
+    where it was measured, because that one is reached by an ORDINARY delete
+    with nothing injected: nest the Trash dir until ``<trash_dir>/<255-byte
+    name>`` is longer than 4096 while every component still fits ``NAME_MAX``.
+    Every ``mkdir`` then succeeds and the candidate cannot be looked up at all.
+    Measured on this branch, ``trash_folder`` run twice over one such fixture
+    from the same root — once with :func:`~app.fsutil.exists` and once with
+    ``dest.exists()`` — the two ends are the same delete: ``OSError(36)``, the
+    same ``.filename`` (the whole candidate path, in both), the same
+    ``str(exc)``, a byte-identical 500 body (``delete._recovery``'s fallback
+    arm either way), the husk still in ``/music`` and an empty Trash. Two
+    differences showed, and neither reaches the user: which FRAME the traceback
+    blames — ``trash_folder``'s ``shutil.move`` against this function's
+    ``while`` — and one extra ``origin_recorded`` warning on the guarded side,
+    where the short-circuit no longer fires so the second predicate meets the
+    same errno. So
+    ``test_a_trash_path_over_PATH_MAX_fails_at_the_MOVE_and_not_at_the_allocator``
+    reads the frame and not the errno: in that fixture nothing else separates
+    the two spellings, and the frame is what a traceback in the log has to
+    point at.
+
+    The smaller-``NAME_MAX`` half has no fixture — this suite mounts no
+    filesystems — so it is forced from the predicate instead, in
+    ``test_a_name_the_KERNEL_refuses_reads_as_free_and_not_as_a_500``, which
+    pins the allocator's own boundary (it returns rather than raising) and
+    nothing past it. What the move then does on a real such filesystem is not
+    staged anywhere here.
+
+    Long names are not only an accident of the source folder: ``beets.util``
+    caps a path component it generates at 200 bytes by default
+    (``MAX_FILENAME_LENGTH``, raisable via the ``max_filename_length`` config),
+    but :func:`_trash_container_name` builds a name out of the album's own tags
+    with no truncation at all, so it can hand this function one that is over the
+    line before any suffix is added.
+    """
+    base = _fit_name(name or "album", _NAME_MAX)
     dest = trash_dir / base
     counter = 1
-    while dest.exists():
-        dest = trash_dir / f"{base} ({counter})"
+    while exists(dest) or origin_recorded(origins_dir, dest.name):
+        # The suffix is ASCII, so its byte cost is its length. The head is
+        # re-shortened from ``base`` every time and never from the previous
+        # candidate, so reaching " (10)" takes its extra byte out of the head
+        # instead of off the end of a name that already fit.
+        suffix = f" ({counter})"
+        dest = trash_dir / (_fit_name(base, _NAME_MAX - len(suffix)) + suffix)
         counter += 1
     return dest
 
 
-def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path) -> str:
+def _fit_name(name: str, budget: int) -> str:
+    """``name`` shortened from the end until it encodes to at most ``budget`` bytes.
+
+    BYTES, because bytes are what the kernel limits: a CJK or fullwidth album
+    title costs three bytes a character, so a 90-character name can be over the
+    line while ``len()`` says it is nowhere near it.
+
+    Whole CODEPOINTS, because every folder name here arrived through
+    ``os.fsdecode``. Slicing the ENCODED form would cut a multi-byte character in
+    half, which turns a name that DECODES into one that does not: the severed
+    bytes come back as lone surrogates, so the entry renders with U+FFFD
+    placeholders everywhere it is shown and joins the set of names a display
+    string can no longer be mapped back to on its own — two of them displaying
+    alike is ``AmbiguousDisplayName``, a 409 on that row's Restore and Empty
+    (``app.wire._match_display_child``). Dropping trailing codepoints cannot do
+    that, and it holds for a name that was ALREADY undecodable too — its bytes
+    are carried as one lone surrogate each, which ``os.fsencode`` puts back as
+    one byte each.
+
+    The origin record's key is not the reason: it and the payload ``name`` are
+    both taken from ``dest.name`` AFTER this has run, so they agree with the
+    entry whatever this returns.
+    """
+    text = name[:budget]  # every codepoint costs >= 1 byte, so this bounds the loop
+    while len(os.fsencode(text)) > budget:
+        text = text[:-1]
+    return text
+
+
+def _record_origin(origins_dir: Path, dest: Path, *, origin: str, moved: MovedShape) -> None:
+    """Record ``dest``'s origin, unless ``dest`` is a symlink. Never raises.
+
+    A symlinked Trash entry is ordinary rather than hostile: ``_album_root`` is
+    ``dirname(item.path)``, so an album whose own folder is a symlink into
+    another volume is trashed AS a symlink because ``shutil.move`` preserves
+    them. ``resolve_trash_child`` resolves the child and refuses anything landing
+    outside Trash, so such a row can never be restored — and a record would make
+    the listing offer "Exact restore" on a row whose Restore button 404s. Writing
+    nothing keeps the promise honest: the row reads as an import-restore, exactly
+    as it did before origins existed.
+
+    (For the sidecar this refusal was a security guard — ``mkstemp(dir=entry)``
+    followed the link straight out of Trash. On the ``/data`` side there is no
+    such escape left; only the unkeepable promise.)
+    """
+    # ``Path.is_symlink`` here and ``os.path.islink`` in ``trash_manage``'s
+    # listing, on purpose and not by drift — and the gap between them is wider
+    # than the overlong name it is usually described by. ``Path.is_symlink``
+    # swallows only ``pathlib._IGNORED_ERRNOS`` (ENOENT/ENOTDIR/EBADF/ELOOP) and
+    # a ``ValueError``, re-raising every other ``lstat`` failure;
+    # ``os.path.islink`` catches ``(OSError, ValueError, AttributeError)``
+    # blanket and answers False to all of it. Measured on 3.12.13: on an
+    # overlong name the first raises ``OSError(36)`` and the second answers
+    # False; on a child of a directory at mode 0600, as a non-root user, the
+    # first raises ``PermissionError(13)`` and the second still answers False.
+    #
+    # This site takes the raising one because ``dest`` is a path the kernel
+    # accepted a statement or two ago — ``shutil.move`` in the two folder
+    # movers, ``mkdir`` in the per-item one — so either fault would have failed
+    # THAT step first, and reaching this line with one means the name or the
+    # permissions changed inside that window. The listing reads names it did not
+    # create, and there the blanket answer is the point: an entry the kernel
+    # will not stat is neither a link to honour nor a restorable album, so the
+    # page answers instead of 500ing. Do not "fix" either one to match the
+    # other.
+    if dest.is_symlink():
+        return
+    write_trash_origin(origins_dir, dest.name, origin=origin, moved=moved)
+
+
+def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path, origins_dir: Path) -> str:
     """Relocate the album's ENTIRE folder under ``trash_dir`` and drop it from the
     library. Reversible.
 
@@ -315,9 +528,17 @@ def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path) -> str:
     folder is shared with another album, so a sibling is never collateral.
     Caller owns the transaction.
 
+    The whole-folder branch records its origin, so Restore moves the folder
+    straight back to it. The shared-folder fallback records what
+    :func:`trash_album` records, and the two row-dropping branches below move
+    nothing, so neither has an origin to record.
+
     Raises :class:`~app.beets.library.LibraryRootUnavailableError` when the
-    album's folder is missing AND the music root itself is unavailable — an
-    unmounted share, not a deleted album. See the branch below.
+    album's folder is missing AND the library's music cannot be found — an
+    unmounted share, not a deleted album. The missing-folder branch uses
+    :func:`~app.beets.library.require_library_present`, not the cheap root
+    predicate, because that branch is the one that drops rows on nothing but an
+    absence. See the branch below.
     """
     items = list(album.items())
     if not items:
@@ -348,29 +569,53 @@ def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path) -> str:
         # file as a deletion. Raising before ``remove`` is what makes it safe: a
         # beets transaction commits on the way out even while unwinding an
         # exception (``beets/dbcore/db.py:924-941``).
-        require_library_root(lib)
+        #
+        # The STRONGER predicate, not the shared default: "the root has an entry"
+        # is satisfied by a ``.stfolder``/``lost+found``/empty leftover dir on a
+        # local mountpoint whose share has dropped, and this branch would then
+        # read every album in the library as a ghost and erase it one delete at a
+        # time. Disk sync keeps the cheap O(1) default on purpose; the delete
+        # path can afford a handful of stats to be sure.
+        require_library_present(lib)
         album.remove(delete=False)
         return str(trash_dir)
     if _folder_is_shared(lib, album, album_root):
-        return trash_album(lib, album, trash_dir=trash_dir)
+        return trash_album(lib, album, trash_dir=trash_dir, origins_dir=origins_dir)
     trash_dir.mkdir(parents=True, exist_ok=True)
-    dest = _unique_trash_dest(trash_dir, os.path.basename(os.path.normpath(album_root)))
+    dest = _unique_trash_dest(
+        trash_dir, origins_dir, os.path.basename(os.path.normpath(album_root))
+    )
     shutil.move(album_root, str(dest))
+    # The folder moved whole, so ``dest`` maps 1:1 back onto ``album_root`` and a
+    # true restore is a single move. Written after the move (the destination is
+    # in Trash, so a failure here cannot leave anything in the music library) and
+    # before the rows are dropped, so the record exists from the moment the
+    # physical fact it describes is true.
+    _record_origin(origins_dir, dest, origin=album_root, moved="folder")
     album.remove(delete=False)  # drop DB rows; files now live under Trash
     return str(dest)
 
 
-def trash_folder(folder: Path, *, trash_dir: Path) -> Path:
+def trash_folder(folder: Path, *, trash_dir: Path, origins_dir: Path) -> Path:
     """Move an orphan husk folder (no tracked items) wholesale into Trash.
 
     Reversible: ``shutil.move`` relocates the whole directory under ``trash_dir`` to
     a collision-free name and returns the destination. No DB interaction — these
     folders hold only art/sidecars, never library items (unlike
     :func:`trash_album_folder`). Caller owns guard/selection (``find_orphan_folders``).
+
+    The origin record matters most here: a folder with no audio cannot be
+    imported, so before it these husks had no exit from Trash except permanent
+    deletion.
     """
     trash_dir.mkdir(parents=True, exist_ok=True)
-    dest = _unique_trash_dest(trash_dir, folder.name)
+    dest = _unique_trash_dest(trash_dir, origins_dir, folder.name)
+    origin = os.path.abspath(str(folder))
     shutil.move(str(folder), str(dest))
+    # The husk's ONLY exit from Trash. An audio-free folder cannot be imported,
+    # so before this record it could be permanently deleted and nothing else;
+    # with it, Restore moves it straight back where the sweep took it from.
+    _record_origin(origins_dir, dest, origin=origin, moved="folder")
     return dest
 
 
@@ -384,3 +629,17 @@ def resolve_trash_dir(settings: Settings, handle: LibraryHandle) -> Path:
     if settings.trash_dir:
         return Path(settings.trash_dir).resolve()
     return handle.beets_dir / "trash"
+
+
+def resolve_trash_origins_dir(settings: Settings, handle: LibraryHandle) -> Path:
+    """Where the origin records go: ``trash_origins_dir`` or ``<beets_dir>/trash-origins``.
+
+    Same shape as :func:`resolve_trash_dir` and resolved from the same two
+    inputs, so the pair is always read together. Deliberately NOT derived from
+    the resolved ``trash_dir``: a configured Trash dir may point anywhere,
+    including inside the music library, and a record reachable from ``/music`` is
+    the whole thing this store exists to avoid.
+    """
+    if settings.trash_origins_dir:
+        return Path(settings.trash_origins_dir).resolve()
+    return handle.beets_dir / "trash-origins"

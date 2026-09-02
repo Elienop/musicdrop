@@ -1,6 +1,7 @@
 """Trash management API: list / restore / empty (Settings → Trash).
 
-Mirrors the delete op's mutual exclusion. Restore runs a move-import and empty
+Mirrors the delete op's mutual exclusion. Restore moves a folder out of Trash
+(back to its recorded origin, or through a move-import) and empty
 rm -rf's trashed folders, so the two must never touch the same tree at once: both
 refuse (409) while any library job runs OR the beets swap lock is held, and both
 hold that lock across their synchronous file work — so a restore and an empty (in
@@ -17,9 +18,10 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 
 from app.beets.config_editor import _settings, _swap_lock
-from app.beets.library import LibraryHandle
-from app.beets.trash import resolve_trash_dir
+from app.beets.library import LibraryHandle, LibraryRootUnavailableError, _music_dir
+from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
 from app.beets.trash_manage import (
+    TrashEmptyPartialError,
     empty_all,
     empty_one,
     list_trashed_albums,
@@ -53,6 +55,22 @@ _TRASH_NOT_FOUND_RESPONSE: Final = {
 _TRASH_RESTORE_FAILED_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": "The restore failed because re-importing the trashed folder failed.",
+}
+#: A move-back restore writes INTO the music library, so it answers an
+#: unavailable music share the way delete does — a 503 that says nothing was
+#: moved — rather than falling into the blanket 500 below it.
+_TRASH_EMPTY_PARTIAL_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": (
+        "Some Trash entries were removed and others could not be; the message names"
+        " which are still there."
+    ),
+}
+_TRASH_LIBRARY_UNAVAILABLE_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": (
+        "The music library folder is unavailable, so the folder was not moved out of Trash."
+    ),
 }
 
 
@@ -94,7 +112,15 @@ async def list_trash(request: Request) -> TrashListing:
     app = request.app
     handle: LibraryHandle = app.state.beets_library
     trash_dir = resolve_trash_dir(_settings(app), handle)
-    albums = await run_in_threadpool(list_trashed_albums, trash_dir)
+    albums = await run_in_threadpool(
+        list_trashed_albums,
+        trash_dir,
+        origins_dir=resolve_trash_origins_dir(_settings(app), handle),
+        music_dir=_music_dir(handle.lib),
+    )
+    # The origins dir is deliberately NOT on the wire beside ``trash_path``: it
+    # is an implementation detail of where the records live, and adding a field
+    # here would be a contract change for something no UI shows.
     return TrashListing(albums=albums, trash_path=str(trash_dir))
 
 
@@ -104,10 +130,11 @@ async def list_trash(request: Request) -> TrashListing:
         409: _TRASH_CONFLICT_RESPONSE,
         404: _TRASH_NOT_FOUND_RESPONSE,
         500: _TRASH_RESTORE_FAILED_RESPONSE,
+        503: _TRASH_LIBRARY_UNAVAILABLE_RESPONSE,
     },
 )
 async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult:
-    """Re-import a trashed folder as-is. 409 if busy, 404 if not in Trash."""
+    """Put a trashed folder back. 409 if busy, 404 if not in Trash, 503 if unmounted."""
     app = request.app
     _gate(app)
     async with _swap_lock(app):
@@ -115,10 +142,21 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
         trash_dir = resolve_trash_dir(_settings(app), handle)
         try:
             result = await run_in_threadpool(
-                restore_album, handle.lib, str(dest), trash_dir=trash_dir
+                restore_album,
+                handle.lib,
+                str(dest),
+                trash_dir=trash_dir,
+                origins_dir=resolve_trash_origins_dir(_settings(app), handle),
             )
             emit_library_changed(app)
             return result
+        # Ahead of the blanket 500, and for the same reason delete_album_op puts
+        # it there: this guard fires BEFORE anything leaves Trash, so "the
+        # restore failed" would be true but useless while "the share is not
+        # mounted" is actionable. Raised inline so the status stays a literal
+        # tests/test_route_status_declarations.py can see.
+        except LibraryRootUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Restore failed: {exc}") from exc
 
@@ -131,9 +169,11 @@ async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> 
     """Permanently remove one trashed album folder. 409 if busy, 404 if not in Trash."""
     app = request.app
     _gate(app)
-    _handle, dest = _child_or_404(app, folder)
+    handle, dest = _child_or_404(app, folder)
     async with _swap_lock(app):
-        result = await run_in_threadpool(empty_one, str(dest))
+        result = await run_in_threadpool(
+            empty_one, str(dest), origins_dir=resolve_trash_origins_dir(_settings(app), handle)
+        )
         emit_library_changed(app)
     return result
 
@@ -151,15 +191,25 @@ async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> 
                 " progress or the beets swap lock is held."
             ),
         },
+        500: _TRASH_EMPTY_PARTIAL_RESPONSE,
     },
 )
 async def empty_trash_all(request: Request) -> EmptyResult:
-    """Permanently clear the whole Trash dir. 409 if busy."""
+    """Permanently clear the whole Trash dir. 409 if busy, 500 if partly cleared."""
     app = request.app
     _gate(app)
     handle: LibraryHandle = app.state.beets_library
     trash_dir = resolve_trash_dir(_settings(app), handle)
     async with _swap_lock(app):
-        result = await run_in_threadpool(empty_all, trash_dir)
+        try:
+            result = await run_in_threadpool(
+                empty_all, trash_dir, origins_dir=resolve_trash_origins_dir(_settings(app), handle)
+            )
+        # A partial sweep still CHANGED the library, so the event fires before
+        # the error propagates — the page must not keep showing entries that are
+        # now gone just because the ones after them could not be removed.
+        except TrashEmptyPartialError as exc:
+            emit_library_changed(app)
+            raise HTTPException(status_code=500, detail=f"Empty Trash: {exc}") from exc
         emit_library_changed(app)
     return result
