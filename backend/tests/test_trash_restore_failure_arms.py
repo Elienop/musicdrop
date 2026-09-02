@@ -210,6 +210,43 @@ def test_a_declined_import_whose_undo_fails_says_where_the_folder_is(
     assert (entry / "stranger.flac").is_file()
 
 
+def test_a_raised_import_whose_undo_fails_keeps_one_full_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other arm's punctuation, which the decline arm's fix did not reach.
+
+    beets RAISING is the second way into :func:`_undo_failure`, and that arm
+    quotes the exception's own message into a sentence of its own. The stop was
+    appended there unconditionally, so any error message that ends its own
+    sentence — the ordinary shape — rendered ".." in the 500 ``detail`` the
+    Trash page shows. Same defect as the one already fixed one function away,
+    and the ``".." not in message`` assertions all sat on the other arm.
+
+    The import's own words are asserted too: trimming the double stop must not
+    be done by trimming the message.
+    """
+    lib = _seeded_library(tmp_path)
+    entry = _trash_the_album(lib, tmp_path)
+
+    def _raises_after_something_retakes_the_trash_entry(*_a: object, **_k: object) -> RestoreResult:
+        entry.mkdir(parents=True)
+        (entry / "stranger.flac").write_bytes(b"\x00")
+        raise RuntimeError("beets could not read the folder.")
+
+    monkeypatch.setattr(
+        "app.beets.trash_manage._restore_by_import",
+        _raises_after_something_retakes_the_trash_entry,
+    )
+    with pytest.raises(TrashRestoreIncompleteError) as ei:
+        _restore(lib, entry, tmp_path)
+
+    message = str(ei.value)
+    assert "beets could not read the folder." in message, "the import's own words, intact"
+    assert ".." not in message, "one full stop, not two"
+    assert "Returning it to Trash then failed with:" in message, "and the undo's story after it"
+    assert message.endswith("."), "and not none either"
+
+
 def test_the_origin_record_survives_a_trash_entry_that_still_exists(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

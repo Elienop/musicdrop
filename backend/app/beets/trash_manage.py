@@ -589,7 +589,8 @@ def _restore_to_origin(
                 origins_dir=origins_dir,
                 entry_name=entry_name,
                 what_failed=(
-                    f"The import failed with: {exc}. Returning it to Trash then failed with: {undo}"
+                    f"The import failed with: {_one_full_stop(str(exc))} Returning it to"
+                    f" Trash then failed with: {undo}"
                 ),
             ) from exc
         raise
@@ -772,10 +773,29 @@ def _undo_failure(
     # with an undo error whose message carries a full stop — so one is added only
     # where it is missing. Appended unconditionally, this rendered ".." in the
     # 500 ``detail`` the Trash page shows the user.
-    tail = what_failed if what_failed.endswith(".") else f"{what_failed}."
     return TrashRestoreIncompleteError(
-        f"the restore could not be completed and could not be undone. {where} {tail}"
+        f"the restore could not be completed and could not be undone. {where}"
+        f" {_one_full_stop(what_failed)}"
     )
+
+
+def _one_full_stop(text: str) -> str:
+    """``text`` ending in exactly one full stop.
+
+    Anywhere a message is composed out of somebody else's words, the words may
+    already end their own sentence — and a stop appended on top renders ".." in
+    the 500 ``detail`` the Trash page puts in front of the user. Both places that
+    do that are here: :func:`_undo_failure`'s tail, whose two call sites end with
+    an undo error of ours (always a full stop today), and the import error the
+    raise arm quotes, which is beets' or a plugin's and can end however it likes
+    — measured, an import that failed with "beets could not read the folder."
+    rendered "...read the folder.. Returning it to Trash...".
+
+    Only "." counts as an ending. A message finishing "!" or "?" gets a stop
+    after it, which reads oddly and has never been seen from these two sources;
+    widening the set on that guess would let a message end without one.
+    """
+    return text if text.endswith(".") else f"{text}."
 
 
 def _holds_media(folder: Path) -> bool:
