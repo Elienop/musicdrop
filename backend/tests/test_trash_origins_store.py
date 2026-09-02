@@ -684,6 +684,37 @@ def test_clearing_the_store_carries_on_past_a_record_it_cannot_remove(
     _assert_nothing_forged(caplog)
 
 
+def test_clearing_the_store_removes_the_records_and_nothing_else(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The sweep is keyed on the ``.json`` the store writes, not on "everything here".
+
+    MusicDrop creates the origins dir and owns it, but owning it is not the same
+    as being the only writer: a note an operator keeps beside the records, or a
+    directory a backup tool leaves there, is not something emptying Trash has
+    any reason to delete. Only what :func:`origin_file` writes is swept.
+
+    Planted together rather than as two tests, because the pair is the claim:
+    the record still has to go in the same call that leaves the other two alone.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    write_trash_origin(origins, "Ordinary", origin="/music/A/Ordinary", moved="folder")
+    note = origins / "notes.txt"
+    note.write_text("operator's own", encoding="ascii")
+    kept = origins / "backup"
+    kept.mkdir()
+    (kept / "Ordinary.json").write_text("{}", encoding="ascii")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        clear_trash_origins(origins)
+
+    assert not origin_file(origins, "Ordinary").exists(), "the record itself had to go"
+    assert note.read_text(encoding="ascii") == "operator's own", "a file that is not a record"
+    assert (kept / "Ordinary.json").is_file(), "a subdirectory beside the records"
+    assert caplog.records == [], "skipping a non-record is not a failure to report"
+
+
 # ----- a store the app cannot reach -----
 
 

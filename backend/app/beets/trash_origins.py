@@ -614,12 +614,18 @@ def clear_trash_origins(origins_dir: Path) -> None:
     docstring states. An emptied Trash is the one moment the whole store can be
     answered at once instead of one key at a time.
 
+    Only the RECORDS go. Every record is written as ``<key>.json``
+    (:func:`origin_file`), so the sweep is keyed on that suffix rather than on
+    "everything in this directory": owning the store dir is not the same as
+    being the only writer, and an Empty all is no reason to delete an operator's
+    note or a backup directory left beside the records.
+
     Failures are logged per file and the sweep carries on, the same posture as
     :func:`delete_trash_origin` and for the same reason: it runs after the
     entries are already gone, so an exception escaping would 500 an Empty that
-    succeeded. Measured against a store that was never created and against a
-    directory planted at a record's own name — see
-    ``tests/test_trash_origins_store.py``.
+    succeeded. Measured against a store that was never created, against a
+    directory planted at a record's own name, and against a non-record file and
+    a subdirectory beside the records — see ``tests/test_trash_origins_store.py``.
     """
     try:
         # Materialised before the first unlink: removing entries from a
@@ -637,6 +643,8 @@ def clear_trash_origins(origins_dir: Path) -> None:
         )
         return
     for path in records:
+        if not path.name.endswith(".json"):
+            continue  # not a record this store wrote; not this sweep's to remove
         try:
             path.unlink()
         except OSError:
