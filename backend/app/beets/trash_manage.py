@@ -114,6 +114,26 @@ _OUTSIDE_LIBRARY_NOTE = (
     " will not move it back there. Restoring re-imports it under your current naming"
     " rules."
 )
+#: The Trash entry is itself a SYMLINK. Ordinary rather than hostile:
+#: ``trash._album_root`` is ``dirname(item.path)``, so an album whose own folder
+#: is a symlink into another volume is trashed AS a symlink (``shutil.move``
+#: recreates the link and unlinks the original), which means only the LINK was
+#: ever moved — the album's files never left the volume they were on.
+#:
+#: Such a row used to fall through to :data:`_NO_RECORD_NOTE`, and all three of
+#: that sentence's claims are false here: ``trash._record_origin`` declines
+#: DELIBERATELY (so nothing failed and the server log says nothing), the row is
+#: not old, and "Restoring re-imports it" is not on offer at all —
+#: :func:`resolve_trash_child` refuses a child that resolves outside Trash, so
+#: Restore answers 404. Say what will really happen instead, and say where the
+#: files are: they are the one thing here that was never at risk.
+_SYMLINKED_ENTRY_NOTE = (
+    "This Trash entry is a link to a folder on another volume, so MusicDrop will not"
+    " restore it — following the link would import files that were never in Trash. The"
+    " album's own files were never moved: they are still where the link points, and"
+    " adding that folder through Import is what puts the album back in the library."
+    " Emptying this entry removes only the link."
+)
 
 
 def list_trashed_albums(
@@ -208,16 +228,30 @@ def _restore_fields(
 ) -> tuple[TrashRestoreMode, str | None, str | None]:
     """``(restore_mode, restore_note, origin)`` for one top-level Trash entry.
 
-    The three ways a row loses its move-back each get their OWN sentence rather
+    The FOUR ways a row loses its move-back each get their OWN sentence rather
     than one generic "cannot restore": the user's next action differs (wait for
-    nothing / put it back by hand / re-point the library), and a row that simply
-    predates the record must say so — that is the owner's decision 2.
+    nothing / put it back by hand / re-point the library / go to the volume the
+    link points at), and a row that simply predates the record must say so —
+    that is the owner's decision 2.
 
     ``entry.name`` is the store's key, and it must be the RAW on-disk name — the
     same string ``_walk_trash_groups`` groups on and ``resolve_trash_child`` maps
     back to. Passing the display form (``display_path``) would look right and
     read nothing for any folder whose name is not valid UTF-8.
     """
+    # ``os.path.islink`` rather than ``Path.is_symlink``: this is the LISTING,
+    # which must not fail because one entry's name is unstattable, and
+    # ``Path.is_symlink`` only absorbs ENOENT/ENOTDIR/EBADF/ELOOP — an overlong
+    # name still raises ENAMETOOLONG out of it (the reason ``app/fsutil.py``
+    # exists). ``os.path.islink`` answers False for every such failure, which is
+    # the right answer here: what cannot be stat'ed is not a link we can honour.
+    #
+    # Asked BEFORE the record, and it decides alone. A symlinked entry cannot be
+    # restored by any route whatever a record says about it, so a record that
+    # somehow exists for this name (written for a DIFFERENT entry that held the
+    # name earlier — the hazard the allocator closes) must not out-vote it.
+    if os.path.islink(entry):
+        return "import", _SYMLINKED_ENTRY_NOTE, None
     record = read_trash_origin(origins_dir, entry.name)
     if record is None:
         return "import", _NO_RECORD_NOTE, None
