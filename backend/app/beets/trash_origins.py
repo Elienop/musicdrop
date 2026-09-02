@@ -168,11 +168,16 @@ def origin_file(origins_dir: Path, entry_name: str) -> Path:
     budget is :data:`_MAX_KEY_BYTES`, not ``NAME_MAX``, because the atomic write
     needs room for its own temp name.
 
-    **The truncated key is not injective, and not by 2^64 either.** For any long
-    name ``N2`` the SHORT name ``N1 = N2[:201] + "." + sha256(N2)[:16]`` is 218
-    bytes, so it is NOT truncated, and ``N1 + ".json"`` is character-for-character
-    the key ``N2`` is given — one construction, no search. Both are legal Trash
-    entry names (they fit ``NAME_MAX``), and the loser's record would be read
+    **The truncated key is not injective, and not by 2^64 either.** The recipe is
+    in BYTES, exactly as the cut above is: for any long name ``N2`` the SHORT
+    name ``N1 = fsdecode(fsencode(N2)[:201]) + "." + sha256(fsencode(N2))[:16]``
+    is 218 bytes, so it is NOT truncated, and ``N1 + ".json"`` is
+    character-for-character the key ``N2`` is given — one construction, no
+    search. Spelled as a CHARACTER slice the recipe only works while ``N2`` is
+    ASCII: for ``N2 = "é" * 120`` it yields 257 bytes, which is not even a legal
+    filename and collides with nothing, while the byte slice is 218 and does
+    (measured). Both are legal Trash entry names (they fit ``NAME_MAX``), and the
+    loser's record would be read
     back for the winner: a listing row offering "Exact restore" to a stranger's
     folder. Closed at the READ, which compares the ``name`` stored in the payload
     (see :func:`read_trash_origin`); the allocator cannot close it, because it

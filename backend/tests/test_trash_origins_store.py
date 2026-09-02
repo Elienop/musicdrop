@@ -43,6 +43,9 @@ def _colliding_pair() -> tuple[str, str]:
     that recomputed the budget would follow the constant anywhere it moved and
     prove only self-consistency.
 
+    Both names are ASCII, so characters and bytes coincide here; the store's cut
+    is in BYTES (see :func:`origin_file`, whose recipe is spelled that way).
+
     ``long`` is 219 bytes, so ``<long>.json`` is 224 — one byte past the budget —
     and it is keyed as ``head[:201] + "." + sha256(long)[:16] + ".json"``.
     ``short`` is that stem spelled out: 218 bytes, so its own ``.json`` is 223 and
