@@ -47,8 +47,8 @@ class ArtistDeletePartialError(Exception):
 
     Deliberately NOT a :class:`~app.beets.library.LibraryRootUnavailableError`,
     even though that is one thing that causes it: the 503 those map to promises
-    that nothing was moved or dropped, which stops being true the moment one
-    album has been through the primitive — and beets commits on the way out of
+    that nothing was DROPPED, which stops being true the moment one album has
+    been through the primitive — and beets commits on the way out of
     the transaction even while unwinding the exception, so the work already done
     cannot be taken back. Falls to the blanket 500 instead, whose message says
     how far the fan-out got.
@@ -399,16 +399,20 @@ async def delete_album_op(
             )
         except AlbumNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        # Ahead of the blanket except on purpose: ``_failed``'s recovery line
-        # sends the user to the Trash folder, and this error's ordinary shape is
-        # a share that was already gone — the guard fires before anything moves
-        # or is dropped, so there is nothing there to find. (The one shape that
-        # does leave files there, a share dropping DURING an album's move, keeps
-        # the rows and is named by the primitive's own error; see
-        # :func:`delete_artist`.) 503 with the guard's own flat
-        # sentence instead, matching what the disk-sync preview already answers
-        # for this same cause (app/api/disk_sync.py). Raised inline rather than
-        # through a helper like ``_failed`` so the status stays a literal that
+        # Ahead of the blanket except on purpose: this cause has one thing that
+        # is known on every path here — the rows are still in the library — and
+        # ``_failed``'s structured body is built to carry a per-failure recovery
+        # line it does not need. The ordinary shape is a share that was already
+        # gone, where the guard fires before anything moves or is dropped; it is
+        # not the only shape, since the same error comes from ``trash.py``'s
+        # post-condition with part of an album already under the Trash container
+        # and its rows kept, and there the error's own words name the mount
+        # rather than that album (see :func:`delete_artist`). What the two share
+        # is the library, which is what the route's 503 description states and
+        # all it states. 503 with the guard's own flat sentence, matching what
+        # the disk-sync preview already answers for this same cause
+        # (app/api/disk_sync.py). Raised inline rather than through a helper like
+        # ``_failed`` so the status stays a literal that
         # tests/test_route_status_declarations.py can see.
         except LibraryRootUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc

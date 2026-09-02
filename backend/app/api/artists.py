@@ -1041,17 +1041,20 @@ def _start(
             ),
         },
         # Flat ErrorDetail, unlike the 500 beside it: this one is raised only
-        # while the fan-out has mutated NOTHING, which is what lets its
-        # description promise that. Once an album has been trashed the same
-        # cause is re-raised as ArtistDeletePartialError and lands on the 500
-        # above - see app/beets/delete.py.
+        # while the fan-out has DROPPED nothing, which is what lets its
+        # description promise that and nothing else. Once an album has been
+        # dropped the same cause is re-raised as ArtistDeletePartialError and
+        # lands on the 500 above - see app/beets/delete.py.
         503: {
             "model": ErrorDetail,
             "description": (
                 "The music library root is missing, empty or unreadable, so the delete is"
-                " refused before any of the artist's albums is moved or dropped (the guard"
-                " against an unmounted share). Nothing reached the Trash folder; a share"
-                " that drops part-way through the fan-out is reported as the 500 instead."
+                " refused (the guard against an unmounted share). None of the artist's"
+                " albums has been dropped from the library: once one has, the same cause"
+                " is reported as the 500 instead, which names how far the fan-out got."
+                " Files are a separate question — a share that drops during the move of"
+                " the album the fan-out is on can leave part of it under the Trash"
+                " folder, so check there before retrying."
             ),
         },
     },

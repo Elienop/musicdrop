@@ -1170,3 +1170,103 @@ def test_the_delete_routes_500_description_does_not_deny_its_own_body(
         f"{path}'s 500 description must keep the condition on its Trash pointer;"
         f" it reads {description!r}"
     )
+
+
+@pytest.mark.parametrize(
+    ("path", "artist", "promise"),
+    [
+        ("/api/albums/{album_id}", None, "The album is still in the library"),
+        ("/api/artists", "Sharey", "None of the artist's albums has been dropped"),
+    ],
+)
+def test_the_delete_routes_503_description_does_not_deny_a_share_that_dropped_mid_move(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    artist: str | None,
+    promise: str,
+) -> None:
+    """Both 503s DECLARED "Nothing reached the Trash folder". This is a 503 that did.
+
+    The guard is not only a pre-check: ``trash.py``'s post-condition re-checks
+    the root BEFORE it asks whether anything landed, so a share that drops
+    part-way through the per-item move raises ``LibraryRootUnavailableError``
+    with items already under the Trash container — and both ops answer that with
+    the 503, ahead of the blanket 500. The artist route's own extra clause ("a
+    share that drops part-way through the fan-out is reported as the 500
+    instead") is wrong for the same run: the fan-out has dropped nothing yet, so
+    ``mutated == 0`` re-raises the cause bare and it lands here too.
+
+    What every 503 does share is the library: no rows are gone. That is what the
+    descriptions now claim, and this test holds both halves together — the LIVE
+    spec against a REAL 503 with files under Trash and the album still in the
+    library. Neither half is evidence on its own, and
+    ``tests/test_openapi_spec_guard.py`` is evidence about neither: it only
+    fires on a dump that was not regenerated.
+
+    The share is dropped by the real mover, between the first item and the
+    second, so nothing here decides where the raise comes from.
+    """
+    from beets.library import Item
+    from beets.util import MoveOperation
+
+    from app.main import app
+
+    lib = _shared_folder_two_track_library(tmp_path)
+    music = tmp_path / "music"
+    trash = tmp_path / "trash"
+    handle = make_test_handle(lib, tmp_path)
+    album_id = _require_id(next(a for a in lib.albums() if a.album == "A Two").id)
+    real_move = Item.move
+    calls = {"n": 0}
+
+    def _drops_the_share_after_the_first(
+        item: Item,
+        operation: MoveOperation = MoveOperation.MOVE,
+        basedir: bytes | None = None,
+        with_album: bool = True,
+        store: bool = True,
+    ) -> None:
+        real_move(item, operation, basedir=basedir, with_album=with_album, store=store)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            shutil.rmtree(music)  # the share goes between item one and item two
+
+    monkeypatch.setattr(Item, "move", _drops_the_share_after_the_first)
+
+    class _App:
+        state = SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins_for(trash))),
+        )
+
+    class _Req:
+        app = _App()
+
+    op = (
+        delete_artist_op(_Req(), artist)  # type: ignore[arg-type]  # stub req
+        if artist is not None
+        else delete_album_op(_Req(), album_id)  # type: ignore[arg-type]  # ditto
+    )
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(op)
+
+    assert ei.value.status_code == 503
+    # The root guard's own flat sentence, so this is the arm the descriptions
+    # below describe and not some other 503.
+    assert ei.value.detail == "Library folder unavailable. Is the music share mounted?"
+    # The state the old sentence denied: one item is under the Trash container.
+    assert len(list((trash / "Sharey - A Two").rglob("*.mp3"))) == 1
+    # ...and the state both descriptions may still promise: the rows are kept.
+    assert lib.get_album(album_id) is not None
+
+    description = app.openapi()["paths"][path]["delete"]["responses"]["503"]["description"]
+    assert "Nothing reached the Trash folder" not in description, (
+        f"{path}'s 503 description denies a Trash entry this same status leaves behind;"
+        f" it reads {description!r}"
+    )
+    # The negative alone is happy with a description that says nothing about
+    # either side. Both halves of the replacement are the claim, so assert them:
+    # what is known (no rows are gone) and what is not (go and look).
+    assert promise in description
+    assert "check there before retrying" in description
