@@ -235,8 +235,11 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
   // trashes an album's own FOLDER, and os.walk does not follow the link), so
   // this is the rendered default rather than a corner. Not a universal, though:
   // a top-level link to a media FILE is walked as a file and lists refused with
-  // real tags — measured ('linked.flac', 'refused', 1). Nothing here branches
-  // on the difference; `track_count === 0` is already false for that row.
+  // real tags — measured ('linked.flac', 'refused', 1). THIS line treats the
+  // two alike (`!refused` decides it either way; `track_count === 0` is already
+  // false for the row with tags), but the row does not: the meta line above
+  // renders whatever tags arrived, so that entry reads "1 track · FLAC" where
+  // the 0-track one falls back to its folder name.
   const noTracks = album.track_count === 0 && !refused;
   const reasonId = useId();
   const outlookId = useId();

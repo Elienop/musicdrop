@@ -78,10 +78,14 @@ const importedAlbum: TrashedAlbum = {
  * media file is walked as a file and lists refused with real tags and a track
  * count (measured: ('linked.flac', 'refused', 1)). MusicDrop's own trashing
  * moves a FOLDER — `trash._album_root`, or the container it makes for a shared
- * one — so it does not produce that row, and the page renders both the same:
- * `noTracks` is false for a refused row whatever its track count. So the
- * fixture stays the shape the app produces, and that choice leaves no arm of
- * the page untested. */
+ * one — so it does not produce that row. The two take the same HEDGE arm —
+ * `noTracks` is false for a refused row whatever its track count — but they do
+ * not render alike: the META line above it reads `track_count`, so the same
+ * fixture with track_count 1 / format FLAC renders "1 track · FLAC" where this
+ * one falls back to its folder name (measured, on the same "Can't be restored."
+ * arm and with no tags hint either way). So the fixture stays the shape the app
+ * produces, and what that costs is one line — a meta line with tags on a
+ * REFUSED row; `album` and `importedAlbum` render that line with tags here. */
 const REFUSED_NOTE =
   "This Trash entry is a link to a folder on another volume, so MusicDrop will not" +
   " restore it — following the link would import files that were never in Trash. The" +
