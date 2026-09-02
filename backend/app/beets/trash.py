@@ -722,7 +722,7 @@ def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path, origins_dir
 
 def _undo_folder_move(
     entry: Path, album_root: Path, *, origins_dir: Path, cause: Exception
-) -> Exception:
+) -> TrashRowsNotRemovedError | TrashDeleteIncompleteError:
     """Put the folder back where it came from, and say what happened either way.
 
     The record is destroyed only ONCE THE FOLDER HAS LANDED, which is the same
