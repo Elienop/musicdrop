@@ -398,15 +398,25 @@ def test_a_trash_path_over_PATH_MAX_fails_at_the_MOVE_and_not_at_the_allocator(
     dir is deep enough, and no suffix, no orphaned record and no entry in the way
     are needed to get there.
 
-    The FRAME is all this fixture can assert on, and that is a measurement, not
-    a preference. Run twice from the same root, once with
-    :func:`app.fsutil.exists` and once with ``dest.exists()``, the two spellings
-    end the delete identically: ``OSError(36)``, the same ``.filename`` (the
-    whole candidate path, in both), the same ``str(exc)``, a byte-identical 500
-    body, the husk still in ``/music`` and an empty Trash. What differs is which
-    frame the traceback blames — ``shutil.move`` in ``trash_folder`` against the
-    ``while`` in ``_unique_trash_dest`` — so the frame is what the assertions
-    below read. Whoever reads the traceback is who that difference is for.
+    TWO things separate the two spellings, and the FRAME is the one this test
+    asserts on. Run twice from the same root, once with
+    :func:`app.fsutil.exists` and once with ``dest.exists()``, the delete ends
+    identically on everything a caller sees: ``OSError(36)``, the same
+    ``.filename`` (the whole candidate path, in both), the same ``str(exc)``, a
+    byte-identical 500 body, the husk still in ``/music`` and an empty Trash.
+    What differs:
+
+    * which frame the traceback blames — ``shutil.move`` in ``trash_folder``
+      against the ``while`` in ``_unique_trash_dest``. That is what the
+      assertions below read, because whoever reads the traceback is who the
+      difference is for;
+    * one log record, which this test does not read. Measured on this fixture
+      (2026-09-02): the guarded run emits exactly one WARNING, from
+      ``app.beets.trash_origins`` — ``origin_recorded``'s "could not tell" — and
+      the unguarded run emits none. :mod:`app.fsutil` is not what talks; it has
+      no logger at all. It is the ``or`` in ``_unique_trash_dest``: the guarded
+      ``exists`` answers False instead of raising, so the second predicate runs
+      and meets the same errno on the record's own path.
     """
     trash = _trash_dir_over_path_max(tmp_path)
     origins = origins_for(trash)

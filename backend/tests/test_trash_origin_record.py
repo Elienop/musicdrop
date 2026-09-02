@@ -1735,12 +1735,19 @@ def test_empty_all_leaves_a_record_whose_entry_was_removed_outside_the_app(
 ) -> None:
     """The accepted residual, pinned so it is a decision rather than a surprise.
 
-    A hand ``rm -rf`` of a Trash entry leaves its record behind, and nothing
-    reaps it: the obvious sweep ("unlink every record with no matching entry")
-    cannot tell an empty Trash dir from a Trash dir whose share has just dropped,
-    and would destroy every remaining origin in that state. The orphan is
-    harmless because ``_unique_trash_dest`` treats a recorded name as occupied —
-    it costs a burnt name, never a wrong restore.
+    A hand ``rm -rf`` of a Trash entry leaves its record behind, and no per-row
+    action reaches it. The tempting sweep — "unlink every record with no
+    matching entry", asked on the LISTING — is still refused: it cannot tell an
+    empty Trash dir from a Trash dir whose share has just dropped, and would
+    destroy every remaining origin in that state.
+
+    What does reap such a record is an Empty all that empties Trash
+    (``clear_trash_origins``, gated on having removed at least one entry), so it
+    waits for one rather than surviving for good. THIS case is the wait: Trash
+    holds nothing, so ``empty_all`` removes nothing, the gate never fires and the
+    record is still there afterwards. Until then the orphan is harmless because
+    ``_unique_trash_dest`` treats a recorded name as occupied — it costs a burnt
+    name, never a wrong restore.
     """
     trash, origins = tmp_path / "trash", _origins(tmp_path)
     trash.mkdir()

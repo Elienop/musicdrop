@@ -238,6 +238,15 @@ def list_trashed_albums(
     folder arriving in Trash by another route (a hand copy, a restored backup, a
     sync client) asks the allocator nothing and can adopt a leftover record.
     ``trash_origins`` states that as an open residual.
+
+    A record left over that way is reached in one place, and it is not here:
+    :func:`empty_all` calls ``trash_origins.clear_trash_origins`` (its only
+    caller, grepped) once it has removed at least one entry AND found
+    ``trash_dir`` empty afterwards. That gate does not have the ambiguity above:
+    having removed an entry is what says the directory walked was the real one,
+    so the empty Trash it then reads is one it emptied itself rather than a
+    share that dropped. The listing can make no such claim — it
+    removes nothing — which is why the reasoning above still holds here.
     """
     if not trash_dir.exists():
         return []
@@ -892,10 +901,12 @@ def _occupied(path: Path) -> bool:
     performed, so one input had two answers depending on which layer saw it.
 
     Nothing is buried or merged by replacing an empty directory: there is nothing
-    in it. Everything else — a non-empty directory, a file, a symlink of any kind
-    — is occupied, and a SYMLINK is occupied even when it points at an empty
-    directory: ``rename`` refuses it (ENOTDIR) and following it would move the
-    album somewhere the user never named.
+    in it. Everything else — a non-empty directory, a file, a symlink that
+    RESOLVES — is occupied, and such a symlink is occupied even when it points
+    at an empty directory: ``rename`` refuses it (ENOTDIR) and following it would
+    move the album somewhere the user never named. A DANGLING link reads as
+    absent, because the ``exists`` above follows it and answers False; the move
+    then meets whatever ``rename`` makes of it.
 
     Answers "occupied" for anything it cannot read, which is the conservative
     side: a refusal leaves the files in Trash.
@@ -1045,10 +1056,18 @@ def _reaches_through_a_link(trash_dir: Path, child: Path) -> bool:
     it can name a path BELOW a link (``Alias/Disc 1``), which a leaf-only test
     clears and ``resolve`` then follows into the row the link points at.
 
-    A ``child`` that is not lexically under ``trash_dir`` — an absolute ``rel``,
-    or one starting ``../`` — has no components to walk and answers False. The
-    caller refuses that shape itself, in the same ``or``, rather than leaving it
-    to the resolved containment check: this must not grow into a second, weaker
+    A ``child`` the base cannot be stripped from answers False, having walked
+    nothing: an absolute ``rel``, which replaces the base entirely. The caller
+    refuses that shape itself, in the same ``or``.
+
+    A ``child`` that CLIMBS is NOT that case. ``pathlib`` does not collapse
+    ``..``, so ``<trash>/../outside/x`` is lexically under ``trash_dir``
+    — measured: ``is_relative_to`` answers True and ``relative_to`` yields
+    ``('..', 'outside', 'x')`` — and the walk below really runs over those
+    components, refusing only if one of them is a link.
+    What refuses the climb itself is the RESOLVED containment check in
+    :func:`resolve_trash_child`, where the ``..`` is finally normalised away,
+    and not ``is_relative_to``. This must not grow into a second, weaker
     traversal check.
     """
     try:

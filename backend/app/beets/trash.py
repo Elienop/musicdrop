@@ -355,8 +355,10 @@ def _unique_trash_dest(trash_dir: Path, origins_dir: Path, name: str) -> Path:
     and without this test the next album to earn that name would inherit a stale
     origin — which steers a ``rename()`` for the wrong folder. That is the exact
     hazard inode keys were rejected for, and it is strictly worse than losing an
-    origin, so it is narrowed here rather than by a reaper that would have to
-    decide whether an empty Trash dir means "empty" or "unmounted".
+    origin, so it is narrowed here rather than by a reaper on the LISTING, which
+    would have to decide whether an empty Trash dir means "empty" or
+    "unmounted". (``trash_manage.empty_all`` does sweep the whole store, but only
+    once it has itself emptied Trash — a reading it does not have to guess.)
 
     Narrowed and not CLOSED, and in two separate ways. This function's reach is
     the names MusicDrop hands out, so a folder that arrives in ``trash_dir`` by
