@@ -124,8 +124,9 @@ _OUTSIDE_LIBRARY_NOTE = (
 #: that sentence's claims are false here: ``trash._record_origin`` declines
 #: DELIBERATELY (so nothing failed and the server log says nothing), the row is
 #: not old, and "Restoring re-imports it" is not on offer at all —
-#: :func:`resolve_trash_child` refuses a child that resolves outside Trash, so
-#: Restore answers 404. Say what will really happen instead, and say where the
+#: :func:`resolve_trash_child` refuses a child that is a link
+#: (:func:`_is_symlinked_entry`, the same predicate this row's mode comes from),
+#: so Restore answers 404. Say what will really happen instead, and say where the
 #: files are: they are the one thing here that was never at risk.
 #:
 #: The last sentence is about the row's OTHER button, and it used to be wrong in
@@ -135,6 +136,15 @@ _OUTSIDE_LIBRARY_NOTE = (
 #: :func:`resolve_trash_child` refusal as Restore and answers 404 with the link
 #: still there. Both per-row actions are named, because the note has to be true
 #: of every affordance rendered next to it.
+#:
+#: "on another volume" is the ORDINARY provenance above, not a measured property
+#: of every entry that gets this note: a link whose target sits inside the Trash
+#: dir (``<trash>/Alias -> ./RealAlbum``) reads the same way and is refused the
+#: same way, and for it that clause is wrong. The rest of the sentence holds —
+#: it is a link, nothing follows it, and the files are wherever it points. The
+#: wording is left alone here because the string is asserted whole in
+#: ``frontend/src/pages/settings/SettingsTrashPage.test.tsx``; changing it is a
+#: two-file change, recorded rather than half-done.
 _SYMLINKED_ENTRY_NOTE = (
     "This Trash entry is a link to a folder on another volume, so MusicDrop will not"
     " restore it — following the link would import files that were never in Trash. The"
@@ -143,6 +153,44 @@ _SYMLINKED_ENTRY_NOTE = (
     " Restore and this row's own Empty both refuse it; Empty all removes the link, and"
     " only the link."
 )
+
+
+def _is_symlinked_entry(entry: Path) -> bool:
+    """Whether a Trash entry is itself a LINK — the refusal both sides make.
+
+    ONE predicate, two callers, and that is the point rather than tidiness:
+    :func:`_restore_fields` renders ``"refused"`` from it and
+    :func:`resolve_trash_child` turns the two per-row routes down with it, so the
+    row's promise and the routes' behaviour cannot answer differently. They used
+    to: the listing asked ``os.path.islink`` while the routes resolved the child
+    and tested containment. Those agree for a link pointing OUT of Trash and
+    disagree for one pointing at a SIBLING entry, where the resolved path is
+    inside the Trash dir — measured before they were one predicate, on
+    ``<trash>/Alias -> ./RealAlbum``: ``DELETE /api/trash?folder=Alias``
+    answered ``200 {"removed": 1}``, ``rmtree``'d ``RealAlbum`` (a different
+    row) and left ``Alias`` in place. Folder names arrive from ``/music``,
+    which this deployment's threat
+    model treats as attacker-writable.
+
+    LEXICAL, and asked of the named path itself: what the link points at is never
+    consulted, so a dangling link, a link to another volume and a link to a
+    sibling Trash entry are one case with one answer, decided before anything is
+    resolved.
+
+    ``os.path.islink`` rather than ``Path.is_symlink`` because both callers take
+    a name a client or the filesystem chose: ``Path.is_symlink`` absorbs only
+    ENOENT/ENOTDIR/EBADF/ELOOP, so an overlong component still raises
+    ENAMETOOLONG out of it (the reason ``app/fsutil.py`` exists), while
+    ``os.path.islink`` answers False — the right answer on both sides, since what
+    cannot be stat'ed is neither a link to honour nor a trashed album. That is no
+    longer an unkillable preference: with this on the route's path,
+    ``tests/test_trash_manage.py::test_resolve_trash_child_refuses_an_overlong_name``
+    fails with the other spelling (measured: OSError out of a resolver whose
+    contract is ``ValueError`` -> 404). It is not the spelling every caller wants
+    — ``trash._record_origin`` asks about a path ``shutil.move`` has just
+    created, where no such name can exist.
+    """
+    return os.path.islink(entry)
 
 
 def list_trashed_albums(
@@ -250,28 +298,19 @@ def _restore_fields(
     back to. Passing the display form (``display_path``) would look right and
     read nothing for any folder whose name is not valid UTF-8.
     """
-    # ``os.path.islink`` rather than ``Path.is_symlink``: this is the LISTING,
-    # which must not fail because one entry's name is unstattable, and
-    # ``Path.is_symlink`` only absorbs ENOENT/ENOTDIR/EBADF/ELOOP — an overlong
-    # name still raises ENAMETOOLONG out of it (the reason ``app/fsutil.py``
-    # exists). ``os.path.islink`` answers False for every such failure, which is
-    # the right answer here: what cannot be stat'ed is not a link we can honour.
-    #
-    # That difference is REAL but UNREACHABLE from here, and NO TEST CAN KILL IT
-    # (measured: swapping in ``entry.is_symlink()`` leaves the whole suite
-    # green). Both of this function's callers have already touched the entry by
-    # the time they call it — ``_walk_trash_groups`` reached it through
-    # ``os.walk``, ``_audio_free_entries`` through ``iterdir`` + ``is_dir`` —
-    # and every one of those raises on the unstattable name first, so no input
-    # exists that this choice decides. It is kept because it costs nothing and
-    # the ordering above it is not guaranteed to last: a caller that stops
-    # pre-stat'ing would make the listing 500 on one bad name.
+    # The SHARED predicate, not a second spelling of it: whatever makes this row
+    # say "refused" is what makes the two per-row routes refuse it
+    # (:func:`_is_symlinked_entry`, which also documents why it is
+    # ``os.path.islink``). The two used to be written separately and disagreed on
+    # a link pointing at a sibling entry.
     #
     # Asked BEFORE the record, and it decides alone. A symlinked entry cannot be
     # restored by any route whatever a record says about it, so a record that
     # somehow exists for this name (written for a DIFFERENT entry that held the
-    # name earlier — the hazard the allocator closes) must not out-vote it.
-    if os.path.islink(entry):
+    # name earlier — a leftover the allocator declines to hand back out, though
+    # it cannot stop a folder arriving by another route from adopting one; see
+    # ``trash_origins``) must not out-vote it.
+    if _is_symlinked_entry(entry):
         return "refused", _SYMLINKED_ENTRY_NOTE, None
     record = read_trash_origin(origins_dir, entry.name)
     if record is None:
@@ -922,11 +961,42 @@ def _return_to_trash(origin: Path, entry: Path) -> None:
         origin.parent.rmdir()
 
 
+def _reaches_through_a_link(trash_dir: Path, child: Path) -> bool:
+    """Whether walking from ``trash_dir`` down to ``child`` crosses a symlink.
+
+    Every component is asked, not just the leaf: ``rel`` is a request string, so
+    it can name a path BELOW a link (``Alias/Disc 1``), which a leaf-only test
+    clears and ``resolve`` then follows into the row the link points at.
+
+    A ``child`` that is not lexically under ``trash_dir`` — an absolute ``rel``,
+    or one starting ``../`` — answers False and is left to the containment check
+    in the caller. Two guards, each with one job; this must not grow into a
+    second, weaker traversal check.
+    """
+    try:
+        parts = child.relative_to(trash_dir).parts
+    except ValueError:
+        return False
+    walked = trash_dir
+    for part in parts:
+        walked = walked / part
+        if _is_symlinked_entry(walked):
+            return True
+    return False
+
+
 def resolve_trash_child(trash_dir: Path, rel: str) -> Path:
-    """Resolve ``trash_dir/rel`` and refuse anything outside it.
+    """Resolve ``trash_dir/rel`` and refuse anything outside it, or behind a link.
 
     These paths are ``rm -rf`` / import targets, so reject traversal (``../``),
     the Trash root itself, and a non-existent child by raising ``ValueError``.
+
+    The LINK refusal comes first, before anything is resolved, and it is the
+    listing's own predicate (:func:`_is_symlinked_entry`) so that a row rendered
+    ``"refused"`` and a request naming that row cannot disagree. Containment
+    alone did not refuse a link pointing INTO Trash: it resolved to a real entry,
+    passed, and the caller then acted on a DIFFERENT row than the one the request
+    named. Nothing behind a link is ever the thing the user clicked.
 
     ``rel`` is the ``folder`` the listing emitted, which is display-safe — so a
     folder whose real name is not valid UTF-8 comes back carrying placeholders.
@@ -934,8 +1004,11 @@ def resolve_trash_child(trash_dir: Path, rel: str) -> Path:
     ``AmbiguousDisplayName`` rather than guess when two folders display alike),
     keeping such an album restorable instead of stranding it in Trash.
     """
+    child = resolve_display_path(trash_dir, rel)
+    if _reaches_through_a_link(trash_dir, child):
+        raise ValueError(f"{rel!r} is not a trashed album")
     base = trash_dir.resolve()
-    dest = resolve_display_path(trash_dir, rel).resolve()
+    dest = child.resolve()
     if dest == base or not dest.is_relative_to(base) or not exists(dest):
         raise ValueError(f"{rel!r} is not a trashed album")
     return dest
@@ -966,9 +1039,10 @@ def empty_all(trash_dir: Path, *, origins_dir: Path) -> EmptyResult:
     symlinked entry used to raise ``OSError`` here and wedge the whole
     operation: nothing after it in ``iterdir`` order was removed, and every
     retry failed identically, leaving Trash impossible to empty through the app.
-    ``empty_one`` cannot clear it either -- ``resolve_trash_child`` resolves the
-    child and 404s anything landing outside Trash, which is a guard worth
-    keeping -- so the entry was unremovable by any route.
+    ``empty_one`` cannot clear it either -- ``resolve_trash_child`` refuses a
+    child that is a link before it resolves anything, which is a guard worth
+    keeping -- so the entry is unremovable by any other route. This is the one
+    place a symlinked entry is acted on, and it acts on the LINK.
 
     An entry gets there without anything hostile: ``_album_root`` is
     ``dirname(item.path)``, so an album whose own folder is a symlink into

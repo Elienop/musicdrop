@@ -389,8 +389,8 @@ def test_empty_all_clears_a_symlinked_entry_without_following_it(tmp_path: Path)
 
     ``is_dir()`` follows symlinks and ``shutil.rmtree`` refuses one, so the loop
     raised ``OSError`` and every retry raised it again -- and ``empty_one``
-    cannot clear it either, because ``resolve_trash_child`` resolves the child
-    and refuses anything landing outside Trash. Nothing hostile is needed to get
+    cannot clear it either, because ``resolve_trash_child`` refuses a child that
+    is a link before resolving it. Nothing hostile is needed to get
     one there: an album whose own folder is a symlink into another volume is
     trashed as a symlink, since ``shutil.move`` preserves them.
 

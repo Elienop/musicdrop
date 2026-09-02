@@ -13,13 +13,19 @@ from pydantic import BaseModel
 #:   files it under the CURRENT path templates, which is not necessarily where
 #:   it was. ``restore_note`` says why.
 #: * ``"refused"`` — Restore will do NOTHING, and neither will this row's own
-#:   Empty. The entry is a symlink, so ``resolve_trash_child`` resolves it
-#:   outside the Trash dir and both per-row endpoints answer 404 before any
-#:   work starts. The UI must disable both controls on this value; leaving them
-#:   live offers two buttons whose only possible outcome is an error.
-#:   ``restore_note`` says where the album's files really are and what does
-#:   remove the entry (only ``DELETE /api/trash/all``, and it removes the link
-#:   alone).
+#:   Empty. The entry is a symlink, and that is the whole predicate: a lexical
+#:   ``os.path.islink`` on the entry itself (``trash_manage._is_symlinked_entry``),
+#:   which the listing renders this value from and ``resolve_trash_child`` refuses
+#:   the request with, so both per-row endpoints answer 404 before anything is
+#:   resolved or touched. ONE function, two callers — the two are true together
+#:   by construction rather than by agreement. (Written as "resolves outside the
+#:   Trash dir", this claim was false for a link pointing at a SIBLING entry: the
+#:   row read "refused" while the per-row Empty resolved through the link and
+#:   removed the other row.) The UI must disable both controls on this value;
+#:   leaving them live offers two buttons whose only possible outcome is an
+#:   error. ``restore_note`` says where the album's files really are and what
+#:   does remove the entry (only ``DELETE /api/trash/all``, and it removes the
+#:   link alone).
 #:
 #: The third value says what the ROUTES will do, which is why it is allowed to
 #: exist while ``track_count == 0`` still gets no value of its own. That count is
