@@ -952,11 +952,13 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - **`MUSICDROP_TRASH_DIR` is an unvalidated `rmtree` root.** (Found 2026-08-28.)
   `resolve_trash_dir` returns `Path(settings.trash_dir).resolve()` with no containment
-  check (`app/beets/trash.py:245-247`), and `empty_all` then `shutil.rmtree`s every child
-  of whatever came back (`trash_manage.py:170-174`). Nothing asserts the trash dir is not
+  check (`app/beets/trash.py`), and `empty_all` then `shutil.rmtree`s every child
+  of whatever came back (`app/beets/trash_manage.py`). Symbols, not line numbers: both
+  functions have since moved by hundreds of lines. Nothing asserts the trash dir is not
   the music root, not inside it, and not the beets dir — and pointing trash at the music
   dataset (so deletes are same-filesystem renames instead of cross-device copies; the
-  default sits on the small `/data` volume per README:127) is a plausible operator move one
+  default sits on the small `/data` volume, which README's "Backup & restore" calls the
+  only GB-scale item there) is a plausible operator move one
   typo away from `MUSICDROP_TRASH_DIR=/music`. Every other destructive path here has a
   containment check (`resolve_trash_child`, `_folder_is_shared`,
   `orphans._excluded_predicate`); the trash root has none. Small: refuse at startup when
