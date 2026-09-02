@@ -35,9 +35,14 @@ from tests.conftest import build_library
 #: Total albums in the stale-library fixture. Only the false-failure rate sets
 #: it: exactly ``_PRESENCE_SAMPLE_SIZE`` of these albums are ghosts, so a call
 #: refuses only when the uniform draw picks all of them, with probability
-#: ``1 / C(_TOTAL_ALBUMS, _PRESENCE_SAMPLE_SIZE)`` — 1 in 2.5 billion here. The
-#: test asserts that bound rather than trusting this comment, so raising
-#: ``_PRESENCE_SAMPLE_SIZE`` fails loudly instead of quietly going flaky.
+#: ``1 / C(_TOTAL_ALBUMS, _PRESENCE_SAMPLE_SIZE)`` — 1 in 2.5 billion here.
+#:
+#: The test asserts that bound rather than trusting this comment, and the
+#: direction it guards is LOWERING ``_PRESENCE_SAMPLE_SIZE`` (or shrinking
+#: ``_TOTAL_ALBUMS``), not raising it: ``1 / C(N, K)`` FALLS as K grows, so a
+#: bigger sample only makes the all-ghost draw rarer. Measured against the
+#: assert: K 5 -> 4 fails it, K 5 -> 8 passes. K raised past ``N / 2`` would turn
+#: the curve back around, but N here is 40x K.
 _TOTAL_ALBUMS = 200
 
 
