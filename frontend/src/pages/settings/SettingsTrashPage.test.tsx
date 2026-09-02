@@ -514,6 +514,11 @@ describe("SettingsTrashPage", () => {
   });
 
   test("the header points at the per-row promise instead of making one", async () => {
+    // The second assertion is a BLACKLIST of one phrasing: a paraphrase that
+    // makes the same false promise ("Restore puts one back exactly as it was")
+    // renders and passes here untouched. What it pins is the pair — that the
+    // header defers to the row, and that the one wording which actually
+    // shipped, and was wrong for every `import` row, cannot come back.
     server.use(
       http.get(TRASH_URL, () =>
         HttpResponse.json({ albums: [album], trash_path: "/t" }),
