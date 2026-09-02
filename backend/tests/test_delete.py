@@ -1105,6 +1105,67 @@ def test_delete_500_when_the_undo_ALSO_fails_does_not_send_the_reader_to_empty_t
     assert (trash / "Discovery" / "01 Track 1.mp3").is_file()
 
 
+def test_a_fanout_that_stops_on_a_double_failure_does_not_send_the_reader_to_empty_trash(
+    duplicates_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The wrapper must not swallow the album it stopped ON having its own line.
+
+    ``ArtistDeletePartialError`` used to be answered on ``moved`` alone, so a
+    fan-out that got one album into Trash and then stopped on one whose rows
+    would not go AND whose folder would not come back shipped "Files are
+    recoverable in the Trash folder. Retry." — the one instruction that state
+    must not give, on a page with an Empty button, for an album that can be in
+    Trash, at its own folder, or half at each. The promise about album 1 is
+    still true; it is simply not the sentence this reader needs first.
+
+    Both albums belong to Radiohead in the fixture, so the fan-out really does
+    reach a second one. The origin is retaken during the second album's
+    ``remove`` — the window ``move_no_merge`` exists for — which is what turns
+    the undo into the double failure.
+    """
+    trash = tmp_path / "trash"
+    roots = {
+        _require_id(a.id): Path(album_folder(duplicates_lib, list(a.items())))
+        for a in duplicates_lib.albums()
+        if a.albumartist == "Radiohead"
+    }
+    assert len(roots) == 2, "the fan-out needs a second album to stop on"
+    real_remove = Album.remove
+    seen: list[int] = []
+
+    def _retakes_the_origin_on_the_second_album(
+        self: Album, *args: object, **kwargs: object
+    ) -> None:
+        seen.append(_require_id(self.id))
+        if len(seen) == 1:
+            real_remove(self, *args, **kwargs)  # type: ignore[arg-type]  # passthrough
+            return
+        root = roots[_require_id(self.id)]
+        root.mkdir(parents=True)
+        (root / "a stranger.mp3").write_bytes(b"\x00")
+        raise RuntimeError("disk I/O error, forced by the fixture")
+
+    monkeypatch.setattr(Album, "remove", _retakes_the_origin_on_the_second_album)
+    req = _store_fault_req(duplicates_lib, tmp_path, trash)
+
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(delete_artist_op(req, "Radiohead"))  # type: ignore[arg-type]  # stub req
+
+    assert ei.value.status_code == 500
+    detail = ei.value.detail
+    assert isinstance(detail, dict)
+    assert "1 of 2 albums had been moved to Trash" in detail["message"], "it really is partial"
+    assert "There is something at BOTH places now" in detail["message"], "...on a double failure"
+    recovery = detail["recovery"]
+    assert recovery != "Files are recoverable in the Trash folder. Retry.", "not the promise"
+    assert recovery != _LOOK_IN_TRASH, "nor the fallback"
+    assert "Do NOT empty the Trash folder before reading the message above" in recovery
+    # ...and the state that makes the sentence matter is on the disk.
+    stopped_on = roots[seen[1]]
+    assert (stopped_on / "a stranger.mp3").is_file(), "something is at the album's own folder"
+    assert len(list(trash.iterdir())) == 2, "and both albums are in Trash, one of them stranded"
+
+
 def _shared_folder_two_track_library(tmp_path: Path) -> Library:
     """An album of TWO tracks in a folder it shares, so a move can stop HALF done.
 

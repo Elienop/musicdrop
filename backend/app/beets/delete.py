@@ -52,6 +52,18 @@ from app.models.delete import DeleteResult
 #: further.
 _NOTHING_DELETED = "Nothing has been deleted."
 
+#: The recovery line for the one state where the reader must not tidy Trash up
+#: before reading the message: the rows would not go AND the folder would not
+#: come back, so the files can be in Trash, at the album's own folder, or half
+#: at each. Named because TWO arms return it — the bare
+#: ``TrashDeleteIncompleteError``, and an artist fan-out that stopped on an
+#: album in that state. Tests compare it to a literal, not to this name, or the
+#: wording would only be pinned against itself.
+_DO_NOT_EMPTY_TRASH = (
+    "Do NOT empty the Trash folder before reading the message above: it says"
+    " where the files are now, from the disk. Compare both paths first."
+)
+
 
 class AlbumNotFoundError(Exception):
     """A referenced album id is not in the library. Maps to 404."""
@@ -81,11 +93,22 @@ class ArtistDeletePartialError(Exception):
     no longer in the set for the whole-folder path — the primitive puts the
     folder back (``decisions.md`` 28 item 4) — but a move that stops part-way
     and the per-item mover's own row-drop window still are.
+
+    Carries ``cause`` too, and for a narrower reason: one of the causes this can
+    wrap — :class:`~app.beets.trash.TrashDeleteIncompleteError`, the album whose
+    rows would not go AND whose folder would not come back — has a recovery line
+    of its own that must not be replaced by the Trash promise, because the whole
+    point of that line is to stop the reader emptying Trash before they have
+    read where their files are. Wrapping it hid that (measured: the fan-out
+    shipped "Files are recoverable in the Trash folder. Retry." for a state
+    whose own line says "Do NOT empty the Trash folder"), so :func:`_recovery`
+    reads through to it.
     """
 
-    def __init__(self, message: str, *, moved: int) -> None:
+    def __init__(self, message: str, *, moved: int, cause: Exception | None = None) -> None:
         super().__init__(message)
         self.moved = moved
+        self.cause = cause
 
 
 def delete_album(
@@ -318,11 +341,13 @@ def _partial(exc: Exception, *, moved: int, mutated: int, total: int) -> ArtistD
             f"the delete stopped after {moved} of {total} albums had been moved to Trash;"
             f" the albums it never reached are untouched ({exc})",
             moved=moved,
+            cause=exc,
         )
     return ArtistDeletePartialError(
         f"the delete stopped after dropping {mutated} of {total} albums that had no files"
         f" left to move; the albums it never reached are untouched ({exc})",
         moved=0,
+        cause=exc,
     )
 
 
@@ -356,7 +381,10 @@ def _recovery(exc: Exception) -> str:
 
     The five states, and the sentence each gets:
 
-    * a partial fan-out with files in Trash — the only Trash promise;
+    * a partial fan-out with files in Trash — the only Trash promise, and it
+      yields to the fourth bullet when the album the fan-out stopped ON is in
+      that state: the promise about the albums before it is true, but it is not
+      the sentence that reader needs first;
     * ``TrashMoveIncompleteError``, raised precisely BECAUSE the files did not
       move; its own message already says the library rows were kept, so the hint
       says where the album still is;
@@ -372,7 +400,10 @@ def _recovery(exc: Exception) -> str:
       sentence now says where the files really are: back in the music folder;
     * ``TrashDeleteIncompleteError`` — that undo failed too. Its own message is
       composed from the disk and names both paths, so this line's whole job is
-      to stop the reader emptying Trash before they have read it;
+      to stop the reader emptying Trash before they have read it. Reached
+      through ``ArtistDeletePartialError.cause`` as well as bare: wrapped, it
+      used to be answered with the Trash promise above, which is the one
+      instruction this state must not give;
     * everything else — the arm that cannot know, so it ASKS rather than tells.
       Most of what lands here moved nothing: a fan-out stopped before its first
       album, one whose albums were all ghosts or empty rows, most faults inside a
@@ -403,8 +434,17 @@ def _recovery(exc: Exception) -> str:
     there. Naming Trash as a place to look is one look for the user who moved
     nothing, against a lost album for the user who did.
     """
-    if isinstance(exc, ArtistDeletePartialError) and exc.moved:
-        return "Files are recoverable in the Trash folder. Retry."
+    if isinstance(exc, ArtistDeletePartialError):
+        # Read THROUGH the wrapper first: the album this stopped on can be in a
+        # state whose own line is the one that matters more than the promise
+        # about the albums before it. Only the double failure qualifies — the
+        # others below either kept their rows (``TrashMoveIncompleteError``) or
+        # left nothing in Trash (``TrashRowsNotRemovedError``), so the fan-out's
+        # own promise is still the more useful sentence for those.
+        if isinstance(exc.cause, TrashDeleteIncompleteError):
+            return _DO_NOT_EMPTY_TRASH
+        if exc.moved:
+            return "Files are recoverable in the Trash folder. Retry."
     if isinstance(exc, TrashMoveIncompleteError):
         return "The files were not moved and the library still has the album. Retry."
     if isinstance(exc, TrashRowsNotRemovedError):
@@ -413,10 +453,7 @@ def _recovery(exc: Exception) -> str:
             " Check whether the album is still listed before retrying."
         )
     if isinstance(exc, TrashDeleteIncompleteError):
-        return (
-            "Do NOT empty the Trash folder before reading the message above: it says"
-            " where the files are now, from the disk. Compare both paths first."
-        )
+        return _DO_NOT_EMPTY_TRASH
     return (
         "Check the Trash folder before retrying: a delete that stops part-way can"
         " leave some or all of the files there. Retry."
