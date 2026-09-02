@@ -76,11 +76,25 @@ def _ignore_dirs(app: object) -> tuple[Path, ...]:
 
     The origin store earns its place the moment it stops being a sidecar: it is a
     non-dotfile directory holding only ``.json`` files, so it is audio-empty BY
-    DEFINITION, and if ``beets_dir`` (or a configured ``trash_origins_dir``) ever
-    sits under the music root the sweep would relocate the whole store into Trash
-    — taking every row's exact restore with it. The Trash dir itself is already
+    DEFINITION, and a ``trash_origins_dir`` configured under the music root reads
+    as a husk — the sweep would relocate the whole store into Trash, taking every
+    row's exact restore with it in one pass. The Trash dir itself is already
     excluded by ``find_orphan_folders``; this one is new because it is no longer
-    inside it."""
+    inside it.
+
+    That covers a sweep reaching the store DIRECTLY, and only that. Excluding a
+    directory does not protect it from a sweep that takes its PARENT:
+    ``find_orphan_folders`` reports the TOP-MOST audio-empty dir, and an excluded
+    subtree is not counted as audio for the dir above it. Measured with
+    ``beets_dir`` itself under the music root — the sweep returns ``beets_dir``,
+    the same list with and without this exclusion, and trashing that takes
+    ``library.db`` and ``config.yaml`` along with the store. That is the shape the
+    ``trash_dir`` exclusion has always had rather than anything the sibling store
+    introduced, and the shipped image does not reach it (``/data`` and ``/music``
+    are separate mounts); it needs a beets dir deliberately placed inside the
+    music library. Not fixed here: sparing every ancestor of an ignored dir would
+    only push the report one level up whenever the store is nested deeper, so it
+    is a change to what the finder reports and not a guard to bolt on."""
     handle: LibraryHandle = app.state.beets_library  # type: ignore[attr-defined]  # app duck-typed (object)
     configured = _settings(app).playlists_export_dir.strip()  # type: ignore[arg-type]  # app duck-typed (object)
     export_dir = (
