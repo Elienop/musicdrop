@@ -173,9 +173,11 @@ def test_delete_artist_root_unavailable_drops_nothing(
 def test_delete_album_op_503_root_unavailable(duplicates_lib: Library, tmp_path: Path) -> None:
     """The HTTP mapping: 503 + the flat honest sentence, not the structured 500.
 
-    The blanket ``except`` above would answer "Files are recoverable in the Trash
-    folder" for an operation that moved nothing, so the root-unavailable arm has
-    to sit in front of it. The stub request is enough because ``_swap_lock``
+    The blanket ``except`` above would answer with the 500's recovery line, which
+    sends the reader to check a Trash folder this operation never created (and
+    for most of this branch's life promised the files were already in it), so the
+    root-unavailable arm has to sit in front of it. The 503 says the one thing
+    that is known instead. The stub request is enough because ``_swap_lock``
     creates its lock lazily on whatever ``app.state`` it is handed
     (config_editor.py:624-630) and ``_settings`` falls back to the module
     singleton when ``state.settings`` is absent (:632-645).
@@ -207,7 +209,8 @@ def test_delete_artist_op_503_root_unavailable(duplicates_lib: Library, tmp_path
     Without this the artist half of the mapping is unpinned: the route-status
     census reads the RAISE and only flags a status raised-but-undeclared, so
     deleting the ``except`` here would leave a declared 503 nothing produces and
-    hand the fan-out back its "recoverable in the Trash folder" 500.
+    hand the fan-out back the blanket 500, whose recovery line can only tell the
+    user to go and look in Trash.
     """
     handle = make_test_handle(duplicates_lib, tmp_path)
     before = len(list(duplicates_lib.albums()))
