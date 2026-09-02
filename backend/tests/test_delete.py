@@ -792,3 +792,65 @@ def test_delete_artist_does_not_count_a_shared_folder_ghost_as_moved(
     ]
     assert list(trash.iterdir()) == []
     assert [a.album for a in lib.albums() if a.albumartist == "Sharey"] == ["B Live"]
+
+
+@pytest.mark.parametrize(
+    ("path", "artist"),
+    [("/api/albums/{album_id}", None), ("/api/artists", "Radiohead")],
+)
+def test_the_delete_routes_500_description_does_not_deny_its_own_body(
+    duplicates_lib: Library,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    artist: str | None,
+) -> None:
+    """The schema's 500 may not promise what a real 500 body denies.
+
+    Both routes DECLARED "its files are recoverable in the Trash folder" flatly,
+    for a status whose structured body carries the recovery line that decides
+    exactly that — so the generated client's types documented one answer while
+    the wire sent the other. The tests above pin the body; this joins it to the
+    contract, so the two cannot drift apart again.
+
+    Two halves, and neither is evidence on its own: the LIVE spec's description
+    (a wrong one passes every behavioural test in this file) against a REAL 500
+    provoked with nothing moved (a wrong body passes any assertion about the
+    spec). ``tests/test_openapi_spec_guard.py`` is not evidence about either —
+    it only fires on a dump that was not regenerated.
+    """
+    from app.main import app
+
+    def _refuses(*args: object, **kwargs: object) -> str:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(delete_mod, "trash_album_folder", _refuses)
+    trash = tmp_path / "trash"
+    handle = make_test_handle(duplicates_lib, tmp_path)
+
+    class _App:
+        state = SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins_for(trash))),
+        )
+
+    class _Req:
+        app = _App()
+
+    op = (
+        delete_artist_op(_Req(), artist)  # type: ignore[arg-type]  # stub req
+        if artist is not None
+        else delete_album_op(_Req(), _require_id(next(iter(duplicates_lib.albums())).id))  # type: ignore[arg-type]  # ditto
+    )
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(op)
+    detail = ei.value.detail
+    assert isinstance(detail, dict)
+    assert "Nothing reached the Trash folder" in detail["recovery"]
+    assert not trash.exists()  # the body is telling the truth about the disk
+
+    description = app.openapi()["paths"][path]["delete"]["responses"]["500"]["description"]
+    assert "recoverable in the Trash folder" not in description, (
+        f"{path}'s 500 description promises Trash recovery for a status this route"
+        f" answers with {detail['recovery']!r}"
+    )
