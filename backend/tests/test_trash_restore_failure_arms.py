@@ -201,6 +201,10 @@ def test_a_declined_import_whose_undo_fails_says_where_the_folder_is(
     assert "NOT added to the library database" in message
     assert "Compare them before removing either" in message, "a next step, not just a diagnosis"
     assert reason in message, "the import's own answer is still reachable"
+    # The composer used to append a full stop to a clause that already ended in
+    # one, so the sentence the Trash page renders finished "...again..".
+    assert ".." not in message, "one full stop, not two"
+    assert message.endswith("."), "and not none either"
     # The claim the sentence makes, measured rather than assumed.
     assert len(list(origin.glob("*.flac"))) == 2
     assert (entry / "stranger.flac").is_file()

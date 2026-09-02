@@ -694,9 +694,20 @@ def _undo_failure(
     The residual, stated rather than hidden: what retook the Trash entry may be a
     STRANGER's folder rather than a piece of ours, and this cannot tell them
     apart. That row then carries a record pointing at the origin our album is
-    stranded at, so it advertises an exact restore — which ``_restore_to_origin``
-    refuses on the spot, because that origin is occupied by the album. A wrong
-    promise that refuses beats a real record destroyed.
+    stranded at, so it advertises an exact restore. That promise is refused only
+    while the origin stays OCCUPIED: ``_restore_to_origin`` answers
+    ``origin_occupied`` on the spot, and it is the stranded album itself that
+    makes it do so. The message above sends the user to compare the two paths and
+    remove one, and removing the copy at the ORIGIN takes the refusal with it —
+    measured, restoring the stranger's row then moves that folder to our album's
+    recorded path and consumes the Trash entry. Nothing is merged or destroyed
+    (the origin is empty by then), but a stranger has been filed under a name
+    that was never its own.
+
+    Kept anyway, and the trade is the point: deleting the record on the guess
+    costs every REAL row whose entry is half-removed its exact restore, for good.
+    A wrong promise that usually refuses beats a real record destroyed — "usually"
+    being the honest word, which this used to leave out.
     """
     # ``%r``, not ``%s``, and the same in the message this logs the traceback of.
     # A Trash folder's name comes from the album's own tags, and
@@ -710,8 +721,13 @@ def _undo_failure(
     if not in_trash:
         # Never raises, so it cannot make this path worse.
         delete_trash_origin(origins_dir, entry_name)
+    # ``what_failed`` already ends its own sentence — both call sites finish it
+    # with an undo error whose message carries a full stop — so one is added only
+    # where it is missing. Appended unconditionally, this rendered ".." in the
+    # 500 ``detail`` the Trash page shows the user.
+    tail = what_failed if what_failed.endswith(".") else f"{what_failed}."
     return TrashRestoreIncompleteError(
-        f"the restore could not be completed and could not be undone. {where} {what_failed}."
+        f"the restore could not be completed and could not be undone. {where} {tail}"
     )
 
 
