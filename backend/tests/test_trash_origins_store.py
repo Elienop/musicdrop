@@ -361,8 +361,11 @@ def test_a_record_that_cannot_be_unlinked_is_logged_and_swallowed(
     * ``unlink(missing_ok=True)`` swallows ``FileNotFoundError`` and nothing
       else, so a read-only, full or damaged ``/data`` raises through it. Staged
       with a DIRECTORY at the record's own name (``EISDIR``) rather than
-      ``chmod``: CI images run as root, where a read-only directory denies
-      nothing and the test would report green having executed no failure.
+      ``chmod``: a maintainer running this suite inside the shipped image is
+      root (``Dockerfile`` declares no ``USER``), and there a read-only
+      directory denies nothing, so a chmod-staged test would report green
+      having executed no failure. ``EISDIR`` denies root too. CI is not the
+      case this guards against — its pytest job runs as ``runner``.
     * the handler itself. The entry name is a real filesystem name, so it can be
       non-UTF-8, and the obvious escape spelling
       (``.encode("utf-8", "backslashreplace").decode("ascii")``) raises
