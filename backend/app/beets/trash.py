@@ -358,13 +358,17 @@ def _unique_trash_dest(trash_dir: Path, origins_dir: Path, name: str) -> Path:
     origin, so it is narrowed here rather than by a reaper that would have to
     decide whether an empty Trash dir means "empty" or "unmounted".
 
-    Narrowed and not CLOSED, because this function's reach is the names
-    MusicDrop hands out and nothing else. A folder that arrives in ``trash_dir``
-    by another route — a hand copy, a restored backup, a sync client writing
-    into the volume — asks the allocator nothing, so it can still land on a name
-    whose record outlived its entry and inherit it. That half is a stated
-    residual; ``trash_origins``'s module docstring holds the full statement, and
-    this docstring must not out-claim it.
+    Narrowed and not CLOSED, and in two separate ways. This function's reach is
+    the names MusicDrop hands out, so a folder that arrives in ``trash_dir`` by
+    another route — a hand copy, a restored backup, a sync client writing into
+    the volume — asks the allocator nothing and can still land on a name whose
+    record outlived its entry. And for the names it DOES hand out, the test
+    below answers "free" for a recorded name whenever the store cannot be
+    reached: measured through this function as a non-root user with the origins
+    dir at mode 0600, ``Dummy`` where a readable store gives ``Dummy (1)``.
+    Both are stated residuals; ``trash_origins``'s module docstring and
+    :func:`~app.beets.trash_origins.origin_recorded` hold the full statement,
+    and this docstring must not out-claim them.
 
     The cost of the test itself is a burnt name: after a manual deletion the
     record is litter, and an album that would have been ``<name>`` becomes
