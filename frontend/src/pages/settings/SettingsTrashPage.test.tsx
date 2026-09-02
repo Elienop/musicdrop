@@ -58,6 +58,37 @@ const importedAlbum: TrashedAlbum = {
   origin: "/old-library/Old Band/Demos",
 };
 
+/** The third arm, and the only one that takes a control away. Verbatim from
+ * `trash_manage._SYMLINKED_ENTRY_NOTE` for the same reason the import note is:
+ * a page that ignored `restore_note` and printed its own copy would satisfy a
+ * shape assertion. Same caveat too — it is not a contract, so do not chase a
+ * backend rewording here.
+ *
+ * The rest of the shape is not decoration. A symlinked entry reaches the
+ * listing through `_audio_free_entries` (os.walk never follows the link, so it
+ * produces no audio group), which means EVERY refused row arrives with
+ * track_count 0 and null artist/album/format/origin. A fixture with tracks on
+ * it would be testing a row the backend cannot send. */
+const REFUSED_NOTE =
+  "This Trash entry is a link to a folder on another volume, so MusicDrop will not" +
+  " restore it — following the link would import files that were never in Trash. The" +
+  " album's own files were never moved: they are still where the link points, and" +
+  " adding that folder through Import is what puts the album back in the library." +
+  " Restore and this row's own Empty both refuse it; Empty all removes the link, and" +
+  " only the link.";
+
+const refusedAlbum: TrashedAlbum = {
+  folder: "Symlinked Album",
+  album_artist: null,
+  album: null,
+  year: null,
+  track_count: 0,
+  format: null,
+  restore_mode: "refused",
+  restore_note: REFUSED_NOTE,
+  origin: null,
+};
+
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -507,5 +538,93 @@ describe("SettingsTrashPage", () => {
     expect(
       await screen.findByText(/Already in your library/i),
     ).toBeInTheDocument();
+  });
+  test("a refused row offers neither of its own controls and says why", async () => {
+    // Both per-row routes resolve the symlink outside Trash and answer 404
+    // before doing any work, so a live Restore and a live Empty here can only
+    // produce an error. Disabled — not hidden: the row still has to read as one
+    // that HAS these controls, or "cannot be restored" looks like a missing UI.
+    server.use(
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [refusedAlbum], trash_path: "/t" }),
+      ),
+    );
+    renderPage();
+
+    const restore = await screen.findByRole("button", { name: /^Restore$/ });
+    const empty = screen.getByRole("button", { name: /Empty Symlinked Album/i });
+    expect(restore).toBeDisabled();
+    expect(empty).toBeDisabled();
+    // The reason is visible, in the same place the import note is shown...
+    expect(screen.getByText(REFUSED_NOTE)).toBeInTheDocument();
+    // ...and reaches BOTH controls, not only the one it renders beside.
+    expect(restore).toHaveAccessibleDescription(/will not restore it/i);
+    expect(empty).toHaveAccessibleDescription(/own Empty both refuse it/i);
+    // The heading must not keep promising a restore that cannot happen.
+    expect(screen.getByText("Can’t be restored.")).toBeInTheDocument();
+    expect(screen.queryByText("Approximate restore.")).not.toBeInTheDocument();
+    // Empty all is the ONE route that clears this entry: never disabled here.
+    expect(screen.getByRole("button", { name: "Empty all" })).toBeEnabled();
+  });
+
+  test("a refused row disables its own controls and nothing else's", async () => {
+    // The other half of the claim above. Asserted in ONE listing, per row, so a
+    // mutant that disables every row (or none) fails here rather than passing
+    // three single-row tests that each only ever look at their own arm.
+    server.use(
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({
+          albums: [album, importedAlbum, refusedAlbum],
+          trash_path: "/t",
+        }),
+      ),
+    );
+    renderPage();
+    await screen.findByText(/2 Brothers - Dreams/);
+
+    const rowOf = (title: RegExp) => {
+      const row = screen.getByText(title).closest("li");
+      if (!row) throw new Error(`no row for ${title.source}`);
+      return row;
+    };
+    const controls = (title: RegExp) => ({
+      restore: within(rowOf(title)).getByRole("button", { name: /^Restore$/ }),
+      empty: within(rowOf(title)).getByRole("button", { name: /^Empty / }),
+    });
+
+    const exact = controls(/2 Brothers - Dreams/);
+    const imported = controls(/Old Band - Demos/);
+    const refused = controls(/Unknown artist - Symlinked Album/);
+
+    expect(exact.restore).toBeEnabled();
+    expect(exact.empty).toBeEnabled();
+    expect(imported.restore).toBeEnabled();
+    expect(imported.empty).toBeEnabled();
+    expect(refused.restore).toBeDisabled();
+    expect(refused.empty).toBeDisabled();
+  });
+
+  test("a refused row drops the zero-track hedge both its buttons would make false", async () => {
+    // Every refused row is a zero-track row, so this is the rendered default,
+    // not a corner: "Restore may still work; Empty removes it permanently" is
+    // two false promises under two dead buttons, and the move-back arm's "not a
+    // sign Restore won't work" is false here as well. The tag sentence also
+    // names the wrong cause — nothing under the link was unreadable, nothing
+    // under it was read — so the backend's note is left to explain the row.
+    server.use(
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [refusedAlbum], trash_path: "/t" }),
+      ),
+    );
+    renderPage();
+
+    const restore = await screen.findByRole("button", { name: /^Restore$/ });
+    expect(
+      screen.queryByText(/couldn.t read audio tags here/i),
+    ).not.toBeInTheDocument();
+    expect(restore).not.toHaveAccessibleDescription(/may still work/i);
+    // Positive control for the matcher itself: without it the assertion above
+    // also passes on a button that is described by nothing at all.
+    expect(restore).toHaveAccessibleDescription(/never moved/i);
   });
 });

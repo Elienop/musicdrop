@@ -126,7 +126,14 @@ function restoreResultMessage(result: RestoreResult): string {
  * over the backend's own sentence for why that is not on offer — three
  * distinct ones, so this must render whatever arrives rather than branch on
  * which. The warning icon is the glance-level tell and the run-in label the
- * readable one; neither carries the meaning alone. */
+ * readable one; neither carries the meaning alone.
+ *
+ * `refused` shares that layout and swaps only the run-in label. It must NOT
+ * keep saying "Approximate restore." — the row it labels has no Restore left
+ * to be approximate about, and a heading that promises one beside a disabled
+ * button is the row contradicting itself. The sentence under it is the
+ * backend's (`_SYMLINKED_ENTRY_NOTE`), which already says both controls refuse
+ * this entry and what does clear it, so the label stays short. */
 function RestoreOutlook({
   album,
   id,
@@ -163,7 +170,11 @@ function RestoreOutlook({
        * measured at 320px with an 85-character space-free path: scrollWidth
        * 633 vs clientWidth 305, and 305 with this class. */}
       <span className="min-w-0">
-        <span className="text-warning font-medium">Approximate restore.</span>{" "}
+        <span className="text-warning font-medium">
+          {album.restore_mode === "refused"
+            ? "Can’t be restored."
+            : "Approximate restore."}
+        </span>{" "}
         {album.restore_note}
         {album.origin && (
           // The wrap goes on the PATH ONLY, never the label around it, and it
@@ -202,8 +213,22 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
   // 0 tracks = "nothing here produced a readable media Item", NOT "no audio"
   // (trash_manage.py) — beets' importer reads more than Item.from_path, so a
   // 0-track folder can still restore. Explain the uncertainty; never disable.
-  const noTracks = album.track_count === 0;
   const exact = album.restore_mode === "move_back";
+  // The ONE value that takes a control away, and it takes BOTH: the entry is a
+  // symlink, so `resolve_trash_child` sends the per-row Restore and the per-row
+  // Empty to the same 404 before either does any work (app/models/trash.py).
+  // Leaving them live offers two buttons whose only reachable outcome is an
+  // error. `Empty all` is untouched — it is the one route that clears this row.
+  const refused = album.restore_mode === "refused";
+  // A symlinked entry is ALWAYS a 0-track row (os.walk does not follow the
+  // link, so nothing under it is ever read), which makes the hedge below the
+  // rendered default rather than a corner: "Restore may still work; Empty
+  // removes it permanently" would be two false promises under two dead
+  // buttons, and the exact arm's "not a sign Restore won't work" is false too.
+  // Dropped rather than reworded — the tag sentence names the WRONG CAUSE for
+  // this row (nothing was unreadable; nothing was read), and the note above
+  // already says the files are on the other side of the link.
+  const noTracks = album.track_count === 0 && !refused;
   const reasonId = useId();
   const outlookId = useId();
 
@@ -264,10 +289,17 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
           )}
         </div>
       </div>
+      {/* Disabled, not hidden: the row must still read as one that HAS a
+        * Restore, so the user can tell "this cannot be restored" from "this
+        * screen forgot the button". The Button primitive already dims it and
+        * kills its pointer events (`disabled:opacity-50
+        * disabled:pointer-events-none`), so no class is added here. The reason
+        * travels with it the same way the import note does — `aria-describedby`
+        * pointing at the outlook line, which is where `restore_note` renders. */}
       <Button
         variant="outline"
         size="sm"
-        disabled={restore.isPending}
+        disabled={refused || restore.isPending}
         aria-describedby={noTracks ? `${outlookId} ${reasonId}` : outlookId}
         // `setResult(null)` first: the previous outcome is about the previous
         // attempt. Without it a row that was refused, then retried into a 503,
@@ -288,7 +320,18 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
       </Button>
       <ConfirmAction
         trigger={
-          <IconAction label={`Empty ${album.album ?? album.folder}`}>
+          // Described only on the refused row: elsewhere the outlook line is
+          // about Restore, and pointing Empty at "Goes back to /music/…" would
+          // describe this button with another button's promise. Disabled here
+          // means the confirm dialog cannot open at all, which is the point —
+          // the route behind it answers 404. A disabled trigger cannot show its
+          // tooltip (pointer events are off and it leaves the tab order), so
+          // the name stays on `aria-label` and the reason on the note beside it.
+          <IconAction
+            label={`Empty ${album.album ?? album.folder}`}
+            disabled={refused}
+            aria-describedby={refused ? outlookId : undefined}
+          >
             <Remove weight="thin" className="size-10" aria-hidden="true" />
           </IconAction>
         }
