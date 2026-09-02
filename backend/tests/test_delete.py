@@ -1166,8 +1166,15 @@ def test_the_delete_routes_500_description_does_not_deny_its_own_body(
     # "the body carries the cause and a recovery hint" passes it and tells the
     # reader of the contract nothing about WHEN Trash gets named. The condition
     # is the claim, so assert it directly.
-    assert "only when" in description, (
-        f"{path}'s 500 description must keep the condition on its Trash pointer;"
+    #
+    # The verb is part of the claim. "points at the Trash folder only when" was
+    # false against this very body: ``_LOOK_IN_TRASH`` names the Trash folder for
+    # the moved-nothing case asserted above. What is conditional is the PROMISE,
+    # not the mention — ``_recovery``'s docstring draws the line as promise vs
+    # check — so both descriptions say "promises recovery from", and this asserts
+    # the whole phrase rather than the bare condition.
+    assert "promises recovery from the Trash folder only when" in description, (
+        f"{path}'s 500 description must keep the condition on its Trash promise;"
         f" it reads {description!r}"
     )
 

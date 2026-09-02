@@ -101,18 +101,19 @@ class TrashRestoreIncompleteError(Exception):
 #: The log line is the tie-breaker, so the note points at it — ``read_trash_origin``
 #: WARNs for the unusable case and stays silent for the absent one.
 #:
-#: What the WARN says is no longer only "the write failed". ``read_trash_origin``
-#: now logs a reason per rejection, and one of them is neither of this sentence's
-#: two causes: "it is the record for a different Trash entry" — the file at this
-#: entry's key belongs to a longer-named entry whose key was truncated onto the
-#: same name. The user sentence still holds (there is no usable record, and the
-#: log says which), so it is left alone; a reader of THIS comment should not
-#: expect the log line to be about a failed write.
+#: What the WARN says is not only "the write failed". ``read_trash_origin`` logs a
+#: reason per rejection, and more than one of them is a record that IS on disk:
+#: "it is the record for a different Trash entry" (the file at this entry's key
+#: belongs to a longer-named entry whose key was truncated onto the same name),
+#: "it could not be read" (measured with the store at mode 000), "it is not an
+#: object". The sentence's third arm is deliberately the WIDE one — "that record
+#: may be unusable now" — so every one of those lands inside it instead of
+#: outside a two-cause disjunction, and the log line stays the tie-breaker.
 _NO_RECORD_NOTE = (
-    "MusicDrop has no usable record of where this came from — either it was moved to"
-    " Trash before origins were recorded, or writing that record failed (the server log"
-    " says which). Restoring re-imports it, so beets files it under your current naming"
-    " rules rather than putting it back."
+    "MusicDrop has no usable record of where this came from: it may predate origin"
+    " records, its record may have failed to write, or that record may be unusable now"
+    " (the server log says which). Restoring re-imports it, so beets files it under your"
+    " current naming rules rather than putting it back."
 )
 #: ``moved="items"``: the album's files were taken out of a folder it shared.
 _SHARED_FOLDER_NOTE = (
@@ -159,12 +160,22 @@ _OUTSIDE_LIBRARY_NOTE = (
 #: What is left is what holds for all of them: it is a link, nothing follows it,
 #: and the files are wherever it points.
 #:
+#: "a folder or file", for the same reason the volume went. The rows MusicDrop
+#: itself creates are links to a FOLDER (``_album_root`` is a directory), but a
+#: hand-placed top-level link to a media FILE reaches the listing too: ``os.walk``
+#: lists it among ``files`` and ``Item.from_path`` follows it, so the row arrives
+#: with real tags and this note. Measured 2026-09-02 by listing a Trash holding
+#: both shapes: ``folder='linked.flac' mode=refused tracks=1 fmt='FLAC'`` and
+#: ``folder='Linked Folder' mode=refused tracks=0 fmt=None``, this string verbatim
+#: on both. A noun that is wrong for one of them is a note contradicting the row
+#: it sits on.
+#:
 #: ``frontend/src/pages/settings/SettingsTrashPage.test.tsx`` keeps its own COPY
 #: of this string as a fixture (``REFUSED_NOTE``). It does not read this one, so
 #: it does not fail when this changes — it goes stale silently. Update it with
 #: any edit here.
 _SYMLINKED_ENTRY_NOTE = (
-    "This Trash entry is a link to a folder elsewhere, so MusicDrop will not"
+    "This Trash entry is a link to a folder or file elsewhere, so MusicDrop will not"
     " restore it — following the link would import files that were never in Trash. The"
     " album's own files were never moved: they are still where the link points, and"
     " adding that folder through Import is what puts the album back in the library."

@@ -36,17 +36,17 @@ const album: TrashedAlbum = {
  * `restore_note` and printed its own copy would pass a shape assertion and
  * fail this one.
  *
- * It is NOT a contract, and it does not have to track the backend: any
- * realistic sentence does that job. This copy went stale once already (the
- * backend widened the sentence to admit a failed write, and nothing here
- * noticed, because the fixture defines its own input). Refreshed rather than
- * left, so it does not read as the current wording to the next person — but
- * do not chase a backend rewording here. */
+ * It is NOT a contract — it is a hand-kept COPY of a runtime string that never
+ * crosses the OpenAPI schema, so nothing across the boundary can check it. This
+ * copy has gone stale twice (the backend widened the sentence to admit a failed
+ * write, then widened it again to admit an unusable record, and nothing here
+ * noticed, because the fixture defines its own input). Refresh it by hand
+ * whenever `trash_manage._NO_RECORD_NOTE` changes. */
 const NO_RECORD_NOTE =
-  "MusicDrop has no usable record of where this came from — either it was moved to" +
-  " Trash before origins were recorded, or writing that record failed (the server log" +
-  " says which). Restoring re-imports it, so beets files it under your current naming" +
-  " rules rather than putting it back.";
+  "MusicDrop has no usable record of where this came from: it may predate origin" +
+  " records, its record may have failed to write, or that record may be unusable now" +
+  " (the server log says which). Restoring re-imports it, so beets files it under your" +
+  " current naming rules rather than putting it back.";
 
 /** The other arm. Shared, because several tests need to assert that the two
  * arms differ — an assertion one fixture cannot make on its own. */
@@ -65,8 +65,13 @@ const importedAlbum: TrashedAlbum = {
 /** The third arm, and the only one that takes a control away. Verbatim from
  * `trash_manage._SYMLINKED_ENTRY_NOTE` for the same reason the import note is:
  * a page that ignored `restore_note` and printed its own copy would satisfy a
- * shape assertion. Same caveat too — it is not a contract, so do not chase a
- * backend rewording here.
+ * shape assertion. Same caveat too: this is a hand-kept COPY, not a contract.
+ * The assertions around it are regexes over fragments (`/will not restore it/`,
+ * `/own Empty both refuse it/`, `/never moved/`), so they keep passing while
+ * this drifts — and they did: this fixture sat a rewording behind the backend
+ * for a whole slice with nothing red. Refresh it by hand whenever
+ * `trash_manage._SYMLINKED_ENTRY_NOTE` changes; the comment beside that string
+ * asks for the same thing from the other side.
  *
  * The rest of the shape is not decoration. Every symlinked entry MusicDrop
  * itself creates is an album's own FOLDER, which reaches the listing through
@@ -87,7 +92,7 @@ const importedAlbum: TrashedAlbum = {
  * produces, and what that costs is one line — a meta line with tags on a
  * REFUSED row; `album` and `importedAlbum` render that line with tags here. */
 const REFUSED_NOTE =
-  "This Trash entry is a link to a folder on another volume, so MusicDrop will not" +
+  "This Trash entry is a link to a folder or file elsewhere, so MusicDrop will not" +
   " restore it — following the link would import files that were never in Trash. The" +
   " album's own files were never moved: they are still where the link points, and" +
   " adding that folder through Import is what puts the album back in the library." +
@@ -371,7 +376,7 @@ describe("SettingsTrashPage", () => {
     // EMPTY folder at the origin is replaced and the restore goes ahead
     // (`trash_manage._occupied`), so "exists again" on its own would send the
     // user to clear something that was never the blocker.
-    expect(message).toHaveTextContent(/with something in it/i);
+    expect(message).toHaveTextContent(/with anything in it/i);
     expect(screen.queryByText(/^Couldn’t restore$/)).not.toBeInTheDocument();
     // A refusal must not be painted like the success it replaces.
     expect(message).toHaveClass("text-warning");

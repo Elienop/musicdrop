@@ -71,11 +71,11 @@ def test_a_symlinked_row_says_what_restore_will_really_do(tmp_path: Path) -> Non
 
     assert mode == "refused", "no per-row route will act on this at all"
     assert note is not None
-    assert "link to a folder elsewhere" in note, "why it cannot be restored"
+    assert "link to a folder or file elsewhere" in note, "why it cannot be restored"
     assert "will not restore it" in note, "and that MusicDrop will not try"
     assert "files were never moved" in note, "where the album actually is"
-    assert "before origins were recorded" not in note, "neither record cause applies"
-    assert "writing that record failed" not in note
+    assert "predate origin records" not in note, "no record cause applies"
+    assert "failed to write" not in note
     assert origin is None
 
 
@@ -99,7 +99,7 @@ def test_the_symlinked_row_matches_what_the_restore_route_will_do(tmp_path: Path
     real_mode, real_note, _ = rows["Real Album"]
     assert real_mode == "import"
     assert real_note is not None
-    assert "before origins were recorded" in real_note, "the ordinary row keeps its own sentence"
+    assert "predate origin records" in real_note, "the ordinary row keeps its own sentence"
 
 
 def test_a_record_under_the_name_cannot_out_vote_the_link(tmp_path: Path) -> None:
@@ -130,7 +130,7 @@ def test_a_record_under_the_name_cannot_out_vote_the_link(tmp_path: Path) -> Non
     assert mode == "refused", "the link decides alone"
     assert origin is None, "and no path is offered as one it would go back to"
     assert note is not None
-    assert "link to a folder elsewhere" in note
+    assert "link to a folder or file elsewhere" in note
 
 
 def _client_trash(client: TestClient) -> Path:

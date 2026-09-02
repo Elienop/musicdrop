@@ -464,13 +464,16 @@ def test_listing_marks_a_row_with_no_record_as_an_import(tmp_path: Path) -> None
     assert row.restore_mode == "import"
     assert row.origin is None
     assert row.restore_note is not None
-    # Both causes, because ``read_trash_origin`` collapses them onto one ``None``:
-    # a row that predates the record and a row whose record write FAILED get this
-    # same sentence, so naming only the first blames a feature that shipped today
-    # for a disk that filled up thirty seconds ago — and nobody looks at the disk.
+    # All three arms, because ``read_trash_origin`` collapses them onto one
+    # ``None``: a row that predates the record, a row whose record write FAILED,
+    # and a row whose record is on disk but unusable (a different entry's, or one
+    # the store cannot read) get this same sentence. Naming only the first blames
+    # a feature that shipped today for a disk that filled up thirty seconds ago —
+    # and nobody looks at the disk.
     assert "no usable record" in row.restore_note
-    assert "before origins were recorded" in row.restore_note
-    assert "writing that record failed" in row.restore_note
+    assert "predate origin records" in row.restore_note
+    assert "failed to write" in row.restore_note
+    assert "unusable now" in row.restore_note
     assert "server log" in row.restore_note
 
 
@@ -1084,8 +1087,8 @@ def test_a_row_whose_record_could_not_be_written_no_longer_blames_its_age(
 
     A real write failure, no monkeypatching — a regular FILE where the origins
     directory belongs, so the store cannot create it. The Trash row used to read
-    "it was moved to Trash before origins were recorded", which is false and,
-    worse, unfalsifiable: it points at the folder's age instead of at the volume
+    "it was moved to Trash before origins were recorded" alone, which is false
+    and, worse, unfalsifiable: it points at the folder's age instead of at the volume
     that just went read-only, so nobody investigates and every later delete loses
     its origin the same silent way. That second clause is now the LIKELIER of the
     two, because a full or read-only ``/data`` fails every delete's record at
@@ -1106,7 +1109,7 @@ def test_a_row_whose_record_could_not_be_written_no_longer_blames_its_age(
         tmp_path / "trash", origins_dir=_origins(tmp_path), music_dir=str(tmp_path / "music")
     )
     assert row.restore_note is not None
-    assert "writing that record failed" in row.restore_note
+    assert "failed to write" in row.restore_note
     assert "server log" in row.restore_note
 
 
@@ -1562,7 +1565,7 @@ def test_a_non_utf8_folder_name_round_trips_through_the_ascii_record(tmp_path: P
     written AND read as pure ASCII. Drop it and ``write_atomic_text``'s STRICT
     UTF-8 encode raises ``UnicodeEncodeError`` inside the swallow-and-log arm: no
     record is left at all, the row degrades to an import-restore with the
-    "trashed before origins were recorded" note, and the folder never goes back
+    no-usable-record note, and the folder never goes back
     to the name it had.
 
     Three halves now, not two: the KEY is also non-UTF-8 (the Trash entry's own

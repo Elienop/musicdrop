@@ -1034,10 +1034,9 @@ def _start(
                 "Deleting the artist failed. Also the status for a fault PART-WAY through"
                 " the fan-out: the message then names how far it got, and says the albums"
                 " it never reached are untouched. The structured body's recovery line"
-                " points at the Trash folder only when albums really reached it — a"
-                " fan-out that stops on its first"
-                " album, and one whose albums were all rows with no files left to move,"
-                " both moved nothing."
+                " promises recovery from the Trash folder only when albums really reached"
+                " it — a fan-out that stops on its first album, and one whose albums were"
+                " all rows with no files left to move, both moved nothing."
             ),
         },
         # Flat ErrorDetail, unlike the 500 beside it: this one is raised only

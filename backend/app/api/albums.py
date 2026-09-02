@@ -452,9 +452,9 @@ async def fetch_album_lyrics_endpoint(
             "model": StructuredErrorDetail,
             "description": (
                 "Deleting the album failed. The structured body's recovery line says what"
-                " state the files are in — it points at the Trash folder only when something"
-                " really reached it, and a delete that failed on the way there leaves the"
-                " album in the library."
+                " state the files are in — it promises recovery from the Trash folder only"
+                " when something really reached it, and a delete that failed on the way"
+                " there leaves the album in the library."
             ),
         },
         # Flat ErrorDetail, unlike the 500 beside it: what this status carries is

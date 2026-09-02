@@ -116,20 +116,29 @@ function restoreResultMessage(result: RestoreResult): string {
     // row and its Restore are unchanged) and the one thing that unblocks it —
     // the folder itself is named on the row's own "Goes back to" line.
     //
-    // "with something in it" carries the rest of the reason. An EMPTY leftover
+    // "with anything in it" carries the rest of the reason. An EMPTY leftover
     // folder at the origin is NOT what refuses: `trash_manage._occupied` calls
     // it free and `_move_no_merge` replaces it, which is how a pruning beets or
     // a half-finished sync leaves the path. Saying only "exists again" named a
     // blocker the backend does not have, and sent the user to clear a folder
-    // that would not have stopped them. Same distinction the contract makes
-    // ("exists again with anything in it", `RestoreResult`) and README.
+    // that would not have stopped them. Worded to match the contract and the
+    // docs to the letter ("exists again with anything in it" in `RestoreResult`
+    // and in README), so a user grepping for what they saw on screen finds the
+    // explanation — this line said "something" against their "anything" until
+    // 2026-09-02.
+    //
+    // "Restore is refused while ..." is what licenses "anything": the word is
+    // negative-polarity and reads as an error in a plain declarative ("its
+    // folder exists again with anything in it"). The conditional frame is
+    // carrying the shared wording, so do not flatten it back to a statement
+    // without changing `RestoreResult` and README in the same breath.
     //
     // The ordinary occupant, not every one: `_occupied` also answers occupied
     // for a FILE at that path, for a symlink that RESOLVES (even one pointing
     // at an empty directory), and for anything it cannot read. A DANGLING link
     // is not occupied — the backend's `exists` follows it and reads it as
     // absent.
-    return "Its original folder exists again with something in it; nothing moved and the files are still in Trash. Clear that folder, then try again.";
+    return "Restore is refused while its original folder exists again with anything in it; nothing moved and the files are still in Trash. Clear that folder, then try again.";
   }
   return "Couldn’t restore";
 }
