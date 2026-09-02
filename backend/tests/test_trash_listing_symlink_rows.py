@@ -60,12 +60,11 @@ def test_a_symlinked_row_says_what_restore_will_really_do(tmp_path: Path) -> Non
 
     mode, note, origin = _rows(trash, tmp_path)["Symlinked Album"]
 
-    assert mode == "import", "there is nothing to move back"
+    assert mode == "refused", "no per-row route will act on this at all"
     assert note is not None
     assert "link to a folder on another volume" in note, "why it cannot be restored"
     assert "will not restore it" in note, "and that MusicDrop will not try"
     assert "files were never moved" in note, "where the album actually is"
-    assert "removes only the link" in note, "what Empty will and will not destroy"
     assert "before origins were recorded" not in note, "neither record cause applies"
     assert "writing that record failed" not in note
     assert origin is None

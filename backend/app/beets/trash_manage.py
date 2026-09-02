@@ -127,12 +127,21 @@ _OUTSIDE_LIBRARY_NOTE = (
 #: :func:`resolve_trash_child` refuses a child that resolves outside Trash, so
 #: Restore answers 404. Say what will really happen instead, and say where the
 #: files are: they are the one thing here that was never at risk.
+#:
+#: The last sentence is about the row's OTHER button, and it used to be wrong in
+#: the user's favour: "Emptying this entry removes only the link" is true of
+#: ``DELETE /api/trash/all`` (:func:`empty_all` unlinks a symlinked child) and
+#: false of the Empty beside this note, which goes through the SAME
+#: :func:`resolve_trash_child` refusal as Restore and answers 404 with the link
+#: still there. Both per-row actions are named, because the note has to be true
+#: of every affordance rendered next to it.
 _SYMLINKED_ENTRY_NOTE = (
     "This Trash entry is a link to a folder on another volume, so MusicDrop will not"
     " restore it — following the link would import files that were never in Trash. The"
     " album's own files were never moved: they are still where the link points, and"
     " adding that folder through Import is what puts the album back in the library."
-    " Emptying this entry removes only the link."
+    " Restore and this row's own Empty both refuse it; Empty all removes the link, and"
+    " only the link."
 )
 
 
@@ -232,7 +241,9 @@ def _restore_fields(
     than one generic "cannot restore": the user's next action differs (wait for
     nothing / put it back by hand / re-point the library / go to the volume the
     link points at), and a row that simply predates the record must say so —
-    that is the owner's decision 2.
+    that is the owner's decision 2. Three of the four are still an import; the
+    symlinked one is ``"refused"``, because it is the only one whose per-row
+    routes both answer 404 before any work starts.
 
     ``entry.name`` is the store's key, and it must be the RAW on-disk name — the
     same string ``_walk_trash_groups`` groups on and ``resolve_trash_child`` maps
@@ -246,12 +257,22 @@ def _restore_fields(
     # exists). ``os.path.islink`` answers False for every such failure, which is
     # the right answer here: what cannot be stat'ed is not a link we can honour.
     #
+    # That difference is REAL but UNREACHABLE from here, and NO TEST CAN KILL IT
+    # (measured: swapping in ``entry.is_symlink()`` leaves the whole suite
+    # green). Both of this function's callers have already touched the entry by
+    # the time they call it — ``_walk_trash_groups`` reached it through
+    # ``os.walk``, ``_audio_free_entries`` through ``iterdir`` + ``is_dir`` —
+    # and every one of those raises on the unstattable name first, so no input
+    # exists that this choice decides. It is kept because it costs nothing and
+    # the ordering above it is not guaranteed to last: a caller that stops
+    # pre-stat'ing would make the listing 500 on one bad name.
+    #
     # Asked BEFORE the record, and it decides alone. A symlinked entry cannot be
     # restored by any route whatever a record says about it, so a record that
     # somehow exists for this name (written for a DIFFERENT entry that held the
     # name earlier — the hazard the allocator closes) must not out-vote it.
     if os.path.islink(entry):
-        return "import", _SYMLINKED_ENTRY_NOTE, None
+        return "refused", _SYMLINKED_ENTRY_NOTE, None
     record = read_trash_origin(origins_dir, entry.name)
     if record is None:
         return "import", _NO_RECORD_NOTE, None
@@ -296,9 +317,11 @@ def _audio_free_entries(
                     # (``SettingsTrashPage.tsx``); do NOT "strengthen" it into a
                     # backend refusal or a disabled control — that would make a
                     # restorable folder permanently unrestorable. It is also why
-                    # ``restore_mode`` has no "unavailable" value: this count is
+                    # this count gets no ``restore_mode`` value of its own: it is
                     # not evidence a row cannot restore, and a contract field
-                    # would read as if it were.
+                    # would read as if it were. ``"refused"`` exists for the one
+                    # case that is not a guess — a symlinked entry, whose refusal
+                    # comes from the guard both per-row routes run.
                     track_count=0,
                     format=None,
                     # An audio-free husk with a record is the row this whole

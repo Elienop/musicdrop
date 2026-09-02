@@ -12,14 +12,26 @@ from pydantic import BaseModel
 #: * ``"import"`` — no usable origin, so Restore re-imports the folder and beets
 #:   files it under the CURRENT path templates, which is not necessarily where
 #:   it was. ``restore_note`` says why.
+#: * ``"refused"`` — Restore will do NOTHING, and neither will this row's own
+#:   Empty. The entry is a symlink, so ``resolve_trash_child`` resolves it
+#:   outside the Trash dir and both per-row endpoints answer 404 before any
+#:   work starts. The UI must disable both controls on this value; leaving them
+#:   live offers two buttons whose only possible outcome is an error.
+#:   ``restore_note`` says where the album's files really are and what does
+#:   remove the entry (only ``DELETE /api/trash/all``, and it removes the link
+#:   alone).
 #:
-#: Deliberately two values and not three: "this row cannot be restored at all"
-#: is not something the backend can know. ``track_count`` is the only signal it
-#: has, and 0 there means "nothing here produced a readable media Item", not "no
-#: music" — beets' own discovery takes every non-ignored file as a candidate, so
-#: a 0-track folder can still import. Encoding that guess as a contract value
-#: would turn a UI hint into a promise. See ``trash_manage._audio_free_entries``.
-TrashRestoreMode = Literal["move_back", "import"]
+#: The third value says what the ROUTES will do, which is why it is allowed to
+#: exist while ``track_count == 0`` still gets no value of its own. That count is
+#: a GUESS — 0 there means "nothing here produced a readable media Item", not "no
+#: music", and beets' own discovery takes every non-ignored file as a candidate,
+#: so a 0-track folder can still import; encoding it as a contract value would
+#: turn a UI hint into a promise the backend cannot keep. A symlinked entry is
+#: the opposite kind of fact: the refusal comes from the guard every request to
+#: those two routes passes through, so it is known before the click rather than
+#: predicted. See ``trash_manage._audio_free_entries`` and
+#: ``trash_manage._restore_fields``.
+TrashRestoreMode = Literal["move_back", "import", "refused"]
 
 
 class TrashedAlbum(BaseModel):
@@ -38,7 +50,9 @@ class TrashedAlbum(BaseModel):
     not start — ``SettingsTrashPage.tsx`` deliberately shows a "may still work"
     hint instead, because 0 there means "no readable tags", not "no music". A
     recorded audio-free husk is exactly such a row AND is restorable exactly,
-    which is the case this record was added for.
+    which is the case this record was added for. ``restore_mode == "refused"``
+    is the ONE signal that does disable a control, and it disables BOTH (Restore
+    and this row's Empty), because both of those routes refuse the row outright.
     """
 
     folder: str

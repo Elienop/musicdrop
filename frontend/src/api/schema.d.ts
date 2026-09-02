@@ -5107,7 +5107,9 @@ export interface components {
          *     not start — ``SettingsTrashPage.tsx`` deliberately shows a "may still work"
          *     hint instead, because 0 there means "no readable tags", not "no music". A
          *     recorded audio-free husk is exactly such a row AND is restorable exactly,
-         *     which is the case this record was added for.
+         *     which is the case this record was added for. ``restore_mode == "refused"``
+         *     is the ONE signal that does disable a control, and it disables BOTH (Restore
+         *     and this row's Empty), because both of those routes refuse the row outright.
          */
         TrashedAlbum: {
             /** Folder */
@@ -5126,7 +5128,7 @@ export interface components {
              * Restore Mode
              * @enum {string}
              */
-            restore_mode: "move_back" | "import";
+            restore_mode: "move_back" | "import" | "refused";
             /** Restore Note */
             restore_note: string | null;
             /** Origin */

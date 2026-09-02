@@ -959,8 +959,8 @@ def test_a_symlinked_trash_entry_is_not_promised_an_exact_restore(tmp_path: Path
     the child and refuses anything landing outside Trash, so such a row can never
     be restored by any route. A record would make the listing offer "Exact
     restore" on a row whose Restore button 404s. Writing nothing keeps the row
-    honest: it reads as an import-restore, exactly as it did before origins
-    existed.
+    honest: the listing reads the link itself and answers ``"refused"``, which
+    is the contract value for "both per-row routes will turn this down".
     """
     trash, elsewhere = tmp_path / "trash", tmp_path / "elsewhere"
     trash.mkdir()
@@ -984,7 +984,7 @@ def test_a_symlinked_trash_entry_is_not_promised_an_exact_restore(tmp_path: Path
         )
         if r.folder == "Album"
     ]
-    assert row.restore_mode == "import"  # never a move_back it cannot honour
+    assert row.restore_mode == "refused"  # never a move_back it cannot honour
 
 
 # ----- an ABSENT record and an UNUSABLE one are not the same event -----

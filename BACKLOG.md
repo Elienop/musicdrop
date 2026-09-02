@@ -785,9 +785,12 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     files taken from a shared folder / origin no longer inside the library) and `origin`
     shown either way so the user can put it back by hand. Old rows are Restore-visible and
     explained, never a silent re-file.
-  * **No third `"unavailable"` mode**, deliberately: `track_count == 0` means "nothing
+  * **No `"unavailable"` mode for `track_count == 0`**, deliberately: 0 means "nothing
     parsed as an Item", not "no music", and encoding that guess as a contract value would
-    turn a UI hint into a promise. `trash_manage.py:110` already warned against exactly this.
+    turn a UI hint into a promise. `trash_manage._audio_free_entries` warns against exactly
+    this. (The rule is about a GUESS. A third value `"refused"` was added later for the one
+    row whose refusal is KNOWN — a symlinked entry, which `resolve_trash_child` turns down
+    on both per-row routes before any work starts. See the symlink residual below.)
   * `trash_album` records `moved="items"` and never offers a move-back — its files came out
     of a possibly-shared folder, and the re-import that must follow takes a DIRECTORY
     (`ImportTaskFactory.paths` makes one album task per file when handed files), so it would
@@ -809,8 +812,9 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   **Second residual, unchanged in substance:** a symlinked Trash entry gets NO record.
   `resolve_trash_child` refuses a child resolving outside Trash, so such a row can never be
   restored by any route, and a record would make the listing offer an "Exact restore" whose
-  button 404s. The row reads as an import-restore instead — exactly its pre-feature
-  behaviour.
+  button 404s. The row reads as `restore_mode: "refused"` instead, carrying a note that says
+  where the album's files really are — the SAME guard turns down this row's own Empty, so
+  the UI disables both per-row controls and only `DELETE /api/trash/all` removes the link.
 
   **UI shipped in the same slice:** each row states its outlook before the user clicks — a
   quiet "Exact restore. Goes back to <path>" or an amber-flagged "Approximate restore."
