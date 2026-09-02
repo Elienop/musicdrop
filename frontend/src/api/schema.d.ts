@@ -5729,7 +5729,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description Deleting the album failed, but its files are recoverable in the Trash folder. */
+            /** @description Deleting the album failed. The structured body's recovery line says what state the files are in — it points at the Trash folder only when something really reached it, and a delete that failed on the way there leaves the album in the library. */
             500: {
                 headers: {
                     [name: string]: unknown;
@@ -6399,7 +6399,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description Deleting the artist failed, but its files are recoverable in the Trash folder. Also the status for a share that drops PART-WAY through the fan-out: the message then names how many of the artist's albums had been trashed before it did, and the rest are untouched. */
+            /** @description Deleting the artist failed. Also the status for a fault PART-WAY through the fan-out: the message then names how far it got, and the rest are untouched. The structured body's recovery line points at the Trash folder only when albums really reached it — a fan-out that stops on its first album, and one whose albums were all rows with no files left to move, both moved nothing. */
             500: {
                 headers: {
                     [name: string]: unknown;
