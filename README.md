@@ -64,8 +64,10 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   having moved nothing out of Trash. Disk sync is the deliberate exception: it keeps the
   cheap "is the root there" test, because it runs it once per removal and accepted the same
   residual for itself. A share
-  dropping part-way through an artist delete reports how many albums were trashed before it
-  dropped — those stay recoverable in Trash, the rest untouched.
+  dropping part-way through an artist delete reports how many of the artist's albums were
+  moved to Trash before it stopped — those are recoverable there, the rest untouched. A run
+  that never moved anything says so instead of sending you to Trash: an artist whose albums
+  were all rows with no files left to move reports that nothing reached the Trash folder.
 - **Restore knows where things came from.** When MusicDrop moves a folder to Trash it
   records where that folder came from in a small JSON file alongside — one per Trash entry,
   under `<beets dir>/trash-origins/`, deliberately outside the trashed folder and outside
@@ -78,16 +80,28 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
     under your *current* naming rules rather than putting it back. The row says which of the
     three reasons applies: it was trashed before MusicDrop recorded origins, its files came
     out of a folder shared with other music, or its origin is no longer inside the library.
-    Restore stays available in every case; the row just tells you it will not be exact.
+    Restore stays available in all three; the row just tells you it will not be exact.
+  - **Can't be restored** — the fourth way a row loses its exact move-back, and the only one
+    with no restore of any kind: the Trash entry is itself a *link* to a folder on another
+    volume, so following it would import files that were never in Trash. The album's own
+    files were never moved — they are still where the link points, and adding that folder
+    through Import is what puts it back in the library. Both of the row's own buttons are
+    disabled, because both refuse it; **Empty all** is the only control that removes such an
+    entry, and it removes the link alone.
 
   Two consequences worth knowing. A row trashed by an older version has no record and never
   will, so a media-free one (art/booklet leftovers with no audio) still has Empty as its only
   exit. (If you move or delete a Trash entry outside MusicDrop, its record is left behind as
-  a harmless leftover; the next folder with that name simply gets a `(1)` suffix. Emptying
-  the entry through the app clears both.) And a Restore whose original folder exists again is refused rather than merged —
-  nothing moves, the files stay in Trash, and the row tells you to clear that folder first.
-  A Trash row listed at zero tracks only means MusicDrop couldn't read audio tags there;
-  beets' importer reads more formats than the listing does, so Restore may still work.
+  a harmless leftover; the next album MusicDrop trashes under that name simply gets a `(1)`
+  suffix. Removing the entry through the app clears both together — except for a link entry,
+  which only **Empty all** can remove, and which has no record to clear because MusicDrop
+  never writes one for a link.) And a Restore whose original folder exists again *with
+  anything in it* is refused rather than merged — nothing moves, the files stay in Trash, and
+  the row tells you to clear that folder first; an empty leftover folder is not in the way
+  and gets replaced. A Trash row listed at zero tracks only means MusicDrop couldn't read
+  audio tags there; beets' importer reads more formats than the listing does, so Restore may
+  still work — except on a link entry, which lists at zero tracks because nothing under the
+  link is ever read, and which says outright that it can't be restored.
 - **beets config** — viewer + writable editor, with advisory notices for import keys MusicDrop forces (a saved value that only affects CLI runs is flagged, not silently accepted).
 - **Naming** — edit beets path/replace rules with a live preview. **Reorganize** — re-apply them to existing files, and sweep emptied leftover folders into the Trash — the sweep only ever offers folders with no audio anywhere beneath them, and never an art/booklet/scans folder sitting at a live album's own filed location. A move that would silently rename an album's cover (a stray file already holds the cover's name at the destination) is refused instead: the preview flags it as an art conflict, and apply holds back just that album.
 - **Disk sync** — a `beet update` equivalent: preview-first removal of library entries whose files were deleted outside the app, plus tag refresh for files changed on disk.
