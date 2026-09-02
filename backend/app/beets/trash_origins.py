@@ -233,9 +233,10 @@ _STORE_WHERE = "The Trash origin-records folder (trash-origins under the beets d
 #: for where each mover asks.
 _STORE_FIX = "Nothing has been deleted. Fix its permissions or its mount, then retry."
 
-#: A name no record can ever have — every record is ``<entry name>.json``, and
-#: :func:`origin_file` never produces a leading dot without one. Used to ask the
-#: store the SEARCH question without depending on any record being there.
+#: A name no record can collide with: :func:`origin_file` always appends
+#: ``.json`` (the truncating branch too), and neither this key nor the
+#: ``mkstemp`` name built from it ends in ``.json``. Used to ask the store the
+#: SEARCH question without depending on any record being there.
 _PROBE_KEY = ".musicdrop-store-check"
 
 #: Errnos that mean the STORE is the problem rather than the key, met at the one

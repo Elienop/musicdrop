@@ -172,9 +172,11 @@ def delete_artist(
         # one branch, so without it a fan-out could reach its second album
         # before anything refused. ``require_usable_store`` runs at the TOP of
         # ``trash_album_folder``, ahead of every branch — so the first album
-        # already refuses with nothing dropped, and a copy here would be a line
-        # no test can kill (measured: removing it left tests/test_delete.py and
-        # tests/test_trash.py, 63 tests, entirely green). It would also refuse a
+        # already refuses with nothing dropped, and a copy here changes no
+        # outcome the delete tests can see: removing it left tests/test_delete.py
+        # and tests/test_trash.py, 63 tests, entirely green (measured; those two
+        # files are where every delete-path behaviour is pinned, so a killer
+        # elsewhere would be a test in the wrong place). It would also refuse a
         # fan-out over an artist with NO albums, which mutates nothing at all.
         # Two counters, because they answer different questions and a run can
         # have one without the other. ``mutated`` is albums whose ROWS are gone,
