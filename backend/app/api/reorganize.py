@@ -87,14 +87,35 @@ def _ignore_dirs(app: object) -> tuple[Path, ...]:
     ``find_orphan_folders`` reports the TOP-MOST audio-empty dir, and an excluded
     subtree is not counted as audio for the dir above it. Measured with
     ``beets_dir`` itself under the music root — the sweep returns ``beets_dir``,
-    the same list with and without this exclusion, and trashing that takes
-    ``library.db`` and ``config.yaml`` along with the store. That is the shape the
-    ``trash_dir`` exclusion has always had rather than anything the sibling store
-    introduced, and the shipped image does not reach it (``/data`` and ``/music``
-    are separate mounts); it needs a beets dir deliberately placed inside the
-    music library. Not fixed here: sparing every ancestor of an ignored dir would
-    only push the report one level up whenever the store is nested deeper, so it
-    is a change to what the finder reports and not a guard to bolt on."""
+    the same list with and without this exclusion. What happens NEXT depends on
+    where Trash sits, and only one of the two loses anything:
+
+    * **Default layout** (``trash_dir`` unset = ``<beets_dir>/trash``): the move
+      is a directory into its own subtree, so ``shutil.move`` refuses it —
+      ``Cannot move a directory '<music>/<beets>' into itself
+      '<music>/<beets>/trash/<beets>'``. ``shutil.Error`` IS an ``OSError``, so
+      ``reorganize_jobs.runner``'s per-folder ``except OSError: continue``
+      swallows it on every sweep. ``library.db``, ``config.yaml`` and the store
+      all survive; the visible residue is an empty ``<beets_dir>/trash`` the
+      mover created before failing, and a report that counts no orphan.
+    * **``MUSICDROP_TRASH_DIR`` pointing OUTSIDE ``beets_dir``**: the move
+      succeeds and all three land under Trash. ``beets_dir`` is then recreated
+      as an empty shell holding one origin record — the one written for the
+      folder that just left.
+
+    The exclusion is also not useless above the store: a parent whose ONLY child
+    is the excluded dir, and which holds no file of its own, reads as EMPTY
+    (never recorded, so it contributes no ``has_file``) and empty dirs are
+    skipped. Give that parent one file of its own and it is reported again. So
+    the hole is the ancestor that has other content, not every ancestor.
+
+    That is the shape the ``trash_dir`` exclusion has always had rather than
+    anything the sibling store introduced, and the shipped image does not reach
+    it (``/data`` and ``/music`` are separate mounts); it needs a beets dir
+    deliberately placed inside the music library. Not fixed here: sparing every
+    ancestor of an ignored dir would only push the report one level up whenever
+    the store is nested deeper, so it is a change to what the finder reports and
+    not a guard to bolt on."""
     handle: LibraryHandle = app.state.beets_library  # type: ignore[attr-defined]  # app duck-typed (object)
     configured = _settings(app).playlists_export_dir.strip()  # type: ignore[arg-type]  # app duck-typed (object)
     export_dir = (
