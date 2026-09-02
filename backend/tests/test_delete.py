@@ -375,7 +375,8 @@ def test_a_fanout_that_already_moved_one_album_does_not_promise_nothing_was_dele
     then calls the guard, so the sentence the 500 relays is the store's own —
     which is the only way this test can see where that sentence puts the promise.
     The FILE shape rather than a chmod because it denies for uid 0 too, so the
-    test does not self-skip in the shipped image, where the app runs as root.
+    test does not self-skip for a maintainer running this suite inside the
+    shipped image, which declares no ``USER`` (``Dockerfile``).
     """
     trash = tmp_path / "trash"
     calls: list[Path] = []

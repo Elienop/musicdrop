@@ -403,7 +403,8 @@ def test_the_orphan_pass_is_skipped_when_the_origin_store_cannot_be_used(
     The sibling above covers the store not being wired at all. This one is the
     store being there and refusing: a regular FILE where the directory belongs,
     which is the shape that denies for uid 0 as well, so this does not self-skip
-    in the shipped image.
+    for a maintainer running the suite inside the shipped image, which declares
+    no ``USER`` (``Dockerfile``).
 
     Asked ONCE, up front, for two reasons the test asserts between them. Per
     folder it would refuse identically for every husk and the ``except OSError``
