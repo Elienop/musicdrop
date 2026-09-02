@@ -64,11 +64,20 @@ const importedAlbum: TrashedAlbum = {
  * shape assertion. Same caveat too — it is not a contract, so do not chase a
  * backend rewording here.
  *
- * The rest of the shape is not decoration. A symlinked entry reaches the
- * listing through `_audio_free_entries` (os.walk never follows the link, so it
- * produces no audio group), which means EVERY refused row arrives with
- * track_count 0 and null artist/album/format/origin. A fixture with tracks on
- * it would be testing a row the backend cannot send. */
+ * The rest of the shape is not decoration. Every symlinked entry MusicDrop
+ * itself creates is an album's own FOLDER, which reaches the listing through
+ * `_audio_free_entries` (os.walk does not follow the link, so it produces no
+ * audio group) and therefore arrives with track_count 0 and null
+ * artist/album/format/origin. This fixture is that row.
+ *
+ * It is not the only refused row the backend CAN send — a top-level link to a
+ * media file is walked as a file and lists refused with real tags and a track
+ * count (measured: ('linked.flac', 'refused', 1)). MusicDrop's own trashing
+ * moves a FOLDER — `trash._album_root`, or the container it makes for a shared
+ * one — so it does not produce that row, and the page renders both the same:
+ * `noTracks` is false for a refused row whatever its track count. So the
+ * fixture stays the shape the app produces, and that choice leaves no arm of
+ * the page untested. */
 const REFUSED_NOTE =
   "This Trash entry is a link to a folder on another volume, so MusicDrop will not" +
   " restore it — following the link would import files that were never in Trash. The" +
@@ -605,12 +614,14 @@ describe("SettingsTrashPage", () => {
   });
 
   test("a refused row drops the zero-track hedge both its buttons would make false", async () => {
-    // Every refused row is a zero-track row, so this is the rendered default,
-    // not a corner: "Restore may still work; Empty removes it permanently" is
-    // two false promises under two dead buttons, and the move-back arm's "not a
-    // sign Restore won't work" is false here as well. The tag sentence also
-    // names the wrong cause — nothing under the link was unreadable, nothing
-    // under it was read — so the backend's note is left to explain the row.
+    // The hedge goes on `refused` alone, not on the track count: "Restore may
+    // still work; Empty removes it permanently" is two promises under two
+    // disabled buttons, and it names the wrong cause — nothing under the link
+    // was unreadable, nothing under it was read — so the backend's note is left
+    // to explain the row. The fixture is zero-track because the rows MusicDrop
+    // itself creates are (see `REFUSED_NOTE`), which makes this the rendered
+    // default rather than a corner; a refused row that did arrive with tracks
+    // takes the same arm, by `album.track_count === 0` rather than by `!refused`.
     server.use(
       http.get(TRASH_URL, () =>
         HttpResponse.json({ albums: [refusedAlbum], trash_path: "/t" }),

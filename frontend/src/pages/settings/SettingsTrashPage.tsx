@@ -124,9 +124,13 @@ function restoreResultMessage(result: RestoreResult): string {
  *
  * `move_back` is a promise about WHERE (its own folder, named); `import` hands
  * over the backend's own sentence for why that is not on offer — three
- * distinct ones, so this must render whatever arrives rather than branch on
- * which. The warning icon is the glance-level tell and the run-in label the
- * readable one; neither carries the meaning alone.
+ * distinct ones (`_NO_RECORD_NOTE` / `_SHARED_FOLDER_NOTE` /
+ * `_OUTSIDE_LIBRARY_NOTE`), so this must render whatever arrives rather than
+ * branch on which. Those three are not the whole count: `trash_manage`
+ * `_restore_fields` has FOUR ways a row loses its move-back, and the fourth is
+ * the `refused` arm below — the only one that is not an import. The warning
+ * icon is the glance-level tell and the run-in label the readable one; neither
+ * carries the meaning alone.
  *
  * `refused` shares that layout and swaps only the run-in label. It must NOT
  * keep saying "Approximate restore." — the row it labels has no Restore left
@@ -220,14 +224,19 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
   // Leaving them live offers two buttons whose only reachable outcome is an
   // error. `Empty all` is untouched — it is the one route that clears this row.
   const refused = album.restore_mode === "refused";
-  // A symlinked entry is ALWAYS a 0-track row (os.walk does not follow the
-  // link, so nothing under it is ever read), which makes the hedge below the
-  // rendered default rather than a corner: "Restore may still work; Empty
-  // removes it permanently" would be two false promises under two dead
-  // buttons, and the exact arm's "not a sign Restore won't work" is false too.
-  // Dropped rather than reworded — the tag sentence names the WRONG CAUSE for
-  // this row (nothing was unreadable; nothing was read), and the note above
-  // already says the files are on the other side of the link.
+  // `!refused` stands on its own, and not on a track count: the hedge below
+  // hints at a Restore this row does not have. "Restore may still work; Empty
+  // removes it permanently" would be two promises under two disabled buttons,
+  // and it names the WRONG CAUSE for this row — nothing under the link was
+  // unreadable, because nothing under it was read. Dropped rather than
+  // reworded; the backend's note above already says where the files are.
+  //
+  // Every symlinked entry MusicDrop itself creates is also a 0-track row (it
+  // trashes an album's own FOLDER, and os.walk does not follow the link), so
+  // this is the rendered default rather than a corner. Not a universal, though:
+  // a top-level link to a media FILE is walked as a file and lists refused with
+  // real tags — measured ('linked.flac', 'refused', 1). Nothing here branches
+  // on the difference; `track_count === 0` is already false for that row.
   const noTracks = album.track_count === 0 && !refused;
   const reasonId = useId();
   const outlookId = useId();
