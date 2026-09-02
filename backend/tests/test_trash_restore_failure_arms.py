@@ -596,6 +596,13 @@ def test_the_restore_result_schema_does_not_call_an_empty_folder_occupied(
     wrong behaviour passes any assertion about the spec).
     ``tests/test_openapi_spec_guard.py`` is not evidence about either — it only
     fires on a dump that was not regenerated.
+
+    The spec half reads the CLAIM, not the word. Asserting ``"empty" in
+    description`` pinned an absence: the sentence inverted to "An EMPTY leftover
+    folder at the origin IS occupied" — the exact wrong contract this test was
+    added for — kept the word and passed (measured on this file). So the
+    sentence that mentions an empty folder must also be the one that denies it
+    is occupied.
     """
     from app.main import app
 
@@ -608,9 +615,14 @@ def test_the_restore_result_schema_does_not_call_an_empty_folder_occupied(
 
     assert result.restored is True, "an empty leftover at the origin is replaced, not refused"
     description = app.openapi()["components"]["schemas"]["RestoreResult"]["description"]
-    assert "empty" in description.lower(), (
-        "the description defines origin_occupied without ever saying an EMPTY folder at the"
-        f" origin is not one — this restore answered {result.reason!r} with one there"
+    about_empty = [s for s in description.split(".") if "empty" in s.lower()]
+    assert about_empty, (
+        "the description defines origin_occupied without ever mentioning an EMPTY folder at"
+        f" the origin — this restore answered {result.reason!r} with one there"
+    )
+    assert any("not occupied" in s.lower() for s in about_empty), (
+        "the description mentions an empty folder at the origin without saying it is NOT"
+        f" occupied — this restore answered {result.reason!r} with one there: {about_empty}"
     )
 
 
