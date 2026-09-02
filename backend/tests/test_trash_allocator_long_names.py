@@ -11,7 +11,7 @@ orphan sweep skipped in silence on every run.
 
 ONE test here is a unit call and nothing else --
 :func:`test_a_name_the_KERNEL_refuses_reads_as_free_and_not_as_a_500`, whose
-input is a filesystem this suite cannot mount (a ``NAME_MAX`` below our own
+input is a filesystem this suite does not mount (a ``NAME_MAX`` below our own
 constant), so the errno is forced from the predicate. Everything else reaches the
 allocator through a real mover, including the one that OPENS on unit calls:
 :func:`test_fit_name_leaves_a_name_that_already_fits_alone` asserts the
@@ -27,9 +27,10 @@ where nothing is in the way at all.
 And one route that never enters the loop at all: a Trash dir nested until
 ``<trash>/<255-byte name>`` is longer than PATH_MAX while every component is
 still inside NAME_MAX. Nothing is in the way, the shortener has nothing to take
-off, and the candidate cannot be looked up regardless — which is the fixture that
-separates the two never-raising spellings of the occupancy test, with no
-injection at all.
+off, and the candidate cannot be looked up regardless — which is the fixture
+that reaches both spellings of the occupancy test with no injection at all.
+What it can separate them BY is narrow, and its own docstring says what was
+measured.
 
 The 255 here is a LITERAL on purpose. Deriving the inputs from ``_NAME_MAX``
 would make these tests move with the constant and prove only that the module
@@ -397,12 +398,15 @@ def test_a_trash_path_over_PATH_MAX_fails_at_the_MOVE_and_not_at_the_allocator(
     dir is deep enough, and no suffix, no orphaned record and no entry in the way
     are needed to get there.
 
-    Both spellings of the predicate end in ``OSError(36)`` here, so the errno
-    cannot tell them apart and the assertion reads the raising FRAME instead:
-    with :func:`app.fsutil.exists` the failure belongs to ``shutil.move``, which
-    at least names the path it could not write, and with ``dest.exists()`` it
-    belongs to the allocator, which names nothing and 500s a delete that has not
-    touched a file.
+    The FRAME is all this fixture can assert on, and that is a measurement, not
+    a preference. Run twice from the same root, once with
+    :func:`app.fsutil.exists` and once with ``dest.exists()``, the two spellings
+    end the delete identically: ``OSError(36)``, the same ``.filename`` (the
+    whole candidate path, in both), the same ``str(exc)``, a byte-identical 500
+    body, the husk still in ``/music`` and an empty Trash. What differs is which
+    frame the traceback blames — ``shutil.move`` in ``trash_folder`` against the
+    ``while`` in ``_unique_trash_dest`` — so the frame is what the assertions
+    below read. Whoever reads the traceback is who that difference is for.
     """
     trash = _trash_dir_over_path_max(tmp_path)
     origins = origins_for(trash)
@@ -442,15 +446,16 @@ def test_a_name_the_KERNEL_refuses_reads_as_free_and_not_as_a_500(
     the kernel still answers ENAMETOOLONG, which ``Path.exists()`` raises rather
     than absorbs, straight out of the delete as a 500 with nothing moved.
 
-    Injected rather than staged, because mounting a filesystem needs privileges
-    the CI job does not have — it runs as ``runner``, not root — so the fixture
-    cannot exist: the errno is forced from the predicate itself, the way
-    ``test_fsutil`` and eleven other modules force theirs. The OTHER way the
-    constant is wrong — a Trash path near PATH_MAX — needs no injection and is
-    staged for real in
+    Injected rather than staged, because this suite mounts no filesystems: the
+    errno is forced from the predicate itself, the way ``test_fsutil`` and
+    eleven other modules force theirs. This pins the allocator's own boundary —
+    it RETURNS a candidate instead of raising — and nothing past it; what the
+    move then does on a filesystem whose ``NAME_MAX`` really is smaller is not
+    staged anywhere here. The OTHER way the constant is wrong — a Trash path
+    near PATH_MAX — needs no injection and is staged for real in
     :func:`test_a_trash_path_over_PATH_MAX_fails_at_the_MOVE_and_not_at_the_allocator`,
-    which is the one that pins :func:`app.fsutil.exists` here without a
-    monkeypatch.
+    which reaches :func:`app.fsutil.exists` without a monkeypatch and pins the
+    frame it moves the failure to.
     """
 
     def boom(_self: Path) -> bool:

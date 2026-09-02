@@ -372,7 +372,8 @@ def _unique_trash_dest(trash_dir: Path, origins_dir: Path, name: str) -> Path:
     allocator's hands.
 
     **Every candidate is kept inside ``NAME_MAX``, and the occupancy test is the
-    never-raising one.** ``Path.exists()`` does not absorb ENAMETOOLONG
+    spelling that absorbs errno 36 rather than raising it** (only that one: see
+    :mod:`app.fsutil`). ``Path.exists()`` does not absorb ENAMETOOLONG
     (``pathlib._IGNORED_ERRNOS`` is ENOENT/ENOTDIR/EBADF/ELOOP — errno 36 is not
     in it), so appending the first ``" (1)"`` — four bytes — turned any name of
     252 to 255 bytes into an ``OSError(36)`` escaping this function on the very
@@ -385,26 +386,39 @@ def _unique_trash_dest(trash_dir: Path, origins_dir: Path, name: str) -> Path:
     skips such a folder in silence on every run. Shortening the HEAD to make room
     for the suffix is the answer rather than refusing or truncating elsewhere: a
     Trash entry's name is only a container, and what a restore reads to put the
-    folder back is the origin RECORD, never the name.
-    :func:`~app.fsutil.exists` then answers "free"
-    instead of raising for the limits this constant cannot see — a filesystem
-    with a smaller ``NAME_MAX`` (eCryptfs stops at 143 bytes), or a Trash path
-    close to ``PATH_MAX`` — leaving the failure to the move, which can at least
-    name the path.
+    folder back is the origin RECORD, never the name. :func:`~app.fsutil.exists`
+    then answers "free" instead of raising for the limits this constant cannot
+    see — a filesystem with a smaller ``NAME_MAX`` (eCryptfs stops at 143
+    bytes), or a Trash path close to ``PATH_MAX`` — leaving the failure to the
+    statement that was trying to do the work.
 
-    The ``PATH_MAX`` half of that is reached by an ORDINARY delete with nothing
-    injected: nest the Trash dir until ``<trash_dir>/<255-byte name>`` is longer
-    than 4096 while every component still fits ``NAME_MAX``. Every ``mkdir``
-    then succeeds, the candidate cannot be looked up at all, and putting
-    ``dest.exists()`` back moves the same errno 36 out of ``shutil.move`` (which
-    names the path) and into THIS function (which does not, and 500s a delete
-    with nothing moved). That is why
+    That is a smaller difference than it sounds, and the ``PATH_MAX`` half is
+    where it was measured, because that one is reached by an ORDINARY delete
+    with nothing injected: nest the Trash dir until ``<trash_dir>/<255-byte
+    name>`` is longer than 4096 while every component still fits ``NAME_MAX``.
+    Every ``mkdir`` then succeeds and the candidate cannot be looked up at all.
+    Measured on this branch, ``trash_folder`` run twice over one such fixture
+    from the same root — once with :func:`~app.fsutil.exists` and once with
+    ``dest.exists()`` — the two ends are the same delete: ``OSError(36)``, the
+    same ``.filename`` (the whole candidate path, in both), the same
+    ``str(exc)``, a byte-identical 500 body (``delete._recovery``'s fallback
+    arm either way), the husk still in ``/music`` and an empty Trash. Two
+    differences showed, and neither reaches the user: which FRAME the traceback
+    blames — ``trash_folder``'s ``shutil.move`` against this function's
+    ``while`` — and one extra ``origin_recorded`` warning on the guarded side,
+    where the short-circuit no longer fires so the second predicate meets the
+    same errno. So
     ``test_a_trash_path_over_PATH_MAX_fails_at_the_MOVE_and_not_at_the_allocator``
-    reads the raising FRAME rather than the errno: both spellings raise 36, and
-    only the frame says which of them did. The smaller-``NAME_MAX`` half has no
-    fixture — mounting a filesystem needs privileges CI's pytest job does not
-    have, it runs as ``runner`` — so it is forced from the predicate instead, in
-    ``test_a_name_the_KERNEL_refuses_reads_as_free_and_not_as_a_500``.
+    reads the frame and not the errno: in that fixture nothing else separates
+    the two spellings, and the frame is what a traceback in the log has to
+    point at.
+
+    The smaller-``NAME_MAX`` half has no fixture — this suite mounts no
+    filesystems — so it is forced from the predicate instead, in
+    ``test_a_name_the_KERNEL_refuses_reads_as_free_and_not_as_a_500``, which
+    pins the allocator's own boundary (it returns rather than raising) and
+    nothing past it. What the move then does on a real such filesystem is not
+    staged anywhere here.
 
     Long names are not only an accident of the source folder: ``beets.util``
     caps a path component it generates at 200 bytes by default
