@@ -21,6 +21,22 @@ to ``album_id IS NULL``, so an item whose ``album_id`` points at a deleted album
 row is sampled like any other instead of producing an empty sample that the
 empty-sample arm waves through.
 
+Two more properties of the same function, each unpinned until the tests at the
+bottom of this file:
+
+* Which query runs FIRST. The album query is the primary and the item query its
+  fallback, and swapping them left the suite green — yet they are not
+  interchangeable. The album arm returns one folder per album; the item arm
+  returns one row per TRACK, so on a multi-track library it asks about fewer
+  real subjects than the sampler's own docstring claims, and it puts an
+  ``ORDER BY RANDOM()`` scan of the big ``items`` table on every presence check
+  (the module's comment on ``_SAMPLE_ALBUM_PATHS_SQL`` says avoiding exactly
+  that scan is why the album query is the primary).
+* The empty-path skip. ``if not raw`` weakened to ``if raw is None`` also left
+  the suite green, and an empty-string ``path`` row then resolves to the library
+  ROOT — a folder that exists whenever ``require_library_root`` has already
+  passed, so one such row answers "the music is there" for a share that is gone.
+
 ``tests/test_library_presence.py`` pins what the predicate ANSWERS; this file
 pins the properties of HOW it asks that a caller can feel.
 """
@@ -283,3 +299,143 @@ def test_a_mounted_dangling_album_id_library_is_still_accepted(tmp_path: Path) -
     lib = _dangling_album_id_library(tmp_path, on_disk=True)
 
     require_library_present(lib)  # must not raise
+
+
+#: Albums in the two fixtures below, and tracks in each of them.
+#:
+#: Deliberately FEWER albums than ``_PRESENCE_SAMPLE_SIZE`` and MORE items than
+#: it, which is what makes both fixtures deterministic and what tells the two
+#: query arms apart:
+#:
+#: * fewer albums than the ``LIMIT`` means the album draw is exhaustive, so
+#:   ``ORDER BY RANDOM()`` cannot change WHICH albums come back. There is no
+#:   false-failure probability to bound here the way ``_TOTAL_ROWS`` bounds one
+#:   for the re-roll tests above — measured over 200 consecutive draws, the
+#:   album arm returned the same 3 folders every time;
+#: * more items than the ``LIMIT`` means the item arm always fills its 5 rows.
+#:   Measured over the same 200 draws with the arms swapped: 5 rows naming 2 or
+#:   3 distinct folders, never 3 rows. That gap is the assertion.
+_GROUPED_ALBUMS = _PRESENCE_SAMPLE_SIZE - 2
+_TRACKS_PER_ALBUM = 4
+
+
+def _multi_track_library(tmp_path: Path) -> tuple[Library, list[str]]:
+    """A healthy library of a few multi-track albums, and the folders it owns.
+
+    Every folder is on disk, so this is not a dropped-share fixture and the
+    presence check accepts it; what is measured is the SHAPE of the sample, not
+    the answer.
+    """
+    assert _GROUPED_ALBUMS >= 1, "the album arm needs at least one album to group"
+    assert _GROUPED_ALBUMS < _PRESENCE_SAMPLE_SIZE, "the album draw must be exhaustive"
+    assert _GROUPED_ALBUMS * _TRACKS_PER_ALBUM > _PRESENCE_SAMPLE_SIZE, (
+        "the item arm must be able to fill its LIMIT, or the two arms agree by accident"
+    )
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+
+    folders: list[str] = []
+    for a in range(_GROUPED_ALBUMS):
+        folder = music / f"Artist {a:03d}" / "Album"
+        folder.mkdir(parents=True)
+        folders.append(str(folder))
+        items = []
+        for t in range(_TRACKS_PER_ALBUM):
+            track = folder / f"{t + 1:02d} Track.mp3"
+            track.write_bytes(b"\x00")  # placeholder bytes; tests never read audio
+            item = Item(
+                album="Album",
+                albumartist=f"Artist {a:03d}",
+                artist=f"Artist {a:03d}",
+                title=f"Track {t + 1}",
+                track=t + 1,
+            )
+            item.path = os.fsencode(str(track))
+            items.append(item)
+        lib.add_album(items).store()
+    return lib, folders
+
+
+def _library_with_an_empty_path_row(tmp_path: Path) -> tuple[Library, Path]:
+    """A dropped share whose DB holds one row with an EMPTY ``path``.
+
+    Only an external ``UPDATE`` writes that (beets always stores the file it
+    imported), which is why it is built with one — the comment on the
+    empty-sample arm of ``require_library_present`` names the same cause.
+
+    None of the album folders exist: that IS the state this fixture is about, a
+    share that went away while ``library.db`` stayed. The mountpoint keeps a
+    ``.stfolder`` so ``require_library_root`` passes and the sampler is the only
+    thing that can catch it — the exact hole ``require_library_present`` exists
+    to cover. Fewer albums than ``_PRESENCE_SAMPLE_SIZE``, so the draw is
+    exhaustive and the empty row is in EVERY sample; nothing here is a coin flip.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    (music / ".stfolder").write_bytes(b"")
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+
+    for a in range(_GROUPED_ALBUMS):
+        item = Item(
+            album="Album",
+            albumartist=f"Artist {a:03d}",
+            artist=f"Artist {a:03d}",
+            title="Track",
+            track=1,
+        )
+        item.path = os.fsencode(str(music / f"Artist {a:03d}" / "Album" / "01 Track.mp3"))
+        lib.add_album([item]).store()
+    with lib.transaction() as tx:
+        lowest = tx.query("SELECT id FROM items ORDER BY id LIMIT 1")[0][0]
+        tx.mutate("UPDATE items SET path = '' WHERE id = ?", (lowest,))
+        stored = tx.query("SELECT path FROM items WHERE id = ?", (lowest,))[0][0]
+    assert stored == "", repr(stored)  # SQLite is dynamically typed: a str, not b""
+    return lib, music
+
+
+def test_the_sampler_asks_one_folder_per_album_and_not_one_per_track(tmp_path: Path) -> None:
+    """The album query is the PRIMARY; the item query is only its fallback.
+
+    Swapping them is not an equivalent change. This library groups into
+    ``_GROUPED_ALBUMS`` albums of ``_TRACKS_PER_ALBUM`` tracks each, so the
+    shipped order returns exactly one folder per album — the cardinality
+    ``_sampled_library_dirs``' own docstring promises ("one per album where the
+    library groups into albums; one per item on the fallback arm"). With the
+    arms swapped the item query never comes back empty, so it answers every
+    presence check: ``_PRESENCE_SAMPLE_SIZE`` rows drawn from the tracks, naming
+    2 or 3 distinct folders on this fixture — fewer real subjects than the
+    sample size suggests, and an unindexed ``ORDER BY RANDOM()`` over the big
+    ``items`` table on a healthy library that the album query answers from the
+    small one.
+    """
+    lib, folders = _multi_track_library(tmp_path)
+    with lib.transaction() as tx:
+        assert tx.query("SELECT COUNT(*) FROM albums")[0][0] == _GROUPED_ALBUMS
+        assert tx.query("SELECT COUNT(*) FROM items")[0][0] > _PRESENCE_SAMPLE_SIZE
+
+    dirs = _sampled_library_dirs(lib, _PRESENCE_SAMPLE_SIZE)
+
+    assert sorted(dirs) == sorted(folders)
+    require_library_present(lib)  # must not raise: every folder is on disk
+
+
+def test_an_empty_path_row_is_skipped_and_not_read_as_the_library_root(tmp_path: Path) -> None:
+    """A row naming no file must not answer for the share.
+
+    ``os.path.dirname(os.path.join(lib.directory, ""))`` is the library ROOT,
+    and the root is what ``require_library_root`` has just confirmed exists — so
+    an empty ``path`` that reaches the loop's body names a folder that is always
+    there, and the first-hit accept then reports "the music is there" for a
+    library whose every album folder is gone. Weakening the skip to ``raw is
+    None`` does exactly that: measured on this fixture, the root was in 50 of 50
+    samples and the check accepted a dropped share.
+    """
+    lib, music = _library_with_an_empty_path_row(tmp_path)
+
+    dirs = _sampled_library_dirs(lib, _PRESENCE_SAMPLE_SIZE)
+
+    assert str(music) not in dirs
+    assert len(dirs) == _GROUPED_ALBUMS - 1  # the empty row contributes nothing
+    with pytest.raises(LibraryRootUnavailableError) as excinfo:
+        require_library_present(lib)
+    assert "holds none of the library's albums" in str(excinfo.value)
