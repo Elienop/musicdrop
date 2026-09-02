@@ -1062,11 +1062,16 @@ def resolve_trash_child(trash_dir: Path, rel: str) -> Path:
 def empty_one(folder_abs: str, *, origins_dir: Path) -> EmptyResult:
     """Permanently remove one trashed entry — a folder or a loose file.
 
-    The origin record goes with it, and strictly AFTER: a failed ``rmtree``
-    raises out of here, and losing the record for an entry that is still sitting
-    in Trash would silently downgrade its row to an import-restore. With the
-    sidecar this ordering was free (the ``rmtree`` took the record with it);
-    keyed on the name in a sibling dir, it is a rule.
+    Its OWN record goes with it, and strictly AFTER: a failed ``rmtree`` raises
+    out of here, and losing the record for an entry that is still sitting in
+    Trash would silently downgrade its row to an import-restore. With the sidecar
+    this ordering was free (the ``rmtree`` took the record with it); keyed on the
+    name in a sibling dir, it is a rule.
+
+    A record naming a DIFFERENT entry stays, and that is not this line's doing:
+    two long names can share one truncated key, and
+    :func:`~app.beets.trash_origins.delete_trash_origin` reads the payload's own
+    ``name`` before unlinking. Its docstring owns that exception.
     """
     path = Path(folder_abs)
     if path.is_dir():
