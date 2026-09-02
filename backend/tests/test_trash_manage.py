@@ -329,8 +329,8 @@ def test_resolve_trash_child_refuses_a_traversal_whose_target_exists(tmp_path: P
 
     ``../escape`` names nothing on disk, so ``not exists(dest)`` answers it and
     the resolved ``is_relative_to`` check is never the reason — measured on this
-    file at ``34893e7``: with that check deleted the whole suite stayed green,
-    and ``resolve_trash_child(trash, "../..")`` returned ``/tmp``.
+    branch before this test existed: with that check deleted the whole suite
+    stayed green, and ``resolve_trash_child(trash, "../..")`` returned ``/tmp``.
 
     A sibling of the Trash dir that really exists is the input only containment
     can refuse. It is the ordinary shape too: ``<beets dir>`` holds ``trash`` and

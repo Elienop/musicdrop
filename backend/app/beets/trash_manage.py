@@ -1070,7 +1070,8 @@ def resolve_trash_child(trash_dir: Path, rel: str) -> Path:
     * the path must be under ``trash_dir`` as written. ``resolve_display_path``
       returns ``trash_dir / rel``, and an absolute ``rel`` replaces the base
       entirely, so ``folder=<abs>/Sneak`` arrives as a path this module never
-      handed out. Measured at ``34893e7``, with ``Sneak -> <trash>/RealAlbum``:
+      handed out. Measured on this branch before this check existed, with
+      ``Sneak -> <trash>/RealAlbum``:
       this resolver returned ``<trash>/RealAlbum``, ``DELETE /api/trash`` answered
       ``200 {"removed": 1}``, and the album that row belonged to was gone while
       ``Sneak`` itself stayed put.
