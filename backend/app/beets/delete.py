@@ -202,10 +202,10 @@ def delete_artist(
                     #
                     # A move that fails PART-WAY sits outside that window in the
                     # other direction — the rows are KEPT, which is the safe
-                    # side. Two ways in: ``trash.py``'s post-condition re-checks
-                    # the root BEFORE it checks whether anything landed, so a
-                    # share dropping mid-move raises with some items already
-                    # under the Trash container, and a cross-filesystem
+                    # side. Two of the ways in: ``trash.py``'s post-condition
+                    # re-checks the root BEFORE it checks whether anything
+                    # landed, so a share dropping mid-move raises with some items
+                    # already under the Trash container, and a cross-filesystem
                     # ``shutil.move`` is copy-then-delete, so a failure between
                     # the two leaves the folder at both ends. Both are relayed
                     # in the cause's own words, which is all this end can offer:
@@ -288,9 +288,9 @@ def _recovery(exc: Exception) -> str:
     """The 500's recovery hint. It may PROMISE Trash only if something is IN Trash.
 
     Asked the other way round from how it started, because listing the failures
-    that moved nothing kept missing one. Exactly ONE failure here can be shown a
-    Trash entry — a fan-out that got past its first album and really relocated
-    files (``ArtistDeletePartialError`` with ``moved`` above zero) — so that is
+    that moved nothing kept missing one. Exactly ONE failure here is KNOWN to
+    have a Trash entry — a fan-out that got past its first album and really
+    relocated files (``ArtistDeletePartialError`` with ``moved``) — so that is
     the arm that states Trash as a fact, and everything else falls to a hint that
     does not. Enumerating the other direction meant a new "moved nothing" path
     was silently welcomed into the promise: a fan-out that fails on its FIRST
@@ -308,8 +308,10 @@ def _recovery(exc: Exception) -> str:
     * everything else — the arm that cannot know, so it ASKS rather than tells.
       Most of what lands here moved nothing: a fan-out stopped before its first
       album, one whose albums were all ghosts or empty rows, most faults inside a
-      single-album delete. Two windows land here with the folder really under
-      Trash, and neither is visible from the exception:
+      single-album delete. But this is also where every failure lands that left
+      bytes under Trash without anything here being able to see it, and there is
+      more than one — no exception type separates them, which is the whole
+      reason the sentence stopped asserting:
 
       * ``album.remove`` raising after the folder moved. beets deletes the album
         row and THEN sends ``album_removed`` to plugins
@@ -319,9 +321,13 @@ def _recovery(exc: Exception) -> str:
         the album row gone and its item rows still there (they are removed after
         the signal). The Trash page offers that entry an exact move-back while
         this line used to be telling its owner there was nothing to look for —
-        and Empty is one click away;
-      * a cross-filesystem ``shutil.move`` that fails after copying, which
-        leaves the bytes at both ends.
+        and Empty is one click away. The only one of these that drops rows;
+      * a move that stops PART-WAY, which keeps the rows: a cross-filesystem
+        ``shutil.move`` is copy-then-delete and a failure between the two leaves
+        the bytes at both ends, and the per-item fallback moves item by item, so
+        a fault mid-loop (or a share dropping there — see
+        :func:`~app.beets.trash._require_move_happened`) leaves some of them
+        under the Trash container.
 
     So the fallback names Trash as a place to CHECK and says what each answer
     means. That is one look for the user who moved nothing, against a lost album
