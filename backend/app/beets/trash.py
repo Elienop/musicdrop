@@ -487,13 +487,25 @@ def _record_origin(origins_dir: Path, dest: Path, *, origin: str, moved: MovedSh
     such escape left; only the unkeepable promise.)
     """
     # ``Path.is_symlink`` here and ``os.path.islink`` in ``trash_manage``'s
-    # listing, on purpose and not by drift. The two differ only for a name the
-    # kernel refuses to stat, and ``dest`` is a path this module has just made
-    # the kernel accept — ``shutil.move`` in the two folder movers, ``mkdir`` in
-    # the per-item one — so an overlong ``dest`` has already failed that step and
-    # never reaches this line. The listing has no such guarantee, which is why it
-    # takes the spelling that answers False instead of raising; do not "fix"
-    # either one to match the other.
+    # listing, on purpose and not by drift — and the gap between them is wider
+    # than the overlong name it is usually described by. ``Path.is_symlink``
+    # swallows only ``pathlib._IGNORED_ERRNOS`` (ENOENT/ENOTDIR/EBADF/ELOOP) and
+    # a ``ValueError``, re-raising every other ``lstat`` failure;
+    # ``os.path.islink`` catches ``(OSError, ValueError, AttributeError)``
+    # blanket and answers False to all of it. Measured on 3.12.13: on an
+    # overlong name the first raises ``OSError(36)`` and the second answers
+    # False; on a child of a directory at mode 0600, as a non-root user, the
+    # first raises ``PermissionError(13)`` and the second still answers False.
+    #
+    # This site takes the raising one because ``dest`` is a path the kernel
+    # accepted a statement or two ago — ``shutil.move`` in the two folder
+    # movers, ``mkdir`` in the per-item one — so either fault would have failed
+    # THAT step first, and reaching this line with one means the name or the
+    # permissions changed inside that window. The listing reads names it did not
+    # create, and there the blanket answer is the point: an entry the kernel
+    # will not stat is neither a link to honour nor a restorable album, so the
+    # page answers instead of 500ing. Do not "fix" either one to match the
+    # other.
     if dest.is_symlink():
         return
     write_trash_origin(origins_dir, dest.name, origin=origin, moved=moved)
