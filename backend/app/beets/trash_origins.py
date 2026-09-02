@@ -40,16 +40,18 @@ manager, an SMB client, ``docker volume rm``) leaves its record behind for
 whatever takes that name next — and two mechanisms narrow it:
 
 * **The allocator**, for the names MusicDrop hands out.
-  ``trash._unique_trash_dest`` treats a recorded name as occupied, so as long as
-  the store can be READ, this app does not give a second folder a name whose
-  record is still on disk. A store it cannot reach reads as empty and the name
-  is handed on — measured, and stated as a residual at :func:`origin_recorded`.
-  That is the whole of what it covers. An entry that reaches ``trash_dir`` by
-  ANOTHER route — a hand copy, a restored backup, a sync client writing into
-  the volume — asks the allocator nothing, so it can land on a name whose
-  record outlived its entry and inherit it: the listing offers "Exact restore"
-  to a stranger's origin and Restore renames the folder there. Nothing here
-  detects that today; it is a stated residual, not a closed hazard.
+  ``trash._unique_trash_dest`` treats a recorded name as occupied, so this app
+  does not give a second folder a name whose record is still on disk. A store it
+  cannot reach used to read as empty, and the name was handed on anyway; a
+  delete is now REFUSED instead — every mover asks
+  :func:`require_usable_store` before it allocates or moves, and
+  :func:`origin_recorded` refuses the same fault class met in the window after
+  that check. That is the whole of what it covers. An entry that reaches
+  ``trash_dir`` by ANOTHER route — a hand copy, a restored backup, a sync
+  client writing into the volume — asks the allocator nothing, so it can land
+  on a name whose record outlived its entry and inherit it: the listing offers
+  "Exact restore" to a stranger's origin and Restore renames the folder there.
+  Nothing here detects that today; it is a stated residual, not a closed hazard.
 * **The record names its own entry.** ``name`` is in the payload and
   :func:`read_trash_origin` refuses a record whose ``name`` is not the entry it
   was asked about. That does nothing for the adoption case above (an adopted
@@ -60,10 +62,13 @@ whatever takes that name next — and two mechanisms narrow it:
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import hashlib
 import json
 import logging
 import os
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -200,8 +205,140 @@ def origin_file(origins_dir: Path, entry_name: str) -> Path:
     return origins_dir / name
 
 
+class TrashOriginsStoreUnusableError(Exception):
+    """The origin-records store cannot be used AS A STORE, so a delete is refused.
+
+    Raised by :func:`require_usable_store` before a mover touches anything, and
+    by :func:`origin_recorded` for the same fault class met a moment later (the
+    store can drop between the two — a ``/data`` mount going, a chmod landing).
+    Both refuse rather than degrade, which is the opposite posture from the rest
+    of this module: every OTHER failure here swallows and logs, because it runs
+    AFTER irreversible work and a record we cannot write must never make a delete
+    fail. This one runs BEFORE any of it.
+
+    The message is USER-facing — the delete routes put it straight into a 503's
+    flat ``detail`` — so it names the store the way the README names it and NOT
+    by absolute path. The absolute path is logged at WARNING beside every raise,
+    which is where an operator reading ``docker logs`` needs it.
+    """
+
+
+#: How the store is named to the USER. Deliberately not its absolute path: the
+#: presence refusal this sits beside leaks none either
+#: (``test_refusal_message_leaks_no_path``), and the sentence reaches a browser.
+_STORE_WHERE = "The Trash origin-records folder (trash-origins under the beets data folder)"
+
+#: What to do about it. "Nothing has been deleted" is a promise the CALLERS keep
+#: by asking before they move or drop anything — see :func:`require_usable_store`
+#: for where each mover asks.
+_STORE_FIX = "Nothing has been deleted. Fix its permissions or its mount, then retry."
+
+#: A name no record can ever have — every record is ``<entry name>.json``, and
+#: :func:`origin_file` never produces a leading dot without one. Used to ask the
+#: store the SEARCH question without depending on any record being there.
+_PROBE_KEY = ".musicdrop-store-check"
+
+#: Errnos that mean the STORE is the problem rather than the key, met at the one
+#: lookup :func:`origin_recorded` makes. Measured on 3.12.13: ``Path.exists()``
+#: absorbs ENOENT/ENOTDIR/EBADF/ELOOP itself, so a FILE at the store path and a
+#: symlink loop at the key never reach that arm at all — ENOTDIR here would be a
+#: line with no reader, and the FILE shape is caught by
+#: :func:`require_usable_store` instead. What is left, and what a dropped mount
+#: or a bad ``PUID``/``PGID`` really produces, is EACCES/EPERM. Everything else
+#: (ENAMETOOLONG from a path over ``PATH_MAX``, a filesystem whose own
+#: ``NAME_MAX`` is smaller) is a KEY-level oddity: it says nothing about the
+#: store, so it keeps the old answer of "free" and its warning.
+_STORE_CLASS_ERRNOS = frozenset({errno.EACCES, errno.EPERM})
+
+
+def require_usable_store(origins_dir: Path) -> None:
+    """Refuse the caller unless a delete could both LOOK UP and WRITE a record here.
+
+    A delete that cannot use this store is a delete that hands out a Trash name
+    whose record is still on disk and then loses the new record — measured at
+    tip: with the store at mode 0000 the folder lands under the ALREADY-RECORDED
+    name, the write fails and is swallowed, and once the mode is repaired the
+    stranger's row offers an exact restore to the first folder's origin. So the
+    movers ask this first and refuse, rather than completing a delete whose only
+    trace of the fault is a WARNING.
+
+    The three probes are the three things a delete does to this directory, in
+    the order it does them, and each is a real syscall rather than an
+    ``os.access`` guess — ``os.access`` answers for the REAL uid and cannot see
+    a read-only mount the way the operation can:
+
+    * ``mkdir(parents=True, exist_ok=True)`` — an ABSENT store is healthy and
+      creating it is what the first delete on a fresh install already does (via
+      the atomic writer). This is also the probe that catches the shapes that
+      are not a directory at all: measured, a regular FILE at the store path
+      raises EEXIST here, a file at a PARENT component raises ENOTDIR, and an
+      absent store under an unwritable parent raises EACCES. The FILE shape is
+      invisible everywhere else — ``Path.exists()`` absorbs the ENOTDIR its
+      children raise, so the allocator reads "no record" in silence.
+    * ``scandir`` + a ``stat`` of :data:`_PROBE_KEY` — the store must be
+      readable AND searchable, and those are two different bits. Measured as a
+      non-root user: at mode 0600 the ``scandir`` SUCCEEDS and the ``stat``
+      raises EACCES, which is exactly the fault ``origin_recorded`` meets, so
+      the ``stat`` is the probe that matters and the ``scandir`` is the one the
+      Empty-all sweep needs.
+    * ``mkstemp`` — the store must be writable. A read-only store (mode 0500)
+      reads perfectly and loses every origin silently, which is the same class
+      of setup fault one permission bit away from the unreadable one. ``mkstemp``
+      rather than a fixed probe name so two movers running at once cannot refuse
+      each other with EEXIST, and it reports the real errno (EACCES here, EROFS
+      on a read-only mount, ENOSPC on a full one) instead of a guess.
+
+    Every probe leaves the store as it found it: the ``stat`` target is never
+    created and the ``mkstemp`` file is unlinked on the way out.
+    """
+    try:
+        origins_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise _store_unusable(origins_dir, "is not a usable folder", exc) from exc
+    try:
+        with os.scandir(origins_dir) as entries:
+            next(entries, None)
+        # The lookup ``origin_recorded`` makes, asked of a key that is never
+        # there: ENOENT is the healthy answer and everything else is the fault.
+        with contextlib.suppress(FileNotFoundError):
+            os.stat(origins_dir / _PROBE_KEY)
+    except OSError as exc:
+        raise _store_unusable(origins_dir, "cannot be read", exc) from exc
+    try:
+        handle, probe = tempfile.mkstemp(dir=origins_dir, prefix=f"{_PROBE_KEY}.")
+    except OSError as exc:
+        raise _store_unusable(origins_dir, "cannot be written", exc) from exc
+    os.close(handle)
+    # Best effort: a probe file we could not remove is litter in a directory
+    # this app owns, not a reason to refuse a delete that can otherwise proceed.
+    with contextlib.suppress(OSError):
+        os.unlink(probe)
+
+
+def _store_unusable(origins_dir: Path, what: str, exc: OSError) -> TrashOriginsStoreUnusableError:
+    """The refusal, with the absolute path in the LOG and out of the message.
+
+    ``%r`` on the path for the reason ``_undo_failure`` gives: a store path can
+    be configured to anything, and a raw ``%s`` of one carrying a newline or an
+    ANSI escape forges log lines.
+    """
+    logger.warning(
+        "%s %s, so a delete was refused; the store is at %r and the error below says why.",
+        _STORE_WHERE,
+        what,
+        display_path(str(origins_dir)),
+        exc_info=True,
+    )
+    return TrashOriginsStoreUnusableError(
+        f"{_STORE_WHERE} {what}: {exc.strerror or exc}. {_STORE_FIX}"
+    )
+
+
 def origin_recorded(origins_dir: Path, entry_name: str) -> bool:
-    """Whether a record already exists for ``entry_name``. Never raises.
+    """Whether a record already exists for ``entry_name``.
+
+    Raises :class:`TrashOriginsStoreUnusableError` when the STORE is what
+    answered — see the paragraph below — and nothing else.
 
     The Trash name allocator asks this so a name whose record is still on disk is
     never handed to a DIFFERENT folder — see the module docstring. False for a
@@ -223,26 +360,34 @@ def origin_recorded(origins_dir: Path, entry_name: str) -> bool:
     where this returns ``False`` for a record that is really there and the
     allocator hands the name on.
 
-    **When the STORE itself cannot be reached the two AGREE, and that is a
-    stated residual.** An origins directory that is present but unsearchable —
-    measured at mode 0600 as a non-root user, the shape a bad ``PUID``/``PGID``
-    or a restored backup produces — makes ``exists()`` raise ``EACCES``:
-    :func:`read_trash_origin` logs "it could not be read" and returns ``None``,
-    and the arm below answers ``False``. Both say "nothing here", so the
-    allocator hands out a name whose record is still on disk; once the
-    permissions are repaired, that second folder's row reads the FIRST folder's
-    origin and offers to move it there. Measured through
+    **When the STORE itself is what cannot be reached, this REFUSES.** An origins
+    directory that is present but unsearchable — measured at mode 0600 as a
+    non-root user, the shape a bad ``PUID``/``PGID`` or a restored backup
+    produces — makes ``exists()`` raise ``EACCES``, and answering either way is
+    wrong. ``False`` hands out a name whose record is still on disk, so once the
+    permissions are repaired that second folder's row reads the FIRST folder's
+    origin and offers to move it there (measured through
     ``trash._unique_trash_dest``: ``Dummy (1)`` with the store readable,
-    ``Dummy`` under the fault. The payload's ``name`` guard cannot catch this
-    one — the two folders share a name — and answering ``True`` on ``OSError``
-    would leave the allocator with no exit at all, since every candidate then
-    reads occupied (measured: 111,939 candidates in one second, still climbing).
-    So the warning below is what this case gets: it is the only trace, and it
-    runs exactly where the residual is created.
+    ``Dummy`` under the fault, and the payload's ``name`` guard cannot catch it
+    because the two folders share a name). ``True`` leaves the allocator with no
+    exit at all, since every candidate then reads occupied — measured, 111,939
+    candidates in one second and still climbing. So it is neither: the delete is
+    refused, which is the owner's ruling (``decisions.md`` 28) and what
+    :func:`require_usable_store` already did a few statements earlier for every
+    mover. This arm is what closes the window BETWEEN the two, where a ``/data``
+    mount drops or a chmod lands after the check has passed.
+
+    A key-level oddity is not that, and keeps the old answer. ENAMETOOLONG — a
+    store path over ``PATH_MAX``, or a filesystem whose own ``NAME_MAX`` is
+    below this module's guess — says nothing about whether the store works, so
+    it still reads as free and still logs the warning below, which is the only
+    trace that name got handed out with a record possibly sitting on it.
     """
     try:
         return origin_file(origins_dir, entry_name).exists()
-    except OSError:
+    except OSError as exc:
+        if exc.errno in _STORE_CLASS_ERRNOS:
+            raise _store_unusable(origins_dir, "cannot be read", exc) from exc
         logger.warning(
             # What went wrong is left to ``exc_info`` rather than named in the
             # sentence. This used to end "Check the permissions on the Trash

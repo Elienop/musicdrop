@@ -31,6 +31,7 @@ from app.beets.trash import (
     trash_album,
     trash_album_folder,
 )
+from app.beets.trash_origins import TrashOriginsStoreUnusableError
 from tests.conftest import build_library, make_test_handle, origins_for
 
 
@@ -753,3 +754,99 @@ def test_trash_album_folder_refuses_a_dropped_flat_share_masked_by_a_stray(
     assert len(list(lib.albums())) == total_before
     assert not trash.exists() or list(trash.iterdir()) == []  # nothing reached Trash
     assert list(music.iterdir()) == [music / ".stfolder"]  # and nothing was written back
+
+
+# ----- The origin-store guard: a store that cannot be used refuses the move -----
+#
+# Owner ruling, ``decisions.md`` 28: a delete that cannot record where a folder
+# came from must not run. Until it, a store the app could not use read as EMPTY
+# and the delete completed — handing out a name whose record was still on disk
+# and then losing the new record, so a repaired store offered one folder's
+# origin to another. The three movers here all ask before they allocate.
+
+
+def _file_at_the_store(tmp_path: Path) -> Path:
+    """A store path with a regular FILE at it, and the reason it is the fixture.
+
+    Root-proof, which a mode bit is not: as uid 0 a directory at 0000 denies
+    nothing and a chmod fixture reports green having exercised no fault. It is
+    also the shape nothing else could see — ``Path.exists()`` absorbs the
+    ENOTDIR a child of a file raises, so before the store check the allocator
+    read "no record here" for it in complete silence.
+    """
+    origins = origins_for(tmp_path / "trash")
+    origins.write_bytes(b"not a directory")
+    return origins
+
+
+def test_trash_album_refuses_an_unusable_store_before_any_mkdir(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    """The per-item mover, which is also duplicates-resolve's and import Replace's.
+
+    It is the one of the three whose refusal has no test of its own anywhere
+    else, and the one whose ``mkdir`` is TWO: ``trash_dir`` and then the album's
+    own container under it.
+    """
+    trash = tmp_path / "trash"
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = _require_id(album.id)
+    folder = album_folder(duplicates_lib, list(album.items()))
+    _file_at_the_store(tmp_path)
+
+    with pytest.raises(TrashOriginsStoreUnusableError) as ei, duplicates_lib.transaction():
+        trash_album(duplicates_lib, album, trash_dir=trash, origins_dir=origins_for(trash))
+
+    assert "trash-origins" in str(ei.value)
+    assert duplicates_lib.get_album(album_id) is not None
+    assert os.path.isdir(folder), "the album's files must still be where they were"
+    assert not trash.exists(), "the refusal comes before the Trash mkdir"
+
+
+def test_trash_album_folder_refuses_an_unusable_store_before_the_GHOST_branch(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    """The check sits above every branch, including the two that move nothing.
+
+    A ghost album — rows with no folder — is dropped by a branch that relocates
+    not one byte, so a check placed beside the ``mkdir`` would let it through.
+    The invariant the owner ruled on is about ROWS, not about files: a fan-out
+    that refused its third album having already erased two ghosts would have
+    broken it while every file stayed exactly where it was.
+    """
+    trash = tmp_path / "trash"
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = _require_id(album.id)
+    shutil.rmtree(album_folder(duplicates_lib, list(album.items())))  # ghost: rows only
+    _file_at_the_store(tmp_path)
+
+    with pytest.raises(TrashOriginsStoreUnusableError), duplicates_lib.transaction():
+        trash_album_folder(duplicates_lib, album, trash_dir=trash, origins_dir=origins_for(trash))
+
+    assert duplicates_lib.get_album(album_id) is not None, "the ghost rows must survive"
+    assert not trash.exists()
+
+
+def test_a_store_that_does_not_exist_yet_is_created_by_the_delete(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    """Absence is the FRESH-INSTALL shape and must not be read as a fault.
+
+    No deployment has an origins directory until its first delete. A guard that
+    treated ENOENT like EACCES would refuse every first delete there is, so this
+    is the counter-example the check is written against — end to end through the
+    mover, not only at the predicate.
+    """
+    trash = tmp_path / "trash"
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = _require_id(album.id)
+    assert not origins_for(trash).exists(), "the fixture must start with no store"
+
+    with duplicates_lib.transaction():
+        dest = trash_album_folder(
+            duplicates_lib, album, trash_dir=trash, origins_dir=origins_for(trash)
+        )
+
+    assert duplicates_lib.get_album(album_id) is None, "the delete must have completed"
+    assert origins_for(trash).is_dir()
+    assert (origins_for(trash) / f"{Path(dest).name}.json").is_file()

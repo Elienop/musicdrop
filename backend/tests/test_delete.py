@@ -232,6 +232,114 @@ def test_delete_artist_op_503_root_unavailable(duplicates_lib: Library, tmp_path
     assert len(list(duplicates_lib.albums())) == before
 
 
+# ----- the SECOND setup fault a delete refuses: an unusable origin store ------
+#
+# Owner ruling, ``decisions.md`` 28. Same tier and same shape as the root guard
+# above, for the same reason: the check runs before anything moves or is
+# dropped, so the one fact known on every path is the one the 503 states.
+
+
+def _store_fault_req(lib: Library, tmp_path: Path, trash: Path) -> object:
+    """A stub request whose settings point the ops at ``trash``'s sibling store."""
+    handle = make_test_handle(lib, tmp_path)
+
+    class _App:
+        state = SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins_for(trash))),
+        )
+
+    class _Req:
+        app = _App()
+
+    return _Req()
+
+
+@pytest.mark.parametrize("artist", [None, "Radiohead"], ids=["album", "artist"])
+@pytest.mark.parametrize(
+    ("shape", "says"),
+    [("file", "is not a usable folder"), ("unsearchable", "cannot be read")],
+)
+def test_delete_op_503_when_the_origin_store_cannot_be_used(
+    duplicates_lib: Library, tmp_path: Path, artist: str | None, shape: str, says: str
+) -> None:
+    """Both ops, both measured shapes: a 503 that names the store and leaks no path.
+
+    The two shapes are not a duplication. ``file`` — a regular FILE where the
+    store belongs — is the one nothing could see before this guard, because
+    ``Path.exists()`` absorbs the ENOTDIR its children raise, and it is
+    ROOT-PROOF: it denies for uid 0 exactly as it does for uid 1000.
+    ``unsearchable`` — the directory at mode 0600 — is the ruling's own headline
+    shape (a bad ``PUID``/``PGID``, a restored backup) and is the one that must
+    skip under root, where a mode bit denies nothing and the arm would report
+    green having exercised no fault.
+
+    Both ends of the message are asserted, because they pull in opposite
+    directions: the sentence has to NAME the store (or the reader cannot act on
+    it) while carrying no absolute path (the presence refusal beside it leaks
+    none either — ``test_refusal_message_leaks_no_path``), and only asserting
+    one of the two lets the other regress.
+
+    ``says`` pins WHICH of the three probes answered, and it is not decoration:
+    an unsearchable store fails the write probe too, so without it the search
+    probe is a line no test can kill (measured — dropping it left 59 tests
+    green, with the refusal still raised and only its sentence changed from
+    "cannot be read" to "cannot be written"). The two sentences send an operator
+    at different permission bits.
+    """
+    if shape == "unsearchable" and os.getuid() == 0:
+        pytest.skip("running as root: an unsearchable directory denies nothing")
+    trash = tmp_path / "trash"
+    origins = origins_for(trash)
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = _require_id(album.id)
+    folder = album_folder(duplicates_lib, list(album.items()))
+    total_before = len(list(duplicates_lib.albums()))
+    if shape == "file":
+        origins.write_bytes(b"not a directory")
+    else:
+        origins.mkdir()
+        (origins / "Someone Elses.json").write_text("{}", encoding="utf-8")
+        # 0600, not 0000: this shape LISTS fine and only fails a lookup of a
+        # child, which is the fault ``origin_recorded`` meets and the only one
+        # the search probe is there for. At 0000 the ``scandir`` probe answers
+        # first, and the ``stat`` becomes a line no test can kill (measured).
+        origins.chmod(0o600)
+
+    req = _store_fault_req(duplicates_lib, tmp_path, trash)
+    op = (
+        delete_artist_op(req, artist)  # type: ignore[arg-type]  # stub req
+        if artist is not None
+        else delete_album_op(req, album_id)  # type: ignore[arg-type]  # ditto
+    )
+    try:
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(op)
+    finally:
+        if shape == "unsearchable":
+            origins.chmod(0o700)
+
+    assert ei.value.status_code == 503
+    detail = ei.value.detail
+    assert isinstance(detail, str), "flat, like the root guard's — not the structured 500"
+    assert "trash-origins" in detail, "the reader has to be told WHICH folder to fix"
+    assert says in detail, "and which of the three questions the store failed"
+    assert str(origins) not in detail, "the store's absolute path must not be in it"
+    assert str(tmp_path) not in detail, "...nor any prefix of it"
+    assert "Nothing has been deleted" in detail
+    # ...and the disk and the library agree with the sentence. The artist arm
+    # is Radiohead, which holds TWO albums in the fixture, so the count is what
+    # says the whole fan-out was refused rather than only its first album.
+    assert len(list(duplicates_lib.albums())) == total_before
+    assert duplicates_lib.get_album(album_id) is not None
+    assert os.path.isdir(folder), "the album's files are still where the library says"
+    assert not trash.exists(), "no Trash name was allocated and no Trash dir created"
+    if shape == "file":
+        assert origins.read_bytes() == b"not a directory", "the store is as it was"
+    else:
+        assert sorted(p.name for p in origins.iterdir()) == ["Someone Elses.json"]
+
+
 def test_delete_album_op_503_masked_drop_says_what_to_do(
     duplicates_lib: Library, tmp_path: Path
 ) -> None:

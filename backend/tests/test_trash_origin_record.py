@@ -31,9 +31,11 @@ import pytest
 from beets import config
 from beets.library import Album, Item, Library
 
+from app.beets import trash_origins as trash_origins_mod
 from app.beets.import_session import ImportBridge, WebImportSession, run_import_worker
 from app.beets.library import LibraryRootUnavailableError, _require_id
 from app.beets.trash import (
+    album_folder,
     resolve_trash_dir,
     resolve_trash_origins_dir,
     trash_album,
@@ -54,6 +56,7 @@ from app.beets.trash_origins import (
     _MAX_KEY_BYTES,
     _NAME_MAX,
     TrashOrigin,
+    TrashOriginsStoreUnusableError,
     delete_trash_origin,
     move_back_target,
     origin_file,
@@ -281,21 +284,29 @@ def test_write_trash_origin_swallows_a_failing_write(tmp_path: Path, name: str) 
     assert read_trash_origin(origins, name) is None
 
 
-def test_a_husk_still_reaches_trash_when_the_record_cannot_be_written(tmp_path: Path) -> None:
-    # A real failure, no monkeypatching: a regular FILE where the origins dir
-    # belongs, so the store's mkdir raises. The delete must still complete.
+def test_a_husk_is_refused_when_the_store_is_not_a_folder(tmp_path: Path) -> None:
+    """This used to assert the OPPOSITE, and the owner's ruling turned it round.
+
+    A regular FILE where the origins directory belongs is not a record that
+    failed to write, it is a store that cannot be used — and until
+    ``decisions.md`` 28 the husk went to Trash anyway, unrecordably, because
+    ``Path.exists()`` absorbs the ENOTDIR its children raise and the allocator
+    read "no record" in silence (measured: zero log records for this shape).
+
+    The fixture is unchanged and it stays root-proof: nothing here is a mode
+    bit, so the refusal holds for uid 0 exactly as it does for uid 1000.
+    """
     husk = tmp_path / "music" / "Old Name"
     husk.mkdir(parents=True)
     (husk / "cover.jpg").write_bytes(b"\x00")
     _origins(tmp_path).write_bytes(b"not a directory")
 
-    dest = trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+    with pytest.raises(TrashOriginsStoreUnusableError) as ei:
+        trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
 
-    assert dest.is_dir()
-    assert (dest / "cover.jpg").is_file()
-    assert not husk.exists()
-    # No record, but the delete happened.
-    assert read_trash_origin(_origins(tmp_path), dest.name) is None
+    assert "trash-origins" in str(ei.value)
+    assert (husk / "cover.jpg").is_file(), "the husk must not have moved"
+    assert not (tmp_path / "trash").exists(), "the refusal comes BEFORE the Trash mkdir"
 
 
 @pytest.mark.parametrize(
@@ -306,63 +317,38 @@ def test_a_husk_still_reaches_trash_when_the_record_cannot_be_written(tmp_path: 
         pytest.param(os.fsdecode(b"Bjork/Dummy \xf6"), id="non-utf8"),
     ],
 )
-def test_an_album_still_reaches_trash_when_the_record_cannot_be_written(
-    tmp_path: Path, folder: str
-) -> None:
-    """The record write must not be able to keep the library rows -- at ANY name.
+def test_an_album_is_refused_when_the_store_is_not_a_folder(tmp_path: Path, folder: str) -> None:
+    """The album twin of the husk refusal, and it asserts the DB half as well.
 
-    Parametrised over the FIXTURE NAME rather than over the failure, because the
-    name is what the failure handler touches and an ASCII fixture proves only
-    that the write was swallowed. This test passed for months on
-    ``Portishead/Dummy`` alone while the handler itself raised
-    ``UnicodeDecodeError`` on every non-ASCII path: ``backslashreplace`` on an
-    ENCODE escapes only what the target codec cannot encode, and UTF-8 encodes
-    everything, so the ``.decode("ascii")`` that followed had real bytes to
-    choke on. The escape skipped ``album.remove()`` one line later, leaving the
-    files in Trash and the rows in the library -- the exact split this whole
-    module exists to prevent.
+    This used to assert that the delete COMPLETED with no record. It cannot any
+    more: a regular FILE at the store path is a store that cannot be used, and
+    the ruling (``decisions.md`` 28) is that such a delete does not run. What it
+    now pins is the whole "nothing happened" — rows kept, files where they were,
+    no Trash dir at all — because the refusal fires ahead of every branch of
+    ``trash_album_folder``, not merely ahead of its ``mkdir``.
 
-    Both non-ASCII arms are load-bearing, and for DIFFERENT regressions -- an
-    accented name is valid UTF-8 that ASCII cannot carry, while a non-UTF-8
-    POSIX name arrives as lone surrogates that UTF-8 itself cannot encode.
-    Measured against the plausible spellings of this one log argument:
-
-    ======================================  ========  ========
-    argument expression                     accented  non-utf8
-    ======================================  ========  ========
-    ``display_path`` (shipped)              pass      pass
-    the bug: utf-8 backslashreplace, ascii  FAILS     pass
-    ascii backslashreplace, decode ascii    pass      pass
-    strict ``.encode("ascii")``             FAILS     FAILS
-    plain ``.encode("utf-8")``              pass      FAILS
-    ======================================  ========  ========
-
-    Note the third row: the obvious one-character fix does not raise, so this
-    test does not object to it. It is only worse output, not a crash, and a
-    test that failed on it would be pinning a preference.
-
-    The undecodable byte must sit in the LEAF, not a parent directory: ``entry``
-    is the TRASH destination, named from the album folder's basename, so a
-    surrogate in the artist component never reaches the handler at all. A first
-    draft put it there and the arm silently proved nothing while still entering
-    the handler -- it takes a mutation matrix, not a green run, to tell those
-    apart.
+    The three NAME arms are kept, and not because the refusal message carries
+    the name (it does not — it names the store and nothing else): what has to be
+    reached with a lone-surrogate album folder before the refusal can be
+    asserted is ``album_folder``, and an ASCII-only fixture would stop
+    exercising it. The record writer's own log-line encoding is pinned where it
+    belongs, at the contract —
+    ``test_write_trash_origin_swallows_a_failing_write`` above, which keeps this
+    same fixture because a writer called directly has no mover to refuse first,
+    and whose docstring holds the measured matrix this one used to repeat.
     """
     lib = _seeded_library(tmp_path, folder=folder)
     album = _dummy(lib)
     album_id = _require_id(album.id)
+    album_root = Path(album_folder(lib, list(album.items())))
     _origins(tmp_path).write_bytes(b"not a directory")
 
-    with lib.transaction():
-        dest = Path(
-            trash_album_folder(
-                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
-            )
-        )
+    with pytest.raises(TrashOriginsStoreUnusableError), lib.transaction():
+        trash_album_folder(lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
 
-    assert lib.get_album(album_id) is None  # the delete completed
-    assert len(list(dest.glob("*.flac"))) == 2
-    assert read_trash_origin(_origins(tmp_path), dest.name) is None
+    assert lib.get_album(album_id) is not None, "the rows must survive the refusal"
+    assert len(list(album_root.glob("*.flac"))) == 2, "the files must not have moved"
+    assert not (tmp_path / "trash").exists(), "the refusal comes BEFORE the Trash mkdir"
 
 
 # ----- reading a record is reading untrusted input -----
@@ -1086,12 +1072,18 @@ def test_every_unusable_record_names_its_own_cause(
 
 
 def test_a_row_whose_record_could_not_be_written_no_longer_blames_its_age(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The finding, end to end: the write fails NOW and the row said "before".
 
-    A real write failure, no monkeypatching — a regular FILE where the origins
-    directory belongs, so the store cannot create it. The Trash row used to read
+    A real write failure, FORCED at the writer rather than staged as a broken
+    store. The fixture this used to share — a regular FILE where the origins
+    directory belongs — now refuses the delete outright (``decisions.md`` 28),
+    so it no longer stages a delete that completes without a record. The shared
+    atomic sink is made to raise instead: it is the same failure the swallow
+    handler sees, and it leaves the store around it healthy, which is what this
+    test needs — the fault has to be a RECORD's, not the store's, or there is no
+    Trash row to read a note off at all. The Trash row used to read
     "it was moved to Trash before origins were recorded" alone, which is false
     and, worse, unfalsifiable: it points at the folder's age instead of at the volume
     that just went read-only, so nobody investigates and every later delete loses
@@ -1102,10 +1094,20 @@ def test_a_row_whose_record_could_not_be_written_no_longer_blames_its_age(
     husk = tmp_path / "music" / "Old Name"
     husk.mkdir(parents=True)
     (husk / "cover.jpg").write_bytes(b"\x00")
-    _origins(tmp_path).write_bytes(b"not a directory")
+
+    def _boom(*_args: object, **_kwargs: object) -> NoReturn:
+        raise OSError(errno.EROFS, "Read-only file system")
+
+    monkeypatch.setattr(trash_origins_mod, "write_atomic_text", _boom)
 
     with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
         trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+
+    # The delete itself still completed. That is the invariant the two refusal
+    # tests above gave up when their fixture changed meaning, so it is asserted
+    # here: a record that cannot be WRITTEN may never keep a folder out of Trash.
+    assert (tmp_path / "trash" / "Old Name" / "cover.jpg").is_file()
+    assert not husk.exists()
 
     # The write announced its own failure at the time it happened...
     assert any("could not record the Trash origin" in r.getMessage() for r in caplog.records)

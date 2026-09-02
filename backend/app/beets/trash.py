@@ -10,8 +10,18 @@ exactly ``beet dup --move <trash> --remove`` for albums.
 Every mover here also records where the folder came from, in the SIBLING store
 ``app.beets.trash_origins`` (``<origins_dir>/<entry name>.json``, never a file
 inside the trashed folder), so Restore can put it back where it came from
-instead of re-filing it by path template. Writing that record can never fail a
-delete — see ``trash_origins.write_trash_origin``.
+instead of re-filing it by path template. Two different promises about that
+record, and the difference is WHEN each is decided:
+
+* **A store that cannot be used refuses the move**, before any ``mkdir``,
+  allocation, relocation or row drop. Every mover here opens with
+  ``trash_origins.require_usable_store``. Owner's ruling (``decisions.md`` 28):
+  a delete that cannot record where a folder came from hands out a name whose
+  record is still on disk and then loses the new one, so it must not run at all.
+* **A record that fails to WRITE never fails the delete** — see
+  ``trash_origins.write_trash_origin``. That write happens after the files have
+  already moved, where failing would be strictly worse than the unrecoverable-
+  but-completed delete it replaces.
 
 Lives in its own module so both features import it without forming the
 ``import_session -> duplicates -> registry -> import_session`` cycle. Imports
@@ -41,6 +51,7 @@ from app.beets.trash_origins import (
     _NAME_MAX,
     MovedShape,
     origin_recorded,
+    require_usable_store,
     write_trash_origin,
 )
 from app.config import Settings
@@ -186,7 +197,10 @@ def trash_album(lib: Library, album: Any, *, trash_dir: Path, origins_dir: Path)
 
     * **Before** — :func:`~app.beets.library.require_library_root` raises
       ``LibraryRootUnavailableError`` if the music root is missing, empty or
-      unreadable. It runs ahead of the ``mkdir`` as well as the moves, because a
+      unreadable, and
+      :func:`~app.beets.trash_origins.require_usable_store` raises
+      ``TrashOriginsStoreUnusableError`` if the origin store cannot be looked up
+      in or written to. Both run ahead of the ``mkdir`` as well as the moves, because a
       beets transaction COMMITS on the way out even while unwinding an exception
       (``beets/dbcore/db.py:924-941`` — no rollback branch), so aborting after a
       mutation would not undo it.
@@ -199,6 +213,7 @@ def trash_album(lib: Library, album: Any, *, trash_dir: Path, origins_dir: Path)
       tolerated.
     """
     require_library_root(lib)
+    require_usable_store(origins_dir)
     trash_dir.mkdir(parents=True, exist_ok=True)
     container = _unique_trash_dest(trash_dir, origins_dir, _trash_container_name(album))
     container.mkdir(parents=True, exist_ok=True)
@@ -360,17 +375,26 @@ def _unique_trash_dest(trash_dir: Path, origins_dir: Path, name: str) -> Path:
     "unmounted". (``trash_manage.empty_all`` does sweep the whole store, but only
     once it has itself emptied Trash — a reading it does not have to guess.)
 
-    Narrowed and not CLOSED, and in two separate ways. This function's reach is
-    the names MusicDrop hands out, so a folder that arrives in ``trash_dir`` by
-    another route — a hand copy, a restored backup, a sync client writing into
-    the volume — asks the allocator nothing and can still land on a name whose
-    record outlived its entry. And for the names it DOES hand out, the test
-    below answers "free" for a recorded name whenever the store cannot be
-    reached: measured through this function as a non-root user with the origins
-    dir at mode 0600, ``Dummy`` where a readable store gives ``Dummy (1)``.
-    Both are stated residuals; ``trash_origins``'s module docstring and
-    :func:`~app.beets.trash_origins.origin_recorded` hold the full statement,
-    and this docstring must not out-claim them.
+    Narrowed and not CLOSED: this function's reach is the names MusicDrop hands
+    out, so a folder that arrives in ``trash_dir`` by another route — a hand
+    copy, a restored backup, a sync client writing into the volume — asks the
+    allocator nothing and can still land on a name whose record outlived its
+    entry. That one is a stated residual; ``trash_origins``'s module docstring
+    holds the full statement, and this docstring must not out-claim it.
+
+    The OTHER half used to be a residual too and is now closed by a refusal
+    rather than by this loop. The test below answered "free" for a recorded name
+    whenever the store could not be reached (measured through this function as a
+    non-root user with the origins dir at mode 0600: ``Dummy``, where a readable
+    store gives ``Dummy (1)``). Every caller now asks
+    :func:`~app.beets.trash_origins.require_usable_store` before it reaches
+    here, and
+    :func:`~app.beets.trash_origins.origin_recorded` raises rather than answering
+    for the same fault class met in the window after that check — so this loop's
+    exit is not what holds the invariant up, which is the whole reason the answer
+    could not simply be flipped to "occupied" (every candidate would then read
+    occupied and the loop would never end — measured, 111,939 candidates in one
+    second).
 
     The cost of the test itself is a burnt name: after a manual deletion the
     record is litter, and an album that would have been ``<name>`` becomes
@@ -533,6 +557,11 @@ def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path, origins_dir
     :func:`trash_album` records, and the two row-dropping branches below move
     nothing, so neither has an origin to record.
 
+    Raises :class:`~app.beets.trash_origins.TrashOriginsStoreUnusableError`
+    before ANY branch runs when the origin-records store cannot be used, which
+    covers the two branches below that drop rows having moved nothing as well as
+    the two that move something.
+
     Raises :class:`~app.beets.library.LibraryRootUnavailableError` when the
     album's folder is missing AND the library's music cannot be found — an
     unmounted share, not a deleted album. The missing-folder branch uses
@@ -540,6 +569,12 @@ def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path, origins_dir
     predicate, because that branch is the one that drops rows on nothing but an
     absence. See the branch below.
     """
+    # AHEAD of every branch, including the two that drop rows having moved
+    # nothing: the invariant the owner ruled on is that a delete drops no LIBRARY
+    # ROW while the origin store cannot be used, and those branches drop rows.
+    # Putting it beside the ``mkdir`` instead would leave a fan-out that refuses
+    # its third album having already erased two ghosts.
+    require_usable_store(origins_dir)
     items = list(album.items())
     if not items:
         # No item rows means no files and no folder, so there is no on-disk
@@ -606,8 +641,11 @@ def trash_folder(folder: Path, *, trash_dir: Path, origins_dir: Path) -> Path:
 
     The origin record matters most here: a folder with no audio cannot be
     imported, so before it these husks had no exit from Trash except permanent
-    deletion.
+    deletion — which is why this mover, like the other two, refuses
+    (:class:`~app.beets.trash_origins.TrashOriginsStoreUnusableError`) rather
+    than moving a husk it could not record.
     """
+    require_usable_store(origins_dir)
     trash_dir.mkdir(parents=True, exist_ok=True)
     dest = _unique_trash_dest(trash_dir, origins_dir, folder.name)
     origin = os.path.abspath(str(folder))

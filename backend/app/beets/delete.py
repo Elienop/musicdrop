@@ -34,6 +34,7 @@ from app.beets.trash import (
     resolve_trash_origins_dir,
     trash_album_folder,
 )
+from app.beets.trash_origins import TrashOriginsStoreUnusableError
 from app.library_busy import library_job_active
 from app.models.delete import DeleteResult
 
@@ -125,10 +126,13 @@ def delete_artist(
 
     That shapes how a fault part-way through is reported, in two tiers:
 
-    * **before the first mutation** — the check below runs ahead of the
-      transaction, and the primitive re-checks per album, so a root that is
+    * **before the first mutation** — the root check below runs ahead of the
+      transaction and the primitive re-checks per album, so a root that is
       already unavailable (or drops before the first move) raises
-      ``LibraryRootUnavailableError``, which the op answers with a 503. Nothing
+      ``LibraryRootUnavailableError``; an origin store that cannot be used
+      raises ``TrashOriginsStoreUnusableError`` from the primitive's own first
+      statement, ahead of every branch of it, so it reaches the first album and
+      no further. The op answers either with a 503. Nothing
       has been DROPPED whenever that fires; nothing has moved either, unless the
       share went during one album's own move, which the primitive catches with
       that album's rows kept and part of its folder under the Trash container;
@@ -158,6 +162,16 @@ def delete_artist(
         # operation rather than a property of whichever album happened to be
         # first. Cheap (one isdir + one scandir entry) against N folder moves.
         require_library_root(lib)
+        # NO second pre-check for the origin store here, deliberately, and the
+        # asymmetry with the line above is the point. ``require_library_root``
+        # earns its place because the primitive only re-checks the ROOT inside
+        # one branch, so without it a fan-out could reach its second album
+        # before anything refused. ``require_usable_store`` runs at the TOP of
+        # ``trash_album_folder``, ahead of every branch — so the first album
+        # already refuses with nothing dropped, and a copy here would be a line
+        # no test can kill (measured: removing it left tests/test_delete.py and
+        # tests/test_trash.py, 63 tests, entirely green). It would also refuse a
+        # fan-out over an artist with NO albums, which mutates nothing at all.
         # Two counters, because they answer different questions and a run can
         # have one without the other. ``mutated`` is albums whose ROWS are gone,
         # which is what makes the 503's "nothing was dropped" false and so
@@ -417,6 +431,16 @@ async def delete_album_op(
         # tests/test_route_status_declarations.py can see.
         except LibraryRootUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # The second setup fault, and the same tier for the same reason: the
+        # store is checked before anything moves or is dropped, so the one thing
+        # known on every path here is that the album is still in the library —
+        # which is what the route's 503 description states. Falling through to
+        # the 500 would attach ``_recovery``'s "check the Trash folder" to a
+        # refusal that created no Trash folder. Raised inline, not through
+        # ``_failed``, so the status stays a literal
+        # tests/test_route_status_declarations.py can see.
+        except TrashOriginsStoreUnusableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except Exception as exc:
             raise _failed(exc) from exc
 
@@ -449,6 +473,11 @@ async def delete_artist_op(
         # Same 503-before-the-blanket-500 ordering as delete_album_op above,
         # and it matters more here: this one fans across every album.
         except LibraryRootUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # Its own arm, not a shared helper, for the reason the pair above has
+        # one each: the route-status census reads the RAISE, so a missing arm
+        # here leaves a declared 503 nothing produces.
+        except TrashOriginsStoreUnusableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except Exception as exc:
             raise _failed(exc) from exc
