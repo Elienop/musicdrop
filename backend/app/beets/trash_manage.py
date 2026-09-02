@@ -95,6 +95,14 @@ class TrashRestoreIncompleteError(Exception):
 #: disk, and every later delete would lose its origin the same way, unnoticed.
 #: The log line is the tie-breaker, so the note points at it — ``read_trash_origin``
 #: WARNs for the unusable case and stays silent for the absent one.
+#:
+#: What the WARN says is no longer only "the write failed". ``read_trash_origin``
+#: now logs a reason per rejection, and one of them is neither of this sentence's
+#: two causes: "it is the record for a different Trash entry" — the file at this
+#: entry's key belongs to a longer-named entry whose key was truncated onto the
+#: same name. The user sentence still holds (there is no usable record, and the
+#: log says which), so it is left alone; a reader of THIS comment should not
+#: expect the log line to be about a failed write.
 _NO_RECORD_NOTE = (
     "MusicDrop has no usable record of where this came from — either it was moved to"
     " Trash before origins were recorded, or writing that record failed (the server log"
@@ -214,8 +222,12 @@ def list_trashed_albums(
     MusicDrop is litter, and the tempting sweep — "unlink every record with no
     matching entry" — cannot tell an empty Trash dir from a Trash dir on a share
     that just dropped, which is the state where it would destroy every remaining
-    origin at once. The hazard orphans actually pose is closed in the name
-    allocator instead (``trash._unique_trash_dest``).
+    origin at once. The hazard orphans pose is NARROWED elsewhere instead:
+    ``trash._unique_trash_dest`` will not hand out a name whose record is still
+    on disk. That covers the names MusicDrop hands out and nothing else — a
+    folder arriving in Trash by another route (a hand copy, a restored backup, a
+    sync client) asks the allocator nothing and can adopt a leftover record.
+    ``trash_origins`` states that as an open residual.
     """
     if not trash_dir.exists():
         return []
@@ -735,9 +747,12 @@ def _undo_failure(
     an entry that is still there — whole, or a half-removed copy — is a row whose
     record is still the truth, and losing it downgrades that row to an
     import-restore forever. When the name IS free the record describes nothing
-    and would be inherited by whatever earns that name next. (The allocator
-    refuses to reuse a recorded name, so keeping one costs a burnt name rather
-    than a mis-steered restore — which is why the doubtful case keeps it.)
+    and would be inherited by whatever earns that name next. (What holds the
+    doubtful case up is the paragraph below, NOT the allocator: the origin is
+    occupied by our own stranded album, so ``_restore_to_origin`` refuses the
+    exact restore a kept record advertises. ``trash._unique_trash_dest`` only
+    declines to HAND OUT a name whose record is still on disk, and the folder
+    that retook this Trash entry got there without asking it.)
 
     The residual, stated rather than hidden: what retook the Trash entry may be a
     STRANGER's folder rather than a piece of ours, and this cannot tell them
@@ -1077,8 +1092,10 @@ def empty_all(trash_dir: Path, *, origins_dir: Path) -> EmptyResult:
     not "wipe the origins dir at the end": a ``trash_dir`` whose share has
     dropped presents as an empty directory, and emptying it would then destroy
     the origins of every entry that is still on the real volume. The records left
-    behind by an entry deleted outside MusicDrop stay as litter — see
-    ``trash._unique_trash_dest`` for why that is harmless.
+    behind by an entry deleted outside MusicDrop stay as litter, and the cost of
+    one is a burnt name: ``trash._unique_trash_dest`` will not hand that name out
+    again. It cannot stop a folder that reaches Trash by another route from
+    adopting the record — a residual ``trash_origins`` states rather than closes.
     """
     if not trash_dir.exists():
         return EmptyResult(removed=0)
