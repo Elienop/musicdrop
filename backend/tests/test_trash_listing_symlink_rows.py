@@ -13,6 +13,13 @@ failed and the log says nothing, the row is not old, and "Restoring re-imports
 it" is not on offer at all — ``resolve_trash_child`` refuses a child that
 resolves outside Trash, so Restore answers 404 and the note describes an action
 the app will not take.
+
+The note is pinned against OUTCOMES, not against its own wording. A membership
+assertion on a phrase passes just as happily when the sentence is false: the
+first version of this file asserted ``"removes only the link"`` while the Empty
+button rendered beside that sentence answered 404 and left the link exactly
+where it was. So the route tests below drive all four endpoints through the real
+app and read each of the note's claims against what the route actually did.
 """
 
 from __future__ import annotations
@@ -20,8 +27,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.beets.trash_manage import list_trashed_albums, resolve_trash_child
+from app.beets.trash_origins import write_trash_origin
 from tests.conftest import origins_for
 
 
@@ -90,3 +99,132 @@ def test_the_symlinked_row_matches_what_the_restore_route_will_do(tmp_path: Path
     assert real_mode == "import"
     assert real_note is not None
     assert "before origins were recorded" in real_note, "the ordinary row keeps its own sentence"
+
+
+def test_a_record_under_the_name_cannot_out_vote_the_link(tmp_path: Path) -> None:
+    """The link is asked BEFORE the record, and a record must not overturn it.
+
+    Such a record is reachable: the store is keyed on the entry NAME, so one
+    written for a DIFFERENT entry that held this name earlier can still be
+    sitting there (the hazard ``trash._unique_trash_dest`` closes by refusing to
+    hand out a recorded name). ``_record_origin`` never writes one for a
+    symlinked entry itself.
+
+    Ordered the other way round — the link tested inside the "no record" branch —
+    this row renders ``move_back`` with an origin, i.e. an "Exact restore"
+    promise on a row whose Restore button 404s, which is the exact failure the
+    symlink refusal exists to prevent. The record here names a folder INSIDE the
+    music dir and is ``moved="folder"``, so nothing else would downgrade it.
+    """
+    trash, _ = _trash_with_a_symlinked_entry(tmp_path)
+    write_trash_origin(
+        origins_for(trash),
+        "Symlinked Album",
+        origin=str(tmp_path / "music" / "Symlinked Album"),
+        moved="folder",
+    )
+
+    mode, note, origin = _rows(trash, tmp_path)["Symlinked Album"]
+
+    assert mode == "refused", "the link decides alone"
+    assert origin is None, "and no path is offered as one it would go back to"
+    assert note is not None
+    assert "link to a folder on another volume" in note
+
+
+def _client_trash(client: TestClient) -> Path:
+    return Path(client.get("/api/trash").json()["trash_path"])
+
+
+def _seed_symlinked_entry(client: TestClient, tmp_path: Path) -> tuple[Path, Path]:
+    """One symlinked Trash entry pointing at a folder outside Trash entirely.
+
+    Returns ``(the link, the folder it points at)``. The target holds a file so
+    every assertion below can say whether anything behind the link was touched.
+    """
+    trash = _client_trash(client)
+    trash.mkdir(parents=True, exist_ok=True)  # created lazily by the mover in production
+    elsewhere = tmp_path / "other volume" / "Portishead - Dummy"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "01 Mysterons.flac").write_bytes(b"\x00")
+    entry = trash / "Portishead - Dummy"
+    entry.symlink_to(elsewhere, target_is_directory=True)
+    return entry, elsewhere
+
+
+def test_the_symlinked_note_is_true_of_every_button_beside_it(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Each claim in the note, read against what the real route did.
+
+    The row renders two controls, and until this test only ONE of them had been
+    checked against the sentence. Both per-row routes resolve the child and
+    refuse anything landing outside Trash, so both answer 404 — the Empty
+    beside the note included, which the note used to describe as working.
+
+    ``restore_mode`` is asserted here too, because it is what the page keys the
+    two disabled states off: a row that 404s twice must not arrive carrying a
+    mode that reads as "this will import".
+    """
+    entry, elsewhere = _seed_symlinked_entry(client, tmp_path)
+
+    (row,) = client.get("/api/trash").json()["albums"]
+    restore = client.post("/api/trash/restore", json={"folder": entry.name})
+    empty_one = client.delete("/api/trash", params={"folder": entry.name})
+
+    note = row["restore_note"]
+    assert row["restore_mode"] == "refused", "the value the UI disables both controls on"
+    # "MusicDrop will not restore it" -> the route refuses before doing anything.
+    assert "will not restore it" in note
+    assert restore.status_code == 404
+    assert restore.json()["detail"] == "Not in Trash"
+    # "Restore and this row's own Empty both refuse it" -> the second half, which
+    # the sentence used to get wrong in the user's favour.
+    assert "own Empty both refuse it" in note
+    assert empty_one.status_code == 404
+    assert empty_one.json()["detail"] == "Not in Trash"
+    # "the album's own files were never moved" -> nothing behind the link moved,
+    # and the link itself is still in Trash after two refusals.
+    assert "files were never moved" in note
+    assert entry.is_symlink()
+    assert (elsewhere / "01 Mysterons.flac").is_file()
+
+
+def test_empty_all_removes_the_link_and_only_the_link(client: TestClient, tmp_path: Path) -> None:
+    """The other half of the same sentence: what DOES clear this entry.
+
+    ``empty_all`` unlinks a symlinked child instead of following it, which is
+    both the only route that can remove this row and the reason the note can
+    promise the album survives. Asserted together, because the sentence is only
+    true if both hold: the entry goes, and the folder it pointed at does not.
+    """
+    entry, elsewhere = _seed_symlinked_entry(client, tmp_path)
+    (row,) = client.get("/api/trash").json()["albums"]
+
+    r = client.delete("/api/trash/all")
+
+    assert "Empty all removes the link, and only the link" in row["restore_note"]
+    assert r.status_code == 200
+    assert r.json()["removed"] == 1
+    assert not entry.is_symlink()
+    assert not entry.exists()
+    assert (elsewhere / "01 Mysterons.flac").is_file(), "nothing behind the link was followed"
+
+
+def test_the_symlinked_note_never_promises_the_per_row_empty(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """A guard on the CLAIM, not on one phrasing of it.
+
+    The two tests above pin the sentences that are there; this pins the sentence
+    that must not come back. "Emptying this entry" and its neighbours describe
+    the button that 404s, so any rewording that reintroduces one is describing a
+    route the row does not offer.
+    """
+    _seed_symlinked_entry(client, tmp_path)
+
+    (row,) = client.get("/api/trash").json()["albums"]
+
+    note = row["restore_note"]
+    for forbidden in ("Emptying this entry", "Emptying it", "Empty removes"):
+        assert forbidden not in note, f"{forbidden!r} describes the Empty that 404s"
