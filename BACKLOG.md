@@ -767,10 +767,13 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   **What the name key costs, and where it is paid.** An entry removed OUTSIDE MusicDrop
   leaves its record, and a later folder taking that name would inherit a stale origin that
   steers a `rename()` — the same hazard inode keys were rejected for. Narrowed at the
-  ALLOCATOR: `trash._unique_trash_dest` treats a recorded name as occupied, so MusicDrop
-  never hands a second folder a name whose record is still on disk, and for the names it
-  hands out the residual is a burnt name (litter) rather than a wrong restore. **That is the
-  whole of what it covers.** A folder reaching `trash_dir` by ANOTHER route — a hand copy, a
+  ALLOCATOR: `trash._unique_trash_dest` treats a recorded name as occupied, so as long as the
+  store can be READ MusicDrop does not hand a second folder a name whose record is still on
+  disk, and for the names it hands out the residual is a burnt name (litter) rather than a
+  wrong restore. A store it cannot read reads as empty and the name goes out anyway — the
+  open entry below ("An unreachable origins store makes the allocator hand out a recorded
+  name") is that half, measured. **That is the whole of what it covers.** A folder reaching
+  `trash_dir` by ANOTHER route — a hand copy, a
   restored backup, a sync client writing into the volume — asks the allocator nothing, so it
   can land on a name whose record outlived its entry and adopt it: the row offers "Exact
   restore" to a stranger's origin. Nothing detects that today; it is a stated residual (the
@@ -843,7 +846,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   **UI shipped in the same slice:** each row states its outlook before the user clicks — a
   quiet "Exact restore. Goes back to <path>" or an amber-flagged "Approximate restore."
   carrying the backend's own sentence, wired to the button via `aria-describedby`; a
-  `"refused"` row keeps that layout and swaps the label for "Can't be restored.", since a
+  `"refused"` row keeps that layout and swaps the label for "Can’t be restored.", since a
   heading promising an approximate restore above a disabled button is the row contradicting
   itself. Restore stays ENABLED on every row EXCEPT that one (owner, 2026-08-31: *"Keep it
   enabled, warn clearly"*, amending `decisions.md` 27 — see that note for why the original
@@ -868,9 +871,13 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `SettingsTrashPage.tsx` shows a "may still work" hint precisely because 0 means "no readable
   tags", not "no music". That 0-track hint is now re-worded rather than stacked on an exact
   row, where it would have contradicted the promise one line above it. It is suppressed on a
-  `"refused"` row and nowhere else: such a row is always 0-track — `os.walk` never follows
-  the link, so nothing under it is read — and the hint's stated cause, unreadable tags, is
-  the wrong one there.)
+  `"refused"` row and nowhere else, and it keys on the REFUSAL rather than on the count.
+  Every refused row MusicDrop itself creates is 0-track — it trashes an album's own FOLDER
+  and `os.walk` does not descend a link — but a hand-placed link to a media FILE is listed
+  by `os.walk` among `files` and `Item.from_path` follows it, so that row arrives refused
+  with real tags (measured: `('linked.flac', 'refused', 1)`). Either shape gets the same
+  suppression, because the hint's stated cause — unreadable tags — is the wrong one on a
+  row that will not be restored at all.)
 
 - ~~**The delete-path mount predicate accepts a root with ANY entry, so a stray file on a
   local mountpoint masks a dropped share.**~~ **FIXED** on `fix/undoable-deletes`
@@ -1027,7 +1034,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   (`:148`). "Top-most" falls out of that last condition rather than out of a walk: an
   audio-empty parent gets reported instead of its child. So the dir that gets reported need
   not be the one holding the content that made it non-empty. (Seeds mode `_seed_orphan`
-  (`:170-191`) IS a climb, and this trigger — a library-scope Reorganize — takes the other
+  (`:168-191`) IS a climb, and this trigger — a library-scope Reorganize — takes the other
   path.)
   **Which var triggers it alone, measured on `fix/undoable-deletes`** (probe: build a music
   tree with one healthy album, then call `find_orphan_folders(music, seeds=None, ...)` — one
