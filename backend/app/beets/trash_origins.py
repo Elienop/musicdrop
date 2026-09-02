@@ -205,6 +205,20 @@ def origin_file(origins_dir: Path, entry_name: str) -> Path:
     return origins_dir / name
 
 
+#: What to do about it, and only that. The reassurance that used to open it —
+#: "Nothing has been deleted" — is NOT here, because this string is relayed by
+#: every caller, including the ones that reach it having already moved and
+#: dropped albums. Measured: the artist fan-out with the store going unusable
+#: between its two albums answers a 500 that says one album was moved to Trash
+#: and, forty words later, that nothing has been deleted; ``resolve_all_groups``
+#: does the same across groups. The promise belongs to the two arms where it is
+#: true and is placed there — the 503s in :mod:`app.beets.delete`, which fire
+#: only while nothing has been created, moved or dropped.
+#: Kept apart from the CAUSE so the two arms that can back the promise put it
+#: BETWEEN the two — :meth:`TrashOriginsStoreUnusableError.worded_with`.
+_STORE_FIX = "Fix its permissions or its mount, then retry."
+
+
 class TrashOriginsStoreUnusableError(Exception):
     """The origin-records store cannot be used AS A STORE, so a delete is refused.
 
@@ -229,22 +243,25 @@ class TrashOriginsStoreUnusableError(Exception):
     that can back it.
     """
 
+    def __init__(self, problem: str, fix: str = _STORE_FIX) -> None:
+        super().__init__(f"{problem} {fix}")
+        self.problem = problem
+        self.fix = fix
+
+    def worded_with(self, promise: str) -> str:
+        """The message with ``promise`` between the cause and the instruction.
+
+        For the caller that can make a promise about what was deleted: the
+        reassurance reads before "fix it, then retry", not after it.
+        """
+        return f"{self.problem} {promise} {self.fix}"
+
 
 #: How the store is named to the USER. Deliberately not its absolute path: the
 #: presence refusal this sits beside leaks none either
 #: (``test_refusal_message_leaks_no_path``), and the sentence reaches a browser.
 _STORE_WHERE = "The Trash origin-records folder (trash-origins under the beets data folder)"
 
-#: What to do about it, and only that. The reassurance that used to open it —
-#: "Nothing has been deleted" — is NOT here, because this string is relayed by
-#: every caller, including the ones that reach it having already moved and
-#: dropped albums. Measured: the artist fan-out with the store going unusable
-#: between its two albums answers a 500 that says one album was moved to Trash
-#: and, forty words later, that nothing has been deleted; ``resolve_all_groups``
-#: does the same across groups. The promise belongs to the two arms where it is
-#: true and is appended there — the 503s in :mod:`app.beets.delete`, which fire
-#: only while nothing has been created, moved or dropped.
-_STORE_FIX = "Fix its permissions or its mount, then retry."
 
 #: A name no record can collide with: :func:`origin_file` always appends
 #: ``.json`` (the truncating branch too), and neither this key nor the
@@ -360,9 +377,7 @@ def _store_unusable(origins_dir: Path, what: str, exc: OSError) -> TrashOriginsS
         display_path(str(origins_dir)),
         exc_info=True,
     )
-    return TrashOriginsStoreUnusableError(
-        f"{_STORE_WHERE} {what}: {exc.strerror or exc}. {_STORE_FIX}"
-    )
+    return TrashOriginsStoreUnusableError(f"{_STORE_WHERE} {what}: {exc.strerror or exc}.")
 
 
 def origin_recorded(origins_dir: Path, entry_name: str) -> bool:

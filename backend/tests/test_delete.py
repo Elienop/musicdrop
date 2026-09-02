@@ -343,7 +343,12 @@ def test_delete_op_503_when_the_origin_store_cannot_be_used(
     assert says in detail, "and which of the three questions the store failed"
     assert str(origins) not in detail, "the store's absolute path must not be in it"
     assert str(tmp_path) not in detail, "...nor any prefix of it"
-    assert "Nothing has been deleted" in detail
+    # The promise sits BETWEEN the cause and the instruction — "...: Permission
+    # denied. Nothing has been deleted. Fix its permissions or its mount, then
+    # retry." — so the reader is reassured before being told what to do.
+    assert detail.endswith(
+        ". Nothing has been deleted. Fix its permissions or its mount, then retry."
+    ), detail
     # ...and the disk and the library agree with the sentence. The artist arm
     # is Radiohead, which holds TWO albums in the fixture, so the count is what
     # says the whole fan-out was refused rather than only its first album.

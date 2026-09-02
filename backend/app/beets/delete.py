@@ -522,7 +522,7 @@ async def delete_album_op(
         # every mover relays that sentence — including the ones that reach it
         # having already moved albums (see ``_NOTHING_DELETED``).
         except TrashOriginsStoreUnusableError as exc:
-            raise HTTPException(status_code=503, detail=f"{exc} {_NOTHING_DELETED}") from exc
+            raise HTTPException(status_code=503, detail=exc.worded_with(_NOTHING_DELETED)) from exc
         except Exception as exc:
             raise _failed(exc) from exc
 
@@ -564,6 +564,6 @@ async def delete_artist_op(
         # cause is re-raised as ArtistDeletePartialError and answered by the 500
         # below, whose message names how far the fan-out got.
         except TrashOriginsStoreUnusableError as exc:
-            raise HTTPException(status_code=503, detail=f"{exc} {_NOTHING_DELETED}") from exc
+            raise HTTPException(status_code=503, detail=exc.worded_with(_NOTHING_DELETED)) from exc
         except Exception as exc:
             raise _failed(exc) from exc
