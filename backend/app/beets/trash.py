@@ -377,8 +377,12 @@ def _unique_trash_dest(trash_dir: Path, origins_dir: Path, name: str) -> Path:
     container, and what a restore reads to put the folder back is the origin
     RECORD, never the name. :func:`~app.fsutil.exists` then answers "free"
     instead of raising for the limits this constant cannot see — a filesystem
-    with a smaller ``NAME_MAX``, or a Trash path close to ``PATH_MAX`` — leaving
-    the failure to the move, which can at least name the path.
+    with a smaller ``NAME_MAX`` (eCryptfs stops at 143 bytes), or a Trash path
+    close to ``PATH_MAX`` — leaving the failure to the move, which can at least
+    name the path. That half is a TRIPWIRE and NO TEST CAN KILL IT (measured:
+    with the shortening in place, putting ``dest.exists()`` back leaves all nine
+    long-name tests green), because once every candidate fits there is nothing
+    left for it to absorb. Do not simplify it back on that evidence.
 
     Long names are not only an accident of the source folder: ``beets.util``
     caps a path component it generates at 200 bytes by default
