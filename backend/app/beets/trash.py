@@ -350,17 +350,26 @@ def _unique_trash_dest(trash_dir: Path, origins_dir: Path, name: str) -> Path:
     """A non-colliding ``trash_dir/<name>`` (append ``(n)`` if it already exists).
 
     A name counts as taken when EITHER namespace holds it. The origins half is
-    what makes the name key safe: an entry deleted outside MusicDrop (a file
-    manager, an SMB client, ``docker volume rm``) leaves its record behind, and
-    without this test the next album to earn that name would inherit a stale
+    what NARROWS the name key's hazard: an entry deleted outside MusicDrop (a
+    file manager, an SMB client, ``docker volume rm``) leaves its record behind,
+    and without this test the next album to earn that name would inherit a stale
     origin — which steers a ``rename()`` for the wrong folder. That is the exact
     hazard inode keys were rejected for, and it is strictly worse than losing an
-    origin, so it is closed here rather than by a reaper that would have to
+    origin, so it is narrowed here rather than by a reaper that would have to
     decide whether an empty Trash dir means "empty" or "unmounted".
 
-    The cost is a burnt name: after a manual deletion the record is litter, and
-    an album that would have been ``<name>`` becomes ``<name> (1)``. Litter is
-    the accepted residual; a wrong restore is not.
+    Narrowed and not CLOSED, because this function's reach is the names
+    MusicDrop hands out and nothing else. A folder that arrives in ``trash_dir``
+    by another route — a hand copy, a restored backup, a sync client writing
+    into the volume — asks the allocator nothing, so it can still land on a name
+    whose record outlived its entry and inherit it. That half is a stated
+    residual; ``trash_origins``'s module docstring holds the full statement, and
+    this docstring must not out-claim it.
+
+    The cost of the test itself is a burnt name: after a manual deletion the
+    record is litter, and an album that would have been ``<name>`` becomes
+    ``<name> (1)``. Litter is the accepted price of taking that name out of the
+    allocator's hands.
 
     **Every candidate is kept inside ``NAME_MAX``, and the occupancy test is the
     never-raising one.** ``Path.exists()`` does not absorb ENAMETOOLONG
@@ -369,21 +378,32 @@ def _unique_trash_dest(trash_dir: Path, origins_dir: Path, name: str) -> Path:
     252 to 255 bytes into an ``OSError(36)`` escaping this function on the very
     first iteration. Measured: 251 passed, 252 and 255 raised, both with a real
     entry in the way and with only an orphaned RECORD in the way. The delete
-    then 500s with "Files are recoverable in the Trash folder. Retry." while
-    nothing has moved and every retry fails identically, and the orphan sweep
-    (whose ``except OSError`` is meant for one bad folder) skips such a folder in
-    silence. Shortening the HEAD to make room for the suffix is the answer rather
-    than refusing or truncating elsewhere: a Trash entry's name is only a
-    container, and what a restore reads to put the folder back is the origin
-    RECORD, never the name. :func:`~app.fsutil.exists` then answers "free"
+    then 500s with nothing moved and every retry failing identically — and the
+    hint that 500 carries is composed from the exception (``delete._recovery``),
+    so whatever it says it can only tell the user to retry the thing that cannot
+    work. The orphan sweep (whose ``except OSError`` is meant for one bad folder)
+    skips such a folder in silence on every run. Shortening the HEAD to make room
+    for the suffix is the answer rather than refusing or truncating elsewhere: a
+    Trash entry's name is only a container, and what a restore reads to put the
+    folder back is the origin RECORD, never the name.
+    :func:`~app.fsutil.exists` then answers "free"
     instead of raising for the limits this constant cannot see — a filesystem
     with a smaller ``NAME_MAX`` (eCryptfs stops at 143 bytes), or a Trash path
     close to ``PATH_MAX`` — leaving the failure to the move, which can at least
-    name the path. No whole-delete fixture can reach that half — with the
-    shortening in place, putting ``dest.exists()`` back leaves every end-to-end
-    long-name test green, because once every candidate fits the constant ABOVE
-    there is nothing left for it to absorb. It is pinned directly instead, by
-    forcing the predicate to raise the errno this paragraph names:
+    name the path.
+
+    The ``PATH_MAX`` half of that is reached by an ORDINARY delete with nothing
+    injected: nest the Trash dir until ``<trash_dir>/<255-byte name>`` is longer
+    than 4096 while every component still fits ``NAME_MAX``. Every ``mkdir``
+    then succeeds, the candidate cannot be looked up at all, and putting
+    ``dest.exists()`` back moves the same errno 36 out of ``shutil.move`` (which
+    names the path) and into THIS function (which does not, and 500s a delete
+    with nothing moved). That is why
+    ``test_a_trash_path_over_PATH_MAX_fails_at_the_MOVE_and_not_at_the_allocator``
+    reads the raising FRAME rather than the errno: both spellings raise 36, and
+    only the frame says which of them did. The smaller-``NAME_MAX`` half has no
+    fixture — mounting a filesystem needs privileges CI's pytest job does not
+    have, it runs as ``runner`` — so it is forced from the predicate instead, in
     ``test_a_name_the_KERNEL_refuses_reads_as_free_and_not_as_a_500``.
 
     Long names are not only an accident of the source folder: ``beets.util``

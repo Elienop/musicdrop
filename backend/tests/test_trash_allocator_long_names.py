@@ -6,17 +6,30 @@ and ``Path.exists()`` answers that with ``OSError(36)`` rather than ``False``
 (``pathlib._IGNORED_ERRNOS`` is ENOENT/ENOTDIR/EBADF/ELOOP; errno 36 is not in
 it). Most tests here are an END-TO-END delete through a real public mover rather
 than a unit call on the allocator: what the defect cost was a 500 on the delete
-route saying "Files are recoverable in the Trash folder. Retry." when nothing had
-moved and no retry could ever succeed, and a husk the orphan sweep skipped in
-silence on every run. The last two are unit calls because what they pin cannot be
-reached end to end -- a kernel refusing a name our own constant thinks fits, and
-the shortener declining to touch a name at the exact limit.
+route with nothing moved and no retry that could ever succeed, and a husk the
+orphan sweep skipped in silence on every run.
+
+ONE test here is a unit call and nothing else --
+:func:`test_a_name_the_KERNEL_refuses_reads_as_free_and_not_as_a_500`, whose
+input is a filesystem this suite cannot mount (a ``NAME_MAX`` below our own
+constant), so the errno is forced from the predicate. Everything else reaches the
+allocator through a real mover, including the one that OPENS on unit calls:
+:func:`test_fit_name_leaves_a_name_that_already_fits_alone` asserts the
+arithmetic directly and then drives ``trash_folder`` twice, so an over-eager
+shortener is caught on disk as well as in the function.
 
 Two ways into the collision loop, and they are worth separating because only one
 of them is new. An EXISTING Trash entry at the name is the old way; an ORPHANED
 RECORD — the entry removed outside MusicDrop, its record kept, which the sibling
 store's design accepts as litter — is the way this branch added, and it fires
 where nothing is in the way at all.
+
+And one route that never enters the loop at all: a Trash dir nested until
+``<trash>/<255-byte name>`` is longer than PATH_MAX while every component is
+still inside NAME_MAX. Nothing is in the way, the shortener has nothing to take
+off, and the candidate cannot be looked up regardless — which is the fixture that
+separates the two never-raising spellings of the occupancy test, with no
+injection at all.
 
 The 255 here is a LITERAL on purpose. Deriving the inputs from ``_NAME_MAX``
 would make these tests move with the constant and prove only that the module
@@ -28,11 +41,13 @@ from __future__ import annotations
 
 import errno
 import os
+import traceback
 from pathlib import Path
 
 import pytest
 from beets.library import Album, Item, Library
 
+from app.beets import trash as trash_module
 from app.beets.trash import (
     _fit_name,
     _trash_container_name,
@@ -352,23 +367,90 @@ def test_fit_name_leaves_a_name_that_already_fits_alone(tmp_path: Path) -> None:
     assert longest_dest.name == LONGEST, "nothing was in the way, so nothing may be trimmed"
 
 
+def _trash_dir_over_path_max(tmp_path: Path) -> Path:
+    """A Trash dir nested until ``<trash>/<LONGEST>`` is longer than PATH_MAX.
+
+    Every component stays inside NAME_MAX and the Trash dir itself stays inside
+    PATH_MAX, so every ``mkdir`` on the way succeeds: the only path in the
+    fixture the kernel refuses is the candidate the allocator is about to test.
+    Built by measuring against ``os.pathconf`` rather than against a literal,
+    because what has to be true is that the KERNEL refuses it.
+    """
+    path_max = os.pathconf(str(tmp_path), "PC_PATH_MAX")
+    deep = tmp_path
+    while len(str(deep / "trash" / LONGEST)) <= path_max:
+        deep = deep / ("d" * 200)
+    deep.mkdir(parents=True)
+    trash = deep / "trash"
+    assert len(str(trash)) < path_max, "the Trash dir itself must be a legal path"
+    assert len(str(trash / LONGEST)) > path_max
+    return trash
+
+
+def test_a_trash_path_over_PATH_MAX_fails_at_the_MOVE_and_not_at_the_allocator(
+    tmp_path: Path,
+) -> None:
+    """The occupancy test's never-raising half, reached with nothing injected.
+
+    ``_NAME_MAX`` bounds one COMPONENT; PATH_MAX bounds the whole path — so a
+    name the shortener rightly leaves alone is still unlookupable once the Trash
+    dir is deep enough, and no suffix, no orphaned record and no entry in the way
+    are needed to get there.
+
+    Both spellings of the predicate end in ``OSError(36)`` here, so the errno
+    cannot tell them apart and the assertion reads the raising FRAME instead:
+    with :func:`app.fsutil.exists` the failure belongs to ``shutil.move``, which
+    at least names the path it could not write, and with ``dest.exists()`` it
+    belongs to the allocator, which names nothing and 500s a delete that has not
+    touched a file.
+    """
+    trash = _trash_dir_over_path_max(tmp_path)
+    origins = origins_for(trash)
+    husk = _husk(tmp_path, LONGEST)
+    # The fixture really is at the hazard rather than merely deep: the unguarded
+    # predicate raises on this candidate, which is what the guarded one absorbs.
+    with pytest.raises(OSError) as raw:
+        (trash / LONGEST).exists()
+    assert raw.value.errno == errno.ENAMETOOLONG
+
+    with pytest.raises(OSError) as caught:
+        trash_folder(husk, trash_dir=trash, origins_dir=origins)
+
+    assert caught.value.errno == errno.ENAMETOOLONG
+    ours = [
+        frame
+        for frame in traceback.extract_tb(caught.value.__traceback__)
+        if frame.filename == trash_module.__file__
+    ]
+    assert ours, "the failure must pass through the module under test"
+    last = ours[-1]
+    where = f"the allocator must hand this failure to the move; it came out of {last.name}"
+    assert last.name == "trash_folder", f"{where}:{last.lineno} instead"
+    assert "shutil.move" in (last.line or ""), f"{where} at {last.line!r} instead"
+    assert (husk / "cover.jpg").is_file(), "the delete must not have moved anything"
+    assert list(trash.iterdir()) == [], "nothing may be left behind in Trash"
+
+
 def test_a_name_the_KERNEL_refuses_reads_as_free_and_not_as_a_500(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The half of the allocator no whole-delete fixture can reach.
+    """The smaller-``NAME_MAX`` half, which this suite can only inject.
 
     ``_NAME_MAX`` is this app's guess at the limit, and it is wrong wherever the
-    filesystem's own is smaller (eCryptfs stops at 143 bytes) or the Trash path
-    sits close to ``PATH_MAX``. There the occupancy test is handed a candidate
-    the shortener already believes fits, and the kernel still answers
-    ENAMETOOLONG — which ``Path.exists()`` raises rather than absorbs, straight
-    out of the delete as a 500 with nothing moved.
+    filesystem's own is smaller — eCryptfs stops at 143 bytes. There the
+    occupancy test is handed a candidate the shortener already believes fits, and
+    the kernel still answers ENAMETOOLONG, which ``Path.exists()`` raises rather
+    than absorbs, straight out of the delete as a 500 with nothing moved.
 
-    Injected rather than staged, because a real filesystem with a smaller
-    ``NAME_MAX`` is not something the suite can mount: the errno is forced from
-    the predicate itself, the way ``test_fsutil`` and eleven other modules force
-    theirs. This is what makes :func:`app.fsutil.exists` load-bearing here — put
-    ``dest.exists()`` back and this test raises instead of asserting.
+    Injected rather than staged, because mounting a filesystem needs privileges
+    the CI job does not have — it runs as ``runner``, not root — so the fixture
+    cannot exist: the errno is forced from the predicate itself, the way
+    ``test_fsutil`` and eleven other modules force theirs. The OTHER way the
+    constant is wrong — a Trash path near PATH_MAX — needs no injection and is
+    staged for real in
+    :func:`test_a_trash_path_over_PATH_MAX_fails_at_the_MOVE_and_not_at_the_allocator`,
+    which is the one that pins :func:`app.fsutil.exists` here without a
+    monkeypatch.
     """
 
     def boom(_self: Path) -> bool:
