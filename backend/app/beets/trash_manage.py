@@ -150,16 +150,21 @@ _OUTSIDE_LIBRARY_NOTE = (
 #: still there. Both per-row actions are named, because the note has to be true
 #: of every affordance rendered next to it.
 #:
-#: "on another volume" is the ORDINARY provenance above, not a measured property
-#: of every entry that gets this note: a link whose target sits inside the Trash
-#: dir (``<trash>/Alias -> ./RealAlbum``) reads the same way and is refused the
-#: same way, and for it that clause is wrong. The rest of the sentence holds —
-#: it is a link, nothing follows it, and the files are wherever it points. The
-#: wording is left alone here because the string is asserted whole in
-#: ``frontend/src/pages/settings/SettingsTrashPage.test.tsx``; changing it is a
-#: two-file change, recorded rather than half-done.
+#: "elsewhere", not "on another volume": another volume is the ORDINARY
+#: provenance described above, not a property of every entry that gets this
+#: note. A link pointing at a SIBLING Trash entry (``<trash>/Alias ->
+#: ./RealAlbum``), at a file, or at nothing that is there right now (a dangling
+#: one, which is what an unmounted volume looks like) reads the same way and is
+#: refused the same way, and for each of those the old clause was simply wrong.
+#: What is left is what holds for all of them: it is a link, nothing follows it,
+#: and the files are wherever it points.
+#:
+#: ``frontend/src/pages/settings/SettingsTrashPage.test.tsx`` keeps its own COPY
+#: of this string as a fixture (``REFUSED_NOTE``). It does not read this one, so
+#: it does not fail when this changes — it goes stale silently. Update it with
+#: any edit here.
 _SYMLINKED_ENTRY_NOTE = (
-    "This Trash entry is a link to a folder on another volume, so MusicDrop will not"
+    "This Trash entry is a link to a folder elsewhere, so MusicDrop will not"
     " restore it — following the link would import files that were never in Trash. The"
     " album's own files were never moved: they are still where the link points, and"
     " adding that folder through Import is what puts the album back in the library."

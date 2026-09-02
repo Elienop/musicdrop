@@ -71,7 +71,7 @@ def test_a_symlinked_row_says_what_restore_will_really_do(tmp_path: Path) -> Non
 
     assert mode == "refused", "no per-row route will act on this at all"
     assert note is not None
-    assert "link to a folder on another volume" in note, "why it cannot be restored"
+    assert "link to a folder elsewhere" in note, "why it cannot be restored"
     assert "will not restore it" in note, "and that MusicDrop will not try"
     assert "files were never moved" in note, "where the album actually is"
     assert "before origins were recorded" not in note, "neither record cause applies"
@@ -130,7 +130,7 @@ def test_a_record_under_the_name_cannot_out_vote_the_link(tmp_path: Path) -> Non
     assert mode == "refused", "the link decides alone"
     assert origin is None, "and no path is offered as one it would go back to"
     assert note is not None
-    assert "link to a folder on another volume" in note
+    assert "link to a folder elsewhere" in note
 
 
 def _client_trash(client: TestClient) -> Path:
