@@ -925,3 +925,11 @@ def test_the_delete_routes_500_description_does_not_deny_its_own_body(
         f"{path}'s 500 description promises Trash recovery for a status this route"
         f" answers with {detail['recovery']!r}"
     )
+    # The negative alone is happy with a paraphrase that drops the condition —
+    # "the body carries the cause and a recovery hint" passes it and tells the
+    # reader of the contract nothing about WHEN Trash gets named. The condition
+    # is the claim, so assert it directly.
+    assert "only when" in description, (
+        f"{path}'s 500 description must keep the condition on its Trash pointer;"
+        f" it reads {description!r}"
+    )
