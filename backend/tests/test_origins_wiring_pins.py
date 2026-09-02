@@ -19,11 +19,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from beets.library import Library
+from beets import config
+from beets.library import Item, Library
 from fastapi.testclient import TestClient
 
 from app.beets.config_editor import _settings
@@ -31,7 +34,9 @@ from app.beets.library import LibraryHandle, _require_id
 from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
 from app.beets.trash_origins import origin_recorded, write_trash_origin
 from app.config import Settings
-from tests.conftest import make_test_handle, origins_for
+from tests.conftest import build_library, make_test_handle, origins_for
+
+SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
 
 
 def _origins_dir(client: TestClient) -> Path:
@@ -142,6 +147,96 @@ def test_delete_artist_op_records_origins_in_the_store_not_in_trash(
     assert {r.restore_mode for r in rows} == {"move_back"}
 
 
+# ----- putting a folder back ---------------------------------------------------
+
+
+def _tagged_flac(dst: Path, *, artist: str, album: str, title: str) -> None:
+    """A real, tagged FLAC — beets must be able to read it as an ``Item``."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(SAMPLE, dst)
+    item = Item(album=album, albumartist=artist, artist=artist, title=title, track=1)
+    item.path = os.fsencode(str(dst))
+    item.write()
+
+
+def _bystander(lib: Library, music: Path) -> None:
+    """One album really on disk, so the library does not read as a dropped share.
+
+    A restore writes INTO the music library and so runs behind
+    ``require_library_present``. A library whose every album is missing from
+    disk IS the dropped-share fixture, and an empty music root is refused by the
+    cheaper root check before that — so a restore test built on either would be
+    asserting through a guard that should have refused it.
+    """
+    dst = music / "Bystander" / "Album" / "01 t.flac"
+    _tagged_flac(dst, artist="Bystander", album="Album", title="T")
+    item = Item(album="Album", albumartist="Bystander", artist="Bystander", title="T", track=1)
+    item.path = os.fsencode(str(dst))
+    lib.add_album([item]).store()
+
+
+def test_restore_route_reads_the_record_from_the_origin_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST /trash/restore resolves the store on its OWN line, and only this sees it.
+
+    The route hands ``restore_album`` the pair, and every test below the route
+    passes them explicitly — so pointing this one at the Trash dir is invisible
+    to all of them. Under that swap the record is simply never found: the
+    move-back is never offered, and the folder goes back through the import
+    fallback to be re-filed by the path template, leaving the record in the
+    store for the next folder to take that name. A silent downgrade to the
+    pre-origins behaviour, on the restore route of the branch that added
+    origins. The STATUS does not give it away either — measured on this
+    fixture the swap still answers ``200 restored``, and on a folder that
+    duplicates a live album it answers ``200`` with ``restored: false,
+    reason: could_not_restore`` — which is why the assertions below are about
+    where the files went, not about the response's verdict.
+
+    Pinned on the two halves an exact restore is made of: the folder lands at
+    the RECORDED origin (a name the path template would never produce, so
+    landing there can only have come from the record), and the record is
+    CONSUMED — the entry is gone from Trash, so a record left behind would be
+    inherited by whatever takes that name next.
+
+    Built on its own library rather than the ``client`` fixture's, which loads
+    the ``musicbrainz`` plugin: this is the only test here that runs a real
+    beets import, and against that plugin the restore spends a minute and a half
+    waiting on lookups over the network.
+    """
+    from app.main import app
+
+    config["threaded"] = False  # reset by the autouse _clear_beets_globals fixture
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+    _bystander(lib, music)
+    trash, origins = tmp_path / "trash", origins_for(tmp_path / "trash")
+    entry = trash / "Weird Folder"
+    _tagged_flac(entry / "01 Dreams.flac", artist="2 Brothers", album="Dreams", title="Dreams")
+    origin = music / "Weird Folder"
+    write_trash_origin(origins, entry.name, origin=str(origin), moved="folder")
+    # Both dirs pinned inside tmp_path AND at different names, so the route has
+    # a real choice to get wrong.
+    monkeypatch.setattr(app.state, "beets_library", make_test_handle(lib, tmp_path), raising=False)
+    monkeypatch.setattr(
+        app.state,
+        "settings",
+        Settings(trash_dir=str(trash), trash_origins_dir=str(origins)),
+        raising=False,
+    )
+    client = TestClient(app)
+
+    r = client.post("/api/trash/restore", json={"folder": entry.name})
+
+    assert r.status_code == 200
+    assert r.json()["restored"] is True
+    assert r.json()["reason"] == "restored"
+    assert [p.name for p in origin.glob("*.flac")] == ["01 Dreams.flac"]
+    assert not (music / "2 Brothers").exists()  # never re-filed by the path template
+    assert not entry.exists()
+    assert not origin_recorded(origins, entry.name), "the record outlived the entry"
+
+
 # ----- emptying Trash ----------------------------------------------------------
 
 
@@ -216,6 +311,52 @@ def test_orphan_sweep_records_the_husks_origin_in_the_store(
     assert reg.state().orphans_trashed == 1
     assert origin_recorded(origins, "Ghost Artist")
     assert not list(trash.glob("*.json"))
+
+
+def test_the_reorganize_worker_THREAD_is_handed_the_origin_store(
+    reorganize_lib: Library, tmp_path: Path
+) -> None:
+    """``start_backfill`` hands the pair to the sweep on its own line, off-thread.
+
+    Nothing else runs that line. The sweep test above calls ``sweep`` directly,
+    and both route tests replace ``start_backfill`` with a fake — so the real
+    spawn lambda never executes, and a store swapped for the Trash dir there
+    (or a kwarg dropped, which turns the orphan pass off entirely) survives all
+    three. It is the last hop before the worker, so getting it wrong sends
+    EVERY reorganize's husk records into the entry namespace while the routes
+    above it resolve the store perfectly.
+
+    Waits on the runner's own ``on_complete`` rather than polling: it fires in
+    ``sweep``'s ``finally``, after the job is finished, so a pass cannot read a
+    half-swept Trash dir.
+    """
+    from app.reorganize_jobs.registry import ReorganizeRegistry
+    from app.reorganize_jobs.runner import start_backfill
+
+    music_dir = Path(os.fsdecode(reorganize_lib.directory))
+    husk = music_dir / "Ghost Artist"
+    husk.mkdir(parents=True, exist_ok=True)
+    (husk / "artist-poster.jpg").write_bytes(b"x")
+    trash = tmp_path / "trash"
+    origins = origins_for(trash)
+    done = threading.Event()
+
+    reg = ReorganizeRegistry()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+    start_backfill(
+        reg,
+        make_test_handle(reorganize_lib, tmp_path),
+        scope="library",
+        trash_dir=trash,
+        trash_origins_dir=origins,
+        on_complete=done.set,
+    )
+
+    assert done.wait(timeout=30), "the reorganize worker never finished"
+    assert reg.state().phase == "done", reg.state().error
+    assert reg.state().orphans_trashed == 1
+    assert origin_recorded(origins, "Ghost Artist")
+    assert not list(trash.glob("*.json")), "records must not land in the entry namespace"
 
 
 def test_album_reorganize_passes_the_trash_origin_store_to_the_worker(
