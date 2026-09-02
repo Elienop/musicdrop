@@ -302,10 +302,11 @@ def test_a_husk_is_refused_when_the_store_is_not_a_folder(tmp_path: Path) -> Non
     husk = tmp_path / "music" / "Old Name"
     husk.mkdir(parents=True)
     (husk / "cover.jpg").write_bytes(b"\x00")
-    _origins(tmp_path).write_bytes(b"not a directory")
+    origins = _origins(tmp_path)
+    origins.write_bytes(b"not a directory")
 
     with pytest.raises(TrashOriginsStoreUnusableError) as ei:
-        trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+        trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=origins)
 
     assert "trash-origins" in str(ei.value)
     assert (husk / "cover.jpg").is_file(), "the husk must not have moved"
@@ -344,10 +345,12 @@ def test_an_album_is_refused_when_the_store_is_not_a_folder(tmp_path: Path, fold
     album = _dummy(lib)
     album_id = _require_id(album.id)
     album_root = Path(album_folder(lib, list(album.items())))
-    _origins(tmp_path).write_bytes(b"not a directory")
+    origins = _origins(tmp_path)
+    origins.write_bytes(b"not a directory")
+    tx = lib.transaction()
 
-    with pytest.raises(TrashOriginsStoreUnusableError), lib.transaction():
-        trash_album_folder(lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+    with pytest.raises(TrashOriginsStoreUnusableError), tx:
+        trash_album_folder(lib, album, trash_dir=tmp_path / "trash", origins_dir=origins)
 
     assert lib.get_album(album_id) is not None, "the rows must survive the refusal"
     assert len(list(album_root.glob("*.flac"))) == 2, "the files must not have moved"
@@ -899,9 +902,11 @@ def test_restore_refuses_to_move_into_an_unavailable_music_share(tmp_path: Path)
             )
         )
     shutil.rmtree(tmp_path / "music")
+    entry_path = str(dest)
+    origins = _origins(tmp_path)
 
     with pytest.raises(LibraryRootUnavailableError):
-        restore_album(lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+        restore_album(lib, entry_path, trash_dir=tmp_path / "trash", origins_dir=origins)
 
     assert len(list(dest.glob("*.flac"))) == 2  # nothing left Trash
 
@@ -1329,15 +1334,15 @@ def test_a_failed_return_to_trash_cannot_forge_a_log_line(
     monkeypatch.setattr(
         "app.beets.trash_manage._restore_by_import", _import_destroys_the_folder_then_fails
     )
+    at_warning = caplog.at_level(logging.WARNING, logger="app.beets.trash_manage")
+    origins = _origins(tmp_path)
     with (
-        caplog.at_level(logging.WARNING, logger="app.beets.trash_manage"),
+        at_warning,
         # The double failure now propagates as the UNDO's story rather than the
         # import's ``RuntimeError``; the import is still reachable as ``__cause__``.
         pytest.raises(TrashRestoreIncompleteError) as ei,
     ):
-        _restore_to_origin(
-            lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
-        )
+        _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=origins)
 
     assert isinstance(ei.value.__cause__, RuntimeError)
     assert any("could not return" in r.getMessage() for r in caplog.records)
@@ -1396,8 +1401,10 @@ def test_a_failed_restore_whose_undo_also_fails_says_where_the_folder_went(
         "app.beets.trash_manage._restore_by_import",
         _import_fails_after_something_retakes_the_trash_entry,
     )
+    entry_path = str(entry)
+    origins = _origins(tmp_path)
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        restore_album(lib, str(entry), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+        restore_album(lib, entry_path, trash_dir=tmp_path / "trash", origins_dir=origins)
 
     message = str(ei.value)
     assert f"at the origin '{origin}'" in message, "the path the files are actually at"
@@ -1497,11 +1504,10 @@ def test_a_part_way_cross_filesystem_move_says_the_folder_may_be_in_both(
 
     monkeypatch.setattr(os, "rename", _across_a_device_boundary)
     monkeypatch.setattr(shutil, "copytree", _half_a_copy)
+    origins = _origins(tmp_path)
 
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        _restore_to_origin(
-            lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
-        )
+        _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=origins)
 
     message = str(ei.value)
     assert str(origin) in message
@@ -1723,8 +1729,10 @@ def test_empty_one_keeps_the_record_when_the_removal_itself_fails(tmp_path: Path
     (tmp_path / "trash").chmod(0o500)  # rmtree cannot unlink out of a read-only dir
 
     try:
+        entry_path = str(dest)
+        origins = _origins(tmp_path)
         with pytest.raises(OSError):
-            empty_one(str(dest), origins_dir=_origins(tmp_path))
+            empty_one(entry_path, origins_dir=origins)
     finally:
         (tmp_path / "trash").chmod(0o700)
 

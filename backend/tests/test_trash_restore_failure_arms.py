@@ -404,15 +404,10 @@ def test_a_failure_creating_the_destination_says_nothing_moved(tmp_path: Path) -
     entry = tmp_path / "trash" / "Artist - Album"
     entry.mkdir(parents=True)
     (entry / "01 a.flac").write_bytes(b"\x00")
+    origins = origins_for(tmp_path / "trash")
 
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        _restore_to_origin(
-            lib,
-            entry,
-            origin,
-            trash_dir=tmp_path / "trash",
-            origins_dir=origins_for(tmp_path / "trash"),
-        )
+        _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=origins)
 
     message = str(ei.value)
     assert f"could not create the folder '{origin.parent}'" in message, "the real cause"
@@ -447,15 +442,10 @@ def test_a_part_way_move_names_each_path_in_its_own_phrase(
 
     _exdev_at(origin, monkeypatch)
     monkeypatch.setattr(shutil, "copytree", _half_a_copy)
+    origins = origins_for(tmp_path / "trash")
 
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        _restore_to_origin(
-            lib,
-            entry,
-            origin,
-            trash_dir=tmp_path / "trash",
-            origins_dir=origins_for(tmp_path / "trash"),
-        )
+        _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=origins)
 
     message = str(ei.value)
     assert "could not move the folder back out of Trash" in message

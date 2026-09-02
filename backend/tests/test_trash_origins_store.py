@@ -607,8 +607,9 @@ def test_a_name_the_allocator_cannot_check_cannot_forge_a_log_line(
     """
     origins = _origins_dir_over_path_max(tmp_path, _FORGED_ENTRY_NAME)
     # The fixture is really at the hazard rather than merely deep.
+    record = origin_file(origins, _FORGED_ENTRY_NAME)
     with pytest.raises(OSError) as raw:
-        origin_file(origins, _FORGED_ENTRY_NAME).exists()
+        record.exists()
     assert raw.value.errno == errno.ENAMETOOLONG
 
     with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
