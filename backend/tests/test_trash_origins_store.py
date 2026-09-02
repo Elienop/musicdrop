@@ -584,11 +584,15 @@ def test_a_name_the_allocator_cannot_check_cannot_forge_a_log_line(
 ) -> None:
     """``origin_recorded``'s warning, and what it is now careful NOT to blame.
 
-    This line runs at the exact moment the store's stated residual is created:
-    the name reads as free although a record may be sitting on it, so the
-    allocator can hand it to a second folder that will later read the first
-    folder's origin. It is the only trace of that, and it is reached with a name
-    the album's own tags can produce.
+    This line runs at the exact moment the KEY-level residual is created: the
+    name reads as free although a record may be sitting on it, so the allocator
+    can hand it to a second folder that will later read the first folder's
+    origin. It is the only trace of that, and it is reached with a name the
+    album's own tags can produce. The STORE-level version of the same shape is
+    no longer a residual at all — it refuses the delete
+    (``test_a_store_that_cannot_be_searched_refuses_instead_of_reading_as_free``
+    below) — which is why this arm's errno matters: ENAMETOOLONG says nothing
+    about whether the store works, so it keeps the old answer and this warning.
 
     The sentence used to end "Check the permissions on the Trash origins
     directory". This fixture is the counter-example, and it needs no injection

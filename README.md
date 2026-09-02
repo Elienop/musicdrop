@@ -51,10 +51,17 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 - **Duplicates** — find & resolve duplicate albums (resolve one, or resolve-all).
 - **Release identity** — which release an album is (source · label · country · media · disambiguation), with view-release links.
 - **Delete & Trash** — delete albums or artists into a reversible Trash; restore or empty it
-  under **Settings → Trash**. If the music root is missing, empty or unreadable (an unmounted
-  share), deletes are refused with a 503 — nothing is moved and no library rows are dropped —
-  so a genuinely emptied library needs a remount (or beets' own CLI) before its leftover
-  entries can be cleared. **Deleting an album** additionally covers the case a stray
+  under **Settings → Trash**. Two setup faults refuse a delete with a 503, and in both cases
+  nothing is moved and no library rows are dropped. The first is the music root being
+  missing, empty or unreadable (an unmounted share), so a genuinely emptied library needs a
+  remount (or beets' own CLI) before its leftover entries can be cleared. The second is the
+  origin-records folder — `<beets dir>/trash-origins/`, described below — being unusable:
+  not there and not creatable, something other than a folder in its place, or not readable
+  or writable by the container's user (a wrong `PUID`/`PGID`, a restored backup, a read-only
+  `/data`). MusicDrop will not delete an album it cannot record the origin of, because the
+  name it would hand that folder in Trash may still be spoken for by a record it cannot see.
+  The message says which of the two it is; fix that folder's permissions or its mount and
+  retry. **Deleting an album** additionally covers the case a stray
   file used to hide: a `.stfolder`, a `lost+found` or an empty leftover directory sitting on
   a local mountpoint whose share has dropped makes the folder look mounted, so before a
   delete drops rows having moved nothing, MusicDrop confirms that at least one of the music
@@ -74,8 +81,15 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   reached are untouched. A run that moved nothing does not claim a count it cannot back: it
   says how many albums it dropped that had no files left to move, and its advice is to
   *check* the Trash folder rather than a promise that anything is in it. That hedge is
-  deliberate — the album a delete stops on can have reached Trash without this end being
-  able to see it, so the honest instruction is to look.
+  deliberate, and it now covers a narrower set: a move that stops PART-WAY — a copy across
+  filesystems that fails between the copy and the delete, or an album taken out of a shared
+  folder file by file — can leave some of it under Trash without this end being able to see
+  it, so the honest instruction is to look. **If the library rows cannot be removed after
+  the whole folder reached Trash, MusicDrop moves the folder back where it came from and
+  reports the error**, so the disk and the library do not disagree and there is nothing in
+  Trash for that album to find. In the rare case that moving it back fails too, the error
+  names both paths, read from the disk, and tells you not to empty Trash before comparing
+  them.
 - **Restore knows where things came from.** When MusicDrop moves a folder to Trash it
   records where that folder came from in a small JSON file alongside — one per Trash entry,
   under `<beets dir>/trash-origins/`, deliberately outside the trashed folder and outside
@@ -107,11 +121,11 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   Two consequences worth knowing. A row trashed by an older version has no record and never
   will, so a media-free one (art/booklet leftovers with no audio) still has Empty as its only
   exit. (If you move or delete a Trash entry outside MusicDrop, its record is left behind.
-  For anything MusicDrop itself puts in Trash that is harmless *as long as it can read its
-  origin records* — it treats a recorded name as taken, so the next album it trashes under
-  that name simply gets a `(1)` suffix. A store it cannot read reads as empty instead, so
-  the name goes out again and the next folder inherits the first one's origin — an open bug,
-  not the design. A folder that arrives in Trash by some *other* route — a hand copy, a
+  For anything MusicDrop itself puts in Trash that is harmless: it treats a recorded name as
+  taken, so the next album it trashes under that name simply gets a `(1)` suffix. A store it
+  cannot use does not make that name go out again — it refuses the delete instead (the 503
+  above), because handing the name on is how the next folder would inherit the first one's
+  origin. A folder that arrives in Trash by some *other* route — a hand copy, a
   restored backup, a sync client writing into the volume — asks nothing, so it can land on that name and its
   row will then offer an exact restore to the *previous* folder's path. Nothing detects
   that today; if you put folders into the Trash directory by hand, check what the row
@@ -306,7 +320,7 @@ MusicDrop has no built-in backup, deliberately: its state is plain files under t
 - `data/beets/plex/plex.json`, `data/beets/slskd/slskd.json` — the Plex and slskd integration settings, mode `0600`. Not just tokens: Plex's library path/section, slskd's downloads prefix and its `auto_import` toggle (lose that and unattended import reverts to its env default, off).
 - `<inbox>/.musicdrop-ledger.json` — the handled-drops record. Defaults to `<beets_dir>/inbox`, inside `/data`; `MUSICDROP_INBOX_DIR` moves it onto the slskd downloads mount — the table's third row.
 - `data/beets/trash/` — deleted albums live here and nowhere else until you empty the Trash; normally the only GB-scale item under `data/`.
-- `data/beets/trash-origins/*.json` — where each trashed folder came from, one tiny file per Trash entry (two entry names long enough to share a shortened key share one file; the loser falls back to the approximate restore). Nothing else records it: restore the Trash without these and every row falls back to the approximate restore, which for an art/booklet leftover with no audio means no way back at all. `MUSICDROP_TRASH_ORIGINS_DIR` moves them.
+- `data/beets/trash-origins/*.json` — where each trashed folder came from, one tiny file per Trash entry (two entry names long enough to share a shortened key share one file; the loser falls back to the approximate restore). Nothing else records it: restore the Trash without these and every row falls back to the approximate restore, which for an art/booklet leftover with no audio means no way back at all. `MUSICDROP_TRASH_ORIGINS_DIR` moves them. A backup that leaves this folder ABSENT is fine — the next delete creates it, exactly as a fresh install does. One restored with permissions the container's user cannot read or write is not: deletes are refused with a 503 until it is fixed (see **Delete & Trash** above).
 - `data/beets/state.pickle` — beets' import state. The banking sweep's forced `incremental` reads its `taghistory`; without it the next sweep re-offers every folder it has already handled.
 - `data/cache/artist-images/` — the `*.override` (+ `*.override.mime`) images you uploaded or pasted by hand, which nothing refetches, and `_enabled.json` / `_art_write_enabled.json`, the two artist-image toggles: lose those and both revert to their env defaults (`MUSICDROP_ARTIST_IMAGES_ENABLED` / `MUSICDROP_ARTIST_ART_WRITE_ENABLED`, off unless set).
 

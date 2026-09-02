@@ -259,9 +259,13 @@ def test_write_trash_origin_swallows_a_failing_write(tmp_path: Path, name: str) 
 
     This is a NEW write on the delete path, so its failure must be no worse than
     today (folder in Trash, no record). TWO of the three callers run
-    ``album.remove()`` on the very next line (``trash.py:231`` for the per-item
-    mover, ``trash.py:418`` for the whole-folder one), so anything escaping here
-    keeps the library rows while the files are already in Trash.
+    ``album.remove()`` a statement or two later (``trash.trash_album`` for the
+    per-item mover, ``trash.trash_album_folder``'s whole-folder branch for the
+    other), so anything escaping here keeps the library rows while the files are
+    already in Trash — and on the whole-folder path it would now also trip the
+    move-back the row drop is wrapped in, undoing a delete because its
+    bookkeeping failed. Named rather than cited by line: the two line numbers
+    this used to give (``trash.py:231`` and ``:418``) were both stale.
 
     Parametrised over the NAME because the failure handler interpolates it, and
     an ASCII fixture exercises the swallow without ever exercising the handler's
