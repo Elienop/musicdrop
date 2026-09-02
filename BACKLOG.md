@@ -1003,7 +1003,9 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   *inside* the music library, plus a library-scope Reorganize. Symbols, not line numbers:
   `reorganize._ignore_dirs` hands the store and the export dir to
   `orphans.find_orphan_folders`, whose `_excluded_predicate` skips those subtrees — and
-  `_library_orphans` then reports the nearest ancestor that has content of its OWN.
+  `_library_orphans` then reports the TOP-MOST audio-empty ancestor of the excluded dir —
+  the climb stops only where a parent holds audio directly or is the root, so the dir that
+  gets reported need not be the one holding the content that made it non-empty.
   **Which var triggers it alone, measured on `fix/undoable-deletes`** (probe: build a music
   tree with one healthy album, then call `find_orphan_folders(music, seeds=None, ...)` — one
   call per layout, so re-deriving it costs nothing):
@@ -1018,10 +1020,17 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     dirs are skipped.
   * the same placement with one file of the parent's own (`<music>/data/notes.txt`) →
     `['data']`. That is the hole: an ancestor with other content.
+  * `MUSICDROP_TRASH_ORIGINS_DIR=<music>/data/sub/origins` with the file one level DOWN
+    (`<music>/data/sub/notes.txt`) → `['data']`, **not** `['data/sub']` (measured
+    2026-09-02 at this tip). This is the case that tells the two readings apart: `data`
+    holds nothing of its own, so what is reported is the top of the audio-empty run, not
+    the dir the content sits in. Whatever ends up under Trash is that whole subtree.
   * `MUSICDROP_PLAYLISTS_EXPORT_DIR=<music>/exports` → `[]`, for the reason above.
 
-  So the two pure-container vars need an ancestor that has content of its own before
-  anything is reported at all. Blast radius depends on where Trash sits, and
+  So the two pure-container vars need at least one non-excluded file somewhere under a
+  non-root ancestor before anything is reported at all — and what gets reported then is the
+  top of the audio-empty run above that file, which can be several levels higher than the
+  ignored dir. Blast radius depends on where Trash sits, and
   `_ignore_dirs`' docstring states both outcomes: in the DEFAULT
   layout (`trash_dir` = `<beets_dir>/trash`) the move is a directory into its own subtree,
   `shutil.move` raises, and `reorganize_jobs.runner`'s `except OSError: continue` swallows
