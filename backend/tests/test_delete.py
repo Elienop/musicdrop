@@ -687,3 +687,108 @@ def test_delete_artist_500_on_the_FIRST_album_does_not_promise_trash(
     # The disk agrees with the sentence: there is no Trash folder to look in.
     assert not trash.exists()
     assert len([a for a in duplicates_lib.albums() if a.albumartist == "Radiohead"]) == 2
+
+
+def _shared_folder_ghost_library(tmp_path: Path) -> Library:
+    """Two albums of one artist in ONE folder, the first of them files-less.
+
+    The shape that reaches ``trash_album``'s ghost arm — the only branch that
+    hands ``_reached_trash`` a path in the MUSIC dir rather than at or under
+    Trash:
+
+    * ``A Ghost`` and ``B Live`` are both ``Sharey``'s and both live in
+      ``music/Sharey/Both``, so ``_folder_is_shared`` refuses the whole-folder
+      move and falls back to the per-item ``trash_album``;
+    * ``A Ghost``'s file is removed while ``B Live``'s stays, so the folder is
+      still a directory (the missing-folder branch is skipped) and yet nothing
+      of ``A Ghost``'s can move;
+    * a bystander album on disk keeps ``require_library_present`` a certainty —
+      three albums against a sample of five is an exhaustive draw, and two of
+      them are really there.
+
+    ``A Ghost`` sorts before ``B Live`` under the same albumartist, so the
+    fan-out meets it first.
+    """
+    from beets.library import Item
+
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+
+    def add(*, artist: str, album: str, at: Path, name: str) -> Path:
+        at.mkdir(parents=True, exist_ok=True)
+        f = at / name
+        f.write_bytes(b"\x00")
+        item = Item(album=album, albumartist=artist, artist=artist, title="Track", track=1)
+        item.path = os.fsencode(str(f))
+        lib.add_album([item]).store()
+        return f
+
+    both = music / "Sharey" / "Both"
+    gone = add(artist="Sharey", album="A Ghost", at=both, name="01 Ghost.mp3")
+    add(artist="Sharey", album="B Live", at=both, name="02 Live.mp3")
+    add(artist="Bystander", album="Still Here", at=music / "Bystander" / "Album", name="01 t.mp3")
+    gone.unlink()  # removed outside MusicDrop; the row and the shared folder survive
+    return lib
+
+
+def test_delete_artist_does_not_count_a_shared_folder_ghost_as_moved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A path OUTSIDE Trash is not a Trash entry, however unlike ``trash_dir`` it looks.
+
+    ``_reached_trash`` asks two things of the primitive's answer: that it is not
+    ``trash_dir`` itself, and that it is under it. The first alone is what the
+    two row-dropping branches of ``trash_album_folder`` need — they return
+    ``str(trash_dir)`` — and it is all the ghost test above exercises. This is
+    the case only the second catches: ``trash_album``'s own ghost arm returns
+    the album's folder in the MUSIC dir, which is neither ``trash_dir`` nor
+    inside it.
+
+    Counted as a move, the fan-out's 500 would say one album "had been moved to
+    Trash" and send its user to a Trash folder holding nothing at all — the
+    exact promise the two counters exist to keep apart.
+    """
+    lib = _shared_folder_ghost_library(tmp_path)
+    trash = tmp_path / "trash"
+    handle = make_test_handle(lib, tmp_path)
+    real = trash_album_folder
+    calls = {"n": 0}
+
+    def _fails_on_the_second(
+        lib: Library, album: object, *, trash_dir: Path, origins_dir: Path
+    ) -> str:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise PermissionError(13, "Permission denied")
+        return str(real(lib, album, trash_dir=trash_dir, origins_dir=origins_dir))
+
+    monkeypatch.setattr(delete_mod, "trash_album_folder", _fails_on_the_second)
+
+    class _App:
+        state = SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins_for(trash))),
+        )
+
+    class _Req:
+        app = _App()
+
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(delete_artist_op(_Req(), "Sharey"))  # type: ignore[arg-type]  # stub req
+
+    assert ei.value.status_code == 500
+    detail = ei.value.detail
+    assert isinstance(detail, dict)
+    assert "1 of 2" in detail["message"]  # one album's rows went, and it says so
+    assert "moved to Trash" not in detail["message"]  # but nothing was moved
+    assert detail["recovery"] == (
+        "Nothing reached the Trash folder, so there is nothing to restore. Retry."
+    )
+    # The premise of the whole test, asserted rather than assumed: the ghost went
+    # through the SHARED-folder fallback, whose sibling is still sitting in the
+    # folder it was never allowed to move wholesale — and Trash is empty.
+    assert sorted(p.name for p in (tmp_path / "music" / "Sharey" / "Both").iterdir()) == [
+        "02 Live.mp3"
+    ]
+    assert list(trash.iterdir()) == []
+    assert [a.album for a in lib.albums() if a.albumartist == "Sharey"] == ["B Live"]
