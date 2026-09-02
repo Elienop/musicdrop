@@ -632,3 +632,58 @@ def test_delete_album_500_does_not_promise_trash_for_files_that_did_not_move(
     assert detail["recovery"] == (
         "The files were not moved and the library still has the album. Retry."
     )
+
+
+def test_delete_artist_500_on_the_FIRST_album_does_not_promise_trash(
+    duplicates_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fan-out that fails on album 1 of 2 has moved nothing — and must say so.
+
+    The tests above cover the fan-out that got PAST its first album: it raises
+    ``ArtistDeletePartialError``, which carries the count the recovery line is
+    chosen from. A failure on the FIRST album never reaches that helper —
+    ``mutated == 0`` re-raises the cause bare so the 503 tier stays available —
+    so the 500 wrapping it took the blanket "Files are recoverable in the Trash
+    folder" while not one file had moved and the Trash folder did not exist. The
+    same wrong sentence as the ghost fan-out's, down the one path nothing
+    enumerated.
+
+    Pinned on the physical fact as well as the wording: the Trash dir is never
+    created, and both albums are still in the library.
+    """
+    trash = tmp_path / "trash"
+    handle = make_test_handle(duplicates_lib, tmp_path)
+
+    def _fails_on_the_first(
+        lib: Library, album: object, *, trash_dir: Path, origins_dir: Path
+    ) -> str:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(delete_mod, "trash_album_folder", _fails_on_the_first)
+
+    class _App:
+        state = SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins_for(trash))),
+        )
+
+    class _Req:
+        app = _App()
+
+    before = [a for a in duplicates_lib.albums() if a.albumartist == "Radiohead"]
+    assert len(before) == 2, "'the first album' only means something with more than one"
+
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(delete_artist_op(_Req(), "Radiohead"))  # type: ignore[arg-type]  # stub req
+
+    assert ei.value.status_code == 500
+    detail = ei.value.detail
+    assert isinstance(detail, dict)
+    assert "Permission denied" in detail["message"]  # the cause is still relayed
+    assert "recoverable in the Trash folder" not in detail["recovery"]
+    assert detail["recovery"] == (
+        "Nothing reached the Trash folder, so there is nothing to restore. Retry."
+    )
+    # The disk agrees with the sentence: there is no Trash folder to look in.
+    assert not trash.exists()
+    assert len([a for a in duplicates_lib.albums() if a.albumartist == "Radiohead"]) == 2

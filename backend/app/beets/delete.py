@@ -189,7 +189,11 @@ def delete_artist(
                     # by design, so there is no window that leaves an album's
                     # files in Trash while its rows survive.
                     if mutated == 0:
-                        raise  # nothing mutated yet — the caller's own error still holds
+                        # Nothing mutated yet, so the caller's own error still
+                        # holds — and by the paragraph above nothing MOVED
+                        # either, which is why ``_recovery`` may not treat an
+                        # unrecognised exception as one with files in Trash.
+                        raise
                     raise _partial(exc, moved=moved, mutated=mutated, total=len(album_ids)) from exc
                 mutated += 1
                 if _reached_trash(dest, trash_dir):
@@ -253,22 +257,41 @@ def _gate() -> None:
 def _recovery(exc: Exception) -> str:
     """The 500's recovery hint. It may only point at Trash if something is IN Trash.
 
-    Two failures reach this helper having moved no files at all, and sending
-    their user to look in Trash for them is worse than saying nothing: a Trash
-    folder that was never created has no entry to find, and a folder that still
-    holds the album makes the promise read as a lie about a delete that half
-    happened.
+    Asked the other way round from how it started, because listing the failures
+    that moved nothing kept missing one. Exactly ONE failure here can show a
+    Trash entry — a fan-out that got past its first album and really relocated
+    files (``ArtistDeletePartialError`` with ``moved`` above zero) — so that is
+    the arm that names Trash, and everything else falls to a hint that does not.
+    Enumerating the other direction meant a new "moved nothing" path was
+    silently welcomed into the promise: a fan-out that fails on its FIRST album
+    re-raises the cause bare (nothing mutated, so the caller's own error still
+    holds), which is neither of the two cases the old list named, and the user of
+    a delete that touched nothing was sent to look in a Trash folder that had
+    never been created.
 
-    * a partial artist fan-out whose albums were all ghosts or empty rows —
-      their rows are gone (the intended cleanup) and not one byte moved;
-    * ``TrashMoveIncompleteError``, which is raised precisely because the files
-      did NOT move; its own message already says the library rows were kept.
+    The three states, and the sentence each gets:
+
+    * a partial fan-out with files in Trash — the only Trash promise;
+    * ``TrashMoveIncompleteError``, raised precisely BECAUSE the files did not
+      move; its own message already says the library rows were kept, so the hint
+      says where the album still is;
+    * everything else — a fan-out that stopped before its first album, one whose
+      albums were all ghosts or empty rows, and any fault inside a single-album
+      delete. None of them has an album in Trash: the primitive drops rows only
+      after the files are provably relocated, so a failure inside it leaves the
+      album in the library.
+
+    One imprecision, stated rather than hidden: a cross-filesystem
+    ``shutil.move`` that fails after copying leaves BYTES under Trash, so the
+    default's first clause is not literally true there. The clause the user acts
+    on is the second one, and it holds — the rows were kept, the album never left
+    the library, and there is nothing to restore.
     """
-    if isinstance(exc, ArtistDeletePartialError) and exc.moved == 0:
-        return "Nothing reached the Trash folder, so there is nothing to restore. Retry."
+    if isinstance(exc, ArtistDeletePartialError) and exc.moved:
+        return "Files are recoverable in the Trash folder. Retry."
     if isinstance(exc, TrashMoveIncompleteError):
         return "The files were not moved and the library still has the album. Retry."
-    return "Files are recoverable in the Trash folder. Retry."
+    return "Nothing reached the Trash folder, so there is nothing to restore. Retry."
 
 
 def _failed(exc: Exception) -> HTTPException:
