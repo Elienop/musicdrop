@@ -941,7 +941,7 @@ def test_restore_without_a_record_still_re_imports_as_before(tmp_path: Path) -> 
     assert not (tmp_path / "music" / "Weird Folder").exists()
 
 
-# ----- a SYMLINKED Trash entry gets no record, because it can never be restored -----
+# ----- a SYMLINKED Trash entry gets no record: both per-row routes refuse it -----
 
 
 def test_a_symlinked_trash_entry_is_not_promised_an_exact_restore(tmp_path: Path) -> None:
@@ -958,9 +958,13 @@ def test_a_symlinked_trash_entry_is_not_promised_an_exact_restore(tmp_path: Path
     What is left is a PROMISE problem. A symlinked entry is ordinary rather than
     hostile — ``_album_root`` is ``dirname(item.path)``, so an album whose own
     folder is a symlink into another volume lands in Trash still a symlink,
-    because ``shutil.move`` preserves them — and ``resolve_trash_child`` resolves
-    the child and refuses anything landing outside Trash, so such a row can never
-    be restored by any route. A record would make the listing offer "Exact
+    because ``shutil.move`` preserves them — and ``resolve_trash_child`` refuses
+    a child that IS a link, or any path running through one, on
+    ``_is_symlinked_entry`` and BEFORE it resolves anything, so both per-row
+    routes turn such a row down. Not the RESOLVED containment check, which is a
+    weaker predicate here: a link pointing at a SIBLING Trash entry resolves back
+    inside Trash and containment alone passed it, which is how the previous tip
+    let a per-row Empty remove the other row. A record would make the listing offer "Exact
     restore" on a row whose Restore button 404s. Writing nothing keeps the row
     honest: the listing reads the link itself and answers ``"refused"``, which
     is the contract value for "both per-row routes will turn this down".

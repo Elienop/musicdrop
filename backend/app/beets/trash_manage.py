@@ -567,8 +567,12 @@ def _restore_to_origin(
     * the import did not land the album — put the folder back in Trash and report
       the import's own answer, so a duplicate reads exactly as it does today. If
       that return ALSO fails, :func:`_undo_failure` looks at the disk and says
-      where the folder actually ended up; it is the only path here that does not
-      end with the files back in Trash.
+      where the folder actually ended up. That is one of TWO paths here that can
+      end with the files not wholly back in Trash; the other is the forward move
+      failing part-way (the ``except OSError`` after :func:`_move_no_merge`
+      below), where a fault mid-``rmtree`` on the copy branch leaves a complete
+      copy at the origin with a partial entry still in Trash. Both answer by
+      looking at the disk (:func:`_whereabouts`) rather than by guessing.
 
     The parent is created because beets prunes an empty artist folder on the way
     out; that is the normal case, not an anomaly. It is created in its OWN try,
@@ -1076,10 +1080,18 @@ def _reaches_through_a_link(trash_dir: Path, child: Path) -> bool:
     — measured: ``is_relative_to`` answers True and ``relative_to`` yields
     ``('..', 'outside', 'x')`` — and the walk below really runs over those
     components, refusing only if one of them is a link.
-    What refuses the climb itself is the RESOLVED containment check in
+    What ANSWERS the climb is the RESOLVED containment check in
     :func:`resolve_trash_child`, where the ``..`` is finally normalised away,
-    and not ``is_relative_to``. This must not grow into a second, weaker
-    traversal check.
+    and not ``is_relative_to``. "Answers", not "refuses": it refuses a climb that
+    lands OUTSIDE Trash, and a climb that lands back INSIDE is accepted, naming
+    the same entry its plain spelling names. Measured 2026-09-02 through the
+    ``TestClient`` app fixture: ``resolve_trash_child(trash, "../trash/Dummy")``
+    and ``resolve_trash_child(trash, "Dummy")`` returned the same
+    ``<trash>/Dummy``, and ``DELETE /api/trash?folder=../trash/Dummy`` answered
+    ``200 {"removed": 1}`` with that entry gone. That is what ``folder=Dummy``
+    does, so the climb reaches nothing the plain spelling could not — it is a
+    spelling, not a hole. This must not grow into a second, weaker traversal
+    check.
     """
     try:
         parts = child.relative_to(trash_dir).parts

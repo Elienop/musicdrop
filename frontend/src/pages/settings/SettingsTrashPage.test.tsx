@@ -597,7 +597,8 @@ describe("SettingsTrashPage", () => {
     ).toBeInTheDocument();
   });
   test("a refused row offers neither of its own controls and says why", async () => {
-    // Both per-row routes resolve the symlink outside Trash and answer 404
+    // Both per-row routes refuse the symlink LEXICALLY — on the child being a
+    // link, before resolving it and without ever following it — and answer 404
     // before doing any work, so a live Restore and a live Empty here can only
     // produce an error. Disabled — not hidden: the row still has to read as one
     // that HAS these controls, or "cannot be restored" looks like a missing UI.

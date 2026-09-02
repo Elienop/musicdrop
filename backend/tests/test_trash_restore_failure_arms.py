@@ -664,9 +664,18 @@ def test_anything_else_at_the_origin_still_refuses(tmp_path: Path, occupant: str
 
     A non-empty directory would be merged into, a file would be replaced, and a
     SYMLINK would move the album to wherever the link points — a place the user
-    never named. All three keep the files in Trash instead. The symlink case is
-    why :func:`_occupied` looks with ``is_symlink`` before ``is_dir``: a link to
-    an EMPTY directory reads as an empty directory to anything that follows it.
+    never named. All three keep the files in Trash instead.
+
+    What holds the symlink case is NOT this test's business, and saying otherwise
+    once made it read as the pin for :func:`_occupied`'s ``is_symlink`` arm.
+    ``os.rename`` answers ENOTDIR on a link destination and
+    :func:`_move_no_merge` normalises that to the same ``origin_occupied``, so
+    the outcome asserted below survives with that arm dropped — measured, this
+    test and ``test_an_empty_directory_at_the_origin_is_replaced_by_the_rename``
+    both pass against an ``is_symlink``-less ``_occupied``. The arm is a tripwire
+    on what ``_occupied`` REPORTS to a future caller (without it, "an empty
+    directory" silently includes a link to one); its own docstring is where that
+    is argued, and it says no test kills it.
     """
     lib = _seeded_library(tmp_path)
     origin = tmp_path / "music" / "Weird Folder"
