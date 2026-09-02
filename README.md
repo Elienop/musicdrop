@@ -58,9 +58,12 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   file used to hide: a `.stfolder`, a `lost+found` or an empty leftover directory sitting on
   a local mountpoint whose share has dropped makes the folder look mounted, so before a
   delete drops rows having moved nothing, MusicDrop confirms that at least one album it
-  believes it owns is really on disk. That stronger check is on the delete path only —
-  disk sync deliberately keeps the cheap "is the root there" test, because it runs it once
-  per removal and accepted the same residual for itself. A share
+  believes it owns is really on disk. **Restore** runs that same stronger check, above both
+  of the ways it can put a folder back — it writes *into* the music library, so an unmounted
+  share is the same catastrophe there, and a restore that hits one is refused with a 503
+  having moved nothing out of Trash. Disk sync is the deliberate exception: it keeps the
+  cheap "is the root there" test, because it runs it once per removal and accepted the same
+  residual for itself. A share
   dropping part-way through an artist delete reports how many albums were trashed before it
   dropped — those stay recoverable in Trash, the rest untouched.
 - **Restore knows where things came from.** When MusicDrop moves a folder to Trash it
