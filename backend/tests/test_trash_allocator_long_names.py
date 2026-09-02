@@ -4,11 +4,13 @@
 " (2)"… — which is the one thing a name already at ``NAME_MAX`` cannot survive,
 and ``Path.exists()`` answers that with ``OSError(36)`` rather than ``False``
 (``pathlib._IGNORED_ERRNOS`` is ENOENT/ENOTDIR/EBADF/ELOOP; errno 36 is not in
-it). Every test here is an END-TO-END delete through a real public mover, not a
-unit call on the allocator: what the defect cost was a 500 on the delete route
-saying "Files are recoverable in the Trash folder. Retry." when nothing had
+it). Most tests here are an END-TO-END delete through a real public mover rather
+than a unit call on the allocator: what the defect cost was a 500 on the delete
+route saying "Files are recoverable in the Trash folder. Retry." when nothing had
 moved and no retry could ever succeed, and a husk the orphan sweep skipped in
-silence on every run.
+silence on every run. The last two are unit calls because what they pin cannot be
+reached end to end -- a kernel refusing a name our own constant thinks fits, and
+the shortener declining to touch a name at the exact limit.
 
 Two ways into the collision loop, and they are worth separating because only one
 of them is new. An EXISTING Trash entry at the name is the old way; an ORPHANED
@@ -24,6 +26,7 @@ agrees with itself; the constant is instead pinned in both directions once, in
 
 from __future__ import annotations
 
+import errno
 import os
 from pathlib import Path
 
@@ -33,6 +36,7 @@ from beets.library import Album, Item, Library
 from app.beets.trash import (
     _fit_name,
     _trash_container_name,
+    _unique_trash_dest,
     trash_album,
     trash_album_folder,
     trash_folder,
@@ -346,3 +350,33 @@ def test_fit_name_leaves_a_name_that_already_fits_alone(tmp_path: Path) -> None:
 
     assert dest.name == "Portishead - Dummy"
     assert longest_dest.name == LONGEST, "nothing was in the way, so nothing may be trimmed"
+
+
+def test_a_name_the_KERNEL_refuses_reads_as_free_and_not_as_a_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The half of the allocator no whole-delete fixture can reach.
+
+    ``_NAME_MAX`` is this app's guess at the limit, and it is wrong wherever the
+    filesystem's own is smaller (eCryptfs stops at 143 bytes) or the Trash path
+    sits close to ``PATH_MAX``. There the occupancy test is handed a candidate
+    the shortener already believes fits, and the kernel still answers
+    ENAMETOOLONG — which ``Path.exists()`` raises rather than absorbs, straight
+    out of the delete as a 500 with nothing moved.
+
+    Injected rather than staged, because a real filesystem with a smaller
+    ``NAME_MAX`` is not something the suite can mount: the errno is forced from
+    the predicate itself, the way ``test_fsutil`` and eleven other modules force
+    theirs. This is what makes :func:`app.fsutil.exists` load-bearing here — put
+    ``dest.exists()`` back and this test raises instead of asserting.
+    """
+
+    def boom(_self: Path) -> bool:
+        raise OSError(errno.ENAMETOOLONG, "forced failure")
+
+    monkeypatch.setattr(Path, "exists", boom)
+    trash, origins = _dirs(tmp_path)
+
+    dest = _unique_trash_dest(trash, origins, "Portishead - Dummy")
+
+    assert dest == trash / "Portishead - Dummy"

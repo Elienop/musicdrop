@@ -379,10 +379,12 @@ def _unique_trash_dest(trash_dir: Path, origins_dir: Path, name: str) -> Path:
     instead of raising for the limits this constant cannot see — a filesystem
     with a smaller ``NAME_MAX`` (eCryptfs stops at 143 bytes), or a Trash path
     close to ``PATH_MAX`` — leaving the failure to the move, which can at least
-    name the path. That half is a TRIPWIRE and NO TEST CAN KILL IT (measured:
-    with the shortening in place, putting ``dest.exists()`` back leaves all nine
-    long-name tests green), because once every candidate fits there is nothing
-    left for it to absorb. Do not simplify it back on that evidence.
+    name the path. No whole-delete fixture can reach that half — with the
+    shortening in place, putting ``dest.exists()`` back leaves every end-to-end
+    long-name test green, because once every candidate fits the constant ABOVE
+    there is nothing left for it to absorb. It is pinned directly instead, by
+    forcing the predicate to raise the errno this paragraph names:
+    ``test_a_name_the_KERNEL_refuses_reads_as_free_and_not_as_a_500``.
 
     Long names are not only an accident of the source folder: ``beets.util``
     caps a path component it generates at 200 bytes by default
