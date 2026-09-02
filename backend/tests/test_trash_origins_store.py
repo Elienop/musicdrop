@@ -16,12 +16,21 @@ of its own production line before these tests existed:
   past the JSON parser's limit, a directory at the key;
 * a store the app cannot reach reads as "nothing recorded" and says so in the
   log, which is the one place that residual is visible;
-* a crafted Trash entry name cannot forge a log line on the write path, the one
-  of the module's three ``%r`` sites that nothing pinned.
+* a crafted Trash entry name cannot forge a log line. Counted rather than
+  recalled, by walking the module's AST for ``logger.*`` calls at this commit:
+  seven calls, six of which interpolate something, seven ``%r`` placeholders
+  between them. Five of the six are pinned here — the write's warning, the
+  delete's failure, the kept-record refusal (both of its placeholders), the
+  allocator's "could not tell", and the store sweep — and the sixth,
+  ``_warn_unusable``, is pinned in ``test_trash_origin_record.py``
+  (``test_an_unusable_record_cannot_forge_a_log_line_through_its_own_filename``).
+  The count is a measurement, so re-run the walk rather than trusting this
+  sentence after adding a line.
 """
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import logging
@@ -337,7 +346,7 @@ def test_an_import_restore_of_the_losing_row_keeps_the_other_entrys_record(
 def test_a_record_that_cannot_be_unlinked_is_logged_and_swallowed(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Both halves of "NEVER raises", on the one call that runs after the point of no return.
+    """The swallow, on the one call that runs after the point of no return.
 
     Every caller is past irreversible work when it gets here — the folder has
     been moved back into the library, or emptied, or stranded by a failed undo
@@ -361,7 +370,7 @@ def test_a_record_that_cannot_be_unlinked_is_logged_and_swallowed(
     """
     origins = tmp_path / "trash-origins"
     origins.mkdir()
-    name = os.fsdecode(b"Caf\xc3\xa9 \xff Dummy")
+    name = os.fsdecode(b"Caf\xc3\xa9 \xff \x1b[31m\nCRITICAL:app:all clear")
     assert not name.isascii(), "the accent that breaks the naive escape spelling"
     assert "\udcff" in name, "and the undecodable byte that display_path is for"
     origin_file(origins, name).mkdir()
@@ -375,6 +384,15 @@ def test_a_record_that_cannot_be_unlinked_is_logged_and_swallowed(
     # becomes the placeholder, which is what tells an operator which entry it is.
     assert "Café" in record.getMessage()
     assert "�" in record.getMessage()
+    # ...and the ``%r`` is load-bearing on this line too. ``display_path``
+    # neutralises the undecodable byte and NOTHING else, so an ANSI escape and a
+    # newline in the same name — both ordinary characters in an ``albumartist``
+    # — reach the log unless the interpolation quotes them. Spelled ``%s`` the
+    # two assertions above still pass, which is how this site stayed unpinned.
+    assert "\x1b" not in caplog.text, "an ANSI escape reached the log"
+    assert "\nCRITICAL" not in caplog.text, "a forged log line reached the log"
+    assert "\\x1b" in caplog.text  # escaped, not dropped
+    assert "\\n" in caplog.text
 
 
 # ----- ...including a file the JSON parser gives up on -----
@@ -497,6 +515,120 @@ def test_a_record_the_json_parser_gives_up_on_does_not_abort_empty_all(
     assert list(trash.iterdir()) == []
 
 
+# ----- the two log lines whose %r nothing was pinning -----
+
+#: A Trash entry name that writes a fake log line if it is interpolated raw. It
+#: needs nothing hostile to exist: ``_trash_container_name`` builds the name from
+#: the album's own ``albumartist``/``album`` tags and neutralises path separators
+#: and nothing else, so an ANSI escape or a newline in a tag arrives here intact.
+_FORGED_ENTRY_NAME = "Dummy\x1b[31m\nCRITICAL:app:all clear"
+
+
+def _assert_nothing_forged(caplog: pytest.LogCaptureFixture) -> None:
+    """The escape survived as text and not as control characters."""
+    assert "\x1b" not in caplog.text, "an ANSI escape reached the log"
+    assert "\nCRITICAL" not in caplog.text, "a forged log line reached the log"
+    # Escaped rather than dropped: the operator still gets the entry to look at.
+    assert "\\x1b" in caplog.text
+    assert "\\n" in caplog.text
+
+
+def _origins_dir_over_path_max(tmp_path: Path, entry_name: str) -> Path:
+    """An origins dir nested until its record for ``entry_name`` is past PATH_MAX.
+
+    Every component stays inside ``NAME_MAX`` and the origins dir itself stays
+    inside ``PATH_MAX``, so every ``mkdir`` on the way succeeds: the only path
+    the kernel refuses is the record file whose existence ``origin_recorded`` is
+    about to test. Measured against ``os.pathconf`` rather than a literal,
+    because what has to be true is that the KERNEL refuses it — and nothing is
+    monkeypatched, so this is a real ``OSError`` with a real errno.
+    """
+    path_max = os.pathconf(str(tmp_path), "PC_PATH_MAX")
+    key = origin_file(Path("/"), entry_name).name
+    deep = tmp_path
+    while len(str(deep / ("d" * 200) / "trash-origins")) < path_max:
+        deep = deep / ("d" * 200)
+    # ...then one last component sized to land the store just inside the limit,
+    # since another 200-byte one would put the store itself past it.
+    gap = path_max - len(str(deep / "trash-origins"))
+    if gap >= 3:
+        deep = deep / ("d" * (gap - 2))
+    origins = deep / "trash-origins"
+    origins.mkdir(parents=True)
+    assert len(str(origins)) < path_max, "the store itself must be a legal path"
+    assert len(str(origins / key)) > path_max, "...and its record file must not be"
+    return origins
+
+
+def test_a_name_the_allocator_cannot_check_cannot_forge_a_log_line(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``origin_recorded``'s warning, and what it is now careful NOT to blame.
+
+    This line runs at the exact moment the store's stated residual is created:
+    the name reads as free although a record may be sitting on it, so the
+    allocator can hand it to a second folder that will later read the first
+    folder's origin. It is the only trace of that, and it is reached with a name
+    the album's own tags can produce.
+
+    The sentence used to end "Check the permissions on the Trash origins
+    directory". This fixture is the counter-example, and it needs no injection
+    and no root: an origins dir nested until the record path passes ``PATH_MAX``
+    makes ``exists()`` raise ENAMETOOLONG, where a permissions hunt finds
+    nothing wrong. So the cause is left to ``exc_info`` — asserted below by the
+    errno the traceback carries, which is also what pins ``exc_info`` itself
+    against being dropped.
+    """
+    origins = _origins_dir_over_path_max(tmp_path, _FORGED_ENTRY_NAME)
+    # The fixture is really at the hazard rather than merely deep.
+    with pytest.raises(OSError) as raw:
+        origin_file(origins, _FORGED_ENTRY_NAME).exists()
+    assert raw.value.errno == errno.ENAMETOOLONG
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        assert origin_recorded(origins, _FORGED_ENTRY_NAME) is False
+
+    assert any(
+        "could not tell whether a Trash origin record exists" in r.getMessage()
+        for r in caplog.records
+    )
+    _assert_nothing_forged(caplog)
+    assert f"[Errno {errno.ENAMETOOLONG}]" in caplog.text, (
+        "the traceback is where the cause is now named, so it has to be there"
+    )
+
+
+def test_keeping_another_entrys_record_cannot_forge_a_log_line(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The kept-record warning: both its ``%r`` sites, and what it can honestly claim.
+
+    Reached without the colliding pair, because the refusal is about the
+    PAYLOAD: any record whose ``name`` is not the entry being deleted is kept,
+    and both of the values this line interpolates — the record's path and the
+    entry name — carry whatever the album's tags carried.
+
+    It also says what the function knows. There is no Trash directory in this
+    fixture at all, and ``delete_trash_origin`` is not given one: the record
+    naming "Another Album" is kept on the strength of the payload alone, and
+    whether "Another Album" is still in Trash is not checked and cannot be from
+    here. The line used to assert it was ("still in Trash and still needs it");
+    when that guess is wrong the file is exactly the leftover ``empty_all``
+    sweeps.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    payload = {"schema": 1, "name": "Another Album", "origin": "/music/A", "moved": "folder"}
+    origin_file(origins, _FORGED_ENTRY_NAME).write_text(json.dumps(payload), encoding="ascii")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        delete_trash_origin(origins, _FORGED_ENTRY_NAME)
+
+    assert origin_file(origins, _FORGED_ENTRY_NAME).exists(), "another entry's record was dropped"
+    assert any("kept the Trash origin record" in r.getMessage() for r in caplog.records)
+    _assert_nothing_forged(caplog)
+
+
 # ----- clearing the whole store -----
 
 
@@ -522,7 +654,7 @@ def test_clearing_the_store_carries_on_past_a_record_it_cannot_remove(
     """
     origins = tmp_path / "trash-origins"
     origins.mkdir()
-    forged = "Dummy\x1b[31m\nCRITICAL:app:all clear"
+    forged = _FORGED_ENTRY_NAME
     write_trash_origin(origins, "Ordinary", origin="/music/A/Ordinary", moved="folder")
     origin_file(origins, forged).mkdir()
 
@@ -532,10 +664,7 @@ def test_clearing_the_store_carries_on_past_a_record_it_cannot_remove(
     assert not origin_file(origins, "Ordinary").exists(), "one bad file stopped the sweep"
     assert origin_file(origins, forged).is_dir()
     assert any("could not remove the Trash origin record" in r.getMessage() for r in caplog.records)
-    assert "\x1b" not in caplog.text, "an ANSI escape reached the log"
-    assert "\nCRITICAL" not in caplog.text, "a forged log line reached the log"
-    assert "\\x1b" in caplog.text  # escaped, not dropped
-    assert "\\n" in caplog.text
+    _assert_nothing_forged(caplog)
 
 
 # ----- a store the app cannot reach -----

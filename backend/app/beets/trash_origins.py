@@ -241,9 +241,18 @@ def origin_recorded(origins_dir: Path, entry_name: str) -> bool:
         return origin_file(origins_dir, entry_name).exists()
     except OSError:
         logger.warning(
+            # What went wrong is left to ``exc_info`` rather than named in the
+            # sentence. This used to end "Check the permissions on the Trash
+            # origins directory", which is one cause of several: the suite
+            # already drives ENAMETOOLONG through here (a store path over
+            # PATH_MAX, and a filesystem whose own NAME_MAX is below this
+            # module's guess), where a permissions hunt finds nothing wrong.
+            # The errno's own message is in the traceback and says which.
             "could not tell whether a Trash origin record exists for %r, so the name is"
             " being treated as free: if a record IS there, a second folder can take that"
-            " name and inherit it. Check the permissions on the Trash origins directory.",
+            " name and inherit it. The error below says why the check could not be made;"
+            " an origins directory the app cannot search and a path the filesystem"
+            " refuses are both measured causes.",
             display_path(entry_name),
             exc_info=True,
         )
@@ -525,9 +534,17 @@ def delete_trash_origin(origins_dir: Path, entry_name: str) -> None:
         path = origin_file(origins_dir, entry_name)
         if _names_a_different_entry(path, entry_name):
             logger.warning(
+                # What this line knows is the PAYLOAD, and nothing else. It used
+                # to say the other entry "is still in Trash and still needs it";
+                # this function is not given ``trash_dir`` and asks nothing about
+                # it, so that was a guess about a directory it cannot see — and
+                # the wrong guess (the other entry gone too) is exactly the
+                # leftover-record case ``trash_manage.empty_all`` now sweeps.
                 "kept the Trash origin record at %r instead of dropping it with %r: the"
-                " record is for a different Trash entry, which is still in Trash and still"
-                " needs it. The two names share one record file — see origin_file.",
+                " record names a different Trash entry, so it is not this entry's to"
+                " remove. Whether that entry is still in Trash is not checked here — this"
+                " function is not told the Trash directory. The two names share one record"
+                " file — see origin_file.",
                 os.fsdecode(path),
                 display_path(entry_name),
             )
