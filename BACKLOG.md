@@ -766,11 +766,18 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
   **What the name key costs, and where it is paid.** An entry removed OUTSIDE MusicDrop
   leaves its record, and a later folder taking that name would inherit a stale origin that
-  steers a `rename()` — the same hazard inode keys were rejected for. Closed at the
-  ALLOCATOR: `trash._unique_trash_dest` treats a recorded name as occupied, so the residual
-  is a burnt name (litter), never a wrong restore. Deliberately NOT closed by a reaper on the
-  listing: "unlink every record with no matching entry" cannot tell an empty Trash dir from
-  one whose share just dropped, and would destroy every origin in that state.
+  steers a `rename()` — the same hazard inode keys were rejected for. Narrowed at the
+  ALLOCATOR: `trash._unique_trash_dest` treats a recorded name as occupied, so MusicDrop
+  never hands a second folder a name whose record is still on disk, and for the names it
+  hands out the residual is a burnt name (litter) rather than a wrong restore. **That is the
+  whole of what it covers.** A folder reaching `trash_dir` by ANOTHER route — a hand copy, a
+  restored backup, a sync client writing into the volume — asks the allocator nothing, so it
+  can land on a name whose record outlived its entry and adopt it: the row offers "Exact
+  restore" to a stranger's origin. Nothing detects that today; it is a stated residual (the
+  module docstring in `trash_origins` states it too), not a closed hazard. Deliberately NOT
+  closed by a reaper on the listing: "unlink every record with no matching entry" cannot tell
+  an empty Trash dir from one whose share just dropped, and would destroy every origin in
+  that state.
 
   **Re-derive before quoting the old framing — "the Trash rows Restore can never restore"
   was imprecise.** A Restore already existed; it re-imports through beets. The genuine gaps
@@ -780,11 +787,15 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   templates rather than returned to where it came from.
 
   What shipped:
-  * `restore_mode` on each row is `"move_back"` or `"import"`, with `restore_note` carrying
-    a distinct sentence for each of the three ways a row loses its move-back (no record /
-    files taken from a shared folder / origin no longer inside the library) and `origin`
-    shown either way so the user can put it back by hand. Old rows are Restore-visible and
-    explained, never a silent re-file.
+  * `restore_mode` on each row is `"move_back"`, `"import"` or `"refused"`, with
+    `restore_note` carrying a distinct sentence for each of the FOUR ways a row loses its
+    move-back (no record / files taken from a shared folder / origin no longer inside the
+    library / the Trash entry is itself a symlink) and `origin` shown for whichever of them
+    read a record, so the user can put it back by hand. The first three are still an
+    `"import"` and stay Restore-visible and explained, never a silent re-file; the fourth is
+    `"refused"` — Restore does nothing and neither does that row's own Empty, because
+    `resolve_trash_child` turns both per-row routes down before any work starts, so the UI
+    disables both controls (`trash_manage._restore_fields`, `models/trash.TrashRestoreMode`).
   * **No `"unavailable"` mode for `track_count == 0`**, deliberately: 0 means "nothing
     parsed as an Item", not "no music", and encoding that guess as a contract value would
     turn a UI hint into a promise. `trash_manage._audio_free_entries` warns against exactly
@@ -818,15 +829,33 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
   **UI shipped in the same slice:** each row states its outlook before the user clicks — a
   quiet "Exact restore. Goes back to <path>" or an amber-flagged "Approximate restore."
-  carrying the backend's own sentence, wired to the button via `aria-describedby`. Restore
-  stays ENABLED on every row (owner, 2026-08-31: *"Keep it enabled, warn clearly"*, amending
-  `decisions.md` 27 — see that note for why the original DISABLE ruling rested on a false
-  premise). The page header no longer promises "puts one back as-is", which was only ever true
+  carrying the backend's own sentence, wired to the button via `aria-describedby`; a
+  `"refused"` row keeps that layout and swaps the label for "Can't be restored.", since a
+  heading promising an approximate restore above a disabled button is the row contradicting
+  itself. Restore stays ENABLED on every row EXCEPT that one (owner, 2026-08-31: *"Keep it
+  enabled, warn clearly"*, amending `decisions.md` 27 — see that note for why the original
+  DISABLE ruling rested on a false premise).
+
+  **That one exception sits outside the ruling's own reason, and the owner has NOT been
+  asked about it.** The amendment reasons that disabling Restore *"would have deleted a
+  working recovery path in the name of safety"* — true of an `"import"` row, where the
+  re-import IS the recovery path and works. A symlinked row has no such path:
+  `resolve_trash_child` answers 404 to the Restore route AND to the per-row Empty route
+  before either does any work (measured; pinned in
+  `backend/tests/test_trash_listing_symlink_rows.py`), so the only reachable outcome of
+  either live control was an error, and disabling them deletes nothing. That is an argument
+  for the carve-out, not an approval of it — put it to the owner and record the answer here
+  and in `decisions.md` 27.
+
+  The page header no longer promises "puts one back as-is", which was only ever true
   for some rows. (Corrected: an earlier draft of this note, and the backend comment it came
   from, claimed the UI disables Restore at `track_count == 0`. It does not and must not —
   `SettingsTrashPage.tsx` shows a "may still work" hint precisely because 0 means "no readable
   tags", not "no music". That 0-track hint is now re-worded rather than stacked on an exact
-  row, where it would have contradicted the promise one line above it.)
+  row, where it would have contradicted the promise one line above it. It is suppressed on a
+  `"refused"` row and nowhere else: such a row is always 0-track — `os.walk` never follows
+  the link, so nothing under it is read — and the hint's stated cause, unreadable tags, is
+  the wrong one there.)
 
 - ~~**The delete-path mount predicate accepts a root with ANY entry, so a stray file on a
   local mountpoint masks a dropped share.**~~ **FIXED** on `fix/undoable-deletes`
