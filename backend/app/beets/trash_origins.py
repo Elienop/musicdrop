@@ -302,8 +302,25 @@ def require_usable_store(origins_dir: Path) -> None:
       each other with EEXIST, and it reports the real errno (EACCES here, EROFS
       on a read-only mount, ENOSPC on a full one) instead of a guess.
 
-    Every probe leaves the store as it found it: the ``stat`` target is never
-    created and the ``mkstemp`` file is unlinked on the way out.
+    What the probes leave behind, measured rather than promised: the ``stat``
+    target is never created and the ``mkstemp`` file is unlinked on the way out,
+    so a healthy store is as it was (measured: empty after two calls). The
+    DIRECTORY is the exception — the ``mkdir`` creates it, by design on the
+    healthy path and also on a call that goes on to REFUSE. Measured under
+    ``umask 0o777``: the store did not exist, the read probe raised EACCES on
+    the mode-0000 directory the ``mkdir`` had just made, and the directory
+    stayed. Nothing downstream reads an empty store differently from an absent
+    one, so that residue costs nothing — but the sentence may not claim
+    otherwise, and ``albums.py``'s "runs before anything is created" is about
+    Trash names and rows, not about this directory.
+
+    One residual, stated because nothing sweeps it: a crash between the
+    ``mkstemp`` and the ``unlink`` leaves a ``.musicdrop-store-check.XXXXXXXX``
+    dotfile in the store. It is inert — :func:`origin_file` always appends
+    ``.json``, so it can never be read as a record — and ``clear_trash_origins``
+    removes only names ending ``.json``, so Empty all walks past it (measured).
+    No sweep is added: nothing depends on it being gone, and a sweep that
+    deletes by prefix is a new way to lose a file that is not ours.
     """
     try:
         origins_dir.mkdir(parents=True, exist_ok=True)

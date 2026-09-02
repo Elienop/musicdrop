@@ -1108,15 +1108,23 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   so that a directory sitting where a track should be is not read as the music coming back;
   both follow symlinks, so a symlinked library reads present while a **dangling** link reads
   absent, which is the fail-closed direction. The refusal message names files instead of
-  "every album's folder", and its four pins moved with it.
+  "every album's folder", and its FIVE pins moved with it — not four, as this entry and the
+  commit first said. Grepping the old wording at `6a5427c`: `test_library_presence.py` (one),
+  `test_library_presence_sampling.py` (two), and `test_delete.py` (two — the verbatim 503 and
+  the artist fan-out's 500, which is the file that was touched twice).
   **The trade, measured rather than argued.** Keying each slot to a FILE is stricter in
   exactly one shape: an album whose folder survives with its sampled track removed by hand is
   now a miss where the folder was a hit. At 200 albums with 1 file, 5 files or a whole folder
   removed it refused 0 times in 1000 draws each; at 2 albums with one file gone, 0 of 200; at
-  5 albums with four gone, 0 of 200; on the singleton fallback arm, 0 of 1000. It refuses only
-  where there is no other album to draw and the missing file is the sampled one — N=1 album
-  with its only (or its lowest-named) track removed while the folder stays: 20 of 20 refusals
-  against 0 of 20 before. That is the shape `_PRESENCE_SAMPLE_SIZE`'s own note already
+  5 albums with four gone, 0 of 200; on the singleton fallback arm, 0 of 1000. It refuses when
+  ALL five sampled albums are missing their sampled file, which is certain where there is no
+  other album to draw — N=1 with its only (or its lowest-named) track removed while the folder
+  stays: 20 of 20 refusals against 0 of 20 before — and equally certain where every album is in
+  that state, measured 50 of 50 at N = 1, 2, 6, 20 and 200. Between those it is the `f**K` rate
+  `_PRESENCE_SAMPLE_SIZE` already models rather than a shape: with half of 200 albums missing
+  their sampled file, folders intact and the share mounted, 33 refusals in 1000 draws (24 in an
+  independent run of the same probe) against an expected 3.1%. A few missing files among many
+  are not refused. The certain case is the shape `_PRESENCE_SAMPLE_SIZE`'s own note already
   documented as refused-by-design for a removed FOLDER at or below the sample size, extended
   to a removed file, and it is stated in `require_library_present`'s docstring and in README.
   The alternative that was NOT taken: skipping rows whose `dirname` is the library root, which

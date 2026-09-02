@@ -554,9 +554,12 @@ def _restore_to_origin(
       directory that disappears the moment the share comes back. It passes an
       EMPTY library, which has no file to sample and so answers on the root check
       alone; and since each slot is now the FILE rather than its folder, it also
-      costs one false refusal — a single-album library whose sampled track was
-      removed by hand while its folder stayed (measured 20 of 20 draws; the
-      figures are in ``require_library_present``'s docstring).
+      refuses wherever ALL of its sampled albums are missing their sampled file:
+      certainly in a single-album library whose track was removed by hand while
+      its folder stayed (measured 20 of 20 draws), and at the ``f**K`` rate below
+      that (measured 33 refusals in 1000 draws with half of 200 albums in that
+      state). Not "one shape" — the figures and the model are in
+      ``require_library_present``'s docstring.
     * the origin is OCCUPIED — refuse rather than merge or divert. A restore
       that lands beside the thing it was meant to be is not a restore, and
       ``shutil.move`` onto an existing directory moves the folder INSIDE it. The

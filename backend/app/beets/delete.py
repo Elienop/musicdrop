@@ -183,13 +183,17 @@ def delete_artist(
         # asymmetry with the line above is the point. ``require_library_root``
         # earns its place because the primitive only re-checks the ROOT inside
         # one branch, so without it a fan-out could reach its second album
-        # before anything refused. ``require_usable_store`` runs at the TOP of
-        # ``trash_album_folder``, ahead of every branch — so the first album
-        # already refuses with nothing dropped, and a copy here changes no
-        # outcome the delete tests can see: removing it left tests/test_delete.py
-        # and tests/test_trash.py, 63 tests, entirely green (measured; those two
-        # files are where every delete-path behaviour is pinned, so a killer
-        # elsewhere would be a test in the wrong place). It would also refuse a
+        # before anything refused. ``require_usable_store`` needs no such help:
+        # it is ``trash_album_folder``'s FIRST statement — checked structurally,
+        # first non-docstring node of the body — ahead of every branch of it, so
+        # the first album already refuses with nothing dropped. A copy here
+        # changes no outcome any test can see: adding it back left the whole
+        # suite green (measured, 3037 passed). That is not an argument that the
+        # delete tests would have caught one if it did, and the difference has
+        # been measured too — ``origin_recorded``'s refusing arm survives
+        # tests/test_delete.py + tests/test_trash.py (74 passed) and is killed
+        # only in tests/test_trash_origins_store.py, so this file's own pins are
+        # not where every delete-path guard lives. It would also refuse a
         # fan-out over an artist with NO albums, which mutates nothing at all.
         # Two counters, because they answer different questions and a run can
         # have one without the other. ``mutated`` is albums whose ROWS are gone,

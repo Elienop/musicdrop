@@ -310,15 +310,25 @@ def require_library_present(lib: Library) -> None:
     Each sampled slot is one FILE — the album's ``MIN(path)`` track, or one item
     row on the fallback arm — never the folder holding it, because a flat layout
     collapses every folder to the music root (see ``_sampled_library_files``).
-    That is measurably stricter in exactly one shape: an album whose folder
-    survives with its sampled track removed is a miss where the folder check was
-    a hit. Measured, sampling 1000 draws each: at 200 albums with 1 or 5 files or
-    a whole folder removed it refused 0 times, and at 2 and at 5 albums with one
-    or four files removed 0 times; at N=1 album with its only (or its
-    lowest-named) track removed while the folder stays, it refuses 20 of 20 where
-    the folder check refused 0 of 20. That last shape is the one the note above
-    already describes for a removed FOLDER — "refused at every size" below
+    That is measurably stricter in exactly one way per album: an album whose
+    folder survives with its sampled track removed is a miss where the folder
+    check was a hit. Measured, sampling 1000 draws each: at 200 albums with 1 or
+    5 files or a whole folder removed it refused 0 times, and at 2 and at 5
+    albums with one or four files removed 0 times; at N=1 album with its only (or
+    its lowest-named) track removed while the folder stays, it refuses 20 of 20
+    where the folder check refused 0 of 20. That last shape is the one the note
+    above already describes for a removed FOLDER — "refused at every size" below
     ``_PRESENCE_SAMPLE_SIZE`` albums — extended to a removed file.
+
+    What that is NOT is a claim that a single-album library is the only library
+    it refuses. The refusal needs all K sampled albums to miss, which is a RATE
+    and not a shape wherever some albums are in that state and some are not:
+    measured with half of 200 albums missing their sampled file (folders all
+    intact, share mounted), 33 refusals in 1000 draws — 24 in an independent run
+    of the same probe, against the ``f**K`` = 3.1% the note above models. At
+    ``f = 1`` — every album's file removed by hand — it is certain at every size
+    measured (50 of 50 at N = 1, 2, 6, 20 and 200), which is the same answer a
+    dropped share gets and the reason this predicate exists.
 
     Why sampling and not a mount check. ``os.path.ismount`` / an ``st_dev``
     comparison against the parent / ``/proc/mounts`` all answer "is a filesystem

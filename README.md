@@ -71,9 +71,15 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   library names is really on disk. It checks the file rather than the folder holding it because
   a naming template with no folder in it (**Settings → Naming**, beets' own `$title`) puts
   every track straight in the music root — and asking whether the music root exists is the
-  question the stray file already answered wrongly. The cost of the stricter test is one shape:
-  a library with a single album whose first track was removed by hand, its folder left behind,
-  is now refused too. **Restore** runs that same stronger check, above both of the ways it can
+  question the stray file already answered wrongly. The cost of the stricter test is that an
+  album whose folder survives with its sampled track removed by hand no longer counts as
+  present. At any realistic library size that changes nothing — with 200 albums and one track,
+  five tracks or a whole folder missing it refused 0 times in 1000 draws, because one album
+  whose file really is there is enough. It bites where *every* album it samples is in that
+  state: a single-album library whose one track was removed by hand, or a share whose folders
+  are all present and whose files are not (measured: refused every time, at 1, 2, 6, 20 and 200
+  albums). Between those it is a rate rather than a shape — with half of 200 albums missing
+  their sampled file, 33 refusals in 1000 draws. **Restore** runs that same stronger check, above both of the ways it can
   put a folder back — it writes *into* the music library, so an unmounted share is the same
   catastrophe there, and a restore that hits one is refused with a 503 having moved nothing out
   of Trash. Disk sync is the deliberate exception: it keeps the cheap "is the root there" test,
