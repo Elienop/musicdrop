@@ -58,8 +58,12 @@ class ArtistDeletePartialError(Exception):
     and two of the primitive's branches drop an album's rows having moved
     nothing at all (an album with no item rows, and a ghost whose folder is
     already gone). Counted on the primitive's RETURN, so it is a floor and not a
-    census: the album this stopped on is never in it, even in the one window
-    where its folder did reach Trash. See :func:`_recovery`.
+    census: the album this stopped on is never in it, and it can have files in
+    Trash all the same. :func:`_recovery` names two ways — ``album.remove``
+    raising after the folder moved, and a move that stops part-way — as the ones
+    this file can point at, not as the whole list; nothing here distinguishes
+    them from a failure that moved nothing, which is why that hint asks rather
+    than tells.
     """
 
     def __init__(self, message: str, *, moved: int) -> None:
@@ -329,17 +333,27 @@ def _recovery(exc: Exception) -> str:
         :func:`~app.beets.trash._require_move_happened`) leaves some of them
         under the Trash container.
 
-    So the fallback names Trash as a place to CHECK and says what each answer
-    means. That is one look for the user who moved nothing, against a lost album
-    for the user who did.
+    So the fallback names Trash as a place to CHECK, and stops there. It used to
+    read the answer out for the user as well — "if the album's folder is there it
+    can be restored from there; if it is not, nothing moved and there is nothing
+    to restore" — and the second bullet's state falsifies both halves at once.
+    Measured on 2026-09-02 (``tests/test_delete.py`` ``_shared_folder_two_track_
+    library`` with ``Item.move`` raising on the album's second item): what sits
+    in Trash is the CONTAINER, holding the one item that made it, not the
+    album's folder; no origin record was written, because ``trash_album`` writes
+    one only after the move; and the album is still in the library with that
+    item's row pointing inside Trash. Telling that user their files can be
+    restored from Trash is as wrong as telling the previous one there is nothing
+    there. Naming Trash as a place to look is one look for the user who moved
+    nothing, against a lost album for the user who did.
     """
     if isinstance(exc, ArtistDeletePartialError) and exc.moved:
         return "Files are recoverable in the Trash folder. Retry."
     if isinstance(exc, TrashMoveIncompleteError):
         return "The files were not moved and the library still has the album. Retry."
     return (
-        "Check the Trash folder: if the album's folder is there it can be restored from"
-        " there; if it is not, nothing moved and there is nothing to restore. Retry."
+        "Check the Trash folder before retrying: a delete that stops part-way can"
+        " leave some or all of the files there. Retry."
     )
 
 

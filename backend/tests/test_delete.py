@@ -453,13 +453,16 @@ def test_delete_album_op_records_an_origin_the_listing_can_offer_a_move_back_on(
 _GHOST_ARTIST = "Ghosty"
 
 # The recovery line every failure that is not a partial fan-out with files in
-# Trash gets. Spelled once here, asserted at each of the four states that reach
-# it: three where nothing moved, and the album.remove window where the folder is
-# in Trash and this code cannot tell (see ``delete._recovery``). Conditional on
-# purpose — the two directions are what make it true in both.
+# Trash gets. Spelled once here, asserted at each of the five states that reach
+# it: three where nothing moved, the album.remove window where the whole folder
+# is in Trash, and the per-item fallback stopping mid-album (see
+# ``delete._recovery``). It states no disk fact in either direction, which is
+# what lets one sentence stand in all five — so an equality against this
+# constant is a SPELLING check, and each state's test carries its own
+# direction-asserting line beside its disk asserts.
 _LOOK_IN_TRASH = (
-    "Check the Trash folder: if the album's folder is there it can be restored from"
-    " there; if it is not, nothing moved and there is nothing to restore. Retry."
+    "Check the Trash folder before retrying: a delete that stops part-way can"
+    " leave some or all of the files there. Retry."
 )
 
 
@@ -763,6 +766,139 @@ def test_delete_500_does_not_deny_a_Trash_entry_it_never_looked_for(
     assert (trash / "Discovery" / "01 Track 1.mp3").is_file()
     assert (origins_for(trash) / "Discovery.json").is_file()
     assert duplicates_lib.get_album(album_id) is None
+    # The equality above is a SPELLING check and travels with the constant: put
+    # the denial back in ``_recovery`` and in ``_LOOK_IN_TRASH`` together and
+    # this test still passed. That lockstep pair was this branch's own wording
+    # until the commit adding these two lines, so the measurement is the suite
+    # at its parent: 2026-09-02, 2995 passed, 0 failed. These are the lines that
+    # read the BODY against the disk above — whatever the sentence says, it may
+    # not deny what the three asserts just found.
+    recovery = detail["recovery"]
+    assert "nothing to restore" not in recovery
+    assert "nothing moved" not in recovery
+
+
+def _shared_folder_two_track_library(tmp_path: Path) -> Library:
+    """An album of TWO tracks in a folder it shares, so a move can stop HALF done.
+
+    ``trash_album_folder``'s whole-folder branch is one ``shutil.move``: it
+    happened or it did not. The shared-folder fallback moves item by item and
+    beets stores each item's new path as it goes (``Album.move`` ->
+    ``item.move(..., store=True)``, ``beets/library/models.py:489-495``), so a
+    fault on the second item leaves the first under Trash with its row already
+    pointing there and the album still in the library.
+
+    * ``A Two`` and ``B Live`` are both ``Sharey``'s and share
+      ``music/Sharey/Both``, which is what makes ``_folder_is_shared`` refuse
+      the whole-folder move;
+    * ``A Two`` sorts first under the same albumartist, so the artist fan-out
+      meets it as its FIRST album — the tier where ``mutated == 0``;
+    * a bystander album on disk keeps ``require_library_present`` a certainty
+      rather than a draw: three albums against a sample of five is exhaustive.
+    """
+    from beets.library import Item
+
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+
+    def add(*, artist: str, album: str, at: Path, names: list[str]) -> None:
+        at.mkdir(parents=True, exist_ok=True)
+        items = []
+        for n, name in enumerate(names, 1):
+            f = at / name
+            f.write_bytes(b"\x00")
+            item = Item(album=album, albumartist=artist, artist=artist, title=f"T{n}", track=n)
+            item.path = os.fsencode(str(f))
+            items.append(item)
+        lib.add_album(items).store()
+
+    both = music / "Sharey" / "Both"
+    add(artist="Sharey", album="A Two", at=both, names=["01 A.mp3", "02 A.mp3"])
+    add(artist="Sharey", album="B Live", at=both, names=["03 B.mp3"])
+    add(
+        artist="Bystander",
+        album="Still Here",
+        at=music / "Bystander" / "Album",
+        names=["01 t.mp3"],
+    )
+    return lib
+
+
+def test_delete_album_500_does_not_read_the_answer_out_of_a_half_moved_album(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Something IS in Trash here, and none of the old sentence's reading holds.
+
+    The recovery line used to answer the user's question for them: "if the
+    album's folder is there it can be restored from there; if it is not, nothing
+    moved and there is nothing to restore". This is the state where the first
+    half is as wrong as the second. What reached Trash is the CONTAINER named
+    for the album, holding the one item that made it — not the album's folder;
+    no origin record was written, because ``trash_album`` writes one only after
+    the move; and the album is still in the library with that item's row
+    pointing inside Trash.
+
+    ``Item.move`` is patched rather than the primitive, so the half-moved state
+    is built by the real mover: item one really is relocated and stored before
+    item two raises.
+    """
+    from beets.library import Item
+    from beets.util import MoveOperation
+
+    lib = _shared_folder_two_track_library(tmp_path)
+    trash = tmp_path / "trash"
+    handle = make_test_handle(lib, tmp_path)
+    album_id = _require_id(next(a for a in lib.albums() if a.album == "A Two").id)
+    real_move = Item.move
+    calls = {"n": 0}
+
+    def _fails_on_the_second(
+        item: Item,
+        operation: MoveOperation = MoveOperation.MOVE,
+        basedir: bytes | None = None,
+        with_album: bool = True,
+        store: bool = True,
+    ) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise PermissionError(13, "Permission denied")
+        real_move(item, operation, basedir=basedir, with_album=with_album, store=store)
+
+    monkeypatch.setattr(Item, "move", _fails_on_the_second)
+
+    class _App:
+        state = SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins_for(trash))),
+        )
+
+    class _Req:
+        app = _App()
+
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(delete_album_op(_Req(), album_id))  # type: ignore[arg-type]  # stub req
+
+    assert ei.value.status_code == 500
+    detail = ei.value.detail
+    assert isinstance(detail, dict)
+    assert "Permission denied" in detail["message"]  # the cause is relayed
+    assert detail["recovery"] == _LOOK_IN_TRASH
+    # The direction, beside the state below: the sentence may point AT Trash and
+    # may not tell this user what finding something there means.
+    assert "can be restored" not in detail["recovery"]
+    assert "nothing to restore" not in detail["recovery"]
+    # The state itself. One file made it, under the container rather than under
+    # anything named like the album's folder; the row for it points into Trash;
+    # the album never left the library; and nothing recorded where it came from.
+    container = trash / "Sharey - A Two"
+    assert len(list(container.rglob("*.mp3"))) == 1
+    album = lib.get_album(album_id)
+    assert album is not None  # the rows were kept
+    rows = [os.fsdecode(i.path) for i in album.items()]
+    assert [r for r in rows if r.startswith(f"{container}{os.sep}")] != []
+    assert not list(origins_for(trash).glob("*.json"))
+    # ...and the album that only ever shared the folder is untouched.
+    assert (tmp_path / "music" / "Sharey" / "Both" / "03 B.mp3").is_file()
 
 
 def _shared_folder_ghost_library(tmp_path: Path) -> Library:
