@@ -141,8 +141,9 @@ def test_delete_album_root_unavailable_keeps_rows(duplicates_lib: Library, tmp_p
     album_id = _require_id(album.id)
     shutil.rmtree(os.fsdecode(duplicates_lib.directory))
 
+    origins = origins_for(trash)
     with pytest.raises(LibraryRootUnavailableError):
-        delete_album(duplicates_lib, album_id, trash_dir=trash, origins_dir=origins_for(trash))
+        delete_album(duplicates_lib, album_id, trash_dir=trash, origins_dir=origins)
 
     assert duplicates_lib.get_album(album_id) is not None  # still queryable
     assert not trash.exists()
@@ -162,8 +163,9 @@ def test_delete_artist_root_unavailable_drops_nothing(
     total_before = len(list(duplicates_lib.albums()))
     shutil.rmtree(os.fsdecode(duplicates_lib.directory))
 
+    origins = origins_for(trash)
     with pytest.raises(LibraryRootUnavailableError):
-        delete_artist(duplicates_lib, "Radiohead", trash_dir=trash, origins_dir=origins_for(trash))
+        delete_artist(duplicates_lib, "Radiohead", trash_dir=trash, origins_dir=origins)
 
     assert [_require_id(a.id) for a in duplicates_lib.albums() if a.albumartist == "Radiohead"] == (
         before
@@ -399,8 +401,9 @@ def test_a_fanout_that_already_moved_one_album_does_not_promise_nothing_was_dele
     )
     req = _store_fault_req(duplicates_lib, tmp_path, trash)
 
+    op = delete_artist_op(req, "Radiohead")  # type: ignore[arg-type]  # stub req
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(delete_artist_op(req, "Radiohead"))  # type: ignore[arg-type]  # stub req
+        asyncio.run(op)
 
     assert len(calls) == 2, "one ask per album, and the fan-out stopped on the second"
     assert ei.value.status_code == 500, "the 503 tier closed the moment an album was dropped"
@@ -525,8 +528,10 @@ def test_delete_artist_op_reports_partial_progress_for_ANY_cause(
     class _Req:
         app = _App()
 
+    req = _Req()
+    op = delete_artist_op(req, "Radiohead")  # type: ignore[arg-type]
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(delete_artist_op(_Req(), "Radiohead"))  # type: ignore[arg-type]
+        asyncio.run(op)
 
     assert ei.value.status_code == 500
     detail = ei.value.detail
@@ -725,8 +730,10 @@ def _artist_op_500(
     class _Req:
         app = _App()
 
+    req = _Req()
+    op = delete_artist_op(req, artist)  # type: ignore[arg-type]  # stub req
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(delete_artist_op(_Req(), artist))  # type: ignore[arg-type]  # stub req
+        asyncio.run(op)
     assert ei.value.status_code == 500
     return ei.value
 
@@ -931,8 +938,10 @@ def test_delete_album_500_does_not_promise_trash_for_files_that_did_not_move(
     class _Req:
         app = _App()
 
+    req = _Req()
+    op = delete_album_op(req, album_id)  # type: ignore[arg-type]  # stub req
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(delete_album_op(_Req(), album_id))  # type: ignore[arg-type]  # stub req
+        asyncio.run(op)
 
     assert ei.value.status_code == 500
     detail = ei.value.detail
@@ -982,8 +991,10 @@ def test_delete_artist_500_on_the_FIRST_album_does_not_promise_trash(
     before = [a for a in duplicates_lib.albums() if a.albumartist == "Radiohead"]
     assert len(before) == 2, "'the first album' only means something with more than one"
 
+    req = _Req()
+    op = delete_artist_op(req, "Radiohead")  # type: ignore[arg-type]  # stub req
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(delete_artist_op(_Req(), "Radiohead"))  # type: ignore[arg-type]  # stub req
+        asyncio.run(op)
 
     assert ei.value.status_code == 500
     detail = ei.value.detail
@@ -1116,8 +1127,10 @@ def test_delete_500_when_the_undo_ALSO_fails_does_not_send_the_reader_to_empty_t
     class _Req:
         app = _App()
 
+    req = _Req()
+    op = delete_album_op(req, album_id)  # type: ignore[arg-type]  # stub req
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(delete_album_op(_Req(), album_id))  # type: ignore[arg-type]  # stub req
+        asyncio.run(op)
 
     assert ei.value.status_code == 500
     detail = ei.value.detail
@@ -1173,8 +1186,9 @@ def test_a_fanout_that_stops_on_a_double_failure_does_not_send_the_reader_to_emp
     monkeypatch.setattr(Album, "remove", _retakes_the_origin_on_the_second_album)
     req = _store_fault_req(duplicates_lib, tmp_path, trash)
 
+    op = delete_artist_op(req, "Radiohead")  # type: ignore[arg-type]  # stub req
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(delete_artist_op(req, "Radiohead"))  # type: ignore[arg-type]  # stub req
+        asyncio.run(op)
 
     assert ei.value.status_code == 500
     detail = ei.value.detail
@@ -1288,8 +1302,10 @@ def test_delete_album_500_does_not_read_the_answer_out_of_a_half_moved_album(
     class _Req:
         app = _App()
 
+    req = _Req()
+    op = delete_album_op(req, album_id)  # type: ignore[arg-type]  # stub req
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(delete_album_op(_Req(), album_id))  # type: ignore[arg-type]  # stub req
+        asyncio.run(op)
 
     assert ei.value.status_code == 500
     detail = ei.value.detail
@@ -1398,8 +1414,10 @@ def test_delete_artist_does_not_count_a_shared_folder_ghost_as_moved(
     class _Req:
         app = _App()
 
+    req = _Req()
+    op = delete_artist_op(req, "Sharey")  # type: ignore[arg-type]  # stub req
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(delete_artist_op(_Req(), "Sharey"))  # type: ignore[arg-type]  # stub req
+        asyncio.run(op)
 
     assert ei.value.status_code == 500
     detail = ei.value.detail
