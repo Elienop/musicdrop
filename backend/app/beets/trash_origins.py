@@ -202,12 +202,16 @@ def origin_recorded(origins_dir: Path, entry_name: str) -> bool:
     allocator would get from a name nothing recorded.
 
     EXISTENCE of the key file, deliberately, and not "would
-    :func:`read_trash_origin` answer for this name". They differ for exactly the
-    colliding pair in :func:`origin_file`: the record belongs to the other name,
-    so the read refuses it while this still says True. Occupied is the safe side
-    — the allocator moves on to ``<name> (1)`` and the pair never shares a file
-    in the first place — and the cost is the same burnt name a manual deletion
-    already costs.
+    :func:`read_trash_origin` answer for this name". They differ for every record
+    that is on disk and refused, which is more than the colliding pair in
+    :func:`origin_file` (whose record belongs to the other name): it is also
+    every UNUSABLE one — a pre-feature payload carrying no ``name``, corrupt
+    JSON, a future schema, a truncated write, a non-ASCII byte. Measured at this
+    tip: read ``None`` and recorded ``True`` for all five. Occupied is the safe
+    side in all of them — the allocator moves on to ``<name> (1)``, so the pair
+    never shares a file in the first place and a record nobody can read is never
+    inherited by a second folder — and the cost is the same burnt name a manual
+    deletion already costs.
     """
     try:
         return origin_file(origins_dir, entry_name).exists()
