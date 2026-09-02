@@ -248,7 +248,7 @@ MusicDrop has no built-in backup, deliberately: its state is plain files under t
 
 | Host path | Mount | Holds |
 |---|---|---|
-| `./data` | `/data` | `beets/` — library DB, config, bank, playlists, settings, Trash — plus `cache/artist-images/` and `cache/cover-thumbs/` |
+| `./data` | `/data` | `beets/` — library DB, config, bank, playlists, settings, Trash and the Trash origin records — plus `cache/artist-images/` and `cache/cover-thumbs/` |
 | your music share | `/music` | the audio files, their embedded tags, `cover.<ext>`, `.lrc`/`.txt` lyric sidecars, `artist-poster.*` / `artist-background.*` |
 | slskd downloads *(acquisition only)* | `/inbox` | `.musicdrop-ledger.json` — which drops were already handled; without it, old downloads re-import |
 
@@ -264,10 +264,11 @@ MusicDrop has no built-in backup, deliberately: its state is plain files under t
 - `data/beets/plex/plex.json`, `data/beets/slskd/slskd.json` — the Plex and slskd integration settings, mode `0600`. Not just tokens: Plex's library path/section, slskd's downloads prefix and its `auto_import` toggle (lose that and unattended import reverts to its env default, off).
 - `<inbox>/.musicdrop-ledger.json` — the handled-drops record. Defaults to `<beets_dir>/inbox`, inside `/data`; `MUSICDROP_INBOX_DIR` moves it onto the slskd downloads mount — the table's third row.
 - `data/beets/trash/` — deleted albums live here and nowhere else until you empty the Trash; normally the only GB-scale item under `data/`.
+- `data/beets/trash-origins/*.json` — where each trashed folder came from, one tiny file per Trash entry. Nothing else records it: restore the Trash without these and every row falls back to the approximate restore, which for an art/booklet leftover with no audio means no way back at all. `MUSICDROP_TRASH_ORIGINS_DIR` moves them.
 - `data/beets/state.pickle` — beets' import state. The banking sweep's forced `incremental` reads its `taghistory`; without it the next sweep re-offers every folder it has already handled.
 - `data/cache/artist-images/` — the `*.override` (+ `*.override.mime`) images you uploaded or pasted by hand, which nothing refetches, and `_enabled.json` / `_art_write_enabled.json`, the two artist-image toggles: lose those and both revert to their env defaults (`MUSICDROP_ARTIST_IMAGES_ENABLED` / `MUSICDROP_ARTIST_ART_WRITE_ENABLED`, off unless set).
 
-Those are the shipped image's paths (`MUSICDROP_BEETS_DIR=/data/beets`, `MUSICDROP_ARTIST_IMAGE_CACHE_DIR=/data/cache/artist-images`). Override either and the tree under it moves; a `MUSICDROP_*_DIR` for trash, bank, playlists, Plex, slskd or the inbox moves that subtree out from under `<beets_dir>`; and `config.yaml`'s `library:` and `directory:` relocate the DB and the music tree with no env var at all. Snapshot what these resolve to, not the defaults.
+Those are the shipped image's paths (`MUSICDROP_BEETS_DIR=/data/beets`, `MUSICDROP_ARTIST_IMAGE_CACHE_DIR=/data/cache/artist-images`). Override either and the tree under it moves; a `MUSICDROP_*_DIR` for trash, trash origins, bank, playlists, Plex, slskd or the inbox moves that subtree out from under `<beets_dir>`; and `config.yaml`'s `library:` and `directory:` relocate the DB and the music tree with no env var at all. Snapshot what these resolve to, not the defaults.
 
 **Regenerable** — don't worry about these:
 
