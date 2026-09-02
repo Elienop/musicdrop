@@ -494,9 +494,10 @@ def delete_trash_origin(origins_dir: Path, entry_name: str) -> None:
     caller runs this AFTER irreversible work — the folder has been moved back
     into the library, emptied, or stranded by a failed undo — so an exception
     escaping here turns an operation that fully SUCCEEDED into a bare 500.
-    Caught: ``OSError`` and ``ValueError`` from the key, the read and the
-    unlink, plus the ``RecursionError`` ``json.loads`` raises on a deeply nested
-    file. That third one is in the list because it was NOT: at the previous tip
+    Caught: ``OSError`` and ``ValueError`` from the key and the unlink, in the
+    handler below; and ``OSError``, ``ValueError`` and ``RecursionError`` from
+    the payload read, inside :func:`_names_a_different_entry`. That last one is
+    in the list because it was NOT: at the previous tip
     a 60k-deep ``[[[...]]]`` at the key escaped ``empty_one`` with the folder
     already rmtree'd, and aborted ``empty_all`` part-way (measured: 1 of 2
     entries destroyed, the sweep abandoned past its own ``except OSError``).

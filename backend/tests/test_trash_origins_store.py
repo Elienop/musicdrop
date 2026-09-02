@@ -515,6 +515,23 @@ def test_a_record_the_json_parser_gives_up_on_does_not_abort_empty_all(
     assert list(trash.iterdir()) == []
 
 
+def test_clearing_a_store_that_was_never_created_is_silent(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The SILENCE is the point, exactly as it is for a record never written.
+
+    A deployment that has never recorded an origin has no store directory, and
+    every Empty all it runs reaches the sweep. Spelled with one ``except
+    OSError`` the missing directory would earn a WARNING every time — noise that
+    buries the warnings that mean something, since a record present and
+    unusable is how a failing ``/data`` announces itself.
+    """
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        clear_trash_origins(tmp_path / "never-created")
+
+    assert caplog.records == []
+
+
 # ----- the two log lines whose %r nothing was pinning -----
 
 #: A Trash entry name that writes a fake log line if it is interpolated raw. It
