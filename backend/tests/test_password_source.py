@@ -388,6 +388,40 @@ def test_writing_creates_the_data_directory(password_hash_file: Path) -> None:
     assert effective_password() == (_FILE_HASH, "file")
 
 
+def test_a_password_change_replaces_the_link_rather_than_writing_through_it(
+    password_hash_file: Path, tmp_path: Path
+) -> None:
+    """A secrets mount survives reads, not the first password change.
+
+    ``_describe_entry`` follows links, so an operator can point
+    ``password-hash`` at a Docker secret and sign in through it. This is the
+    other half of that sentence, and the reason the docstring there says
+    "read-side": the writer publishes with ``os.replace``, which swaps the LINK
+    for a regular file and never opens the target, so the mounted secret is left
+    byte-identical and the new password lives in the beets directory instead.
+
+    Pinned rather than left implicit because the two halves read as one promise:
+    an operator told "links keep working" would expect the change to write
+    through to the mount, and the orphaned secret then shadows the new password
+    on the next deploy that recreates the link. Refusing to write through a
+    planted link is the property being kept.
+    """
+    mounted = tmp_path / "secrets-mount" / "musicdrop-password"
+    mounted.parent.mkdir(parents=True, exist_ok=True)
+    mounted.write_text(_FILE_HASH + "\n", encoding="utf-8")
+    before = mounted.read_bytes()
+    password_hash_file.parent.mkdir(parents=True, exist_ok=True)
+    password_hash_file.symlink_to(mounted)
+    assert effective_password() == (_FILE_HASH, "file")
+
+    write_password_hash(_ENV_HASH)
+
+    assert password_hash_file.is_symlink() is False
+    assert stat.S_ISREG(password_hash_file.lstat().st_mode)
+    assert effective_password() == (_ENV_HASH, "file")
+    assert mounted.read_bytes() == before
+
+
 def test_writing_twice_replaces_the_stored_hash(password_hash_file: Path) -> None:
     write_password_hash(_FILE_HASH)
     write_password_hash(_ENV_HASH)

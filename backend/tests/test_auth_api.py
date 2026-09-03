@@ -235,23 +235,33 @@ def test_an_unreadable_hash_says_so_rather_than_blaming_the_password(
     password, but one is "set MUSICDROP_PASSWORD_HASH" and the other is
     "replace the one you set". The operator is the only user here and sees this
     sentence verbatim in the login form.
+
+    Pinned WHOLE, like its file twin below, because fragments do not pin
+    MEANING: a review round rewrote the third sentence to say that unsetting the
+    variable discards the stored password — the reverse of the truth — and the
+    two ``in`` checks this test used to make ("unset it", "if there is one")
+    both still passed.
+
+    Three sentences: the state, then two recoveries that lead different places.
+    Doubling the dollars keeps the override — a ``scrypt$...`` value pasted into
+    docker-compose.yml with single dollars usually arrives unparseable (compose
+    swallows a letter-led field; a digit-led one survives), which is the
+    measured way this state is reached. Unsetting the variable instead hands the
+    server back to whatever is stored, which is the move an operator who never
+    meant to use the override wants, and the sentence has to admit that may be
+    nothing because the app cannot promise a stored one.
     """
     monkeypatch.setattr("app.config.settings.password_hash", "argon2id$v=19$whatever")
     resp = _anonymous().post(_LOGIN, json={"password": _PASSWORD})
     assert resp.status_code == 401
-    # The env arm's sentence, which names the compose trap: a `scrypt$...` value
-    # pasted into docker-compose.yml with single dollars usually arrives
-    # unparseable (compose swallows letter-led fields; digit-led ones survive),
-    # and that is the measured way this state is reached.
-    detail = resp.json()["detail"]
-    assert "MUSICDROP_PASSWORD_HASH" in detail
-    assert "$$" in detail
-    # The SECOND recovery. Doubling the dollars keeps the override; unsetting the
-    # variable hands the server back to whatever is stored, which is the move an
-    # operator who never meant to use the override wants — and the sentence has
-    # to admit it may be nothing, because the app cannot promise a stored one.
-    assert "unset it" in detail
-    assert "if there is one" in detail
+    assert resp.json() == {
+        "detail": (
+            "The password hash in MUSICDROP_PASSWORD_HASH is not readable. "
+            "In docker-compose, every $ in the hash must be doubled to $$. "
+            "Or unset it and restart MusicDrop, and the password stored on this "
+            "server, if there is one, applies again."
+        )
+    }
 
 
 def test_an_unreadable_STORED_FILE_names_its_own_recovery(password_hash_file: Path) -> None:

@@ -142,22 +142,32 @@ _ECHOED_INPUT_KEY: Final = "input"
 
 
 def _without_the_echoed_input(errors: object) -> object:
-    """Every 422 row minus :data:`_ECHOED_INPUT_KEY`, leaving ``loc``/``msg``/``type``.
+    """Each 422 row minus :data:`_ECHOED_INPUT_KEY`, leaving at least ``loc``/``msg``/``type``.
 
     Dropped app-wide rather than for a named list of fields. Two of the routes
     that take a body take a PASSWORD in it (``POST /api/auth/setup``,
     ``POST /api/auth/password``), so a request that misses a field or sends one
     with the wrong type had the plaintext read back to it in the response body —
     and a list of secret field names is a list somebody has to remember to add
-    to. The three surviving keys are exactly what FastAPI's own
-    ``HTTPValidationError`` component declares, so this narrows the body towards
-    the contract rather than away from it, and the frontend reads ``msg`` only
+    to.
+
+    What survives is ``loc``/``msg``/``type`` on every shape measured, plus
+    ``ctx`` on the rows where pydantic sets one: a malformed JSON body answers
+    with a ``json_invalid`` row whose ``ctx.error`` is the parser's own
+    complaint (measured: ``"Expecting ',' delimiter"``), and a validator's
+    ``ValueError`` gives a ``value_error`` row whose ``ctx.error`` renders as
+    ``{}`` — ``jsonable_encoder`` has no fields to take off the exception
+    object. Those three are the ``required`` list of the ``ValidationError``
+    component — the row schema ``HTTPValidationError.detail`` is an array of —
+    which declares five properties in all, ``input`` and ``ctx`` being its two
+    optional ones. So this narrows the body towards the required set rather than
+    outside the contract, and the frontend reads ``msg`` only
     (``frontend/src/api/lib.ts::firstValidationMessage``).
 
     This does not make a 422 body free of everything a client sent: ``loc``
     names the offending field, and a validator that quotes the value in its own
-    message would put it in ``msg``. It removes the echo pydantic adds to every
-    row by default.
+    message puts it in ``msg`` (measured: ``"Value error, blank name: '  '"``).
+    What it removes is the verbatim echo pydantic adds to each row by default.
     """
     if not isinstance(errors, list):
         return errors

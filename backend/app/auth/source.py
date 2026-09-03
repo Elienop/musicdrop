@@ -111,11 +111,20 @@ def _describe_entry(path: Path) -> os.stat_result | None:
     """What is at ``path``, or ``None`` when NOTHING is.
 
     An ``lstat`` first, so a SYMLINK is seen as a symlink rather than as its
-    target. Links are then followed deliberately: an operator who points
+    target. Links are then followed deliberately, because this module already
+    trusts the directory beets' config and library sit in: refusing them would
+    buy nothing, since anyone who can create the link can write the file.
+
+    Following is a READ-side property, and only that. An operator who points
     ``password-hash`` at a secrets mount (a Docker secret, a systemd credential)
-    keeps working, and this module already trusts the directory beets' config
-    and library sit in. Refusing links would break that for no gain — anyone who
-    can create the link can write the file.
+    is authenticated through it — but the first password change ends the
+    arrangement: :func:`write_password_hash` publishes with ``os.replace``,
+    which swaps THE LINK for a regular file at this path and leaves the mount's
+    own file as it was. Measured, and pinned by
+    ``tests/test_password_source.py::test_a_password_change_replaces_the_link_rather_than_writing_through_it``.
+    Replacing a planted link rather than writing through it is the property
+    being kept; the cost is that a link here survives reads and not writes,
+    which is why the dangling case below refuses to read as "absent".
 
     A DANGLING link is the half worth spelling out: the second ``stat`` raises
     ``FileNotFoundError`` where the ``lstat`` succeeded. That error is left to
