@@ -240,8 +240,9 @@ def test_an_unreadable_hash_says_so_rather_than_blaming_the_password(
     resp = _anonymous().post(_LOGIN, json={"password": _PASSWORD})
     assert resp.status_code == 401
     # The env arm's sentence, which names the compose trap: a `scrypt$...` value
-    # pasted into docker-compose.yml with single dollars is interpolated down to
-    # something unparseable, and that is the measured way this state is reached.
+    # pasted into docker-compose.yml with single dollars usually arrives
+    # unparseable (compose swallows letter-led fields; digit-led ones survive),
+    # and that is the measured way this state is reached.
     detail = resp.json()["detail"]
     assert "MUSICDROP_PASSWORD_HASH" in detail
     assert "$$" in detail

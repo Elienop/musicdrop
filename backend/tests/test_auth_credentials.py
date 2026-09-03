@@ -326,9 +326,9 @@ def test_the_cli_prints_a_hash_that_verifies() -> None:
     assert stored.count("\n") == 0
     assert "MUSICDROP_PASSWORD_HASH" in out.stderr
     # The compose form is on STDERR, beside the guidance and never on stdout:
-    # a `scrypt$...` value pasted raw into docker-compose.yml is interpolated
-    # down to something unparseable, which is the measured way the
-    # set-but-UNREADABLE state is reached.
+    # a `scrypt$...` value pasted raw into docker-compose.yml usually arrives
+    # unparseable (compose swallows letter-led fields; digit-led ones survive),
+    # which is the measured way the set-but-UNREADABLE state is reached.
     assert stored.replace("$", "$$") in out.stderr
     assert "$$" in out.stderr
 
