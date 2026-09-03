@@ -63,7 +63,7 @@ def test_stray_entry_on_a_dropped_mountpoint(duplicates_lib: Library, stray: str
 
     with pytest.raises(LibraryRootUnavailableError) as ei:
         require_library_present(duplicates_lib)
-    assert "holds none of the library's albums" in str(ei.value)
+    assert "none of the music files the library names" in str(ei.value)
 
 
 def test_refusal_message_leaks_no_path(duplicates_lib: Library) -> None:
@@ -198,7 +198,7 @@ def test_require_library_root_never_samples_the_database(
     def _must_not_run(*_args: object, **_kwargs: object) -> list[str]:
         raise AssertionError("require_library_root sampled the DB — it must stay O(1)")
 
-    monkeypatch.setattr(library_mod, "_sampled_library_dirs", _must_not_run)
+    monkeypatch.setattr(library_mod, "_sampled_library_files", _must_not_run)
 
     require_library_root(duplicates_lib)  # must not raise
 
@@ -233,21 +233,35 @@ def test_require_library_present_short_circuits_on_the_first_hit(
     """A healthy library pays ONE sample stat, not ``_PRESENCE_SAMPLE_SIZE``.
 
     The sample budget is spent only on the refusal path; that is what makes the
-    check affordable inside a fan-out.
+    check affordable inside a fan-out. Both stats are counted, not just the
+    sample's: the root guard's own ``isdir`` is the other half of the cost a
+    caller feels, and counting it is what would catch the sample being taken
+    twice or the root guard being run per sample.
     """
-    checked: list[str] = []
+    sampled: list[str] = []
+    root_checks: list[str] = []
+    real_isfile = os.path.isfile
     real_isdir = os.path.isdir
 
+    def _isfile(path: Any) -> bool:
+        sampled.append(str(path))
+        return real_isfile(path)
+
     def _isdir(path: Any) -> bool:
-        checked.append(str(path))
+        root_checks.append(str(path))
         return real_isdir(path)
 
+    monkeypatch.setattr(os.path, "isfile", _isfile)
     monkeypatch.setattr(os.path, "isdir", _isdir)
 
     require_library_present(duplicates_lib)
 
-    # One for the root guard, one for the first sampled album folder.
-    assert len(checked) == 2, checked
+    # One for the root guard, one for the first sampled album FILE — and the
+    # file is what is stat'ed, not the folder holding it (which is what a flat
+    # layout collapses onto the music root).
+    assert len(root_checks) == 1, root_checks
+    assert len(sampled) == 1, sampled
+    assert os.path.isfile(sampled[0]), sampled
 
 
 # ----- SQLite is dynamically typed: a raw `path` row is not always BLOB -----
@@ -282,11 +296,11 @@ def test_the_presence_check_survives_a_path_row_stored_as_text(
 
     require_library_present(duplicates_lib)  # the raise under test is TypeError, not the 503
 
-    # And the paths still resolve to the same folders, so the check is not
-    # merely surviving — it is still asking the real question.
-    dirs = library_mod._sampled_library_dirs(duplicates_lib, 5)
-    assert dirs, "a seeded library must sample something"
-    assert all(os.path.isdir(d) for d in dirs)
+    # And the paths still resolve to the same files, so the check is not merely
+    # surviving — it is still asking the real question.
+    files = library_mod._sampled_library_files(duplicates_lib, 5)
+    assert files, "a seeded library must sample something"
+    assert all(os.path.isfile(f) for f in files)
 
 
 def test_a_text_path_row_does_not_hide_a_dropped_share(duplicates_lib: Library) -> None:

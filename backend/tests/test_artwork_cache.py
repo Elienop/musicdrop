@@ -44,9 +44,13 @@ def _broken_cache_dir(tmp_path: Path) -> Path:
 
     The path's parent is a regular FILE, so ``mkdir`` raises ENOTDIR and every
     slot ``exists()`` reads False (pathlib swallows ENOTDIR). That matters
-    because the ``chmod 0o500`` fixtures this file already uses have to
-    ``skip`` under root, and CI images do run as root: a write-back test built
-    on chmod would report green having executed nothing.
+    because the ``chmod 0o500`` fixtures this file already uses have to ``skip``
+    under root, and root is a real way to run this suite: the shipped image
+    declares no ``USER`` (``Dockerfile``), so a maintainer running pytest inside
+    it is root and a write-back test built on chmod would report green having
+    executed nothing. (Not CI: ``.github/workflows/ci.yml`` runs the job on
+    ``ubuntu-latest`` with no ``container:`` key and no ``sudo``, i.e. as
+    ``runner``.)
     """
     blocker = tmp_path / "not-a-dir"
     blocker.write_bytes(b"")

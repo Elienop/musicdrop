@@ -31,9 +31,11 @@ import pytest
 from beets import config
 from beets.library import Album, Item, Library
 
+from app.beets import trash_origins as trash_origins_mod
 from app.beets.import_session import ImportBridge, WebImportSession, run_import_worker
 from app.beets.library import LibraryRootUnavailableError, _require_id
 from app.beets.trash import (
+    album_folder,
     resolve_trash_dir,
     resolve_trash_origins_dir,
     trash_album,
@@ -42,7 +44,6 @@ from app.beets.trash import (
 )
 from app.beets.trash_manage import (
     TrashRestoreIncompleteError,
-    _occupied,
     _restore_to_origin,
     _return_to_trash,
     empty_all,
@@ -54,6 +55,7 @@ from app.beets.trash_origins import (
     _MAX_KEY_BYTES,
     _NAME_MAX,
     TrashOrigin,
+    TrashOriginsStoreUnusableError,
     delete_trash_origin,
     move_back_target,
     origin_file,
@@ -62,7 +64,7 @@ from app.beets.trash_origins import (
     write_trash_origin,
 )
 from app.config import Settings
-from app.fsutil import exists
+from app.fsutil import exists, occupied
 from app.models.bank import BankApplyDirective
 from app.models.trash import RestoreResult
 from tests.conftest import build_library, make_test_handle, origins_for
@@ -257,9 +259,13 @@ def test_write_trash_origin_swallows_a_failing_write(tmp_path: Path, name: str) 
 
     This is a NEW write on the delete path, so its failure must be no worse than
     today (folder in Trash, no record). TWO of the three callers run
-    ``album.remove()`` on the very next line (``trash.py:231`` for the per-item
-    mover, ``trash.py:418`` for the whole-folder one), so anything escaping here
-    keeps the library rows while the files are already in Trash.
+    ``album.remove()`` a statement or two later (``trash.trash_album`` for the
+    per-item mover, ``trash.trash_album_folder``'s whole-folder branch for the
+    other), so anything escaping here keeps the library rows while the files are
+    already in Trash — and on the whole-folder path it would now also trip the
+    move-back the row drop is wrapped in, undoing a delete because its
+    bookkeeping failed. Named rather than cited by line: the two line numbers
+    this used to give (``trash.py:231`` and ``:418``) were both stale.
 
     Parametrised over the NAME because the failure handler interpolates it, and
     an ASCII fixture exercises the swallow without ever exercising the handler's
@@ -281,21 +287,30 @@ def test_write_trash_origin_swallows_a_failing_write(tmp_path: Path, name: str) 
     assert read_trash_origin(origins, name) is None
 
 
-def test_a_husk_still_reaches_trash_when_the_record_cannot_be_written(tmp_path: Path) -> None:
-    # A real failure, no monkeypatching: a regular FILE where the origins dir
-    # belongs, so the store's mkdir raises. The delete must still complete.
+def test_a_husk_is_refused_when_the_store_is_not_a_folder(tmp_path: Path) -> None:
+    """This used to assert the OPPOSITE, and the owner's ruling turned it round.
+
+    A regular FILE where the origins directory belongs is not a record that
+    failed to write, it is a store that cannot be used — and until
+    ``decisions.md`` 28 the husk went to Trash anyway, unrecordably, because
+    ``Path.exists()`` absorbs the ENOTDIR its children raise and the allocator
+    read "no record" in silence (measured: zero log records for this shape).
+
+    The fixture is unchanged and it stays root-proof: nothing here is a mode
+    bit, so the refusal holds for uid 0 exactly as it does for uid 1000.
+    """
     husk = tmp_path / "music" / "Old Name"
     husk.mkdir(parents=True)
     (husk / "cover.jpg").write_bytes(b"\x00")
-    _origins(tmp_path).write_bytes(b"not a directory")
+    origins = _origins(tmp_path)
+    origins.write_bytes(b"not a directory")
 
-    dest = trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+    with pytest.raises(TrashOriginsStoreUnusableError) as ei:
+        trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=origins)
 
-    assert dest.is_dir()
-    assert (dest / "cover.jpg").is_file()
-    assert not husk.exists()
-    # No record, but the delete happened.
-    assert read_trash_origin(_origins(tmp_path), dest.name) is None
+    assert "trash-origins" in str(ei.value)
+    assert (husk / "cover.jpg").is_file(), "the husk must not have moved"
+    assert not (tmp_path / "trash").exists(), "the refusal comes BEFORE the Trash mkdir"
 
 
 @pytest.mark.parametrize(
@@ -306,63 +321,40 @@ def test_a_husk_still_reaches_trash_when_the_record_cannot_be_written(tmp_path: 
         pytest.param(os.fsdecode(b"Bjork/Dummy \xf6"), id="non-utf8"),
     ],
 )
-def test_an_album_still_reaches_trash_when_the_record_cannot_be_written(
-    tmp_path: Path, folder: str
-) -> None:
-    """The record write must not be able to keep the library rows -- at ANY name.
+def test_an_album_is_refused_when_the_store_is_not_a_folder(tmp_path: Path, folder: str) -> None:
+    """The album twin of the husk refusal, and it asserts the DB half as well.
 
-    Parametrised over the FIXTURE NAME rather than over the failure, because the
-    name is what the failure handler touches and an ASCII fixture proves only
-    that the write was swallowed. This test passed for months on
-    ``Portishead/Dummy`` alone while the handler itself raised
-    ``UnicodeDecodeError`` on every non-ASCII path: ``backslashreplace`` on an
-    ENCODE escapes only what the target codec cannot encode, and UTF-8 encodes
-    everything, so the ``.decode("ascii")`` that followed had real bytes to
-    choke on. The escape skipped ``album.remove()`` one line later, leaving the
-    files in Trash and the rows in the library -- the exact split this whole
-    module exists to prevent.
+    This used to assert that the delete COMPLETED with no record. It cannot any
+    more: a regular FILE at the store path is a store that cannot be used, and
+    the ruling (``decisions.md`` 28) is that such a delete does not run. What it
+    now pins is the whole "nothing happened" — rows kept, files where they were,
+    no Trash dir at all — because the refusal fires ahead of every branch of
+    ``trash_album_folder``, not merely ahead of its ``mkdir``.
 
-    Both non-ASCII arms are load-bearing, and for DIFFERENT regressions -- an
-    accented name is valid UTF-8 that ASCII cannot carry, while a non-UTF-8
-    POSIX name arrives as lone surrogates that UTF-8 itself cannot encode.
-    Measured against the plausible spellings of this one log argument:
-
-    ======================================  ========  ========
-    argument expression                     accented  non-utf8
-    ======================================  ========  ========
-    ``display_path`` (shipped)              pass      pass
-    the bug: utf-8 backslashreplace, ascii  FAILS     pass
-    ascii backslashreplace, decode ascii    pass      pass
-    strict ``.encode("ascii")``             FAILS     FAILS
-    plain ``.encode("utf-8")``              pass      FAILS
-    ======================================  ========  ========
-
-    Note the third row: the obvious one-character fix does not raise, so this
-    test does not object to it. It is only worse output, not a crash, and a
-    test that failed on it would be pinning a preference.
-
-    The undecodable byte must sit in the LEAF, not a parent directory: ``entry``
-    is the TRASH destination, named from the album folder's basename, so a
-    surrogate in the artist component never reaches the handler at all. A first
-    draft put it there and the arm silently proved nothing while still entering
-    the handler -- it takes a mutation matrix, not a green run, to tell those
-    apart.
+    The three NAME arms are kept, and not because the refusal message carries
+    the name (it does not — it names the store and nothing else): what has to be
+    reached with a lone-surrogate album folder before the refusal can be
+    asserted is ``album_folder``, and an ASCII-only fixture would stop
+    exercising it. The record writer's own log-line encoding is pinned where it
+    belongs, at the contract —
+    ``test_write_trash_origin_swallows_a_failing_write`` above, which keeps this
+    same fixture because a writer called directly has no mover to refuse first,
+    and whose docstring holds the measured matrix this one used to repeat.
     """
     lib = _seeded_library(tmp_path, folder=folder)
     album = _dummy(lib)
     album_id = _require_id(album.id)
-    _origins(tmp_path).write_bytes(b"not a directory")
+    album_root = Path(album_folder(lib, list(album.items())))
+    origins = _origins(tmp_path)
+    origins.write_bytes(b"not a directory")
+    tx = lib.transaction()
 
-    with lib.transaction():
-        dest = Path(
-            trash_album_folder(
-                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
-            )
-        )
+    with pytest.raises(TrashOriginsStoreUnusableError), tx:
+        trash_album_folder(lib, album, trash_dir=tmp_path / "trash", origins_dir=origins)
 
-    assert lib.get_album(album_id) is None  # the delete completed
-    assert len(list(dest.glob("*.flac"))) == 2
-    assert read_trash_origin(_origins(tmp_path), dest.name) is None
+    assert lib.get_album(album_id) is not None, "the rows must survive the refusal"
+    assert len(list(album_root.glob("*.flac"))) == 2, "the files must not have moved"
+    assert not (tmp_path / "trash").exists(), "the refusal comes BEFORE the Trash mkdir"
 
 
 # ----- reading a record is reading untrusted input -----
@@ -422,7 +414,7 @@ def test_move_back_target_refuses_an_origin_outside_the_library(tmp_path: Path) 
     assert move_back_target(inside, music_dir=music) == tmp_path / "music" / "A"
     # The library ROOT itself is refused separately from "outside the library",
     # and it is the one that costs something: a corrupt or empty origin that
-    # normalises to the music root would hand ``_move_no_merge`` the whole
+    # normalises to the music root would hand ``move_no_merge`` the whole
     # library as a move destination.
     assert move_back_target(TrashOrigin(origin=music, moved="folder"), music_dir=music) is None
     assert (
@@ -910,9 +902,11 @@ def test_restore_refuses_to_move_into_an_unavailable_music_share(tmp_path: Path)
             )
         )
     shutil.rmtree(tmp_path / "music")
+    entry_path = str(dest)
+    origins = _origins(tmp_path)
 
     with pytest.raises(LibraryRootUnavailableError):
-        restore_album(lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+        restore_album(lib, entry_path, trash_dir=tmp_path / "trash", origins_dir=origins)
 
     assert len(list(dest.glob("*.flac"))) == 2  # nothing left Trash
 
@@ -1086,12 +1080,18 @@ def test_every_unusable_record_names_its_own_cause(
 
 
 def test_a_row_whose_record_could_not_be_written_no_longer_blames_its_age(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The finding, end to end: the write fails NOW and the row said "before".
 
-    A real write failure, no monkeypatching — a regular FILE where the origins
-    directory belongs, so the store cannot create it. The Trash row used to read
+    A real write failure, FORCED at the writer rather than staged as a broken
+    store. The fixture this used to share — a regular FILE where the origins
+    directory belongs — now refuses the delete outright (``decisions.md`` 28),
+    so it no longer stages a delete that completes without a record. The shared
+    atomic sink is made to raise instead: it is the same failure the swallow
+    handler sees, and it leaves the store around it healthy, which is what this
+    test needs — the fault has to be a RECORD's, not the store's, or there is no
+    Trash row to read a note off at all. The Trash row used to read
     "it was moved to Trash before origins were recorded" alone, which is false
     and, worse, unfalsifiable: it points at the folder's age instead of at the volume
     that just went read-only, so nobody investigates and every later delete loses
@@ -1102,10 +1102,20 @@ def test_a_row_whose_record_could_not_be_written_no_longer_blames_its_age(
     husk = tmp_path / "music" / "Old Name"
     husk.mkdir(parents=True)
     (husk / "cover.jpg").write_bytes(b"\x00")
-    _origins(tmp_path).write_bytes(b"not a directory")
+
+    def _boom(*_args: object, **_kwargs: object) -> NoReturn:
+        raise OSError(errno.EROFS, "Read-only file system")
+
+    monkeypatch.setattr(trash_origins_mod, "write_atomic_text", _boom)
 
     with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
         trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+
+    # The delete itself still completed. That is the invariant the two refusal
+    # tests above gave up when their fixture changed meaning, so it is asserted
+    # here: a record that cannot be WRITTEN may never keep a folder out of Trash.
+    assert (tmp_path / "trash" / "Old Name" / "cover.jpg").is_file()
+    assert not husk.exists()
 
     # The write announced its own failure at the time it happened...
     assert any("could not record the Trash origin" in r.getMessage() for r in caplog.records)
@@ -1324,15 +1334,15 @@ def test_a_failed_return_to_trash_cannot_forge_a_log_line(
     monkeypatch.setattr(
         "app.beets.trash_manage._restore_by_import", _import_destroys_the_folder_then_fails
     )
+    at_warning = caplog.at_level(logging.WARNING, logger="app.beets.trash_manage")
+    origins = _origins(tmp_path)
     with (
-        caplog.at_level(logging.WARNING, logger="app.beets.trash_manage"),
+        at_warning,
         # The double failure now propagates as the UNDO's story rather than the
         # import's ``RuntimeError``; the import is still reachable as ``__cause__``.
         pytest.raises(TrashRestoreIncompleteError) as ei,
     ):
-        _restore_to_origin(
-            lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
-        )
+        _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=origins)
 
     assert isinstance(ei.value.__cause__, RuntimeError)
     assert any("could not return" in r.getMessage() for r in caplog.records)
@@ -1391,8 +1401,10 @@ def test_a_failed_restore_whose_undo_also_fails_says_where_the_folder_went(
         "app.beets.trash_manage._restore_by_import",
         _import_fails_after_something_retakes_the_trash_entry,
     )
+    entry_path = str(entry)
+    origins = _origins(tmp_path)
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        restore_album(lib, str(entry), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+        restore_album(lib, entry_path, trash_dir=tmp_path / "trash", origins_dir=origins)
 
     message = str(ei.value)
     assert f"at the origin '{origin}'" in message, "the path the files are actually at"
@@ -1467,7 +1479,7 @@ def test_a_part_way_cross_filesystem_move_says_the_folder_may_be_in_both(
 ) -> None:
     """The message has to say BOTH — "check both paths" reads as "one of them".
 
-    ``_move_no_merge`` cannot rename across filesystems, so it copies and then
+    ``move_no_merge`` cannot rename across filesystems, so it copies and then
     removes — and a failure mid-copy leaves a partial copy at the origin while
     the whole folder is still in Trash. No undo is attempted there, deliberately,
     which makes the sentence the only thing the user has: it has to say both
@@ -1492,11 +1504,10 @@ def test_a_part_way_cross_filesystem_move_says_the_folder_may_be_in_both(
 
     monkeypatch.setattr(os, "rename", _across_a_device_boundary)
     monkeypatch.setattr(shutil, "copytree", _half_a_copy)
+    origins = _origins(tmp_path)
 
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        _restore_to_origin(
-            lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
-        )
+        _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=origins)
 
     message = str(ei.value)
     assert str(origin) in message
@@ -1513,7 +1524,7 @@ def test_return_to_trash_names_a_vanished_source_rather_than_the_syscall(
 ) -> None:
     """The half of that guard nothing tested, and the only thing it changes.
 
-    ``not exists(origin)`` is a MESSAGE, not a guard: ``_move_no_merge`` on a
+    ``not exists(origin)`` is a MESSAGE, not a guard: ``move_no_merge`` on a
     missing source raises ``FileNotFoundError``, an ``OSError`` the arm below
     turns into this same exception type. Only the wording differs — and the
     wording is all the operator has, because this runs only when a restore has
@@ -1536,7 +1547,7 @@ def test_a_dangling_symlink_at_the_origin_keeps_the_files_in_trash(tmp_path: Pat
     """``exists`` follows links, so the occupancy pre-filter cannot see this one.
 
     A dangling ``music/X -> /gone`` reads as ABSENT, the move is attempted, and
-    ``os.rename`` answers ENOTDIR — which ``_move_no_merge`` normalises to the
+    ``os.rename`` answers ENOTDIR — which ``move_no_merge`` normalises to the
     same ``origin_occupied`` the pre-filter would have given. The cross-device
     branch reaches the same answer by its own route: ``copytree``'s ``makedirs``
     sees the link and raises EEXIST (both errnos measured 2026-09-02). Pinned
@@ -1545,7 +1556,7 @@ def test_a_dangling_symlink_at_the_origin_keeps_the_files_in_trash(tmp_path: Pat
     happened.
 
     Two layers, and which one refuses is the fact the UI copy rests on: this is
-    the one occupant :func:`_occupied` calls FREE, so the message shown for
+    the one occupant :func:`occupied` calls FREE, so the message shown for
     ``origin_occupied`` cannot describe only what the pre-filter catches. It
     used to say a "folder exists again with anything in it", which for this
     shape is false twice — nothing is in it and it is not a folder — and sent
@@ -1553,7 +1564,7 @@ def test_a_dangling_symlink_at_the_origin_keeps_the_files_in_trash(tmp_path: Pat
     the original path again, which is true here too; ``SettingsTrashPage``
     carries the same sentence and the reasoning.
 
-    The premise is asserted on :func:`_occupied` itself rather than on ``exists``
+    The premise is asserted on :func:`occupied` itself rather than on ``exists``
     below it, because it is the function's ANSWER the restore acts on: a future
     reordering that made ``exists`` no longer first would leave an ``exists``
     assertion passing while the thing it stands for had changed.
@@ -1566,7 +1577,7 @@ def test_a_dangling_symlink_at_the_origin_keeps_the_files_in_trash(tmp_path: Pat
     (entry / "01 a.flac").write_bytes(b"\x00")
 
     assert exists(origin) is False, "nothing resolves at that path"
-    assert not _occupied(origin), "and the pre-filter is blind to it: the move must refuse"
+    assert not occupied(origin), "and the pre-filter is blind to it: the move must refuse"
 
     result = _restore_to_origin(
         lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
@@ -1718,8 +1729,10 @@ def test_empty_one_keeps_the_record_when_the_removal_itself_fails(tmp_path: Path
     (tmp_path / "trash").chmod(0o500)  # rmtree cannot unlink out of a read-only dir
 
     try:
+        entry_path = str(dest)
+        origins = _origins(tmp_path)
         with pytest.raises(OSError):
-            empty_one(str(dest), origins_dir=_origins(tmp_path))
+            empty_one(entry_path, origins_dir=origins)
     finally:
         (tmp_path / "trash").chmod(0o700)
 

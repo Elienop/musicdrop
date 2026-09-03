@@ -21,6 +21,7 @@ from app.beets.reorganize import (
     reorganize_singleton,
 )
 from app.beets.trash import trash_folder
+from app.beets.trash_origins import TrashOriginsStoreUnusableError, require_usable_store
 from app.models.reorganize import ReorganizeOutcome, ReorganizeScope
 from app.playlists.reexport import reexport_playlists_containing_sync
 from app.reorganize_jobs.registry import ReorganizeRegistry
@@ -196,7 +197,20 @@ def _sweep_orphans(
 
     ``protected_dirs`` are the live albums' own dirs: a seeded climb lands on an
     album's audio-free subfolder just as readily as a library scan does, so both
-    modes get the same set."""
+    modes get the same set.
+
+    The origin store is asked ONCE, up front, and a store that cannot be used
+    skips the whole phase with a WARNING instead of failing the job. Per-folder
+    it would refuse identically for every husk, and the ``except OSError``
+    below — written to isolate one bad folder — would swallow every one of them
+    in silence. Failing the job instead would cost the run its `.m3u8` re-export
+    tail (``sweep``'s blanket handler calls ``reg.fail`` and skips it) for a
+    fault that has nothing to do with the files this run already moved."""
+    try:
+        require_usable_store(trash_origins_dir)
+    except TrashOriginsStoreUnusableError:
+        _log.warning("orphan sweep skipped: the Trash origin store cannot be used", exc_info=True)
+        return False
     seeds = None if scope == "library" else vacated
     for folder in find_orphan_folders(
         music_dir,

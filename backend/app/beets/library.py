@@ -149,25 +149,28 @@ def require_library_root(lib: Library) -> None:
 #:
 #: The number is a trade between two measurable rates, not a round pick:
 #:
-#: * **False lockout.** Let ``f`` be the fraction of live album rows whose folder
-#:   is legitimately missing (deleted outside MusicDrop, never synced back). The
+#: * **False lockout.** Let ``f`` be the fraction of live album rows whose sampled
+#:   FILE is legitimately missing — its folder deleted outside MusicDrop, or that
+#:   one track removed from a folder that is still there, or never synced back. The
 #:   check refuses only when ALL sampled albums are missing — but the rate is
 #:   ``f**(K-1)``, not ``f**K``, and the difference is a whole factor of ``f``.
 #:   The sample is drawn from a population that still holds the row this call is
 #:   about: every caller runs the check BEFORE ``album.remove()``, and the delete
-#:   path's two callers reach it precisely because that album's folder is already
+#:   path's two callers reach it precisely because that album's files are already
 #:   gone. So one draw is a guaranteed miss whenever the sampler happens to draw
 #:   it — which at ``N <= K`` albums it always does, the draw being exhaustive.
-#:   Measured in a 2-album library: the sampler returned the ghost's own folder
-#:   plus the bystander. At a pathological ``f = 0.5`` — half the library already
+#:   Measured in a 2-album library: the sampler returned the ghost's own file
+#:   plus the bystander's. At a pathological ``f = 0.5`` — half the library already
 #:   ghosts — K=4 gives 12.5%, K=5 gives 6.3%, K=6 gives 3.1%. At a realistic
 #:   ``f = 0.05``, K=5 is 0.000625%. The curve has flattened by 5; more samples
 #:   buy almost nothing.
-#: * **Blocking cost.** Each sample is one ``isdir``. On a *hung* (rather than
+#: * **Blocking cost.** Each sample is one ``isfile`` — one ``os.stat``, the same
+#:   cost the folder check paid (measured: 1 for ``isdir``, ``isfile`` and
+#:   ``exists`` alike). On a *hung* (rather than
 #:   dropped) NFS/SMB mount a stat blocks for the mount's timeout, so K is also
 #:   the worst-case number of timeouts a user waits through. That caps K low.
 #:
-#: The check short-circuits on the FIRST folder it finds, so a healthy library
+#: The check short-circuits on the FIRST file it finds, so a healthy library
 #: pays one stat and only the refusal path pays all K.
 _PRESENCE_SAMPLE_SIZE = 5
 
@@ -178,12 +181,12 @@ _PRESENCE_SAMPLE_SIZE = 5
 # library has more albums than ``_PRESENCE_SAMPLE_SIZE``. At ``N <= K`` the draw
 # is exhaustive, so re-rolling returns the same set forever and a refusal is
 # permanent until the library itself changes. That is not a hedge on a rare
-# shape: a library whose album folders were all removed outside MusicDrop is
+# shape: a library whose albums' files were all removed outside MusicDrop is
 # refused at every size, and measured at N = 1, 2, 3, 5 and 6 the user then
 # cannot clean up a single row through the app. The message says so (see
 # ``require_library_present``) rather than blaming a mount that is fine. None of
-# that can weaken the true positive — with the share gone EVERY album folder is
-# missing, so every draw refuses.
+# that can weaken the true positive — with the share gone EVERY file the library
+# names is missing, so every draw refuses.
 #
 # Cost is O(rows in `albums`), which is the small table (an item scan at 75k rows
 # is what this deliberately avoids), and it is paid only on the rare arm that is
@@ -211,7 +214,7 @@ GROUP BY album_id
 #
 # ``ORDER BY RANDOM()`` for the same reason as the album query, against a
 # measured lockout rather than a hypothetical one. On a singleton-only library —
-# 200 rows, 195 folders on disk, only the 5 lowest-rowid ones removed by hand,
+# 200 rows, 195 of them really on disk, only the 5 lowest-rowid ones removed by hand,
 # share mounted — the bare ``LIMIT`` this used to be refused 20 of 20 attempts
 # with ONE distinct draw over 5 calls, blaming the mount. That user can never
 # delete or restore a single row: ``require_library_present`` gates the delete
@@ -221,7 +224,7 @@ GROUP BY album_id
 # table") does not survive being measured. At 75k singletons: bare ``LIMIT``
 # 0.004 ms, ``ORDER BY RANDOM()`` 2.3 ms — a scan plus a temp B-tree, since no
 # index helps an unordered pick. It is paid once, only on this arm, and only by a
-# library with no groupable album. Against the five ``os.path.isdir`` calls it
+# library with no groupable album. Against the five ``os.path.isfile`` calls it
 # precedes it is the larger half on a local disk (0.0006 ms each) and the smaller
 # one on the network share this whole predicate exists for, where every stat is a
 # round trip and can block for the mount timeout. Either way, 2 ms once per
@@ -231,13 +234,25 @@ SELECT path FROM items ORDER BY RANDOM() LIMIT ?
 """
 
 
-def _sampled_library_dirs(lib: Library, size: int) -> list[str]:
-    """Up to ``size`` on-disk folders the library BELIEVES it owns.
+def _sampled_library_files(lib: Library, size: int) -> list[str]:
+    """Up to ``size`` on-disk FILES the library BELIEVES it owns.
 
-    One per album where the library groups into albums; one per item on the
-    fallback arm, which is what a singleton-only library has instead. Both draws
-    re-roll — see the comments on the two queries for why a fixed sample makes a
-    false refusal permanent.
+    One per album where the library groups into albums — its ``MIN(path)``
+    track — and one per item on the fallback arm, which is what a singleton-only
+    library has instead. Both draws re-roll — see the comments on the two
+    queries for why a fixed sample makes a false refusal permanent.
+
+    The FILE, not ``os.path.dirname`` of it. Taking the folder made the answer
+    depend on how deep the path template files a track: under a ``paths.default``
+    with no directory component (beets' own ``$title`` is the shortest, and the
+    template is editable from Settings -> Naming) every track sits directly in
+    the music root, every dirname collapses to that root, and the check ended up
+    asking ``os.path.isdir(<music root>)`` — the question ``require_library_root``
+    has already answered, and the one a stray entry on a dropped share's
+    mountpoint answers wrongly. Measured on a 200-row flat library with the share
+    dropped and only a ``.stfolder`` on the mountpoint: the root came back 5 times
+    out of 5 and the check ACCEPTED, while the same rows re-filed under
+    ``$albumartist/$album/$title`` were refused.
 
     Raw SQL rather than ``lib.albums()``/``album.items()`` for the same reason
     ``trash._folder_is_shared`` uses it: materializing beets models to read one
@@ -249,10 +264,17 @@ def _sampled_library_dirs(lib: Library, size: int) -> list[str]:
         rows = tx.query(_SAMPLE_ALBUM_PATHS_SQL, (size,))
         if not rows:
             rows = tx.query(_SAMPLE_ITEM_PATHS_SQL, (size,))
-    dirs: list[str] = []
+    files: list[str] = []
     for row in rows:
         raw = row[0]
         if not raw:
+            # A row naming no file is no evidence either way, so it must not
+            # spend one of the K slots. Under the folder check this skip was
+            # load-bearing in a second way — ``dirname(join(root, ""))`` is the
+            # library ROOT, which exists whenever ``require_library_root`` has
+            # just passed, so one such row answered "the music is there" for a
+            # share that is gone. A file check cannot be fooled that way (the
+            # root is not a file), but the slot is still worth keeping.
             continue
         # ``os.fsencode``, never ``bytes(raw)``. SQLite is dynamically typed, so
         # the declared-BLOB ``path`` column hands back whatever was written to
@@ -263,8 +285,8 @@ def _sampled_library_dirs(lib: Library, size: int) -> list[str]:
         # answer "is the music really there" before rows are dropped. fsencode
         # takes both types and is the exact inverse of the ``os.fsdecode``
         # ``_abs_path`` applies next, so neither loses a non-UTF-8 path.
-        dirs.append(os.path.dirname(_abs_path(lib, os.fsencode(raw))))
-    return dirs
+        files.append(_abs_path(lib, os.fsencode(raw)))
+    return files
 
 
 def require_library_present(lib: Library) -> None:
@@ -281,9 +303,32 @@ def require_library_present(lib: Library) -> None:
     So this asks the only question that has no false answer in that state:
     *does anything the library says is on disk actually exist?* With the share
     gone the answer is no for every album at once; with it mounted, one surviving
-    album is enough. Sampling ``_PRESENCE_SAMPLE_SIZE`` albums and accepting the
+    file is enough. Sampling ``_PRESENCE_SAMPLE_SIZE`` albums and accepting the
     FIRST hit is what keeps a legitimately-deleted album from locking the user
     out of deleting it.
+
+    Each sampled slot is one FILE — the album's ``MIN(path)`` track, or one item
+    row on the fallback arm — never the folder holding it, because a flat layout
+    collapses every folder to the music root (see ``_sampled_library_files``).
+    That is measurably stricter in exactly one way per album: an album whose
+    folder survives with its sampled track removed is a miss where the folder
+    check was a hit. Measured, sampling 1000 draws each: at 200 albums with 1 or
+    5 files or a whole folder removed it refused 0 times, and at 2 and at 5
+    albums with one or four files removed 0 times; at N=1 album with its only (or
+    its lowest-named) track removed while the folder stays, it refuses 20 of 20
+    where the folder check refused 0 of 20. That last shape is the one the note
+    above already describes for a removed FOLDER — "refused at every size" below
+    ``_PRESENCE_SAMPLE_SIZE`` albums — extended to a removed file.
+
+    What that is NOT is a claim that a single-album library is the only library
+    it refuses. The refusal needs all K sampled albums to miss, which is a RATE
+    and not a shape wherever some albums are in that state and some are not:
+    measured with half of 200 albums missing their sampled file (folders all
+    intact, share mounted), 33 refusals in 1000 draws — 24 in an independent run
+    of the same probe, against the ``f**K`` = 3.1% the note above models. At
+    ``f = 1`` — every album's file removed by hand — it is certain at every size
+    measured (50 of 50 at N = 1, 2, 6, 20 and 200), which is the same answer a
+    dropped share gets and the reason this predicate exists.
 
     Why sampling and not a mount check. ``os.path.ismount`` / an ``st_dev``
     comparison against the parent / ``/proc/mounts`` all answer "is a filesystem
@@ -311,7 +356,7 @@ def require_library_present(lib: Library) -> None:
       blaming a mount.
     """
     require_library_root(lib)
-    sample = _sampled_library_dirs(lib, _PRESENCE_SAMPLE_SIZE)
+    sample = _sampled_library_files(lib, _PRESENCE_SAMPLE_SIZE)
     if not sample:
         # Every way into this arm, and what the predicate does with each:
         #
@@ -322,7 +367,7 @@ def require_library_present(lib: Library) -> None:
         #   predicate has no evidence, not because it found any.
         # * Every drawn row's `path` is NULL or empty (only an external ``UPDATE``
         #   writes that). Same answer for the same reason — a row naming no file
-        #   cannot be confirmed or denied by ``os.path.isdir``.
+        #   cannot be confirmed or denied by ``os.path.isfile``.
         # * Items whose `album_id` points at a deleted album row USED to land
         #   here and be accepted, because the fallback query asked only for
         #   ``album_id IS NULL``. It no longer narrows, so that shape is sampled
@@ -347,16 +392,26 @@ def require_library_present(lib: Library) -> None:
         # music exists. That is a recoverable annoyance against an unrecoverable
         # loss, so it fails toward the annoyance.
         return
-    # ``os.path.isdir`` swallows OSError itself, so a permission fault or a
-    # stale handle on one folder reads as "not there" and the loop moves on —
-    # the same fail-closed posture as the root check's unreadable arm.
-    for folder in sample:
-        if os.path.isdir(folder):
+    # ``os.path.isfile`` swallows OSError itself, so a permission fault or a
+    # stale handle on one path reads as "not there" and the loop moves on — the
+    # same fail-closed posture as the root check's unreadable arm.
+    #
+    # ``isfile`` rather than ``exists``: the question is whether the FILE the
+    # library named is there, and a directory (or a socket, or a device node)
+    # sitting at that path is not evidence the music came back. Both follow
+    # symlinks and both cost one stat, so the only behavioural difference beyond
+    # the type test is none — a symlinked library reads present, a DANGLING link
+    # reads absent, which is the fail-closed direction. The type test is pinned
+    # behaviourally, not only by name: ``test_library_presence_sampling.py::
+    # test_a_directory_where_the_track_should_be_is_not_the_music_coming_back``
+    # puts a directory at a single album's sampled path and fails on the swap.
+    for path in sample:
+        if os.path.isfile(path):
             return
     raise LibraryRootUnavailableError(
-        "Library folder is present but holds none of the library's albums."
-        " Either the music share is not mounted, or every album's folder has been"
-        " removed outside MusicDrop."
+        "Library folder is present but none of the music files the library names"
+        " are in it. Either the music share is not mounted, or those files have"
+        " been removed outside MusicDrop."
     )
 
 

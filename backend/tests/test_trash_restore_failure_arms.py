@@ -404,15 +404,10 @@ def test_a_failure_creating_the_destination_says_nothing_moved(tmp_path: Path) -
     entry = tmp_path / "trash" / "Artist - Album"
     entry.mkdir(parents=True)
     (entry / "01 a.flac").write_bytes(b"\x00")
+    origins = origins_for(tmp_path / "trash")
 
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        _restore_to_origin(
-            lib,
-            entry,
-            origin,
-            trash_dir=tmp_path / "trash",
-            origins_dir=origins_for(tmp_path / "trash"),
-        )
+        _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=origins)
 
     message = str(ei.value)
     assert f"could not create the folder '{origin.parent}'" in message, "the real cause"
@@ -447,15 +442,10 @@ def test_a_part_way_move_names_each_path_in_its_own_phrase(
 
     _exdev_at(origin, monkeypatch)
     monkeypatch.setattr(shutil, "copytree", _half_a_copy)
+    origins = origins_for(tmp_path / "trash")
 
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        _restore_to_origin(
-            lib,
-            entry,
-            origin,
-            trash_dir=tmp_path / "trash",
-            origins_dir=origins_for(tmp_path / "trash"),
-        )
+        _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=origins)
 
     message = str(ei.value)
     assert "could not move the folder back out of Trash" in message
@@ -514,7 +504,7 @@ def test_return_to_trash_names_each_path_when_the_move_itself_fails(
     def _fails(*_a: object, **_k: object) -> None:
         raise OSError(errno.EIO, "Input/output error")
 
-    monkeypatch.setattr("app.beets.trash_manage._move_no_merge", _fails)
+    monkeypatch.setattr("app.beets.trash_manage.move_no_merge", _fails)
     with pytest.raises(TrashRestoreIncompleteError) as ei:
         _return_to_trash(origin, entry)
 
@@ -627,7 +617,7 @@ def test_the_restore_result_schema_does_not_call_an_empty_folder_occupied(
 
 
 def test_a_directory_the_app_cannot_read_is_treated_as_occupied(tmp_path: Path) -> None:
-    """:func:`_occupied`'s ``except OSError`` arm, which nothing reached.
+    """:func:`occupied`'s ``except OSError`` arm, which nothing reached.
 
     A directory the app can stat but not READ — a mode bit, a share that came
     back with different ownership, a fault mid-``scandir`` — leaves "is anything
@@ -667,13 +657,13 @@ def test_anything_else_at_the_origin_still_refuses(tmp_path: Path, occupant: str
     never named. All three keep the files in Trash instead.
 
     What holds the symlink case is NOT this test's business, and saying otherwise
-    once made it read as the pin for :func:`_occupied`'s ``is_symlink`` arm.
+    once made it read as the pin for :func:`occupied`'s ``is_symlink`` arm.
     ``os.rename`` answers ENOTDIR on a link destination and
-    :func:`_move_no_merge` normalises that to the same ``origin_occupied``, so
+    :func:`move_no_merge` normalises that to the same ``origin_occupied``, so
     the outcome asserted below survives with that arm dropped — measured, this
     test and ``test_an_empty_directory_at_the_origin_is_replaced_by_the_rename``
-    both pass against an ``is_symlink``-less ``_occupied``. The arm is a tripwire
-    on what ``_occupied`` REPORTS to a future caller (without it, "an empty
+    both pass against an ``is_symlink``-less ``occupied``. The arm is a tripwire
+    on what ``occupied`` REPORTS to a future caller (without it, "an empty
     directory" silently includes a link to one); its own docstring is where that
     is argued, and it says no test kills it.
     """

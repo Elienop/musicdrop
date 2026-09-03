@@ -1,4 +1,5 @@
-"""The ENAMETOOLONG guard for fs predicates on request-supplied paths.
+"""The ENAMETOOLONG guard for fs predicates on request-supplied paths, and
+:func:`app.fsutil.occupied`'s own answer where the two differ.
 
 Contract: a name-shaped failure (kernel: "File name too long") answers as
 "does not exist" so unknown-name refusal paths work; EVERY other OSError is
@@ -64,3 +65,27 @@ def test_existing_paths_stay_reachable(tmp_path: Path) -> None:
     real.mkdir()
     assert fsutil.exists(real) is True
     assert fsutil.is_dir(real) is True
+
+
+def test_a_symlink_to_an_empty_directory_is_occupied(tmp_path: Path) -> None:
+    """The ``is_symlink`` tripwire, which the callers below it would hide.
+
+    An EMPTY directory is deliberately NOT occupied — ``rename`` replaces one,
+    and refusing there would strand every album whose folder a pruning beets or
+    a half-finished sync left behind. A LINK to an empty directory looks the
+    same to ``is_dir`` and ``scandir``, which both follow it, so without the
+    ``is_symlink`` test first this answers "free" for a path that leaves the
+    music library entirely.
+
+    Nothing in the app acts on that answer differently today — every move below
+    refuses a symlink anyway — so this is the predicate's ANSWER being pinned,
+    not a caller's behaviour. Measured with the clause removed: ``occupied``
+    answers False here.
+    """
+    target = tmp_path / "somewhere else"
+    target.mkdir()
+    link = tmp_path / "Album"
+    link.symlink_to(target, target_is_directory=True)
+
+    assert fsutil.occupied(link) is True, "following it would leave the music library"
+    assert fsutil.occupied(target) is False, "...while the empty directory itself is free"

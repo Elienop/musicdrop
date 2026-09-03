@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
+import pytest
 from beets.library import Album, Item, Library
 
 from app.beets.reorganize import plan_reorganize, reorganize_album, reorganize_singleton
@@ -389,5 +391,62 @@ def test_the_orphan_pass_is_skipped_when_only_the_trash_dir_is_wired(
     # this the guard can be deleted and the test still passes — the pass then
     # dies inside ``trash_folder`` and ``sweep`` turns it into ``fail``, which
     # also collects nothing.
+    assert reg.state().phase == "done"
+    assert reg.state().failures == []
+
+
+def test_the_orphan_pass_is_skipped_when_the_origin_store_cannot_be_used(
+    reorganize_lib: Library, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A store that is wired but UNUSABLE skips the phase; it must not fail the job.
+
+    The sibling above covers the store not being wired at all. This one is the
+    store being there and refusing: a regular FILE where the directory belongs,
+    which is the shape that denies for uid 0 as well, so this does not self-skip
+    for a maintainer running the suite inside the shipped image, which declares
+    no ``USER`` (``Dockerfile``).
+
+    Asked ONCE, up front, for two reasons the test asserts between them. Per
+    folder it would refuse identically for every husk and the ``except OSError``
+    inside the loop — written to isolate one bad folder — would swallow every
+    one of them in silence. And failing the JOB would cost the run its ``.m3u8``
+    re-export tail, since ``sweep``'s blanket handler calls ``reg.fail`` and
+    skips it: the phase has nothing to do with the files this run already moved.
+    So: nothing collected, the husk left alone, no Trash directory created, a
+    WARNING carrying the traceback, and the run still finishing ``done``.
+    """
+    from app.reorganize_jobs.registry import ReorganizeRegistry
+    from app.reorganize_jobs.runner import sweep
+    from tests.conftest import make_test_handle
+
+    music_dir = Path(os.fsdecode(reorganize_lib.directory))
+    husk = music_dir / "Ghost Artist"
+    husk.mkdir(parents=True, exist_ok=True)
+    (husk / "artist-poster.jpg").write_bytes(b"x")
+    trash = tmp_path / "trash"
+    origins = tmp_path / "trash-origins"
+    origins.write_bytes(b"not a directory")
+    reg = ReorganizeRegistry()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+
+    with caplog.at_level(logging.WARNING, logger="app.reorganize_jobs.runner"):
+        sweep(
+            reg,
+            make_test_handle(reorganize_lib, tmp_path),
+            scope="library",
+            trash_dir=trash,
+            trash_origins_dir=origins,
+        )
+
+    assert reg.state().orphans_trashed == 0
+    assert husk.is_dir(), "the husk stays in the library rather than moving unrestorably"
+    assert not trash.exists(), "and no Trash directory was created for it"
+    skips = [r for r in caplog.records if "orphan sweep skipped" in r.getMessage()]
+    assert len(skips) == 1, "asked once for the whole phase, not once per husk"
+    assert skips[0].levelname == "WARNING"
+    assert skips[0].exc_info is not None, "the errno is what tells an operator what to fix"
+    # ...and the run still finishes, so the .m3u8 re-export tail after this
+    # phase still runs. Without the guard the raise escapes the per-folder
+    # ``except OSError`` into ``sweep``'s blanket handler, which calls reg.fail.
     assert reg.state().phase == "done"
     assert reg.state().failures == []

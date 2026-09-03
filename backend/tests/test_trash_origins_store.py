@@ -45,11 +45,13 @@ from beets.library import Item, Library
 
 from app.beets.trash_manage import empty_all, empty_one, list_trashed_albums, restore_album
 from app.beets.trash_origins import (
+    TrashOriginsStoreUnusableError,
     clear_trash_origins,
     delete_trash_origin,
     origin_file,
     origin_recorded,
     read_trash_origin,
+    require_usable_store,
     write_trash_origin,
 )
 from tests.conftest import build_library
@@ -139,7 +141,7 @@ def test_a_record_is_never_read_back_for_a_different_entry(tmp_path: Path) -> No
 
     One sha256 call produces a second, shorter name with the same record file, so
     the two entries take turns owning it — and the loser's row does not lose an
-    origin, it gains the WRONG one. That answer steers ``_move_no_merge``: the
+    origin, it gains the WRONG one. That answer steers ``move_no_merge``: the
     listing offers "Exact restore", and Restore renames the loser's folder into
     the winner's origin, on top of nothing that was ever there.
 
@@ -359,8 +361,11 @@ def test_a_record_that_cannot_be_unlinked_is_logged_and_swallowed(
     * ``unlink(missing_ok=True)`` swallows ``FileNotFoundError`` and nothing
       else, so a read-only, full or damaged ``/data`` raises through it. Staged
       with a DIRECTORY at the record's own name (``EISDIR``) rather than
-      ``chmod``: CI images run as root, where a read-only directory denies
-      nothing and the test would report green having executed no failure.
+      ``chmod``: a maintainer running this suite inside the shipped image is
+      root (``Dockerfile`` declares no ``USER``), and there a read-only
+      directory denies nothing, so a chmod-staged test would report green
+      having executed no failure. ``EISDIR`` denies root too. CI is not the
+      case this guards against — its pytest job runs as ``runner``.
     * the handler itself. The entry name is a real filesystem name, so it can be
       non-UTF-8, and the obvious escape spelling
       (``.encode("utf-8", "backslashreplace").decode("ascii")``) raises
@@ -582,11 +587,15 @@ def test_a_name_the_allocator_cannot_check_cannot_forge_a_log_line(
 ) -> None:
     """``origin_recorded``'s warning, and what it is now careful NOT to blame.
 
-    This line runs at the exact moment the store's stated residual is created:
-    the name reads as free although a record may be sitting on it, so the
-    allocator can hand it to a second folder that will later read the first
-    folder's origin. It is the only trace of that, and it is reached with a name
-    the album's own tags can produce.
+    This line runs at the exact moment the KEY-level residual is created: the
+    name reads as free although a record may be sitting on it, so the allocator
+    can hand it to a second folder that will later read the first folder's
+    origin. It is the only trace of that, and it is reached with a name the
+    album's own tags can produce. The STORE-level version of the same shape is
+    no longer a residual at all — it refuses the delete
+    (``test_a_store_that_cannot_be_searched_refuses_instead_of_reading_as_free``
+    below) — which is why this arm's errno matters: ENAMETOOLONG says nothing
+    about whether the store works, so it keeps the old answer and this warning.
 
     The sentence used to end "Check the permissions on the Trash origins
     directory". This fixture is the counter-example, and it needs no injection
@@ -598,8 +607,9 @@ def test_a_name_the_allocator_cannot_check_cannot_forge_a_log_line(
     """
     origins = _origins_dir_over_path_max(tmp_path, _FORGED_ENTRY_NAME)
     # The fixture is really at the hazard rather than merely deep.
+    record = origin_file(origins, _FORGED_ENTRY_NAME)
     with pytest.raises(OSError) as raw:
-        origin_file(origins, _FORGED_ENTRY_NAME).exists()
+        record.exists()
     assert raw.value.errno == errno.ENAMETOOLONG
 
     with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
@@ -718,27 +728,32 @@ def test_clearing_the_store_removes_the_records_and_nothing_else(
 # ----- a store the app cannot reach -----
 
 
-def test_a_store_that_cannot_be_reached_reads_as_free_and_says_so(
+def test_a_store_that_cannot_be_searched_refuses_instead_of_reading_as_free(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """``origin_recorded`` and ``read_trash_origin`` AGREE here, and that is the residual.
+    """This asserted ``False`` here for the whole of the feature's life. It refuses now.
 
-    The two DIFFER on a record that is present, reachable and refused — the five
-    shapes ``origin_recorded`` lists — and there "occupied" is the safe side.
-    They agree in plenty of harmless ways too, including one that looks like this
-    case and is not: a symlink LOOP at the key with a healthy store, where
-    ``exists()`` swallows ELOOP and answers False while the read logs and returns
-    ``None`` (measured in
-    :func:`test_a_symlink_loop_at_the_key_reads_as_free_on_both_sides`).
+    The two answers ``origin_recorded`` and ``read_trash_origin`` give still
+    AGREE on an unsearchable store, and they still agree harmlessly in other
+    ways — a symlink LOOP at the key with a healthy store, where ``exists()``
+    swallows ELOOP and the read logs and returns ``None``, measured in
+    :func:`test_a_symlink_loop_at_the_key_reads_as_free_on_both_sides`. What
+    made THIS agreement a residual is that a record really is on disk and the
+    name was handed out anyway: the allocator gave it to a second folder whose
+    row would later read the FIRST folder's origin and offer to move it there.
 
-    What makes THIS agreement the residual is not the agreement, it is that a
-    record really is on disk and the name is handed out anyway. An origins
-    directory that is present but unsearchable takes the safety net away:
-    ``exists()`` raises ``EACCES``, the name reads as free, and the allocator can
-    hand it to a second folder whose row will later read the FIRST folder's
-    origin. Answering "occupied" instead would leave the allocator's loop with no
-    exit (every candidate occupied), so the honest answer is the unsafe one and
-    this log line is its only trace.
+    The residual is closed by refusing the delete (owner ruling,
+    ``decisions.md`` 28), not by answering "occupied" — that was measured to
+    leave the allocator's loop with no exit at all, 111,939 candidates in one
+    second and still climbing. The refusal is raised from BOTH ends: every mover
+    asks ``require_usable_store`` before it allocates, and this arm closes the
+    window after that check, where a ``/data`` mount drops or a chmod lands
+    mid-request. This test is the second of the two, which is why it drives the
+    predicate directly rather than a mover.
+
+    ``read_trash_origin`` is deliberately unchanged and asserted unchanged
+    below: the restore and Empty sides run AFTER irreversible work, so they keep
+    swallow-and-degrade. The ruling is about Delete.
 
     Skipped as root, where the mode bit denies nothing and the test would report
     green having exercised no fault at all. CI's pytest job runs as "runner".
@@ -752,19 +767,118 @@ def test_a_store_that_cannot_be_reached_reads_as_free_and_says_so(
 
     try:
         with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
-            recorded = origin_recorded(origins, "Dummy")
+            with pytest.raises(TrashOriginsStoreUnusableError) as ei:
+                origin_recorded(origins, "Dummy")
             assert read_trash_origin(origins, "Dummy") is None
     finally:
         origins.chmod(0o700)
 
-    assert recorded is False, "the allocator must not be told 'occupied' here — see the docstring"
-    assert any(
-        "could not tell whether a Trash origin record exists" in r.getMessage()
-        for r in caplog.records
+    assert "trash-origins" in str(ei.value), "the refusal has to name the store"
+    assert str(origins) not in str(ei.value), "...and must not leak its absolute path"
+    assert any("so a delete was refused" in r.getMessage() for r in caplog.records), (
+        "the absolute path belongs in the log, and the log line is what carries it"
     )
-    # ...and the record really was there all along, so what the allocator would
-    # hand out is a name that is still spoken for.
+    assert any(str(origins) in r.getMessage() for r in caplog.records)
+    # ...and the record really was there all along, which is what the name the
+    # allocator used to hand out was still spoken for by.
     assert read_trash_origin(origins, "Dummy") is not None
+
+
+def test_the_store_refusal_covers_EPERM_as_well_as_EACCES(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second errno in ``_STORE_CLASS_ERRNOS``, which no filesystem here produces.
+
+    The set is a pair — EACCES and EPERM — and the test above only reaches the
+    first: a mode bit gives EACCES, and EPERM off this lookup wants something
+    this suite cannot stage locally (a mandatory-access-control layer, or a
+    filesystem the container is not allowed to traverse regardless of the mode).
+    Injected rather than skipped, because "dropped from the set" is otherwise a
+    change no test can see and the arm it belongs to is a REFUSAL: with EPERM
+    out, this store reads as free and the allocator hands out a name whose
+    record is on disk.
+
+    ``Path.exists`` is the exact call ``origin_recorded`` makes, so the stub
+    puts the errno where the real one would arrive.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    write_trash_origin(origins, "Dummy", origin="/music/Portishead/Dummy", moved="folder")
+
+    def _eperm(_self: Path) -> bool:
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(Path, "exists", _eperm)
+
+    with pytest.raises(TrashOriginsStoreUnusableError) as ei:
+        origin_recorded(origins, "Dummy")
+
+    assert "cannot be read" in str(ei.value), "the same sentence the EACCES half gets"
+    assert str(origins) not in str(ei.value), "...and no absolute path in it either"
+
+
+def test_a_store_that_cannot_be_written_refuses_before_anything_moves(tmp_path: Path) -> None:
+    """A READ-ONLY store is the same class of fault one permission bit along.
+
+    Measured at tip: mode 0500 reads perfectly, so every check written against
+    "can it be read" passes — and then the record write fails and is swallowed,
+    and the origin is lost in silence. The ruling's word is "usable", so the
+    write is probed too, and with the real syscall rather than ``os.access``:
+    ``os.access`` answers for the REAL uid and cannot see a read-only MOUNT,
+    which is the deployment shape this fault actually arrives in.
+
+    Skipped as root for the usual reason, and the FILE-at-store shape carries
+    the root-proof half of this invariant
+    (``test_trash_origin_record.py::test_a_husk_is_refused_when_the_store_is_not_a_folder``).
+    """
+    if os.getuid() == 0:
+        pytest.skip("running as root: a read-only directory denies nothing")
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    origins.chmod(0o500)
+
+    try:
+        with pytest.raises(TrashOriginsStoreUnusableError) as ei:
+            require_usable_store(origins)
+    finally:
+        origins.chmod(0o700)
+
+    assert "cannot be written" in str(ei.value)
+    assert list(origins.iterdir()) == [], "the write probe must leave nothing behind"
+
+
+def test_a_store_that_was_never_created_is_created_rather_than_refused(tmp_path: Path) -> None:
+    """The shape a fresh install is in, and the one a naive check would refuse.
+
+    Absence is not a fault: no deployment has an origins directory until its
+    first delete, and the atomic writer has always created it. A check that read
+    ENOENT as "unusable" would refuse the first delete on every new install —
+    the twin of ``test_clearing_a_store_that_was_never_created_is_silent``
+    above, on the write side.
+    """
+    origins = tmp_path / "never-created" / "trash-origins"
+
+    require_usable_store(origins)
+
+    assert origins.is_dir()
+    assert list(origins.iterdir()) == [], "the probes must leave nothing behind"
+
+
+def test_a_store_that_cannot_be_created_refuses(tmp_path: Path) -> None:
+    """Absent is fine; absent and UNCREATABLE is not, and the two look alike.
+
+    Root-proof: the parent is a regular FILE, so ``mkdir`` answers ENOTDIR for
+    any uid. The mode-bit spelling of the same shape (a parent at 0500) is the
+    one that would pass vacuously as root, which is why this stages the other.
+    """
+    parent = tmp_path / "data"
+    parent.write_bytes(b"not a directory")
+
+    with pytest.raises(TrashOriginsStoreUnusableError) as ei:
+        require_usable_store(parent / "trash-origins")
+
+    assert "is not a usable folder" in str(ei.value)
+    assert "Not a directory" in str(ei.value)
 
 
 def test_a_symlink_loop_at_the_key_reads_as_free_on_both_sides(
@@ -795,6 +909,10 @@ def test_a_symlink_loop_at_the_key_reads_as_free_on_both_sides(
         delete_trash_origin(origins, "Dummy")  # must return, not raise
 
     assert any("present but unusable" in r.getMessage() for r in caplog.records)
+    # The allocator's "could not tell" warning names what reaches its OSError
+    # arm; a loop at the key is not among them, because ``Path.exists`` absorbs
+    # ELOOP. This pins the warning's text against the claim.
+    assert not any("could not tell" in r.getMessage() for r in caplog.records)
     assert not key.is_symlink(), "the loop was left behind, holding its name"
 
 

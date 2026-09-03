@@ -26,16 +26,25 @@ bottom of this file:
 
 * Which query runs FIRST. The album query is the primary and the item query its
   fallback, and swapping them left the suite green — yet they are not
-  interchangeable. The album arm returns one folder per album; the item arm
-  returns one row per TRACK, so on a multi-track library it asks about fewer
-  real subjects than the sampler's own docstring claims, and it puts an
-  ``ORDER BY RANDOM()`` scan of the big ``items`` table on every presence check
-  (the module's comment on ``_SAMPLE_ALBUM_PATHS_SQL`` says avoiding exactly
-  that scan is why the album query is the primary).
+  interchangeable. The album arm returns one file per album (its ``MIN(path)``
+  track); the item arm returns one row per TRACK, so on a multi-track library it
+  asks about fewer real subjects than the sampler's own docstring claims, and it
+  puts an ``ORDER BY RANDOM()`` scan of the big ``items`` table on every presence
+  check (the module's comment on ``_SAMPLE_ALBUM_PATHS_SQL`` says avoiding
+  exactly that scan is why the album query is the primary).
 * The empty-path skip. ``if not raw`` weakened to ``if raw is None`` also left
   the suite green, and an empty-string ``path`` row then resolves to the library
-  ROOT — a folder that exists whenever ``require_library_root`` has already
-  passed, so one such row answers "the music is there" for a share that is gone.
+  ROOT, spending one of the five slots on a path that is not a file and can
+  never be one. It used to be worse than a wasted slot: while the sampler took
+  ``os.path.dirname`` of each path the root was itself the subject, and a root
+  exists whenever ``require_library_root`` has just passed, so one such row
+  answered "the music is there" for a share that was gone.
+
+What the sampler asks about is the FILE, never the folder holding it. Under
+``dirname`` the answer depended on the path template's depth: a flat
+``paths.default`` (``$title``) files every track in the music root, so every
+sample collapsed onto the root and a dropped share with a stray entry on its
+mountpoint was ACCEPTED. The last test in this file is that regression.
 
 ``tests/test_library_presence.py`` pins what the predicate ANSWERS; this file
 pins the properties of HOW it asks that a caller can feel.
@@ -45,6 +54,7 @@ from __future__ import annotations
 
 import math
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -53,8 +63,9 @@ from beets.library import Item, Library
 from app.beets.library import (
     _PRESENCE_SAMPLE_SIZE,
     LibraryRootUnavailableError,
-    _sampled_library_dirs,
+    _sampled_library_files,
     require_library_present,
+    require_library_root,
 )
 from tests.conftest import build_library
 
@@ -171,7 +182,7 @@ def _dangling_album_id_library(tmp_path: Path, *, on_disk: bool) -> Library:
 
 
 def _what_an_unordered_limit_would_draw(lib: Library) -> list[str]:
-    """The folders the sampler would keep re-checking with ``ORDER BY RANDOM()`` gone.
+    """The files the sampler would keep re-checking with ``ORDER BY RANDOM()`` gone.
 
     Spelled out in SQL rather than derived from the fixture's insertion order,
     so it measures what SQLite actually returns for a bare ``LIMIT`` instead of
@@ -188,9 +199,9 @@ def _what_an_unordered_limit_would_draw(lib: Library) -> list[str]:
         )
         if not rows:
             rows = tx.query("SELECT path FROM items LIMIT ?", (_PRESENCE_SAMPLE_SIZE,))
-    folders = [os.path.dirname(os.fsdecode(row[0])) for row in rows]
-    assert len(folders) == _PRESENCE_SAMPLE_SIZE, folders
-    return folders
+    files = [os.fsdecode(row[0]) for row in rows]
+    assert len(files) == _PRESENCE_SAMPLE_SIZE, files
+    return files
 
 
 def test_a_stale_library_is_not_refused_by_its_oldest_ghosts(tmp_path: Path) -> None:
@@ -211,7 +222,7 @@ def test_a_stale_library_is_not_refused_by_its_oldest_ghosts(tmp_path: Path) -> 
         "the fixture must be big enough that an all-ghost draw is not a real flake"
     )
     fixed = _what_an_unordered_limit_would_draw(lib)
-    assert not any(os.path.isdir(folder) for folder in fixed), fixed
+    assert not any(os.path.isfile(path) for path in fixed), fixed
 
     require_library_present(lib)  # must not raise
 
@@ -225,8 +236,8 @@ def test_two_draws_from_the_same_library_are_not_the_same_sample(tmp_path: Path)
     """
     lib = _stale_library(tmp_path)
 
-    first = _sampled_library_dirs(lib, _PRESENCE_SAMPLE_SIZE)
-    second = _sampled_library_dirs(lib, _PRESENCE_SAMPLE_SIZE)
+    first = _sampled_library_files(lib, _PRESENCE_SAMPLE_SIZE)
+    second = _sampled_library_files(lib, _PRESENCE_SAMPLE_SIZE)
 
     assert len(first) == _PRESENCE_SAMPLE_SIZE
     assert set(first) != set(second)
@@ -248,7 +259,7 @@ def test_a_stale_singleton_library_is_not_refused_by_its_oldest_ghosts(tmp_path:
         "the fixture must be big enough that an all-ghost draw is not a real flake"
     )
     fixed = _what_an_unordered_limit_would_draw(lib)
-    assert not any(os.path.isdir(folder) for folder in fixed), fixed
+    assert not any(os.path.isfile(path) for path in fixed), fixed
 
     require_library_present(lib)  # must not raise
 
@@ -261,8 +272,8 @@ def test_two_draws_from_a_singleton_library_are_not_the_same_sample(tmp_path: Pa
     """
     lib = _singleton_library(tmp_path)
 
-    first = _sampled_library_dirs(lib, _PRESENCE_SAMPLE_SIZE)
-    second = _sampled_library_dirs(lib, _PRESENCE_SAMPLE_SIZE)
+    first = _sampled_library_files(lib, _PRESENCE_SAMPLE_SIZE)
+    second = _sampled_library_files(lib, _PRESENCE_SAMPLE_SIZE)
 
     assert len(first) == _PRESENCE_SAMPLE_SIZE
     assert set(first) != set(second)
@@ -280,12 +291,12 @@ def test_a_dangling_album_id_is_sampled_rather_than_waved_through(tmp_path: Path
     """
     lib = _dangling_album_id_library(tmp_path, on_disk=False)
 
-    assert _sampled_library_dirs(lib, _PRESENCE_SAMPLE_SIZE), (
+    assert _sampled_library_files(lib, _PRESENCE_SAMPLE_SIZE), (
         "the sampler must reach rows whose album_id points nowhere"
     )
     with pytest.raises(LibraryRootUnavailableError) as excinfo:
         require_library_present(lib)
-    assert "holds none of the library's albums" in str(excinfo.value)
+    assert "none of the music files the library names" in str(excinfo.value)
 
 
 def test_a_mounted_dangling_album_id_library_is_still_accepted(tmp_path: Path) -> None:
@@ -320,11 +331,13 @@ _TRACKS_PER_ALBUM = 4
 
 
 def _multi_track_library(tmp_path: Path) -> tuple[Library, list[str]]:
-    """A healthy library of a few multi-track albums, and the folders it owns.
+    """A healthy library of a few multi-track albums, and the file per album the
+    sampler must name.
 
-    Every folder is on disk, so this is not a dropped-share fixture and the
+    Every file is on disk, so this is not a dropped-share fixture and the
     presence check accepts it; what is measured is the SHAPE of the sample, not
-    the answer.
+    the answer. The expected file is each album's ``MIN(path)`` — the lowest
+    path, which the ``NN Track.mp3`` naming makes the first track.
     """
     assert _GROUPED_ALBUMS >= 1, "the album arm needs at least one album to group"
     assert _GROUPED_ALBUMS < _PRESENCE_SAMPLE_SIZE, "the album draw must be exhaustive"
@@ -334,11 +347,11 @@ def _multi_track_library(tmp_path: Path) -> tuple[Library, list[str]]:
     music = tmp_path / "music"
     lib = build_library(str(tmp_path / "library.db"), str(music))
 
-    folders: list[str] = []
+    lowest_per_album: list[str] = []
     for a in range(_GROUPED_ALBUMS):
         folder = music / f"Artist {a:03d}" / "Album"
         folder.mkdir(parents=True)
-        folders.append(str(folder))
+        lowest_per_album.append(str(folder / "01 Track.mp3"))
         items = []
         for t in range(_TRACKS_PER_ALBUM):
             track = folder / f"{t + 1:02d} Track.mp3"
@@ -353,7 +366,7 @@ def _multi_track_library(tmp_path: Path) -> tuple[Library, list[str]]:
             item.path = os.fsencode(str(track))
             items.append(item)
         lib.add_album(items).store()
-    return lib, folders
+    return lib, lowest_per_album
 
 
 def _library_with_an_empty_path_row(tmp_path: Path) -> tuple[Library, Path]:
@@ -393,49 +406,174 @@ def _library_with_an_empty_path_row(tmp_path: Path) -> tuple[Library, Path]:
     return lib, music
 
 
-def test_the_sampler_asks_one_folder_per_album_and_not_one_per_track(tmp_path: Path) -> None:
+def test_the_sampler_asks_one_file_per_album_and_not_one_per_track(tmp_path: Path) -> None:
     """The album query is the PRIMARY; the item query is only its fallback.
 
     Swapping them is not an equivalent change. This library groups into
     ``_GROUPED_ALBUMS`` albums of ``_TRACKS_PER_ALBUM`` tracks each, so the
-    shipped order returns exactly one folder per album — the cardinality
-    ``_sampled_library_dirs``' own docstring promises ("one per album where the
-    library groups into albums; one per item on the fallback arm"). With the
+    shipped order returns exactly one file per album — the cardinality
+    ``_sampled_library_files``' own docstring promises ("one per album where the
+    library groups into albums ... one per item on the fallback arm"). With the
     arms swapped the item query never comes back empty, so it answers every
-    presence check: ``_PRESENCE_SAMPLE_SIZE`` rows drawn from the tracks, naming
-    2 or 3 distinct folders on this fixture — fewer real subjects than the
-    sample size suggests, and an unindexed ``ORDER BY RANDOM()`` over the big
-    ``items`` table on a healthy library that the album query answers from the
-    small one.
+    presence check: ``_PRESENCE_SAMPLE_SIZE`` rows drawn from the tracks, more
+    rows than this library has albums and 2 or 3 real subjects behind them — and
+    an unindexed ``ORDER BY RANDOM()`` over the big ``items`` table on a healthy
+    library that the album query answers from the small one.
+
+    Asserting the exact paths, not just their count, is what also pins WHICH
+    file stands for an album: its ``MIN(path)``, so the sampled slot is stable
+    across draws rather than a different track each time.
     """
-    lib, folders = _multi_track_library(tmp_path)
+    lib, lowest_per_album = _multi_track_library(tmp_path)
     with lib.transaction() as tx:
         assert tx.query("SELECT COUNT(*) FROM albums")[0][0] == _GROUPED_ALBUMS
         assert tx.query("SELECT COUNT(*) FROM items")[0][0] > _PRESENCE_SAMPLE_SIZE
 
-    dirs = _sampled_library_dirs(lib, _PRESENCE_SAMPLE_SIZE)
+    files = _sampled_library_files(lib, _PRESENCE_SAMPLE_SIZE)
 
-    assert sorted(dirs) == sorted(folders)
-    require_library_present(lib)  # must not raise: every folder is on disk
+    assert sorted(files) == sorted(lowest_per_album)
+    require_library_present(lib)  # must not raise: every file is on disk
 
 
 def test_an_empty_path_row_is_skipped_and_not_read_as_the_library_root(tmp_path: Path) -> None:
-    """A row naming no file must not answer for the share.
+    """A row naming no file must not spend a sample slot, or stand for the root.
 
-    ``os.path.dirname(os.path.join(lib.directory, ""))`` is the library ROOT,
-    and the root is what ``require_library_root`` has just confirmed exists — so
-    an empty ``path`` that reaches the loop's body names a folder that is always
-    there, and the first-hit accept then reports "the music is there" for a
-    library whose every album folder is gone. Weakening the skip to ``raw is
-    None`` does exactly that: measured on this fixture, the root was in 50 of 50
-    samples and the check accepted a dropped share.
+    ``os.path.join(lib.directory, "")`` is the library root with a trailing
+    separator, so an empty ``path`` that reaches the loop's body puts the root
+    itself into the sample. Under the file check that costs a slot rather than
+    the answer (the root is a directory, so ``os.path.isfile`` says no) — but it
+    was the answer while the sampler took ``os.path.dirname``: the root is what
+    ``require_library_root`` has just confirmed exists, so the first-hit accept
+    reported "the music is there" for a library whose every album folder was
+    gone. Measured then: weakening the skip to ``raw is None`` put the root in
+    50 of 50 samples and accepted a dropped share.
+
+    Both halves are asserted because either alone is weak — the count catches
+    the wasted slot, and ``normpath`` is what makes "the root is not in the
+    sample" catch it too (the joined form carries a trailing separator, so a
+    bare string comparison passes vacuously).
     """
     lib, music = _library_with_an_empty_path_row(tmp_path)
 
-    dirs = _sampled_library_dirs(lib, _PRESENCE_SAMPLE_SIZE)
+    files = _sampled_library_files(lib, _PRESENCE_SAMPLE_SIZE)
 
-    assert str(music) not in dirs
-    assert len(dirs) == _GROUPED_ALBUMS - 1  # the empty row contributes nothing
+    assert not [f for f in files if os.path.normpath(f) == str(music)]
+    assert len(files) == _GROUPED_ALBUMS - 1  # the empty row contributes nothing
     with pytest.raises(LibraryRootUnavailableError) as excinfo:
         require_library_present(lib)
-    assert "holds none of the library's albums" in str(excinfo.value)
+    assert "none of the music files the library names" in str(excinfo.value)
+
+
+#: Albums in the flat-layout fixture below. More than ``_PRESENCE_SAMPLE_SIZE``
+#: so the draw is a real sample rather than an exhaustive one — the refusal must
+#: come from every drawn file being absent, not from the draw being forced.
+_FLAT_ALBUMS = _PRESENCE_SAMPLE_SIZE + 3
+
+
+def _flat_library(tmp_path: Path) -> tuple[Library, Path]:
+    """A library whose ``paths.default`` has NO directory component.
+
+    ``$title`` is beets' own shortest template and the field is editable from
+    the app (Settings -> Naming writes ``paths:`` back into ``config.yaml``), so
+    this is a supported layout, not a damaged install. Each file is placed where
+    beets' OWN ``Item.destination()`` puts it, and the assert below reads that
+    destination — so "every track lands in the music root" is a measurement of
+    the template rather than an assumption about it, and it is made HERE rather
+    than from the sampler's own output, which would only re-state whatever the
+    sampler currently returns.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    lib = build_library(str(tmp_path / "library.db"), str(music), path_format="$title")
+
+    for a in range(_FLAT_ALBUMS):
+        item = Item(
+            album=f"Album {a:03d}",
+            albumartist=f"Artist {a:03d}",
+            artist=f"Artist {a:03d}",
+            title=f"Song {a:03d}",
+            track=1,
+        )
+        item.path = os.fsencode(str(music / f"provisional-{a:03d}.mp3"))
+        lib.add_album([item]).store()
+        dest = Path(os.fsdecode(item.destination()))
+        assert dest.parent == music, f"the template must be flat, got {dest}"
+        dest.write_bytes(b"\x00")  # placeholder bytes; tests never read audio
+        item.path = os.fsencode(str(dest))
+        item.store()
+    return lib, music
+
+
+def test_a_flat_layout_does_not_sample_the_music_root_against_itself(tmp_path: Path) -> None:
+    """A dropped share must be refused whatever depth the template files a track at.
+
+    The hole this closes: with the sampler taking ``os.path.dirname``, a flat
+    library's every sample WAS the music root, so ``require_library_present``
+    re-asked the question ``require_library_root`` had just answered — and a
+    stray ``.stfolder`` on the local mountpoint answers it wrongly. Measured on
+    the shipped folder check: the root came back 5 of 5 times and the predicate
+    ACCEPTED, while the same rows under ``$albumartist/$album/$title`` were
+    refused.
+
+    The premise — that this template really does file every track in the music
+    root — is asserted inside the fixture, from beets' own ``Item.destination()``
+    rather than from the sampler's output: without it the refusal below could be
+    coming from something else entirely and would pin nothing about flat layouts,
+    and reading it back off the sampler would only re-state whatever the sampler
+    happens to return.
+    """
+    lib, music = _flat_library(tmp_path)
+
+    require_library_present(lib)  # healthy: the sampled files are all there
+
+    shutil.rmtree(music)
+    music.mkdir()
+    (music / ".stfolder").mkdir()  # the stray entry the cheap predicate accepts
+
+    require_library_root(lib)  # accepts the stray-entry mountpoint — the gap
+
+    with pytest.raises(LibraryRootUnavailableError) as excinfo:
+        require_library_present(lib)
+    assert "none of the music files the library names" in str(excinfo.value)
+
+    # And the reason it refused: the sample is the FILES, so nothing in it is
+    # the music root. Asserted after the behaviour on purpose — restoring
+    # ``dirname`` must fail the raise above, not merely this shape check.
+    sample = _sampled_library_files(lib, _PRESENCE_SAMPLE_SIZE)
+    assert len(sample) == _PRESENCE_SAMPLE_SIZE, sample
+    assert not [p for p in sample if os.path.normpath(p) == str(music)], sample
+
+
+def test_a_directory_where_the_track_should_be_is_not_the_music_coming_back(
+    tmp_path: Path,
+) -> None:
+    """``os.path.isfile``, not ``os.path.exists`` — the only shape that separates them.
+
+    The predicate asks whether the FILE the library named is there. ``exists``
+    answers True for a DIRECTORY (or a socket, or a FIFO) sitting at that path,
+    and none of those is the music coming back: an interrupted sync, a restore
+    tool, or a mount that was laid down over the track's own name all leave
+    something that is not a track where a track should be.
+
+    Single-album so the draw is exhaustive and the answer is deterministic. The
+    ``exists`` control is asserted first, or this test would pass for the wrong
+    reason — with nothing at all at the path both predicates refuse, and the
+    swap would survive.
+    """
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+    folder = music / "A" / "Album"
+    track = folder / "01 Track.mp3"
+    folder.mkdir(parents=True)
+    track.mkdir()  # a DIRECTORY at the item path
+    item = Item(album="Album", albumartist="A", artist="A", title="Track", track=1)
+    item.path = os.fsencode(str(track))
+    lib.add_album([item]).store()
+
+    assert _sampled_library_files(lib, _PRESENCE_SAMPLE_SIZE) == [str(track)]
+    assert os.path.exists(track), "the control: ``exists`` would accept this library"
+    require_library_root(lib)  # the tree is all there, so the cheap check passes
+
+    with pytest.raises(LibraryRootUnavailableError) as excinfo:
+        require_library_present(lib)
+    assert "none of the music files the library names" in str(excinfo.value)
