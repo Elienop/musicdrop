@@ -53,8 +53,8 @@ entry carries a dated correction block where the pass changed it._
    (#199 = `3e82ae4` = v0.46.0, #200 = `0eca9c2` = v0.47.0, #201 = `9d1b4e7` = v0.47.1).
    The full record moved to *Recently shipped* below; what remains from this item is not the
    item but the findings it produced, each filed separately under *Open bugs / hardening*.
-5. **First-run password setup — IN FLIGHT on `feat/first-run-password-setup` (2026-09-03;
-   vault decisions 29).** Why: on 2026-09-02 the owner's TrueNAS compose read `$Yy` and `$rSl`
+5. ~~**First-run password setup**~~ — **SHIPPED — PR #212, squash `2d6fbc4` = v0.50.0**
+   (2026-09-03; vault decisions 29). Original entry kept for its record. Why: on 2026-09-02 the owner's TrueNAS compose read `$Yy` and `$rSl`
    inside the `MUSICDROP_PASSWORD_HASH` value as variables and blanked them (compose
    interpolates `$name` in `environment:`), startup said *set but UNREADABLE*, and the fix was
    the `$$` doubling README and `docker-compose.yml` already documented — a known footgun of
@@ -80,7 +80,8 @@ entry carries a dated correction block where the pass changed it._
    `docker-compose.yml` and this file change in the same PR. The 2026-09-03 review round
    (four seats plus an owner browser pass) found that the setup window is not bounded to first
    boot and that losing the data volume loses the credential — both amended into *Accepted
-   residuals* below — and its fix round lands on the same branch before merge.
+   residuals* below — and two fix rounds, each verified adversarially and in the browser,
+   landed on the same branch before merge.
 
 The 40 banked #143 Plex review Minors stay fully adjudicated (2026-08-25, every item
 re-verified against v0.44.0): 12 shipped as the triage fix slice (see Recently shipped), 12
@@ -2095,6 +2096,22 @@ Added by the 2026-08-28 sweeps:
 
 ## Recently shipped
 
+- **First-run password setup — #212 = v0.50.0 (2026-09-03).** A fresh install sets its
+  password on the sign-in screen (setup form; hash stored at `<beets_dir>/password-hash`,
+  0600, atomic) and changes it in **Settings → Account** (wrong current password answers 403
+  and keeps the session; a change re-mints only the caller's cookie). `MUSICDROP_PASSWORD_HASH`
+  stays as an override that wins while set, readable or not, and both screens say what to fix
+  or unset (`decisions.md` 29). `AuthStatus.password_source: none | env | file`;
+  `POST /api/auth/setup` is the fifth exempt path, 409 once any source exists, under an
+  in-process lock. Review-round hardening: the stored hash is read only when the entry is a
+  bounded regular file (a FIFO no longer wedges the event loop, a dangling symlink counts as
+  present); a 422 no longer echoes the submitted body; setup and change each write a line to
+  the container log through uvicorn's logger; the boot line names a file the override shadows;
+  the CLI refuses whitespace-only passwords like the routes; a process-level test floor keeps
+  the suite green when a real `password-hash` sits in the dev beets dir; one field-marking
+  rule on both forms with focus placed after every answer. The residuals it accepted are
+  under *Accepted residuals* (the setup window re-opens whenever the file is absent; a lost
+  data volume loses the credential; root-owned-file recovery UNVERIFIED).
 - **Trash data-safety, two slices — #208 = v0.48.0 (2026-09-02) and #209 = v0.49.0 (2026-09-03).**
   - **#208 = v0.48.0 — undoable deletes.** Every mover records where an entry came from in a
     sibling store (`<beets_dir>/trash-origins/<entry>.json`, freedesktop `trashinfo` shape), so
