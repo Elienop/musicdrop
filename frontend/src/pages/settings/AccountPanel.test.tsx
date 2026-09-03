@@ -272,10 +272,11 @@ describe("AccountPanel — what the server refuses", () => {
     expect(
       screen.getByLabelText("Confirm new password"),
     ).not.toHaveAttribute("aria-describedby");
-    // Feedback sits in the action row with the button, as the Plex and slskd
-    // panels do, rather than stacked under it.
-    expect(alert.parentElement).toContainElement(
-      screen.getByRole("button", { name: "Change password" }),
+    // Feedback sits in the action row WITH the button, as the Plex and slskd
+    // panels do, rather than stacked under it. The same container, not merely
+    // an ancestor in common: the form is that either way.
+    expect(alert.parentElement).toBe(
+      screen.getByRole("button", { name: "Change password" }).parentElement,
     );
   });
 
