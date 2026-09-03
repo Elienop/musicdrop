@@ -25,6 +25,20 @@ const MISMATCH_MESSAGE = "The two passwords don’t match. Type them again.";
  * panel is mounted once per route. */
 const ERROR_ID = "account-password-error";
 
+/** The panel's own description, per source, because the recovery is not the
+ * same sentence in both.
+ *
+ * Under the environment override, "delete the password-hash file" is not merely
+ * incomplete — it is WRONG: the variable wins whether or not a file is there, so
+ * deleting one changes nothing, and a locked-out operator would be sent to do
+ * the one thing that cannot help. The recovery that IS true there is unsetting
+ * the variable, which the notice says. Caught in a browser pass rather than by a
+ * test: the description and the notice only sit together on screen. */
+const DESCRIPTION =
+  "MusicDrop is protected by one password, shared by everyone who uses this server. If you forget it, delete the password-hash file in MusicDrop’s beets directory and restart MusicDrop — the sign-in screen will then set a new one.";
+const DESCRIPTION_UNDER_OVERRIDE =
+  "MusicDrop is protected by one password, shared by everyone who uses this server. On this server it is set outside the app.";
+
 /**
  * Settings → Account: change the single password this server is protected by.
  *
@@ -62,7 +76,7 @@ export function AccountPanel() {
   }
   if (status.data.password_source === "env") {
     return (
-      <Panel>
+      <Panel description={DESCRIPTION_UNDER_OVERRIDE}>
         <EnvOverrideNotice />
       </Panel>
     );
@@ -74,15 +88,15 @@ export function AccountPanel() {
   );
 }
 
-/** The panel shell. Its description carries the forgotten-password recovery,
- * because this is the screen an operator looks at while they still CAN sign in
- * — the sign-in screen can only say it once they cannot. */
-function Panel({ children }: Readonly<{ children: React.ReactNode }>) {
+/** The panel shell. Its default description carries the forgotten-password
+ * recovery, because this is the screen an operator looks at while they still CAN
+ * sign in — the sign-in screen can only say it once they cannot. */
+function Panel({
+  children,
+  description = DESCRIPTION,
+}: Readonly<{ children: React.ReactNode; description?: string }>) {
   return (
-    <SettingsSection
-      title="Password"
-      description="MusicDrop is protected by one password, shared by everyone who uses this server. If you forget it, delete the password-hash file in MusicDrop’s beets directory and restart MusicDrop — the sign-in screen will then set a new one."
-    >
+    <SettingsSection title="Password" description={description}>
       {children}
     </SettingsSection>
   );
@@ -101,9 +115,10 @@ function EnvOverrideNotice() {
     <StatusBanner tone="neutral">
       This server’s password comes from{" "}
       <code className="font-mono">MUSICDROP_PASSWORD_HASH</code>, which
-      overrides any password stored by the app, so it can’t be changed here.
-      Unset that variable and restart MusicDrop to hand the password over to the
-      app; the sign-in screen will then set a new one.
+      overrides any password stored by the app, so it can’t be changed here —
+      and a forgotten one can’t be recovered by deleting a file either. Unset
+      that variable and restart MusicDrop to hand the password over to the app;
+      the sign-in screen will then set a new one.
     </StatusBanner>
   );
 }

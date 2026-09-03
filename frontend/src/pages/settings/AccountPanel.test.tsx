@@ -254,6 +254,27 @@ describe("AccountPanel — under the environment override", () => {
       screen.queryByRole("button", { name: "Change password" }),
     ).not.toBeInTheDocument();
   });
+
+  test("does not repeat the delete-the-file recovery, which is WRONG here", async () => {
+    // Caught in the browser pass, not by a test: the panel's default
+    // description tells the operator to delete the password-hash file, and
+    // under the override that is not merely incomplete — the variable wins
+    // whether or not a file is there, so deleting one changes nothing and sends
+    // a locked-out operator to do the one thing that cannot help.
+    server.use(statusHandler("env"));
+    renderWithProviders(<AccountPanel />);
+
+    // Wait for the notice, not for the region: the region exists from the first
+    // paint (the loading branch is inside the same panel) and still carries the
+    // default description then, so asserting on it too early passes vacuously.
+    await findBanner(/overrides any password stored by the app/i);
+    const panel = screen.getByRole("region", { name: "Password" });
+    expect(panel).not.toHaveTextContent(
+      /delete the password-hash file in MusicDrop’s beets directory/,
+    );
+    // The recovery that IS true here, said once.
+    expect(panel).toHaveTextContent(/unset that variable/i);
+  });
 });
 
 describe("AccountPanel — before and instead of an answer", () => {
