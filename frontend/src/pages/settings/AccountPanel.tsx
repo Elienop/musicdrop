@@ -26,9 +26,9 @@ const MISMATCH_MESSAGE = "The two passwords don’t match. Type them again.";
  * panel is mounted once per route. */
 const ERROR_ID = "account-password-error";
 
-/** The panel's lede: one line, like every sibling panel's description, and the
- * same vocabulary the sign-in card uses for the same fact ("a single password",
- * "the one everyone uses"). The forgotten-password recovery used to live here
+/** The panel's lede: one line, the shape the sibling panels' descriptions take,
+ * and the same vocabulary the sign-in card uses for the same fact ("a single
+ * password", "the one everyone uses"). The recovery used to live here
  * and is a footnote under the form now — it is an aside, read once months
  * before it is needed, and in the lede it was the tallest thing in the panel on
  * a phone, sitting above three fields it is not about. */
@@ -177,10 +177,11 @@ function ChangePasswordForm() {
           currentRef.current?.focus();
         },
         onError: (error) => {
-          // Every answer leaves this form mounted with focus on <body>, so
-          // every answer sends it back to the first field. Only a wrong current
-          // password also SELECTS: that is the one case where the value in the
-          // field is the thing to replace.
+          // Submitting disabled the button, which drops focus to <body>, and
+          // the rejections this form keeps rendering for (403, 422, 429, 503,
+          // and a request with no answer) all leave it there. Send it back to
+          // the first field; a wrong current password also SELECTS, being the
+          // one of them about the value sitting in that field.
           currentRef.current?.focus();
           if (error.status === 403) {
             currentRef.current?.select();

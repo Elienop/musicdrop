@@ -491,10 +491,11 @@ function FirstRunSetup({
           void status.refetch();
           return;
         }
-        // Every other answer leaves this form mounted, with the rejection
-        // announcing itself to a user whose focus the disabled button dropped
-        // to <body>. No `select()`: unlike a wrong password, nothing here says
-        // the typed value is the problem.
+        // The answers that leave this form on screen (422, 429, 503, and a
+        // request with no answer at all) announce themselves to a user whose
+        // focus the disabled button dropped to <body>, so put it back. No
+        // `select()`: unlike a wrong password, none of these says the typed
+        // value is the problem.
         passwordRef.current?.focus();
       },
     });

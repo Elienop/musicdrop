@@ -438,8 +438,11 @@ describe("AccountPanel — under the environment override", () => {
     expect(notice).not.toHaveTextContent(
       "the sign-in screen will then set a new one",
     );
-    // A glyph, like every other neutral banner in the app: colour alone does
-    // not carry the state, and a text-only box reads as a quoted paragraph
+    // A glyph. Measured over `tone="neutral"` call sites in src/ while writing
+    // this: the six outside this panel each carry an icon or an action slot,
+    // none is prose alone — the settings-panel precedent being
+    // SettingsBeetsPage's `tone="neutral" icon={Info}`. Colour is not carrying
+    // the state on its own, and a text-only box reads as a quoted paragraph
     // rather than as a notice from the system.
     expect(notice.querySelector("svg")).toBeInTheDocument();
   });
