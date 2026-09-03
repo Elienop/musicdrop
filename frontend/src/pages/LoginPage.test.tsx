@@ -574,6 +574,24 @@ describe("LoginPage — first run, with no password anywhere", () => {
     ).not.toBeInTheDocument();
   });
 
+  test("the setup form carries the username field password managers look for", async () => {
+    // Pinned on this form of its own: the sign-in form's copy of this test
+    // renders the OTHER branch, so deleting the field here left the suite
+    // green. Off screen, not a tab stop, not announced.
+    server.use(statusHandler(false, false, "none"));
+    renderLogin();
+
+    const password = await screen.findByLabelText("Password");
+    const username = password
+      .closest("form")
+      ?.querySelector('input[autocomplete="username"]');
+    expect(username).toBeInstanceOf(HTMLInputElement);
+    expect(username).toHaveAttribute("tabindex", "-1");
+    expect(username).toHaveAttribute("aria-hidden", "true");
+    expect(username).toHaveAttribute("readonly");
+    expect(username).not.toHaveClass("hidden");
+  });
+
   test("refuses a mismatched confirmation without asking the server", async () => {
     let posts = 0;
     server.use(
@@ -600,6 +618,15 @@ describe("LoginPage — first run, with no password anywhere", () => {
     // derive, and the route could not have caught it anyway (it takes one
     // password field).
     expect(posts).toBe(0);
+    // "Type them again" with focus left on the button means tabbing back to
+    // the field first; submitting had disabled that button, so focus was on
+    // <body>. The selection is what makes the retype a retype rather than an
+    // append. The Account panel's form cites this behaviour as its precedent.
+    const confirm =
+      screen.getByLabelText<HTMLInputElement>("Confirm password");
+    expect(confirm).toHaveFocus();
+    expect(confirm.selectionStart).toBe(0);
+    expect(confirm.selectionEnd).toBe("hunter3".length);
     // And the message clears the moment either half changes, rather than
     // hanging around contradicting what is now typed.
     await userEvent.type(screen.getByLabelText("Confirm password"), "!");
@@ -625,9 +652,8 @@ describe("LoginPage — first run, with no password anywhere", () => {
     expect(
       screen.queryByText("The two passwords don’t match. Type them again."),
     ).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Password")).toHaveAttribute(
+    expect(screen.getByLabelText("Password")).not.toHaveAttribute(
       "aria-invalid",
-      "false",
     );
     expect(screen.getByLabelText("Confirm password")).toHaveAttribute(
       "aria-invalid",
@@ -635,11 +661,13 @@ describe("LoginPage — first run, with no password anywhere", () => {
     );
   });
 
-  test("describes the confirm field by the mismatch, and by nothing else", async () => {
-    // `aria-describedby` claims the text is ABOUT this field. The mismatch is
-    // about the pair, so both fields carry it; a rejection the server wrote is
-    // about the request or the first field, and pointing the confirm field at
-    // it told a screen-reader user a fact about a different field.
+  test("marks the confirm field for the mismatch, and no field for a rejection", async () => {
+    // `aria-describedby` claims the text is ABOUT this field. The confirm
+    // field is the one whose value is wrong relative to the first, and the one
+    // the sentence sends the caret to, so it is the one marked — the same rule
+    // the Account panel's form follows. The server's rejections are about the
+    // request or the server's state, so they are said in the alert and pointed
+    // at nothing.
     server.use(
       statusHandler(false, false, "none"),
       http.post(SETUP_URL, () =>
@@ -664,17 +692,23 @@ describe("LoginPage — first run, with no password anywhere", () => {
 
     const mismatch = await screen.findByRole("alert");
     expect(confirm).toHaveAttribute("aria-describedby", mismatch.id);
-    expect(password).toHaveAttribute("aria-describedby", mismatch.id);
+    expect(confirm).toHaveAttribute("aria-invalid", "true");
+    // NOT the first field: it held half of the mismatched pair, but the
+    // sentence is not about the value sitting in it, and the Account panel's
+    // form marks only the confirmation for the same mistake.
+    expect(password).not.toHaveAttribute("aria-describedby");
+    expect(password).not.toHaveAttribute("aria-invalid");
 
     // Now a matched pair the SERVER refuses: the sentence is about the request,
-    // so the confirm field is described by nothing.
+    // so it is said in the alert and no field is marked.
     await userEvent.type(confirm, "{Backspace}2");
     await userEvent.click(screen.getByRole("button", { name: "Set password" }));
 
     const rejection = await screen.findByRole("alert");
     expect(rejection).toHaveTextContent("Another sign-in is already");
-    expect(password).toHaveAttribute("aria-describedby", rejection.id);
+    expect(password).not.toHaveAttribute("aria-describedby");
     expect(confirm).not.toHaveAttribute("aria-describedby");
+    expect(confirm).toHaveAttribute("aria-invalid", "false");
   });
 
   test("puts focus back in the password field after a rejection", async () => {
@@ -798,6 +832,53 @@ describe("LoginPage — first run, with no password anywhere", () => {
     ).toBeInTheDocument();
   });
 
+  test("a 409 whose re-check fails still says what happened, and moves focus", async () => {
+    // The modal reason a 409 arrives at all is a server that was just
+    // restarted with a password — so the re-check right behind it is the
+    // request most likely to fail. It leaves `password_set: false` in the
+    // cache, so this form stays mounted: the sentence has to be visible HERE
+    // too, or the click changed nothing observable on the page.
+    let statusCalls = 0;
+    server.use(
+      http.get(STATUS_URL, () => {
+        statusCalls += 1;
+        return statusCalls === 1
+          ? HttpResponse.json({
+              authenticated: false,
+              password_set: false,
+              password_source: "none",
+            })
+          : HttpResponse.error();
+      }),
+      http.post(SETUP_URL, () =>
+        HttpResponse.json(
+          {
+            detail:
+              "A password is already configured on this server and stored in the beets directory.",
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    renderLogin();
+
+    await userEvent.type(await screen.findByLabelText("Password"), "hunter2");
+    await userEvent.type(screen.getByLabelText("Confirm password"), "hunter2");
+    await userEvent.click(screen.getByRole("button", { name: "Set password" }));
+
+    const note = await screen.findByText(
+      "A password was set from elsewhere while this page was open. Sign in with that one.",
+    );
+    expect(note).toBe(screen.getByRole("status"));
+    await waitFor(() => expect(statusCalls).toBe(2));
+    // Still the setup form — and focus is in it, not on the <body> the
+    // disabled button dropped it to.
+    expect(
+      screen.getByRole("button", { name: "Set password" }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toHaveFocus();
+  });
+
   test.each([
     [422, "A password cannot be empty or only whitespace."],
     [
@@ -837,9 +918,10 @@ describe("LoginPage — an unreadable MUSICDROP_PASSWORD_HASH", () => {
     expect(banner).toHaveAttribute("data-slot", "status-banner");
     expect(banner).toHaveTextContent("MUSICDROP_PASSWORD_HASH");
     // The measured way this state is reached: docker-compose interpolates a
-    // single $, so a hash pasted straight from the CLI arrives shorter than it
-    // left. Without this sentence the operator is told their hash is wrong and
-    // not why.
+    // single $ followed by a letter, a digit or _, so a hash pasted straight
+    // from the CLI usually arrives shorter than it left (11 of 12 real hashes
+    // in the probe). Without this sentence the operator is told their hash is
+    // wrong and not why.
     expect(banner).toHaveTextContent("must be doubled to");
     // No setup form, and this is the owner's ruling rather than an oversight:
     // the env var wins even when its value cannot be read, so a password set

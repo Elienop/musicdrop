@@ -133,13 +133,37 @@ function EnvOverrideNotice() {
   );
 }
 
+/**
+ * What the form is currently saying, and which field — if any — the sentence
+ * is ABOUT.
+ *
+ * Held as state rather than derived from the mutation, because the mutation's
+ * error outlives the typing that answers it: after a 403 the sentence, the red
+ * border and the `aria-describedby` on the current-password field all stood
+ * while the operator retyped that very field, and a later mismatch then marked
+ * the confirm field while the current one was still described by the shared id
+ * — so it was described by a sentence about a pair it is not in.
+ *
+ * `field` is undefined for the answers that are about the request or the
+ * server's state rather than about a value on screen (422, 429, 503, 409, and
+ * the statuses the middleware answers): those are said in the action row and
+ * point at nothing.
+ */
+type FormError = Readonly<{
+  message: string;
+  field?: "current" | "confirm";
+  /** A 409 is about this server's configuration, not about anything typed, so
+   * it reads as a neutral banner rather than as a field error. */
+  conflict?: boolean;
+}>;
+
 /** Current / new / confirm, and the four answers the route can give back. */
 function ChangePasswordForm() {
   const change = useChangePassword();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
-  const [mismatch, setMismatch] = useState(false);
+  const [shown, setShown] = useState<FormError | undefined>(undefined);
   // Always-mounted polite region (the Plex/slskd dialect): a live region that
   // is inserted at the moment it gains text is often not announced at all, so
   // the success sentence is state rather than a conditionally mounted node.
@@ -147,11 +171,23 @@ function ChangePasswordForm() {
   const currentRef = useRef<HTMLInputElement>(null);
   const confirmRef = useRef<HTMLInputElement>(null);
 
+  /** Drop the shown error if it is the one about `field`: editing a field
+   * answers the sentence that was about the value in it. The mismatch is about
+   * the PAIR, so either half's edit answers it — both call this with
+   * `"confirm"`, the field the mismatch marks. */
+  function clearErrorAbout(field: "current" | "confirm") {
+    setShown((error) => (error?.field === field ? undefined : error));
+  }
+
   function handleSubmit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     setChanged(false);
+    // Cleared before the new outcome is decided, so the answer to THIS submit
+    // is the only one on screen and the only field marked is the one it is
+    // about. Without this the last answer's marking outlived it.
+    setShown(undefined);
     if (next !== confirm) {
-      setMismatch(true);
+      setShown({ message: MISMATCH_MESSAGE, field: "confirm" });
       // The sentence says "type them again", so put the caret where typing
       // goes — the same thing the sign-in screen's setup form does for the
       // same mistake, rather than leaving focus on the button that was clicked.
@@ -159,7 +195,6 @@ function ChangePasswordForm() {
       confirmRef.current?.select();
       return;
     }
-    setMismatch(false);
     change.mutate(
       { currentPassword: current, newPassword: next },
       {
@@ -177,11 +212,22 @@ function ChangePasswordForm() {
           currentRef.current?.focus();
         },
         onError: (error) => {
+          // A 403 is the one answer about a value on screen: it says the
+          // current password is wrong, so that field carries it. Everything
+          // else the route or the middleware can answer is about the request
+          // or the server's state (422, 429, 503, and the 409 below among
+          // them), and is said in the action row without marking a field.
+          if (error.status === 409) {
+            setShown({ message: error.message, conflict: true });
+          } else if (error.status === 403) {
+            setShown({ message: error.message, field: "current" });
+          } else {
+            setShown({ message: error.message });
+          }
           // Submitting disabled the button, which drops focus to <body>, and
-          // the rejections this form keeps rendering for (403, 422, 429, 503,
-          // and a request with no answer) all leave it there. Send it back to
-          // the first field; a wrong current password also SELECTS, being the
-          // one of them about the value sitting in that field.
+          // every answer that leaves this form on screen leaves it there. Send
+          // it back to the first field; a wrong current password also SELECTS,
+          // being the answer about the value sitting in that field.
           currentRef.current?.focus();
           if (error.status === 403) {
             currentRef.current?.select();
@@ -197,9 +243,8 @@ function ChangePasswordForm() {
   // Unreachable while the panel hides the form under "env", and handled anyway:
   // the status this panel read is a cached answer, and a restart can invalidate
   // it under an open tab.
-  const conflict = change.error?.status === 409 ? change.error.message : null;
-  const rejection = conflict === null ? change.error?.message : undefined;
-  const shown = mismatch ? MISMATCH_MESSAGE : rejection;
+  const conflict = shown?.conflict === true ? shown.message : null;
+  const rejection = shown?.conflict === true ? undefined : shown?.message;
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-4">
@@ -217,10 +262,17 @@ function ChangePasswordForm() {
           autoComplete="current-password"
           required
           ref={currentRef}
-          aria-invalid={change.error?.status === 403}
-          aria-describedby={shown === undefined ? undefined : ERROR_ID}
+          // Marked only while the sentence on screen is about THIS field — a
+          // wrong current password. The rejections about the request or the
+          // server used to point here too, so this field was described by a
+          // sentence about the new password, or about a pair it is not in.
+          aria-invalid={shown?.field === "current"}
+          aria-describedby={shown?.field === "current" ? ERROR_ID : undefined}
           value={current}
-          onChange={(e) => setCurrent(e.target.value)}
+          onChange={(e) => {
+            clearErrorAbout("current");
+            setCurrent(e.target.value);
+          }}
           // The width cap belongs to each field, as it does in the Plex and
           // slskd panels; on the form it also capped the action row below.
           className="max-w-md"
@@ -240,7 +292,7 @@ function ChangePasswordForm() {
             // Clear on edit, from EITHER half of the pair: the mismatch was
             // about the two as they stood at submit, and retyping this one is
             // the likelier correction.
-            setMismatch(false);
+            clearErrorAbout("confirm");
             setNext(e.target.value);
           }}
           className="max-w-md"
@@ -259,15 +311,16 @@ function ChangePasswordForm() {
           autoComplete="new-password"
           required
           ref={confirmRef}
-          aria-invalid={mismatch}
-          // The MISMATCH only. It is the one sentence about this pair; the
-          // server's rejections are about the current password or about the
-          // request, and pointing this field at them told a screen-reader user
-          // a fact about a field they were not in.
-          aria-describedby={mismatch ? ERROR_ID : undefined}
+          // The MISMATCH only. It is the one sentence about this pair, and
+          // this is the field it says to retype; the server's rejections are
+          // about the current password or about the request, and pointing this
+          // field at them told a screen-reader user a fact about a field they
+          // were not in.
+          aria-invalid={shown?.field === "confirm"}
+          aria-describedby={shown?.field === "confirm" ? ERROR_ID : undefined}
           value={confirm}
           onChange={(e) => {
-            setMismatch(false);
+            clearErrorAbout("confirm");
             setConfirm(e.target.value);
           }}
           className="max-w-md"
@@ -318,9 +371,9 @@ function ChangePasswordForm() {
             </>
           ) : null}
         </p>
-        {shown !== undefined && (
+        {rejection !== undefined && (
           <p id={ERROR_ID} className="text-destructive text-sm" role="alert">
-            {shown}
+            {rejection}
           </p>
         )}
       </div>

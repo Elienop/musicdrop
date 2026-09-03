@@ -169,7 +169,9 @@ function LoginCardBody({
 }>) {
   // Held HERE, one level above both forms, because the fact it records is that
   // the setup form was replaced by the sign-in form: state inside either one
-  // is unmounted by the very swap it exists to explain.
+  // is unmounted by the very swap it exists to explain — and when the re-check
+  // that would swap them fails, the form that stays is the setup one, so both
+  // arms are handed the flag.
   const [superseded, setSuperseded] = useState(false);
 
   if (status.isPending) {
@@ -180,6 +182,7 @@ function LoginCardBody({
       <NoUsablePassword
         status={status}
         destination={destination}
+        superseded={superseded}
         onSuperseded={() => setSuperseded(true)}
       />
     );
@@ -210,10 +213,12 @@ function LoginCardBody({
 function NoUsablePassword({
   status,
   destination,
+  superseded,
   onSuperseded,
 }: Readonly<{
   status: AuthStatusQuery;
   destination: string;
+  superseded: boolean;
   onSuperseded: () => void;
 }>) {
   const source = status.data?.password_source;
@@ -227,6 +232,7 @@ function NoUsablePassword({
     <FirstRunSetup
       status={status}
       destination={destination}
+      superseded={superseded}
       onSuperseded={onSuperseded}
     />
   );
@@ -450,32 +456,51 @@ function SignInForm({
 function FirstRunSetup({
   status,
   destination,
+  superseded,
   onSuperseded,
 }: Readonly<{
   status: AuthStatusQuery;
   destination: string;
+  superseded: boolean;
   onSuperseded: () => void;
 }>) {
   const navigate = useNavigate();
   const setup = useSetupPassword();
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
-  const [mismatch, setMismatch] = useState(false);
+  // The sentence currently on screen, and whether it is the one about the
+  // confirm field. Held rather than read off `setup.error`, which outlives the
+  // typing that answers it: a mismatch cleared by an edit uncovered the
+  // server's previous rejection, which then reappeared under the fields.
+  const [shown, setShown] = useState<
+    Readonly<{ message: string; mismatch: boolean }> | undefined
+  >(undefined);
   const passwordRef = useRef<HTMLInputElement>(null);
   const confirmRef = useRef<HTMLInputElement>(null);
 
   // The mismatch is checked here rather than as the fields are typed: a "they
   // don't match" that appears on the first keystroke of the second field is
   // telling the user they are wrong before they have finished being right.
+  /** Drop the sentence if it is the mismatch: editing either half of the pair
+   * answers the one sentence that is about the pair. A rejection the server
+   * wrote is about the request, so typing does not answer it — it goes on the
+   * next submit. */
+  function clearMismatch() {
+    setShown((error) => (error?.mismatch === true ? undefined : error));
+  }
+
   function handleSubmit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
+    // Cleared before the new outcome is decided, so the answer to THIS submit
+    // is the only sentence on screen and the only field marked is the one it
+    // is about.
+    setShown(undefined);
     if (password !== confirm) {
-      setMismatch(true);
+      setShown({ message: MISMATCH_MESSAGE, mismatch: true });
       confirmRef.current?.focus();
       confirmRef.current?.select();
       return;
     }
-    setMismatch(false);
     setup.mutate(password, {
       onSuccess: () => {
         void navigate(destination, { replace: true });
@@ -483,34 +508,46 @@ function FirstRunSetup({
       onError: (error) => {
         if (error.status === 409) {
           // Re-ask, and hand the account of it to the form that replaces this
-          // one. The refetch answers `password_set: true`, and LoginCardBody
-          // swaps this branch for the sign-in form — which is the thing the
-          // operator now needs, and the only screen that can act on a password
-          // someone else just set.
+          // one. The refetch usually answers `password_set: true`, and
+          // LoginCardBody swaps this branch for the sign-in form — which is
+          // the thing the operator now needs, and the only screen that can act
+          // on a password someone else just set. The 409's own sentence is not
+          // rendered: `superseded` says the same fact in the words of what
+          // happened here, in whichever form is on screen when it lands.
           onSuperseded();
           void status.refetch();
-          return;
+        } else {
+          setShown({ message: error.message, mismatch: false });
         }
-        // The answers that leave this form on screen (422, 429, 503, and a
-        // request with no answer at all) announce themselves to a user whose
-        // focus the disabled button dropped to <body>, so put it back. No
+        // Submitting disabled the button, which drops focus to <body>. Every
+        // answer that leaves this form mounted announces itself to a user
+        // whose focus is nowhere, so put it back — including a 409 whose
+        // re-check fails, which leaves this branch exactly where it was. No
         // `select()`: unlike a wrong password, none of these says the typed
-        // value is the problem.
+        // value is the problem. Measured answers that land here: 422, 429 and
+        // 503 from the route, and a request with no answer at all; the
+        // middleware can also refuse a POST before the route sees it.
         passwordRef.current?.focus();
       },
     });
   }
-
-  // A 409 has already triggered the refetch that unmounts this form; showing
-  // its sentence in the meantime would be a message the user watches disappear.
-  const rejection = setup.error?.status === 409 ? undefined : setup.error?.message;
-  const shown = mismatch ? MISMATCH_MESSAGE : rejection;
 
   return (
     // The card header carries what this branch is (see LoginPage): a second
     // muted paragraph here said the same thing twice, in the same type, 12px
     // below the description.
     <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+      {superseded && (
+        // Also HERE, not only in the sign-in form: the re-check behind a 409
+        // can itself fail — a server mid-restart is the usual reason a 409
+        // arrives — and then the cache still says `password_set: false`, this
+        // branch stays mounted, and the click had changed nothing on screen.
+        // The two are never mounted together: this form and the sign-in form
+        // are the two arms of one branch.
+        <output className="text-muted-foreground text-sm">
+          {SUPERSEDED_MESSAGE}
+        </output>
+      )}
       <HiddenUsernameField />
       <div className="flex flex-col gap-1">
         <label htmlFor="setup-password" className="text-sm font-medium">
@@ -526,14 +563,17 @@ function FirstRunSetup({
           autoFocus
           required
           ref={passwordRef}
-          aria-invalid={shown !== undefined}
-          aria-describedby={shown === undefined ? undefined : SETUP_ERROR_ID}
+          // No `aria-invalid` and no `aria-describedby`: nothing this form can
+          // say is about the value in THIS field on its own. The mismatch is
+          // answered by retyping the confirmation, and the server's rejections
+          // are about the request or the server's state — marking this field
+          // for them told a screen-reader user its contents were the problem.
           value={password}
           onChange={(e) => {
             // Clear on edit, from EITHER half: the mismatch was about the pair
             // as it stood at submit, and retyping the first field is the
             // likelier correction of the two.
-            setMismatch(false);
+            clearMismatch();
             setPassword(e.target.value);
           }}
         />
@@ -548,15 +588,16 @@ function FirstRunSetup({
           autoComplete="new-password"
           required
           ref={confirmRef}
-          aria-invalid={mismatch}
-          // The MISMATCH only. It is the one sentence about this pair; the
-          // server's rejections are about the request or about the first
-          // field, and pointing this one at them told a screen-reader user a
-          // fact about a field they were not in.
-          aria-describedby={mismatch ? SETUP_ERROR_ID : undefined}
+          // The MISMATCH only, and this field only: it is the one whose value
+          // is wrong relative to the first, and the field "type them again"
+          // sends the caret to. The server's rejections are about the request
+          // or about the server's state, so they are said in the alert and
+          // point at no field — the rule the Account panel's form follows too.
+          aria-invalid={shown?.mismatch === true}
+          aria-describedby={shown?.mismatch === true ? SETUP_ERROR_ID : undefined}
           value={confirm}
           onChange={(e) => {
-            setMismatch(false);
+            clearMismatch();
             setConfirm(e.target.value);
           }}
         />
@@ -568,7 +609,7 @@ function FirstRunSetup({
           this side is the mismatch, which the server never sees. */}
       {shown !== undefined && (
         <p id={SETUP_ERROR_ID} className="text-destructive text-sm" role="alert">
-          {shown}
+          {shown.message}
         </p>
       )}
       <Button type="submit" disabled={setup.isPending}>
@@ -591,8 +632,10 @@ function FirstRunSetup({
  * fix the variable, and find the password gone.
  *
  * The compose sentence is the second half of the copy because it is the
- * measured way this state is reached: docker-compose interpolates a single `$`,
- * so a hash pasted straight from the CLI arrives shorter than it left. The
+ * measured way this state is reached: docker-compose interpolates a single `$`
+ * that is followed by a letter, a digit or `_`, so a hash pasted straight from
+ * the CLI usually arrives shorter than it left — 11 of 12 real hashes in the
+ * probe behind this branch. The
  * backend says the same thing on its own 401
  * (`app/api/auth.py::_UNREADABLE_ENV_HASH_DETAIL`); this screen has to say it
  * itself because this branch makes no request that could carry it.

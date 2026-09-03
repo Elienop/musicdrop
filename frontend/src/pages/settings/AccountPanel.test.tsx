@@ -207,6 +207,26 @@ describe("AccountPanel — the form", () => {
     );
   });
 
+  test("the mismatch clears when the CONFIRM field is retyped", async () => {
+    // The other half of the same pair. Pinned separately because the two
+    // handlers are separate lines: deleting the clear from this one left the
+    // suite green while the alert stood over the field being corrected.
+    server.use(statusHandler("file"));
+    renderWithProviders(<AccountPanel />);
+
+    await submitChange("old-one", "new-one", "new-two");
+    await screen.findByText("The two passwords don’t match. Type them again.");
+
+    const confirm = screen.getByLabelText("Confirm new password");
+    await userEvent.type(confirm, "!");
+
+    expect(
+      screen.queryByText("The two passwords don’t match. Type them again."),
+    ).not.toBeInTheDocument();
+    expect(confirm).toHaveAttribute("aria-invalid", "false");
+    expect(confirm).not.toHaveAttribute("aria-describedby");
+  });
+
   test("a mismatched confirmation is caught here, not by a scrypt derive", async () => {
     let posts = 0;
     server.use(
@@ -275,12 +295,22 @@ describe("AccountPanel — what the server refuses", () => {
     // Feedback sits in the action row WITH the button, as the Plex and slskd
     // panels do, rather than stacked under it. The same container, not merely
     // an ancestor in common: the form is that either way.
+    //
+    // WHICH container, not what it looks like: the row's own class list, the
+    // `max-w-md` on the three inputs and the footnote's divider are not
+    // asserted here. The sibling panels' tests (SlskdPanel, PlexSettingsPanel)
+    // assert no class list either, and the evidence for those is the owner's
+    // browser pass on the built app.
     expect(alert.parentElement).toBe(
       screen.getByRole("button", { name: "Change password" }).parentElement,
     );
   });
 
-  test("the mismatch describes BOTH fields, since it is about the pair", async () => {
+  test("the mismatch marks the confirm field, and no other", async () => {
+    // `aria-describedby` claims the sentence is ABOUT this field. The current
+    // password is not in the mismatched pair, and it used to be described by
+    // this sentence anyway — so a screen-reader user sitting in it was read a
+    // fact about two fields they were not in.
     server.use(statusHandler("file"));
     renderWithProviders(<AccountPanel />);
 
@@ -291,9 +321,79 @@ describe("AccountPanel — what the server refuses", () => {
 
     const mismatch = await screen.findByRole("alert");
     expect(confirm).toHaveAttribute("aria-describedby", mismatch.id);
-    expect(screen.getByLabelText("Current password")).toHaveAttribute(
+    expect(confirm).toHaveAttribute("aria-invalid", "true");
+    const current = screen.getByLabelText("Current password");
+    expect(current).not.toHaveAttribute("aria-describedby");
+    expect(current).toHaveAttribute("aria-invalid", "false");
+    // The confirm field is the one to retype, so it is the one marked — the
+    // new-password field carries the other half of the pair and is not the
+    // field the sentence sends the caret to.
+    expect(screen.getByLabelText("New password")).not.toHaveAttribute(
       "aria-describedby",
-      mismatch.id,
+    );
+  });
+
+  test("a wrong current password stops being wrong when that field is retyped", async () => {
+    // The rejection lived in the mutation's error, which outlives the typing
+    // that answers it: the sentence and the red border stood while the
+    // operator corrected the very field they were about.
+    server.use(
+      statusHandler("file"),
+      http.post(CHANGE_URL, () =>
+        HttpResponse.json(
+          { detail: "The current password is incorrect." },
+          { status: 403 },
+        ),
+      ),
+    );
+    renderWithProviders(<AccountPanel />);
+
+    await submitChange("wrong-one", "new-one");
+    await screen.findByRole("alert");
+
+    await userEvent.type(screen.getByLabelText("Current password"), "!");
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    const current = screen.getByLabelText("Current password");
+    expect(current).toHaveAttribute("aria-invalid", "false");
+    expect(current).not.toHaveAttribute("aria-describedby");
+  });
+
+  test("a new submit answers with one error, on one field", async () => {
+    // Reachable by correcting a wrong current password and then mistyping the
+    // confirmation: the 403's marking survived into the mismatch, so the
+    // current-password field was described by a sentence about the other pair.
+    server.use(
+      statusHandler("file"),
+      http.post(CHANGE_URL, () =>
+        HttpResponse.json(
+          { detail: "The current password is incorrect." },
+          { status: 403 },
+        ),
+      ),
+    );
+    renderWithProviders(<AccountPanel />);
+
+    await submitChange("wrong-one", "new-one");
+    await screen.findByRole("alert");
+    // Only the confirmation is touched, so nothing but the submit itself can
+    // clear the 403's marking of the current-password field.
+    await userEvent.type(screen.getByLabelText("Confirm new password"), "!");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Change password" }),
+    );
+
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toHaveTextContent(
+      "The two passwords don’t match. Type them again.",
+    );
+    const current = screen.getByLabelText("Current password");
+    expect(current).toHaveAttribute("aria-invalid", "false");
+    expect(current).not.toHaveAttribute("aria-describedby");
+    expect(screen.getByLabelText("Confirm new password")).toHaveAttribute(
+      "aria-describedby",
+      alerts[0].id,
     );
   });
 
@@ -305,9 +405,12 @@ describe("AccountPanel — what the server refuses", () => {
       statusHandler("file"),
       http.post(CHANGE_URL, () =>
         HttpResponse.json(
+          // The route's own sentence, copied whole from
+          // `backend/app/api/auth.py::_ENV_OVERRIDE_DETAIL` — a shortened
+          // paraphrase would be a fixture the server never sends.
           {
             detail:
-              "The password comes from MUSICDROP_PASSWORD_HASH, which overrides the stored one, so it cannot be changed here.",
+              "The password comes from MUSICDROP_PASSWORD_HASH, which overrides the stored one, so it cannot be changed here. Unset that variable and restart MusicDrop to let the app manage the password instead.",
           },
           { status: 409 },
         ),
@@ -343,6 +446,23 @@ describe("AccountPanel — what the server refuses", () => {
     await submitChange("old-one", "  ");
 
     expect(await screen.findByRole("alert")).toHaveTextContent(detail);
+    // Said in the action row and nowhere else. The 422 is about the NEW
+    // password and the 503 about the server's data directory, so neither is a
+    // sentence about the current-password field — which is where both used to
+    // be attached, that field being the one carrying the shared id.
+    for (const label of [
+      "Current password",
+      "New password",
+      "Confirm new password",
+    ]) {
+      expect(screen.getByLabelText(label)).not.toHaveAttribute(
+        "aria-describedby",
+      );
+    }
+    expect(screen.getByLabelText("Current password")).toHaveAttribute(
+      "aria-invalid",
+      "false",
+    );
   });
 
   test("a rejection that is not about a field still leaves focus in the form", async () => {
@@ -419,6 +539,12 @@ describe("AccountPanel — under the environment override", () => {
     expect(screen.queryByText(/Forgot it\?/)).not.toBeInTheDocument();
     // The recovery that IS true here, said once.
     expect(panel).toHaveTextContent(/unset that variable/i);
+    // And the lede says WHY the panel offers no form, rather than falling back
+    // to the default description: reverting to it left this test green while
+    // the branch silently lost the one sentence that explains the screen.
+    expect(screen.getByText(/protected by a single password/i)).toHaveTextContent(
+      "On this server it is set outside the app.",
+    );
   });
 
   test("names both outcomes of unsetting, because it cannot know which", async () => {
@@ -439,8 +565,9 @@ describe("AccountPanel — under the environment override", () => {
       "the sign-in screen will then set a new one",
     );
     // A glyph. Measured over `tone="neutral"` call sites in src/ while writing
-    // this: the six outside this panel each carry an icon or an action slot,
-    // none is prose alone — the settings-panel precedent being
+    // this: five outside this panel (a sixth grep hit is a prose comment), and
+    // each of the five carries an icon or an action slot, none prose alone —
+    // the settings-panel precedent being
     // SettingsBeetsPage's `tone="neutral" icon={Info}`. Colour is not carrying
     // the state on its own, and a text-only box reads as a quoted paragraph
     // rather than as a notice from the system.
