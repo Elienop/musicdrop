@@ -2096,6 +2096,12 @@ Added by the 2026-08-28 sweeps:
 
 ## Recently shipped
 
+- **Sign-in form field marking — #214 (2026-09-04).** Owner ruling `decisions.md` 31, asked after
+  v0.50.0: every password form marks a field invalid only while the error shown is about that
+  field. The sign-in form had kept painting its one field red for every answer (429, 503, the
+  server-unreachable sentence); now a refused password marks and selects it, the other answers
+  show their message with the field unmarked, retyping clears the refusal, and a 401 about the
+  server re-checks status so the notice that names the fix replaces the form. Follow-up to #212.
 - **First-run password setup — #212 = v0.50.0 (2026-09-03).** A fresh install sets its
   password on the sign-in screen (setup form; hash stored at `<beets_dir>/password-hash`,
   0600, atomic) and changes it in **Settings → Account** (wrong current password answers 403

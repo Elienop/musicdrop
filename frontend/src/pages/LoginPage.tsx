@@ -189,6 +189,7 @@ function LoginCardBody({
   }
   return (
     <SignInForm
+      status={status}
       destination={destination}
       returning={returning}
       superseded={superseded}
@@ -335,10 +336,12 @@ function StatusProbePending() {
 }
 
 function SignInForm({
+  status,
   destination,
   returning,
   superseded,
 }: Readonly<{
+  status: AuthStatusQuery;
   destination: string;
   returning: boolean;
   superseded: boolean;
@@ -346,22 +349,62 @@ function SignInForm({
   const navigate = useNavigate();
   const login = useLogin();
   const [password, setPassword] = useState("");
+  // The sentence currently on screen, and whether it is the one about the
+  // password field. Held rather than read off `login.error`, which outlives
+  // the typing that answers it — the same shape the setup form below and the
+  // Account panel use, and for the same reason.
+  const [shown, setShown] = useState<
+    Readonly<{ message: string; aboutPassword: boolean }> | undefined
+  >(undefined);
   const passwordRef = useRef<HTMLInputElement>(null);
+
+  /** Drop the sentence if it is the one about this field: typing answers "that
+   * password was refused". A 429, a 503 or an unreachable server is not
+   * answered by typing, so it stands until the next submit decides again. */
+  function clearRefusal() {
+    setShown((error) => (error?.aboutPassword === true ? undefined : error));
+  }
 
   function handleSubmit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
+    // Cleared before the new outcome is decided, so the answer to THIS submit
+    // is the only sentence on screen and the field is marked only while the
+    // sentence is about it.
+    setShown(undefined);
     login.mutate(password, {
       onSuccess: () => {
         void navigate(destination, { replace: true });
       },
-      onError: () => {
+      onError: (error) => {
+        // A 401 is the answer about the value in this field. The route also
+        // answers 401 when NOTHING on the server can authenticate — no hash,
+        // or one that does not parse (backend/app/api/auth.py::_refusal_detail)
+        // — which reaches this form only when the server's state changed while
+        // the page was open, since the card branches on the status probe at
+        // load. Rather than reading the server's prose to tell the two apart,
+        // the re-check below re-asks: if nothing can authenticate, the answer
+        // swaps this form for the branch that names the fix. The other
+        // answers (429, 503, and a request with no answer at all) are about
+        // the request or the server, so they are said in the alert and point
+        // at no field.
+        const aboutPassword = error.status === 401;
+        setShown({ message: error.message, aboutPassword });
+        if (aboutPassword) {
+          // The setup form's move on a 409, for the same reason: the screen
+          // that fits the server's current state is the one to be on.
+          void status.refetch();
+        }
         // Submitting DISABLES the button, which drops focus to <body>; the
-        // rejection then announces itself to a user whose focus is nowhere,
-        // with the rejected password still typed out and needing a select-all.
+        // rejection then announces itself to a user whose focus is nowhere.
         // Safe as a per-call callback, unlike the success side: a failure
-        // leaves this form mounted exactly where it was.
+        // leaves this form mounted exactly where it was. The select-all is for
+        // the refused password only — it is the one answer saying the typed
+        // value is the problem, and selecting after a 429 would put a retry's
+        // first keystroke through the password the user still needs.
         passwordRef.current?.focus();
-        passwordRef.current?.select();
+        if (aboutPassword) {
+          passwordRef.current?.select();
+        }
       },
     });
   }
@@ -402,14 +445,22 @@ function SignInForm({
           autoFocus
           required
           ref={passwordRef}
-          // The primitive already styles `aria-invalid` (destructive border +
-          // ring); without the attribute that styling could never fire, and
-          // the rejection below was text sitting near the field rather than
-          // text ABOUT it.
-          aria-invalid={login.isError}
-          aria-describedby={login.isError ? ERROR_ID : undefined}
+          // Marked while the sentence on screen is about THIS field — a
+          // refused password. The primitive already styles `aria-invalid`
+          // (destructive border + ring). It used to read `login.isError`,
+          // which marked the field for a busy derive and a missing signing
+          // secret too: `aria-describedby` claims the sentence is ABOUT this
+          // value, so a screen-reader user was told their password was the
+          // problem when the server was.
+          aria-invalid={shown?.aboutPassword === true}
+          aria-describedby={
+            shown?.aboutPassword === true ? ERROR_ID : undefined
+          }
           value={password}
-          onChange={(e) => setPassword(e.target.value)}
+          onChange={(e) => {
+            clearRefusal();
+            setPassword(e.target.value);
+          }}
         />
       </div>
       {/* The server authors every rejection here — wrong password, no hash
@@ -420,9 +471,9 @@ function SignInForm({
           all (see useLogin). The form stays enabled underneath: 429 in
           particular means "try that again", and disabling it would strand the
           one user who can. */}
-      {login.isError && (
+      {shown !== undefined && (
         <p id={ERROR_ID} className="text-destructive text-sm" role="alert">
-          {login.error.message}
+          {shown.message}
         </p>
       )}
       <Button type="submit" disabled={login.isPending}>

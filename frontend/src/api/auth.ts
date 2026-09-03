@@ -121,6 +121,11 @@ export function useClearCacheOnSignOut(): void {
  * surfaces `detail` rather than inventing per-status copy that would drift
  * from the backend's.
  *
+ * It carries the STATUS as well, through the same `PasswordRequestError` the
+ * other two password routes use: the form marks its field for a 401 and not
+ * for the answers that are about the request or the server, and the sentences
+ * alone cannot be branched on without matching the server's prose.
+ *
  * The success side lives here, not at the call site: TanStack runs a
  * hook-level `onSuccess` unconditionally, while a per-call one is skipped once
  * the observer unmounts. Navigation is the page's job; being signed in is
@@ -128,7 +133,7 @@ export function useClearCacheOnSignOut(): void {
  */
 export function useLogin() {
   const queryClient = useQueryClient();
-  return useMutation<AuthStatus, Error, string>({
+  return useMutation<AuthStatus, PasswordRequestError, string>({
     // The password rides in `variables`, which TanStack keeps readable for
     // `gcTime` after the form unmounts — five minutes of a plaintext
     // credential sitting in memory for no one's benefit. Zero here rather
@@ -137,25 +142,11 @@ export function useLogin() {
     // forgotten by a future caller. Safe while mounted — TanStack's
     // `optionalRemove` only collects a mutation with no observers left.
     gcTime: 0,
-    mutationFn: async (password) => {
-      let result;
-      try {
-        result = await client.POST("/api/auth/login", { body: { password } });
-      } catch {
-        // A rejection here means the request never got an ANSWER — the server
-        // is down, the proxy dropped it, DNS failed. The browser's own words
-        // for that are jargon on the one screen whose whole job is explaining
-        // why signing in isn't working, so this says the same thing sign-out
-        // says (see SERVER_UNREACHABLE_MESSAGE). (The gate's 401 cannot reach
-        // here: /api/auth/login is exempt from the client middleware.)
-        throw new Error(SERVER_UNREACHABLE_MESSAGE);
-      }
-      const { data, error } = result;
-      if (error || !data) {
-        throw new Error(detailMessage(error) ?? "Couldn’t sign in. Try again.");
-      }
-      return data;
-    },
+    mutationFn: (password) =>
+      passwordRequest(
+        () => client.POST("/api/auth/login", { body: { password } }),
+        "Couldn’t sign in. Try again.",
+      ),
     onSuccess: (status) => {
       sessionEstablished(queryClient, status);
     },
@@ -192,16 +183,17 @@ function sessionEstablished(
 }
 
 /**
- * A refusal from one of the two password-WRITING routes, carrying the status
- * the server answered with.
+ * A refusal from one of the three password routes, carrying the status the
+ * server answered with.
  *
- * The status is on the error because the two forms branch on it and the
+ * The status is on the error because the three forms branch on it and the
  * sentence alone cannot be branched on: the setup form treats a 409 as "someone
  * configured a password while this page was open" and re-checks rather than
- * showing text, and the change form paints a 409 (the env override is active)
- * as a notice while a 403 (wrong current password) is an inline field error
- * that keeps the form. Matching on the server's prose instead would break the
- * moment the prose is reworded.
+ * showing text, the change form paints a 409 (the env override is active) as a
+ * notice while a 403 (wrong current password) is an inline field error that
+ * keeps the form, and the sign-in form marks its field for a 401 and not for
+ * the 429 and 503 that are about the request and the server. Matching on the
+ * server's prose instead would break the moment the prose is reworded.
  *
  * `status` is null for the one failure the server did not author: a request
  * that never got an answer at all.
@@ -216,9 +208,9 @@ export class PasswordRequestError extends Error {
   }
 }
 
-/** The result shape both password routes return — `AuthStatus` on success, an
+/** The result shape the password routes return — `AuthStatus` on success, an
  * `ErrorDetail`-ish body otherwise. Widened from openapi-fetch's union so ONE
- * helper can run both calls. */
+ * helper can run all three calls. */
 interface AuthStatusResult {
   data?: AuthStatus;
   error?: unknown;
@@ -226,10 +218,10 @@ interface AuthStatusResult {
 }
 
 /**
- * Run a password write and normalise its three failure shapes into one
- * `PasswordRequestError`.
+ * Run one of the password requests and normalise its three failure shapes into
+ * one `PasswordRequestError`.
  *
- * `send` is a thunk rather than a path + body, because the two routes take
+ * `send` is a thunk rather than a path + body, because the three routes take
  * different bodies and openapi-fetch types each call site precisely — passing
  * the already-typed call in keeps that check at the call site instead of
  * loosening it here.
@@ -238,9 +230,11 @@ interface AuthStatusResult {
  * is GATED, so a 401 from it really is "your session ended", and the client
  * middleware has already flipped the store to bounce this browser to /login.
  * Swallowing it into a form error would leave the user typing into a page the
- * app is navigating away from.
+ * app is navigating away from. The other two callers are gate-exempt
+ * (`GATE_EXEMPT_PATHS` in api/client.ts), so the middleware raises nothing for
+ * them and their 401s arrive here as ordinary answers to render.
  */
-async function writePassword(
+async function passwordRequest(
   send: () => Promise<AuthStatusResult>,
   fallback: string,
 ): Promise<AuthStatus> {
@@ -281,7 +275,7 @@ export function useSetupPassword() {
     // unmounts.
     gcTime: 0,
     mutationFn: (password) =>
-      writePassword(
+      passwordRequest(
         () => client.POST("/api/auth/setup", { body: { password } }),
         "Couldn’t set the password. Try again.",
       ),
@@ -307,7 +301,7 @@ export function useChangePassword() {
   >({
     gcTime: 0,
     mutationFn: ({ currentPassword, newPassword }) =>
-      writePassword(
+      passwordRequest(
         () =>
           client.POST("/api/auth/password", {
             body: {

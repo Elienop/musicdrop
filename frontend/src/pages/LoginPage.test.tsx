@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -299,6 +299,248 @@ describe("LoginPage — the server's own rejections, verbatim", () => {
     expect(field).toHaveFocus();
     expect(field.selectionStart).toBe(0);
     expect(field.selectionEnd).toBe("wrong".length);
+  });
+
+  test.each([
+    [429, "Another sign-in is already in progress. Try again in a moment."],
+    [503, "The session signing secret is unavailable."],
+  ])("says the %i in the alert without marking the field", async (status, detail) => {
+    // `aria-invalid` and `aria-describedby` claim the sentence is ABOUT the
+    // value in this field. A derive already running, and a server with no
+    // signing secret, are about the request and about the server — marking the
+    // field for them told a screen-reader user their password was the problem.
+    // The rule the setup form and the Account panel already follow.
+    server.use(
+      statusHandler(true),
+      http.post(LOGIN_URL, () => HttpResponse.json({ detail }, { status })),
+    );
+    renderLogin();
+
+    const field = await screen.findByLabelText<HTMLInputElement>("Password");
+    await userEvent.type(field, "hunter2");
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(detail);
+    expect(field).toHaveAttribute("aria-invalid", "false");
+    expect(field).not.toHaveAttribute("aria-describedby");
+    // Focus still comes back — the disabled button dropped it to <body>, and
+    // the retry both of these ask for starts here. NOT selected, though:
+    // neither sentence says the typed value is the problem.
+    expect(field).toHaveFocus();
+    expect(field.selectionEnd).toBe(field.selectionStart);
+  });
+
+  test("the sentence for a server that never answered marks no field either", async () => {
+    // Written on this side rather than by the server (see useLogin), and about
+    // reachability — so it is about neither the password nor anything else on
+    // screen, and points at no field.
+    server.use(
+      statusHandler(true),
+      http.post(LOGIN_URL, () => HttpResponse.error()),
+    );
+    renderLogin();
+
+    const field = await screen.findByLabelText("Password");
+    await userEvent.type(field, "hunter2");
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Can’t reach the server.",
+    );
+    expect(field).toHaveAttribute("aria-invalid", "false");
+    expect(field).not.toHaveAttribute("aria-describedby");
+  });
+
+  test("retyping after a refused password clears the marking and the sentence", async () => {
+    // Typing answers the one sentence that is about the value in this field,
+    // so it goes on the edit rather than standing over a password the user has
+    // already replaced — parity with the setup form's mismatch and the Account
+    // panel's wrong current password.
+    server.use(
+      statusHandler(true),
+      http.post(LOGIN_URL, () =>
+        HttpResponse.json({ detail: "Incorrect password." }, { status: 401 }),
+      ),
+    );
+    renderLogin();
+
+    const field = await screen.findByLabelText("Password");
+    await userEvent.type(field, "wrong");
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(field).toHaveAttribute("aria-invalid", "true");
+
+    await userEvent.type(field, "right");
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(field).toHaveAttribute("aria-invalid", "false");
+    expect(field).not.toHaveAttribute("aria-describedby");
+  });
+
+  test("a sentence about the request stands while the field is retyped", async () => {
+    // A 429 is not answered by typing — the derive slot is busy whatever is in
+    // the field — so it stays until the next submit decides again. Only the
+    // sentence about THIS field's value is cleared by editing it.
+    server.use(
+      statusHandler(true),
+      http.post(LOGIN_URL, () =>
+        HttpResponse.json(
+          {
+            detail:
+              "Another sign-in is already in progress. Try again in a moment.",
+          },
+          { status: 429 },
+        ),
+      ),
+    );
+    renderLogin();
+
+    const field = await screen.findByLabelText("Password");
+    await userEvent.type(field, "hunter2");
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Another sign-in is already",
+    );
+
+    await userEvent.type(field, "3");
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Another sign-in is already",
+    );
+  });
+
+  test("the last answer's marking does not outlive the next submit", async () => {
+    // A refused password marks the field; a 429 on the retry is about the
+    // request. Read off `login.isError` the marking survived both, so the
+    // second answer arrived with the first one's red border still on the field.
+    let posts = 0;
+    server.use(
+      statusHandler(true),
+      http.post(LOGIN_URL, () => {
+        posts += 1;
+        return posts === 1
+          ? HttpResponse.json({ detail: "Incorrect password." }, { status: 401 })
+          : HttpResponse.json(
+              {
+                detail:
+                  "Another sign-in is already in progress. Try again in a moment.",
+              },
+              { status: 429 },
+            );
+      }),
+    );
+    renderLogin();
+
+    const field = await screen.findByLabelText("Password");
+    await userEvent.type(field, "wrong");
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Incorrect password.",
+    );
+    expect(field).toHaveAttribute("aria-invalid", "true");
+
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Another sign-in is already",
+      ),
+    );
+    expect(field).toHaveAttribute("aria-invalid", "false");
+    expect(field).not.toHaveAttribute("aria-describedby");
+  });
+
+  test("the previous answer is cleared before the next one lands", async () => {
+    // While the retry is in flight the last answer is no longer the answer to
+    // anything: leaving it up marks the field red under a request that has not
+    // been refused yet, and its `role="alert"` is the page's account of a
+    // submit two clicks old.
+    let posts = 0;
+    server.use(
+      statusHandler(true),
+      http.post(LOGIN_URL, async () => {
+        posts += 1;
+        if (posts === 1) {
+          return HttpResponse.json(
+            { detail: "Incorrect password." },
+            { status: 401 },
+          );
+        }
+        // Never answers: the assertions below are about the moment between the
+        // click and the answer.
+        await delay("infinite");
+        return HttpResponse.json({ authenticated: true, password_set: true });
+      }),
+    );
+    renderLogin();
+
+    const field = await screen.findByLabelText("Password");
+    await userEvent.type(field, "wrong");
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Incorrect password.",
+    );
+    expect(field).toHaveAttribute("aria-invalid", "true");
+
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    expect(
+      await screen.findByRole("button", { name: "Signing in…" }),
+    ).toBeDisabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(field).toHaveAttribute("aria-invalid", "false");
+    expect(field).not.toHaveAttribute("aria-describedby");
+  });
+
+  test("a 401 about the SERVER hands over to the branch that names the fix", async () => {
+    // The route answers 401 for a wrong password AND for a server where
+    // nothing can authenticate — no hash, or one that does not parse
+    // (backend/app/api/auth.py::_refusal_detail). This page branches on the
+    // status probe at load, so the second kind reaches the form only when the
+    // server's state changed while the page was open.
+    //
+    // The form does not read the sentence to tell them apart: a 401 marks the
+    // field, and the re-check behind it swaps the whole card for the branch
+    // that names the fix — the same move the setup form makes on a 409.
+    // Matching on the server's prose would break the moment it is reworded.
+    let statusCalls = 0;
+    server.use(
+      http.get(STATUS_URL, () => {
+        statusCalls += 1;
+        return HttpResponse.json({
+          authenticated: false,
+          password_set: statusCalls === 1,
+          password_source: statusCalls === 1 ? "file" : "env",
+        });
+      }),
+      http.post(LOGIN_URL, () =>
+        HttpResponse.json(
+          {
+            detail:
+              "The password hash in MUSICDROP_PASSWORD_HASH is not readable. In docker-compose, every $ in the hash must be doubled to $$. Or unset it and restart MusicDrop, and the password stored on this server, if there is one, applies again.",
+          },
+          { status: 401 },
+        ),
+      ),
+    );
+    renderLogin();
+
+    await userEvent.type(await screen.findByLabelText("Password"), "hunter2");
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    // The form is gone, and what replaced it is the env branch's banner — the
+    // one screen that says what to do about an unreadable variable.
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveAttribute(
+        "data-slot",
+        "status-banner",
+      ),
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "MUSICDROP_PASSWORD_HASH",
+    );
+    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+    expect(statusCalls).toBe(2);
   });
 
   test("an empty submit is refused by the field, not by a scrypt round trip", async () => {
