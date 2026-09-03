@@ -1,7 +1,8 @@
 import { type SubmitEvent, useRef, useState } from "react";
 
 import { useAuthStatus, useChangePassword } from "@/api/auth";
-import { Spinner, Success } from "@/components/icons";
+import { Info, Spinner, Success } from "@/components/icons";
+import { HiddenUsernameField } from "@/components/system/HiddenUsernameField";
 import { SettingsSection } from "@/components/system/SettingsSection";
 import { StatusBanner } from "@/components/system/StatusBanner";
 import { Button } from "@/components/ui/button";
@@ -25,19 +26,24 @@ const MISMATCH_MESSAGE = "The two passwords don’t match. Type them again.";
  * panel is mounted once per route. */
 const ERROR_ID = "account-password-error";
 
-/** The panel's own description, per source, because the recovery is not the
- * same sentence in both.
- *
- * Under the environment override, "delete the password-hash file" is not merely
- * incomplete — it is WRONG: the variable wins whether or not a file is there, so
- * deleting one changes nothing, and a locked-out operator would be sent to do
- * the one thing that cannot help. The recovery that IS true there is unsetting
- * the variable, which the notice says. Caught in a browser pass rather than by a
- * test: the description and the notice only sit together on screen. */
+/** The panel's lede: one line, like every sibling panel's description, and the
+ * same vocabulary the sign-in card uses for the same fact ("a single password",
+ * "the one everyone uses"). The forgotten-password recovery used to live here
+ * and is a footnote under the form now — it is an aside, read once months
+ * before it is needed, and in the lede it was the tallest thing in the panel on
+ * a phone, sitting above three fields it is not about. */
 const DESCRIPTION =
-  "MusicDrop is protected by one password, shared by everyone who uses this server. If you forget it, delete the password-hash file in MusicDrop’s beets directory and restart MusicDrop — the sign-in screen will then set a new one.";
+  "MusicDrop is protected by a single password, the one everyone uses to sign in to this server.";
+
+/** The same lede, plus the fact that changes what the rest of the panel can
+ * offer. The recovery footnote is NOT rendered under the override: "delete the
+ * password-hash file" is not merely incomplete there — the variable wins
+ * whether or not a file is present, so deleting one changes nothing, and a
+ * locked-out operator would be sent to do the one thing that cannot help. The
+ * recovery that IS true there is unsetting the variable, which the notice
+ * says. */
 const DESCRIPTION_UNDER_OVERRIDE =
-  "MusicDrop is protected by one password, shared by everyone who uses this server. On this server it is set outside the app.";
+  "MusicDrop is protected by a single password, the one everyone uses to sign in to this server. On this server it is set outside the app.";
 
 /**
  * Settings → Account: change the single password this server is protected by.
@@ -54,7 +60,7 @@ export function AccountPanel() {
   if (status.isPending) {
     return (
       <Panel>
-        <output className="text-muted-foreground block text-sm">
+        <output className="text-muted-foreground text-sm block">
           Checking how this server’s password is configured…
         </output>
       </Panel>
@@ -112,13 +118,17 @@ function Panel({
  */
 function EnvOverrideNotice() {
   return (
-    <StatusBanner tone="neutral">
+    // `icon` rather than prose alone: the neutral banners elsewhere in the app
+    // carry a glyph, and a bg-muted box without one reads as a quoted
+    // paragraph rather than as a notice from the system.
+    <StatusBanner tone="neutral" icon={Info}>
       This server’s password comes from{" "}
       <code className="font-mono">MUSICDROP_PASSWORD_HASH</code>, which
-      overrides any password stored by the app, so it can’t be changed here —
-      and a forgotten one can’t be recovered by deleting a file either. Unset
-      that variable and restart MusicDrop to hand the password over to the app;
-      the sign-in screen will then set a new one.
+      overrides any password stored by the app, so it can’t be changed here.
+      Deleting the <code className="font-mono">password-hash</code> file won’t
+      reset it either. To let the app manage the password, unset that variable
+      and restart MusicDrop: if a password is stored on this server it applies
+      again, otherwise the sign-in screen sets a new one.
     </StatusBanner>
   );
 }
@@ -135,12 +145,18 @@ function ChangePasswordForm() {
   // the success sentence is state rather than a conditionally mounted node.
   const [changed, setChanged] = useState(false);
   const currentRef = useRef<HTMLInputElement>(null);
+  const confirmRef = useRef<HTMLInputElement>(null);
 
   function handleSubmit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     setChanged(false);
     if (next !== confirm) {
       setMismatch(true);
+      // The sentence says "type them again", so put the caret where typing
+      // goes — the same thing the sign-in screen's setup form does for the
+      // same mistake, rather than leaving focus on the button that was clicked.
+      confirmRef.current?.focus();
+      confirmRef.current?.select();
       return;
     }
     setMismatch(false);
@@ -154,13 +170,19 @@ function ChangePasswordForm() {
           setNext("");
           setConfirm("");
           setChanged(true);
+          // Submitting disabled the button, which drops focus to <body>, and
+          // the three fields were just emptied — so after a change that WORKED
+          // there was nothing focused at all. The first field is where the form
+          // starts; the polite region in the action row still announces it.
+          currentRef.current?.focus();
         },
         onError: (error) => {
-          // A wrong current password is the one failure the user fixes by
-          // typing again, and submitting disabled the button — which drops
-          // focus to <body>. Send it back to the field that was wrong.
+          // Every answer leaves this form mounted with focus on <body>, so
+          // every answer sends it back to the first field. Only a wrong current
+          // password also SELECTS: that is the one case where the value in the
+          // field is the thing to replace.
+          currentRef.current?.focus();
           if (error.status === 403) {
-            currentRef.current?.focus();
             currentRef.current?.select();
           }
         },
@@ -179,9 +201,13 @@ function ChangePasswordForm() {
   const shown = mismatch ? MISMATCH_MESSAGE : rejection;
 
   return (
-    <form onSubmit={handleSubmit} className="flex max-w-md flex-col gap-4">
+    <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+      <HiddenUsernameField />
       <div className="flex flex-col gap-1">
-        <label htmlFor="account-current-password" className="text-sm font-medium">
+        <label
+          htmlFor="account-current-password"
+          className="text-sm font-medium"
+        >
           Current password
         </label>
         <Input
@@ -194,6 +220,9 @@ function ChangePasswordForm() {
           aria-describedby={shown === undefined ? undefined : ERROR_ID}
           value={current}
           onChange={(e) => setCurrent(e.target.value)}
+          // The width cap belongs to each field, as it does in the Plex and
+          // slskd panels; on the form it also capped the action row below.
+          className="max-w-md"
         />
       </div>
       <div className="flex flex-col gap-1">
@@ -206,7 +235,14 @@ function ChangePasswordForm() {
           autoComplete="new-password"
           required
           value={next}
-          onChange={(e) => setNext(e.target.value)}
+          onChange={(e) => {
+            // Clear on edit, from EITHER half of the pair: the mismatch was
+            // about the two as they stood at submit, and retyping this one is
+            // the likelier correction.
+            setMismatch(false);
+            setNext(e.target.value);
+          }}
+          className="max-w-md"
         />
       </div>
       <div className="flex flex-col gap-1">
@@ -221,46 +257,72 @@ function ChangePasswordForm() {
           type="password"
           autoComplete="new-password"
           required
+          ref={confirmRef}
           aria-invalid={mismatch}
-          aria-describedby={shown === undefined ? undefined : ERROR_ID}
+          // The MISMATCH only. It is the one sentence about this pair; the
+          // server's rejections are about the current password or about the
+          // request, and pointing this field at them told a screen-reader user
+          // a fact about a field they were not in.
+          aria-describedby={mismatch ? ERROR_ID : undefined}
           value={confirm}
           onChange={(e) => {
             setMismatch(false);
             setConfirm(e.target.value);
           }}
+          className="max-w-md"
         />
       </div>
-      <Button type="submit" disabled={change.isPending} className="self-start">
-        {change.isPending && (
-          <Spinner className="size-4 animate-spin" aria-hidden="true" />
-        )}
-        {change.isPending ? "Changing…" : "Change password"}
-      </Button>
-      <p
-        role="status"
-        aria-live="polite"
-        className={
-          changed ? "text-success flex items-center gap-1 text-sm" : "sr-only"
-        }
-      >
-        {changed ? (
-          <>
-            <Success className="size-4" aria-hidden="true" />
-            {CHANGED_MESSAGE}
-          </>
-        ) : null}
+      {/* The recovery, as a footnote under the fields (the slskd panel's
+          shape): an aside read once, months before it is needed, rather than
+          the panel's lede above three fields it is not about. */}
+      <p className="text-muted-foreground border-t pt-4 text-sm">
+        Forgot it? Delete the <code className="font-mono">password-hash</code>{" "}
+        file in MusicDrop’s beets directory and restart MusicDrop. The sign-in
+        screen will then set a new one.
       </p>
-      {conflict !== null && <StatusBanner tone="neutral">{conflict}</StatusBanner>}
-      {/* Rendered verbatim: the server names its own cause for each of these —
+      {/* Above the action row and full width: it is about the server's state,
+          not about the button. */}
+      {conflict !== null && (
+        <StatusBanner tone="neutral" icon={Info}>
+          {conflict}
+        </StatusBanner>
+      )}
+      {/* The action row the sibling settings panels end their forms with: the
+          button and its feedback on one line, under a divider that separates
+          them from the fields.
+
+          Rendered verbatim: the server names its own cause for each rejection —
           a wrong current password (403), a blank new one (422), a derive
           already running (429), a data directory it cannot write (503) — and a
-          re-worded copy here could only drift from it. The mismatch above is
-          the one sentence this side owns. */}
-      {shown !== undefined && (
-        <p id={ERROR_ID} className="text-destructive text-sm" role="alert">
-          {shown}
+          re-worded copy here could only drift from it. The mismatch is the one
+          sentence this side owns. */}
+      <div className="border-border flex flex-wrap items-center gap-3 border-t pt-4">
+        <Button type="submit" disabled={change.isPending}>
+          {change.isPending && (
+            <Spinner className="size-4 animate-spin" aria-hidden="true" />
+          )}
+          {change.isPending ? "Changing…" : "Change password"}
+        </Button>
+        <p
+          role="status"
+          aria-live="polite"
+          className={
+            changed ? "text-success flex items-center gap-1 text-sm" : "sr-only"
+          }
+        >
+          {changed ? (
+            <>
+              <Success className="size-4" aria-hidden="true" />
+              {CHANGED_MESSAGE}
+            </>
+          ) : null}
         </p>
-      )}
+        {shown !== undefined && (
+          <p id={ERROR_ID} className="text-destructive text-sm" role="alert">
+            {shown}
+          </p>
+        )}
+      </div>
     </form>
   );
 }

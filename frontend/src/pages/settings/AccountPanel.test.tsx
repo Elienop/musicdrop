@@ -86,10 +86,35 @@ describe("AccountPanel — the form", () => {
     server.use(statusHandler("file"));
     renderWithProviders(<AccountPanel />);
 
-    const panel = await screen.findByRole("region", { name: "Password" });
+    // Wait for the FORM, not for the region: the region exists from the first
+    // paint (the loading branch is inside the same panel), so asserting on it
+    // any earlier only reads the probe's own line.
+    await screen.findByLabelText("Current password");
+    const panel = screen.getByRole("region", { name: "Password" });
     expect(panel).toHaveTextContent("password-hash");
     expect(panel).toHaveTextContent(/delete/i);
     expect(panel).toHaveTextContent(/restart MusicDrop/i);
+  });
+
+  test("the recovery is a footnote under the form, not the panel's lede", async () => {
+    // It is an aside — the thing you read once, months before you need it —
+    // and in the lede it was the tallest thing in the panel on a phone, above
+    // the three fields it is not about.
+    server.use(statusHandler("file"));
+    renderWithProviders(<AccountPanel />);
+
+    // The form first: the lede is on screen from the first paint, while the
+    // probe is still out, so reading it any earlier proves nothing about the
+    // branch that renders the fields.
+    const current = await screen.findByLabelText("Current password");
+    const lede = screen.getByText(/protected by a single password/i);
+    expect(lede).not.toHaveTextContent(/delete/i);
+    const footnote = screen.getByText(/Forgot it\?/);
+    expect(footnote).toHaveTextContent("password-hash");
+    // Under the form it belongs to: the fields come first.
+    expect(footnote.compareDocumentPosition(current)).toBe(
+      Node.DOCUMENT_POSITION_PRECEDING,
+    );
   });
 
   test("a change says the password moved AND that other sessions were dropped", async () => {
@@ -123,6 +148,47 @@ describe("AccountPanel — the form", () => {
     expect(screen.getByLabelText("Current password")).toHaveValue("");
     expect(screen.getByLabelText("New password")).toHaveValue("");
     expect(screen.getByLabelText("Confirm new password")).toHaveValue("");
+    // And focus has somewhere to be: submitting disabled the button, which
+    // drops focus to <body>, and all three fields were then emptied — so
+    // after a SUCCESSFUL change nothing at all was focused.
+    expect(screen.getByLabelText("Current password")).toHaveFocus();
+  });
+
+  test("a mismatch puts the caret where the sentence says to type", async () => {
+    // "Type them again" with focus left on the button means tabbing back to
+    // the field first. The sign-in screen's setup form already focuses and
+    // selects the confirm field on the same mistake.
+    server.use(statusHandler("file"));
+    renderWithProviders(<AccountPanel />);
+
+    await submitChange("old-one", "new-one", "new-two");
+
+    await screen.findByText("The two passwords don’t match. Type them again.");
+    const confirm =
+      screen.getByLabelText<HTMLInputElement>("Confirm new password");
+    expect(confirm).toHaveFocus();
+    expect(confirm.selectionStart).toBe(0);
+    expect(confirm.selectionEnd).toBe("new-two".length);
+  });
+
+  test("the mismatch clears when the NEW password field is retyped", async () => {
+    // It was cleared only by the confirm field's own edit, so the alert and
+    // both red borders stood while the user retyped the other half.
+    server.use(statusHandler("file"));
+    renderWithProviders(<AccountPanel />);
+
+    await submitChange("old-one", "new-one", "new-two");
+    await screen.findByText("The two passwords don’t match. Type them again.");
+
+    await userEvent.type(screen.getByLabelText("New password"), "!");
+
+    expect(
+      screen.queryByText("The two passwords don’t match. Type them again."),
+    ).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Confirm new password")).toHaveAttribute(
+      "aria-invalid",
+      "false",
+    );
   });
 
   test("a mismatched confirmation is caught here, not by a scrypt derive", async () => {
@@ -183,6 +249,35 @@ describe("AccountPanel — what the server refuses", () => {
     // Focus went back to the field that was wrong: submitting disabled the
     // button, which drops focus to <body>.
     expect(current).toHaveFocus();
+    // The rejection is about the current password, so the field it describes is
+    // that one — the confirm field is described by the mismatch or by nothing.
+    const alert = screen.getByRole("alert");
+    expect(current).toHaveAttribute("aria-describedby", alert.id);
+    expect(
+      screen.getByLabelText("Confirm new password"),
+    ).not.toHaveAttribute("aria-describedby");
+    // Feedback sits in the action row with the button, as the Plex and slskd
+    // panels do, rather than stacked under it.
+    expect(alert.parentElement).toContainElement(
+      screen.getByRole("button", { name: "Change password" }),
+    );
+  });
+
+  test("the mismatch describes BOTH fields, since it is about the pair", async () => {
+    server.use(statusHandler("file"));
+    renderWithProviders(<AccountPanel />);
+
+    const confirm = await screen.findByLabelText("Confirm new password");
+    expect(confirm).not.toHaveAttribute("aria-describedby");
+
+    await submitChange("old-one", "new-one", "new-two");
+
+    const mismatch = await screen.findByRole("alert");
+    expect(confirm).toHaveAttribute("aria-describedby", mismatch.id);
+    expect(screen.getByLabelText("Current password")).toHaveAttribute(
+      "aria-describedby",
+      mismatch.id,
+    );
   });
 
   test("a 409 reads as a notice about the server, not as a field error", async () => {
@@ -208,6 +303,8 @@ describe("AccountPanel — what the server refuses", () => {
     const banner = await findBanner(/overrides the stored one/i);
     expect(banner).toHaveAttribute("role", "status");
     expect(banner).toHaveTextContent("MUSICDROP_PASSWORD_HASH");
+    // Carries a glyph, like the other neutral banners in the app.
+    expect(banner.querySelector("svg")).toBeInTheDocument();
     // Nothing painted red, and nothing pointed at a field: the user typed
     // nothing wrong.
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -229,6 +326,36 @@ describe("AccountPanel — what the server refuses", () => {
     await submitChange("old-one", "  ");
 
     expect(await screen.findByRole("alert")).toHaveTextContent(detail);
+  });
+
+  test("a rejection that is not about a field still leaves focus in the form", async () => {
+    // 429 and 503 both mean "try that again", and the button that was clicked
+    // is disabled while the request is out, so focus was on <body> when the
+    // sentence asking for a retry arrived. The first field is where the retry
+    // starts; nothing is selected, because nothing typed here was wrong.
+    server.use(
+      statusHandler("file"),
+      http.post(CHANGE_URL, () =>
+        HttpResponse.json(
+          {
+            detail:
+              "Another sign-in is already in progress. Try again in a moment.",
+          },
+          { status: 429 },
+        ),
+      ),
+    );
+    renderWithProviders(<AccountPanel />);
+
+    await submitChange("old-one", "new-one");
+
+    await screen.findByRole("alert");
+    const current =
+      screen.getByLabelText<HTMLInputElement>("Current password");
+    expect(current).toHaveFocus();
+    expect(current.selectionStart).toBe(current.selectionEnd);
+    // Not painted red either: the value in it is not what the server refused.
+    expect(current).toHaveAttribute("aria-invalid", "false");
   });
 });
 
@@ -272,8 +399,32 @@ describe("AccountPanel — under the environment override", () => {
     expect(panel).not.toHaveTextContent(
       /delete the password-hash file in MusicDrop’s beets directory/,
     );
+    expect(screen.queryByText(/Forgot it\?/)).not.toBeInTheDocument();
     // The recovery that IS true here, said once.
     expect(panel).toHaveTextContent(/unset that variable/i);
+  });
+
+  test("names both outcomes of unsetting, because it cannot know which", async () => {
+    // Measured on a scratch server that had BOTH: after unsetting the
+    // variable, the password-hash FILE took over and the sign-in screen asked
+    // for that password — so "the sign-in screen will then set a new one" was
+    // false. Status reports `password_source: "env"` and nothing about what is
+    // shadowed behind it, so the honest sentence covers both.
+    server.use(statusHandler("env"));
+    renderWithProviders(<AccountPanel />);
+
+    const notice = await findBanner(/overrides any password stored by the app/i);
+    expect(notice).toHaveTextContent(/if a password is stored on this server/i);
+    expect(notice).toHaveTextContent(
+      /otherwise the sign-in screen sets a new one/i,
+    );
+    expect(notice).not.toHaveTextContent(
+      "the sign-in screen will then set a new one",
+    );
+    // A glyph, like every other neutral banner in the app: colour alone does
+    // not carry the state, and a text-only box reads as a quoted paragraph
+    // rather than as a notice from the system.
+    expect(notice.querySelector("svg")).toBeInTheDocument();
   });
 });
 
