@@ -21,8 +21,10 @@ from pathlib import Path
 import pytest
 from starlette.testclient import TestClient
 
+from app.auth.source import PASSWORD_HASH_FILENAME
 from app.host_guard import HostGuardMiddleware, host_allowed, resolve_allowed_hosts
 from app.main import app as real_app
+from tests.conftest import low_cost_stored_hash
 
 
 @pytest.mark.parametrize(
@@ -310,18 +312,12 @@ def test_prod_posture_rejects_testserver_and_honors_the_setting(tmp_path: Path) 
     assert lines[-1] == "('music.example.test',)"
 
 
-def test_posture_log_emits_under_real_uvicorn(tmp_path: Path) -> None:
-    """The startup posture line must actually reach the operator's console.
+def _posture_line_under_real_uvicorn(tmp_path: Path, beets_dir: Path) -> str:
+    """Boot real uvicorn in PROD posture and return its ``security posture:`` line.
 
-    No in-process caplog test can prove this: caplog attaches a handler to the
-    root logger, so ANY logger name passes. Under the real Dockerfile entrypoint
-    uvicorn configures only ``uvicorn``/``uvicorn.error``/``uvicorn.access`` and
-    leaves root at WARNING with no handlers — an INFO record from ``app.main``
-    is dropped before it reaches stdout, which is how the line shipped invisible.
-    So boot real uvicorn in PROD posture and read its output.
-
-    Guards the whole diagnostic: with a wrong allowlist every request 400s, and
-    this line is the only thing that says which posture and which names are live.
+    Shared by the two tests below, which differ only in what they seed into
+    ``beets_dir`` — the whole point of the second one is that the SAME emission
+    site has to report a configured server as well as an empty one.
     """
     dist = tmp_path / "dist"
     (dist / "assets").mkdir(parents=True)
@@ -332,11 +328,10 @@ def test_posture_log_emits_under_real_uvicorn(tmp_path: Path) -> None:
         "MUSICDROP_ALLOWED_HOSTS": "music.example.test",
         # Real uvicorn runs the lifespan, which OPENS a beets library; aim it at
         # a throwaway dir so the boot cannot touch the dev library `.env` points at.
-        "MUSICDROP_BEETS_DIR": str(tmp_path / "beets"),
+        "MUSICDROP_BEETS_DIR": str(beets_dir),
         # Pin the auth clause's input rather than inheriting it: an env var
         # beats `backend/.env`, so an owner who sets a real hash locally does
-        # not turn this assertion red. Empty is also the state a fresh deploy
-        # boots in, which is the one worth pinning.
+        # not turn these assertions red.
         "MUSICDROP_PASSWORD_HASH": "",
     }
     backend = Path(__file__).resolve().parents[1]
@@ -380,16 +375,56 @@ def test_posture_log_emits_under_real_uvicorn(tmp_path: Path) -> None:
         proc.wait(timeout=30)
         reader.join(timeout=30)
     assert posture is not None, f"no posture line in uvicorn output: {seen!r}"
+    return posture
+
+
+def test_posture_log_emits_under_real_uvicorn(tmp_path: Path) -> None:
+    """The startup posture line must actually reach the operator's console.
+
+    No in-process caplog test can prove this: caplog attaches a handler to the
+    root logger, so ANY logger name passes. Under the real Dockerfile entrypoint
+    uvicorn configures only ``uvicorn``/``uvicorn.error``/``uvicorn.access`` and
+    leaves root at WARNING with no handlers — an INFO record from ``app.main``
+    is dropped before it reaches stdout, which is how the line shipped invisible.
+    So boot real uvicorn in PROD posture and read its output.
+
+    Guards the whole diagnostic: with a wrong allowlist every request 400s, and
+    this line is the only thing that says which posture and which names are live.
+    """
+    posture = _posture_line_under_real_uvicorn(tmp_path, tmp_path / "beets")
+
     assert "prod (static_dir set)" in posture
     assert "music.example.test" in posture
     assert "IP literals, localhost" in posture
-    # The auth clause, on the same line and through the same logger. The child
-    # inherits no MUSICDROP_PASSWORD_HASH, so this is the state a fresh deploy
-    # is in — an app that answers nothing until the operator sets one, which is
-    # exactly the case that must not boot silently.
+    # The auth clause, on the same line and through the same logger. The child's
+    # MUSICDROP_PASSWORD_HASH is empty and its beets dir is fresh, so this is the
+    # state a fresh deploy is in — an app that answers nothing until the operator
+    # sets one, which is exactly the case that must not boot silently.
     assert "NO password configured" in posture
     assert "MUSICDROP_PASSWORD_HASH" in posture
     # The cookie clause is a RULE, not a state: Secure is decided per request
     # from that request's scheme, so the line must not claim a boot-time value
     # an operator behind a TLS proxy would read as false.
     assert "session cookie: Secure on HTTPS requests, plain otherwise" in posture
+
+
+def test_the_posture_log_reports_a_CONFIGURED_server_too(tmp_path: Path) -> None:
+    """The return journey, at the emission site rather than in the helper.
+
+    ``auth_posture`` is pinned per state by unit tests, but until this existed
+    the ARGUMENT the boot line passes was not: replacing it with "nothing is
+    configured" left the whole suite green, so a server with a perfectly good
+    stored password could announce that every request would be rejected. This is
+    the only test that boots the module with a password in place.
+    """
+    beets_dir = tmp_path / "beets"
+    beets_dir.mkdir()
+    (beets_dir / PASSWORD_HASH_FILENAME).write_text(
+        low_cost_stored_hash("the operator's password") + "\n", encoding="utf-8"
+    )
+
+    posture = _posture_line_under_real_uvicorn(tmp_path, beets_dir)
+
+    assert "password configured from" in posture
+    assert str(beets_dir / PASSWORD_HASH_FILENAME) in posture
+    assert "NO password configured" not in posture

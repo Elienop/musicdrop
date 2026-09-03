@@ -37,9 +37,8 @@ from app.artwork.filler import ArtistImageFiller
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
 from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
-from app.auth.gate import SessionGateMiddleware, auth_posture
+from app.auth.gate import SessionGateMiddleware, boot_auth_posture
 from app.auth.session import load_or_create_session_secret, session_secret_path
-from app.auth.source import effective_password
 from app.bank.store import reconcile_interrupted
 from app.beets.library import LibraryHandle, close_library
 from app.beets.setup import setup_beets
@@ -452,7 +451,12 @@ logging.getLogger("uvicorn.error").info(
     # removed the compose line has to be told the stored one is still there.
     # Resolved once, at import, and read off the disk: a file written after boot
     # is invisible to this line until the next restart.
-    auth_posture(*effective_password()),
+    #
+    # One no-argument call rather than unpacking the resolver here: the arguments
+    # ARE the message, and a call site that builds them is a call site that can
+    # get them wrong with nothing to notice. app/auth/gate.py::boot_auth_posture
+    # owns the composition and is pinned per state.
+    boot_auth_posture(),
 )
 
 app.include_router(health_router, prefix="/api")

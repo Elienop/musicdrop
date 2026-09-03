@@ -72,7 +72,12 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.auth.passwords import password_is_configured
 from app.auth.session import SESSION_COOKIE_NAME, session_token_is_valid
-from app.auth.source import PasswordSource, effective_password, password_file_location
+from app.auth.source import (
+    PasswordSource,
+    effective_password,
+    password_file_location,
+    stored_password_file_is_present,
+)
 from app.security_headers import DOCS_PATHS
 
 API_PREFIX: Final = "/api/"
@@ -116,7 +121,25 @@ _UNAUTHENTICATED_DETAIL: Final = "authentication required"
 _REJECT_BODY: Final = b'{"detail":"' + _UNAUTHENTICATED_DETAIL.encode("ascii") + b'"}'
 
 
-def auth_posture(password_hash: str, source: PasswordSource) -> str:
+def _shadowed_file_note(stored_file_present: bool) -> str:
+    """What the env var is hiding, when it is hiding something.
+
+    Empty when there is no stored file, so the common case reads exactly as it
+    did. When there IS one, the operator who removes the compose line is about
+    to meet a password they did not set on this deployment — this clause is
+    where the boot log tells them so, and names the file to delete if they want
+    the setup form back instead.
+    """
+    if not stored_file_present:
+        return ""
+    return (
+        f" (a stored password hash at {password_file_location()} also exists"
+        " and is ignored while MUSICDROP_PASSWORD_HASH is set; unsetting the"
+        " variable hands the password back to that file)"
+    )
+
+
+def auth_posture(password_hash: str, source: PasswordSource, *, stored_file_present: bool) -> str:
     """One clause for the startup posture line: can anyone sign in at all?
 
     Four states, not two. "Unset", "the env var is set but unreadable" and "the
@@ -129,18 +152,25 @@ def auth_posture(password_hash: str, source: PasswordSource) -> str:
 
     Takes both halves of :func:`app.auth.source.effective_password` rather than
     re-resolving them, so the line reports the same answer the gate and the
-    login route will act on.
+    login route will act on — and ``stored_file_present`` beside them, which is
+    the one thing those two halves cannot say: under the env var the file is
+    never consulted, so a shadowed one is invisible in the pair. Required and
+    keyword-only rather than defaulted, so a call site that forgets it fails at
+    import instead of quietly reporting "no file".
+
+    :func:`boot_auth_posture` is what production calls; this signature is here
+    so each state can be exercised without arranging the disk.
     """
     if password_is_configured(password_hash):
         if source == "file":
             return f"password configured from {password_file_location()}"
-        return "password configured from the environment"
+        return "password configured from the environment" + _shadowed_file_note(stored_file_present)
     if source == "env":
         return (
             "MUSICDROP_PASSWORD_HASH is set but UNREADABLE, so every gated API "
             "request will be rejected until it is replaced (generate one with "
             "`python -m app.auth.hash_password`; in docker-compose every `$` in "
-            "the value must be doubled to `$$`)"
+            "the value must be doubled to `$$`)" + _shadowed_file_note(stored_file_present)
         )
     if source == "file":
         return (
@@ -154,6 +184,19 @@ def auth_posture(password_hash: str, source: PasswordSource) -> str:
         "MUSICDROP_PASSWORD_HASH is set to override it; generate a hash with "
         "`python -m app.auth.hash_password`)"
     )
+
+
+def boot_auth_posture() -> str:
+    """:func:`auth_posture` for the LIVE password state, resolved here.
+
+    The composition lives in a function of its own so the call site in
+    ``app/main.py`` is one name with no arguments to get wrong. The previous
+    shape — unpacking ``effective_password()`` at the call site — passed its
+    mutation test silently: replacing it with two literals left the whole suite
+    green while the boot line claimed the opposite of the truth.
+    """
+    stored, source = effective_password()
+    return auth_posture(stored, source, stored_file_present=stored_password_file_is_present())
 
 
 def path_requires_session(path: str) -> bool:

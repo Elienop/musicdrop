@@ -18,7 +18,8 @@ from typing import Any
 
 import pytest
 
-from app.auth.gate import auth_posture
+from app.auth.gate import auth_posture, boot_auth_posture
+from app.auth.hash_password import main
 from app.auth.passwords import (
     PasswordHashError,
     hash_password,
@@ -34,6 +35,7 @@ from app.auth.session import (
 )
 from app.auth.source import password_file_location
 from app.playlists.atomic import write_atomic_bytes
+from tests.conftest import low_cost_stored_hash
 
 _SECRET = b"0123456789abcdef0123456789abcdef"
 #: The hash a token is bound to. Spelled at every call site below rather
@@ -344,7 +346,32 @@ def test_the_cli_refuses_an_empty_password() -> None:
     out = _run_cli("\n\n", backend)
     assert out.returncode == 2
     assert out.stdout.strip() == ""
-    assert "empty password" in out.stderr
+    assert "empty or only whitespace" in out.stderr
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t "])
+def test_the_cli_refuses_a_blank_password_the_same_way_the_routes_do(
+    blank: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Whitespace-only too, which is the half that used to be hashed.
+
+    Measured before this: three spaces produced a working ``scrypt$...`` line and
+    rc 0, while ``POST /api/auth/setup`` answered 422 for the same input — so
+    ``app/models/auth.py`` (which ships into the OpenAPI contract) and README
+    both described a rule the CLI did not apply. A credential nobody can retype
+    on purpose is the thing that rule exists to prevent.
+
+    Driven through the module's ``getpass`` seam rather than a subprocess: this
+    is about the refusal, not about the terminal handling the three tests above
+    cover.
+    """
+    monkeypatch.setattr("app.auth.hash_password.getpass", lambda _prompt: blank)
+
+    assert main() == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "empty or only whitespace" in captured.err
 
 
 # --------------------------------------------------------------------------
@@ -362,18 +389,18 @@ def test_posture_reports_a_working_hash_and_which_source_it_came_from() -> None:
     whether the live hash is the env var or the stored file; with one string for
     both, the boot log could not answer that.
     """
-    from_env = auth_posture(_WORKING_HASH, "env")
+    from_env = auth_posture(_WORKING_HASH, "env", stored_file_present=False)
     assert "password configured" in from_env
     assert "from the environment" in from_env
 
-    from_file = auth_posture(_WORKING_HASH, "file")
+    from_file = auth_posture(_WORKING_HASH, "file", stored_file_present=True)
     assert "password configured" in from_file
     assert password_file_location() in from_file
     assert from_file != from_env
 
 
 def test_posture_reports_an_unset_hash_and_names_the_env_var() -> None:
-    line = auth_posture("", "none")
+    line = auth_posture("", "none", stored_file_present=False)
     assert "NO password configured" in line
     assert "MUSICDROP_PASSWORD_HASH" in line
     # The fix moved: setup happens on the sign-in screen, and the env var is
@@ -388,9 +415,9 @@ def test_posture_distinguishes_an_unreadable_hash_from_an_unset_one() -> None:
     "NO password configured", so the operator sets it again — to the same
     mangled value.
     """
-    unreadable = auth_posture("scrypt$oops", "env")
+    unreadable = auth_posture("scrypt$oops", "env", stored_file_present=False)
     assert "UNREADABLE" in unreadable
-    assert unreadable != auth_posture("", "none")
+    assert unreadable != auth_posture("", "none", stored_file_present=False)
     # The measured way a hash arrives mangled: pasted into docker-compose with
     # single dollars, where every $ starts a variable interpolation.
     assert "$$" in unreadable
@@ -403,8 +430,62 @@ def test_posture_tells_an_unreadable_stored_file_from_an_unreadable_env_var() ->
     they never typed the stored hash — and must name the path, because deleting
     it is the forgotten-password recovery.
     """
-    line = auth_posture("scrypt$oops", "file")
+    line = auth_posture("scrypt$oops", "file", stored_file_present=True)
     assert "UNREADABLE" in line
     assert password_file_location() in line
     assert "deleted" in line
-    assert line != auth_posture("scrypt$oops", "env")
+    assert line != auth_posture("scrypt$oops", "env", stored_file_present=False)
+
+
+@pytest.mark.parametrize("env_hash", [_WORKING_HASH, "scrypt$oops"])
+def test_posture_says_when_the_env_var_is_shadowing_a_stored_file(env_hash: str) -> None:
+    """Both env arms, because the operator's next move is the same either way.
+
+    Removing the compose line hands the password back to a file they may not
+    know is there — or may be counting on. Naming it is what turns "my password
+    stopped working" into one look at the boot log. The unreadable arm needs it
+    too: that operator is already reaching for the compose file.
+    """
+    shadowing = auth_posture(env_hash, "env", stored_file_present=True)
+    alone = auth_posture(env_hash, "env", stored_file_present=False)
+
+    assert password_file_location() in shadowing
+    assert "ignored" in shadowing
+    assert password_file_location() not in alone
+    assert alone in shadowing, "the shadowed line adds to the plain one rather than replacing it"
+
+
+def test_the_boot_clause_reads_the_live_state(password_hash_file: Path) -> None:
+    """What ``app/main.py`` logs at import: composed here, not at the call site.
+
+    The call site used to unpack the resolver itself, and replacing that with two
+    literals left every test green while the boot line said the opposite of the
+    truth. One no-argument function is what makes the arguments testable.
+    """
+    assert "NO password configured" in boot_auth_posture()
+
+    password_hash_file.parent.mkdir(parents=True, exist_ok=True)
+    password_hash_file.write_text(low_cost_stored_hash("a stored password"), encoding="utf-8")
+
+    configured = boot_auth_posture()
+    assert "password configured from" in configured
+    assert password_file_location() in configured
+
+
+def test_the_boot_clause_names_a_file_the_env_var_shadows(
+    password_hash_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The state the two halves of ``effective_password`` cannot report.
+
+    Under the env var the file is never consulted, so the pair says only
+    ``("<hash>", "env")``. The presence has to be resolved separately or the
+    clause silently drops the one fact the operator needs.
+    """
+    password_hash_file.parent.mkdir(parents=True, exist_ok=True)
+    password_hash_file.write_text(low_cost_stored_hash("the stored one"), encoding="utf-8")
+    monkeypatch.setattr("app.config.settings.password_hash", _WORKING_HASH)
+
+    clause = boot_auth_posture()
+
+    assert "from the environment" in clause
+    assert password_file_location() in clause
