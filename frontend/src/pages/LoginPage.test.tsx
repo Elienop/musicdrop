@@ -6,6 +6,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import * as assetVersion from "@/api/assetVersion";
+import type { PasswordSource } from "@/api/auth";
 import { AUTH_STATUS_KEY } from "@/api/auth";
 import { markAuthenticated, markUnauthenticated } from "@/api/authStore";
 import { LIBRARY_CONTENT_KEY_COUNT } from "@/api/useEventStream";
@@ -17,11 +18,28 @@ const REAL_NAVIGATOR = globalThis.navigator;
 
 const STATUS_URL = `${window.location.origin}/api/auth/status`;
 const LOGIN_URL = `${window.location.origin}/api/auth/login`;
+const SETUP_URL = `${window.location.origin}/api/auth/setup`;
 
-/** The two states GET /api/auth/status can report to a signed-out browser. */
-function statusHandler(passwordSet: boolean, authenticated = false) {
+/**
+ * What GET /api/auth/status reports to a signed-out browser.
+ *
+ * `source` defaults to the value that matches `passwordSet`, so the calls that
+ * only care whether signing in is possible read as before: a usable password is
+ * one stored in a file, and an unusable one with no source is a first run. The
+ * two combinations that are neither — false with "env" and false with "file" —
+ * are the unreadable-hash branches and are always passed explicitly.
+ */
+function statusHandler(
+  passwordSet: boolean,
+  authenticated = false,
+  source: PasswordSource = passwordSet ? "file" : "none",
+) {
   return http.get(STATUS_URL, () =>
-    HttpResponse.json({ authenticated, password_set: passwordSet }),
+    HttpResponse.json({
+      authenticated,
+      password_set: passwordSet,
+      password_source: source,
+    }),
   );
 }
 
@@ -460,68 +478,193 @@ describe("LoginPage — landing here from inside the shell", () => {
   });
 });
 
-describe("LoginPage — no password configured", () => {
-  test("explains the setup instead of offering a doomed form", async () => {
-    server.use(statusHandler(false));
+describe("LoginPage — first run, with no password anywhere", () => {
+  test("sets the password here instead of explaining a shell command", async () => {
+    server.use(statusHandler(false, false, "none"));
     renderLogin();
 
+    // Two fields, because the CLI this replaces prompts twice: a typo in a
+    // single masked field locks the operator out of their own server.
+    const password = await screen.findByLabelText("Password");
+    const confirm = screen.getByLabelText("Confirm password");
+    expect(password).toHaveAttribute("type", "password");
+    // `new-password` on BOTH: nothing is saved for this server yet, so a
+    // manager should offer to generate and store one rather than autofill an
+    // entry that cannot exist.
+    expect(password).toHaveAttribute("autocomplete", "new-password");
+    expect(confirm).toHaveAttribute("autocomplete", "new-password");
     expect(
-      await screen.findByText(/no password is configured on this server/i),
+      screen.getByRole("button", { name: "Set password" }),
     ).toBeInTheDocument();
-    // In the system's shape for an attention-demanding status, not muted prose
-    // wearing role="alert" — the tone said "aside" while the role said
-    // "interrupt", and nothing on this server works until it is dealt with.
-    expect(screen.getByRole("alert")).toHaveAttribute(
-      "data-slot",
-      "status-banner",
-    );
-    // The form would 401 on every attempt; showing it would waste the
-    // operator's time on the wrong problem.
-    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
-    // Both invocations from README §Authentication — the container one first.
-    const commands = screen.getByText(/hash_password/);
-    expect(commands).toHaveTextContent(
-      "docker exec -it musicdrop python -m app.auth.hash_password",
-    );
-    expect(commands).toHaveTextContent(
-      "cd backend && uv run python -m app.auth.hash_password",
-    );
-    // The env var the generated hash goes into — the second half of the fix,
-    // and the reason the copy is a paragraph rather than just a command.
-    expect(screen.getByText("MUSICDROP_PASSWORD_HASH")).toBeInTheDocument();
+    // The half of the old notice that is now WRONG for this branch: nothing
+    // here needs the env var or the hash command, and naming either would send
+    // the operator to a shell they no longer have to open.
+    expect(screen.queryByText("MUSICDROP_PASSWORD_HASH")).not.toBeInTheDocument();
+    expect(screen.queryByText(/hash_password/)).not.toBeInTheDocument();
   });
 
-  test("re-checks on demand, so a restart is picked up without a reload", async () => {
+  test("refuses a mismatched confirmation without asking the server", async () => {
+    let posts = 0;
+    server.use(
+      statusHandler(false, false, "none"),
+      http.post(SETUP_URL, () => {
+        posts += 1;
+        return HttpResponse.json({
+          authenticated: true,
+          password_set: true,
+          password_source: "file",
+        });
+      }),
+    );
+    renderLogin();
+
+    await userEvent.type(await screen.findByLabelText("Password"), "hunter2");
+    await userEvent.type(screen.getByLabelText("Confirm password"), "hunter3");
+    await userEvent.click(screen.getByRole("button", { name: "Set password" }));
+
+    expect(
+      await screen.findByText("The two passwords don’t match. Type them again."),
+    ).toBeInTheDocument();
+    // The whole point of the confirm field: a mismatch costs no ~0.16 s scrypt
+    // derive, and the route could not have caught it anyway (it takes one
+    // password field).
+    expect(posts).toBe(0);
+    // And the message clears the moment either half changes, rather than
+    // hanging around contradicting what is now typed.
+    await userEvent.type(screen.getByLabelText("Confirm password"), "!");
+    expect(
+      screen.queryByText("The two passwords don’t match. Type them again."),
+    ).not.toBeInTheDocument();
+  });
+
+  test("a set password signs the browser in, exactly as a sign-in would", async () => {
+    server.use(
+      statusHandler(false, false, "none"),
+      http.post(SETUP_URL, async ({ request }) => {
+        expect(await request.json()).toEqual({ password: "hunter2" });
+        return HttpResponse.json({
+          authenticated: true,
+          password_set: true,
+          password_source: "file",
+        });
+      }),
+    );
+    const { queryClient, invalidate, bump } = renderLogin({
+      from: { pathname: "/artists", search: "" },
+    });
+
+    await userEvent.type(await screen.findByLabelText("Password"), "hunter2");
+    await userEvent.type(screen.getByLabelText("Confirm password"), "hunter2");
+    await userEvent.click(screen.getByRole("button", { name: "Set password" }));
+
+    // Lands on the page that was asked for, with the guard's status query
+    // already warm — the setup response IS an AuthStatus, so nothing
+    // round-trips again on the way into the shell.
+    expect(await screen.findByTestId("location")).toHaveTextContent("/artists");
+    expect(queryClient.getQueryData(AUTH_STATUS_KEY)).toEqual({
+      authenticated: true,
+      password_set: true,
+      password_source: "file",
+    });
+    // The same cache refresh a sign-in does. It matters here for the same
+    // reason: a fresh EventSource replays nothing, so anything this browser
+    // cached before would sit stale behind the shell.
+    expect(invalidate).toHaveBeenCalledTimes(LIBRARY_CONTENT_KEY_COUNT);
+    expect(bump).toHaveBeenCalled();
+  });
+
+  test("a 409 re-checks and hands over to the sign-in form", async () => {
+    // Someone else set a password while this page was open — another browser,
+    // or the operator setting the env var and restarting. Narrating the 409
+    // would leave them reading a sentence about a form that is no longer the
+    // one they need; re-asking the server swaps the branch for the sign-in
+    // form, which is the only screen that can act on the new password.
     let configured = false;
     server.use(
       http.get(STATUS_URL, () =>
-        HttpResponse.json({ authenticated: false, password_set: configured }),
+        HttpResponse.json({
+          authenticated: false,
+          password_set: configured,
+          password_source: configured ? "file" : "none",
+        }),
+      ),
+      http.post(SETUP_URL, () => {
+        configured = true;
+        return HttpResponse.json(
+          {
+            detail:
+              "A password is already configured on this server and stored in the beets directory.",
+          },
+          { status: 409 },
+        );
+      }),
+    );
+    renderLogin();
+
+    await userEvent.type(await screen.findByLabelText("Password"), "hunter2");
+    await userEvent.type(screen.getByLabelText("Confirm password"), "hunter2");
+    await userEvent.click(screen.getByRole("button", { name: "Set password" }));
+
+    expect(
+      await screen.findByRole("button", { name: "Sign in" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Confirm password")).not.toBeInTheDocument();
+    // The sign-in field is `current-password` — the proof this is the OTHER
+    // form and not the setup one with a renamed button.
+    expect(screen.getByLabelText("Password")).toHaveAttribute(
+      "autocomplete",
+      "current-password",
+    );
+  });
+
+  test.each([
+    [422, "A password cannot be empty or only whitespace."],
+    [
+      503,
+      "The new password could not be saved to the beets directory, so nothing was changed. Check that the directory is writable, then try again.",
+    ],
+    [429, "Another sign-in is already in progress. Try again in a moment."],
+  ])("renders the %i detail as written, keeping the form", async (status, detail) => {
+    // The server authors each of these and names its own cause; a re-worded
+    // copy here could only drift from it. The form stays: a 429 means "try that
+    // again", and a 503 is fixed outside the browser and then retried.
+    server.use(
+      statusHandler(false, false, "none"),
+      http.post(SETUP_URL, () => HttpResponse.json({ detail }, { status })),
+    );
+    renderLogin();
+
+    await userEvent.type(await screen.findByLabelText("Password"), "  ");
+    await userEvent.type(screen.getByLabelText("Confirm password"), "  ");
+    await userEvent.click(screen.getByRole("button", { name: "Set password" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(detail);
+    expect(
+      screen.getByRole("button", { name: "Set password" }),
+    ).toBeEnabled();
+  });
+
+  test("re-checks on demand, so a password set elsewhere is picked up", async () => {
+    let configured = false;
+    server.use(
+      http.get(STATUS_URL, () =>
+        HttpResponse.json({
+          authenticated: false,
+          password_set: configured,
+          password_source: configured ? "file" : "none",
+        }),
       ),
     );
     renderLogin();
 
-    await screen.findByText(/no password is configured on this server/i);
+    await screen.findByRole("button", { name: "Set password" });
     configured = true;
     await userEvent.click(screen.getByRole("button", { name: "Check again" }));
 
-    expect(await screen.findByLabelText("Password")).toBeInTheDocument();
     expect(
-      screen.queryByText(/no password is configured on this server/i),
-    ).not.toBeInTheDocument();
-  });
-
-  test("copies the commands when the clipboard allows it", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
-    server.use(statusHandler(false));
-    renderLogin();
-
-    await userEvent.click(await screen.findByRole("button", { name: "Copy" }));
-
-    expect(
-      await screen.findByRole("button", { name: "Copied" }),
+      await screen.findByRole("button", { name: "Sign in" }),
     ).toBeInTheDocument();
-    expect(writeText.mock.calls[0][0]).toContain("app.auth.hash_password");
+    expect(screen.queryByLabelText("Confirm password")).not.toBeInTheDocument();
   });
 
   test("shows the re-check in progress, so the click is not silent", async () => {
@@ -537,12 +680,16 @@ describe("LoginPage — no password configured", () => {
       http.get(STATUS_URL, async () => {
         calls += 1;
         if (calls > 1) await held;
-        return HttpResponse.json({ authenticated: false, password_set: false });
+        return HttpResponse.json({
+          authenticated: false,
+          password_set: false,
+          password_source: "none",
+        });
       }),
     );
     renderLogin();
 
-    await screen.findByText(/no password is configured on this server/i);
+    await screen.findByRole("button", { name: "Set password" });
     await userEvent.click(screen.getByRole("button", { name: "Check again" }));
 
     const busy = await screen.findByRole("button", { name: "Checking…" });
@@ -555,13 +702,13 @@ describe("LoginPage — no password configured", () => {
   });
 
   test("re-checking says so when nothing changed, instead of nothing", async () => {
-    // The copy above tells the operator to restart MusicDrop, so the likeliest
-    // moment for this click is mid-restart — exactly when the answer does not
-    // change and a silent re-check is indistinguishable from a dead button.
-    server.use(statusHandler(false));
+    // A silent re-check is indistinguishable from a dead button, and this
+    // branch is exactly where an operator clicks it repeatedly while waiting
+    // for another browser (or a restart) to change the answer.
+    server.use(statusHandler(false, false, "none"));
     renderLogin();
 
-    await screen.findByText(/no password is configured on this server/i);
+    await screen.findByRole("button", { name: "Set password" });
     await userEvent.click(screen.getByRole("button", { name: "Check again" }));
 
     const notice = await screen.findByText("Still no password configured.");
@@ -571,7 +718,6 @@ describe("LoginPage — no password configured", () => {
     // role, and this asserts the live region survived the change.
     expect(notice.tagName).toBe("OUTPUT");
     expect(notice).toBe(screen.getByRole("status"));
-    // And the button came back, rather than staying stuck on its busy label.
     expect(
       await screen.findByRole("button", { name: "Check again" }),
     ).toBeEnabled();
@@ -582,13 +728,17 @@ describe("LoginPage — no password configured", () => {
     server.use(
       http.get(STATUS_URL, () =>
         up
-          ? HttpResponse.json({ authenticated: false, password_set: false })
+          ? HttpResponse.json({
+              authenticated: false,
+              password_set: false,
+              password_source: "none",
+            })
           : new HttpResponse(null, { status: 503 }),
       ),
     );
     renderLogin();
 
-    await screen.findByText(/no password is configured on this server/i);
+    await screen.findByRole("button", { name: "Set password" });
     up = false;
     await userEvent.click(screen.getByRole("button", { name: "Check again" }));
 
@@ -599,6 +749,60 @@ describe("LoginPage — no password configured", () => {
       ),
     ).toBeInTheDocument();
   });
+});
+
+describe("LoginPage — an unreadable MUSICDROP_PASSWORD_HASH", () => {
+  test("names the variable, the compose rule, and the restart — and offers NO setup", async () => {
+    server.use(statusHandler(false, false, "env"));
+    renderLogin();
+
+    const banner = await screen.findByRole("alert");
+    // In the system's shape for an attention-demanding status, not muted prose
+    // wearing role="alert".
+    expect(banner).toHaveAttribute("data-slot", "status-banner");
+    expect(banner).toHaveTextContent("MUSICDROP_PASSWORD_HASH");
+    // The measured way this state is reached: docker-compose interpolates a
+    // single $, so a hash pasted straight from the CLI arrives shorter than it
+    // left. Without this sentence the operator is told their hash is wrong and
+    // not why.
+    expect(banner).toHaveTextContent("must be doubled to");
+    expect(banner).toHaveTextContent(/restart MusicDrop/i);
+    // No setup form, and this is the owner's ruling rather than an oversight:
+    // the env var wins even when its value cannot be read, so a password set
+    // here would be shadowed the moment the variable is corrected.
+    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Set password" }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("offers the hash command, since fixing the variable needs a new one", async () => {
+    server.use(statusHandler(false, false, "env"));
+    renderLogin();
+
+    // Both invocations from README §Authentication — the container one first.
+    const commands = await screen.findByText(/hash_password/);
+    expect(commands).toHaveTextContent(
+      "docker exec -it musicdrop python -m app.auth.hash_password",
+    );
+    expect(commands).toHaveTextContent(
+      "cd backend && uv run python -m app.auth.hash_password",
+    );
+  });
+
+  test("copies the commands when the clipboard allows it", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    server.use(statusHandler(false, false, "env"));
+    renderLogin();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Copy" }));
+
+    expect(
+      await screen.findByRole("button", { name: "Copied" }),
+    ).toBeInTheDocument();
+    expect(writeText.mock.calls[0][0]).toContain("app.auth.hash_password");
+  });
 
   test("the command block shows both commands in full, with no scroll container", async () => {
     // This was `overflow-x-auto` + tabIndex + role="group": a scroll container
@@ -606,7 +810,7 @@ describe("LoginPage — no password configured", () => {
     // It wraps now, so there is nothing to scroll to and no stop to name. That
     // matters most HERE: the sign-in card is max-w-sm at every viewport, so
     // the old version truncated this command on a 4K monitor too.
-    server.use(statusHandler(false));
+    server.use(statusHandler(false, false, "env"));
     renderLogin();
 
     const block = await screen.findByText(/docker exec -it musicdrop/);
@@ -617,5 +821,52 @@ describe("LoginPage — no password configured", () => {
     // BOTH commands, in full. The checkout one is the half that scrolling hid.
     expect(block).toHaveTextContent("app.auth.hash_password");
     expect(block).toHaveTextContent("cd backend && uv run python");
+  });
+
+  test("a re-check that changes nothing names the variable that is still wrong", async () => {
+    server.use(statusHandler(false, false, "env"));
+    renderLogin();
+
+    await screen.findByRole("button", { name: "Check again" });
+    await userEvent.click(screen.getByRole("button", { name: "Check again" }));
+
+    // Not "Still no password configured" — one IS configured, and saying
+    // otherwise would send the operator looking for the wrong problem.
+    expect(
+      await screen.findByText(
+        "The hash in MUSICDROP_PASSWORD_HASH is still unreadable.",
+      ),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("LoginPage — an unreadable stored password", () => {
+  test("says what to delete, and does not offer to overwrite it", async () => {
+    server.use(statusHandler(false, false, "file"));
+    renderLogin();
+
+    const banner = await screen.findByRole("alert");
+    expect(banner).toHaveAttribute("data-slot", "status-banner");
+    expect(banner).toHaveTextContent("password-hash");
+    expect(banner).toHaveTextContent(/delete/i);
+    expect(banner).toHaveTextContent(/restart MusicDrop/i);
+    // Setup is not offered: the server refuses to overwrite a hash file it
+    // cannot read, so a form here would collect a password and be refused.
+    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+    // And the env var is not named — it is not what is wrong here, and this
+    // branch exists precisely because the two used to be told the same story.
+    expect(screen.queryByText("MUSICDROP_PASSWORD_HASH")).not.toBeInTheDocument();
+  });
+
+  test("a re-check that changes nothing says the stored one is still unreadable", async () => {
+    server.use(statusHandler(false, false, "file"));
+    renderLogin();
+
+    await screen.findByRole("button", { name: "Check again" });
+    await userEvent.click(screen.getByRole("button", { name: "Check again" }));
+
+    expect(
+      await screen.findByText("The stored password is still unreadable."),
+    ).toBeInTheDocument();
   });
 });

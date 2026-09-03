@@ -86,6 +86,11 @@ const ReviewPage = lazy(() =>
 const SearchPage = lazy(() =>
   import("@/pages/search/SearchPage").then((m) => ({ default: m.SearchPage })),
 );
+const SettingsAccountPage = lazy(() =>
+  import("@/pages/settings/SettingsAccountPage").then((m) => ({
+    default: m.SettingsAccountPage,
+  })),
+);
 const SettingsBeetsPage = lazy(() =>
   import("@/pages/settings/SettingsBeetsPage").then((m) => ({
     default: m.SettingsBeetsPage,
@@ -129,8 +134,8 @@ const queryClient = createAppQueryClient();
 // IA: the sidebar (shell/Sidebar NAV_SECTIONS) groups the sections —
 // Library (/ Overview dashboard, /artists roster, /browse facets),
 // Acquire (/review, /import), Manage (/playlists, /duplicates, /settings/* —
-// beets · naming · metadata · integrations; /settings redirects to
-// /settings/beets).
+// beets · naming · metadata · integrations · trash · account; /settings
+// redirects to /settings/beets).
 // Detail routes hang off the artist spine:
 //   /artists/:name  that artist's albums
 //   /albums/:id     album tracklist (back link is contextual — Artists,
@@ -187,6 +192,7 @@ const router = createBrowserRouter([
           { path: "metadata", element: <SettingsMetadataPage /> },
           { path: "integrations", element: <SettingsIntegrationsPage /> },
           { path: "trash", element: <SettingsTrashPage /> },
+          { path: "account", element: <SettingsAccountPage /> },
         ],
       },
       { path: "/duplicates", element: <DuplicatesPage /> },

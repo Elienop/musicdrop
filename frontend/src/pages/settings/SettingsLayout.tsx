@@ -9,12 +9,17 @@ import { NavLink, Outlet } from "react-router";
 import { PageHeader } from "@/components/system/PageHeader";
 import { cn } from "@/lib/utils";
 
+// Ordered by what each section is ABOUT, widest first: the engine, then the
+// rules it files music by, then the metadata it fetches, then the services it
+// talks to, then what it deleted. Account is last because it is the one section
+// about the operator rather than the library.
 const SETTINGS_SECTIONS = [
   { label: "Beets", to: "/settings/beets" },
   { label: "Naming", to: "/settings/naming" },
   { label: "Metadata", to: "/settings/metadata" },
   { label: "Integrations", to: "/settings/integrations" },
   { label: "Trash", to: "/settings/trash" },
+  { label: "Account", to: "/settings/account" },
 ] as const;
 
 export function SettingsLayout() {

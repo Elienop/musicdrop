@@ -20,6 +20,7 @@ function renderAt(path: string) {
           { path: "metadata", element: <p>metadata section body</p> },
           { path: "integrations", element: <p>integrations section body</p> },
           { path: "trash", element: <p>trash section body</p> },
+          { path: "account", element: <p>account section body</p> },
         ],
       },
     ],
@@ -35,16 +36,20 @@ describe("SettingsLayout", () => {
     expect(h1).toHaveAttribute("tabindex", "-1");
   });
 
-  test("renders the five section links in the sub-nav", () => {
+  test("renders the six section links in the sub-nav, in order", () => {
     renderAt("/settings/beets");
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
     const links = within(nav).getAllByRole("link");
+    // The ORDER is asserted, not just the membership: the rail is read
+    // top-to-bottom and Account is deliberately last — it is the one section
+    // about the operator rather than about the library.
     expect(links.map((l) => l.getAttribute("href"))).toEqual([
       "/settings/beets",
       "/settings/naming",
       "/settings/metadata",
       "/settings/integrations",
       "/settings/trash",
+      "/settings/account",
     ]);
   });
 
@@ -54,6 +59,7 @@ describe("SettingsLayout", () => {
     ["/settings/metadata", "Metadata"],
     ["/settings/integrations", "Integrations"],
     ["/settings/trash", "Trash"],
+    ["/settings/account", "Account"],
   ])("marks exactly one active section with aria-current at %s", (path, label) => {
     renderAt(path);
     const active = screen.getByRole("link", { name: label });

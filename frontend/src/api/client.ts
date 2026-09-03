@@ -39,14 +39,25 @@ export const client = createClient<paths>({
  * on. `status` is the login page's own admission probe — it is gate-exempt and
  * answers 200 for a cookie-less caller, so a 401 there would be a contract
  * break rather than a session fact, and acting on one would have this page sign
- * its visitor out mid-probe.
+ * its visitor out mid-probe. `setup` is the third call the sign-in screen makes
+ * and is exempt for the same reason as the other two — a server with no
+ * password has no credential to hold a session with — so a 401 from it could
+ * only be a contract break, and treating one as a session fact would sign the
+ * operator out of the form that is creating their password.
  *
  * The gate's other two exempt paths are absent because listing them would be
  * decoration: `/api/health` (which the topbar does call) and
  * `/api/slskd/webhook` are exempt server-side, so neither can answer 401 at
  * all, and a member no test can distinguish from its absence makes this set
  * look better covered than it is — the same reasoning `gate.py` gives for
- * keeping `logout` out of `AUTH_ROUTE_PATHS`.
+ * keeping `logout` out of `AUTH_ROUTE_PATHS`. The three that ARE here are each
+ * distinguishable: a test makes the endpoint answer 401 and watches whether the
+ * store flips (api/authTransport.test.ts).
+ *
+ * `/api/auth/password` is deliberately ABSENT and must stay so: it is GATED, so
+ * its 401 means the session really is gone. Its "wrong current password" answer
+ * is a 403 precisely so that a typo cannot be mistaken for one
+ * (`backend/app/api/auth.py::change_password`).
  *
  * `/api/auth/logout` is deliberately ABSENT: it is gated, so its 401 means the
  * session really is gone. Exempting it deadlocked sign-out — the middleware
@@ -62,6 +73,7 @@ export const client = createClient<paths>({
  */
 export const GATE_EXEMPT_PATHS: ReadonlySet<string> = new Set([
   "/api/auth/login",
+  "/api/auth/setup",
   "/api/auth/status",
 ]);
 
