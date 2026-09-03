@@ -110,7 +110,7 @@
             }
           },
           "401": {
-            "description": "The password did not match, or no usable password hash is configured on the server (MUSICDROP_PASSWORD_HASH).",
+            "description": "The password did not match, or the configured password hash is not usable \u2014 either nothing is configured, or the value in MUSICDROP_PASSWORD_HASH cannot be read, or the stored hash file cannot be read.",
             "content": {
               "application/json": {
                 "schema": {
@@ -181,6 +181,235 @@
           }
         },
         "security": []
+      }
+    },
+    "/api/auth/setup": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Setup Password",
+        "description": "Set the FIRST password, on a server that has none, and sign the caller in.\n\nGate-exempt by necessity \u2014 there is no credential to hold a session with\nyet \u2014 and therefore refused with a 409 the moment any source exists. The\ntwo halves of that decision (read the source, write the file) run under one\nlock, because the atomic writer publishes with ``os.replace``, which is\nlast-writer-wins rather than create-or-fail: without the lock two\nsimultaneous first-run POSTs would each pass the check and the second would\noverwrite the first, leaving the operator holding a cookie for a password\nthat is no longer stored. The image runs a single uvicorn worker by design,\nso an in-process lock is what \"first wins\" means here; a multi-worker\ndeployment would need the check in the filesystem instead.\n\nThe 503 arm runs BEFORE anything is written: a cookie that cannot be signed\nwould leave a password stored and nobody able to use it until a restart.",
+        "operationId": "setup_password_api_auth_setup_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthStatus"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A password source already exists, so first-run setup is closed: either MUSICDROP_PASSWORD_HASH is set (it wins even when its value cannot be read), or the hash file under the beets directory is already there. Available only while password_source is \"none\".",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The password was empty or only whitespace. There is deliberately no other policy \u2014 no minimum length, no character classes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Another password derive was still running and this request waited its turn without getting one. The scrypt work is deliberately serialised and slow; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server has no session signing secret (startup did not complete), or the hash could not be written to the beets directory. Nothing is half-written in either case.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/auth/password": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Change Password",
+        "description": "Replace the stored password, and re-mint THIS caller's cookie.\n\nGated, and it still asks for the current password: the session cookie is a\n30-day bearer token with no server-side record, so possession of one must\nnot be enough to replace the credential it was minted from.\n\nEvery OTHER live session is signed out by this, and that is not a side\neffect to design away \u2014 the signing key is derived from the password hash\n(``app/auth/session.py::_signing_key``), which is the only revocation this\nstateless session design has. The caller's own cookie is re-minted under\nthe new hash so the browser that made the change stays signed in.\n\nA wrong current password is a 403, deliberately NOT a 401: on a gated path\nthe client reads any 401 as \"your session ended\" and drops the user at the\nsign-in screen, which would turn a typo into a sign-out.",
+        "operationId": "change_password_api_auth_password_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The current password did not match. Deliberately NOT a 401: the session is still valid, and a 401 on a gated path is what the client treats as \"you have been signed out\".",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The password cannot be changed in this server's state: MUSICDROP_PASSWORD_HASH is set and overrides the stored hash, or there is no readable stored hash to verify against (nothing configured yet, or a hash file this process cannot read).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The new password was empty or only whitespace. There is deliberately no other policy \u2014 no minimum length, no character classes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Another password derive was still running and this request waited its turn without getting one. The scrypt work is deliberately serialised and slow; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The new hash could not be written to the beets directory; the old password still works. The route also answers 503 if the server has no session signing secret, but on this GATED path the gate refuses that state with a 401 first (measured), so that arm is defence in depth rather than a reachable answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/auth/logout": {
@@ -10450,15 +10679,25 @@
           "password_set": {
             "type": "boolean",
             "title": "Password Set"
+          },
+          "password_source": {
+            "type": "string",
+            "enum": [
+              "none",
+              "env",
+              "file"
+            ],
+            "title": "Password Source"
           }
         },
         "type": "object",
         "required": [
           "authenticated",
-          "password_set"
+          "password_set",
+          "password_source"
         ],
         "title": "AuthStatus",
-        "description": "Whether this caller is signed in, and whether signing in is possible.\n\nReturned by ``GET /api/auth/status`` AND by a successful\n``POST /api/auth/login`` \u2014 one model, so the client can seed its status\ncache straight from the login response instead of round-tripping again.\n\n``password_set`` is false both when ``MUSICDROP_PASSWORD_HASH`` is unset and\nwhen it is set to something unreadable: in either case nothing can\nauthenticate, and the operator's fix is the same."
+        "description": "Whether this caller is signed in, and whether signing in is possible.\n\nReturned by ``GET /api/auth/status`` AND by a successful\n``POST /api/auth/login`` \u2014 one model, so the client can seed its status\ncache straight from the login response instead of round-tripping again.\n\n``password_set`` says the EFFECTIVE hash parses, so it is false both when\nno password is configured at all and when the configured one is unreadable:\nin either case nothing can authenticate. ``password_source`` is what tells\nthose two apart, and what decides whether first-run setup is offered:\n\n* ``\"none\"`` \u2014 no source exists. ``POST /api/auth/setup`` is available, and\n  this is the ONLY value for which it is (it answers 409 otherwise);\n* ``\"env\"`` \u2014 ``MUSICDROP_PASSWORD_HASH`` is non-empty. It wins over the\n  file whether or not its value can be read, so ``\"env\"`` with\n  ``password_set`` false means \"fix or unset the env var\" (in\n  docker-compose, every $ in the hash must be doubled to $$);\n* ``\"file\"`` \u2014 the hash file under the beets directory exists. ``\"file\"``\n  with ``password_set`` false means \"delete that file and restart\", which\n  is also the forgotten-password recovery."
       },
       "BankBulkDeleteRequest": {
         "properties": {
@@ -11367,6 +11606,25 @@
         ],
         "title": "CandidateOption",
         "description": "A ranked alternative release from ``task.candidates``.\n\nThe switcher in the review screen lists these; ``index`` is the position in\nthe beets candidate list and is what a choice references. ``release_id`` is\nthe metadata backend's id for the release (``AlbumInfo.album_id`` \u2014 an\nMBID for MusicBrainz, the deezer id for Deezer): the bank's apply runner\npins ``import.search_ids`` to it so the apply imports exactly the release\nthe user chose. None for sources without an id (the apply then falls back\nto an unpinned lookup's top candidate)."
+      },
+      "ChangePasswordRequest": {
+        "properties": {
+          "current_password": {
+            "type": "string",
+            "title": "Current Password"
+          },
+          "new_password": {
+            "type": "string",
+            "title": "New Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "current_password",
+          "new_password"
+        ],
+        "title": "ChangePasswordRequest",
+        "description": "Both fields ``POST /api/auth/password`` takes.\n\nThe current password is required even though the caller already holds a\nvalid session cookie: the cookie is a 30-day bearer token with no\nserver-side record, so possession of it must not be enough to replace the\ncredential it was minted from."
       },
       "ConfigAdvisory": {
         "properties": {
@@ -15697,6 +15955,20 @@
           "duration_seconds"
         ],
         "title": "SearchTrack"
+      },
+      "SetupRequest": {
+        "properties": {
+          "password": {
+            "type": "string",
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "title": "SetupRequest",
+        "description": "The one field ``POST /api/auth/setup`` takes, on first run only.\n\nNo confirmation field: the confirm-and-compare belongs to the form, which\ncan tell the operator about a typo without spending a ~0.16 s scrypt derive\non it. No length or composition policy either \u2014 see :class:`LoginRequest`\nfor why a ceiling would not help, and ``app/auth/hash_password.py`` for the\none rule this mirrors: an empty (or whitespace-only) password is refused."
       },
       "SkippedGroup": {
         "properties": {

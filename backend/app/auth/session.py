@@ -12,9 +12,11 @@ Two consequences worth being explicit about:
   browser; the token itself stays cryptographically valid until its embedded
   expiry. Revoking ONE early would need a server-side deny list, which does not
   exist — so a token copied out of a browser before logout keeps working.
-  Revoking ALL of them is supported and takes two forms: change
-  ``MUSICDROP_PASSWORD_HASH`` (the signing key is derived from it — see
-  :func:`_signing_key`), or delete ``<beets_dir>/session-secret``.
+  Revoking ALL of them is supported and takes two forms: change the password
+  (through ``POST /api/auth/password``, or by rewriting
+  ``MUSICDROP_PASSWORD_HASH`` — the signing key is derived from whichever hash
+  is effective, see :func:`_signing_key` and ``app/auth/source.py``), or delete
+  ``<beets_dir>/session-secret``.
 * **The version prefix is the upgrade path.** A future token that needs a
   revocation id or an issued-at stamp becomes ``v2.``; ``v1`` tokens then fail
   the version check and their holders re-authenticate.
@@ -103,8 +105,8 @@ def _signing_key(secret: bytes, password_hash: str) -> bytes:
     """The per-token key: the file secret, bound to the CURRENT password hash.
 
     Signing with the raw file secret would make a session outlive the password
-    that created it — change ``MUSICDROP_PASSWORD_HASH`` because it leaked, and
-    every cookie minted under the old one keeps working for up to 30 days.
+    that created it — change the password because it leaked, and every cookie
+    minted under the old one keeps working for up to 30 days.
     There is no session store to sweep, so the binding has to be in the key:
     derive it from the hash, and rotating the hash changes the key, which
     invalidates every outstanding token at once.
@@ -133,8 +135,8 @@ def mint_session_token(
     """A token for a session expiring ``max_age_seconds`` from now.
 
     ``password_hash`` is read by the CALLER at call time (never captured here),
-    so a rotated ``MUSICDROP_PASSWORD_HASH`` takes effect on the next request
-    rather than the next restart.
+    so a rotated password takes effect on the next request rather than the next
+    restart.
     """
     payload = str(int(time.time()) + max_age_seconds).encode("ascii")
     return _TOKEN_SEPARATOR.join(

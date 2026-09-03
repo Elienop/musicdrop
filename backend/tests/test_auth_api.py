@@ -1,7 +1,8 @@
 """``/api/auth/login``, ``/api/auth/logout`` and ``/api/auth/status``.
 
-Most tests here build their stored hash with :func:`_stored_hash`, which writes
-the ``scrypt$...`` wire format out by hand at a deliberately tiny work factor.
+Most tests here build their stored hash with
+:func:`tests.conftest.low_cost_stored_hash`, which writes the ``scrypt$...``
+wire format out by hand at a deliberately tiny work factor.
 Two reasons, and the first is not speed:
 
 * it is a LITERAL reconstruction of the format, so a change to the separator,
@@ -17,7 +18,6 @@ real OWASP parameters are not left untested by the shortcut.
 from __future__ import annotations
 
 import base64
-import hashlib
 import threading
 import time
 
@@ -30,7 +30,7 @@ from fastapi.testclient import TestClient
 from app.auth.session import SESSION_COOKIE_NAME, SESSION_MAX_AGE_SECONDS
 from app.config import settings
 from app.main import app as real_app
-from tests.conftest import TEST_SESSION_SECRET, session_cookie_value
+from tests.conftest import TEST_SESSION_SECRET, low_cost_stored_hash, session_cookie_value
 
 _PASSWORD = "correct horse battery staple"
 _LOGIN = "/api/auth/login"
@@ -43,29 +43,6 @@ _SECURE_FLAG = "Secure"
 _PROTO_HEADER = "X-Forwarded-Proto"
 
 
-def _stored_hash(password: str, *, n: int = 1024, r: int = 8, p: int = 1) -> str:
-    salt = b"sixteen-byte-slt"
-    digest = hashlib.scrypt(
-        password.encode("utf-8"),
-        salt=salt,
-        n=n,
-        r=r,
-        p=p,
-        maxmem=128 * r * (n + p + 2) + 1024 * 1024,
-        dklen=32,
-    )
-    return "$".join(
-        (
-            "scrypt",
-            str(n),
-            str(r),
-            str(p),
-            base64.b64encode(salt).decode("ascii"),
-            base64.b64encode(digest).decode("ascii"),
-        )
-    )
-
-
 @pytest.fixture
 def configured(monkeypatch: pytest.MonkeyPatch) -> None:
     """``MUSICDROP_PASSWORD_HASH`` set to a hash of :data:`_PASSWORD`.
@@ -75,7 +52,7 @@ def configured(monkeypatch: pytest.MonkeyPatch) -> None:
     the login route reads ``settings.password_hash`` at REQUEST time rather
     than capturing it at import.
     """
-    monkeypatch.setattr("app.config.settings.password_hash", _stored_hash(_PASSWORD))
+    monkeypatch.setattr("app.config.settings.password_hash", low_cost_stored_hash(_PASSWORD))
 
 
 def _anonymous() -> TestClient:
@@ -98,7 +75,11 @@ def test_the_right_password_sets_the_session_cookie(configured: None) -> None:
     """
     resp = _anonymous().post(_LOGIN, json={"password": _PASSWORD})
     assert resp.status_code == 200
-    assert resp.json() == {"authenticated": True, "password_set": True}
+    assert resp.json() == {
+        "authenticated": True,
+        "password_set": True,
+        "password_source": "env",
+    }
 
     header = resp.headers["set-cookie"]
     assert header.startswith(f"{SESSION_COOKIE_NAME}=")
@@ -257,7 +238,12 @@ def test_an_unreadable_hash_says_so_rather_than_blaming_the_password(
     monkeypatch.setattr("app.config.settings.password_hash", "argon2id$v=19$whatever")
     resp = _anonymous().post(_LOGIN, json={"password": _PASSWORD})
     assert resp.status_code == 401
-    assert resp.json() == {"detail": "The configured password hash is not readable."}
+    # The env arm's sentence, which names the compose trap: a `scrypt$...` value
+    # pasted into docker-compose.yml with single dollars is interpolated down to
+    # something unparseable, and that is the measured way this state is reached.
+    detail = resp.json()["detail"]
+    assert "MUSICDROP_PASSWORD_HASH" in detail
+    assert "$$" in detail
 
 
 @pytest.mark.parametrize(
@@ -282,7 +268,9 @@ def test_every_shape_of_broken_hash_refuses(broken: str, monkeypatch: pytest.Mon
     monkeypatch.setattr("app.config.settings.password_hash", broken)
     resp = _anonymous().post(_LOGIN, json={"password": _PASSWORD})
     assert resp.status_code == 401
-    assert resp.json() == {"detail": "The configured password hash is not readable."}
+    # The env arm's sentence for every shape (see the test above for why it
+    # names the compose interpolation rule).
+    assert "MUSICDROP_PASSWORD_HASH" in resp.json()["detail"]
 
 
 def test_login_refuses_when_the_server_has_no_signing_secret(
@@ -630,26 +618,53 @@ def test_a_token_copied_before_logout_still_works(configured: None) -> None:
 
 
 def test_status_reports_signed_out_with_a_password_available(configured: None) -> None:
-    assert _anonymous().get(_STATUS).json() == {"authenticated": False, "password_set": True}
+    assert _anonymous().get(_STATUS).json() == {
+        "authenticated": False,
+        "password_set": True,
+        "password_source": "env",
+    }
 
 
 def test_status_reports_signed_in(configured: None) -> None:
     client = _anonymous()
     client.post(_LOGIN, json={"password": _PASSWORD})
-    assert client.get(_STATUS).json() == {"authenticated": True, "password_set": True}
+    assert client.get(_STATUS).json() == {
+        "authenticated": True,
+        "password_set": True,
+        "password_source": "env",
+    }
 
 
 def test_status_reports_no_password_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Both fields false — what slice 2's login screen renders "set a password" from."""
+    """All three fields at their first-run values — what opens the setup form.
+
+    ``password_source == "none"`` is the state in which ``POST /api/auth/setup``
+    is available (both other sources answer 409 — measured in
+    ``tests/test_auth_setup_api.py``), so the login screen branches on it rather
+    than on ``password_set``, which is also false for a configured-but-
+    unreadable server.
+    """
     monkeypatch.setattr("app.config.settings.password_hash", "")
-    assert _anonymous().get(_STATUS).json() == {"authenticated": False, "password_set": False}
+    assert _anonymous().get(_STATUS).json() == {
+        "authenticated": False,
+        "password_set": False,
+        "password_source": "none",
+    }
 
 
 def test_status_reports_an_unreadable_hash_as_no_password(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """password_set false, source "env" — configured, and nothing can sign in.
+
+    The pair is the whole point: false-and-"none" offers setup, false-and-"env"
+    must not, because the env var wins even when its value is garbage and setup
+    would create a second credential the corrected variable then shadows.
+    """
     monkeypatch.setattr("app.config.settings.password_hash", "scrypt$oops")
-    assert _anonymous().get(_STATUS).json()["password_set"] is False
+    body = _anonymous().get(_STATUS).json()
+    assert body["password_set"] is False
+    assert body["password_source"] == "env"
 
 
 def test_status_agrees_with_the_gate_about_an_expired_cookie(

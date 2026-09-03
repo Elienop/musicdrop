@@ -110,7 +110,10 @@ def test_logins_own_401_survives_the_overlay(schema: dict[str, Any]) -> None:
     """Login is exempt, so its 401 must be the route's own sentence about the
     password — not a claim that a session cookie was missing."""
     login = schema["paths"]["/api/auth/login"]["post"]["responses"]["401"]
+    # Still names the env var: with two sources the description has to say which
+    # one an operator would go and fix, and this is the one they can typo.
     assert "MUSICDROP_PASSWORD_HASH" in login["description"]
+    assert "did not match" in login["description"]
     assert login["content"]["application/json"]["schema"] == _ERROR_DETAIL
 
 

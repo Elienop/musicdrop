@@ -13,14 +13,21 @@ built SPA shell and its assets still load for a browser with no cookie. They
 have to: the login screen is part of that bundle, and a shell that 401s has no
 way to ask for the password.
 
-Four exact paths are exempt (:data:`EXEMPT_PATHS`), each for a caller that
+Five exact paths are exempt (:data:`EXEMPT_PATHS`), each for a caller that
 cannot hold a cookie or must not be double-gated:
 
 * ``/api/health`` — the image's HEALTHCHECK calls it with bare ``urllib``;
 * ``/api/slskd/webhook`` — machine-to-machine, already fail-closed behind its
   own shared secret;
 * ``/api/auth/login`` and ``/api/auth/status`` — the way in, and the question
-  the login screen asks before rendering.
+  the login screen asks before rendering;
+* ``/api/auth/setup`` — first-run password setup, which by definition runs
+  before any credential exists. It is exempt STATICALLY rather than only while
+  unconfigured, because :func:`path_requires_session` is a pure function of the
+  path and the OpenAPI overlay asks it the same question at build time: an
+  exemption that depended on request state could not be expressed in the
+  contract. The route itself refuses with 409 the moment any source exists, so
+  the exemption is a way IN on first run and nothing else.
 
 The match is an EXACT string compare, and it is made against BOTH the raw
 ``scope["path"]`` and the ROUTE path (that same string with any ASGI
@@ -65,7 +72,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.auth.passwords import password_is_configured
 from app.auth.session import SESSION_COOKIE_NAME, session_token_is_valid
-from app.config import settings
+from app.auth.source import PasswordSource, effective_password, password_file_location
 from app.security_headers import DOCS_PATHS
 
 API_PREFIX: Final = "/api/"
@@ -87,6 +94,7 @@ EXEMPT_PATHS: Final = frozenset(
         "/api/slskd/webhook",
         "/api/auth/login",
         "/api/auth/status",
+        "/api/auth/setup",
     }
 )
 
@@ -108,25 +116,42 @@ _UNAUTHENTICATED_DETAIL: Final = "authentication required"
 _REJECT_BODY: Final = b'{"detail":"' + _UNAUTHENTICATED_DETAIL.encode("ascii") + b'"}'
 
 
-def auth_posture(password_hash: str) -> str:
+def auth_posture(password_hash: str, source: PasswordSource) -> str:
     """One clause for the startup posture line: can anyone sign in at all?
 
-    Three states, not two, because "unset" and "set but unreadable" have
-    different fixes and the operator sees this line once at boot and nowhere
-    else. Without it a typo'd hash presents identically to a working one until
-    the first login attempt fails.
+    Four states, not two. "Unset", "the env var is set but unreadable" and "the
+    stored file is unreadable" have three different fixes, and the operator sees
+    this line once at boot and nowhere else — without it a typo'd hash presents
+    identically to a working one until the first login attempt fails. The
+    fourth state (configured) names the LIVE source, because with two sources
+    an operator who removed the compose line has to be told the file is still
+    there.
+
+    Takes both halves of :func:`app.auth.source.effective_password` rather than
+    re-resolving them, so the line reports the same answer the gate and the
+    login route will act on.
     """
     if password_is_configured(password_hash):
-        return "password configured"
-    if password_hash.strip():
+        if source == "file":
+            return f"password configured from {password_file_location()}"
+        return "password configured from the environment"
+    if source == "env":
         return (
             "MUSICDROP_PASSWORD_HASH is set but UNREADABLE, so every gated API "
             "request will be rejected until it is replaced (generate one with "
-            "`python -m app.auth.hash_password`)"
+            "`python -m app.auth.hash_password`; in docker-compose every `$` in "
+            "the value must be doubled to `$$`)"
+        )
+    if source == "file":
+        return (
+            f"the stored password hash at {password_file_location()} is UNREADABLE, "
+            "so every gated API request will be rejected until that file is deleted "
+            "and MusicDrop restarted (which re-opens the sign-in screen's setup form)"
         )
     return (
         "NO password configured, so every gated API request will be rejected "
-        "until MUSICDROP_PASSWORD_HASH is set (generate one with "
+        "until one is set on the sign-in screen's setup form (or "
+        "MUSICDROP_PASSWORD_HASH is set to override it; generate a hash with "
         "`python -m app.auth.hash_password`)"
     )
 
@@ -198,10 +223,11 @@ def scope_has_valid_session(scope: Scope) -> bool:
     if not isinstance(secret, bytes):
         return False
     token = HTTPConnection(scope).cookies.get(SESSION_COOKIE_NAME)
-    # ``settings.password_hash`` read at REQUEST time, not captured: the token's
-    # signing key is derived from it, so a rotated hash must invalidate live
+    # The EFFECTIVE hash, resolved at REQUEST time and never captured: the
+    # token's signing key is derived from it, so a password changed through
+    # ``POST /api/auth/password`` (which rewrites the file) must invalidate live
     # cookies on the next request rather than the next restart.
-    return session_token_is_valid(token, secret, settings.password_hash)
+    return session_token_is_valid(token, secret, effective_password()[0])
 
 
 def scope_is_private(scope: Scope) -> bool:
