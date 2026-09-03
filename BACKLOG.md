@@ -77,7 +77,10 @@ entry carries a dated correction block where the pass changed it._
    CLI's stderr both gain the `$$` form). No env→file migration, no username. The residuals
    accepted with it are under *Accepted residuals*: the first-run race, the env-wins
    asymmetry, and the root-owned-file question on the `docker exec` recovery path. README,
-   `docker-compose.yml` and this file change in the same PR.
+   `docker-compose.yml` and this file change in the same PR. The 2026-09-03 review round
+   (four seats plus an owner browser pass) found that the setup window is not bounded to first
+   boot and that losing the data volume loses the credential — both amended into *Accepted
+   residuals* below — and its fix round lands on the same branch before merge.
 
 The 40 banked #143 Plex review Minors stay fully adjudicated (2026-08-25, every item
 re-verified against v0.44.0): 12 shipped as the triage fix slice (see Recently shipped), 12
@@ -1539,16 +1542,24 @@ the condition it names has changed.
   by design — there is no second process in the shipped deployment. Documented at
   `app/auth/session.py::load_or_create_session_secret`.
 
-- **The first-run SETUP race is accepted on a trusted LAN (2026-09-03, first-run password
-  setup; vault decisions 29).** Between first boot and the first `POST /api/auth/setup`,
-  whoever reaches the sign-in screen first sets the password — there is no setup token to
-  present. Accepted because the shipped deployment is a single account on a trusted LAN and
-  the window is the operator's own first visit. Within the one process an `asyncio.Lock`
-  around check-then-write makes "first wins" true rather than probabilistic: a second setup
-  POST answers **409** instead of overwriting, and the image runs uvicorn single-worker by
-  design (the same fact the session-secret race above rests on). The hardening if the box
-  is ever exposed beyond the LAN is a setup token printed to the startup log and required by
-  the form — noted, not built.
+- **The first-run SETUP race is accepted on a trusted LAN — and the window is not bounded to
+  first boot (2026-09-03, first-run password setup; vault decisions 29; amended by the
+  same-day security review).** Whoever reaches the sign-in screen while no password source
+  exists sets the password — there is no setup token to present. The window opens at first
+  boot and it re-opens whenever the `password-hash` file becomes absent: the source is resolved
+  per request, so deleting the file re-opens setup on a running server with no restart and no
+  prompt (measured by the review seat), and a bind mount that comes up empty or a restore that
+  misses the file does the same at the next start. Accepted because the shipped deployment is
+  a single account on a trusted LAN. The mitigations are the ones in place, not a token: the
+  firewall/LAN the deployment assumes; the `MUSICDROP_PASSWORD_HASH` override, which hides the
+  setup form regardless of the file and keeps the credential outside the data volume; and the
+  log line setup writes when it stores a password (WARNING, naming the file — fix round item
+  M1, 2026-09-03), so a claim is visible in the container log. Within the one process an
+  `asyncio.Lock` around check-then-write makes "first wins" true rather than probabilistic: a
+  second setup POST answers **409** instead of overwriting, and the image runs uvicorn
+  single-worker by design (the same fact the session-secret race above rests on). A setup
+  token printed to the startup log and required by the form remains the hardening if the box
+  is ever exposed beyond the LAN — noted, not built.
 
 - **The password is the one env-vs-file store where the ENVIRONMENT wins, and it wins even
   when UNREADABLE (2026-09-03, vault decisions 29).** `plex.json` and `slskd.json` let the
