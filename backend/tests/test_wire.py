@@ -257,6 +257,9 @@ def test_a_malformed_JSON_body_keeps_its_ctx_and_still_drops_the_echo() -> None:
     assert row["type"] == "json_invalid"
     assert "input" not in row, row
     assert {"loc", "msg", "type"} <= set(row), row
+    # Named before it is indexed, so a strip that took ``ctx`` too fails as an
+    # assertion about the row rather than as a KeyError three lines later.
+    assert "ctx" in row, row
     assert set(row["ctx"]) == {"error"}, row
 
 
