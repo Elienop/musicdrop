@@ -2,7 +2,7 @@
 
 The headline invariant is the first test in this file — before this middleware
 existed, anyone who could reach the port could read the whole library through
-``GET /api/config``. Everything else here is the fence around that: the four
+``GET /api/config``. Everything else here is the fence around that: the five
 exempt paths that must stay open, the SPA shell that must stay open (or the
 login screen has nowhere to render), the doc surface that must NOT, and the
 cheaper guards that must keep winning ahead of it.
@@ -234,17 +234,26 @@ def test_login_is_reachable_without_a_cookie(monkeypatch: pytest.MonkeyPatch) ->
     assert resp.json() != _UNAUTHENTICATED
 
 
-def test_the_exempt_set_is_exactly_the_four_documented_paths() -> None:
-    """A census, so a fifth exemption cannot be added without a decision.
+def test_the_exempt_set_is_exactly_the_five_documented_paths() -> None:
+    """A census, so a sixth exemption cannot be added without a decision.
 
     Each of these is exempt for a caller that cannot hold a cookie; anything
     added here is a hole in the gate and should be visible in a diff.
+
+    ``/api/auth/setup`` joined the set with first-run password setup, which by
+    definition runs before any credential exists. It is exempt STATICALLY,
+    because ``path_requires_session`` is a pure function of the path and the
+    OpenAPI overlay asks it the same question at build time; the route itself
+    answers 409 the moment any password source exists
+    (``tests/test_auth_setup_api.py``), which is what keeps the exemption from
+    being a way in on a configured server.
     """
     assert EXEMPT_PATHS == {
         "/api/health",
         "/api/slskd/webhook",
         "/api/auth/login",
         "/api/auth/status",
+        "/api/auth/setup",
     }
 
 

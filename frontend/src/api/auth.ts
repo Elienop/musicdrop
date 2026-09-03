@@ -15,6 +15,11 @@ import { invalidateLibraryContent } from "@/api/useEventStream";
 
 export type AuthStatus = components["schemas"]["AuthStatus"];
 
+/** Where the server's single password comes from, as the contract spells it.
+ * Derived from the generated model rather than re-typed, so a fourth value
+ * added server-side is a type error here instead of a silent `default:` arm. */
+export type PasswordSource = AuthStatus["password_source"];
+
 /** `GET /api/auth/status` is exempt from the session gate, so this query
  * answers for a signed-OUT browser too — which is what makes it usable both
  * as the shell's admission check and as the login page's "can anyone sign in
@@ -152,18 +157,173 @@ export function useLogin() {
       return data;
     },
     onSuccess: (status) => {
-      // The login response IS an AuthStatus, so the guard's query starts warm
-      // instead of round-tripping again on the way into the shell.
+      sessionEstablished(queryClient, status);
+    },
+  });
+}
+
+/**
+ * What both cookie-minting routes do to this browser once the server has said
+ * yes — sign-in and first-run setup alike, because `POST /api/auth/setup`
+ * returns the same `AuthStatus` behind the same `Set-Cookie` block as login
+ * (`backend/app/api/auth.py`), so the app is in exactly the state a sign-in
+ * leaves it in.
+ *
+ * One function rather than two identical `onSuccess` bodies: the cache-seeding
+ * half and the asset bump were written for login and are just as load-bearing
+ * on setup, and a copy would be free to lose one of them.
+ */
+function sessionEstablished(
+  queryClient: ReturnType<typeof useQueryClient>,
+  status: AuthStatus,
+): void {
+  // The response IS an AuthStatus, so the guard's query starts warm instead of
+  // round-tripping again on the way into the shell.
+  queryClient.setQueryData(AUTH_STATUS_KEY, status);
+  markAuthenticated();
+  // Whatever this browser cached belongs to a session that has been away;
+  // invalidating gives the shell fresh data, and the asset bump remounts every
+  // <img> whose bytes may have changed meanwhile. It also covers the gap a
+  // FRESH EventSource cannot: its catch-up only runs on a RE-connect
+  // (useEventStream's `connected` flag starts false), so a stream opened after
+  // sign-in replays nothing.
+  invalidateLibraryContent(queryClient);
+  bumpAssetVersion();
+}
+
+/**
+ * A refusal from one of the two password-WRITING routes, carrying the status
+ * the server answered with.
+ *
+ * The status is on the error because the two forms branch on it and the
+ * sentence alone cannot be branched on: the setup form treats a 409 as "someone
+ * configured a password while this page was open" and re-checks rather than
+ * showing text, and the change form paints a 409 (the env override is active)
+ * as a notice while a 403 (wrong current password) is an inline field error
+ * that keeps the form. Matching on the server's prose instead would break the
+ * moment the prose is reworded.
+ *
+ * `status` is null for the one failure the server did not author: a request
+ * that never got an answer at all.
+ */
+export class PasswordRequestError extends Error {
+  readonly status: number | null;
+
+  constructor(message: string, status: number | null) {
+    super(message);
+    this.name = "PasswordRequestError";
+    this.status = status;
+  }
+}
+
+/** The result shape both password routes return — `AuthStatus` on success, an
+ * `ErrorDetail`-ish body otherwise. Widened from openapi-fetch's union so ONE
+ * helper can run both calls. */
+interface AuthStatusResult {
+  data?: AuthStatus;
+  error?: unknown;
+  response: Response;
+}
+
+/**
+ * Run a password write and normalise its three failure shapes into one
+ * `PasswordRequestError`.
+ *
+ * `send` is a thunk rather than a path + body, because the two routes take
+ * different bodies and openapi-fetch types each call site precisely — passing
+ * the already-typed call in keeps that check at the call site instead of
+ * loosening it here.
+ *
+ * An `UnauthenticatedError` is re-thrown untouched: `POST /api/auth/password`
+ * is GATED, so a 401 from it really is "your session ended", and the client
+ * middleware has already flipped the store to bounce this browser to /login.
+ * Swallowing it into a form error would leave the user typing into a page the
+ * app is navigating away from.
+ */
+async function writePassword(
+  send: () => Promise<AuthStatusResult>,
+  fallback: string,
+): Promise<AuthStatus> {
+  let result: AuthStatusResult;
+  try {
+    result = await send();
+  } catch (cause) {
+    if (cause instanceof UnauthenticatedError) {
+      throw cause;
+    }
+    // No answer at all — the server is down, the proxy dropped it, DNS failed.
+    // Same sentence as sign-in and sign-out use for the same fact.
+    throw new PasswordRequestError(SERVER_UNREACHABLE_MESSAGE, null);
+  }
+  const { data, error, response } = result;
+  if (error || !data) {
+    throw new PasswordRequestError(
+      detailMessage(error) ?? fallback,
+      response.status,
+    );
+  }
+  return data;
+}
+
+/**
+ * Set the FIRST password on a server that has none, and take the cookie it
+ * mints.
+ *
+ * Available only while `password_source` is `"none"`; the route answers 409 the
+ * moment any source exists, which is how a second browser that had this form
+ * open learns it lost the race (see the setup form in pages/LoginPage.tsx).
+ */
+export function useSetupPassword() {
+  const queryClient = useQueryClient();
+  return useMutation<AuthStatus, PasswordRequestError, string>({
+    // Same reasoning as useLogin: the password rides in `variables`, which
+    // TanStack would otherwise keep readable for `gcTime` after the form
+    // unmounts.
+    gcTime: 0,
+    mutationFn: (password) =>
+      writePassword(
+        () => client.POST("/api/auth/setup", { body: { password } }),
+        "Couldn’t set the password. Try again.",
+      ),
+    onSuccess: (status) => {
+      sessionEstablished(queryClient, status);
+    },
+  });
+}
+
+/**
+ * Replace the stored password, and take the re-minted cookie for THIS browser.
+ *
+ * Every other live session is signed out by this — the session signing key is
+ * derived from the password hash — and the panel says so, because it is the
+ * only revocation this stateless session design has.
+ */
+export function useChangePassword() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    AuthStatus,
+    PasswordRequestError,
+    { currentPassword: string; newPassword: string }
+  >({
+    gcTime: 0,
+    mutationFn: ({ currentPassword, newPassword }) =>
+      writePassword(
+        () =>
+          client.POST("/api/auth/password", {
+            body: {
+              current_password: currentPassword,
+              new_password: newPassword,
+            },
+          }),
+        "Couldn’t change the password. Try again.",
+      ),
+    onSuccess: (status) => {
+      // Only the status cache, and deliberately NOT `sessionEstablished`: this
+      // browser was already signed in, its cached library data is still its
+      // own, and bumping the asset version would remount every <img> in the app
+      // for a change that touched no bytes. What DID change is
+      // `password_source`, which the panel itself renders.
       queryClient.setQueryData(AUTH_STATUS_KEY, status);
-      markAuthenticated();
-      // Whatever this browser cached belongs to a session that has been away;
-      // invalidating gives the shell fresh data, and the asset bump remounts
-      // every <img> whose bytes may have changed meanwhile. It also covers the
-      // gap a FRESH EventSource cannot: its catch-up only runs on a RE-connect
-      // (useEventStream's `connected` flag starts false), so a stream opened
-      // after sign-in replays nothing.
-      invalidateLibraryContent(queryClient);
-      bumpAssetVersion();
     },
   });
 }

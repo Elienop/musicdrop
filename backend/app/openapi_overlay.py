@@ -97,7 +97,7 @@ def _ensure_security_scheme(components: dict[str, object]) -> None:
     the credential"; ``http``/``bearer`` would describe an Authorization header
     this API never reads. Nothing generates code from it (openapi-typescript
     emits types, not a client), but it is what makes ``/docs`` say out loud
-    that the API is authenticated and which four operations are not.
+    that the API is authenticated and which five operations are not.
     """
     schemes = components.get("securitySchemes")
     if not isinstance(schemes, dict):

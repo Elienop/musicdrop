@@ -10,19 +10,27 @@ name — every near-miss below shares one.
 
 from __future__ import annotations
 
+import json
 import os
 import queue
+import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
 
+from app.auth.source import PASSWORD_HASH_FILENAME
 from app.host_guard import HostGuardMiddleware, host_allowed, resolve_allowed_hosts
 from app.main import app as real_app
+from tests.conftest import low_cost_stored_hash
 
 
 @pytest.mark.parametrize(
@@ -258,11 +266,16 @@ def test_prod_posture_rejects_testserver_and_honors_the_setting(tmp_path: Path) 
         "from starlette.testclient import TestClient\n"
         "from app.main import app\n"
         "from app.auth.session import SESSION_COOKIE_NAME, mint_session_token\n"
-        "from app.config import settings\n"
+        # The gate signs with the EFFECTIVE hash (env var, else the stored
+        # file), so the child mints under the same resolver rather than under
+        # settings.password_hash alone — otherwise a password-hash file left in
+        # whatever beets dir the child resolves would make every gated request
+        # 401 and this test would pass or fail for the wrong reason.
+        "from app.auth.source import effective_password\n"
         "secret = b'0123456789abcdef0123456789abcdef'\n"
         "app.state.session_secret = secret\n"
         "c = TestClient(app, cookies={SESSION_COOKIE_NAME:"
-        " mint_session_token(secret, settings.password_hash)})\n"
+        " mint_session_token(secret, effective_password()[0])})\n"
         "default = c.get('/api/health')\n"
         "named = c.get('/api/health', headers={'Host': 'music.example.test'})\n"
         "ip = c.get('/api/health', headers={'Host': '127.0.0.1:3030'})\n"
@@ -279,6 +292,10 @@ def test_prod_posture_rejects_testserver_and_honors_the_setting(tmp_path: Path) 
         **os.environ,
         "MUSICDROP_STATIC_DIR": str(dist),
         "MUSICDROP_ALLOWED_HOSTS": "Music.Example.Test",
+        # The child runs without conftest, so nothing pins the stored-hash
+        # file: aim MUSICDROP_BEETS_DIR at a throwaway dir so it cannot read
+        # (or be decided by) the one in the dev library `.env` points at.
+        "MUSICDROP_BEETS_DIR": str(tmp_path / "beets"),
         # Hermetic binding: the session token is signed with a key derived
         # from MUSICDROP_PASSWORD_HASH, and an env var beats backend/.env —
         # so an owner who sets a real hash locally cannot change what this
@@ -301,6 +318,109 @@ def test_prod_posture_rejects_testserver_and_honors_the_setting(tmp_path: Path) 
     assert lines[-1] == "('music.example.test',)"
 
 
+class _UvicornChild:
+    """A live ``uvicorn app.main:app`` process, with its output pumped to a queue.
+
+    Pumping on a thread rather than reading inline so a MISSING line fails on a
+    deadline instead of blocking forever in ``readline()`` once uvicorn goes
+    quiet. ``stderr`` is merged into ``stdout``: uvicorn's default config sends
+    its own records to stderr and the access log to stdout, and a test that
+    asks "what would the operator see in ``docker logs``?" wants both.
+    """
+
+    def __init__(self, proc: subprocess.Popen[str]) -> None:
+        self._proc = proc
+        self._queue: queue.Queue[str | None] = queue.Queue()
+        self.seen: list[str] = []
+        self._reader = threading.Thread(target=self._pump, daemon=True)
+        self._reader.start()
+
+    def _pump(self) -> None:
+        assert self._proc.stdout is not None
+        for line in self._proc.stdout:
+            self._queue.put(line)
+        self._queue.put(None)  # the child's output ended
+
+    def wait_for(self, needle: str, *, timeout: float = 60.0) -> str:
+        """The next output line containing ``needle``, or fail saying what came instead."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                line = self._queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            if line is None:  # child exited
+                break
+            self.seen.append(line)
+            if needle in line:
+                return line
+        raise AssertionError(f"no {needle!r} line in uvicorn output: {self.seen!r}")
+
+    def port(self) -> int:
+        """The port uvicorn actually bound, read back from its own startup line."""
+        line = self.wait_for("Uvicorn running on")
+        _, _, tail = line.partition("http://127.0.0.1:")
+        digits = tail.split()[0].strip().rstrip("/")
+        assert digits.isdigit(), line
+        return int(digits)
+
+    def close(self) -> None:
+        self._proc.terminate()
+        self._proc.wait(timeout=30)
+        self._reader.join(timeout=30)
+
+
+@contextmanager
+def _real_uvicorn(beets_dir: Path, *, static_dir: Path | None = None) -> Iterator[_UvicornChild]:
+    """Boot ``app.main:app`` under real uvicorn, exactly as the Dockerfile CMD does.
+
+    No ``--log-level`` and no ``--log-config``, because ``Dockerfile:61`` passes
+    neither: what these tests are for is the output an operator gets from the
+    SHIPPED command, and a flag here would be a configuration the container does
+    not have.
+    """
+    env = {
+        **os.environ,
+        "MUSICDROP_STATIC_DIR": str(static_dir) if static_dir else "",
+        "MUSICDROP_ALLOWED_HOSTS": "music.example.test",
+        # Real uvicorn runs the lifespan, which OPENS a beets library; aim it at
+        # a throwaway dir so the boot cannot touch the dev library `.env` points at.
+        "MUSICDROP_BEETS_DIR": str(beets_dir),
+        # Pin the auth clause's input rather than inheriting it: an env var
+        # beats `backend/.env`, so an owner who sets a real hash locally does
+        # not turn these assertions red.
+        "MUSICDROP_PASSWORD_HASH": "",
+    }
+    backend = Path(__file__).resolve().parents[1]
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "0"],
+        cwd=backend,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    child = _UvicornChild(proc)
+    try:
+        yield child
+    finally:
+        child.close()
+
+
+def _posture_line_under_real_uvicorn(tmp_path: Path, beets_dir: Path) -> str:
+    """Boot real uvicorn in PROD posture and return its ``security posture:`` line.
+
+    Shared by the two tests below, which differ only in what they seed into
+    ``beets_dir`` — the whole point of the second one is that the SAME emission
+    site has to report a configured server as well as an empty one.
+    """
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text('<!doctype html><div id="root"></div>')
+    with _real_uvicorn(beets_dir, static_dir=dist) as child:
+        return child.wait_for("security posture:")
+
+
 def test_posture_log_emits_under_real_uvicorn(tmp_path: Path) -> None:
     """The startup posture line must actually reach the operator's console.
 
@@ -314,73 +434,126 @@ def test_posture_log_emits_under_real_uvicorn(tmp_path: Path) -> None:
     Guards the whole diagnostic: with a wrong allowlist every request 400s, and
     this line is the only thing that says which posture and which names are live.
     """
-    dist = tmp_path / "dist"
-    (dist / "assets").mkdir(parents=True)
-    (dist / "index.html").write_text('<!doctype html><div id="root"></div>')
-    env = {
-        **os.environ,
-        "MUSICDROP_STATIC_DIR": str(dist),
-        "MUSICDROP_ALLOWED_HOSTS": "music.example.test",
-        # Real uvicorn runs the lifespan, which OPENS a beets library; aim it at
-        # a throwaway dir so the boot cannot touch the dev library `.env` points at.
-        "MUSICDROP_BEETS_DIR": str(tmp_path / "beets"),
-        # Pin the auth clause's input rather than inheriting it: an env var
-        # beats `backend/.env`, so an owner who sets a real hash locally does
-        # not turn this assertion red. Empty is also the state a fresh deploy
-        # boots in, which is the one worth pinning.
-        "MUSICDROP_PASSWORD_HASH": "",
-    }
-    backend = Path(__file__).resolve().parents[1]
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "app.main:app", "--port", "0", "--log-level", "info"],
-        cwd=backend,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    seen: list[str] = []
-    posture: str | None = None
-    # Pump on a thread so a MISSING line fails on the deadline instead of
-    # blocking forever in readline() once uvicorn goes quiet after startup.
-    lines: queue.Queue[str | None] = queue.Queue()
+    posture = _posture_line_under_real_uvicorn(tmp_path, tmp_path / "beets")
 
-    def _pump() -> None:
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            lines.put(line)
-        lines.put(None)
-
-    reader = threading.Thread(target=_pump, daemon=True)
-    reader.start()
-    try:
-        deadline = time.monotonic() + 60.0
-        while time.monotonic() < deadline:
-            try:
-                line = lines.get(timeout=1.0)
-            except queue.Empty:
-                continue
-            if line is None:  # child exited
-                break
-            seen.append(line)
-            if "security posture:" in line:
-                posture = line
-                break
-    finally:
-        proc.terminate()
-        proc.wait(timeout=30)
-        reader.join(timeout=30)
-    assert posture is not None, f"no posture line in uvicorn output: {seen!r}"
     assert "prod (static_dir set)" in posture
     assert "music.example.test" in posture
     assert "IP literals, localhost" in posture
-    # The auth clause, on the same line and through the same logger. The child
-    # inherits no MUSICDROP_PASSWORD_HASH, so this is the state a fresh deploy
-    # is in — an app that answers nothing until the operator sets one, which is
-    # exactly the case that must not boot silently.
+    # The auth clause, on the same line and through the same logger. The child's
+    # MUSICDROP_PASSWORD_HASH is empty and its beets dir is fresh, so this is the
+    # state a fresh deploy is in — an app that answers nothing until the operator
+    # sets one, which is exactly the case that must not boot silently.
     assert "NO password configured" in posture
     assert "MUSICDROP_PASSWORD_HASH" in posture
     # The cookie clause is a RULE, not a state: Secure is decided per request
     # from that request's scheme, so the line must not claim a boot-time value
     # an operator behind a TLS proxy would read as false.
     assert "session cookie: Secure on HTTPS requests, plain otherwise" in posture
+
+
+def test_the_posture_log_reports_a_CONFIGURED_server_too(tmp_path: Path) -> None:
+    """The return journey, at the emission site rather than in the helper.
+
+    ``auth_posture`` is pinned per state by unit tests, but until this existed
+    the ARGUMENT the boot line passes was not: replacing it with "nothing is
+    configured" left the whole suite green, so a server with a perfectly good
+    stored password could announce that every request would be rejected. This is
+    the only test that boots the module with a password in place.
+    """
+    beets_dir = tmp_path / "beets"
+    beets_dir.mkdir()
+    (beets_dir / PASSWORD_HASH_FILENAME).write_text(
+        low_cost_stored_hash("the operator's password") + "\n", encoding="utf-8"
+    )
+
+    posture = _posture_line_under_real_uvicorn(tmp_path, beets_dir)
+
+    assert "password configured from" in posture
+    assert str(beets_dir / PASSWORD_HASH_FILENAME) in posture
+    assert "NO password configured" not in posture
+
+
+#: ``socket.getaddrinfo`` as the stdlib defines it, captured at IMPORT time —
+#: which is before ``tests/conftest.py::_resolve_hosts_public`` (autouse) swaps
+#: in one that answers 93.184.216.34 for every host so the SSRF guard is inert.
+#: The test below is the suite's only one that opens a real socket, and under
+#: that stub its request to the child on 127.0.0.1 dialled a public address and
+#: timed out instead of failing on anything to do with logging.
+_REAL_GETADDRINFO = socket.getaddrinfo
+
+
+def _post_to_the_child(port: int, path: str, payload: dict[str, str], *, cookie: str = "") -> str:
+    """POST JSON over a real socket and return the session cookie it set.
+
+    ``urllib`` rather than ``TestClient``: the point of these two tests is what
+    a separate PROCESS writes to its own stderr, so the request has to leave
+    this one. No ``Origin`` header, which is what curl and the container
+    healthcheck send too, so the CSRF guard passes it through.
+    """
+    headers = {"content-type": "application/json"}
+    if cookie:
+        headers["cookie"] = cookie
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            assert response.status == 200, response.status
+            set_cookie: str = response.headers.get("set-cookie", "")
+            return set_cookie.split(";")[0]
+    except urllib.error.HTTPError as exc:  # pragma: no cover - a failing route
+        raise AssertionError(f"{path} answered {exc.code}: {exc.read()!r}") from exc
+
+
+def test_both_password_lines_reach_real_uvicorns_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Setup and change each write a levelled line to the process's own output.
+
+    README points an operator at these two lines, and no in-process test can
+    tell whether they arrive: ``caplog`` attaches a handler to the ROOT logger,
+    so a record from any logger name passes it. Under the shipped CMD
+    (``Dockerfile:61``, no log config) uvicorn's LOGGING_CONFIG configures only
+    its own loggers and leaves root at WARNING with no handler. Measured through
+    ``logging.getLogger(__name__)``: the setup WARNING reached stderr only via
+    ``logging.lastResort``, printed bare with no level to grep for, and the
+    change INFO did not appear at all.
+
+    So both go through ``uvicorn.error``, the way the boot posture line already
+    does, and this asserts the LEVEL as well as the sentence — the level marker
+    is what the bare last-resort spelling loses.
+    """
+    # Runs after the autouse stub and therefore wins, the way test_artwork_ssrf
+    # re-stubs it: without this, 127.0.0.1 resolves to a public address.
+    monkeypatch.setattr(socket, "getaddrinfo", _REAL_GETADDRINFO)
+    first, second = "the-first-password", "the-second-password"
+    beets_dir = tmp_path / "beets"
+    quoted_path = repr(str(beets_dir / PASSWORD_HASH_FILENAME))
+
+    with _real_uvicorn(beets_dir) as child:
+        port = child.port()
+        cookie = _post_to_the_child(port, "/api/auth/setup", {"password": first})
+        # Short deadlines: each POST has already answered 200 by now, so the
+        # record was written before the response left the child. A generous one
+        # would only make a regression take a minute to report.
+        setup_line = child.wait_for("first-run setup stored a password at", timeout=15.0)
+        _post_to_the_child(
+            port,
+            "/api/auth/password",
+            {"current_password": first, "new_password": second},
+            cookie=cookie,
+        )
+        change_line = child.wait_for("the stored password was changed at", timeout=15.0)
+
+    assert "WARNING" in setup_line, setup_line
+    assert quoted_path in setup_line, setup_line
+    # INFO, not WARNING: a change is an expected administrative action where
+    # setup is a one-way change of the instance's posture.
+    assert "INFO" in change_line, change_line
+    assert quoted_path in change_line, change_line
+    for line in (setup_line, change_line):
+        for secret in (first, second):
+            assert secret not in line, line

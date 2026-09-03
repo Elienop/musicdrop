@@ -18,6 +18,8 @@ const GATED_URL = `${window.location.origin}/api/health`;
 const LOGIN_URL = `${window.location.origin}/api/auth/login`;
 const STATUS_URL = `${window.location.origin}/api/auth/status`;
 const LOGOUT_URL = `${window.location.origin}/api/auth/logout`;
+const SETUP_URL = `${window.location.origin}/api/auth/setup`;
+const CHANGE_URL = `${window.location.origin}/api/auth/password`;
 const RAW_URL = `${window.location.origin}/api/albums/7/cover`;
 
 beforeEach(() => {
@@ -135,6 +137,50 @@ describe("client middleware — the exemption is the gate's, exactly", () => {
     expect(response.status).toBe(401);
     expect(error).toEqual({ detail: "Incorrect password." });
     expect(notified).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  test("first-run setup is exempt, so it cannot sign out the page creating the password", async () => {
+    // The third member of the set, and the one that would be pure decoration if
+    // it were not distinguishable: /api/auth/setup is gate-exempt server-side
+    // (a server with no password has no credential to hold a session with), so
+    // a 401 from it can only be a contract break — and acting on one would flip
+    // the store while the operator is halfway through setting their password.
+    server.use(
+      http.post(SETUP_URL, () =>
+        HttpResponse.json({ detail: "authentication required" }, { status: 401 }),
+      ),
+    );
+    const { notified, unsubscribe } = watchStore();
+
+    const { response } = await client.POST("/api/auth/setup", {
+      body: { password: "hunter2" },
+    });
+
+    expect(response.status).toBe(401);
+    expect(notified).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  test("changing the password is GATED, so its 401 flips the store", async () => {
+    // The other direction, and the reason /api/auth/password must stay OUT of
+    // the set: it is behind the gate, so its 401 means the session really is
+    // gone. Its "wrong current password" answer is a 403 precisely so that a
+    // typo can never arrive here looking like an expiry.
+    server.use(
+      http.post(CHANGE_URL, () =>
+        HttpResponse.json({ detail: "authentication required" }, { status: 401 }),
+      ),
+    );
+    const { notified, unsubscribe } = watchStore();
+
+    await expect(
+      client.POST("/api/auth/password", {
+        body: { current_password: "a", new_password: "b" },
+      }),
+    ).rejects.toBeInstanceOf(UnauthenticatedError);
+
+    expect(notified).toHaveBeenCalledTimes(1);
     unsubscribe();
   });
 

@@ -41,7 +41,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from fastapi import FastAPI, Request, Response
 from fastapi.encoders import jsonable_encoder
@@ -136,18 +136,65 @@ async def surrogate_safe_http_exception_handler(request: Request, exc: Exception
     return await http_exception_handler(request, safe)
 
 
+#: The key pydantic puts the REJECTED VALUE under in each 422 row, and the one
+#: key of a row that comes from the request rather than from the schema.
+_ECHOED_INPUT_KEY: Final = "input"
+
+
+def _without_the_echoed_input(errors: object) -> object:
+    """Each 422 row minus :data:`_ECHOED_INPUT_KEY`, leaving at least ``loc``/``msg``/``type``.
+
+    Dropped app-wide rather than for a named list of fields. Two of the routes
+    that take a body take a PASSWORD in it (``POST /api/auth/setup``,
+    ``POST /api/auth/password``), so a request that misses a field or sends one
+    with the wrong type had the plaintext read back to it in the response body —
+    and a list of secret field names is a list somebody has to remember to add
+    to.
+
+    What survives is ``loc``/``msg``/``type`` on every shape measured, plus
+    ``ctx`` on the rows where pydantic sets one: a malformed JSON body answers
+    with a ``json_invalid`` row whose ``ctx.error`` is the parser's own
+    complaint (measured: ``"Expecting ',' delimiter"``), and a validator's
+    ``ValueError`` gives a ``value_error`` row whose ``ctx.error`` renders as
+    ``{}`` — ``jsonable_encoder`` has no fields to take off the exception
+    object. Those three are the ``required`` list of the ``ValidationError``
+    component — the row schema ``HTTPValidationError.detail`` is an array of —
+    which declares five properties in all, ``input`` and ``ctx`` being its two
+    optional ones. So this narrows the body towards the required set rather than
+    outside the contract, and the frontend reads ``msg`` only
+    (``frontend/src/api/lib.ts::firstValidationMessage``).
+
+    This does not make a 422 body free of everything a client sent: ``loc``
+    names the offending field, and a validator that quotes the value in its own
+    message puts it in ``msg`` (measured: ``"Value error, blank name: '  '"``).
+    What it removes is the verbatim echo pydantic adds to each row by default.
+    """
+    if not isinstance(errors, list):
+        return errors
+    return [
+        {key: value for key, value in row.items() if key != _ECHOED_INPUT_KEY}
+        if isinstance(row, dict)
+        else row
+        for row in errors
+    ]
+
+
 async def surrogate_safe_validation_exception_handler(request: Request, exc: Exception) -> Response:
-    """FastAPI's own 422 handler, with the echoed input scrubbed first.
+    """FastAPI's own 422 handler, with the echoed input dropped and the rest scrubbed.
 
     A 422 body echoes the value that failed validation, and a client can put a
     lone surrogate there without sending a single non-ASCII byte: ``json.loads``
     accepts the escape ``"\\udce9"``. That echo is rendered by a plain
     ``JSONResponse``, so it needs the same treatment as an ``HTTPException``.
+
+    The echo itself now goes (:func:`_without_the_echoed_input`); the scrub stays
+    on what is left, because ``loc`` can carry a client-supplied key — pydantic
+    puts the offending key in it when the field being validated is a mapping.
     """
     if not isinstance(exc, RequestValidationError):
         raise exc
     safe = RequestValidationError(
-        scrub_content(jsonable_encoder(exc.errors())),
+        scrub_content(_without_the_echoed_input(jsonable_encoder(exc.errors()))),
         body=exc.body,
         endpoint_ctx=exc.endpoint_ctx,
     )

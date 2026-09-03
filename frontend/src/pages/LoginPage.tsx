@@ -1,11 +1,12 @@
 import { type SubmitEvent, useEffect, useRef, useState } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router";
 
-import { useAuthStatus, useLogin } from "@/api/auth";
+import { useAuthStatus, useLogin, useSetupPassword } from "@/api/auth";
 import { useSignedOut } from "@/api/authStore";
 import { ICON_WEIGHT, IconContext, Spinner, Warning } from "@/components/icons";
 import { LogoWordmark } from "@/components/shell/Logo";
 import { CopyableSnippet } from "@/components/system/CopyableSnippet";
+import { HiddenUsernameField } from "@/components/system/HiddenUsernameField";
 import { StatusBanner } from "@/components/system/StatusBanner";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,9 +18,11 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
-/** Generating a hash is the operator's step, and README §Authentication is the
- * source for both forms of the command — the container one first, since that
- * is how MusicDrop is meant to run. */
+/** Generating a hash by hand is the OVERRIDE path only — the env var beats the
+ * stored password, so this is what the operator needs when they are fixing a
+ * mangled `MUSICDROP_PASSWORD_HASH` rather than letting the app manage one.
+ * README §Authentication is the source for both forms of the command; the
+ * container one first, since that is how MusicDrop is meant to run. */
 const HASH_COMMANDS = `docker exec -it musicdrop python -m app.auth.hash_password
 # or, from a checkout:  cd backend && uv run python -m app.auth.hash_password`;
 
@@ -27,9 +30,35 @@ const HASH_COMMANDS = `docker exec -it musicdrop python -m app.auth.hash_passwor
  * Static, like the field's own id: this form is mounted once per page. */
 const ERROR_ID = "login-password-error";
 
+/** The setup form's own twin of ERROR_ID. Separate constant, not a shared one:
+ * the two forms are never mounted together, but an id reused across them would
+ * make that a fact nothing enforces. */
+const SETUP_ERROR_ID = "setup-password-error";
+
+/** Said by the setup form when the two fields disagree — client-side, because a
+ * mismatch costs a ~0.16 s scrypt derive to be told the same thing by the
+ * server, and the server is not even asked (it takes one password field). */
+const MISMATCH_MESSAGE = "The two passwords don’t match. Type them again.";
+
+/** What a re-check says when the request itself failed. Shared by all three
+ * "nobody can sign in" branches, which each offer the same button. */
+const UNREACHABLE_RECHECK =
+  "Couldn’t reach the server — it may still be restarting.";
+
+/** Said in the sign-in form after a 409 on setup: a password arrived from
+ * somewhere else while this page was open, so the card swapped itself for a
+ * form the operator did not ask for. Without it the likeliest next move is to
+ * type the password they just chose and be told it is incorrect. */
+const SUPERSEDED_MESSAGE =
+  "A password was set from elsewhere while this page was open. Sign in with that one.";
+
 /** What RouteAnnouncer would have written if this page were inside the shell.
- * Same `"<Page> - MusicDrop"` shape, so the tab reads consistently either way. */
+ * Same `"<Page> - MusicDrop"` shape, so the tab reads consistently either way.
+ * Two titles, because this card is two screens: the setup branch's only action
+ * is "Set password", and a tab reading "Sign in" over it asks the operator
+ * whether they already have a password. */
 const PAGE_TITLE = "Sign in - MusicDrop";
+const SETUP_PAGE_TITLE = "Set a password - MusicDrop";
 
 /** The query result this page branches on, threaded to the branch that needs
  * it. Taken from the hook rather than re-spelt as `UseQueryResult<AuthStatus>`
@@ -58,10 +87,16 @@ export function LoginPage() {
   // to a gated URL is bounced by the STATUS probe, which never touches the
   // store, so the two cases are distinguishable without a second flag.
   const returning = signedOut && location.state != null;
+  // The one branch whose action is not signing in. Derived from the same two
+  // fields `LoginCardBody` branches on, so the header cannot describe a
+  // different screen from the one below it.
+  const firstRun =
+    status.data?.password_set === false &&
+    status.data.password_source === "none";
 
   useEffect(() => {
-    document.title = PAGE_TITLE;
-  }, []);
+    document.title = firstRun ? SETUP_PAGE_TITLE : PAGE_TITLE;
+  }, [firstRun]);
 
   // Only a POSITIVE answer redirects — not `useAuthGateState`, which reports a
   // failed probe as "authenticated" so an outage doesn't strand the shell. On
@@ -92,10 +127,18 @@ export function LoginPage() {
                     it: the primitive keeps its slot and its type, and
                     preflight resets the heading's own size/weight/margin so
                     nothing moves. */}
-                <h2>Sign in</h2>
+                <h2>{firstRun ? "Set a password" : "Sign in"}</h2>
               </CardTitle>
+              {/* Branched here rather than answered with a second paragraph
+                  under the body: the two muted lines were typographically
+                  identical and read as one description with an odd gap in the
+                  middle, the second half restating the first. The env and file
+                  branches keep "Sign in" — their banners are about nobody
+                  being able to. */}
               <CardDescription>
-                MusicDrop is protected by a single password.
+                {firstRun
+                  ? "No password is set yet. Choose the one everyone will use to sign in to this server."
+                  : "MusicDrop is protected by a single password."}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -114,7 +157,7 @@ export function LoginPage() {
 
 /** The three states this card can be in, as early returns rather than a
  * nested ternary (typescript:S3358) — the probe is still deciding, the server
- * has no password to check against, or there is a form to fill in. */
+ * has no usable password to check against, or there is a form to fill in. */
 function LoginCardBody({
   status,
   destination,
@@ -124,13 +167,75 @@ function LoginCardBody({
   destination: string;
   returning: boolean;
 }>) {
+  // Held HERE, one level above both forms, because the fact it records is that
+  // the setup form was replaced by the sign-in form: state inside either one
+  // is unmounted by the very swap it exists to explain — and when the re-check
+  // that would swap them fails, the form that stays is the setup one, so both
+  // arms are handed the flag.
+  const [superseded, setSuperseded] = useState(false);
+
   if (status.isPending) {
     return <StatusProbePending />;
   }
   if (status.data?.password_set === false) {
-    return <NoPasswordConfigured status={status} />;
+    return (
+      <NoUsablePassword
+        status={status}
+        destination={destination}
+        superseded={superseded}
+        onSuperseded={() => setSuperseded(true)}
+      />
+    );
   }
-  return <SignInForm destination={destination} returning={returning} />;
+  return (
+    <SignInForm
+      destination={destination}
+      returning={returning}
+      superseded={superseded}
+    />
+  );
+}
+
+/**
+ * `password_set: false` means the EFFECTIVE hash does not parse, which is three
+ * different situations with three different fixes — and the backend keeps them
+ * apart in `password_source` precisely so this screen can stop guessing.
+ *
+ * * `"none"` — nothing is configured anywhere, so the fix is to set a password,
+ *   and that is a form on this page rather than a shell command and a restart.
+ * * `"env"` — `MUSICDROP_PASSWORD_HASH` is set to something unreadable. It wins
+ *   over the stored password even like this (owner's ruling), so setup is NOT
+ *   offered: a typo'd variable must not silently create a second credential
+ *   that the corrected variable would then shadow.
+ * * `"file"` — the stored hash is there and unreadable. Deleting it is the
+ *   recovery, and also the forgotten-password route.
+ */
+function NoUsablePassword({
+  status,
+  destination,
+  superseded,
+  onSuperseded,
+}: Readonly<{
+  status: AuthStatusQuery;
+  destination: string;
+  superseded: boolean;
+  onSuperseded: () => void;
+}>) {
+  const source = status.data?.password_source;
+  if (source === "env") {
+    return <UnreadableEnvHash status={status} />;
+  }
+  if (source === "file") {
+    return <UnreadableStoredHash status={status} />;
+  }
+  return (
+    <FirstRunSetup
+      status={status}
+      destination={destination}
+      superseded={superseded}
+      onSuperseded={onSuperseded}
+    />
+  );
 }
 
 /**
@@ -232,7 +337,12 @@ function StatusProbePending() {
 function SignInForm({
   destination,
   returning,
-}: Readonly<{ destination: string; returning: boolean }>) {
+  superseded,
+}: Readonly<{
+  destination: string;
+  returning: boolean;
+  superseded: boolean;
+}>) {
   const navigate = useNavigate();
   const login = useLogin();
   const [password, setPassword] = useState("");
@@ -268,6 +378,19 @@ function SignInForm({
           You’ve been signed out. Sign in again to continue.
         </p>
       )}
+      {superseded && (
+        // `<output>` IS role="status", and it is the native element for "the
+        // result of the thing you just did" — here, a Set password click the
+        // server answered 409. It is mounted with its text (the swap
+        // re-renders the whole branch), which some screen readers do not
+        // announce; the autoFocus below still lands the user in the field the
+        // sentence is about. Same choice as StatusProbePending and
+        // RecheckStatus below.
+        <output className="text-muted-foreground text-sm">
+          {SUPERSEDED_MESSAGE}
+        </output>
+      )}
+      <HiddenUsernameField />
       <div className="flex flex-col gap-1">
         <label htmlFor="login-password" className="text-sm font-medium">
           Password
@@ -312,17 +435,299 @@ function SignInForm({
   );
 }
 
-/** `password_set: false` covers both "MUSICDROP_PASSWORD_HASH is unset" and
- * "it is set to something unreadable" — the backend collapses them because the
- * operator's fix is identical, so the copy names that one fix rather than
- * guessing which happened. */
-function NoPasswordConfigured({
+
+/**
+ * First run: nothing is configured anywhere, so this screen sets the password
+ * instead of explaining how to.
+ *
+ * Two fields and no reveal toggle, matching the CLI this replaces
+ * (`app/auth/hash_password.py` prompts twice and refuses a mismatch): a typo in
+ * a single masked field locks the operator out of their own server until they
+ * delete a file and restart it, and the design system has no show/hide control
+ * to offer instead.
+ *
+ * A 409 is not shown as text HERE. It means a password was configured while
+ * this page was open — another browser, or the operator setting the env var —
+ * so the response is to re-ask the server, let the answer swap this whole
+ * branch for the sign-in form, and say what happened from over there (a
+ * sentence in a form that is about to unmount is one the user watches
+ * disappear).
+ */
+function FirstRunSetup({
+  status,
+  destination,
+  superseded,
+  onSuperseded,
+}: Readonly<{
+  status: AuthStatusQuery;
+  destination: string;
+  superseded: boolean;
+  onSuperseded: () => void;
+}>) {
+  const navigate = useNavigate();
+  const setup = useSetupPassword();
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  // The sentence currently on screen, and whether it is the one about the
+  // confirm field. Held rather than read off `setup.error`, which outlives the
+  // typing that answers it: a mismatch cleared by an edit uncovered the
+  // server's previous rejection, which then reappeared under the fields.
+  const [shown, setShown] = useState<
+    Readonly<{ message: string; mismatch: boolean }> | undefined
+  >(undefined);
+  const passwordRef = useRef<HTMLInputElement>(null);
+  const confirmRef = useRef<HTMLInputElement>(null);
+
+  // The mismatch is checked here rather than as the fields are typed: a "they
+  // don't match" that appears on the first keystroke of the second field is
+  // telling the user they are wrong before they have finished being right.
+  /** Drop the sentence if it is the mismatch: editing either half of the pair
+   * answers the one sentence that is about the pair. A rejection the server
+   * wrote is about the request, so typing does not answer it — it goes on the
+   * next submit. */
+  function clearMismatch() {
+    setShown((error) => (error?.mismatch === true ? undefined : error));
+  }
+
+  function handleSubmit(event: SubmitEvent<HTMLFormElement>) {
+    event.preventDefault();
+    // Cleared before the new outcome is decided, so the answer to THIS submit
+    // is the only sentence on screen and the only field marked is the one it
+    // is about.
+    setShown(undefined);
+    if (password !== confirm) {
+      setShown({ message: MISMATCH_MESSAGE, mismatch: true });
+      confirmRef.current?.focus();
+      confirmRef.current?.select();
+      return;
+    }
+    setup.mutate(password, {
+      onSuccess: () => {
+        void navigate(destination, { replace: true });
+      },
+      onError: (error) => {
+        if (error.status === 409) {
+          // Re-ask, and hand the account of it to the form that replaces this
+          // one. The refetch usually answers `password_set: true`, and
+          // LoginCardBody swaps this branch for the sign-in form — which is
+          // the thing the operator now needs, and the only screen that can act
+          // on a password someone else just set. The 409's own sentence is not
+          // rendered: `superseded` says the same fact in the words of what
+          // happened here, in whichever form is on screen when it lands.
+          onSuperseded();
+          void status.refetch();
+        } else {
+          setShown({ message: error.message, mismatch: false });
+        }
+        // Submitting disabled the button, which drops focus to <body>. Every
+        // answer that leaves this form mounted announces itself to a user
+        // whose focus is nowhere, so put it back — including a 409 whose
+        // re-check fails, which leaves this branch exactly where it was. No
+        // `select()`: unlike a wrong password, none of these says the typed
+        // value is the problem. Measured answers that land here: 422, 429 and
+        // 503 from the route, and a request with no answer at all; the
+        // middleware can also refuse a POST before the route sees it.
+        passwordRef.current?.focus();
+      },
+    });
+  }
+
+  return (
+    // The card header carries what this branch is (see LoginPage): a second
+    // muted paragraph here said the same thing twice, in the same type, 12px
+    // below the description.
+    <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+      {superseded && (
+        // Also HERE, not only in the sign-in form: the re-check behind a 409
+        // can itself fail — a server mid-restart is the usual reason a 409
+        // arrives — and then the cache still says `password_set: false`, this
+        // branch stays mounted, and the click had changed nothing on screen.
+        // The two are never mounted together: this form and the sign-in form
+        // are the two arms of one branch.
+        <output className="text-muted-foreground text-sm">
+          {SUPERSEDED_MESSAGE}
+        </output>
+      )}
+      <HiddenUsernameField />
+      <div className="flex flex-col gap-1">
+        <label htmlFor="setup-password" className="text-sm font-medium">
+          Password
+        </label>
+        <Input
+          id="setup-password"
+          type="password"
+          // `new-password`, not `current-password`: nothing is saved for this
+          // server yet, so a manager should offer to generate and store one
+          // rather than autofill an entry that cannot exist.
+          autoComplete="new-password"
+          autoFocus
+          required
+          ref={passwordRef}
+          // No `aria-invalid` and no `aria-describedby`: nothing this form can
+          // say is about the value in THIS field on its own. The mismatch is
+          // answered by retyping the confirmation, and the server's rejections
+          // are about the request or the server's state — marking this field
+          // for them told a screen-reader user its contents were the problem.
+          value={password}
+          onChange={(e) => {
+            // Clear on edit, from EITHER half: the mismatch was about the pair
+            // as it stood at submit, and retyping the first field is the
+            // likelier correction of the two.
+            clearMismatch();
+            setPassword(e.target.value);
+          }}
+        />
+      </div>
+      <div className="flex flex-col gap-1">
+        <label htmlFor="setup-password-confirm" className="text-sm font-medium">
+          Confirm password
+        </label>
+        <Input
+          id="setup-password-confirm"
+          type="password"
+          autoComplete="new-password"
+          required
+          ref={confirmRef}
+          // The MISMATCH only, and this field only: it is the one whose value
+          // is wrong relative to the first, and the field "type them again"
+          // sends the caret to. The server's rejections are about the request
+          // or about the server's state, so they are said in the alert and
+          // point at no field — the rule the Account panel's form follows too.
+          aria-invalid={shown?.mismatch === true}
+          aria-describedby={shown?.mismatch === true ? SETUP_ERROR_ID : undefined}
+          value={confirm}
+          onChange={(e) => {
+            clearMismatch();
+            setConfirm(e.target.value);
+          }}
+        />
+      </div>
+      {/* The server authors every rejection it sends — a blank password
+          (422), a data directory it cannot write (503), a derive already
+          running (429) — and each names its own cause, so they are rendered
+          verbatim rather than re-worded here. The one sentence written on
+          this side is the mismatch, which the server never sees. */}
+      {shown !== undefined && (
+        <p id={SETUP_ERROR_ID} className="text-destructive text-sm" role="alert">
+          {shown.message}
+        </p>
+      )}
+      <Button type="submit" disabled={setup.isPending}>
+        {setup.isPending && (
+          <Spinner className="size-4 animate-spin" aria-hidden="true" />
+        )}
+        {setup.isPending ? "Setting password…" : "Set password"}
+      </Button>
+    </form>
+  );
+}
+
+/**
+ * `MUSICDROP_PASSWORD_HASH` is set to something that does not parse.
+ *
+ * No setup form here, and that is the owner's ruling rather than an oversight:
+ * the env var wins over the stored password whether or not its value can be
+ * read, so offering setup on a typo'd variable would create a second credential
+ * that the corrected variable then shadows — the operator would set a password,
+ * fix the variable, and find the password gone.
+ *
+ * The compose sentence is the second half of the copy because it is the
+ * measured way this state is reached: docker-compose interpolates a single `$`
+ * that is followed by a letter, a digit or `_`, so a hash pasted straight from
+ * the CLI usually arrives shorter than it left — 11 of 12 real hashes in the
+ * probe behind this branch. The
+ * backend says the same thing on its own 401
+ * (`app/api/auth.py::_UNREADABLE_ENV_HASH_DETAIL`); this screen has to say it
+ * itself because this branch makes no request that could carry it.
+ */
+function UnreadableEnvHash({ status }: Readonly<{ status: AuthStatusQuery }>) {
+  return (
+    <div className="flex flex-col gap-4">
+      <StatusBanner tone="warning" icon={Warning}>
+        <code className="font-mono">MUSICDROP_PASSWORD_HASH</code> is set on
+        this server, but its value is not a password hash MusicDrop can read, so
+        nobody can sign in. In docker-compose, every{" "}
+        <code className="font-mono">$</code> in the hash must be doubled to{" "}
+        <code className="font-mono">$$</code>.
+      </StatusBanner>
+      {/* The rest of the fix travels with the command it needs, in the
+          snippet's own children slot (the shape SlskdPanel already uses):
+          the banner said "fix or unset it" and the block said "generate",
+          with nothing saying that fixing MEANS generating a fresh hash and
+          pasting it back with doubled dollars.
+
+          Both outcomes of unsetting, because this screen cannot tell them
+          apart: status reports `password_source: "env"` and says nothing
+          about a stored password shadowed behind the variable. Measured on a
+          server that had both — after unsetting, the stored one took over and
+          the sign-in screen asked for it. */}
+      <CopyableSnippet label="Generate a password hash" snippet={HASH_COMMANDS}>
+        <p className="text-muted-foreground text-sm">
+          Generate a fresh hash with the command below and paste it into the
+          variable, then restart MusicDrop. Or unset the variable and restart:
+          if a password is stored on this server it applies again, otherwise
+          this screen sets a new one.
+        </p>
+      </CopyableSnippet>
+      <RecheckStatus
+        status={status}
+        unchanged="The hash in MUSICDROP_PASSWORD_HASH is still unreadable."
+      />
+    </div>
+  );
+}
+
+/**
+ * The stored hash exists and does not parse — a truncated write, a file edited
+ * by hand, a half-copied backup.
+ *
+ * Deleting it is the recovery, and deliberately the only one offered: the
+ * server refuses to overwrite a file it cannot read (`app/auth/source.py`),
+ * because "unreadable" and "absent" would otherwise be the same state to this
+ * screen and a corrupt file would silently re-open setup. This is also the
+ * forgotten-password route, which is why the Settings panel's description says
+ * the same thing.
+ *
+ * No path is printed. The file lives under whatever `MUSICDROP_BEETS_DIR` is
+ * set to, which this screen is never told, and a plausible-looking wrong path
+ * is worse than a named directory.
+ */
+function UnreadableStoredHash({
   status,
 }: Readonly<{ status: AuthStatusQuery }>) {
-  // What the LAST re-check found, or null before the first one. The answer
-  // that would change anything (a password now configured) swaps this whole
-  // branch for the form, so anything recorded here is by definition "no
-  // change" — see handleRecheck.
+  return (
+    <div className="flex flex-col gap-4">
+      <StatusBanner tone="warning" icon={Warning}>
+        The password stored on this server is not readable, so nobody can sign
+        in. Delete the <code className="font-mono">password-hash</code> file in
+        MusicDrop’s beets directory and restart MusicDrop — this screen will then
+        set a new password.
+      </StatusBanner>
+      <RecheckStatus
+        status={status}
+        unchanged="The stored password is still unreadable."
+      />
+    </div>
+  );
+}
+
+/**
+ * The "ask the server again" affordance, shared by all three branches above.
+ *
+ * Every one of them ends in "restart MusicDrop" or "someone else may have set
+ * one", so the likeliest moment for this click is mid-restart — when a silent
+ * re-check that changes nothing is indistinguishable from a dead button. The
+ * answer that WOULD change something (a usable password) swaps the whole branch
+ * for the sign-in form, so anything this records is by definition "no change",
+ * and each branch passes its own wording for what did not change.
+ *
+ * `refetch` leaves `isPending` false (v5: initial load only), so the spinner has
+ * to read `isFetching`.
+ */
+function RecheckStatus({
+  status,
+  unchanged,
+}: Readonly<{ status: AuthStatusQuery; unchanged: string }>) {
   const [recheck, setRecheck] = useState<null | "unchanged" | "unreachable">(
     null,
   );
@@ -334,17 +739,7 @@ function NoPasswordConfigured({
   }
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* A warning, in the system's shape for one. It was muted prose wearing
-          role="alert" — the tone said "aside", the role said "interrupt", and
-          nothing on this server works until it is dealt with. */}
-      <StatusBanner tone="warning" icon={Warning}>
-        No password is configured on this server, so nobody can sign in yet.
-        Generate a hash, set it as{" "}
-        <code className="font-mono">MUSICDROP_PASSWORD_HASH</code>, and restart
-        MusicDrop.
-      </StatusBanner>
-      <CopyableSnippet label="Generate a password hash" snippet={HASH_COMMANDS} />
+    <>
       {recheck !== null && (
         // `<output>` IS role="status" (same polite live region), and it is the
         // native element for "the result of the thing you just did" — which is
@@ -352,16 +747,9 @@ function NoPasswordConfigured({
         // inline, but a flex container blockifies every child, so it lays out
         // as the block <p> did. StatusProbePending above is the same choice.
         <output className="text-muted-foreground text-sm">
-          {recheck === "unreachable"
-            ? "Couldn’t reach the server — it may still be restarting."
-            : "Still no password configured."}
+          {recheck === "unreachable" ? UNREACHABLE_RECHECK : unchanged}
         </output>
       )}
-      {/* The copy above asks the operator to restart MusicDrop, so the likeliest
-          moment for this click is mid-restart — when a silent re-check that
-          changes nothing is indistinguishable from a dead button. `refetch`
-          leaves `isPending` false (v5: initial load only), so the spinner has
-          to read `isFetching`. */}
       <Button
         type="button"
         variant="outline"
@@ -373,6 +761,6 @@ function NoPasswordConfigured({
         )}
         {status.isFetching ? "Checking…" : "Check again"}
       </Button>
-    </div>
+    </>
   );
 }

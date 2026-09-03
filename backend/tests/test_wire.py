@@ -193,6 +193,76 @@ def test_every_api_route_resolves_to_the_safe_response_class() -> None:
     assert classes == {SurrogateSafeJSONResponse}, classes
 
 
+def test_a_validation_422_does_not_echo_what_the_client_sent() -> None:
+    """No row carries ``input`` — the schema's words, not the client's value.
+
+    App-wide rather than per-route, because two of the routes that take a body
+    take a PASSWORD in it and a list of secret field names is a list somebody
+    has to remember to add to. ``loc``/``msg``/``type`` are the ``required``
+    list of the generated ``ValidationError`` row schema, so the body stays
+    inside the contract; ``input`` is a declared but optional property of the
+    same schema, which is why dropping it does not break it.
+
+    Asserted as "at least those three, and no ``input``" rather than as an exact
+    key set: a malformed JSON body (the second case below) also carries ``ctx``,
+    so ``set(row) == {...}`` was true only of the shape the first case happens to
+    produce.
+
+    ``/api/trash/restore`` stands in for "any route with a Pydantic body": the
+    marker below is an ordinary string in an ordinary field, and the point is
+    that no field is special.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    marker = "a-value-the-client-sent-marker"
+    resp = TestClient(app).post("/api/trash/restore", json={"folder": {"nested": marker}})
+
+    assert resp.status_code == 422, resp.text
+    assert marker not in resp.text
+    rows = resp.json()["detail"]
+    assert rows, "a validation 422 names at least one bad field"
+    for row in rows:
+        assert "input" not in row, row
+        assert {"loc", "msg", "type"} <= set(row), row
+
+
+def test_a_malformed_JSON_body_keeps_its_ctx_and_still_drops_the_echo() -> None:
+    """The second row shape, which is why the assertion above is not an equality.
+
+    An unparseable body never reaches a field validator, so pydantic answers
+    with one ``json_invalid`` row that carries a fourth key, ``ctx`` — the
+    parser's own complaint about where the JSON stopped making sense, not the
+    bytes the client sent. The strip has nothing to remove here and must leave
+    the row alone.
+
+    Sent to ``POST /api/auth/setup`` on purpose: it is the route whose body is a
+    password, so this is the shape where an echo would cost the most.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    marker = "a-value-the-client-sent-marker"
+    resp = TestClient(app).post(
+        "/api/auth/setup",
+        content=f'{{"password": "{marker}"',
+        headers={"content-type": "application/json"},
+    )
+
+    assert resp.status_code == 422, resp.text
+    assert marker not in resp.text
+    (row,) = resp.json()["detail"]
+    assert row["type"] == "json_invalid"
+    assert "input" not in row, row
+    assert {"loc", "msg", "type"} <= set(row), row
+    # Named before it is indexed, so a strip that took ``ctx`` too fails as an
+    # assertion about the row rather than as a KeyError three lines later.
+    assert "ctx" in row, row
+    assert set(row["ctx"]) == {"error"}, row
+
+
 # ----- resolve_display_path (the inverse, for names the client sends back) -----
 
 

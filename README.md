@@ -160,7 +160,7 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 - **Acquisition (slskd)** — completed slskd downloads land in a watched inbox (webhook-driven) and queue into the import pipeline; a unified **Review** page is the one home for import decisions and inbox backlog.
 - **Faceted Browse** — slice the library by genre · decade · format · type · media · country · source · lyrics coverage, sorted A–Z or recently added.
 - **Live updates** — library changes stream to every open tab (SSE), no manual refresh.
-- **Sign-in** — a single-password login screen, a 30-day session cookie, and a **Sign out** control in the top bar. Before a password hash is configured, the same screen is a setup notice naming the env var and the command that generates one — see [Authentication](#authentication).
+- **Sign-in** — a single-password login screen, a 30-day session cookie, and a **Sign out** control in the top bar. On a fresh install the same screen is the **setup form** that creates the password; change it later under **Settings → Account** — see [Authentication](#authentication).
 - **Dark, art-forward UI** — violet-accented dark theme, dissolving detail rails, Koito-inspired row cards, a two-font type system (League Spartan display face), and the original MusicDrop logo re-colored onto the design tokens.
 
 **Planned** — deemix acquisition adapter.
@@ -216,45 +216,24 @@ The same goes for server-to-server callers — a proxy that rewrites `Host` to a
 MusicDrop has a **single account**, protected by one password. Every `/api/*` request — and
 `/docs`, `/redoc`, `/openapi.json` — is refused with a `401` unless the browser holds a valid
 session cookie. The only exceptions are the container healthcheck (`/api/health`), the slskd
-webhook (which carries its own shared secret), and the two sign-in endpoints themselves.
+webhook (which carries its own shared secret), and the three sign-in endpoints themselves —
+first-run setup, sign-in, and the status check the sign-in screen asks first.
 
-**Until you set a password, nothing is reachable.** That is deliberate — there is no
-"unprotected by default" mode. On a fresh install the browser lands on a **setup screen** instead
-of the sign-in form: it names the env var to set (`MUSICDROP_PASSWORD_HASH`), shows the command
-that generates a hash, and offers **Check again** so you can restart the container and recheck
-without reloading the page. The command block comes with a **Copy** button *when the browser will
-allow one* — clipboard access needs a secure page, meaning HTTPS or `localhost`, so on a plain-HTTP
-LAN address the button is replaced by a line telling you to select the text instead. The command
-wraps rather than scrolling, so it is fully visible either way. The startup log says the same thing
-on one line:
+**Until a password exists, the only page a visitor can reach is the setup form — and it hands
+the account to whoever submits it first.** That is deliberate — there is no "unprotected by
+default" mode, and no setup token to present either — so bring the app up behind a firewall (the
+LAN it is built for), or set `MUSICDROP_PASSWORD_HASH` (below) before the first boot if the port
+is reachable by strangers. On a fresh install the browser lands on that **setup form** instead
+of the sign-in form: choose a password, confirm it, and you are signed in. There is no username,
+no length rule and no e-mail; an empty (or whitespace-only) password is refused, the same rule
+the `hash_password` command applies. What gets stored is a scrypt hash, not the password:
+`data/beets/password-hash`, mode `0600`, written atomically beside `session-secret`. The
+startup log says which state the server is in, on one line — its `auth:` clause reads
+`NO password configured` until setup runs, points at the setup form, and names
+`MUSICDROP_PASSWORD_HASH` as the override (below); once a password exists it says where the
+password came from, the file or the environment.
 
-```
-security posture: prod (static_dir set); …; auth: NO password configured, so every gated API
-request will be rejected until MUSICDROP_PASSWORD_HASH is set
-```
-
-Set it in two steps. First generate a hash — **never put the plaintext password in an env var**,
-which is why MusicDrop has no setting for one:
-
-```bash
-docker exec -it musicdrop python -m app.auth.hash_password
-# or, from a checkout:  cd backend && uv run python -m app.auth.hash_password
-```
-
-It prompts twice (hidden — nothing reaches your shell history) and prints a self-describing
-scrypt string like `scrypt$131072$8$1$vIfqnSPZ…$bTMGckBk…`. Put it in your compose file and
-restart:
-
-```yaml
-    environment:
-      # Every $ DOUBLED: compose expands a single $ as a variable reference.
-      - MUSICDROP_PASSWORD_HASH=scrypt$$131072$$8$$1$$vIfqnSPZ…$$bTMGckBk…
-```
-
-The doubling is only a `docker-compose.yml` quirk. In an `.env` file, an `env_file:`, or a plain
-`docker run -e`, paste the value exactly as printed.
-
-With a hash set, MusicDrop opens on a **sign-in screen** — one password field, no username, and
+With a password set, MusicDrop opens on a **sign-in screen** — one password field, no username, and
 it is the only page an unauthenticated visitor can reach. Signing in sets a cookie that lasts
 **30 days**, survives container restarts, and is `HttpOnly` + `SameSite=Lax`; you land on
 whichever page you originally asked for rather than being dropped on the Overview. If the server
@@ -264,11 +243,98 @@ already in flight — rather than failing blankly.
 **Sign out** is in the top bar, beside the activity indicator, at every window width; it clears
 the cookie in that browser.
 
-**Changing the password signs every session out, everywhere.** The cookie is signed with a key
-derived from `MUSICDROP_PASSWORD_HASH`, so setting a new hash and restarting invalidates every
-outstanding cookie — which is what you want if a password ever leaks, and worth knowing before
-you rotate one casually. Deleting `data/beets/session-secret` and restarting does the same
-thing without changing the password.
+**Changing the password** is under **Settings → Account**: current password, new password,
+confirm. A wrong current password is refused and nothing changes. Saving rewrites
+`password-hash`, keeps the browser you did it from signed in, and signs every other browser out
+(see below).
+
+**Forgot it?** There is no reset link, deliberately — nothing to e-mail and nothing to guess.
+Remove the hash file and restart MusicDrop; the sign-in screen is the setup form again. The same
+recovery covers a hash MusicDrop cannot read: whatever is at that path counts as a password that
+is present, and if it cannot be read as a hash, sign-in is refused and the setup form stays hidden
+until it is fixed or removed. Two ways to do the same thing, depending on which side of the bind
+mount you are standing on:
+
+```bash
+# through the container:
+docker exec musicdrop rm /data/beets/password-hash && docker compose restart musicdrop
+# or on the host side of the ./data bind mount:
+rm ./data/beets/password-hash && docker compose restart musicdrop
+```
+
+A directory at that path needs `rm -r`; plain `rm` stops at a directory.
+
+Restart as well, for two reasons: the startup line reports the password source at boot and
+not again, and a container start is also when the entrypoint re-owns everything under `/data`
+(what a root `docker exec` leaves behind there is recorded as unverified in `BACKLOG.md`).
+Setting the new password writes a new hash, which signs every other browser out — the paragraph
+after next says why. Deleting that file *is* the reset, so it is as protected as the data
+directory it lives in, which already holds the library. Both forms write a line to the container
+log when they store a password, in the same stream as uvicorn's own startup lines — the setup
+form at `WARNING` and **Settings → Account** at `INFO`, each naming the file — so if the setup
+form was ever used by someone who was not you, the log says so.
+
+#### Overriding the password from the environment
+
+`MUSICDROP_PASSWORD_HASH` is the other way to set the password, and the older one. A non-empty
+value there **wins over the file** and hides both the setup form and the change-password form —
+**Settings → Account** shows a notice explaining the override instead. It stays for two reasons:
+as a recovery lever (regain access without deleting anything, then decide), and for operators
+who would rather keep the credential in their deployment config — which also keeps it outside
+the data volume. With the file as the source, losing the data directory loses the password with
+it (a bind mount that comes up empty, a restore that misses the file), and the instance is
+claimable again through the setup form until someone runs it; the override is the way to keep
+the credential somewhere the data volume cannot take it. The two sources do not merge:
+nothing copies the env var into the file, and a file written earlier is shadowed while the
+override is set — unset it and restart, and that file is the password again (or, with no file,
+the setup form is back).
+
+Generate the hash first — **never put the plaintext password in an env var**, which is why
+MusicDrop has no setting for one:
+
+```bash
+docker exec -it musicdrop python -m app.auth.hash_password
+# or, from a checkout:  cd backend && uv run python -m app.auth.hash_password
+```
+
+It prompts twice (hidden — nothing reaches your shell history) and prints a self-describing
+scrypt string like `scrypt$131072$8$1$vIfqnSPZ…$bTMGckBk…`, followed by the same value with
+every `$` doubled, labelled as the compose form. Put that one in your compose file and restart:
+
+```yaml
+    environment:
+      # Every $ DOUBLED: compose reads a $ before a letter or _ as a variable reference.
+      - MUSICDROP_PASSWORD_HASH=scrypt$$131072$$8$$1$$vIfqnSPZ…$$bTMGckBk…
+```
+
+The doubling is only a `docker-compose.yml` quirk. In an `.env` file, an `env_file:`, or a plain
+`docker run -e`, paste the value exactly as printed.
+
+**The override wins even when its value is unreadable.** A hash that compose has mangled is
+still a set override. With the `$` left single, compose treats a `$` followed by a letter or
+underscore as a variable reference and swallows the name, up to the first character that is not
+a letter, digit or underscore; a `$` before a digit is kept, so `$131072$8$1` and the base64 `=`
+padding survive, and whichever of the salt and digest start with a letter lose their leading run.
+Measured with Compose 5.5.0 on a hash the generator printed:
+`scrypt$131072$8$1$5SpsLX…sA==$xLM5OQ…PsE=` arrived as `scrypt$131072$8$1$5SpsLX…sA===` — the
+digit-led salt intact, the letter-led digest reduced to its `=` — and `docker compose config` had
+warned that *the "xLM5OQ…PsE" variable is not set*. Once in a while both fields happen to start
+with a digit or a symbol, the raw value arrives intact and works, and the trap is hidden rather
+than removed; usually what arrives no longer parses — the incident this feature came out of —
+and then sign-in is refused, the setup form stays hidden, and the refusal names the `$$` rule —
+as does the startup line, which reads `MUSICDROP_PASSWORD_HASH is set but UNREADABLE`. That is
+a deliberate asymmetry with the Plex and slskd settings, where a saved file beats its seed env
+var: a typo in the override falling through to the setup form would create a second password
+that the corrected env var later shadows, and a lockout lever that can be shadowed is not one.
+Fix the value or remove it; the refusal message says the same.
+
+**Changing the password signs every other session out, everywhere.** The cookie is signed with a
+key derived from the password hash — the file's or the environment's, whichever is in effect —
+so a new hash invalidates every outstanding cookie. The change-password form re-issues the cookie
+of the browser that submitted it and no other; a new `MUSICDROP_PASSWORD_HASH` plus a restart
+re-issues none, so every browser signs in again. Which is what you want if a password ever leaks,
+and worth knowing before you rotate one casually. Deleting `data/beets/session-secret` and
+restarting does the same thing without changing the password.
 
 The one thing you cannot do is revoke a *single* session early: **Sign out** expires the cookie
 in the browser, but the token itself stays valid until it expires or until you rotate one of the
@@ -329,6 +395,7 @@ MusicDrop has no built-in backup, deliberately: its state is plain files under t
 - `data/beets/playlists/*.json` and `data/beets/playlists/artwork/` — MusicDrop owns playlists; Plex is a push target, not a copy.
 - `<music>/.playlists/*.m3u8` — the Plex-readable exports. Rewritten only when a playlist changes, never rebuilt wholesale, so the music tree's restore is what covers them; `MUSICDROP_PLAYLISTS_EXPORT_DIR` takes them out of it — snapshot that path too.
 - `data/beets/plex/plex.json`, `data/beets/slskd/slskd.json` — the Plex and slskd integration settings, mode `0600`. Not just tokens: Plex's library path/section, slskd's downloads prefix and its `auto_import` toggle (lose that and unattended import reverts to its env default, off).
+- `data/beets/password-hash` — the single account's password, as a scrypt hash, mode `0600`, written by the setup form and by **Settings → Account**. Absent, the sign-in screen is the setup form again (that is also the forgotten-password recovery, so a backup without it costs a re-setup, not the library); present but unreadable — whatever sits at that path, if MusicDrop cannot read it as a hash — sign-in is refused and the setup form stays hidden until it is fixed or removed. While `MUSICDROP_PASSWORD_HASH` is set the override wins and this file is shadowed, whatever it holds.
 - `<inbox>/.musicdrop-ledger.json` — the handled-drops record. Defaults to `<beets_dir>/inbox`, inside `/data`; `MUSICDROP_INBOX_DIR` moves it onto the slskd downloads mount — the table's third row.
 - `data/beets/trash/` — deleted albums live here and nowhere else until you empty the Trash; normally the only GB-scale item under `data/`.
 - `data/beets/trash-origins/*.json` — where each trashed folder came from, one tiny file per Trash entry (two entry names long enough to share a shortened key share one file; the loser falls back to the approximate restore). Nothing else records it: restore the Trash without these and every row falls back to the approximate restore, which for an art/booklet leftover with no audio means no way back at all. `MUSICDROP_TRASH_ORIGINS_DIR` moves them. A backup that leaves this folder ABSENT is fine — the next delete creates it, exactly as a fresh install does. One restored with permissions the container's user cannot read or write is not: deletes are refused with a 503 until it is fixed (see **Delete & Trash** above).
@@ -342,7 +409,7 @@ Those are the shipped image's paths (`MUSICDROP_BEETS_DIR=/data/beets`, `MUSICDR
 - `data/cache/artist-images/*.bin` · `*.mime` · `*.miss` — the auto-fetch cache and its negative markers, refetched on demand.
 - `data/cache/artist-images/*.thumb.bin` · `*.thumb.src` — the 320px WebP portraits the grids and rosters render, re-derived from the `*.override` or `*.bin` beside them the moment the sidecar's source tag stops matching.
 - `data/cache/cover-thumbs/` — the same derivation for album covers (`MUSICDROP_COVER_THUMB_CACHE_DIR=/data/cache/cover-thumbs` in the shipped image). Nothing authoritative is here at all: unlike the artist cache this one never owns an original — every cover it thumbnails lives in the music tree, as an art file or an embedded tag. Delete the whole directory and the next page view rebuilds what it needs.
-- `data/beets/session-secret` — the key your session cookie is signed with, mode `0600`. Restoring it keeps you signed in across the restore; losing it just means signing in again on the next visit, which is also how you revoke every outstanding session on purpose. It is *not* your password — that lives only in `MUSICDROP_PASSWORD_HASH`, so a snapshot with no `session-secret` still lets you in.
+- `data/beets/session-secret` — the key your session cookie is signed with, mode `0600`. Restoring it keeps you signed in across the restore; losing it just means signing in again on the next visit, which is also how you revoke every outstanding session on purpose. It is *not* your password — that is `password-hash` above, or `MUSICDROP_PASSWORD_HASH` — so a snapshot with no `session-secret` still lets you in.
 - import, backfill and sweep jobs — in memory only; they don't survive a restart anyway.
 
 **Snapshot consistency**

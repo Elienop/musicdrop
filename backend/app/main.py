@@ -37,7 +37,7 @@ from app.artwork.filler import ArtistImageFiller
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
 from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
-from app.auth.gate import SessionGateMiddleware, auth_posture
+from app.auth.gate import SessionGateMiddleware, boot_auth_posture
 from app.auth.session import load_or_create_session_secret, session_secret_path
 from app.bank.store import reconcile_interrupted
 from app.beets.library import LibraryHandle, close_library
@@ -316,7 +316,7 @@ class App(FastAPI):
     is idempotent on repeat calls.
 
     It never touches a declared RESPONSE entry or any 422. It does set
-    ``security`` unconditionally — ``[]`` on the four gate-exempt operations,
+    ``security`` unconditionally — ``[]`` on the five gate-exempt operations,
     and the document-wide requirement at the top level — because that is a fact
     about the middleware rather than a description a route could know better.
     """
@@ -444,10 +444,19 @@ logging.getLogger("uvicorn.error").info(
     ", ".join(extra_origins) or "none",
     "".join(f", {name}" for name in allowed_hosts),
     # The auth clause is the difference between a locked deployment and one
-    # that refuses everything: an unset (or unreadable) MUSICDROP_PASSWORD_HASH
-    # is indistinguishable from a working one until the first login fails, and
-    # this line is the only place it is ever said out loud.
-    auth_posture(settings.password_hash),
+    # that refuses everything: an unset (or unreadable) password hash is
+    # indistinguishable from a working one until the first login fails, and this
+    # line is the only place it is ever said out loud. It reports the SOURCE
+    # too, because with two of them (env var, stored file) an operator who
+    # removed the compose line has to be told the stored one is still there.
+    # Resolved once, at import, and read off the disk: a file written after boot
+    # is invisible to this line until the next restart.
+    #
+    # One no-argument call rather than unpacking the resolver here: the arguments
+    # ARE the message, and a call site that builds them is a call site that can
+    # get them wrong with nothing to notice. app/auth/gate.py::boot_auth_posture
+    # owns the composition and is pinned per state.
+    boot_auth_posture(),
 )
 
 app.include_router(health_router, prefix="/api")

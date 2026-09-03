@@ -267,18 +267,20 @@ def test_a_malformed_request_body_still_answers_with_the_validation_shape(
     ``_FastAPIValidationError`` above as a faithful copy of that shape: the
     control test would prove nothing against a model FastAPI does not use.
 
-    Validated, not key-set-pinned: FastAPI's real rows carry ``input`` (and
-    sometimes ``ctx``/``url``) on top of the three keys its own
-    ``HTTPValidationError`` component declares. That gap is FastAPI's contract,
-    not this app's, and pinning it here would fail on a FastAPI upgrade that
-    documents them.
+    Validated, not key-set-pinned: a real row may carry keys on top of the three
+    the generated ``ValidationError`` schema lists as ``required`` (that schema
+    declares five in all, ``input`` and ``ctx`` being the optional two, and a
+    ``json_invalid`` row does carry ``ctx``). ``input`` is not among them here —
+    ``app/wire.py`` strips it app-wide — but which of the rest appear is
+    FastAPI's contract, not this app's, and pinning it here would fail on a
+    FastAPI upgrade that adds one.
     """
     response = client.post(path, json={"not": "a valid body"})
     assert response.status_code == 422
 
     body = response.json()
     detail = _FastAPIValidationError.model_validate(body).detail
-    assert detail, "a request-validation 422 always names at least one bad field"
+    assert detail, "a request-validation 422 names at least one bad field"
     assert detail[0].loc[0] == "body"
 
 

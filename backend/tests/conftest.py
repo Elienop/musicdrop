@@ -21,13 +21,20 @@ The third load-bearing thing here is not a fixture at all — see
 ``_install_session_cookie_on_every_test_client`` below, which is what keeps the
 session gate (``app/auth/gate.py``) from 401-ing the whole suite.
 
-The fourth is not in this file: ``backend/conftest.py`` (the ROOT conftest,
+The fourth is ``password_hash_file`` (autouse), which pins the stored-password
+file at a per-test tmp path so no test can read or write the one under the
+developer's real beets library — the same class of hole the ``BEETSDIR`` floor
+below closes, for a file two production routes WRITE.
+
+The fifth is not in this file: ``backend/conftest.py`` (the ROOT conftest,
 imported before this one) pins ``BEETSDIR`` at a throwaway sandbox for the whole
 process, so nothing here can resolve beets' config against the developer's
 personal ``~/.config/beets``. Read its docstring before changing anything that
 touches ``BEETSDIR``.
 """
 
+import base64
+import hashlib
 import os
 import socket
 from collections.abc import Iterator
@@ -39,9 +46,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.auth.session import SESSION_COOKIE_NAME, mint_session_token
+from app.auth.source import effective_password, password_hash_path
 from app.beets.library import LibraryHandle, close_library
 from app.beets.setup import setup_beets
-from app.config import settings
 from app.main import app as _real_app
 
 if TYPE_CHECKING:
@@ -62,15 +69,55 @@ def session_cookie_value() -> str:
     the token format or the signature changes and the gate stops accepting what
     this mints, ~2,500 tests go red — which is the intended alarm.
 
-    ``settings.password_hash`` is read HERE, at mint time, because the signing
-    key is derived from it (``app/auth/session.py::_signing_key``). A test whose
-    fixture patches the hash and THEN builds a client gets a cookie bound to the
-    patched value; one that patches it after construction has invalidated its
-    own cookie, and must re-mint or clear the jar. That is the same rule real
-    clients live under — rotating the password signs everyone out — so the suite
-    is not being given a special case.
+    The EFFECTIVE hash is read HERE, at mint time, because the signing key is
+    derived from it (``app/auth/session.py::_signing_key``) — through
+    ``effective_password()``, the same resolver the gate asks, so a test that
+    stores a password in the (pinned) hash file gets a cookie the gate accepts.
+    A test whose fixture patches the hash and THEN builds a client gets a cookie
+    bound to the patched value; one that patches it after construction has
+    invalidated its own cookie, and must re-mint or clear the jar. That is the
+    same rule real clients live under — rotating the password signs everyone out
+    — so the suite is not being given a special case.
     """
-    return mint_session_token(TEST_SESSION_SECRET, settings.password_hash)
+    return mint_session_token(TEST_SESSION_SECRET, effective_password()[0])
+
+
+def low_cost_stored_hash(password: str, *, n: int = 1024, r: int = 8, p: int = 1) -> str:
+    """A ``scrypt$...`` hash of ``password``, written out by hand and cheap.
+
+    Two reasons, and the first is not speed:
+
+    * it is a LITERAL reconstruction of the wire format, so a change to the
+      separator, the field order or the algorithm tag breaks the tests that use
+      it instead of moving silently with the production code;
+    * n=1024 makes a verify ~1 ms instead of ~160 ms, which is the difference
+      between a fast file and twenty tests spending three seconds in a KDF.
+
+    ``tests/test_auth_credentials.py`` pins what ``hash_password()`` itself
+    writes, so the real OWASP parameters are not left untested by the shortcut.
+    Shared from here because three files need it: the login/status tests, the
+    first-run setup tests and the change-password tests.
+    """
+    salt = b"sixteen-byte-slt"
+    digest = hashlib.scrypt(
+        password.encode("utf-8"),
+        salt=salt,
+        n=n,
+        r=r,
+        p=p,
+        maxmem=128 * r * (n + p + 2) + 1024 * 1024,
+        dklen=32,
+    )
+    return "$".join(
+        (
+            "scrypt",
+            str(n),
+            str(r),
+            str(p),
+            base64.b64encode(salt).decode("ascii"),
+            base64.b64encode(digest).decode("ascii"),
+        )
+    )
 
 
 def _install_session_cookie_on_every_test_client() -> None:
@@ -110,6 +157,32 @@ def _install_session_cookie_on_every_test_client() -> None:
 
 
 _install_session_cookie_on_every_test_client()
+
+
+@pytest.fixture(autouse=True)
+def password_hash_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """AUTOUSE FLOOR: no test can read or write a REAL ``password-hash`` file.
+
+    ``app/auth/source.py`` derives the file's path from ``settings.beets_dir``,
+    which ``backend/.env`` aims at the developer's REAL beets library on a dev
+    box. Two production routes WRITE that file (``POST /api/auth/setup`` and
+    ``POST /api/auth/password``) and three code paths read it on every request,
+    so a test that forgot to isolate itself would plant a credential in the real
+    library — or, worse, overwrite the owner's own.
+
+    Pinned at ``live_password_hash_path``, the single seam every production read
+    and write goes through, rather than at ``settings.beets_dir``: that keeps the
+    floor independent of the ~50 tests that repoint ``beets_dir`` for their own
+    reasons, so pointing it at a real library still cannot reach a real hash
+    file. ``tests/test_password_file_isolation.py`` is the decoy pin for exactly
+    that case, in the shape ``test_beetsdir_isolation.py`` uses.
+
+    Returns the pinned path, so a test that wants to seed or inspect the stored
+    hash asks for this fixture by name instead of re-deriving it.
+    """
+    pinned = password_hash_path(str(tmp_path / "auth-source"))
+    monkeypatch.setattr("app.auth.source.live_password_hash_path", lambda: pinned)
+    return pinned
 
 
 @pytest.fixture(autouse=True)

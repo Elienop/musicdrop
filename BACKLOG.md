@@ -53,6 +53,34 @@ entry carries a dated correction block where the pass changed it._
    (#199 = `3e82ae4` = v0.46.0, #200 = `0eca9c2` = v0.47.0, #201 = `9d1b4e7` = v0.47.1).
    The full record moved to *Recently shipped* below; what remains from this item is not the
    item but the findings it produced, each filed separately under *Open bugs / hardening*.
+5. **First-run password setup — IN FLIGHT on `feat/first-run-password-setup` (2026-09-03;
+   vault decisions 29).** Why: on 2026-09-02 the owner's TrueNAS compose read `$Yy` and `$rSl`
+   inside the `MUSICDROP_PASSWORD_HASH` value as variables and blanked them (compose
+   interpolates `$name` in `environment:`), startup said *set but UNREADABLE*, and the fix was
+   the `$$` doubling README and `docker-compose.yml` already documented — a known footgun of
+   the hash-in-env pattern (Traefik basic-auth, Vaultwarden `ADMIN_TOKEN`), not operator error.
+   The shape, as ruled: with NO password source the sign-in screen's pre-password notice becomes
+   a **setup form** (`POST /api/auth/setup`, the fifth gate-exempt path — every census that
+   counted four moves to five: `gate.py`, the OpenAPI overlay, `main.py` prose, the frontend
+   `GATE_EXEMPT_PATHS`, and their pins); the hash is written to `<beets_dir>/password-hash` at
+   `0600` through the same atomic writer as `session-secret`, and the caller is signed in by
+   the same response; change-password is `POST /api/auth/password` behind a new **Settings →
+   Account** section (current, new, confirm; a wrong current password answers **403**, not
+   401, because any non-exempt 401 flips the frontend to signed-out; under the env override
+   the route answers **409** even though the panel shows a notice instead of the form);
+   forgotten password = delete the file and restart. `AuthStatus` gains
+   `password_source: none | env | file`, and
+   one resolver (`effective_password()`) replaces the four readers of `settings.password_hash`,
+   the gate's included. **Precedence, ruled:** a non-empty env var wins over the file and hides
+   both forms **even when its value is UNREADABLE** — refuse login, offer no setup, and say the
+   compose `$$` rule in the message (the posture line's UNREADABLE arm and the `hash_password`
+   CLI's stderr both gain the `$$` form). No env→file migration, no username. The residuals
+   accepted with it are under *Accepted residuals*: the first-run race, the env-wins
+   asymmetry, and the root-owned-file question on the `docker exec` recovery path. README,
+   `docker-compose.yml` and this file change in the same PR. The 2026-09-03 review round
+   (four seats plus an owner browser pass) found that the setup window is not bounded to first
+   boot and that losing the data volume loses the credential — both amended into *Accepted
+   residuals* below — and its fix round lands on the same branch before merge.
 
 The 40 banked #143 Plex review Minors stay fully adjudicated (2026-08-25, every item
 re-verified against v0.44.0): 12 shipped as the triage fix slice (see Recently shipped), 12
@@ -1498,10 +1526,14 @@ the condition it names has changed.
 - **Logout is client-side only; session tokens are stateless (2026-08-30, auth slice 1).**
   A token stays cryptographically valid until its embedded expiry (≤30 days) — there is
   no server-side session table, so nothing can revoke ONE session early. Deliberate: no
-  state to store, reconcile or sweep. Rotating `MUSICDROP_PASSWORD_HASH` invalidates
-  every session at once (the signing key is bound to the hash — 2026-08-30 audit fix M3),
-  as does deleting `<beets_dir>/session-secret`. Pinned as intended behaviour by
-  `test_a_token_copied_before_logout_still_works`.
+  state to store, reconcile or sweep. Rotating the effective hash invalidates every
+  session at once (the signing key is bound to the hash — 2026-08-30 audit fix M3), as
+  does deleting `<beets_dir>/session-secret`. That holds for both sources: a new
+  `MUSICDROP_PASSWORD_HASH` plus a restart re-mints nothing, so every browser signs in
+  again; the change-password form (**Settings → Account**, writing
+  `<beets_dir>/password-hash` — first-run password setup, 2026-09-03) re-mints only the
+  caller's cookie, so every OTHER browser is signed out and the UI says so. Pinned as
+  intended behaviour by `test_a_token_copied_before_logout_still_works`.
 
 - **The session-secret create race is narrowed, not closed (2026-08-30, auth slice 1).**
   Two processes hitting first-run together could each mint a signing key; the loser
@@ -1509,6 +1541,45 @@ the condition it names has changed.
   before the other's `os.replace`. Accepted because the image runs uvicorn single-worker
   by design — there is no second process in the shipped deployment. Documented at
   `app/auth/session.py::load_or_create_session_secret`.
+
+- **The first-run SETUP race is accepted on a trusted LAN — and the window is not bounded to
+  first boot (2026-09-03, first-run password setup; vault decisions 29; amended by the
+  same-day security review).** Whoever reaches the sign-in screen while no password source
+  exists sets the password — there is no setup token to present. The window opens at first
+  boot and it re-opens whenever the `password-hash` file becomes absent: the source is resolved
+  per request, so deleting the file re-opens setup on a running server with no restart and no
+  prompt (measured by the review seat), and a bind mount that comes up empty or a restore that
+  misses the file does the same at the next start. Accepted because the shipped deployment is
+  a single account on a trusted LAN. The mitigations are the ones in place, not a token: the
+  firewall/LAN the deployment assumes; the `MUSICDROP_PASSWORD_HASH` override, which hides the
+  setup form regardless of the file and keeps the credential outside the data volume; and the
+  log line setup writes when it stores a password (WARNING, naming the file — added by the
+  same-day fix round on this branch, 2026-09-03), so a claim is visible in the container log.
+  Within the one process an `asyncio.Lock` around check-then-write makes "first wins" true
+  rather than probabilistic: a second setup POST answers **409** instead of overwriting, and
+  the image runs uvicorn single-worker by design (the same fact the session-secret race above
+  rests on). A setup token printed to the startup log and required by the form remains the
+  hardening if the box is ever exposed beyond the LAN — noted, not built.
+
+- **The password is the one env-vs-file store where the ENVIRONMENT wins, and it wins even
+  when UNREADABLE (2026-09-03, vault decisions 29).** `plex.json` and `slskd.json` let the
+  saved file beat its seed env var; `MUSICDROP_PASSWORD_HASH` does the opposite and hides
+  both the setup form and the change-password form. Deliberate: it is the lockout-recovery
+  lever, and a mangled value (the compose `$$` trap) falling through to the setup form would
+  mint a second password that the corrected env var later shadows. No env→file migration
+  either — the env var is a chosen posture. Recorded in README's override subsection; do not
+  "fix" the asymmetry to match the integrations.
+
+- **The `docker exec … rm` recovery path and root-owned files under `/data` — UNVERIFIED
+  (2026-09-03).** Inferred from reading, not from running a container: the image declares no
+  `USER` (`Dockerfile`, beside the accepted `docker:S6471` comment), so `docker exec` runs as
+  root, and `entrypoint.sh` re-owns `/data` with `chown -R` on every start. The documented
+  forgotten-password recovery is therefore `rm` AND restart: the `rm` itself creates nothing,
+  and the restart's chown runs before the app writes a fresh `password-hash` as its own user.
+  What was not measured: whether an exec session that WRITES under `/data` (an operator
+  piping `hash_password` output into the path by hand) leaves a file the serving user cannot
+  read until that chown, and what the status endpoint reports meanwhile. Treat as UNVERIFIED
+  until someone runs it in a container; README's recipe already carries the restart.
 
 - **Both integration `base_url` fields are credential-exfiltrating SSRF for whoever holds
   the password; the slskd one is additionally REFLECTED — accepted, and measured

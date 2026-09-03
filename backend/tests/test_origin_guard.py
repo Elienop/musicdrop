@@ -270,11 +270,16 @@ def test_prod_posture_rejects_the_dev_origin_write(tmp_path: Path) -> None:
         "from starlette.testclient import TestClient\n"
         "from app.main import app\n"
         "from app.auth.session import SESSION_COOKIE_NAME, mint_session_token\n"
-        "from app.config import settings\n"
+        # The gate signs with the EFFECTIVE hash (env var, else the stored
+        # file), so the child mints under the same resolver rather than under
+        # settings.password_hash alone — otherwise a password-hash file left in
+        # whatever beets dir the child resolves would make every gated request
+        # 401 and this test would pass or fail for the wrong reason.
+        "from app.auth.source import effective_password\n"
         "secret = b'0123456789abcdef0123456789abcdef'\n"
         "app.state.session_secret = secret\n"
         "c = TestClient(app, cookies={SESSION_COOKIE_NAME:"
-        " mint_session_token(secret, settings.password_hash)})\n"
+        " mint_session_token(secret, effective_password()[0])})\n"
         "dev = c.post('/api/config/validate', json={'yaml_text': 'a: 1'},"
         " headers={'Origin': 'http://localhost:5173'})\n"
         "same = c.post('/api/config/validate', json={'yaml_text': 'a: 1'},"
@@ -295,6 +300,10 @@ def test_prod_posture_rejects_the_dev_origin_write(tmp_path: Path) -> None:
         **os.environ,
         "MUSICDROP_STATIC_DIR": str(dist),
         "MUSICDROP_ALLOWED_HOSTS": "testserver",
+        # The child runs without conftest, so nothing pins the stored-hash
+        # file: aim MUSICDROP_BEETS_DIR at a throwaway dir so it cannot read
+        # (or be decided by) the one in the dev library `.env` points at.
+        "MUSICDROP_BEETS_DIR": str(tmp_path / "beets"),
         # Hermetic binding: the session token is signed with a key derived
         # from MUSICDROP_PASSWORD_HASH, and an env var beats backend/.env —
         # so an owner who sets a real hash locally cannot change what this

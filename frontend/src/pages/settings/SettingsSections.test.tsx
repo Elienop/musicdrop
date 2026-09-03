@@ -19,7 +19,11 @@ vi.mock("@/components/settings/PlexSettingsPanel", () => ({
 vi.mock("@/components/settings/SlskdPanel", () => ({
   SlskdPanel: () => <div data-testid="slskd-panel" />,
 }));
+vi.mock("@/pages/settings/AccountPanel", () => ({
+  AccountPanel: () => <div data-testid="account-panel" />,
+}));
 
+import { SettingsAccountPage } from "@/pages/settings/SettingsAccountPage";
 import { SettingsIntegrationsPage } from "@/pages/settings/SettingsIntegrationsPage";
 import { SettingsMetadataPage } from "@/pages/settings/SettingsMetadataPage";
 import { SettingsNamingPage } from "@/pages/settings/SettingsNamingPage";
@@ -41,5 +45,10 @@ describe("settings section pages", () => {
     render(<SettingsIntegrationsPage />);
     expect(screen.getByTestId("plex-panel")).toBeInTheDocument();
     expect(screen.getByTestId("slskd-panel")).toBeInTheDocument();
+  });
+
+  test("account hosts the AccountPanel", () => {
+    render(<SettingsAccountPage />);
+    expect(screen.getByTestId("account-panel")).toBeInTheDocument();
   });
 });
