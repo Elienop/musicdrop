@@ -117,7 +117,8 @@ def test_an_unreadable_env_var_still_wins_over_a_readable_file(
 ) -> None:
     """The owner's ruling, and the arm the naive implementation gets wrong.
 
-    A hash pasted into docker-compose with single dollars arrives mangled. If
+    A hash pasted into docker-compose with single dollars usually arrives
+    mangled. If
     that fell through to the file — or to ``"none"`` — the server would either
     authenticate against a password the operator thought they had replaced, or
     offer to set a brand new one. It reports ``"env"`` with an unusable hash

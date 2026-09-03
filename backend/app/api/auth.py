@@ -113,7 +113,8 @@ _NO_PASSWORD_DETAIL: Final = "No password is configured on this server."
 # server back to whatever is stored — which may be a password the operator set
 # on the sign-in screen, or nothing at all, and the sentence says so rather than
 # promising either. A hash pasted into docker-compose with single dollars is
-# interpolated to something shorter, which is the measured way this state is
+# usually interpolated to something shorter (compose swallows a letter-led
+# field; a digit-led one survives), which is the measured way this state is
 # reached. The file twin below names its own recovery, which is deleting it
 # (never overwriting it — see app/auth/source.py).
 _UNREADABLE_ENV_HASH_DETAIL: Final = (
@@ -330,11 +331,11 @@ def _change_refusal_detail(source: PasswordSource) -> str:
 def _reject_a_blank_password(candidate: str) -> None:
     """The one password policy either writing route has, mirroring the CLI.
 
-    ``app/auth/hash_password.py`` refuses an empty password, and a
-    whitespace-only one is the same mistake with a stray keystroke. Nothing
-    else is enforced: see :class:`app.models.auth.LoginRequest` for why a
-    length ceiling would not help, and the 422 descriptions for the deliberate
-    absence of a minimum.
+    ``app/auth/hash_password.py`` refuses a password that is empty or only
+    whitespace, and this route applies the same rule — a whitespace-only one is
+    an empty password with a stray keystroke. Nothing else is enforced: see
+    :class:`app.models.auth.LoginRequest` for why a length ceiling would not
+    help, and the 422 descriptions for the deliberate absence of a minimum.
     """
     if not candidate.strip():
         raise HTTPException(status_code=422, detail=_BLANK_PASSWORD_DETAIL)

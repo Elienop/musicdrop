@@ -418,8 +418,10 @@ def test_posture_distinguishes_an_unreadable_hash_from_an_unset_one() -> None:
     unreadable = auth_posture("scrypt$oops", "env", stored_file_present=False)
     assert "UNREADABLE" in unreadable
     assert unreadable != auth_posture("", "none", stored_file_present=False)
-    # The measured way a hash arrives mangled: pasted into docker-compose with
-    # single dollars, where every $ starts a variable interpolation.
+    # The measured way a hash usually arrives mangled: pasted into
+    # docker-compose with single dollars, where a $ before a letter or an
+    # underscore starts a variable interpolation (a $ before a digit or a
+    # symbol is left alone).
     assert "$$" in unreadable
 
 
