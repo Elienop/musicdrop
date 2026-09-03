@@ -124,12 +124,23 @@ describe("LoginPage — the form", () => {
 });
 
 describe("LoginPage — the server's own rejections, verbatim", () => {
-  // The server's own sentences, verbatim (backend app/auth/routes.py) — these
-  // are the strings the UI must not paraphrase, so the fixture has to BE them.
+  // The server's own sentences, copied from the `_*_DETAIL` constants in
+  // backend/app/api/auth.py — these are the strings the UI must not
+  // paraphrase, so the fixture has to BE them. (A fixture that has drifted
+  // proves nothing about verbatim rendering: the row that used to sit here,
+  // "The configured password hash is not readable.", was a sentence the
+  // backend does not send, under a comment citing a file that does not exist.)
   test.each([
     [401, "Incorrect password."],
     [401, "No password is configured on this server."],
-    [401, "The configured password hash is not readable."],
+    [
+      401,
+      "The password hash in MUSICDROP_PASSWORD_HASH is not readable. In docker-compose, every $ in the hash must be doubled to $$. Or unset it and restart MusicDrop, and the password stored on this server, if there is one, applies again.",
+    ],
+    [
+      401,
+      "The stored password hash on this server is not readable. Delete the password-hash file in the beets directory and restart MusicDrop to set a new password.",
+    ],
     [429, "Another sign-in is already in progress. Try again in a moment."],
     [503, "The session signing secret is unavailable."],
   ])("renders the %i detail as written", async (status, detail) => {
@@ -479,6 +490,38 @@ describe("LoginPage — landing here from inside the shell", () => {
 });
 
 describe("LoginPage — first run, with no password anywhere", () => {
+  test("titles the card for the thing this screen does, and says it once", async () => {
+    // The card header is the first thing announced after the brand, and over a
+    // form whose only action is "Set password" it used to read "Sign in" — with
+    // a second muted paragraph under the description repeating what the
+    // description had just said.
+    server.use(statusHandler(false, false, "none"));
+    renderLogin();
+
+    await screen.findByRole("button", { name: "Set password" });
+    expect(
+      screen.getByRole("heading", { level: 2, name: "Set a password" }),
+    ).toBeInTheDocument();
+    // One h2 in the card: the branch REPLACES the sign-in title rather than
+    // adding a second heading beside it.
+    expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(1);
+    expect(
+      screen.getByText(
+        "No password is set yet. Choose the one everyone will use to sign in to this server.",
+      ),
+    ).toBeInTheDocument();
+    // The sign-in description is not also on screen — the two would read as one
+    // two-sentence muted block with an odd gap in the middle.
+    expect(
+      screen.queryByText("MusicDrop is protected by a single password."),
+    ).not.toBeInTheDocument();
+    // And the tab follows the header, rather than announcing a form that is
+    // not the one on screen.
+    await waitFor(() =>
+      expect(document.title).toBe("Set a password - MusicDrop"),
+    );
+  });
+
   test("sets the password here instead of explaining a shell command", async () => {
     server.use(statusHandler(false, false, "none"));
     renderLogin();
@@ -501,6 +544,13 @@ describe("LoginPage — first run, with no password anywhere", () => {
     // the operator to a shell they no longer have to open.
     expect(screen.queryByText("MUSICDROP_PASSWORD_HASH")).not.toBeInTheDocument();
     expect(screen.queryByText(/hash_password/)).not.toBeInTheDocument();
+    // No re-check button under the primary action either: the case it covers
+    // here (a password set from elsewhere while this page was open) is what the
+    // 409 on submit answers, so on this branch it was a second full-width
+    // button competing with the one the operator came to press.
+    expect(
+      screen.queryByRole("button", { name: "Check again" }),
+    ).not.toBeInTheDocument();
   });
 
   test("refuses a mismatched confirmation without asking the server", async () => {
@@ -535,6 +585,101 @@ describe("LoginPage — first run, with no password anywhere", () => {
     expect(
       screen.queryByText("The two passwords don’t match. Type them again."),
     ).not.toBeInTheDocument();
+  });
+
+  test("the mismatch clears when the FIRST field is retyped too", async () => {
+    // The likelier correction of the two: the user decides the password they
+    // meant is the one they typed second. Clearing only on the confirm field
+    // left the alert and both red borders standing while they retyped.
+    server.use(statusHandler(false, false, "none"));
+    renderLogin();
+
+    await userEvent.type(await screen.findByLabelText("Password"), "hunter2");
+    await userEvent.type(screen.getByLabelText("Confirm password"), "hunter3");
+    await userEvent.click(screen.getByRole("button", { name: "Set password" }));
+
+    await screen.findByText("The two passwords don’t match. Type them again.");
+    await userEvent.type(screen.getByLabelText("Password"), "!");
+
+    expect(
+      screen.queryByText("The two passwords don’t match. Type them again."),
+    ).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toHaveAttribute(
+      "aria-invalid",
+      "false",
+    );
+    expect(screen.getByLabelText("Confirm password")).toHaveAttribute(
+      "aria-invalid",
+      "false",
+    );
+  });
+
+  test("describes the confirm field by the mismatch, and by nothing else", async () => {
+    // `aria-describedby` claims the text is ABOUT this field. The mismatch is
+    // about the pair, so both fields carry it; a rejection the server wrote is
+    // about the request or the first field, and pointing the confirm field at
+    // it told a screen-reader user a fact about a different field.
+    server.use(
+      statusHandler(false, false, "none"),
+      http.post(SETUP_URL, () =>
+        HttpResponse.json(
+          {
+            detail:
+              "Another sign-in is already in progress. Try again in a moment.",
+          },
+          { status: 429 },
+        ),
+      ),
+    );
+    renderLogin();
+
+    const password = await screen.findByLabelText("Password");
+    const confirm = screen.getByLabelText("Confirm password");
+    expect(confirm).not.toHaveAttribute("aria-describedby");
+
+    await userEvent.type(password, "hunter2");
+    await userEvent.type(confirm, "hunter3");
+    await userEvent.click(screen.getByRole("button", { name: "Set password" }));
+
+    const mismatch = await screen.findByRole("alert");
+    expect(confirm).toHaveAttribute("aria-describedby", mismatch.id);
+    expect(password).toHaveAttribute("aria-describedby", mismatch.id);
+
+    // Now a matched pair the SERVER refuses: the sentence is about the request,
+    // so the confirm field is described by nothing.
+    await userEvent.type(confirm, "{Backspace}2");
+    await userEvent.click(screen.getByRole("button", { name: "Set password" }));
+
+    const rejection = await screen.findByRole("alert");
+    expect(rejection).toHaveTextContent("Another sign-in is already");
+    expect(password).toHaveAttribute("aria-describedby", rejection.id);
+    expect(confirm).not.toHaveAttribute("aria-describedby");
+  });
+
+  test("puts focus back in the password field after a rejection", async () => {
+    // Submitting disables the button, which drops focus to <body>; the
+    // rejection then announces itself to a user whose focus is nowhere, and a
+    // keyboard user has to tab from the top of the document to retry.
+    server.use(
+      statusHandler(false, false, "none"),
+      http.post(SETUP_URL, () =>
+        HttpResponse.json(
+          {
+            detail:
+              "Another sign-in is already in progress. Try again in a moment.",
+          },
+          { status: 429 },
+        ),
+      ),
+    );
+    renderLogin();
+
+    await userEvent.type(await screen.findByLabelText("Password"), "hunter2");
+    await userEvent.type(screen.getByLabelText("Confirm password"), "hunter2");
+    await userEvent.click(screen.getByRole("button", { name: "Set password" }));
+
+    await screen.findByRole("alert");
+    expect(screen.getByLabelText("Password")).toHaveFocus();
   });
 
   test("a set password signs the browser in, exactly as a sign-in would", async () => {
@@ -573,12 +718,13 @@ describe("LoginPage — first run, with no password anywhere", () => {
     expect(bump).toHaveBeenCalled();
   });
 
-  test("a 409 re-checks and hands over to the sign-in form", async () => {
+  test("a 409 re-checks, hands over to the sign-in form, and says why", async () => {
     // Someone else set a password while this page was open — another browser,
-    // or the operator setting the env var and restarting. Narrating the 409
-    // would leave them reading a sentence about a form that is no longer the
-    // one they need; re-asking the server swaps the branch for the sign-in
-    // form, which is the only screen that can act on the new password.
+    // or the operator setting the env var and restarting. Re-asking the server
+    // swaps the branch for the sign-in form, which is the only screen that can
+    // act on the new password; without a sentence to go with it, the card
+    // silently became a different form and the likeliest next move was to type
+    // the password they had just chosen.
     let configured = false;
     server.use(
       http.get(STATUS_URL, () =>
@@ -615,6 +761,20 @@ describe("LoginPage — first run, with no password anywhere", () => {
       "autocomplete",
       "current-password",
     );
+    // The account of the swap survives it: the state is held above the branch,
+    // so it is still on screen after the form it was raised in unmounted.
+    const note = screen.getByText(
+      "A password was set from elsewhere while this page was open. Sign in with that one.",
+    );
+    // In a live region, so it is announced rather than only found by someone
+    // already reading the card. `<output>` carries the status role implicitly
+    // (the dialect this file already pins for the re-check line).
+    expect(note.tagName).toBe("OUTPUT");
+    expect(note).toBe(screen.getByRole("status"));
+    // The header follows the branch too — this is a sign-in screen now.
+    expect(
+      screen.getByRole("heading", { level: 2, name: "Sign in" }),
+    ).toBeInTheDocument();
   });
 
   test.each([
@@ -643,116 +803,10 @@ describe("LoginPage — first run, with no password anywhere", () => {
       screen.getByRole("button", { name: "Set password" }),
     ).toBeEnabled();
   });
-
-  test("re-checks on demand, so a password set elsewhere is picked up", async () => {
-    let configured = false;
-    server.use(
-      http.get(STATUS_URL, () =>
-        HttpResponse.json({
-          authenticated: false,
-          password_set: configured,
-          password_source: configured ? "file" : "none",
-        }),
-      ),
-    );
-    renderLogin();
-
-    await screen.findByRole("button", { name: "Set password" });
-    configured = true;
-    await userEvent.click(screen.getByRole("button", { name: "Check again" }));
-
-    expect(
-      await screen.findByRole("button", { name: "Sign in" }),
-    ).toBeInTheDocument();
-    expect(screen.queryByLabelText("Confirm password")).not.toBeInTheDocument();
-  });
-
-  test("shows the re-check in progress, so the click is not silent", async () => {
-    // `refetch` leaves `isPending` false (v5: initial load only), so a button
-    // wired to that reports nothing at all. The handler is held open here to
-    // make the in-flight moment observable rather than a race.
-    let calls = 0;
-    let release = () => {};
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    server.use(
-      http.get(STATUS_URL, async () => {
-        calls += 1;
-        if (calls > 1) await held;
-        return HttpResponse.json({
-          authenticated: false,
-          password_set: false,
-          password_source: "none",
-        });
-      }),
-    );
-    renderLogin();
-
-    await screen.findByRole("button", { name: "Set password" });
-    await userEvent.click(screen.getByRole("button", { name: "Check again" }));
-
-    const busy = await screen.findByRole("button", { name: "Checking…" });
-    expect(busy).toBeDisabled();
-
-    release();
-    expect(
-      await screen.findByRole("button", { name: "Check again" }),
-    ).toBeEnabled();
-  });
-
-  test("re-checking says so when nothing changed, instead of nothing", async () => {
-    // A silent re-check is indistinguishable from a dead button, and this
-    // branch is exactly where an operator clicks it repeatedly while waiting
-    // for another browser (or a restart) to change the answer.
-    server.use(statusHandler(false, false, "none"));
-    renderLogin();
-
-    await screen.findByRole("button", { name: "Set password" });
-    await userEvent.click(screen.getByRole("button", { name: "Check again" }));
-
-    const notice = await screen.findByText("Still no password configured.");
-    // The element is `<output>`, not `<p role="status">`. Pinned because the
-    // two are interchangeable to every other assertion in this file, so the
-    // swap would otherwise be untested: `<output>` has an IMPLICIT status
-    // role, and this asserts the live region survived the change.
-    expect(notice.tagName).toBe("OUTPUT");
-    expect(notice).toBe(screen.getByRole("status"));
-    expect(
-      await screen.findByRole("button", { name: "Check again" }),
-    ).toBeEnabled();
-  });
-
-  test("a re-check against an unreachable server says THAT instead", async () => {
-    let up = true;
-    server.use(
-      http.get(STATUS_URL, () =>
-        up
-          ? HttpResponse.json({
-              authenticated: false,
-              password_set: false,
-              password_source: "none",
-            })
-          : new HttpResponse(null, { status: 503 }),
-      ),
-    );
-    renderLogin();
-
-    await screen.findByRole("button", { name: "Set password" });
-    up = false;
-    await userEvent.click(screen.getByRole("button", { name: "Check again" }));
-
-    // "Still not configured" would be a guess here — the server never said.
-    expect(
-      await screen.findByText(
-        "Couldn’t reach the server — it may still be restarting.",
-      ),
-    ).toBeInTheDocument();
-  });
 });
 
 describe("LoginPage — an unreadable MUSICDROP_PASSWORD_HASH", () => {
-  test("names the variable, the compose rule, and the restart — and offers NO setup", async () => {
+  test("names the variable and the compose rule — and offers NO setup", async () => {
     server.use(statusHandler(false, false, "env"));
     renderLogin();
 
@@ -766,7 +820,6 @@ describe("LoginPage — an unreadable MUSICDROP_PASSWORD_HASH", () => {
     // left. Without this sentence the operator is told their hash is wrong and
     // not why.
     expect(banner).toHaveTextContent("must be doubled to");
-    expect(banner).toHaveTextContent(/restart MusicDrop/i);
     // No setup form, and this is the owner's ruling rather than an oversight:
     // the env var wins even when its value cannot be read, so a password set
     // here would be shadowed the moment the variable is corrected.
@@ -774,6 +827,11 @@ describe("LoginPage — an unreadable MUSICDROP_PASSWORD_HASH", () => {
     expect(
       screen.queryByRole("button", { name: "Set password" }),
     ).not.toBeInTheDocument();
+    // Nobody can sign in here either, but this branch is about a variable the
+    // operator has to fix in a shell — the card keeps the sign-in title.
+    expect(
+      screen.getByRole("heading", { level: 2, name: "Sign in" }),
+    ).toBeInTheDocument();
   });
 
   test("offers the hash command, since fixing the variable needs a new one", async () => {
@@ -787,6 +845,28 @@ describe("LoginPage — an unreadable MUSICDROP_PASSWORD_HASH", () => {
     );
     expect(commands).toHaveTextContent(
       "cd backend && uv run python -m app.auth.hash_password",
+    );
+  });
+
+  test("connects the command to the fix, and names both outcomes of unsetting", async () => {
+    // The banner said "fix or unset it" and the block said "generate", with
+    // nothing joining them: the operator had to work out that fixing MEANS
+    // generating a fresh hash and pasting it with doubled dollars.
+    server.use(statusHandler(false, false, "env"));
+    renderLogin();
+
+    const instruction = await screen.findByText(/paste it into the variable/i);
+    expect(instruction).toHaveTextContent(/restart MusicDrop/i);
+    // Both outcomes, because this page cannot tell them apart: status reports
+    // `password_source: "env"` and says nothing about a stored password sitting
+    // behind it. Claiming "this screen sets the password instead" was false on
+    // a server that also has one stored.
+    expect(instruction).toHaveTextContent(/if a password is stored/i);
+    expect(instruction).toHaveTextContent(/otherwise this screen sets a new one/i);
+    // Beside the command it introduces, not stranded above the banner.
+    const snippet = screen.getByText(/docker exec -it musicdrop/);
+    expect(instruction.compareDocumentPosition(snippet)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
     );
   });
 
@@ -823,7 +903,14 @@ describe("LoginPage — an unreadable MUSICDROP_PASSWORD_HASH", () => {
     expect(block).toHaveTextContent("cd backend && uv run python");
   });
 
+  // The re-check lives on the two notice branches, which are the ones that end
+  // in "restart MusicDrop" and have no other action to offer. (These four
+  // moved here from the first-run describe when the setup branch dropped the
+  // button; the component under test is the same `RecheckStatus`.)
   test("a re-check that changes nothing names the variable that is still wrong", async () => {
+    // A silent re-check is indistinguishable from a dead button, and this
+    // branch is exactly where an operator clicks it repeatedly while waiting
+    // for a restart to change the answer.
     server.use(statusHandler(false, false, "env"));
     renderLogin();
 
@@ -832,9 +919,100 @@ describe("LoginPage — an unreadable MUSICDROP_PASSWORD_HASH", () => {
 
     // Not "Still no password configured" — one IS configured, and saying
     // otherwise would send the operator looking for the wrong problem.
+    const notice = await screen.findByText(
+      "The hash in MUSICDROP_PASSWORD_HASH is still unreadable.",
+    );
+    // The element is `<output>`, not `<p role="status">`. Pinned because the
+    // two are interchangeable to every other assertion in this file, so the
+    // swap would otherwise be untested: `<output>` has an IMPLICIT status
+    // role, and this asserts the live region survived the change.
+    expect(notice.tagName).toBe("OUTPUT");
+    expect(notice).toBe(screen.getByRole("status"));
+    expect(
+      await screen.findByRole("button", { name: "Check again" }),
+    ).toBeEnabled();
+  });
+
+  test("re-checks on demand, so a password set elsewhere is picked up", async () => {
+    let configured = false;
+    server.use(
+      http.get(STATUS_URL, () =>
+        HttpResponse.json({
+          authenticated: false,
+          password_set: configured,
+          password_source: configured ? "file" : "env",
+        }),
+      ),
+    );
+    renderLogin();
+
+    await screen.findByRole("button", { name: "Check again" });
+    configured = true;
+    await userEvent.click(screen.getByRole("button", { name: "Check again" }));
+
+    expect(
+      await screen.findByRole("button", { name: "Sign in" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("MUSICDROP_PASSWORD_HASH")).not.toBeInTheDocument();
+  });
+
+  test("shows the re-check in progress, so the click is not silent", async () => {
+    // `refetch` leaves `isPending` false (v5: initial load only), so a button
+    // wired to that reports nothing at all. The handler is held open here to
+    // make the in-flight moment observable rather than a race.
+    let calls = 0;
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.get(STATUS_URL, async () => {
+        calls += 1;
+        if (calls > 1) await held;
+        return HttpResponse.json({
+          authenticated: false,
+          password_set: false,
+          password_source: "env",
+        });
+      }),
+    );
+    renderLogin();
+
+    await screen.findByRole("button", { name: "Check again" });
+    await userEvent.click(screen.getByRole("button", { name: "Check again" }));
+
+    const busy = await screen.findByRole("button", { name: "Checking…" });
+    expect(busy).toBeDisabled();
+
+    release();
+    expect(
+      await screen.findByRole("button", { name: "Check again" }),
+    ).toBeEnabled();
+  });
+
+  test("a re-check against an unreachable server says THAT instead", async () => {
+    let up = true;
+    server.use(
+      http.get(STATUS_URL, () =>
+        up
+          ? HttpResponse.json({
+              authenticated: false,
+              password_set: false,
+              password_source: "env",
+            })
+          : new HttpResponse(null, { status: 503 }),
+      ),
+    );
+    renderLogin();
+
+    await screen.findByRole("button", { name: "Check again" });
+    up = false;
+    await userEvent.click(screen.getByRole("button", { name: "Check again" }));
+
+    // "Still unreadable" would be a guess here — the server never said.
     expect(
       await screen.findByText(
-        "The hash in MUSICDROP_PASSWORD_HASH is still unreadable.",
+        "Couldn’t reach the server — it may still be restarting.",
       ),
     ).toBeInTheDocument();
   });
@@ -856,6 +1034,11 @@ describe("LoginPage — an unreadable stored password", () => {
     // And the env var is not named — it is not what is wrong here, and this
     // branch exists precisely because the two used to be told the same story.
     expect(screen.queryByText("MUSICDROP_PASSWORD_HASH")).not.toBeInTheDocument();
+    // The card keeps the sign-in title: the recovery here is deleting a file
+    // and restarting, not setting a password on this screen.
+    expect(
+      screen.getByRole("heading", { level: 2, name: "Sign in" }),
+    ).toBeInTheDocument();
   });
 
   test("a re-check that changes nothing says the stored one is still unreadable", async () => {
