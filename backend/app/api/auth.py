@@ -67,10 +67,11 @@ logger = logging.getLogger(__name__)
 # discarded and a WARNING one reaches stderr through `logging.lastResort` —
 # printed bare, with no level to grep for. Same reasoning, and the same choice,
 # as the boot posture line; the long version is in the comment above it
-# (`app/main.py`). Pinned by
+# (`app/main.py`). The level prefix reaching a real uvicorn's stderr is pinned by
 # test_host_guard.py::test_both_password_lines_reach_real_uvicorns_output, which
-# reads a real child process's output rather than caplog: caplog attaches to the
-# ROOT logger, so it cannot tell these two spellings apart.
+# reads a real child process's output: caplog attaches to the ROOT logger, so
+# it sees both spellings and only `record.name` tells them apart (the write
+# failure below is pinned that way, in test_auth_setup_api.py).
 operator_logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter(tags=["auth"])
@@ -355,7 +356,7 @@ def _store_password_hash(stored: str) -> None:
     except OSError as exc:
         # %r on both: the path is operator-controlled and the exception quotes
         # it back, so a newline in either could forge a second log line.
-        logger.warning("could not write the password hash: %r", exc)
+        operator_logger.warning("could not write the password hash: %r", exc)
         raise HTTPException(status_code=503, detail=_WRITE_FAILED_DETAIL) from exc
 
 

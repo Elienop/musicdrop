@@ -375,13 +375,17 @@ def test_setup_refuses_when_the_server_has_no_signing_secret(
 
 
 def test_setup_reports_a_write_failure_rather_than_a_500(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A read-only or full data directory is an operator problem, not a crash.
 
     Patched at the sink rather than by chmod-ing a directory, because the suite
     can run as root (the shipped image's shell is), where a mode change is not
     an obstacle at all.
+
+    The warning goes through the logger uvicorn prints (``record.name`` is the
+    one thing caplog can distinguish; the app-namespace spelling reaches the
+    container log bare, with no level, through ``logging.lastResort``).
     """
 
     def refuse(*_args: object, **_kwargs: object) -> None:
@@ -389,8 +393,11 @@ def test_setup_reports_a_write_failure_rather_than_a_500(
 
     monkeypatch.setattr("app.auth.source.write_atomic_text", refuse)
 
-    resp = _anonymous().post(_SETUP, json={"password": _PASSWORD})
+    with caplog.at_level(logging.WARNING):
+        resp = _anonymous().post(_SETUP, json={"password": _PASSWORD})
 
     assert resp.status_code == 503
     assert "could not be saved" in resp.json()["detail"]
     assert "set-cookie" not in resp.headers
+    failures = [r for r in caplog.records if "could not write the password hash" in r.getMessage()]
+    assert [(r.name, r.levelno) for r in failures] == [("uvicorn.error", logging.WARNING)]
