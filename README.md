@@ -219,8 +219,11 @@ session cookie. The only exceptions are the container healthcheck (`/api/health`
 webhook (which carries its own shared secret), and the three sign-in endpoints themselves —
 first-run setup, sign-in, and the status check the sign-in screen asks first.
 
-**Until a password exists, nothing is reachable.** That is deliberate — there is no
-"unprotected by default" mode. On a fresh install the browser lands on a **setup form** instead
+**Until a password exists, the only page a visitor can reach is the setup form — and it hands
+the account to whoever submits it first.** That is deliberate — there is no "unprotected by
+default" mode, and no setup token to present either — so bring the app up behind a firewall (the
+LAN it is built for), or set `MUSICDROP_PASSWORD_HASH` (below) before the first boot if the port
+is reachable by strangers. On a fresh install the browser lands on that **setup form** instead
 of the sign-in form: choose a password, confirm it, and you are signed in. There is no username,
 no length rule and no e-mail; an empty (or whitespace-only) password is refused, the same rule
 the `hash_password` command applies. What gets stored is a scrypt hash, not the password:
@@ -246,8 +249,11 @@ confirm. A wrong current password is refused and nothing changes. Saving rewrite
 (see below).
 
 **Forgot it?** There is no reset link, deliberately — nothing to e-mail and nothing to guess.
-Delete the hash file and restart MusicDrop; the sign-in screen is the setup form again. Two ways
-to do the same thing, depending on which side of the bind mount you are standing on:
+Remove the hash file and restart MusicDrop; the sign-in screen is the setup form again. The same
+recovery covers a hash MusicDrop cannot read: whatever is at that path counts as a password that
+is present, and if it cannot be read as a hash, sign-in is refused and the setup form stays hidden
+until it is removed. Two ways to do the same thing, depending on which side of the bind mount you
+are standing on:
 
 ```bash
 # through the container:
@@ -261,7 +267,10 @@ not again, and a container start is also when the entrypoint re-owns everything 
 (what a root `docker exec` leaves behind there is recorded as unverified in `BACKLOG.md`).
 Setting the new password writes a new hash, which signs every other browser out — the paragraph
 after next says why. Deleting that file *is* the reset, so it is as protected as the data
-directory it lives in, which already holds the library.
+directory it lives in, which already holds the library. Both forms write a line to the container
+log when they store a password — the setup form at warning level, naming the file, and
+**Settings → Account** at info level — so if the setup form was ever used by someone who was not
+you, the log says so.
 
 #### Overriding the password from the environment
 
@@ -269,7 +278,11 @@ directory it lives in, which already holds the library.
 value there **wins over the file** and hides both the setup form and the change-password form —
 **Settings → Account** shows a notice explaining the override instead. It stays for two reasons:
 as a recovery lever (regain access without deleting anything, then decide), and for operators
-who would rather keep the credential in their deployment config. The two sources do not merge:
+who would rather keep the credential in their deployment config — which also keeps it outside
+the data volume. With the file as the source, losing the data directory loses the password with
+it (a bind mount that comes up empty, a restore that misses the file), and the instance is
+claimable again through the setup form until someone runs it; the override is the way to keep
+the credential somewhere the data volume cannot take it. The two sources do not merge:
 nothing copies the env var into the file, and a file written earlier is shadowed while the
 override is set — unset it and restart, and that file is the password again (or, with no file,
 the setup form is back).
@@ -288,7 +301,7 @@ every `$` doubled, labelled as the compose form. Put that one in your compose fi
 
 ```yaml
     environment:
-      # Every $ DOUBLED: compose expands a single $ as a variable reference.
+      # Every $ DOUBLED: compose reads a $ before a letter or _ as a variable reference.
       - MUSICDROP_PASSWORD_HASH=scrypt$$131072$$8$$1$$vIfqnSPZ…$$bTMGckBk…
 ```
 
@@ -296,16 +309,22 @@ The doubling is only a `docker-compose.yml` quirk. In an `.env` file, an `env_fi
 `docker run -e`, paste the value exactly as printed.
 
 **The override wins even when its value is unreadable.** A hash that compose has mangled is
-still a set override. With the `$` left single, compose keeps `$131072`, `$8` and `$1` (a `$`
-followed by a digit is not a variable reference to it) but reads the letter-led salt and digest
-as variables and blanks them, so what reaches MusicDrop is `scrypt$131072$8$1` — four fields of
-six, and the incident this feature came out of. Sign-in is refused, the setup form stays hidden,
-and the refusal names the `$$` rule — as does the startup line, which reads
-`MUSICDROP_PASSWORD_HASH is set but UNREADABLE`. That is a deliberate asymmetry with the Plex
-and slskd settings, where a saved file beats its seed env var: a typo in the override falling
-through to the setup form would create a second password that the corrected env var later
-shadows, and a lockout lever that can be shadowed is not one. Fix the value or remove it; the
-refusal message says the same.
+still a set override. With the `$` left single, compose treats a `$` followed by a letter or
+underscore as a variable reference and swallows the name, up to the first character that is not
+a letter, digit or underscore; a `$` before a digit is kept, so `$131072$8$1` and the base64 `=`
+padding survive, and whichever of the salt and digest start with a letter lose their leading run.
+Measured with Compose 5.5.0 on a hash the generator printed:
+`scrypt$131072$8$1$5SpsLX…sA==$xLM5OQ…PsE=` arrived as `scrypt$131072$8$1$5SpsLX…sA===` — the
+digit-led salt intact, the letter-led digest reduced to its `=` — and `docker compose config` had
+warned that *the "xLM5OQ…PsE" variable is not set*. Once in a while both fields happen to start
+with a digit or a symbol, the raw value arrives intact and works, and the trap is hidden rather
+than removed; usually what arrives no longer parses — the incident this feature came out of —
+and then sign-in is refused, the setup form stays hidden, and the refusal names the `$$` rule —
+as does the startup line, which reads `MUSICDROP_PASSWORD_HASH is set but UNREADABLE`. That is
+a deliberate asymmetry with the Plex and slskd settings, where a saved file beats its seed env
+var: a typo in the override falling through to the setup form would create a second password
+that the corrected env var later shadows, and a lockout lever that can be shadowed is not one.
+Fix the value or remove it; the refusal message says the same.
 
 **Changing the password signs every other session out, everywhere.** The cookie is signed with a
 key derived from the password hash — the file's or the environment's, whichever is in effect —
@@ -374,7 +393,7 @@ MusicDrop has no built-in backup, deliberately: its state is plain files under t
 - `data/beets/playlists/*.json` and `data/beets/playlists/artwork/` — MusicDrop owns playlists; Plex is a push target, not a copy.
 - `<music>/.playlists/*.m3u8` — the Plex-readable exports. Rewritten only when a playlist changes, never rebuilt wholesale, so the music tree's restore is what covers them; `MUSICDROP_PLAYLISTS_EXPORT_DIR` takes them out of it — snapshot that path too.
 - `data/beets/plex/plex.json`, `data/beets/slskd/slskd.json` — the Plex and slskd integration settings, mode `0600`. Not just tokens: Plex's library path/section, slskd's downloads prefix and its `auto_import` toggle (lose that and unattended import reverts to its env default, off).
-- `data/beets/password-hash` — the single account's password, as a scrypt hash, mode `0600`, written by the setup form and by **Settings → Account**. Absent, the sign-in screen is the setup form again (that is also the forgotten-password recovery, so a backup without it costs a re-setup, not the library); present but unreadable — permissions the container's user cannot read through, or contents that are not a hash — sign-in is refused and the setup form stays hidden until it is fixed or deleted. While `MUSICDROP_PASSWORD_HASH` is set the override wins and this file is shadowed, whatever it holds.
+- `data/beets/password-hash` — the single account's password, as a scrypt hash, mode `0600`, written by the setup form and by **Settings → Account**. Absent, the sign-in screen is the setup form again (that is also the forgotten-password recovery, so a backup without it costs a re-setup, not the library); present but unreadable — whatever sits at that path, if MusicDrop cannot read it as a hash — sign-in is refused and the setup form stays hidden until it is fixed or removed. While `MUSICDROP_PASSWORD_HASH` is set the override wins and this file is shadowed, whatever it holds.
 - `<inbox>/.musicdrop-ledger.json` — the handled-drops record. Defaults to `<beets_dir>/inbox`, inside `/data`; `MUSICDROP_INBOX_DIR` moves it onto the slskd downloads mount — the table's third row.
 - `data/beets/trash/` — deleted albums live here and nowhere else until you empty the Trash; normally the only GB-scale item under `data/`.
 - `data/beets/trash-origins/*.json` — where each trashed folder came from, one tiny file per Trash entry (two entry names long enough to share a shortened key share one file; the loser falls back to the approximate restore). Nothing else records it: restore the Trash without these and every row falls back to the approximate restore, which for an art/booklet leftover with no audio means no way back at all. `MUSICDROP_TRASH_ORIGINS_DIR` moves them. A backup that leaves this folder ABSENT is fine — the next delete creates it, exactly as a fresh install does. One restored with permissions the container's user cannot read or write is not: deletes are refused with a 503 until it is fixed (see **Delete & Trash** above).
