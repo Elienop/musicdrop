@@ -44,7 +44,12 @@ from app.auth.session import (
     SESSION_MAX_AGE_SECONDS,
     mint_session_token,
 )
-from app.auth.source import PasswordSource, effective_password, write_password_hash
+from app.auth.source import (
+    PasswordSource,
+    effective_password,
+    password_file_location,
+    write_password_hash,
+)
 from app.models.auth import (
     AuthStatus,
     ChangePasswordRequest,
@@ -90,14 +95,19 @@ router = APIRouter(tags=["auth"])
 # deliberately NOT in this set. It is a bounce trigger the transport turns into
 # a redirect and no human ever reads, so it keeps the house register.
 _NO_PASSWORD_DETAIL: Final = "No password is configured on this server."
-# Two sentences, and the second one is the whole point: a hash pasted into
-# docker-compose with single dollars is interpolated to something shorter, which
-# is the measured way this state is reached. The env arm names the variable; the
-# file arm names the recovery, which is deleting it (never overwriting it — see
-# app/auth/source.py).
+# Three sentences, and the last two are both recoveries, because they lead
+# different places. Fixing the value keeps the override; unsetting it hands the
+# server back to whatever is stored — which may be a password the operator set
+# on the sign-in screen, or nothing at all, and the sentence says so rather than
+# promising either. A hash pasted into docker-compose with single dollars is
+# interpolated to something shorter, which is the measured way this state is
+# reached. The file twin below names its own recovery, which is deleting it
+# (never overwriting it — see app/auth/source.py).
 _UNREADABLE_ENV_HASH_DETAIL: Final = (
     "The password hash in MUSICDROP_PASSWORD_HASH is not readable. "
-    "In docker-compose, every $ in the hash must be doubled to $$."
+    "In docker-compose, every $ in the hash must be doubled to $$. "
+    "Or unset it and restart MusicDrop, and the password stored on this server, "
+    "if there is one, applies again."
 )
 _UNREADABLE_FILE_HASH_DETAIL: Final = (
     "The stored password hash on this server is not readable. "
@@ -490,6 +500,12 @@ async def setup_password(body: SetupRequest, request: Request, response: Respons
             raise HTTPException(status_code=409, detail=_already_configured_detail(source))
         stored = await _hash_serialised(body.password)
         _store_password_hash(stored)
+    # WARNING, not info: this is the moment the instance stopped being claimable
+    # by whoever reached it first, and deleting the file re-opens that on the
+    # running process with no restart and no other signal. An operator reading
+    # the log has to be able to see both the claim and where the credential now
+    # lives. Neither the password nor the hash is logged, here or anywhere.
+    logger.warning("first-run setup stored a password at %r", password_file_location())
     _issue_session_cookie(response, request, secret, stored)
     return AuthStatus(authenticated=True, password_set=True, password_source="file")
 
@@ -529,6 +545,9 @@ async def change_password(
             raise HTTPException(status_code=403, detail=_WRONG_CURRENT_PASSWORD_DETAIL)
         new_stored = await _hash_serialised(body.new_password)
         _store_password_hash(new_stored)
+    # INFO rather than WARNING: an expected administrative action, where setup is
+    # a one-way change of the instance's posture. Same rule about what is in it.
+    logger.info("the stored password was changed at %r", password_file_location())
     _issue_session_cookie(response, request, secret, new_stored)
     return AuthStatus(authenticated=True, password_set=True, password_source="file")
 

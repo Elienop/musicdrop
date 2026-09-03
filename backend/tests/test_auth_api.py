@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import threading
 import time
+from pathlib import Path
 
 import anyio
 import httpx
@@ -244,6 +245,37 @@ def test_an_unreadable_hash_says_so_rather_than_blaming_the_password(
     detail = resp.json()["detail"]
     assert "MUSICDROP_PASSWORD_HASH" in detail
     assert "$$" in detail
+    # The SECOND recovery. Doubling the dollars keeps the override; unsetting the
+    # variable hands the server back to whatever is stored, which is the move an
+    # operator who never meant to use the override wants — and the sentence has
+    # to admit it may be nothing, because the app cannot promise a stored one.
+    assert "unset it" in detail
+    assert "if there is one" in detail
+
+
+def test_an_unreadable_STORED_FILE_names_its_own_recovery(password_hash_file: Path) -> None:
+    """The file arm's sentence, which is NOT the env arm's.
+
+    Deleting this arm left the whole suite green while the same server answered
+    "No password is configured on this server." to a login and "A password is
+    already configured on this server" to setup. Pinned as the whole sentence
+    because the login form renders it verbatim.
+
+    A DIRECTORY is the unreadable state, because ``chmod 000`` is no obstacle to
+    the root shell the shipped image gives a ``docker exec``.
+    """
+    password_hash_file.mkdir(parents=True)
+
+    resp = _anonymous().post(_LOGIN, json={"password": _PASSWORD})
+
+    assert resp.status_code == 401
+    assert resp.json() == {
+        "detail": (
+            "The stored password hash on this server is not readable. "
+            "Delete the password-hash file in the beets directory and restart "
+            "MusicDrop to set a new password."
+        )
+    }
 
 
 @pytest.mark.parametrize(

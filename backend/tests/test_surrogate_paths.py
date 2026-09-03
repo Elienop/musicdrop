@@ -415,11 +415,15 @@ _JSON = {"Content-Type": "application/json"}
 
 
 def test_validation_error_echo_survives_a_client_injected_surrogate(client: TestClient) -> None:
-    # json.loads accepts that escape and yields a LONE SURROGATE, which FastAPI
-    # echoes as the offending `input` in its 422 body — rendered by a plain
-    # JSONResponse outside the app's response class.
+    # json.loads accepts that escape and yields a LONE SURROGATE, which pydantic
+    # puts in the row's `input` — rendered by a plain JSONResponse outside the
+    # app's response class. `app/wire.py` now drops that key from every row
+    # (a password field was being read back to the sender), so the surrogate no
+    # longer reaches the renderer at all and this asserts both halves: the
+    # request is still refused, and its value is not in the answer.
     resp = client.post("/api/trash/restore", content=_SURROGATE_BODY, headers=_JSON)
     assert resp.status_code == 422, resp.text
+    assert "input" not in resp.text
 
 
 def test_validation_error_control_is_422_for_an_ordinary_bad_value(client: TestClient) -> None:

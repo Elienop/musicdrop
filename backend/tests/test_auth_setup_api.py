@@ -13,9 +13,12 @@ and ``tests/test_password_file_isolation.py`` proves that floor is not vacuous.
 
 from __future__ import annotations
 
+import logging
 import stat
 from pathlib import Path
 
+import anyio
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -29,6 +32,10 @@ _LOGIN = "/api/auth/login"
 _STATUS = "/api/auth/status"
 _GATED = "/openapi.json"
 _PASSWORD = "correct horse battery staple"
+#: How many browsers race for the account in the write-lock test. Eight is well
+#: past the two the failure needs and still costs one scrypt derive, because the
+#: seven that lose answer 409 before deriving anything.
+_CONCURRENT_SETUPS = 8
 
 
 def _anonymous() -> TestClient:
@@ -61,6 +68,47 @@ def test_setup_stores_the_hash_and_signs_the_caller_in(password_hash_file: Path)
     }
     stored = password_hash_file.read_text(encoding="utf-8").strip()
     assert verify_password(_PASSWORD, stored) is True
+
+
+def test_the_claim_is_logged_and_carries_no_secret(
+    password_hash_file: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The one event an operator has to be able to see, and what it may not say.
+
+    Until the file exists this instance belongs to whoever reaches it first, and
+    deleting the file re-opens that on the RUNNING process — no restart, no
+    other signal. Without this record the only trace of the claim is uvicorn's
+    access line for a 200. WARNING because it is a one-way change of posture.
+
+    The second half is the constraint: no record from ANY logger may carry the
+    plaintext or the stored hash. Asserted over every record the request
+    produced, not just this one, and over the arguments as well as the rendered
+    message — a ``%r`` of the wrong value would otherwise pass.
+    """
+    with caplog.at_level(logging.DEBUG):
+        resp = _anonymous().post(_SETUP, json={"password": _PASSWORD})
+
+    assert resp.status_code == 200
+    stored = password_hash_file.read_text(encoding="utf-8").strip()
+    claims = [record for record in caplog.records if "first-run setup" in record.getMessage()]
+    assert len(claims) == 1, [record.getMessage() for record in caplog.records]
+    assert claims[0].levelno == logging.WARNING
+    assert str(password_hash_file) in claims[0].getMessage()
+    _assert_no_secret_in(caplog.records, secrets=(_PASSWORD, stored))
+
+
+def _assert_no_secret_in(records: list[logging.LogRecord], *, secrets: tuple[str, ...]) -> None:
+    """No record anywhere carries the plaintext or the stored hash.
+
+    Both the rendered message and the raw arguments, because a record is not
+    rendered until a handler formats it: a secret passed as an argument and
+    never formatted is still a secret sitting in whatever handler the operator
+    configured.
+    """
+    for record in records:
+        rendered = f"{record.getMessage()} {record.args!r}"
+        for secret in secrets:
+            assert secret not in rendered, f"{secret!r} leaked into {record.name}: {rendered}"
 
 
 def test_the_stored_hash_is_owner_only(password_hash_file: Path) -> None:
@@ -128,6 +176,56 @@ def test_setup_is_reachable_without_a_session() -> None:
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.anyio
+async def test_only_one_of_many_simultaneous_first_run_setups_wins(
+    password_hash_file: Path,
+) -> None:
+    """First WINS, rather than first-ish: the check and the write are one step.
+
+    The atomic writer publishes with ``os.replace``, which is last-writer-wins
+    rather than create-or-fail, so without the lock in ``app/api/auth.py`` every
+    caller passes the "no source" check and the last write survives. Measured
+    with the lock replaced by a null context: two callers both got 200, and the
+    FIRST one was handed a cookie for a password that was no longer stored —
+    told it was signed in, and locked out on its next request.
+
+    One event loop for all of them (``httpx.ASGITransport``), because that is
+    what an ``asyncio.Lock`` serialises; two TestClients would each run in their
+    own loop and contend on nothing.
+
+    Only two of the passwords are verified against the stored hash rather than
+    all of them: each verify pays a real ~0.16 s scrypt derive, and the winner
+    plus one loser is what the claim needs.
+    """
+    passwords = [f"first-run passphrase number {index}" for index in range(_CONCURRENT_SETUPS)]
+    transport = httpx.ASGITransport(app=real_app)
+    answers: dict[str, httpx.Response] = {}
+
+    async def claim(password: str) -> None:
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            answers[password] = await client.post(_SETUP, json={"password": password})
+
+    async with anyio.create_task_group() as group:
+        for password in passwords:
+            group.start_soon(claim, password)
+
+    statuses = sorted(response.status_code for response in answers.values())
+    assert statuses == [200] + [409] * (_CONCURRENT_SETUPS - 1), statuses
+    with_cookie = [
+        password for password, response in answers.items() if "set-cookie" in response.headers
+    ]
+    assert len(with_cookie) == 1, "more than one caller was told it now holds the account"
+
+    winner = next(password for password, response in answers.items() if response.status_code == 200)
+    assert with_cookie == [winner]
+    loser = next(password for password in passwords if password != winner)
+    # anyio.Path, not Path: a blocking read inside an async test is what
+    # ruff's ASYNC240 is about, and the rule is right even here.
+    stored = (await anyio.Path(password_hash_file).read_text(encoding="utf-8")).strip()
+    assert verify_password(winner, stored) is True
+    assert verify_password(loser, stored) is False
+
+
 def test_setup_is_refused_once_a_hash_is_stored(password_hash_file: Path) -> None:
     """First wins. The second caller is told, and the stored hash is untouched.
 
@@ -192,6 +290,26 @@ def test_setup_is_refused_when_the_stored_file_is_UNREADABLE(
     assert password_hash_file.is_dir()
 
 
+def test_setup_is_refused_when_the_path_is_a_DANGLING_symlink(
+    password_hash_file: Path,
+) -> None:
+    """A link that resolves to nothing is still an entry the operator put there.
+
+    The shape an operator lands in when the file is a link into a secrets mount
+    that has not been mounted yet. Setup publishes with ``os.replace``, which
+    drops the link and stores a password where they meant to read one — so the
+    answer has to be 409, and the link has to survive it.
+    """
+    password_hash_file.parent.mkdir(parents=True, exist_ok=True)
+    password_hash_file.symlink_to(password_hash_file.parent / "not-mounted-yet")
+
+    resp = _anonymous().post(_SETUP, json={"password": _PASSWORD})
+
+    assert resp.status_code == 409
+    assert password_hash_file.is_symlink()
+    assert not password_hash_file.exists()  # still dangling: nothing was written
+
+
 # --------------------------------------------------------------------------
 # 422 / 503
 # --------------------------------------------------------------------------
@@ -208,6 +326,33 @@ def test_a_blank_password_is_refused(blank: str, password_hash_file: Path) -> No
     resp = _anonymous().post(_SETUP, json={"password": blank})
 
     assert resp.status_code == 422
+    assert not password_hash_file.exists()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param({"password": ["a-plaintext-marker"]}, id="wrong-type"),
+        pytest.param({"password": {"value": "a-plaintext-marker"}}, id="wrong-type-object"),
+    ],
+)
+def test_a_shape_422_does_not_read_the_password_back(
+    body: dict[str, object], password_hash_file: Path
+) -> None:
+    """A body pydantic refuses must not carry the plaintext into the response.
+
+    The blank-password 422 is the app's own and answers with a sentence, but a
+    body of the WRONG SHAPE is refused by pydantic, which puts the rejected
+    value in each row by default. Reachable by anyone who can reach the port:
+    ``/api/auth/setup`` is gate-exempt. Dropped for every route in
+    ``app/wire.py`` rather than for a named list of password fields.
+    """
+    resp = _anonymous().post(_SETUP, json=body)
+
+    assert resp.status_code == 422
+    assert "a-plaintext-marker" not in resp.text
+    # The message is still there, which is what the sign-in form renders.
+    assert resp.json()["detail"][0]["msg"]
     assert not password_hash_file.exists()
 
 

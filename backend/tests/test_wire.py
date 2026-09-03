@@ -193,6 +193,34 @@ def test_every_api_route_resolves_to_the_safe_response_class() -> None:
     assert classes == {SurrogateSafeJSONResponse}, classes
 
 
+def test_a_validation_422_does_not_echo_what_the_client_sent() -> None:
+    """Every row is ``loc``/``msg``/``type`` — the schema's words, not the client's.
+
+    App-wide rather than per-route, because two of the routes that take a body
+    take a PASSWORD in it and a list of secret field names is a list somebody
+    has to remember to add to. Those three keys are also exactly what FastAPI's
+    ``HTTPValidationError`` component declares, so the wire body and the
+    contract agree where they used to differ.
+
+    ``/api/trash/restore`` stands in for "any route with a Pydantic body": the
+    marker below is an ordinary string in an ordinary field, and the point is
+    that no field is special.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    marker = "a-value-the-client-sent-marker"
+    resp = TestClient(app).post("/api/trash/restore", json={"folder": {"nested": marker}})
+
+    assert resp.status_code == 422, resp.text
+    assert marker not in resp.text
+    rows = resp.json()["detail"]
+    assert rows, "a validation 422 names at least one bad field"
+    for row in rows:
+        assert set(row) == {"loc", "msg", "type"}, row
+
+
 # ----- resolve_display_path (the inverse, for names the client sends back) -----
 
 

@@ -22,6 +22,7 @@ proves that floor is not vacuous.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -80,6 +81,38 @@ def test_the_password_changes_and_the_caller_stays_signed_in(
     # working: without the re-mint the browser that made the change would be
     # signed out by its own success.
     assert client.get(_GATED).status_code == 200
+
+
+def test_the_change_is_logged_and_carries_no_secret(
+    password_hash_file: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A record an operator can find, at INFO — this is an expected action.
+
+    Setup logs at WARNING because it is a one-way change of the instance's
+    posture; a change is routine, and its value is in the timeline (every other
+    browser was signed out at that moment). Neither carries the plaintext or the
+    hash, and that is asserted over every record the request produced.
+    """
+    _stored(password_hash_file, _OLD)
+    client = _signed_in()
+
+    with caplog.at_level(logging.DEBUG):
+        resp = client.post(_CHANGE, json={"current_password": _OLD, "new_password": _NEW})
+
+    assert resp.status_code == 200
+    stored = password_hash_file.read_text(encoding="utf-8").strip()
+    changes = [
+        record
+        for record in caplog.records
+        if "the stored password was changed" in record.getMessage()
+    ]
+    assert len(changes) == 1, [record.getMessage() for record in caplog.records]
+    assert changes[0].levelno == logging.INFO
+    assert str(password_hash_file) in changes[0].getMessage()
+    for record in caplog.records:
+        rendered = f"{record.getMessage()} {record.args!r}"
+        for secret in (_OLD, _NEW, stored):
+            assert secret not in rendered, f"{secret!r} leaked into {record.name}: {rendered}"
 
 
 def test_only_the_new_password_signs_in_afterwards(password_hash_file: Path) -> None:
@@ -218,7 +251,49 @@ def test_an_unreadable_stored_hash_refuses_the_change(password_hash_file: Path) 
     resp = client.post(_CHANGE, json={"current_password": _OLD, "new_password": _NEW})
 
     assert resp.status_code == 409
+    # The whole sentence, not just the status. Collapsing this arm onto the
+    # "nothing to change" one left the suite green while the panel told an
+    # operator with a corrupt hash file to go and set a password on the sign-in
+    # screen, which answers 409 as well. The recovery here is deleting the file,
+    # and it is the same sentence a login refusal gives — one state, one fix.
+    assert resp.json() == {
+        "detail": (
+            "The stored password hash on this server is not readable. "
+            "Delete the password-hash file in the beets directory and restart "
+            "MusicDrop to set a new password."
+        )
+    }
     assert password_hash_file.read_text(encoding="utf-8") == "scrypt$oops"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param({"current_password": "a-plaintext-marker"}, id="new-password-missing"),
+        pytest.param(
+            {"current_password": ["a-plaintext-marker"], "new_password": _NEW},
+            id="current-password-wrong-type",
+        ),
+    ],
+)
+def test_a_shape_422_does_not_read_the_password_back(
+    body: dict[str, object], password_hash_file: Path
+) -> None:
+    """A missing or mistyped field must not echo the password that WAS sent.
+
+    The missing-field row is the one worth spelling out: pydantic reports it
+    against the whole body, so the value of every OTHER field — here the current
+    password — travelled back to the caller in the 422. Dropped app-wide in
+    ``app/wire.py``; see the twin in ``test_auth_setup_api.py``.
+    """
+    _stored(password_hash_file, _OLD)
+    client = _signed_in()
+
+    resp = client.post(_CHANGE, json=body)
+
+    assert resp.status_code == 422
+    assert "a-plaintext-marker" not in resp.text
+    assert resp.json()["detail"][0]["msg"]
 
 
 @pytest.mark.parametrize("blank", ["", "   ", "\n\t"])
