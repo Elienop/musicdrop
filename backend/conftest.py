@@ -58,6 +58,22 @@ is strictly better — the sandbox starts empty each run, where the old file
 persisted across runs and held real history — but tests that read importer state
 can still see what an earlier test left. Pre-seeding the sandbox with non-empty
 importer state changes no result today.
+
+**The second floor: the stored password hash.** ``tests/conftest.py``'s autouse
+``password_hash_file`` fixture pins ``app.auth.source.live_password_hash_path``
+per test, and that is where the WRITE protection lives. It cannot cover the two
+reads that happen at IMPORT time, before any fixture exists:
+
+* ``app/main.py`` resolves the boot posture clause while the module is imported;
+* ``tests/test_health.py`` builds a module-level ``TestClient``, whose seam
+  cookie is minted from ``effective_password()`` (``tests/conftest.py``).
+
+With a real ``password-hash`` in the configured beets dir, that second read minted
+a cookie bound to the real stored hash, the autouse fixture then repointed the
+resolver at an empty tmp dir, and the gate rejected the suite's own cookie —
+measured on this branch as ``tests/test_health.py`` failing ``401 == 200``. So
+the resolver is pinned HERE too, at the same place and for the same reason the
+``BEETSDIR`` floor is: before anything can import ``app.main``.
 """
 
 import os
@@ -65,6 +81,8 @@ import tempfile
 from pathlib import Path
 
 from confuse.util import config_dirs
+
+import app.auth.source as _password_source
 
 #: The suite's throwaway ``BEETSDIR``. ``TemporaryDirectory`` keeps a finalizer
 #: that removes it at interpreter exit; ``ignore_cleanup_errors`` so a lingering
@@ -84,3 +102,19 @@ os.environ["BEETSDIR"] = str(SUITE_BEETSDIR)
 #: pin in ``tests/test_beetsdir_isolation.py`` can assert the sandbox is not one
 #: of them, rather than hard-coding a path that would rot on another platform.
 PLATFORM_BEETS_DIRS: tuple[Path, ...] = tuple(Path(d) / "beets" for d in config_dirs())
+
+#: Where the stored password hash resolves for the whole pytest PROCESS. Inside
+#: the same throwaway sandbox, so it is removed with it, and under a name of its
+#: own so a test that inspects the sandbox's beets files does not trip over it.
+#: Nothing in the suite writes here — the autouse fixture repoints every test at
+#: its own ``tmp_path`` — which is the point: the import-time readers find no
+#: stored hash, exactly as they do on a machine that has never run setup.
+SUITE_PASSWORD_HASH_PATH = SUITE_BEETSDIR / "suite-password-hash"
+
+# THE SECOND FLOOR, and it has to be applied by importing the resolver's module
+# here: ``app.main`` reads it while IT is imported, so a fixture cannot get in
+# first. Assigning the module attribute (rather than the env var or
+# ``settings.beets_dir``) pins the one seam every production read and write goes
+# through — the same seam ``tests/conftest.py::password_hash_file`` re-pins per
+# test, which saves and restores this value.
+_password_source.live_password_hash_path = lambda: SUITE_PASSWORD_HASH_PATH

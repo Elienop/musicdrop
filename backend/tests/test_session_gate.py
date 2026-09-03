@@ -2,7 +2,7 @@
 
 The headline invariant is the first test in this file — before this middleware
 existed, anyone who could reach the port could read the whole library through
-``GET /api/config``. Everything else here is the fence around that: the four
+``GET /api/config``. Everything else here is the fence around that: the five
 exempt paths that must stay open, the SPA shell that must stay open (or the
 login screen has nowhere to render), the doc surface that must NOT, and the
 cheaper guards that must keep winning ahead of it.
