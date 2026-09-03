@@ -19,7 +19,7 @@ entry carries a dated correction block where the pass changed it._
 
 ## Next up
 
-1. ~~**The data-safety slice**~~ — **SHIPPED on `fix/undoable-deletes`** (2026-08-31): the
+1. ~~**The data-safety slice**~~ — **SHIPPED — PR #208, squash `6a5427c` = v0.48.0** (2026-09-02): the
    unmounted-share ghost delete and the unrestorable Trash rows, both closed below, plus the
    README and `decisions.md` 27 (amended). Original entry kept for its correction record.
 
@@ -743,7 +743,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   album's shape (less protection, never more).
 
 - ~~**Record the origin path at trash time so a move-back restore becomes possible.**~~
-  **FIXED** on `fix/undoable-deletes` (follow-up from #189). Every mover records the origin
+  **FIXED** on `fix/undoable-deletes` (PR #208, squash `6a5427c` = v0.48.0; follow-up from #189). Every mover records the origin
   in a SIBLING store — `<beets_dir>/trash-origins/<entry name>.json`, one file per Trash
   entry, keyed on the entry's own name — mirroring freedesktop.org's `info/<name>.trashinfo`
   beside `files/<name>`.
@@ -883,6 +883,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - ~~**The delete-path mount predicate accepts a root with ANY entry, so a stray file on a
   local mountpoint masks a dropped share.**~~ **FIXED** on `fix/undoable-deletes`
+  (PR #208, squash `6a5427c` = v0.48.0)
   (deferred 2026-08-28 by design call, from the #189 security review). `.stfolder`,
   `lost+found` or an empty leftover dir on the mountpoint made `require_library_root` pass
   while the share was gone, re-opening the ghost drop for exactly that state.
@@ -1080,7 +1081,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 - ~~**A FLAT library layout defeats the delete path's presence check — it samples the music
   root against itself.**~~ (Found 2026-09-02, on `fix/undoable-deletes`, while re-reading the
   check that entry-above's sibling shipped.) —
-  **FIXED in #209**. Trigger: a
+  **FIXED in #209** (squash `5b7643b` = v0.49.0). Trigger: a
   `paths.default` template with no directory component — beets' own `$title` is the shortest,
   and the template is editable from the app (**Settings → Naming**, `config_editor` writes
   `paths:` straight back into `config.yaml`), so this is a supported layout and not a damaged
@@ -1138,7 +1139,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - ~~**An unreachable origins store makes the allocator hand out a recorded name, and the next
   folder inherits the first one's origin.**~~ —
-  **FIXED in #209**, 2026-09-02, per the owner's
+  **FIXED in #209** (squash `5b7643b` = v0.49.0), 2026-09-02, per the owner's
   ruling in `decisions.md` 28 item 3: the delete is REFUSED while the store cannot be used. What shipped, by symbol:
   `trash_origins.require_usable_store` asks the store the three questions a delete asks it —
   `mkdir(parents=True, exist_ok=True)`, `scandir` plus a `stat` of a key that is never there,
@@ -1180,7 +1181,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - ~~**A plugin listener that raises on `album_removed` leaves the folder in Trash with its
   album row already gone.**~~ —
-  **FIXED in #209**, 2026-09-02, per the owner's
+  **FIXED in #209** (squash `5b7643b` = v0.49.0), 2026-09-02, per the owner's
   ruling in `decisions.md` 28 item 4, WITH a residual
   that is stated below rather than closed. What shipped: `trash.trash_album_folder`'s
   whole-folder branch wraps `album.remove`; on a raise the folder is moved back to
@@ -2022,6 +2023,26 @@ Added by the 2026-08-28 sweeps:
   option, not utilities).
 
 ## Recently shipped
+
+- **Trash data-safety, two slices — #208 = v0.48.0 (2026-09-02) and #209 = v0.49.0 (2026-09-03).**
+  - **#208 = v0.48.0 — undoable deletes.** Every mover records where an entry came from in a
+    sibling store (`<beets_dir>/trash-origins/<entry>.json`, freedesktop `trashinfo` shape), so
+    Restore puts a folder back exactly where it was instead of re-importing; a symlinked Trash
+    entry is shown as refused with Restore and its own Empty disabled; the presence check
+    refuses a delete when the music share is not mounted, even behind a stray file on the
+    mountpoint. `decisions.md` 27 amended, 28 recorded from the owner's four answers.
+  - **#209 = v0.49.0 — fail closed, move back.** `decisions.md` 28 items 3 and 4: a delete
+    answers **503** and moves nothing when the origin store cannot be made, searched or
+    written (three real probes before any mover runs; the message names the store, not its
+    path, and reads "…Nothing has been deleted. Fix its permissions or its mount, then retry.");
+    when `album.remove` fails after a whole-folder move the folder is moved back and the 500
+    says so, hedging on the library rows because a plugin listener can raise after beets
+    committed. The flat-library presence check samples the files the library names, not their
+    folders. Also the first Sonar sweep of the Python side since 2026-08-31: 34 `S5778`
+    sites hoisted to one call per `pytest.raises` and one `S112` annotation, so the persistent
+    project reads zero open after the merge. Residuals stay above: the per-item mover has no
+    undo, a listener failure orphans item rows, the leaked probe dotfile is not swept, the UI
+    renders only the message half of a structured 500.
 
 - **Real authentication — auth option C, three slices, shipped 2026-08-30 (#199, #200, #201).**
   The standing long-term security item, closed in one day. Before it: 112 operations (66
