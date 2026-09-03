@@ -217,17 +217,18 @@ MusicDrop has a **single account**, protected by one password. Every `/api/*` re
 `/docs`, `/redoc`, `/openapi.json` — is refused with a `401` unless the browser holds a valid
 session cookie. The only exceptions are the container healthcheck (`/api/health`), the slskd
 webhook (which carries its own shared secret), and the three sign-in endpoints themselves —
-first-run setup, sign-in, and the status check the sign-in screen polls.
+first-run setup, sign-in, and the status check the sign-in screen asks first.
 
 **Until a password exists, nothing is reachable.** That is deliberate — there is no
 "unprotected by default" mode. On a fresh install the browser lands on a **setup form** instead
 of the sign-in form: choose a password, confirm it, and you are signed in. There is no username,
-no length rule and no e-mail; the one thing refused is an empty (or whitespace-only) password. What gets stored is an
-scrypt hash, not the password: `data/beets/password-hash`, mode `0600`, written atomically
-beside `session-secret`. The startup log says which state the server is in, on one line — its
-`auth:` clause reads `NO password configured` until setup runs, points at the setup form, and
-names `MUSICDROP_PASSWORD_HASH` as the override (below); once a password exists it says where
-the password came from, the file or the environment.
+no length rule and no e-mail; an empty (or whitespace-only) password is refused, the same rule
+the `hash_password` command applies. What gets stored is a scrypt hash, not the password:
+`data/beets/password-hash`, mode `0600`, written atomically beside `session-secret`. The
+startup log says which state the server is in, on one line — its `auth:` clause reads
+`NO password configured` until setup runs, points at the setup form, and names
+`MUSICDROP_PASSWORD_HASH` as the override (below); once a password exists it says where the
+password came from, the file or the environment.
 
 With a password set, MusicDrop opens on a **sign-in screen** — one password field, no username, and
 it is the only page an unauthenticated visitor can reach. Signing in sets a cookie that lasts
@@ -255,11 +256,12 @@ docker exec musicdrop rm /data/beets/password-hash && docker compose restart mus
 rm ./data/beets/password-hash && docker compose restart musicdrop
 ```
 
-The restart is part of the recipe, not a flourish: the startup line reports the password source
-once, at boot, and a container start is also when the entrypoint re-owns everything under
-`/data`. Setting the new password writes a new hash, which signs every other browser out — the
-paragraph after next says why. Deleting that file *is* the reset, so it is exactly as protected
-as the data directory it lives in, which already holds the library.
+Restart as well, for two reasons: the startup line reports the password source at boot and
+not again, and a container start is also when the entrypoint re-owns everything under `/data`
+(what a root `docker exec` leaves behind there is recorded as unverified in `BACKLOG.md`).
+Setting the new password writes a new hash, which signs every other browser out — the paragraph
+after next says why. Deleting that file *is* the reset, so it is as protected as the data
+directory it lives in, which already holds the library.
 
 #### Overriding the password from the environment
 
@@ -293,14 +295,17 @@ every `$` doubled, labelled as the compose form. Put that one in your compose fi
 The doubling is only a `docker-compose.yml` quirk. In an `.env` file, an `env_file:`, or a plain
 `docker run -e`, paste the value exactly as printed.
 
-**The override wins even when its value is unreadable.** A hash that compose has mangled — one
-`$` left single, so `$131072` was read as a variable and expanded to nothing — is still a set
-override: sign-in is refused (the form says the hash cannot be read), the setup form stays
-hidden, and the startup line reads `MUSICDROP_PASSWORD_HASH is set but UNREADABLE` and repeats
-the `$$` rule. That is a deliberate asymmetry with the Plex and slskd settings, where a saved
-file beats its seed env var: a typo in the override falling through to the setup form would
-create a second password that the corrected env var later shadows, and a lockout lever that can
-be shadowed is not one. Fix the value or remove it; the refusal message says the same.
+**The override wins even when its value is unreadable.** A hash that compose has mangled is
+still a set override. With the `$` left single, compose keeps `$131072`, `$8` and `$1` (a `$`
+followed by a digit is not a variable reference to it) but reads the letter-led salt and digest
+as variables and blanks them, so what reaches MusicDrop is `scrypt$131072$8$1` — four fields of
+six, and the incident this feature came out of. Sign-in is refused, the setup form stays hidden,
+and the refusal names the `$$` rule — as does the startup line, which reads
+`MUSICDROP_PASSWORD_HASH is set but UNREADABLE`. That is a deliberate asymmetry with the Plex
+and slskd settings, where a saved file beats its seed env var: a typo in the override falling
+through to the setup form would create a second password that the corrected env var later
+shadows, and a lockout lever that can be shadowed is not one. Fix the value or remove it; the
+refusal message says the same.
 
 **Changing the password signs every other session out, everywhere.** The cookie is signed with a
 key derived from the password hash — the file's or the environment's, whichever is in effect —
@@ -369,7 +374,7 @@ MusicDrop has no built-in backup, deliberately: its state is plain files under t
 - `data/beets/playlists/*.json` and `data/beets/playlists/artwork/` — MusicDrop owns playlists; Plex is a push target, not a copy.
 - `<music>/.playlists/*.m3u8` — the Plex-readable exports. Rewritten only when a playlist changes, never rebuilt wholesale, so the music tree's restore is what covers them; `MUSICDROP_PLAYLISTS_EXPORT_DIR` takes them out of it — snapshot that path too.
 - `data/beets/plex/plex.json`, `data/beets/slskd/slskd.json` — the Plex and slskd integration settings, mode `0600`. Not just tokens: Plex's library path/section, slskd's downloads prefix and its `auto_import` toggle (lose that and unattended import reverts to its env default, off).
-- `data/beets/password-hash` — the single account's password, as an scrypt hash, mode `0600`, written by the setup form and by **Settings → Account**. Absent, the sign-in screen is the setup form again (that is also the forgotten-password recovery, so a backup without it costs a re-setup, not the library); present but not readable by the container's user, sign-in is refused until it is fixed or deleted. While `MUSICDROP_PASSWORD_HASH` is set the override wins and this file is shadowed, whatever it holds.
+- `data/beets/password-hash` — the single account's password, as a scrypt hash, mode `0600`, written by the setup form and by **Settings → Account**. Absent, the sign-in screen is the setup form again (that is also the forgotten-password recovery, so a backup without it costs a re-setup, not the library); present but unreadable — permissions the container's user cannot read through, or contents that are not a hash — sign-in is refused and the setup form stays hidden until it is fixed or deleted. While `MUSICDROP_PASSWORD_HASH` is set the override wins and this file is shadowed, whatever it holds.
 - `<inbox>/.musicdrop-ledger.json` — the handled-drops record. Defaults to `<beets_dir>/inbox`, inside `/data`; `MUSICDROP_INBOX_DIR` moves it onto the slskd downloads mount — the table's third row.
 - `data/beets/trash/` — deleted albums live here and nowhere else until you empty the Trash; normally the only GB-scale item under `data/`.
 - `data/beets/trash-origins/*.json` — where each trashed folder came from, one tiny file per Trash entry (two entry names long enough to share a shortened key share one file; the loser falls back to the approximate restore). Nothing else records it: restore the Trash without these and every row falls back to the approximate restore, which for an art/booklet leftover with no audio means no way back at all. `MUSICDROP_TRASH_ORIGINS_DIR` moves them. A backup that leaves this folder ABSENT is fine — the next delete creates it, exactly as a fresh install does. One restored with permissions the container's user cannot read or write is not: deletes are refused with a 503 until it is fixed (see **Delete & Trash** above).

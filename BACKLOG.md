@@ -66,8 +66,10 @@ entry carries a dated correction block where the pass changed it._
    `0600` through the same atomic writer as `session-secret`, and the caller is signed in by
    the same response; change-password is `POST /api/auth/password` behind a new **Settings →
    Account** section (current, new, confirm; a wrong current password answers **403**, not
-   401, because any non-exempt 401 flips the frontend to signed-out); forgotten password =
-   delete the file and restart. `AuthStatus` gains `password_source: none | env | file`, and
+   401, because any non-exempt 401 flips the frontend to signed-out; under the env override
+   the route answers **409** even though the panel shows a notice instead of the form);
+   forgotten password = delete the file and restart. `AuthStatus` gains
+   `password_source: none | env | file`, and
    one resolver (`effective_password()`) replaces the four readers of `settings.password_hash`,
    the gate's included. **Precedence, ruled:** a non-empty env var wins over the file and hides
    both forms **even when its value is UNREADABLE** — refuse login, offer no setup, and say the
