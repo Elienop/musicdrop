@@ -879,6 +879,60 @@ describe("LoginPage — first run, with no password anywhere", () => {
     expect(screen.getByLabelText("Password")).toHaveFocus();
   });
 
+  test("the last answer's sentence does not outlive the next submit", async () => {
+    // The rejection was read off the mutation's error, so a 409 — which
+    // deliberately says nothing itself — left the PREVIOUS answer's alert
+    // standing under the note explaining the swap. Reachable in one sitting: a
+    // sign-in already in flight (429), then someone else sets the password.
+    let posts = 0;
+    let statusCalls = 0;
+    server.use(
+      http.get(STATUS_URL, () => {
+        statusCalls += 1;
+        return statusCalls === 1
+          ? HttpResponse.json({
+              authenticated: false,
+              password_set: false,
+              password_source: "none",
+            })
+          : HttpResponse.error();
+      }),
+      http.post(SETUP_URL, () => {
+        posts += 1;
+        return posts === 1
+          ? HttpResponse.json(
+              {
+                detail:
+                  "Another sign-in is already in progress. Try again in a moment.",
+              },
+              { status: 429 },
+            )
+          : HttpResponse.json(
+              {
+                detail:
+                  "A password is already configured on this server and stored in the beets directory.",
+              },
+              { status: 409 },
+            );
+      }),
+    );
+    renderLogin();
+
+    await userEvent.type(await screen.findByLabelText("Password"), "hunter2");
+    await userEvent.type(screen.getByLabelText("Confirm password"), "hunter2");
+    await userEvent.click(screen.getByRole("button", { name: "Set password" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Another sign-in is already",
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Set password" }));
+
+    await screen.findByText(
+      "A password was set from elsewhere while this page was open. Sign in with that one.",
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   test.each([
     [422, "A password cannot be empty or only whitespace."],
     [

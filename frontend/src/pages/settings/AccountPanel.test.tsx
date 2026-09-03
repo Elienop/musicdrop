@@ -397,6 +397,42 @@ describe("AccountPanel — what the server refuses", () => {
     );
   });
 
+  test("a change that works clears the rejection the last try left", async () => {
+    // The rejection lived in the mutation's error, which a SUCCESS does not
+    // reset — so "The current password is incorrect." sat in the action row
+    // beside "Password changed.", two answers to two different submits on
+    // screen at once.
+    let posts = 0;
+    server.use(
+      statusHandler("file"),
+      http.post(CHANGE_URL, () => {
+        posts += 1;
+        return posts === 1
+          ? HttpResponse.json(
+              { detail: "The current password is incorrect." },
+              { status: 403 },
+            )
+          : HttpResponse.json({
+              authenticated: true,
+              password_set: true,
+              password_source: "file",
+            });
+      }),
+    );
+    renderWithProviders(<AccountPanel />);
+
+    await submitChange("wrong-one", "new-one");
+    await screen.findByRole("alert");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Change password" }),
+    );
+
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Password changed.",
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   test("a 409 reads as a notice about the server, not as a field error", async () => {
     // Not reachable while the panel hides the form under "env", and handled
     // anyway: the status this panel read is a cached answer, and a restart can
