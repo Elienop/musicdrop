@@ -110,6 +110,27 @@ describe("LoginPage — the form", () => {
     ).toBeInTheDocument();
   });
 
+  test("carries the username field password managers look for", async () => {
+    // Chrome logs "Password forms should have (optionally hidden) username
+    // fields for accessibility" for a form with password fields alone, and
+    // managers file entries they then struggle to offer back. It is off
+    // screen, out of the tab order and out of the accessibility tree: this
+    // server has one password and no accounts, so it is not a second thing for
+    // anyone to fill in.
+    server.use(statusHandler(true));
+    renderLogin();
+
+    const password = await screen.findByLabelText("Password");
+    const form = password.closest("form");
+    const username = form?.querySelector('input[autocomplete="username"]');
+    expect(username).toBeInstanceOf(HTMLInputElement);
+    expect(username).toHaveAttribute("tabindex", "-1");
+    expect(username).toHaveAttribute("aria-hidden", "true");
+    expect(username).toHaveAttribute("readonly");
+    // Present, not merely declared: `display: none` is the shape managers skip.
+    expect(username).not.toHaveClass("hidden");
+  });
+
   test("shows nothing decidable until the status probe answers", async () => {
     server.use(statusHandler(true));
     renderLogin();

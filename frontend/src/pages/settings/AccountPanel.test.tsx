@@ -80,6 +80,22 @@ describe("AccountPanel — the form", () => {
     );
   });
 
+  test("carries the username field password managers look for", async () => {
+    // Same reasoning as the sign-in screen's forms: a change-password form
+    // with password fields alone is the shape Chrome warns about and the shape
+    // a manager files awkwardly. Off screen, not a tab stop, not announced.
+    server.use(statusHandler("file"));
+    renderWithProviders(<AccountPanel />);
+
+    const current = await screen.findByLabelText("Current password");
+    const username = current
+      .closest("form")
+      ?.querySelector('input[autocomplete="username"]');
+    expect(username).toBeInstanceOf(HTMLInputElement);
+    expect(username).toHaveAttribute("tabindex", "-1");
+    expect(username).toHaveAttribute("aria-hidden", "true");
+  });
+
   test("the panel says how to recover a password nobody remembers", async () => {
     // This screen is the only one that can say it while the operator can still
     // sign in; the sign-in screen only gets to say it once they cannot.
