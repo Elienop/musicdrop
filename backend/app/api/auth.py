@@ -60,6 +60,19 @@ from app.models.errors import ErrorDetail, validation_or_detail_422
 
 logger = logging.getLogger(__name__)
 
+# The two lines an OPERATOR is told to look for in `docker logs`, and the reason
+# they do not use `logger` above: uvicorn's LOGGING_CONFIG configures only its
+# own loggers and leaves root at WARNING with no handler, so under the shipped
+# CMD (`Dockerfile:61`, no --log-config) an INFO record from `app.api.auth` is
+# discarded and a WARNING one reaches stderr through `logging.lastResort` —
+# printed bare, with no level to grep for. Same reasoning, and the same choice,
+# as the boot posture line; the long version is in the comment above it
+# (`app/main.py`). Pinned by
+# test_host_guard.py::test_both_password_lines_reach_real_uvicorns_output, which
+# reads a real child process's output rather than caplog: caplog attaches to the
+# ROOT logger, so it cannot tell these two spellings apart.
+operator_logger = logging.getLogger("uvicorn.error")
+
 router = APIRouter(tags=["auth"])
 
 # These are UI COPY, which is why they are full sentences.
@@ -505,7 +518,7 @@ async def setup_password(body: SetupRequest, request: Request, response: Respons
     # running process with no restart and no other signal. An operator reading
     # the log has to be able to see both the claim and where the credential now
     # lives. Neither the password nor the hash is logged, here or anywhere.
-    logger.warning("first-run setup stored a password at %r", password_file_location())
+    operator_logger.warning("first-run setup stored a password at %r", password_file_location())
     _issue_session_cookie(response, request, secret, stored)
     return AuthStatus(authenticated=True, password_set=True, password_source="file")
 
@@ -547,7 +560,7 @@ async def change_password(
         _store_password_hash(new_stored)
     # INFO rather than WARNING: an expected administrative action, where setup is
     # a one-way change of the instance's posture. Same rule about what is in it.
-    logger.info("the stored password was changed at %r", password_file_location())
+    operator_logger.info("the stored password was changed at %r", password_file_location())
     _issue_session_cookie(response, request, secret, new_stored)
     return AuthStatus(authenticated=True, password_set=True, password_source="file")
 

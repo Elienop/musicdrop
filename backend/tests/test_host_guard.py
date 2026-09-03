@@ -10,12 +10,18 @@ name — every near-miss below shares one.
 
 from __future__ import annotations
 
+import json
 import os
 import queue
+import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -312,19 +318,70 @@ def test_prod_posture_rejects_testserver_and_honors_the_setting(tmp_path: Path) 
     assert lines[-1] == "('music.example.test',)"
 
 
-def _posture_line_under_real_uvicorn(tmp_path: Path, beets_dir: Path) -> str:
-    """Boot real uvicorn in PROD posture and return its ``security posture:`` line.
+class _UvicornChild:
+    """A live ``uvicorn app.main:app`` process, with its output pumped to a queue.
 
-    Shared by the two tests below, which differ only in what they seed into
-    ``beets_dir`` — the whole point of the second one is that the SAME emission
-    site has to report a configured server as well as an empty one.
+    Pumping on a thread rather than reading inline so a MISSING line fails on a
+    deadline instead of blocking forever in ``readline()`` once uvicorn goes
+    quiet. ``stderr`` is merged into ``stdout``: uvicorn's default config sends
+    its own records to stderr and the access log to stdout, and a test that
+    asks "what would the operator see in ``docker logs``?" wants both.
     """
-    dist = tmp_path / "dist"
-    (dist / "assets").mkdir(parents=True)
-    (dist / "index.html").write_text('<!doctype html><div id="root"></div>')
+
+    def __init__(self, proc: subprocess.Popen[str]) -> None:
+        self._proc = proc
+        self._queue: queue.Queue[str | None] = queue.Queue()
+        self.seen: list[str] = []
+        self._reader = threading.Thread(target=self._pump, daemon=True)
+        self._reader.start()
+
+    def _pump(self) -> None:
+        assert self._proc.stdout is not None
+        for line in self._proc.stdout:
+            self._queue.put(line)
+        self._queue.put(None)  # the child's output ended
+
+    def wait_for(self, needle: str, *, timeout: float = 60.0) -> str:
+        """The next output line containing ``needle``, or fail saying what came instead."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                line = self._queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            if line is None:  # child exited
+                break
+            self.seen.append(line)
+            if needle in line:
+                return line
+        raise AssertionError(f"no {needle!r} line in uvicorn output: {self.seen!r}")
+
+    def port(self) -> int:
+        """The port uvicorn actually bound, read back from its own startup line."""
+        line = self.wait_for("Uvicorn running on")
+        _, _, tail = line.partition("http://127.0.0.1:")
+        digits = tail.split()[0].strip().rstrip("/")
+        assert digits.isdigit(), line
+        return int(digits)
+
+    def close(self) -> None:
+        self._proc.terminate()
+        self._proc.wait(timeout=30)
+        self._reader.join(timeout=30)
+
+
+@contextmanager
+def _real_uvicorn(beets_dir: Path, *, static_dir: Path | None = None) -> Iterator[_UvicornChild]:
+    """Boot ``app.main:app`` under real uvicorn, exactly as the Dockerfile CMD does.
+
+    No ``--log-level`` and no ``--log-config``, because ``Dockerfile:61`` passes
+    neither: what these tests are for is the output an operator gets from the
+    SHIPPED command, and a flag here would be a configuration the container does
+    not have.
+    """
     env = {
         **os.environ,
-        "MUSICDROP_STATIC_DIR": str(dist),
+        "MUSICDROP_STATIC_DIR": str(static_dir) if static_dir else "",
         "MUSICDROP_ALLOWED_HOSTS": "music.example.test",
         # Real uvicorn runs the lifespan, which OPENS a beets library; aim it at
         # a throwaway dir so the boot cannot touch the dev library `.env` points at.
@@ -336,46 +393,32 @@ def _posture_line_under_real_uvicorn(tmp_path: Path, beets_dir: Path) -> str:
     }
     backend = Path(__file__).resolve().parents[1]
     proc = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "app.main:app", "--port", "0", "--log-level", "info"],
+        [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "0"],
         cwd=backend,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
     )
-    seen: list[str] = []
-    posture: str | None = None
-    # Pump on a thread so a MISSING line fails on the deadline instead of
-    # blocking forever in readline() once uvicorn goes quiet after startup.
-    lines: queue.Queue[str | None] = queue.Queue()
-
-    def _pump() -> None:
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            lines.put(line)
-        lines.put(None)
-
-    reader = threading.Thread(target=_pump, daemon=True)
-    reader.start()
+    child = _UvicornChild(proc)
     try:
-        deadline = time.monotonic() + 60.0
-        while time.monotonic() < deadline:
-            try:
-                line = lines.get(timeout=1.0)
-            except queue.Empty:
-                continue
-            if line is None:  # child exited
-                break
-            seen.append(line)
-            if "security posture:" in line:
-                posture = line
-                break
+        yield child
     finally:
-        proc.terminate()
-        proc.wait(timeout=30)
-        reader.join(timeout=30)
-    assert posture is not None, f"no posture line in uvicorn output: {seen!r}"
-    return posture
+        child.close()
+
+
+def _posture_line_under_real_uvicorn(tmp_path: Path, beets_dir: Path) -> str:
+    """Boot real uvicorn in PROD posture and return its ``security posture:`` line.
+
+    Shared by the two tests below, which differ only in what they seed into
+    ``beets_dir`` — the whole point of the second one is that the SAME emission
+    site has to report a configured server as well as an empty one.
+    """
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text('<!doctype html><div id="root"></div>')
+    with _real_uvicorn(beets_dir, static_dir=dist) as child:
+        return child.wait_for("security posture:")
 
 
 def test_posture_log_emits_under_real_uvicorn(tmp_path: Path) -> None:
@@ -428,3 +471,89 @@ def test_the_posture_log_reports_a_CONFIGURED_server_too(tmp_path: Path) -> None
     assert "password configured from" in posture
     assert str(beets_dir / PASSWORD_HASH_FILENAME) in posture
     assert "NO password configured" not in posture
+
+
+#: ``socket.getaddrinfo`` as the stdlib defines it, captured at IMPORT time —
+#: which is before ``tests/conftest.py::_resolve_hosts_public`` (autouse) swaps
+#: in one that answers 93.184.216.34 for every host so the SSRF guard is inert.
+#: The test below is the suite's only one that opens a real socket, and under
+#: that stub its request to the child on 127.0.0.1 dialled a public address and
+#: timed out instead of failing on anything to do with logging.
+_REAL_GETADDRINFO = socket.getaddrinfo
+
+
+def _post_to_the_child(port: int, path: str, payload: dict[str, str], *, cookie: str = "") -> str:
+    """POST JSON over a real socket and return the session cookie it set.
+
+    ``urllib`` rather than ``TestClient``: the point of these two tests is what
+    a separate PROCESS writes to its own stderr, so the request has to leave
+    this one. No ``Origin`` header, which is what curl and the container
+    healthcheck send too, so the CSRF guard passes it through.
+    """
+    headers = {"content-type": "application/json"}
+    if cookie:
+        headers["cookie"] = cookie
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            assert response.status == 200, response.status
+            set_cookie: str = response.headers.get("set-cookie", "")
+            return set_cookie.split(";")[0]
+    except urllib.error.HTTPError as exc:  # pragma: no cover - a failing route
+        raise AssertionError(f"{path} answered {exc.code}: {exc.read()!r}") from exc
+
+
+def test_both_password_lines_reach_real_uvicorns_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Setup and change each write a levelled line to the process's own output.
+
+    README points an operator at these two lines, and no in-process test can
+    tell whether they arrive: ``caplog`` attaches a handler to the ROOT logger,
+    so a record from any logger name passes it. Under the shipped CMD
+    (``Dockerfile:61``, no log config) uvicorn's LOGGING_CONFIG configures only
+    its own loggers and leaves root at WARNING with no handler. Measured through
+    ``logging.getLogger(__name__)``: the setup WARNING reached stderr only via
+    ``logging.lastResort``, printed bare with no level to grep for, and the
+    change INFO did not appear at all.
+
+    So both go through ``uvicorn.error``, the way the boot posture line already
+    does, and this asserts the LEVEL as well as the sentence — the level marker
+    is what the bare last-resort spelling loses.
+    """
+    # Runs after the autouse stub and therefore wins, the way test_artwork_ssrf
+    # re-stubs it: without this, 127.0.0.1 resolves to a public address.
+    monkeypatch.setattr(socket, "getaddrinfo", _REAL_GETADDRINFO)
+    first, second = "the-first-password", "the-second-password"
+    beets_dir = tmp_path / "beets"
+    quoted_path = repr(str(beets_dir / PASSWORD_HASH_FILENAME))
+
+    with _real_uvicorn(beets_dir) as child:
+        port = child.port()
+        cookie = _post_to_the_child(port, "/api/auth/setup", {"password": first})
+        # Short deadlines: each POST has already answered 200 by now, so the
+        # record was written before the response left the child. A generous one
+        # would only make a regression take a minute to report.
+        setup_line = child.wait_for("first-run setup stored a password at", timeout=15.0)
+        _post_to_the_child(
+            port,
+            "/api/auth/password",
+            {"current_password": first, "new_password": second},
+            cookie=cookie,
+        )
+        change_line = child.wait_for("the stored password was changed at", timeout=15.0)
+
+    assert "WARNING" in setup_line, setup_line
+    assert quoted_path in setup_line, setup_line
+    # INFO, not WARNING: a change is an expected administrative action where
+    # setup is a one-way change of the instance's posture.
+    assert "INFO" in change_line, change_line
+    assert quoted_path in change_line, change_line
+    for line in (setup_line, change_line):
+        for secret in (first, second):
+            assert secret not in line, line
