@@ -1553,13 +1553,13 @@ the condition it names has changed.
   a single account on a trusted LAN. The mitigations are the ones in place, not a token: the
   firewall/LAN the deployment assumes; the `MUSICDROP_PASSWORD_HASH` override, which hides the
   setup form regardless of the file and keeps the credential outside the data volume; and the
-  log line setup writes when it stores a password (WARNING, naming the file — fix round item
-  M1, 2026-09-03), so a claim is visible in the container log. Within the one process an
-  `asyncio.Lock` around check-then-write makes "first wins" true rather than probabilistic: a
-  second setup POST answers **409** instead of overwriting, and the image runs uvicorn
-  single-worker by design (the same fact the session-secret race above rests on). A setup
-  token printed to the startup log and required by the form remains the hardening if the box
-  is ever exposed beyond the LAN — noted, not built.
+  log line setup writes when it stores a password (WARNING, naming the file — added by the
+  same-day fix round on this branch, 2026-09-03), so a claim is visible in the container log.
+  Within the one process an `asyncio.Lock` around check-then-write makes "first wins" true
+  rather than probabilistic: a second setup POST answers **409** instead of overwriting, and
+  the image runs uvicorn single-worker by design (the same fact the session-secret race above
+  rests on). A setup token printed to the startup log and required by the form remains the
+  hardening if the box is ever exposed beyond the LAN — noted, not built.
 
 - **The password is the one env-vs-file store where the ENVIRONMENT wins, and it wins even
   when UNREADABLE (2026-09-03, vault decisions 29).** `plex.json` and `slskd.json` let the

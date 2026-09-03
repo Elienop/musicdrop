@@ -252,8 +252,8 @@ confirm. A wrong current password is refused and nothing changes. Saving rewrite
 Remove the hash file and restart MusicDrop; the sign-in screen is the setup form again. The same
 recovery covers a hash MusicDrop cannot read: whatever is at that path counts as a password that
 is present, and if it cannot be read as a hash, sign-in is refused and the setup form stays hidden
-until it is removed. Two ways to do the same thing, depending on which side of the bind mount you
-are standing on:
+until it is fixed or removed. Two ways to do the same thing, depending on which side of the bind
+mount you are standing on:
 
 ```bash
 # through the container:
@@ -262,15 +262,17 @@ docker exec musicdrop rm /data/beets/password-hash && docker compose restart mus
 rm ./data/beets/password-hash && docker compose restart musicdrop
 ```
 
+A directory at that path needs `rm -r`; plain `rm` stops at a directory.
+
 Restart as well, for two reasons: the startup line reports the password source at boot and
 not again, and a container start is also when the entrypoint re-owns everything under `/data`
 (what a root `docker exec` leaves behind there is recorded as unverified in `BACKLOG.md`).
 Setting the new password writes a new hash, which signs every other browser out — the paragraph
 after next says why. Deleting that file *is* the reset, so it is as protected as the data
 directory it lives in, which already holds the library. Both forms write a line to the container
-log when they store a password — the setup form at warning level, naming the file, and
-**Settings → Account** at info level — so if the setup form was ever used by someone who was not
-you, the log says so.
+log when they store a password, in the same stream as uvicorn's own startup lines — the setup
+form at `WARNING` and **Settings → Account** at `INFO`, each naming the file — so if the setup
+form was ever used by someone who was not you, the log says so.
 
 #### Overriding the password from the environment
 
