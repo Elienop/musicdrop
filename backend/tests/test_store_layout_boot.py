@@ -268,6 +268,29 @@ def test_the_refusal_says_where_this_start_already_wrote(
     assert (beets / "library.db").exists()  # the files the sentence is about
 
 
+def test_the_import_registry_gets_the_pair_the_gate_CHECKED(
+    beets_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lifespan hands the registry what ``checked_store_dirs`` returned.
+
+    It used to run the gate and then resolve the pair AGAIN from the bare
+    resolvers, so a Trash swapped between the two reached ``attach_library``
+    unchecked. The two calls return the same value in any test that lets them
+    both run — which is why this patches the gate to a sentinel pair and asks
+    what the registry received: a reintroduced second resolve would hand over
+    the real paths and fail here, where no behavioural assertion can see it.
+    """
+    from app.import_jobs.registry import registry as import_registry
+
+    sentinel = (tmp_path_marker := beets_dir / "checked-trash", beets_dir / "checked-origins")
+    monkeypatch.setattr("app.main.checked_store_dirs", lambda *a, **k: sentinel)
+
+    with TestClient(real_app) as client:
+        assert client.get("/api/health").status_code == 200
+        assert import_registry._trash_dir == tmp_path_marker
+        assert import_registry._trash_origins_dir == sentinel[1]
+
+
 def test_the_refusal_reaches_a_real_uvicorns_output(tmp_path: Path) -> None:
     """What ``docker logs`` shows, from a separate process with no test handlers.
 
