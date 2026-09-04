@@ -224,6 +224,54 @@ def _top_most(paths: list[str]) -> list[str]:
     return [p for p in paths if not any(p != q and _under(p, q) for q in paths)]
 
 
+def _ancestor_chain(roots: Collection[str]) -> set[str]:
+    """Every strict ancestor of every path in ``roots``, folded once.
+
+    A set lookup rather than a scan per candidate, so both callers stay
+    O(candidates) however many roots they were handed. Stops at the filesystem
+    root (``dirname('/') == '/'``), and skips a chain already walked — two
+    siblings share everything above them.
+    """
+    ancestors: set[str] = set()
+    for root in roots:
+        d = os.path.dirname(os.path.normpath(root))
+        while d and d not in ancestors:
+            ancestors.add(d)
+            parent = os.path.dirname(d)
+            if parent == d:
+                break
+            d = parent
+    return ancestors
+
+
+def _drop_excluded_ancestors(raw: list[str], exclude_roots: tuple[str, ...]) -> list[str]:
+    """Drop any candidate that CONTAINS an excluded root.
+
+    ``_excluded_predicate`` keeps the sweep out of Trash and every ``ignore_dirs``
+    subtree, and that is the whole guard only if a report is the thing that gets
+    trashed. It is not: the mover takes the reported folder WITH ITS SUBTREE, so
+    reporting an ancestor of an excluded dir hands over the excluded dir too.
+
+    It happens for one reason: an excluded subtree is never recorded, so it
+    contributes no audio to the dir above it. Give that dir a non-audio file of
+    its own and it reads as a husk. Measured on ``d65e635`` with
+    ``ignore_dirs=(<M>/data/exports,)`` and a stray ``<M>/data/notes.txt`` —
+    ``find_orphan_folders`` returned ``data``, whose subtree holds the exports;
+    remove the stray file and it returned ``[]`` (an only-child parent records no
+    ``has_file`` and empty dirs are skipped), which is why the hole needed a file
+    to show at all.
+
+    Sparing the whole ancestor CHAIN, not just the immediate parent, is what
+    makes this a guard rather than a nudge: sparing one level only moves the
+    report one level up when the excluded dir is nested deeper. Same shape (and
+    the same helper) as :func:`_drop_protected`'s live-album-root ancestors.
+    """
+    if not exclude_roots:
+        return raw
+    ancestors = _ancestor_chain(exclude_roots)
+    return [dp for dp in raw if dp not in ancestors]
+
+
 def _drop_protected(raw: list[str], protected_dirs: Collection[str]) -> list[str]:
     """Drop the candidates a LIVE album owns (see :func:`find_orphan_folders`).
 
@@ -241,15 +289,7 @@ def _drop_protected(raw: list[str], protected_dirs: Collection[str]) -> list[str
     if not protected_dirs:
         return raw
     roots = {os.path.normpath(p) for p in protected_dirs}
-    ancestors: set[str] = set()
-    for root in roots:
-        d = os.path.dirname(root)
-        while d and d not in ancestors:
-            ancestors.add(d)
-            parent = os.path.dirname(d)
-            if parent == d:
-                break
-            d = parent
+    ancestors = _ancestor_chain(roots)
     return [
         dp
         for dp in raw
@@ -274,8 +314,16 @@ def find_orphan_folders(
     another in the result.
 
     ``ignore_dirs`` are extra absolute roots to skip (e.g. the playlists export
-    dir). Directories whose name is a dotdir or a known NAS/OS housekeeping name are
-    always skipped.
+    dir, the Trash origin store, the beets data dir). Directories whose name is a
+    dotdir or a known NAS/OS housekeeping name are always skipped.
+
+    No returned path is at, below, or ABOVE ``trash_dir`` or any ``ignore_dirs``
+    entry — the mover takes a reported folder's whole subtree, so an ancestor of
+    an excluded dir would hand that dir over anyway (see
+    :func:`_drop_excluded_ancestors`). Both modes get it from the same drop:
+    seeds mode stops its climb AT an excluded ancestor, which is not the same
+    guard, because the candidate it has already banked below that stop can still
+    be an ancestor of a different excluded dir.
 
     ``protected_dirs`` are normalized absolute dirs owned by LIVE beets albums
     (``app.beets.reorganize.live_album_roots``): nothing at, directly under, or above
@@ -289,5 +337,5 @@ def find_orphan_folders(
         raw = _library_orphans(root, excluded)
     else:
         raw = _seeded_orphans(seeds, root, excluded)
-    kept = _top_most(_drop_protected(raw, protected_dirs))
+    kept = _top_most(_drop_protected(_drop_excluded_ancestors(raw, exclude_roots), protected_dirs))
     return sorted(Path(p) for p in kept)

@@ -334,3 +334,195 @@ def test_protected_root_under_candidate_shields_the_ancestor(tmp_path: Path) -> 
         )
         == []
     )
+
+
+# --------------------------------------------------------------------------
+# An excluded root's ANCESTORS. Excluding a subtree only protects it from a
+# sweep that names it: the mover takes a reported folder WITH its subtree, so an
+# ancestor of an ignored dir hands the ignored dir over anyway.
+# --------------------------------------------------------------------------
+
+
+def test_an_ancestor_of_an_ignored_dir_is_not_reported(tmp_path: Path) -> None:
+    """The measured hole, and the file of its own that is needed to open it.
+
+    An excluded subtree is never recorded, so it contributes no ``has_file`` to
+    the dir above it — an only-child parent therefore reads as EMPTY and is
+    skipped, which is why this needs a stray file to show at all. With one,
+    ``data`` was reported on ``d65e635`` and its subtree includes the exports.
+    """
+    root = tmp_path / "music"
+    _touch(root / "Real" / "Album" / "01.flac")
+    exports = root / "data" / "exports"
+    _touch(exports / "p1.m3u8")
+    _touch(root / "data" / "notes.txt")  # the parent's own content
+    trash = tmp_path / "trash"
+
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=(exports,)) == []
+    # Without the stray file the parent is empty and was already skipped, so this
+    # second half is what shows the drop is doing the work rather than the old
+    # empty-dir rule (both return [] and only one of them is about this guard).
+    (root / "data" / "notes.txt").unlink()
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=(exports,)) == []
+
+
+def test_a_genuine_husk_beside_an_ignored_dir_is_still_reported(tmp_path: Path) -> None:
+    """The control: the guard spares ancestors, not the whole sweep.
+
+    Same run as the spared ancestor, so a drop that returned ``[]`` for
+    everything would fail here instead of passing the test above for free.
+    """
+    root = tmp_path / "music"
+    _touch(root / "Real" / "Album" / "01.flac")
+    _touch(root / "Real" / "Old Album" / "cover.jpg")  # a real husk under a kept artist
+    exports = root / "data" / "exports"
+    _touch(exports / "p1.m3u8")
+    _touch(root / "data" / "notes.txt")
+    trash = tmp_path / "trash"
+
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=(exports,)) == [
+        root / "Real" / "Old Album"
+    ]
+
+
+def test_a_deeper_ignored_dir_does_not_push_the_report_one_level_up(tmp_path: Path) -> None:
+    """Sparing the whole ancestor CHAIN, not just the immediate parent.
+
+    Measured on ``d65e635`` with the file one level down: the report was
+    ``data``, not ``data/sub`` — ``data`` holds nothing of its own, so what gets
+    reported is the top of the audio-empty run. Sparing one level would have
+    moved the answer up rather than removed it.
+    """
+    root = tmp_path / "music"
+    _touch(root / "Real" / "Album" / "01.flac")
+    store = root / "data" / "sub" / "origins"
+    _touch(store / "Some Album.json")
+    _touch(root / "data" / "sub" / "notes.txt")
+    trash = tmp_path / "trash"
+
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=(store,)) == []
+
+
+def test_seeds_mode_also_spares_an_ignored_dirs_ancestor(tmp_path: Path) -> None:
+    """Seeds mode stops its CLIMB at an excluded ancestor, which is a different guard.
+
+    The climb starts below the stop and banks a candidate on the way up, so the
+    dir it returns can still be an ancestor of a DIFFERENT excluded root. Both
+    modes are covered because the drop runs in ``find_orphan_folders``, after
+    either branch has produced its raw list.
+    """
+    root = tmp_path / "music"
+    _touch(root / "Real" / "Album" / "01.flac")
+    exports = root / "data" / "exports"
+    _touch(exports / "p1.m3u8")
+    _touch(root / "data" / "notes.txt")
+    trash = tmp_path / "trash"
+
+    assert (
+        find_orphan_folders(
+            root, seeds=[root / "data" / "gone"], trash_dir=trash, ignore_dirs=(exports,)
+        )
+        == []
+    )
+
+
+def test_a_beets_dir_inside_the_library_is_never_reported(tmp_path: Path) -> None:
+    """A plain-named beets dir under the music root, end to end through the API helper.
+
+    It is reported DIRECTLY rather than as an ancestor — beets plants
+    ``library.db`` and ``config.yaml`` in it, so it has content of its own —
+    which is why a dot-name (``.musicdrop``) escaped and this spelling did not.
+    Measured both ways on ``d65e635``.
+
+    Asserted through ``api.reorganize._ignore_dirs`` rather than by passing the
+    dir in by hand: the finder was already able to skip a dir it was told about,
+    and what was missing was the caller telling it.
+
+    ``trash_dir`` sits OUTSIDE the beets dir here, which is the arm that loses
+    data: with the default ``<B>/trash`` the move would be a directory into its
+    own subtree and ``shutil.move`` refuses it, while a configured Trash
+    elsewhere takes ``library.db``, ``config.yaml`` and the store in one pass.
+    It is also the arm the ancestor drop does not already cover — see
+    ``test_the_default_trash_position_already_spares_the_beets_dir``.
+    """
+    from types import SimpleNamespace
+
+    from app.api.reorganize import _ignore_dirs
+    from app.config import Settings
+    from tests.conftest import build_library, make_test_handle
+
+    root = tmp_path / "music"
+    _touch(root / "Real" / "Album" / "01.flac")
+    beets_dir = root / "musicdrop"
+    _touch(beets_dir / "library.db")
+    _touch(beets_dir / "config.yaml")
+    trash = tmp_path / "trash"
+    store = tmp_path / "records"
+
+    # Without the exclusion the beets dir IS the reported husk (pins the shape):
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash) == [beets_dir]
+
+    handle = make_test_handle(build_library(str(beets_dir / "library.db"), str(root)), beets_dir)
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_origins_dir=str(store), playlists_export_dir=""),
+        )
+    )
+    ignore = _ignore_dirs(app)
+    assert beets_dir in ignore
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=ignore) == []
+
+
+def test_a_beets_dir_that_contains_the_library_is_not_an_ignore_root(tmp_path: Path) -> None:
+    """The condition that keeps the previous test from silencing the whole sweep.
+
+    ``excluded()`` is a prefix test, so an ignore root ABOVE the music root
+    excludes every candidate and the sweep returns ``[]`` for the entire library.
+    That layout is the ordinary one — the starter config ships
+    ``directory: ../music``, and the test fixtures put the music dir under the
+    beets dir — so the entry has to be conditional on the beets dir being INSIDE
+    the library. The husk here proves the sweep is still alive.
+    """
+    from types import SimpleNamespace
+
+    from app.api.reorganize import _ignore_dirs
+    from app.config import Settings
+    from tests.conftest import build_library, make_test_handle
+
+    beets_dir = tmp_path
+    root = tmp_path / "music"
+    _touch(root / "Real" / "Album" / "01.flac")
+    _touch(root / "Old Artist" / "poster.jpg")  # a genuine husk
+    trash = beets_dir / "trash"
+
+    handle = make_test_handle(build_library(str(beets_dir / "library.db"), str(root)), beets_dir)
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_origins_dir=str(tmp_path / "records"), playlists_export_dir=""),
+        )
+    )
+    ignore = _ignore_dirs(app)
+    assert beets_dir not in ignore
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=ignore) == [
+        root / "Old Artist"
+    ]
+
+
+def test_the_default_trash_position_already_spares_the_beets_dir(tmp_path: Path) -> None:
+    """The other arm, and why the ``_ignore_dirs`` entry is not the only guard.
+
+    With ``trash_dir`` at its default ``<B>/trash``, the beets dir is an ANCESTOR
+    of an excluded root, so ``_drop_excluded_ancestors`` spares it before the
+    caller's ignore list is even consulted. Pinned so a later edit that made the
+    ``_ignore_dirs`` entry unconditional (or dropped it) would still be measured
+    against this case rather than assumed to cover it.
+    """
+    root = tmp_path / "music"
+    _touch(root / "Real" / "Album" / "01.flac")
+    beets_dir = root / "musicdrop"
+    _touch(beets_dir / "library.db")
+    _touch(beets_dir / "config.yaml")
+
+    assert find_orphan_folders(root, seeds=None, trash_dir=beets_dir / "trash") == []

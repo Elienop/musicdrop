@@ -69,59 +69,60 @@ def _origins_dir(app: object) -> Path:
 
 
 def _ignore_dirs(app: object) -> tuple[Path, ...]:
-    """Dirs under the music root the orphan sweep must never trash — the resolved
-    playlists export dir (defaults to <music>/.playlists) and the Trash origin store.
-    Dotdirs/NAS dirs are handled name-based in the scanner; this covers a configured
-    non-dotfile export dir.
+    """The app-owned dirs the orphan sweep must never trash: the resolved
+    playlists export dir (defaults to <music>/.playlists), the Trash origin store,
+    and the beets data dir. Dotdirs/NAS dirs are handled name-based in the
+    scanner; these three cover the case where the configured path is an ordinary
+    name the scanner has no reason to skip.
 
-    The origin store earns its place the moment it stops being a sidecar: it is a
-    non-dotfile directory holding only ``.json`` files, so it is audio-empty BY
-    DEFINITION, and a ``trash_origins_dir`` configured under the music root reads
-    as a husk — the sweep would relocate the whole store into Trash, taking every
-    row's exact restore with it in one pass. The Trash dir itself is already
-    excluded by ``find_orphan_folders``; this one is new because it is no longer
-    inside it.
+    Each earns its place by being audio-empty BY DEFINITION while looking exactly
+    like a husk:
 
-    That covers a sweep reaching the store DIRECTLY, and only that. Excluding a
-    directory does not protect it from a sweep that takes its PARENT:
-    ``find_orphan_folders`` reports the TOP-MOST audio-empty dir, and an excluded
-    subtree is not counted as audio for the dir above it. Measured with
-    ``beets_dir`` itself under the music root — the sweep returns ``beets_dir``,
-    the same list with and without this exclusion. What happens NEXT depends on
-    where Trash sits, and only one of the two loses anything:
+    * the **export dir** holds ``.m3u8`` files;
+    * the **origin store** holds ``.json`` files, and sweeping it would take
+      every row's exact restore into Trash in one pass;
+    * the **beets data dir**, and ONLY when it sits strictly inside the music
+      root. It holds ``library.db`` + ``config.yaml`` — content of its own — so
+      unlike the other two it is reported DIRECTLY (measured on ``d65e635``:
+      ``MUSICDROP_BEETS_DIR=<music>/musicdrop`` returned ``musicdrop``,
+      identically with and without the store exclusion). It is not excluded by
+      name either: only a dot-name is, and ``<music>/.musicdrop`` returned ``[]``
+      where ``<music>/musicdrop`` did not, which is the whole difference between
+      the two spellings. It is listed here so the containment rule can allow a
+      beets dir inside the library (``app.beets.store_layout``) without the sweep
+      then trashing it.
 
-    * **Default layout** (``trash_dir`` unset = ``<beets_dir>/trash``): the move
-      is a directory into its own subtree, so ``shutil.move`` refuses it —
-      ``Cannot move a directory '<music>/<beets>' into itself
-      '<music>/<beets>/trash/<beets>'``. ``shutil.Error`` IS an ``OSError``, so
-      ``reorganize_jobs.runner``'s per-folder ``except OSError: continue``
-      swallows it on every sweep. ``library.db``, ``config.yaml`` and the store
-      all survive; the visible residue is an empty ``<beets_dir>/trash`` the
-      mover created before failing, and a report that counts no orphan.
-    * **``MUSICDROP_TRASH_DIR`` pointing OUTSIDE ``beets_dir``**: the move
-      succeeds and all three land under Trash. ``beets_dir`` is then recreated
-      as an empty shell holding one origin record — the one written for the
-      folder that just left.
+      The "strictly inside" condition is load-bearing, not tidiness. An exclude
+      root that CONTAINS the music root excludes every candidate — ``excluded()``
+      is a prefix test — so the sweep would return ``[]`` for the whole library
+      and report nothing at all. That is not hypothetical: the dev/test layout
+      has ``beets_dir`` as the PARENT of ``directory`` (``<beets>/../music`` is
+      the starter config's own default shape), which is exactly the case an
+      unconditional entry silences.
 
-    The exclusion is also not useless above the store: a parent whose ONLY child
-    is the excluded dir, and which holds no file of its own, reads as EMPTY
-    (never recorded, so it contributes no ``has_file``) and empty dirs are
-    skipped. Give that parent one file of its own and it is reported again. So
-    the hole is the ancestor that has other content, not every ancestor.
+    The Trash dir itself is excluded inside ``find_orphan_folders``, which takes
+    it as its own argument.
 
-    That is the shape the ``trash_dir`` exclusion has always had rather than
-    anything the sibling store introduced, and the shipped image does not reach
-    it (``/data`` and ``/music`` are separate mounts); it needs a beets dir
-    deliberately placed inside the music library. Not fixed here: sparing every
-    ancestor of an ignored dir would only push the report one level up whenever
-    the store is nested deeper, so it is a change to what the finder reports and
-    not a guard to bolt on."""
+    Excluding a subtree is not on its own enough, because the mover takes a
+    reported folder's WHOLE subtree: a sweep that reports an ANCESTOR of an
+    excluded dir hands the excluded dir over anyway. That hole is closed at the
+    finder now (``orphans._drop_excluded_ancestors``), which drops every
+    candidate above any excluded root, so the tuple this function returns is
+    protected up as well as down.
+
+    Both consumers read this same tuple — the dry-run preview
+    (``beets.reorganize._orphan_preview``) and the runner's ``_sweep_orphans`` —
+    so preview and outcome cannot disagree about what is spared."""
     handle: LibraryHandle = app.state.beets_library  # type: ignore[attr-defined]  # app duck-typed (object)
     configured = _settings(app).playlists_export_dir.strip()  # type: ignore[arg-type]  # app duck-typed (object)
-    export_dir = (
-        Path(configured) if configured else Path(os.fsdecode(handle.lib.directory)) / ".playlists"
-    )
-    return (export_dir, _origins_dir(app))
+    music_dir = Path(os.fsdecode(handle.lib.directory))
+    export_dir = Path(configured) if configured else music_dir / ".playlists"
+    dirs = [export_dir, _origins_dir(app)]
+    beets_dir = handle.beets_dir.resolve()
+    music_root = music_dir.resolve()
+    if beets_dir != music_root and beets_dir.is_relative_to(music_root):
+        dirs.append(handle.beets_dir)
+    return tuple(dirs)
 
 
 @router.get("/reorganize/preview")
