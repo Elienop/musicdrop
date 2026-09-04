@@ -9,9 +9,12 @@ over in ``app.beets.reorganize.live_album_roots`` and arrives here as plain path
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable, Collection
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 #: Lowercase audio extensions. Over-inclusive on purpose: a husk is only reported
 #: when NO file of ANY of these types exists beneath it, so a missing exotic
@@ -97,6 +100,69 @@ def _skip_name(name: str) -> bool:
 def _under(path: str, root: str) -> bool:
     """True if ``path`` is strictly inside ``root``."""
     return path != root and path.startswith(root + os.sep)
+
+
+def _real(path: str) -> str:
+    """``path`` with every symlink collapsed, normalised, and made absolute.
+
+    ``os.path.realpath`` and not ``Path.resolve``: it returns ``str`` (what this
+    module compares) and does not raise on a symlink loop — it stops at the loop
+    and hands back a path, which for an exclusion root is the safe direction. A
+    RELATIVE root is joined to the process CWD, the same join ``open()`` makes
+    when ``app.playlists.reexport.export_dir_for`` writes an ``.m3u8`` into it.
+    """
+    return os.path.normpath(os.path.realpath(path))
+
+
+def _exclude_roots_for_walk(root: str, exclude_roots: tuple[str, ...]) -> tuple[str, ...]:
+    """Each exclude root as ``os.walk`` will spell it under ``root``, or dropped.
+
+    The walk root is beets' ``lib.directory``, which is ``normpath``'d and NOT
+    realpath'd (``beets/util/__init__.py:178``), while the exclusion roots reach
+    this module already resolved — so under ``/music -> /mnt/tank/music``, the
+    Docker norm, the two sides are different strings for the same directory and
+    every string comparison in this module misses. Measured in the review round:
+    with a symlinked library the beets data dir was REPORTED, and moving the
+    reported folder took ``library.db`` and ``config.yaml`` with it.
+
+    Translating the roots INTO the walk's spelling — rather than realpath'ing
+    every directory the walk yields — costs one ``realpath`` per exclusion root
+    instead of one per directory, and it is exact: ``os.walk`` does not descend
+    into symlinked directories, so every ``dirpath`` it yields is ``root``
+    followed by real components, and ``realpath(dirpath)`` is ``realpath(root)``
+    followed by the same ones.
+
+    Two roots are dropped rather than translated:
+
+    * one that resolves OUTSIDE the walked tree — the beets data dir on the
+      shipped layout, for one. Housekeeping rather than behaviour: removing this
+      arm leaves the suite green, because translating such a root produces a
+      spelling that is still outside the tree and ``os.walk`` yields nothing
+      outside ``root``. It keeps the tuple to paths the walk can produce, and
+      keeps ``_ancestor_chain`` from folding in every directory up to ``/``;
+    * one at or ABOVE the walk root, which would match EVERY walked directory
+      (``_excluded_predicate`` is a prefix test) and return an empty sweep for
+      the whole library. Before this function it was a silent no-op, so it gets
+      the one WARNING line this module logs. ``MUSICDROP_PLAYLISTS_EXPORT_DIR`` is the reachable
+      way in: it is an operator-set absolute path with no rule of its own
+      (``app.beets.store_layout`` refuses a Trash or origin store there).
+    """
+    real_root = _real(root)
+    kept: list[str] = []
+    for r in exclude_roots:
+        real_r = _real(r)
+        if real_r == real_root or _under(real_root, real_r):
+            _log.warning(
+                "orphan sweep: ignoring the exclude root %r — it is at or above the music "
+                "root %r, and excluding it would exclude the whole library",
+                r,
+                root,
+            )
+            continue
+        if not _under(real_r, real_root):
+            continue
+        kept.append(os.path.normpath(os.path.join(root, os.path.relpath(real_r, real_root))))
+    return tuple(kept)
 
 
 def _scan_tree(
@@ -331,7 +397,7 @@ def find_orphan_folders(
     knows nothing about the DB keeps exactly the old behaviour.
     """
     root = os.path.normpath(str(music_dir))
-    exclude_roots = tuple(os.path.normpath(str(d)) for d in (trash_dir, *ignore_dirs))
+    exclude_roots = _exclude_roots_for_walk(root, tuple(str(d) for d in (trash_dir, *ignore_dirs)))
     excluded = _excluded_predicate(root, exclude_roots)
     if seeds is None:
         raw = _library_orphans(root, excluded)

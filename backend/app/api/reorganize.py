@@ -7,7 +7,6 @@ three — only one reorganize at a time — and it is mutually exclusive with ev
 other library write (see _gate_busy + the gate sites in edit/cover/config/
 duplicates/import/lyrics/artists)."""
 
-import os
 from pathlib import Path
 from typing import Annotated, Final
 
@@ -23,6 +22,7 @@ from app.events.emit import emit_library_changed
 from app.library_busy import raise_if_library_busy
 from app.models.errors import ErrorDetail
 from app.models.reorganize import ReorganizeBackfillStatus, ReorganizePlan, ReorganizeScope
+from app.playlists.reexport import export_dir_for
 from app.playlists.store import get_playlists_dir
 from app.reorganize_jobs.registry import (
     ReorganizeRegistry,
@@ -102,24 +102,23 @@ def _ignore_dirs(app: object, origins_dir: Path) -> tuple[Path, ...]:
     * the **export dir** holds ``.m3u8`` files;
     * the **origin store** holds ``.json`` files, and sweeping it would take
       every row's exact restore into Trash in one pass;
-    * the **beets data dir**, and ONLY when it sits strictly inside the music
-      root. It holds ``library.db`` + ``config.yaml`` — content of its own — so
-      unlike the other two it is reported DIRECTLY (measured on ``d65e635``:
-      ``MUSICDROP_BEETS_DIR=<music>/musicdrop`` returned ``musicdrop``,
-      identically with and without the store exclusion). It is not excluded by
-      name either: only a dot-name is, and ``<music>/.musicdrop`` returned ``[]``
-      where ``<music>/musicdrop`` did not, which is the whole difference between
-      the two spellings. It is listed here so the containment rule can allow a
-      beets dir inside the library (``app.beets.store_layout``) without the sweep
-      then trashing it.
+    * the **beets data dir**. ``app.beets.store_layout`` refuses a layout where
+      it nests with the music root in either direction, so on an accepted layout
+      it resolves outside the walked tree and ``orphans._exclude_roots_for_walk``
+      drops it. It is passed anyway, unconditionally, because the sweep is what
+      would move ``library.db`` and ``config.yaml`` if that rule were ever
+      relaxed or bypassed, and because it holds content of its own — measured on
+      ``d65e635``, before the rule existed: ``MUSICDROP_BEETS_DIR=<music>/musicdrop``
+      returned ``musicdrop``, identically with and without the store exclusion.
+      Name-based skipping does not cover it: a dot-prefixed name is skipped and
+      ``<music>/.musicdrop`` returned ``[]`` where ``<music>/musicdrop`` did not.
 
-      The "strictly inside" condition is load-bearing, not tidiness. An exclude
-      root that CONTAINS the music root excludes every candidate — ``excluded()``
-      is a prefix test — so the sweep would return ``[]`` for the whole library
-      and report nothing at all. That is not hypothetical: the dev/test layout
-      has ``beets_dir`` as the PARENT of ``directory`` (``<beets>/../music`` is
-      the starter config's own default shape), which is exactly the case an
-      unconditional entry silences.
+      It used to be added only when it sat strictly inside the music root,
+      because an exclude root CONTAINING the root excluded every candidate —
+      ``excluded()`` is a prefix test — and the sweep returned ``[]`` for the
+      whole library. That is now handled where it belongs: the finder drops an
+      exclude root at or above the walk root and logs one WARNING, so a caller
+      cannot silence a sweep by passing one.
 
     The Trash dir itself is excluded inside ``find_orphan_folders``, which takes
     it as its own argument.
@@ -135,15 +134,13 @@ def _ignore_dirs(app: object, origins_dir: Path) -> tuple[Path, ...]:
     (``beets.reorganize._orphan_preview``) and the runner's ``_sweep_orphans`` —
     so preview and outcome cannot disagree about what is spared."""
     handle: LibraryHandle = app.state.beets_library  # type: ignore[attr-defined]  # app duck-typed (object)
-    configured = _settings(app).playlists_export_dir.strip()  # type: ignore[arg-type]  # app duck-typed (object)
-    music_dir = Path(os.fsdecode(handle.lib.directory))
-    export_dir = Path(configured) if configured else music_dir / ".playlists"
-    dirs = [export_dir, origins_dir]
-    beets_dir = handle.beets_dir.resolve()
-    music_root = music_dir.resolve()
-    if beets_dir != music_root and beets_dir.is_relative_to(music_root):
-        dirs.append(handle.beets_dir)
-    return tuple(dirs)
+    # ``export_dir_for`` and not a second copy of the same default: the two
+    # spellings of ``<music>/.playlists`` drifted apart is exactly how a dir the
+    # exporter writes to becomes one the sweep can trash. The finder resolves
+    # what it is given, which is what makes a RELATIVE
+    # ``MUSICDROP_PLAYLISTS_EXPORT_DIR`` match — ``export_dir_for`` hands the
+    # configured value through unchanged and ``open()`` joins it to the CWD.
+    return (export_dir_for(handle.lib), origins_dir, handle.beets_dir)
 
 
 @router.get("/reorganize/preview", responses={503: _LAYOUT_REFUSED_RESPONSE})

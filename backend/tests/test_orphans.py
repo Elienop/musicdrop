@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
+import os
 from pathlib import Path
+
+import pytest
 
 from app.beets.orphans import find_orphan_folders
 from tests.conftest import origins_for
@@ -122,6 +126,86 @@ def test_ignore_dirs_excludes_a_configured_export_dir(tmp_path: Path) -> None:
     assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=(export,)) == []
     # without the ignore it WOULD be flagged (proves the exclusion is load-bearing):
     assert find_orphan_folders(root, seeds=None, trash_dir=trash) == [export]
+
+
+def test_the_ignore_list_names_the_directory_the_exporter_writes_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_ignore_dirs`` and ``export_dir_for`` are one function now, not two copies.
+
+    They were two, each computing ``<music>/.playlists`` for an empty setting,
+    and the sweep spared the export dir only for as long as the copies agreed.
+    All three shapes of the setting are asserted against a literal — the empty
+    default, an absolute path and a relative one — because a drift could show in
+    any one of them alone.
+
+    The relative shape is the one with teeth: ``export_dir_for`` hands the value
+    through unchanged and ``open()`` joins it to the process CWD, so the sweep
+    has to be given the same unchanged value to resolve. What it does with it is
+    pinned in ``test_a_relative_export_dir_matches_the_directory_it_is_written_to``.
+    """
+    from types import SimpleNamespace
+
+    from app.api.reorganize import _ignore_dirs
+    from app.config import Settings
+    from app.playlists.reexport import export_dir_for
+    from tests.conftest import beets_dir_for, build_library, make_test_handle
+
+    root = tmp_path / "music"
+    root.mkdir()
+    beets_dir = beets_dir_for(tmp_path)
+    origins = tmp_path / "records"
+    handle = make_test_handle(build_library(str(beets_dir / "library.db"), str(root)), beets_dir)
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_origins_dir=str(origins)),
+        )
+    )
+
+    for configured, expected in (
+        ("", root / ".playlists"),
+        (str(tmp_path / "exports"), tmp_path / "exports"),
+        ("exports", Path("exports")),
+    ):
+        monkeypatch.setattr("app.config.settings.playlists_export_dir", configured)
+        assert _ignore_dirs(app, origins)[0] == expected, configured
+        assert export_dir_for(handle.lib) == expected, configured
+
+
+def test_the_ignore_list_names_the_beets_dir_whatever_its_position(tmp_path: Path) -> None:
+    """The entry is unconditional: the shipped layout puts B beside the library.
+
+    ``app.beets.store_layout`` refuses B nesting with M in either direction, so
+    on any layout the app will boot with, this entry resolves outside the walked
+    tree and the finder drops it. It is passed anyway — the sweep is what would
+    move ``library.db`` — and the position it is passed from must not decide
+    whether it is passed.
+    """
+    from types import SimpleNamespace
+
+    from app.api.reorganize import _ignore_dirs
+    from app.config import Settings
+    from tests.conftest import beets_dir_for, build_library, make_test_handle
+
+    origins = tmp_path / "records"
+    for beets_dir, root in (
+        (beets_dir_for(tmp_path), tmp_path / "music"),  # siblings — the shipped shape
+        (tmp_path, tmp_path / "music"),  # B above M
+        (tmp_path / "music" / "musicdrop", tmp_path / "music"),  # B inside M
+    ):
+        beets_dir.mkdir(parents=True, exist_ok=True)
+        root.mkdir(parents=True, exist_ok=True)
+        handle = make_test_handle(
+            build_library(str(beets_dir / "library.db"), str(root)), beets_dir
+        )
+        app = SimpleNamespace(
+            state=SimpleNamespace(
+                beets_library=handle,
+                settings=Settings(trash_origins_dir=str(origins)),
+            )
+        )
+        assert beets_dir in _ignore_dirs(app, origins), beets_dir
 
 
 def test_ignore_dirs_excludes_the_trash_origin_store(tmp_path: Path) -> None:
@@ -474,15 +558,26 @@ def test_a_beets_dir_inside_the_library_is_never_reported(tmp_path: Path) -> Non
     assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=ignore) == []
 
 
-def test_a_beets_dir_that_contains_the_library_is_not_an_ignore_root(tmp_path: Path) -> None:
-    """The condition that keeps the previous test from silencing the whole sweep.
+def test_an_ignore_root_above_the_music_root_is_dropped_with_one_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The entry is unconditional now, and the sweep survives it.
 
-    ``excluded()`` is a prefix test, so an ignore root ABOVE the music root
-    excludes every candidate and the sweep returns ``[]`` for the entire library.
-    That layout is the ordinary one — the starter config ships
-    ``directory: ../music``, and the test fixtures put the music dir under the
-    beets dir — so the entry has to be conditional on the beets dir being INSIDE
-    the library. The husk here proves the sweep is still alive.
+    ``excluded()`` is a prefix test, so an ignore root at or ABOVE the music root
+    matches every walked directory and the sweep returns ``[]`` for the entire
+    library. That used to be kept out by making the ``_ignore_dirs`` beets-dir
+    entry conditional on the dir sitting inside the library, which left the same
+    hole open for the two roots that have no such condition. It is handled in the
+    finder now: the root is dropped and one WARNING is logged.
+
+    Three assertions, and each covers a different mistake: the entry is present
+    (a caller that stopped passing it), the husk is still reported (a drop that
+    silenced the sweep anyway), and the line is logged (a silent no-op, which is
+    what this was before).
+
+    ``app.beets.store_layout`` refuses this layout at boot and at every
+    destructive use site, so it does not arrive through the app — the finder is a
+    public function and this is its own guard.
     """
     from types import SimpleNamespace
 
@@ -504,10 +599,196 @@ def test_a_beets_dir_that_contains_the_library_is_not_an_ignore_root(tmp_path: P
         )
     )
     ignore = _ignore_dirs(app, tmp_path / "records")
-    assert beets_dir not in ignore
-    assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=ignore) == [
-        root / "Old Artist"
+    assert beets_dir in ignore
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.orphans"):
+        found = find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=ignore)
+
+    assert found == [root / "Old Artist"]
+    warnings = [r for r in caplog.records if "at or above the music root" in r.getMessage()]
+    assert len(warnings) == 1, [r.getMessage() for r in caplog.records]
+
+
+# --------------------------------------------------------------------------
+# The walk root and the exclusion roots can be two spellings of one directory.
+# --------------------------------------------------------------------------
+
+
+def _symlinked_library(tmp_path: Path) -> tuple[Path, Path]:
+    """``(link, real)`` — ``/music -> /mnt/tank/music``, the shape a container has.
+
+    beets stores ``lib.directory`` as the operator wrote it (``normpath``, not
+    ``realpath`` — ``beets/util/__init__.py:178``), so the sweep walks the LINK
+    while the exclusion roots reach it resolved.
+    """
+    real = tmp_path / "tank" / "music"
+    real.mkdir(parents=True)
+    link = tmp_path / "music"
+    link.symlink_to(real)
+    return link, real
+
+
+def test_an_ignore_root_matches_through_a_symlinked_walk_root(tmp_path: Path) -> None:
+    """The measured loss: a resolved beets dir under a symlinked library.
+
+    Measured in the review round on the pre-fix finder — with the library reached
+    through a symlink the beets data dir was REPORTED, and running the mover on
+    the reported folder took ``library.db`` and ``config.yaml`` into Trash.
+
+    The control is the first assertion: without the ignore root the dir IS the
+    husk, so the second assertion is about the exclusion working rather than
+    about the dir being uninteresting.
+    """
+    link, real = _symlinked_library(tmp_path)
+    _touch(real / "Real" / "Album" / "01.flac")
+    _touch(real / "musicdrop" / "library.db")
+    trash = tmp_path / "trash"
+
+    assert find_orphan_folders(link, seeds=None, trash_dir=trash) == [link / "musicdrop"]
+
+    resolved_beets_dir = (real / "musicdrop").resolve()
+    assert (
+        find_orphan_folders(link, seeds=None, trash_dir=trash, ignore_dirs=(resolved_beets_dir,))
+        == []
+    )
+
+
+def test_a_trash_dir_matches_through_a_symlinked_walk_root(tmp_path: Path) -> None:
+    """The Trash twin, and the reason it is worse than a missed exclusion.
+
+    A non-dot Trash inside the library that the sweep does not recognise has its
+    OWN husks reported, so every run moves them back into Trash under a fresh
+    ``(n)`` name — the pile grows on a schedule instead of being left alone.
+    """
+    link, real = _symlinked_library(tmp_path)
+    _touch(real / "Real" / "Album" / "01.flac")
+    _touch(real / "recycle" / "Old Album" / "cover.jpg")
+    _touch(real / "Old Artist" / "poster.jpg")  # a husk the sweep SHOULD report
+
+    found = find_orphan_folders(link, seeds=None, trash_dir=(real / "recycle").resolve())
+
+    assert found == [link / "Old Artist"]
+
+
+def test_the_export_dir_matches_through_a_symlinked_walk_root(tmp_path: Path) -> None:
+    """The third root, whose contents are ``.m3u8`` files and nothing else.
+
+    An export dir is audio-empty by definition, so a missed exclusion reports it
+    every run — and the mover would take every exported playlist with it.
+    """
+    link, real = _symlinked_library(tmp_path)
+    _touch(real / "Real" / "Album" / "01.flac")
+    _touch(real / "exports" / "1.m3u8")
+    _touch(real / "Old Artist" / "poster.jpg")  # a husk the sweep SHOULD report
+
+    found = find_orphan_folders(
+        link, seeds=None, trash_dir=tmp_path / "trash", ignore_dirs=((real / "exports").resolve(),)
+    )
+
+    assert found == [link / "Old Artist"]
+
+
+def test_an_ignore_root_spelled_through_a_symlink_matches_a_real_walk_root(
+    tmp_path: Path,
+) -> None:
+    """The other direction: the walk root is real and the exclude root is a link.
+
+    ``MUSICDROP_PLAYLISTS_EXPORT_DIR`` is written by an operator, so the app has
+    no say in which spelling arrives — the comparison has to hold from either
+    side.
+    """
+    root = tmp_path / "music"
+    _touch(root / "Real" / "Album" / "01.flac")
+    _touch(root / "exports" / "1.m3u8")
+    link = tmp_path / "exports-link"
+    link.symlink_to(root / "exports")
+
+    _touch(root / "Old Artist" / "poster.jpg")  # a husk the sweep SHOULD report
+
+    assert sorted(find_orphan_folders(root, seeds=None, trash_dir=tmp_path / "trash")) == [
+        root / "Old Artist",
+        root / "exports",
     ]
+    assert find_orphan_folders(
+        root, seeds=None, trash_dir=tmp_path / "trash", ignore_dirs=(link,)
+    ) == [root / "Old Artist"]
+
+
+def test_a_relative_export_dir_matches_the_directory_it_is_written_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative ``MUSICDROP_PLAYLISTS_EXPORT_DIR``, which ``open()`` joins to the CWD.
+
+    ``export_dir_for`` hands the configured value through unchanged, so the
+    ``.m3u8`` files land under the process working directory. A comparison that
+    kept the relative string could match no walked directory at all, and the dir
+    the exporter writes to was swept.
+    """
+    root = tmp_path / "music"
+    _touch(root / "Real" / "Album" / "01.flac")
+    _touch(root / "exports" / "1.m3u8")
+    _touch(root / "Old Artist" / "poster.jpg")  # a husk the sweep SHOULD report
+    monkeypatch.chdir(root)
+
+    found = find_orphan_folders(
+        root, seeds=None, trash_dir=tmp_path / "trash", ignore_dirs=(Path("exports"),)
+    )
+
+    assert found == [root / "Old Artist"]
+
+
+def test_an_ignore_root_outside_the_library_leaves_the_sweep_alone(tmp_path: Path) -> None:
+    """The control for the two drops: a root elsewhere is neither warned nor fatal.
+
+    The shipped layout puts the beets data dir beside the library rather than
+    inside it, so this is the ordinary case — it must not consume the WARNING the
+    at-or-above case is pinned on, and it must not stop the husk being reported.
+    """
+    root = tmp_path / "music"
+    _touch(root / "Real" / "Album" / "01.flac")
+    _touch(root / "Old Artist" / "poster.jpg")
+
+    found = find_orphan_folders(
+        root,
+        seeds=None,
+        trash_dir=tmp_path / "trash",
+        ignore_dirs=(tmp_path / "beets", tmp_path / "records"),
+    )
+
+    assert found == [root / "Old Artist"]
+
+
+def test_a_trash_dir_at_the_music_root_does_not_silence_the_sweep(tmp_path: Path) -> None:
+    """``trash_dir`` goes through the same drop, and it is the one that is not optional.
+
+    ``app.beets.store_layout`` refuses a Trash dir that is or contains the music
+    root, so this arrives only if the finder is called directly — and a sweep
+    that quietly reported nothing is how that call would go unnoticed.
+    """
+    root = tmp_path / "music"
+    _touch(root / "Real" / "Album" / "01.flac")
+    _touch(root / "Old Artist" / "poster.jpg")
+
+    assert find_orphan_folders(root, seeds=None, trash_dir=root) == [root / "Old Artist"]
+    assert find_orphan_folders(root, seeds=None, trash_dir=tmp_path) == [root / "Old Artist"]
+
+
+def test_the_walk_root_spelling_is_what_comes_back(tmp_path: Path) -> None:
+    """Returned paths keep the spelling the caller walked with.
+
+    The mover and ``protected_dirs`` are built on ``lib.directory``; a result set
+    in resolved form would miss every protected root and hand a live album's
+    folder to Trash. ``os.path.realpath`` on the result is what shows the two are
+    the same directory.
+    """
+    link, real = _symlinked_library(tmp_path)
+    _touch(real / "Real" / "Album" / "01.flac")
+    _touch(real / "Old Artist" / "poster.jpg")
+
+    found = find_orphan_folders(link, seeds=None, trash_dir=tmp_path / "trash")
+
+    assert found == [link / "Old Artist"]
+    assert os.path.realpath(found[0]) == str(real / "Old Artist")
 
 
 def test_the_default_trash_position_already_spares_the_beets_dir(tmp_path: Path) -> None:
