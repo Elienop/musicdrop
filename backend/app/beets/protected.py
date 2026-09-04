@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 import os
-import stat as stat_mod
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,13 +82,19 @@ def export_dir(settings: Settings, music_dir: Path) -> Path:
     return Path(configured) if configured else music_dir / ".playlists"
 
 
-def _dir_id(path: str | Path) -> tuple[int, int] | None:
-    """``(st_dev, st_ino)`` when ``path`` is a directory this process can stat."""
+def _ident(path: str | Path) -> tuple[int, int] | None:
+    """``(st_dev, st_ino)``, or ``None`` for a path this process cannot stat.
+
+    No "is it a directory" test: :func:`protected_match` only ever hands this a
+    ``dirpath`` from ``os.walk``, and a file's inode cannot collide with a
+    directory's, so a setting that names a file contributes an id nothing can
+    match. Measured — adding the test back was an equivalent mutant.
+    """
     try:
         st = os.stat(path)
     except OSError:
         return None
-    return (st.st_dev, st.st_ino) if stat_mod.S_ISDIR(st.st_mode) else None
+    return (st.st_dev, st.st_ino)
 
 
 def protected_trees(
@@ -119,13 +124,13 @@ def protected_trees(
     ]
     ids: dict[tuple[int, int], tuple[str, str]] = {}
     for path, name, setting in entries:
-        ident = _dir_id(path)
+        ident = _ident(path)
         # First writer wins, so the five the rule is about name themselves when a
         # store shares their directory (the default `library:` sits in the beets
         # dir, whose parent entry was added first).
         if ident is not None:
             ids.setdefault(ident, (name, setting))
-    return ProtectedTrees(ids=ids, trash=_dir_id(trash_dir))
+    return ProtectedTrees(ids=ids, trash=_ident(trash_dir))
 
 
 def _note_walk_error(exc: OSError) -> None:
@@ -147,7 +152,7 @@ def protected_match(root: Path, protected: ProtectedTrees) -> str | None:
     if os.path.islink(top) or not os.path.isdir(top):
         return None
     for dirpath, _dirnames, _filenames in os.walk(top, onerror=_note_walk_error):
-        ident = _dir_id(dirpath)
+        ident = _ident(dirpath)
         found = protected.ids.get(ident) if ident is not None else None
         if found is not None:
             name, setting = found

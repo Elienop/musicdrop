@@ -303,6 +303,42 @@ def test_open_checked_dir_refuses_an_identity_that_moved(tmp_path: Path) -> None
         open_checked_dir(tmp_path / "trash", (stale.st_dev, stale.st_ino))
 
 
+def test_empty_all_enumerates_from_the_descriptor_it_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The half of ``security-auditor-6`` no outcome assertion can see otherwise.
+
+    The directory at the Trash path is REPLACED between the ``open`` and the
+    first read — the window itself, forced deterministically by wrapping
+    ``open_checked_dir``. Enumerating from the fd yields the entry the check
+    approved (``Album``, which the swapped-in directory does not hold, so the
+    removal fails and names it); enumerating from the path yields ``Decoy`` and
+    removes it. Measured: with ``os.scandir(trash_dir)`` in place of
+    ``os.scandir(fd)`` the rest of this file stays green.
+
+    What it does NOT close is stated in ``empty_all``: the per-entry paths are
+    still built from ``trash_dir``, so the removal targets follow the swap.
+    """
+    import app.beets.trash_manage as manage
+
+    trash = tmp_path / "trash"
+    (trash / "Album").mkdir(parents=True)
+    decoy = tmp_path / "decoy"
+    (decoy / "Decoy").mkdir(parents=True)
+    real_open = open_checked_dir
+
+    def swapping(path: Path, expected: tuple[int, int] | None) -> int:
+        fd = real_open(path, expected)
+        os.rename(path, tmp_path / "gone")
+        os.rename(decoy, path)
+        return fd
+
+    monkeypatch.setattr(manage, "open_checked_dir", swapping)
+    with pytest.raises(manage.TrashEmptyPartialError, match="'Album'"):
+        empty_all(trash, origins_dir=origins_for(trash), protected=_trees_for(tmp_path / "music"))
+    assert (trash / "Decoy").is_dir()
+
+
 def test_open_checked_dir_returns_a_usable_descriptor(tmp_path: Path) -> None:
     """The control: the ordinary case yields the fd ``empty_all`` enumerates from."""
     trash = tmp_path / "trash"
