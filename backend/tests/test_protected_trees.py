@@ -617,21 +617,66 @@ def _trash_dir(client: TestClient) -> Path:
     return Path(client.get("/api/trash").json()["trash_path"])
 
 
-def test_the_empty_routes_answer_503_and_name_the_entry(
+def test_the_empty_routes_refuse_a_store_that_sits_inside_a_trash_entry(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Both remove routes, end to end, through production's own set.
+    """D2 through the routes, with nothing patched but a setting.
 
-    Nothing is patched but a setting: with ``MUSICDROP_INBOX_DIR`` pointing
-    inside a Trash entry, ``checked_protected_trees`` finds it by itself. The
-    ordinary entry beside it is the control — Empty all removes that one and
-    reports it in the same message.
+    ``MUSICDROP_INBOX_DIR`` inside a Trash entry used to be the in-process
+    fixture for D1's guard — the layout rule had no row for it, so the walk was
+    the only thing that caught it. D2 gives it one, and the layout check runs
+    FIRST, so this is now a refusal by the predicate: nothing is walked and
+    NOTHING is removed, including the ordinary entry beside it. That last
+    assertion is what makes this stronger than the D1 version it replaces, which
+    could only report the store after having removed the other entry.
     """
     trash = _trash_dir(client)
     (trash / "Sneak" / "inbox").mkdir(parents=True)
     (trash / "Sneak" / "keep.flac").write_bytes(b"x")
     (trash / "Ordinary").mkdir()
     monkeypatch.setattr("app.config.settings.inbox_dir", str(trash / "Sneak" / "inbox"))
+
+    one = client.delete("/api/trash", params={"folder": "Sneak"})
+    assert one.status_code == 503, one.text
+    assert "The Trash directory contains the inbox" in one.json()["detail"]
+
+    every = client.delete("/api/trash/all")
+    assert every.status_code == 503, every.text
+    assert "The Trash directory contains the inbox" in every.json()["detail"]
+    assert (trash / "Sneak" / "keep.flac").exists()
+    assert (trash / "Ordinary").exists()
+
+
+def test_the_empty_routes_are_wired_to_the_guard_as_well_as_to_the_predicate(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D1's guard, reached through both remove routes.
+
+    ``checked_store_dirs`` is stood down for this test — NOT the guard under
+    test — because with D2 in place there is no spelling of a protected
+    directory inside a Trash entry that the predicate still allows: every one of
+    the eleven protected paths has a row against ``T``, measured by walking the
+    table. The layout check runs first, so it answers every in-process fixture
+    (the test above is that control, unpatched).
+
+    What still reaches the guard in the real world is an ALIAS the predicate
+    cannot see — a bind mount — and that is measured against a real one in
+    ``test_a_bind_mounted_beets_dir_is_refused_at_the_mover_and_the_remover``,
+    in a child process, on ``empty_all`` itself. What this test adds is the
+    WIRING: that both routes hand ``empty_one``/``empty_all`` a protected set at
+    all, which a subprocess probe calling the primitive directly cannot show.
+
+    The ordinary entry beside the refused one is the control: Empty all removes
+    it and says so in the same message.
+    """
+    from app.beets.store_layout import _resolve_store_dirs
+
+    trash = _trash_dir(client)
+    (trash / "Sneak" / "inbox").mkdir(parents=True)
+    (trash / "Sneak" / "keep.flac").write_bytes(b"x")
+    (trash / "Ordinary").mkdir()
+    monkeypatch.setattr("app.config.settings.inbox_dir", str(trash / "Sneak" / "inbox"))
+    monkeypatch.setattr("app.api.trash.checked_store_dirs", _resolve_store_dirs)
 
     one = client.delete("/api/trash", params={"folder": "Sneak"})
     assert one.status_code == 503, one.text
@@ -781,7 +826,7 @@ assert inside.samefile(B), "the fixture did not alias the beets dir"
 def layout():
     try:
         check_store_layout(music_dir=M, beets_dir=B, trash_dir=T, origins_dir=O,
-                           library_path=B / "library.db")
+                           library_path=B / "library.db", settings=Settings())
         return "ALLOWED"
     except StoreLayoutError:
         return "REFUSED"

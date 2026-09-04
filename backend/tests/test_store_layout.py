@@ -20,6 +20,7 @@ import pytest
 
 from app.beets import store_layout
 from app.beets.store_layout import (
+    _FIX_ORIGINS,
     _FIX_TRASH,
     BEETS_SETTING,
     LIBRARY_SETTING,
@@ -28,8 +29,9 @@ from app.beets.store_layout import (
     TRASH_SETTING,
     StoreLayoutError,
     check_store_layout,
-    resolve_configured_path,
+    effective_config_paths,
 )
+from app.config import settings as app_settings
 
 
 def _check(
@@ -49,7 +51,22 @@ def _check(
         trash_dir=trash,
         origins_dir=origins,
         library_path=beets / "library.db" if library is None else library,
+        settings=app_settings,
     )
+
+
+#: Every app-owned store D2 brings into the rule, as ``(Settings field, the
+#: setting's name in a message, what a message calls the directory)``. Kept
+#: beside ``protected._APP_STORES`` rather than derived from it, so a store
+#: dropped from that tuple fails here instead of silently losing four rows.
+_D2_STORES = (
+    ("playlists_export_dir", "MUSICDROP_PLAYLISTS_EXPORT_DIR", "the playlist exports"),
+    ("bank_dir", "MUSICDROP_BANK_DIR", "the import bank"),
+    ("plex_settings_dir", "MUSICDROP_PLEX_SETTINGS_DIR", "the Plex settings store"),
+    ("slskd_settings_dir", "MUSICDROP_SLSKD_SETTINGS_DIR", "the slskd settings store"),
+    ("playlists_dir", "MUSICDROP_PLAYLISTS_DIR", "the playlist store"),
+    ("inbox_dir", "MUSICDROP_INBOX_DIR", "the inbox"),
+)
 
 
 # --------------------------------------------------------------------------
@@ -162,7 +179,7 @@ def test_the_database_inside_the_origin_store_is_refused(tmp_path: Path) -> None
         )
     message = str(exc.value)
     assert "The Trash origin store contains the beets database" in message
-    assert "library.db is not a *.json, so that sweep leaves it" in message
+    assert "library.db would sit in a folder the store sweep prunes" in message
 
 
 def test_trash_equal_to_the_music_dir_is_refused(tmp_path: Path) -> None:
@@ -205,7 +222,7 @@ def test_trash_equal_to_the_beets_dir_is_refused(tmp_path: Path) -> None:
             origins=tmp_path / "records",
         )
     assert "The Trash directory is the beets data directory" in str(exc.value)
-    assert "library.db, config.yaml" in str(exc.value)
+    assert "library.db and config.yaml" in str(exc.value)
 
 
 def test_trash_containing_the_beets_dir_is_refused(tmp_path: Path) -> None:
@@ -739,21 +756,167 @@ def test_a_relative_directory_resolves_against_the_beets_dir_not_the_cwd(
 ) -> None:
     """confuse joins a relative ``directory:`` to ``config_dir()`` = ``BEETSDIR``.
 
+    ``store_layout`` used to re-implement that join in a helper of its own. It
+    does not any more — ``effective_config_paths`` returns confuse's
+    ``as_filename()``, which has already done it — so the property is pinned
+    where it now lives. Resolving against the CWD instead would compare the WRONG
+    directory against Trash.
+
     (``confuse/templates.py``, ``Filename.value``: expanduser, then — with the
     default ``in_source_dir=False`` and no ``base_for_paths`` on beets' source —
     ``os.path.join(view.root().config_dir(), path_str)``, then ``abspath``. The
     starter config says the same in its own words: "Paths are relative to this
     file's directory", shipping ``directory: ../music``.)
-
-    Resolving against the CWD instead would compare the WRONG directory against
-    Trash, which is the whole reason this helper is not ``Path(raw).resolve()``.
     """
     beets = tmp_path / "data" / "beets"
     beets.mkdir(parents=True)
-    assert resolve_configured_path("../music", beets) == (tmp_path / "data" / "music")
-    assert resolve_configured_path("inner", beets) == (beets / "inner")
+
+    directory, library = effective_config_paths(
+        {"directory": "../music", "library": "inner/library.db"}, beets
+    )
+
+    assert directory == str(tmp_path / "data" / "music")
+    assert library == str(beets / "inner" / "library.db")
+    # The control: NOT the CWD, which is what a bare ``Path(raw).resolve()``
+    # would give and what this test exists to keep out.
+    assert directory != str(Path("../music").resolve())
 
 
 def test_an_absolute_directory_ignores_the_beets_dir(tmp_path: Path) -> None:
     absolute = tmp_path / "elsewhere" / "music"
-    assert resolve_configured_path(str(absolute), tmp_path / "data") == absolute
+    directory, _ = effective_config_paths(
+        {"directory": str(absolute), "library": "library.db"}, tmp_path / "data"
+    )
+    assert directory == str(absolute)
+
+
+# --------------------------------------------------------------------------
+# D2 — Trash and the origin store are DEDICATED directories.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("field", "setting", "name"), _D2_STORES)
+def test_a_trash_that_is_an_app_store_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, setting: str, name: str
+) -> None:
+    """``MUSICDROP_TRASH_DIR=<B>/plex`` and its four siblings.
+
+    Measured in the review round: each of these booted clean, and the first
+    Empty Trash wiped that store. The five paths the rule started with had no
+    row for any of them.
+    """
+    store = tmp_path / "data" / "store"
+    monkeypatch.setattr(f"app.config.settings.{field}", str(store))
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=tmp_path / "music",
+            beets=tmp_path / "data",
+            trash=store,
+            origins=tmp_path / "records",
+        )
+    message = str(exc.value)
+    assert f"The Trash directory is {name}" in message
+    assert setting in message
+    assert message.endswith(_FIX_TRASH)
+
+
+@pytest.mark.parametrize(("field", "setting", "name"), _D2_STORES)
+def test_a_trash_that_holds_an_app_store_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, setting: str, name: str
+) -> None:
+    """The containment half: the store one level down is still emptied."""
+    trash = tmp_path / "bin"
+    monkeypatch.setattr(f"app.config.settings.{field}", str(trash / "store"))
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=tmp_path / "music",
+            beets=tmp_path / "data",
+            trash=trash,
+            origins=tmp_path / "records",
+        )
+    assert f"The Trash directory contains {name}" in str(exc.value)
+
+
+@pytest.mark.parametrize(("field", "setting", "name"), _D2_STORES)
+def test_a_trash_inside_an_app_store_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, setting: str, name: str
+) -> None:
+    """The other direction: trashed albums land in a directory the app manages.
+
+    Not symmetric with the row above — the message names the STORE as the
+    subject, because that is the pair the operator has to separate, and the fix
+    is still the Trash's.
+    """
+    store = tmp_path / "store"
+    monkeypatch.setattr(f"app.config.settings.{field}", str(store))
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=tmp_path / "music",
+            beets=tmp_path / "data",
+            trash=store / "bin",
+            origins=tmp_path / "records",
+        )
+    message = str(exc.value)
+    assert f"{name[0].upper()}{name[1:]} contains the Trash directory" in message
+    assert message.endswith(_FIX_TRASH)
+
+
+@pytest.mark.parametrize(("field", "setting", "name"), _D2_STORES)
+def test_an_origin_store_that_overlaps_an_app_store_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, setting: str, name: str
+) -> None:
+    """O gets the same four rows as T, with its own loss and its own fix.
+
+    The store sweep unlinks every ``*.json`` directly inside the origin store,
+    and four of these six directories hold ``*.json`` state files.
+    """
+    store = tmp_path / "data" / "store"
+    monkeypatch.setattr(f"app.config.settings.{field}", str(store))
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=tmp_path / "music",
+            beets=tmp_path / "data",
+            trash=tmp_path / "data" / "trash",
+            origins=store,
+        )
+    message = str(exc.value)
+    assert f"The Trash origin store is {name}" in message
+    assert message.endswith(_FIX_ORIGINS)
+
+
+def test_the_shipped_defaults_survive_every_generated_row(tmp_path: Path) -> None:
+    """The control D2 needs most: 24 generated rows and the DEFAULT still passes.
+
+    Every store field left empty, which is how the image ships — each store
+    resolves to its own leaf under ``B``, the exports to ``<M>/.playlists``, the
+    Trash and the origin store to their own leaves under ``B``. A generated row
+    that had the direction or the containment test wrong would refuse this.
+    """
+    music = tmp_path / "music"
+    beets = tmp_path / "data"
+    _check(music=music, beets=beets, trash=beets / "trash", origins=beets / "trash-origins")
+    # ...and the owner's ruling still holds beside them: a Trash INSIDE the music
+    # library, which now shares that library with the export dir.
+    _check(music=music, beets=beets, trash=music / ".trash", origins=beets / "trash-origins")
+
+
+def test_a_hostile_path_cannot_forge_a_second_log_line(tmp_path: Path) -> None:
+    """The message promises one line in ``docker logs``; ``repr`` is what keeps it.
+
+    A ``directory:`` holding a newline and an ANSI escape is a value the operator
+    submits, and it is echoed back verbatim. Without the ``repr`` the refusal
+    would print as several lines, the last of which the operator has authored.
+    """
+    music = tmp_path / "mu\nsic\x1b[31m"
+    music.mkdir()
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=music,
+            beets=tmp_path / "data",
+            trash=music,
+            origins=tmp_path / "records",
+        )
+    message = str(exc.value)
+    assert "\n" not in message
+    assert "\x1b" not in message
+    assert repr(str(music)) in message  # the path is still there, just neutralised

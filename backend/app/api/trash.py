@@ -143,8 +143,8 @@ def _child_or_404(app: Any, folder: str) -> tuple[LibraryHandle, Path, Path, Pat
     The pair is returned rather than re-taken by the caller because the child is
     what gets ``rmtree``'d or moved: deriving it from one check and acting under
     a second is two instants where the route can only honestly claim one. It also
-    halves the work — a bare ``checked_store_dirs`` was measured at 27
-    ``_relation`` calls and 222 stats, and both routes were paying it twice.
+    halves the work — a bare ``checked_store_dirs`` was measured at 130 stats
+    over the rule's 36 rows, and both routes were paying it twice.
     """
     handle, trash_dir, origins_dir, protected = _store(app)
     try:

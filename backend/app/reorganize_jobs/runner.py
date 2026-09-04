@@ -227,6 +227,7 @@ def _sweep_orphans(
             trash_dir=trash_dir,
             origins_dir=trash_origins_dir,
             library_path=library_path,
+            settings=settings,
         )
     except StoreLayoutError:
         _log.warning("orphan sweep skipped: the store layout is refused", exc_info=True)

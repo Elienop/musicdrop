@@ -1694,6 +1694,7 @@ def _trash_replaced_albums(session: WebImportSession) -> None:
             trash_dir=trash_dir,
             origins_dir=origins_dir,
             library_path=Path(os.fsdecode(lib.path)),
+            settings=settings,
         )
     except StoreLayoutError:
         logger.warning(

@@ -39,7 +39,17 @@ Refused, with the loss each one would cause:
 ``T`` inside ``O``         trashed albums land among the origin records
 ``L`` is / inside ``T``    Empty Trash deletes the beets database
 ``L`` is / inside ``O``    the database sits in the directory the store sweep prunes
+``T`` overlaps a store     Empty Trash deletes that store, or trashed albums land in it
+``O`` overlaps a store     the store sweep unlinks its ``*.json``, or the records land
+                           in it
 =========================  =========================================================
+
+The last two rows are D2, and "a store" is each of the six directories the app
+owns beside these five: the import bank, the Plex settings store, the slskd
+settings store, the playlist store, the inbox and the playlist export dir. Four
+generated rows each — ``T``/``O`` is one, holds one, sits in one — because
+``MUSICDROP_TRASH_DIR=<B>/plex`` booted clean and the first Empty Trash wiped
+that store.
 
 Allowed, and each one is a shape somebody really runs: ``T`` strictly inside
 ``M`` (the ruling — ``/music/.trash`` makes a delete a same-disk rename), ``T``
@@ -63,13 +73,18 @@ import os
 import stat
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, NamedTuple
 
 import beets
 import confuse
 
 from app.beets.library import LibraryHandle, _music_dir
-from app.beets.protected import ProtectedTrees, protected_trees
+from app.beets.protected import (
+    ProtectedTrees,
+    app_owned_dirs,
+    export_dir,
+    protected_trees,
+)
 from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
 from app.config import Settings
 
@@ -86,7 +101,6 @@ __all__ = [
     "effective_config_paths",
     "handle_music_and_library",
     "layout_error_for_config",
-    "resolve_configured_path",
 ]
 
 #: How each of the five inputs is spelled for the operator who has to change it.
@@ -95,6 +109,9 @@ ORIGINS_SETTING = "MUSICDROP_TRASH_ORIGINS_DIR"
 MUSIC_SETTING = "`directory:` in config.yaml"
 LIBRARY_SETTING = "`library:` in config.yaml"
 BEETS_SETTING = "MUSICDROP_BEETS_DIR"
+#: The playlist export dir takes part in D2's rows only, so it is not one of
+#: the five above; it is spelled for the operator the same way.
+EXPORT_SETTING = "MUSICDROP_PLAYLISTS_EXPORT_DIR"
 
 #: The ``config.yaml`` key whose value a refusal is about, when there is one —
 #: the editor paints its gutter row against that key. ``None`` for a refusal
@@ -209,18 +226,14 @@ def _resolved(path: Path, setting: str) -> Path:
     Every path entering :func:`check_store_layout` goes through here, so a call
     site cannot hold one side of a comparison in a lexical spelling.
 
-    It also refuses a path the process cannot ``stat``. Non-strict
-    ``Path.resolve()`` re-raises only ELOOP, so a Trash path behind an
-    untraversable directory comes back as the string it was handed and every
-    inode comparison below silently becomes a string comparison — measured, that
-    layout was allowed at boot and then answered 500 (``PermissionError``) at all
-    four Trash routes. ENOENT and ENOTDIR are allowed through: none of the five
-    has to exist yet.
+    It also refuses a path that EXISTS and cannot be stat'd. Non-strict
+    ``Path.resolve()`` re-raises only ELOOP, so a Trash behind a mode-000
+    directory came back as the string it was handed and every inode comparison
+    became a string comparison: measured, that layout was allowed at boot and
+    then answered 500 at all four Trash routes. ENOENT and ENOTDIR pass — none
+    of the paths has to exist yet.
     """
-    try:
-        resolved = Path(os.path.expanduser(str(path))).resolve()
-    except _UNRESOLVABLE as exc:
-        raise _unresolvable(setting, str(path), exc) from exc
+    resolved = _guarded(setting, str(path), lambda: Path(os.path.expanduser(str(path))).resolve())
     try:
         resolved.stat()
     except OSError as exc:
@@ -230,12 +243,10 @@ def _resolved(path: Path, setting: str) -> Path:
 
 
 def _guarded(setting: str, raw: str, resolve: Callable[[], Path]) -> Path:
-    """Run a resolver that is outside this module and relay its failure as a refusal.
+    """Run a resolver and relay its failure as a refusal in the message shape.
 
-    ``resolve_trash_dir`` and :func:`resolve_configured_path` both call
-    ``Path.resolve()`` themselves, so they raise BEFORE
-    :func:`check_store_layout` sees anything — widening the ``except`` inside
-    the check would not have caught them.
+    ``resolve_trash_dir`` and ``Path.resolve()`` raise on a symlink loop or an
+    embedded NUL, outside every ``except StoreLayoutError`` in the app.
     """
     try:
         return resolve()
@@ -246,15 +257,14 @@ def _guarded(setting: str, raw: str, resolve: Callable[[], Path]) -> Path:
 def _stat_id(path: Path) -> tuple[int, int] | None:
     """``(st_dev, st_ino)`` for a path this process can stat, ``None`` otherwise.
 
-    The one seam :func:`_same_path` uses to ask the filesystem, kept separate so
-    a test can answer for it without patching ``os.stat`` for the whole process.
+    The module's one seam onto the filesystem, kept separate so a test can answer
+    for it without patching ``os.stat`` for the whole process.
 
-    ``None`` means "no identity to compare", which is not the same as "absent":
-    any ``stat`` failure lands here. The five paths the rule is about do not
-    reach this in that state — :func:`_resolved` refuses every errno outside
-    :data:`_ABSENT_ERRNOS` before a comparison runs — so what a ``None`` here
-    covers is a not-yet-created path, an ANCESTOR walked by :func:`_relation`,
-    and a candidate spelling a remedy is trying out.
+    ``None`` means "no identity to compare", not "absent": any ``stat`` failure
+    lands here. The participants do not reach it in that state —
+    :func:`_resolved` refuses every errno outside :data:`_ABSENT_ERRNOS` first —
+    so a ``None`` covers a not-yet-created path and an ANCESTOR walked by
+    :func:`_chain`.
     """
     try:
         st = path.stat()
@@ -263,53 +273,63 @@ def _stat_id(path: Path) -> tuple[int, int] | None:
     return (st.st_dev, st.st_ino)
 
 
-def _same_path(a: Path, b: Path) -> bool:
-    """Whether two resolved paths name ONE directory or file.
+#: One rung of a path's ancestry: what the filesystem calls it and how it is
+#: spelled. Both, because either can be the only thing available — an inode when
+#: two spellings are one directory (a bind mount, a case-insensitive volume), a
+#: spelling when the path is not there yet and has no inode at all.
+_Rung = tuple[tuple[int, int] | None, str]
+
+
+def _chain(path: Path) -> tuple[_Rung, ...]:
+    """``path`` and every ancestor, each as ``(identity, spelling)``.
+
+    Built ONCE per participant. Every row below is then a comparison of tuples,
+    so the cost is one ``stat`` per rung instead of one per row: the review round
+    measured 91 stats for 12 rows on the shipped layout.
+    """
+    return tuple((_stat_id(rung), str(rung)) for rung in (path, *path.parents))
+
+
+def _same_rung(a: _Rung, b: _Rung) -> bool:
+    """Whether two rungs name ONE directory or file.
 
     ``resolve()`` collapses symlinks and ``..``. It does not collapse a bind
     mount, a case-insensitive filesystem or a unicode-normalising one, so two
-    different strings can be one directory — measured in the review round with a
-    bind mount in an unprivileged user namespace: the two spellings compared as
-    unrelated trees, the layout passed, and Empty Trash removed the library.
+    strings can be one directory — measured with a bind mount in an unprivileged
+    user namespace: the spellings compared as unrelated trees, the layout passed,
+    and Empty Trash removed the library.
 
-    So when both paths can be stat'd the filesystem decides, by inode. When
-    either cannot, the string comparison is all that is left; that is the
-    residual — a Trash directory the operator has not created yet, aliased to the
-    library by a mount, is not caught here. It is caught the next time the check
-    runs with the directory present, which the delete and sweep call sites do. A
-    path that exists but cannot be stat'd does not reach the residual: it is
-    refused in :func:`_resolved`.
+    So the filesystem decides when both rungs have an identity. When either does
+    not, the spelling is all that is left; that is the residual — a Trash the
+    operator has not created yet, aliased to the library by a mount, is not
+    caught here. It is caught the next time the check runs with the directory
+    present (every delete, every sweep) and at the moment of destruction by
+    ``app.beets.protected``.
     """
-    if a == b:
+    if a[1] == b[1]:
         return True
-    a_id = _stat_id(a)
-    return a_id is not None and a_id == _stat_id(b)
+    return a[0] is not None and a[0] == b[0]
 
 
-def _relation(container: Path, inner: Path) -> str | None:
-    """``"is"`` when the two are the same directory, ``"contains"`` when ``inner``
-    is strictly below ``container``, ``None`` when neither holds.
+def _same_path(a: Path, b: Path) -> bool:
+    """:func:`_same_rung` for two paths no chain has been built for."""
+    return _same_rung((_stat_id(a), str(a)), (_stat_id(b), str(b)))
 
-    Both arguments must already be ``_resolved``. Containment walks ``inner``'s
-    ancestors and asks :func:`_same_path` about each rather than testing one
-    string prefix, because the container can be an ALIAS of an ancestor rather
-    than that ancestor's own spelling: a bind mount of ``<M>``'s parent onto the
-    Trash path leaves the two endpoints with different inodes, so an
-    identity-only fix would still have passed that layout (measured in the
-    review round, where Empty Trash then removed both the music dir and the
-    beets dir).
 
-    ``is_relative_to`` compares path components, which is what the equality
-    branch of :func:`_same_path` reproduces for a not-yet-created path, so
-    ``/data/trash`` still does not read as containing ``/data/trash-origins``
-    the way a string prefix would.
+def _relation_of(container: tuple[_Rung, ...], inner: tuple[_Rung, ...]) -> str | None:
+    """``"is"``, ``"contains"`` or ``None``, from two chains.
+
+    Containment walks ``inner``'s ancestors rather than testing one string
+    prefix, because the container can be an ALIAS of an ancestor rather than that
+    ancestor's own spelling: a bind mount of ``<M>``'s parent onto the Trash path
+    leaves the two endpoints with different inodes, and Empty Trash then removed
+    both the music dir and the beets dir. The spelling half of :func:`_same_rung`
+    is what keeps ``/data/trash`` from reading as containing
+    ``/data/trash-origins`` the way a prefix test would.
     """
-    if _same_path(container, inner):
+    if _same_rung(container[0], inner[0]):
         return "is"
-    for ancestor in inner.parents:
-        if _same_path(container, ancestor):
-            return "contains"
-    return None
+    return "contains" if any(_same_rung(container[0], rung) for rung in inner[1:]) else None
 
 
 def _refuse(
@@ -326,21 +346,21 @@ def _refuse(
 ) -> StoreLayoutError:
     """Compose the one message shape, so boot, Save, Validate and Apply agree.
 
-    Written for somebody reading ``docker logs`` or the editor's gutter with no
-    access to this source: what the layout is, where each side resolved to, what
-    it would have cost, and which setting to move.
+    ``<Subject> <relation> <other> - <loss>. <SETTING>: <path>; <other>: <path>.
+    <Fix>`` - one line in ``docker logs``, one paragraph on the Trash page. Owner
+    ruling 2026-09-04: "please please simplify the notes and descriptions on the
+    app - long paragraphs are just a waste of space."
 
-    Both resolved paths are echoed verbatim, and one of them can be the resolved
-    form of a caller-supplied ``directory:``. That is a deliberate trade for a
-    single-operator, session-gated app: the operator needs to see where their own
-    setting landed, and the same session can already read those paths from
+    Both paths go through ``repr``: two characters against a path holding a
+    newline or an ANSI escape forging a second log line, which is the promise the
+    shape above makes. Echoing them at all is a deliberate trade for a
+    single-operator, session-gated app - the operator needs to see where their
+    own setting landed, and the same session can read those paths from
     ``GET /api/config``.
     """
     return StoreLayoutError(
-        f"{subject} {relation} {other}. "
-        f"{setting} resolves to {str(subject_path)!r}; "
-        f"{other_setting} resolves to {str(other_path)!r}. "
-        f"{loss} {fix}",
+        f"{subject} {relation} {other} — {loss}. "
+        f"{setting}: {str(subject_path)!r}; {other_setting}: {str(other_path)!r}. {fix}",
         headline=f"{subject} {relation} {other}",
         # Either side of the pair can be the config.yaml key; the subject is
         # asked first because that is the setting the message tells the operator
@@ -350,7 +370,7 @@ def _refuse(
 
 
 #: The remedy each refusal ends with. FIXED strings, one per setting the row
-#: tells the operator to move — no computed example spellings. Those were built
+#: tells the operator to move - no computed example spellings. Those were built
 #: by testing candidate paths against the rule and dropping the ones it would
 #: refuse, which is a second copy of the rule carrying its own guards: the
 #: reviewers found three rows it had never been taught about, and no test failed
@@ -364,6 +384,159 @@ _FIX_LIBRARY_TRASH: Final = "Move `library:` out of the Trash."
 _FIX_LIBRARY_ORIGINS: Final = "Move `library:` out of the Trash origin store."
 
 
+class _Participant(NamedTuple):
+    """A path the rule is about: where it resolved, what to call it, what spells it."""
+
+    path: Path
+    name: str
+    setting: str
+
+
+class _Row(NamedTuple):
+    """One refused relationship, as data.
+
+    ``container`` and ``inner`` are keys into the participant map; ``relations``
+    is which answers of :func:`_relation_of` the row refuses. Both of them for a
+    pair that may not overlap at all, one for a pair whose other direction is
+    allowed on purpose (``T`` strictly inside ``M`` is the owner's ruling).
+    """
+
+    container: str
+    inner: str
+    relations: tuple[str, ...]
+    loss: str
+    fix: str
+
+
+#: THE rule, in the order it is asked. Order decides only WHICH message a layout
+#: breaking several rows gets. ``B`` against ``M`` comes first because those two
+#: are the trees the other three are placed relative to, and ``L``'s rows come
+#: last because the four DIRECTORIES have to be sane before where the database
+#: file sits is the interesting question.
+#:
+#: Twelve ``raise`` blocks used to spell this out at ~14 lines each, and the
+#: reviewers found three of them missing from the remedy builders' idea of the
+#: same rule. One table cannot disagree with itself.
+_ROWS: Final[tuple[_Row, ...]] = (
+    _Row(
+        "beets",
+        "music",
+        ("is",),
+        "the sweep would offer the app's own folders for trashing",
+        _FIX_BEETS,
+    ),
+    _Row(
+        "music",
+        "beets",
+        ("contains",),
+        "a sweep or a folder delete could move library.db and config.yaml",
+        _FIX_BEETS,
+    ),
+    _Row(
+        "beets",
+        "music",
+        ("contains",),
+        "the sweep would run with none of the app-owned exclusions",
+        _FIX_MUSIC,
+    ),
+    _Row(
+        "trash",
+        "music",
+        ("is", "contains"),
+        "emptying it would delete the music library",
+        _FIX_TRASH,
+    ),
+    _Row(
+        "trash",
+        "beets",
+        ("is", "contains"),
+        "Empty Trash would delete library.db and config.yaml",
+        _FIX_TRASH,
+    ),
+    _Row(
+        "origins",
+        "music",
+        ("is", "contains"),
+        "the store sweep would unlink *.json files in the music library",
+        _FIX_ORIGINS,
+    ),
+    _Row(
+        "origins",
+        "beets",
+        ("is", "contains"),
+        "the store sweep would unlink *.json files in the beets data directory",
+        _FIX_ORIGINS,
+    ),
+    _Row(
+        "music",
+        "origins",
+        ("contains",),
+        "a folder delete above the store would trash the restore records",
+        _FIX_ORIGINS,
+    ),
+    _Row(
+        "trash",
+        "origins",
+        ("is", "contains"),
+        "Empty Trash would delete the restore records",
+        _FIX_ORIGINS,
+    ),
+    _Row(
+        "origins",
+        "trash",
+        ("contains",),
+        "trashed albums would land among the restore records",
+        _FIX_ORIGINS,
+    ),
+    _Row(
+        "trash",
+        "library",
+        ("is", "contains"),
+        "Empty Trash would delete library.db and the backups beside it",
+        _FIX_LIBRARY_TRASH,
+    ),
+    _Row(
+        "origins",
+        "library",
+        ("is", "contains"),
+        "library.db would sit in a folder the store sweep prunes",
+        _FIX_LIBRARY_ORIGINS,
+    ),
+)
+
+#: D2 - the Trash and the origin store are DEDICATED directories: neither may be,
+#: contain, or sit inside any other app-owned store. Measured in the review
+#: round: ``MUSICDROP_TRASH_DIR=<B>/plex`` (or ``playlists``, ``bank``,
+#: ``slskd``, ``inbox``) booted clean and Empty Trash wiped that store. Four
+#: generated rows per store rather than a hand-written block each, so a sixth
+#: store is one entry in ``protected._APP_STORES`` and nothing here.
+#:
+#: ``(participant key, cost of holding a store, cost of sitting in one, fix)``.
+_DEDICATED: Final[tuple[tuple[str, str, str, str], ...]] = (
+    ("trash", "Empty Trash would delete it", "trashed albums would land in it", _FIX_TRASH),
+    (
+        "origins",
+        "the store sweep would unlink *.json files in it",
+        "restore records would land in it",
+        _FIX_ORIGINS,
+    ),
+)
+
+#: The participant keys of the five paths the rule started with. Everything else
+#: in the map is an app-owned store, and :func:`_store_rows` generates for it.
+_FIVE: Final = frozenset({"music", "beets", "trash", "origins", "library"})
+
+
+def _store_rows(stores: tuple[str, ...]) -> tuple[_Row, ...]:
+    """D2's rows: four per app-owned store the settings name."""
+    rows: list[_Row] = []
+    for key in stores:
+        for subject, holds, sits, fix in _DEDICATED:
+            rows.append(_Row(subject, key, ("is", "contains"), holds, fix))
+            rows.append(_Row(key, subject, ("contains",), sits, fix))
+    return tuple(rows)
+
+
 def check_store_layout(
     *,
     music_dir: Path,
@@ -371,239 +544,61 @@ def check_store_layout(
     trash_dir: Path,
     origins_dir: Path,
     library_path: Path,
+    settings: Settings,
 ) -> None:
-    """Raise :class:`StoreLayoutError` on any refused relationship among the five.
+    """Raise :class:`StoreLayoutError` on any refused relationship among the paths.
 
-    The five are resolved here rather than by the caller, so no call site can
-    compare a lexical path against a resolved one. Order of the checks decides
-    only WHICH message a layout that breaks several rules gets; every refused
-    layout raises whichever comes first. ``B`` versus ``M`` runs first because
-    those two are the trees the other three are placed relative to.
+    The paths are resolved here rather than by the caller, so no call site can
+    compare a lexical spelling against a resolved one. ``settings`` brings the
+    app-owned stores in as participants (D2); it is required rather than
+    defaulted so a new call site cannot silently lose those rows.
+
+    Raises:
+        StoreLayoutError: a refused relation, or a path that would not resolve.
     """
-    music = _resolved(music_dir, MUSIC_SETTING)
-    beets = _resolved(beets_dir, BEETS_SETTING)
-    trash = _resolved(trash_dir, TRASH_SETTING)
-    origins = _resolved(origins_dir, ORIGINS_SETTING)
-    library = _resolved(library_path, LIBRARY_SETTING)
+    participants = {
+        "music": _Participant(
+            _resolved(music_dir, MUSIC_SETTING), "the music library", MUSIC_SETTING
+        ),
+        "beets": _Participant(
+            _resolved(beets_dir, BEETS_SETTING), "the beets data directory", BEETS_SETTING
+        ),
+        "trash": _Participant(
+            _resolved(trash_dir, TRASH_SETTING), "the Trash directory", TRASH_SETTING
+        ),
+        "origins": _Participant(
+            _resolved(origins_dir, ORIGINS_SETTING), "the Trash origin store", ORIGINS_SETTING
+        ),
+        "library": _Participant(
+            _resolved(library_path, LIBRARY_SETTING), "the beets database", LIBRARY_SETTING
+        ),
+    }
+    music_root, beets_root = participants["music"].path, participants["beets"].path
+    stores: list[tuple[Path, str, str]] = [
+        (export_dir(settings, music_root), "the playlist exports", EXPORT_SETTING),
+        *app_owned_dirs(settings, beets_root),
+    ]
+    for path, name, setting in stores:
+        participants[setting] = _Participant(_resolved(path, setting), name, setting)
 
-    if _relation(beets, music) == "is":
+    # One chain per participant, not one per row.
+    chains = {key: _chain(who.path) for key, who in participants.items()}
+    store_keys = tuple(key for key in participants if key not in _FIVE)
+    for row in (*_ROWS, *_store_rows(store_keys)):
+        relation = _relation_of(chains[row.container], chains[row.inner])
+        if relation not in row.relations:
+            continue
+        container, inner = participants[row.container], participants[row.inner]
         raise _refuse(
-            subject="The beets data directory",
-            relation="is",
-            other="the music library",
-            setting=BEETS_SETTING,
-            subject_path=beets,
-            other_setting=MUSIC_SETTING,
-            other_path=music,
-            loss=(
-                "The beets data directory holds the app's own folders — bank/,"
-                " plex/, slskd/, playlists/, inbox/ — and none of them holds"
-                " audio, so as the music library it is also the tree a"
-                " library-scope Reorganize walks and offers for trashing."
-            ),
-            fix=_FIX_BEETS,
-        )
-
-    if _relation(music, beets) == "contains":
-        raise _refuse(
-            subject="The music library",
-            relation="contains",
-            other="the beets data directory",
-            setting=MUSIC_SETTING,
-            subject_path=music,
-            other_setting=BEETS_SETTING,
-            other_path=beets,
-            loss=(
-                "A library-scope Reorganize walks the music library and a"
-                " whole-folder delete takes a folder's whole subtree, so this"
-                " layout puts library.db and config.yaml where both can move"
-                " them — measured on d65e635: a plain-named beets dir inside the"
-                " library was reported by the orphan sweep."
-            ),
-            fix=_FIX_BEETS,
-        )
-
-    if _relation(beets, music) == "contains":
-        raise _refuse(
-            subject="The beets data directory",
-            relation="contains",
-            other="the music library",
-            setting=BEETS_SETTING,
-            subject_path=beets,
-            other_setting=MUSIC_SETTING,
-            other_path=music,
-            loss=(
-                "A beets data directory above the music library makes every"
-                " app-owned exclusion an ancestor of the walk root. The orphan"
-                " sweep drops such a root with a WARNING and runs on, so it runs"
-                " with none of those exclusions: the app's own folders are no"
-                " longer kept out of it, and the sweep's every run logs the"
-                " warning."
-            ),
-            fix=_FIX_MUSIC,
-        )
-
-    relation = _relation(trash, music)
-    if relation is not None:
-        raise _refuse(
-            subject="The Trash directory",
+            subject=container.name[0].upper() + container.name[1:],
             relation=relation,
-            other="the music library",
-            setting=TRASH_SETTING,
-            subject_path=trash,
-            other_setting=MUSIC_SETTING,
-            other_path=music,
-            loss=(
-                "Emptying the Trash permanently removes every entry under it,"
-                " so this layout would delete the music library."
-            ),
-            fix=_FIX_TRASH,
-        )
-
-    relation = _relation(trash, beets)
-    if relation is not None:
-        raise _refuse(
-            subject="The Trash directory",
-            relation=relation,
-            other="the beets data directory",
-            setting=TRASH_SETTING,
-            subject_path=trash,
-            other_setting=BEETS_SETTING,
-            other_path=beets,
-            loss=(
-                "Emptying the Trash permanently removes every entry under it, so"
-                " this layout would delete library.db, config.yaml and the Trash"
-                " origin records."
-            ),
-            fix=_FIX_TRASH,
-        )
-
-    relation = _relation(origins, music)
-    if relation is not None:
-        raise _refuse(
-            subject="The Trash origin store",
-            relation=relation,
-            other="the music library",
-            setting=ORIGINS_SETTING,
-            subject_path=origins,
-            other_setting=MUSIC_SETTING,
-            other_path=music,
-            loss=(
-                "Emptying the Trash sweeps the store, unlinking every *.json"
-                " file directly inside it, so this layout would delete JSON"
-                " files from the music library."
-            ),
-            fix=_FIX_ORIGINS,
-        )
-
-    relation = _relation(origins, beets)
-    if relation is not None:
-        raise _refuse(
-            subject="The Trash origin store",
-            relation=relation,
-            other="the beets data directory",
-            setting=ORIGINS_SETTING,
-            subject_path=origins,
-            other_setting=BEETS_SETTING,
-            other_path=beets,
-            loss=(
-                "Emptying the Trash sweeps the store, unlinking every *.json"
-                " file directly inside it, so this layout would delete JSON"
-                " files from the beets data directory."
-            ),
-            fix=_FIX_ORIGINS,
-        )
-
-    if _relation(music, origins) == "contains":
-        raise _refuse(
-            subject="The music library",
-            relation="contains",
-            other="the Trash origin store",
-            setting=MUSIC_SETTING,
-            subject_path=music,
-            other_setting=ORIGINS_SETTING,
-            other_path=origins,
-            loss=(
-                "Deleting any folder above the store moves the records into"
-                " Trash with it, and the record is what Restore reads to put a"
-                " trashed folder back where it came from."
-            ),
-            fix=_FIX_ORIGINS,
-        )
-
-    relation = _relation(trash, origins)
-    if relation is not None:
-        raise _refuse(
-            subject="The Trash directory",
-            relation=relation,
-            other="the Trash origin store",
-            setting=TRASH_SETTING,
-            subject_path=trash,
-            other_setting=ORIGINS_SETTING,
-            other_path=origins,
-            loss=(
-                "Emptying the Trash would delete the records it needs, and each"
-                " record file would also be listed as a trashed entry of its own."
-            ),
-            fix=_FIX_ORIGINS,
-        )
-
-    if _relation(origins, trash) == "contains":
-        raise _refuse(
-            subject="The Trash origin store",
-            relation="contains",
-            other="the Trash directory",
-            setting=ORIGINS_SETTING,
-            subject_path=origins,
-            other_setting=TRASH_SETTING,
-            other_path=trash,
-            loss=(
-                "Trashed albums would land among the origin records, which both"
-                " the store sweep and the Trash listing walk."
-            ),
-            fix=_FIX_ORIGINS,
-        )
-
-    # ``library:`` is its own beets key, so the database file can be moved into
-    # Trash while B, T and O stay disjoint. Its own two rows, checked last
-    # because the four DIRECTORIES have to be sane before where the DB sits is
-    # the interesting question.
-    relation = _relation(trash, library)
-    if relation is not None:
-        raise _refuse(
-            subject="The Trash directory",
-            relation=relation,
-            other="the beets database",
-            setting=TRASH_SETTING,
-            subject_path=trash,
-            other_setting=LIBRARY_SETTING,
-            other_path=library,
-            loss=(
-                "Emptying the Trash permanently removes every entry under it, so"
-                " this layout would delete library.db and the migration backups"
-                " beets writes beside it."
-            ),
-            fix=_FIX_LIBRARY_TRASH,
-        )
-
-    relation = _relation(origins, library)
-    if relation is not None:
-        raise _refuse(
-            subject="The Trash origin store",
-            relation=relation,
-            other="the beets database",
-            setting=ORIGINS_SETTING,
-            subject_path=origins,
-            other_setting=LIBRARY_SETTING,
-            other_path=library,
-            loss=(
-                "The store sweep unlinks every *.json directly inside the origin"
-                " store. library.db is not a *.json, so that sweep leaves it;"
-                " what this refuses is the database sharing a directory the app"
-                " prunes on its own schedule, beside records it keys by Trash"
-                " entry name."
-            ),
-            fix=_FIX_LIBRARY_ORIGINS,
+            other=inner.name,
+            setting=container.setting,
+            subject_path=container.path,
+            other_setting=inner.setting,
+            other_path=inner.path,
+            loss=row.loss,
+            fix=row.fix,
         )
 
 
@@ -651,6 +646,7 @@ def checked_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path,
         trash_dir=trash,
         origins_dir=origins,
         library_path=library,
+        settings=settings,
     )
     return trash, origins
 
@@ -690,36 +686,6 @@ def _resolve_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path
         lambda: resolve_trash_origins_dir(settings, handle),
     )
     return trash, origins
-
-
-def resolve_configured_path(raw: str, beets_dir: Path) -> Path:
-    """Resolve a ``directory:`` or ``library:`` value the way beets will.
-
-    Both keys are confuse ``Filename`` templates and share one resolution rule,
-    which is why one function serves them: ``directory:`` names ``M`` and
-    ``library:`` names ``L``.
-
-    confuse's ``Filename.value`` (``confuse/templates.py``, the ``value`` body):
-    ``expanduser`` first, then — for a value that came from a file, with the
-    default ``in_source_dir=False`` and beets' source not setting
-    ``base_for_paths`` — a RELATIVE path is joined to ``view.root().config_dir()``,
-    which is ``BEETSDIR``, and the result goes through ``abspath``. The starter
-    config says the same thing in its own words ("Paths are relative to this
-    file's directory") and ships ``directory: ../music``.
-
-    ``resolve()`` is ours, not confuse's: this module compares symlink-free
-    paths on both sides, and confuse stops at ``abspath``.
-
-    NOTE the pre-existing disagreement this does NOT change: the
-    ``WritablePath`` validator in ``app/models/config_editor.py`` resolves the
-    same value against the process CWD instead. Both run on a Save; they can
-    disagree only for a relative ``directory:``, and only about which directory
-    is checked for writability.
-    """
-    expanded = os.path.expanduser(raw)
-    if not os.path.isabs(expanded):
-        expanded = os.path.join(str(beets_dir), expanded)
-    return Path(os.path.abspath(expanded)).resolve()
 
 
 class _CandidateConfig(beets.IncludeLazyConfig):
@@ -888,20 +854,18 @@ def layout_error_for_config(
         if raw_directory is None or raw_library is None:
             return None
         trash, origins = _resolve_store_dirs(settings, handle)
+        # Both values arrive ABSOLUTE: ``effective_config_paths`` returns
+        # confuse's ``as_filename()``, which has already joined a relative
+        # ``directory:`` to the beets dir and run ``abspath``. ``_resolved``
+        # does the rest, so the wrapper this used to call was a second
+        # ``resolve()`` over an already-resolved path.
         check_store_layout(
-            music_dir=_guarded(
-                MUSIC_SETTING,
-                raw_directory,
-                lambda: resolve_configured_path(raw_directory, handle.beets_dir),
-            ),
+            music_dir=Path(raw_directory),
             beets_dir=handle.beets_dir,
             trash_dir=trash,
             origins_dir=origins,
-            library_path=_guarded(
-                LIBRARY_SETTING,
-                raw_library,
-                lambda: resolve_configured_path(raw_library, handle.beets_dir),
-            ),
+            library_path=Path(raw_library),
+            settings=settings,
         )
     except StoreLayoutError as exc:
         return exc

@@ -422,7 +422,7 @@ def test_the_two_child_routes_check_the_layout_exactly_once(
     tell one check from two.
 
     It is also what the duplicate cost was: a bare ``checked_store_dirs`` was
-    measured at 27 ``_relation`` calls and 222 stats, and these two paid it twice.
+    measured at 130 stats over the rule's 36 rows, and these two paid it twice.
     """
     import app.api.trash as trash_api
 

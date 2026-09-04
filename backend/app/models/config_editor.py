@@ -108,7 +108,7 @@ def _library_file(p: Path) -> Path:
 
     RESIDUAL, and the same one :func:`_writable_path` carries: a RELATIVE value
     is resolved against the process CWD here, while beets resolves it against the
-    beets data directory (``store_layout.resolve_configured_path``). So a
+    beets data directory (confuse's ``Filename`` template). So a
     relative ``library:`` naming an existing directory under the beets dir is
     caught here only when the two coincide; the Apply refusal is what covers it
     otherwise.
