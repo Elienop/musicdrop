@@ -626,8 +626,44 @@ def test_import_replace_without_a_playlists_dir_leaves_exports_alone(
     assert _export_text(duplicates_lib, record.id) == before
 
 
+def test_import_replace_skips_the_trashing_when_the_store_layout_is_refused(
+    duplicates_lib: Library, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The Trash pair here was resolved when the registry got the library, not now.
+
+    ``ImportRegistry.attach_library`` freezes ``(trash_dir, origins_dir)`` at
+    lifespan or after an Apply, and an import can run hours later — the same gap
+    the request paths close by re-resolving per call. Pointing the Trash at the
+    music library is the shape measured to cost the library on Empty Trash; here
+    it costs less and still costs something, because this pass MOVES rather than
+    deletes: the replaced album's files would be relocated inside the library
+    under a container name and its rows dropped. WARNING and skip, so the old
+    copy stays where the operator can still see it.
+
+    The control is
+    ``test_import_replace_without_a_playlists_dir_leaves_exports_alone``, which
+    runs the same helper on an accepted layout and asserts the album IS gone.
+    """
+    import logging
+
+    from app.beets.import_session import _trash_replaced_albums
+
+    music = Path(os.fsdecode(duplicates_lib.directory))
+    superseded = _album_by_title(duplicates_lib, "Discovery")
+    session = _replace_session(duplicates_lib, trash_dir=music, playlists_dir=None)
+    session._replace_album_ids = {_require_id(superseded.id)}
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.import_session"):
+        _trash_replaced_albums(session)
+
+    assert duplicates_lib.get_album(_require_id(superseded.id)) is not None
+    assert any("store layout is refused" in r.getMessage() for r in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]
+
+
 def test_run_import_worker_post_run_pass_tolerates_a_minimal_session(
-    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A REPLICA of the fake-session shape in tests/test_import_session.py.
 
@@ -660,6 +696,13 @@ def test_run_import_worker_post_run_pass_tolerates_a_minimal_session(
             return []
 
     class _Lib:
+        # ``directory`` and ``path``: the post-run pass re-checks the store
+        # layout before moving anything, so a fake standing in for a beets
+        # Library has to say where the music and the DB are. Siblings under
+        # ``tmp_path``, which the check accepts.
+        directory = os.fsencode(str(tmp_path / "music"))
+        path = os.fsencode(str(tmp_path / "beets" / "library.db"))
+
         def music_dir_context(self) -> AbstractContextManager[None]:
             return contextlib.nullcontext()
 
@@ -673,8 +716,8 @@ def test_run_import_worker_post_run_pass_tolerates_a_minimal_session(
         lib = _Lib()
         paths: ClassVar[list[bytes]] = []
         _replace_album_ids: ClassVar[set[int]] = {11, 22}
-        _trash_dir = Path("/tmp/trash")
-        _trash_origins_dir = Path("/tmp/trash-origins")
+        _trash_dir = tmp_path / "trash"
+        _trash_origins_dir = tmp_path / "trash-origins"
         _playlists_dir = None
 
         def run(self) -> None:
@@ -685,6 +728,7 @@ def test_run_import_worker_post_run_pass_tolerates_a_minimal_session(
         return str(trash_dir)
 
     monkeypatch.setattr(session_mod, "trash_album", fake_trash)
+    monkeypatch.setattr("app.config.settings.beets_dir", str(tmp_path / "beets"))
     with caplog.at_level(logging.ERROR, logger="app.beets.import_session"):
         run_import_worker(_FakeSession())  # type: ignore[arg-type]  # minimal duck-typed session
 

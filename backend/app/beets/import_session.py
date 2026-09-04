@@ -37,12 +37,14 @@ from app.beets.import_mapping import (
     map_album_match,
     map_candidate_options,
 )
-from app.beets.library import _require_id, duplicate_albums_still_present
+from app.beets.library import _music_dir, _require_id, duplicate_albums_still_present
 from app.beets.merge_preview import build_merge_preview
 from app.beets.release_identity import release_identity
 from app.beets.relookup import relookup
 from app.beets.research import _read_items, lookup_items
+from app.beets.store_layout import StoreLayoutError, check_store_layout
 from app.beets.trash import album_format_bitrate, trash_album
+from app.config import settings
 from app.models.album import ReleaseIdentity
 from app.models.bank import BankApplyDirective, BankReason
 from app.models.import_models import (
@@ -1656,12 +1658,34 @@ def _trash_replaced_albums(session: WebImportSession) -> None:
     widening the ImportRunner protocol, the registry and ``ImportJobState`` for a
     diagnostic figure the import UI has nowhere to show. Repairing the export is
     the invariant; reporting it is not.
+
+    The store layout is re-checked here for the reason the request paths re-check
+    it: this pair was resolved once, when the registry was handed the library at
+    lifespan or after an Apply, and an import can run hours later. The pair moves
+    files rather than deleting them, so a refused layout costs a replaced album's
+    files relocated inside the music library with its DB rows dropped, not an
+    ``rmtree``. WARNING and skip, like the orphan sweep's arm: the import itself
+    has already committed, and leaving the old copy in the library is the
+    recoverable side of the choice.
     """
     trash_dir = session._trash_dir
     origins_dir = session._trash_origins_dir
     if trash_dir is None or origins_dir is None or not session._replace_album_ids:
         return
     lib = session.lib
+    try:
+        check_store_layout(
+            music_dir=Path(_music_dir(lib)),
+            beets_dir=Path(settings.beets_dir),
+            trash_dir=trash_dir,
+            origins_dir=origins_dir,
+            library_path=Path(os.fsdecode(lib.path)),
+        )
+    except StoreLayoutError:
+        logger.warning(
+            "post-import Trash cleanup skipped: the store layout is refused", exc_info=True
+        )
+        return
     dropped_item_ids: set[int] = set()
     with lib.music_dir_context():
         for album_id in session._replace_album_ids:
