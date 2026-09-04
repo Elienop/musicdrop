@@ -1029,8 +1029,16 @@ def test_a_protected_root_in_another_spelling_still_shields(tmp_path: Path) -> N
     The set comes from the beets DB, which stores what the operator configured;
     the walk uses ``lib.directory``. With the library reached through a symlink
     the two spellings differ, and the string comparison alone reported the live
-    album's own booklet folder. Both spellings are asserted, so a fix that
-    dropped the string test would fail here too.
+    album's own booklet folder. Both spellings are asserted for each shape, so a
+    fix that dropped the string test would fail here too.
+
+    All THREE shapes the filter documents are exercised, because they are three
+    separate comparisons: the candidate's parent is a protected root (the
+    booklet folder), the candidate IS one (an album whose audio has gone from
+    disk), and a protected root lies strictly UNDER the candidate (the artist
+    dir, whose one album is still live). Measured with the identity arm
+    disabled, the first shape alone still passed — the parent test is a third
+    comparison and covers it — so this test pinned one third of the change.
     """
     real = tmp_path / "tank" / "music"
     link = tmp_path / "music"
@@ -1045,6 +1053,18 @@ def test_a_protected_root_in_another_spelling_still_shields(tmp_path: Path) -> N
         link / "Live" / "Box" / "Scans (LP)"
     ]
     for spelling in (real / "Live" / "Box", link / "Live" / "Box"):
+        assert (
+            find_orphan_folders(link, seeds=None, trash_dir=trash, protected_dirs={str(spelling)})
+            == []
+        ), spelling
+
+    # The album's audio is gone from disk: the candidate IS the protected root,
+    # and its ancestor is what would be reported if the root were not spared.
+    (real / "Live" / "Box" / "Disc 1" / "01.flac").unlink()
+    _touch(real / "Live" / "Box" / "Disc 1" / "cover.jpg")
+    assert find_orphan_folders(link, seeds=None, trash_dir=trash) == [link / "Live"]
+    for spelling in (real / "Live" / "Box", link / "Live" / "Box"):
+        # ``Live`` is an ANCESTOR of the root; ``Box`` IS one once ``Live`` is spared.
         assert (
             find_orphan_folders(link, seeds=None, trash_dir=trash, protected_dirs={str(spelling)})
             == []
