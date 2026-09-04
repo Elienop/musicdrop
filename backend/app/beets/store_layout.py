@@ -59,6 +59,7 @@ of the five has to exist yet.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Final
 
@@ -114,23 +115,113 @@ class StoreLayoutError(Exception):
         self.config_key = config_key
 
 
-def _resolved(path: Path) -> Path:
+#: What resolving an operator-supplied path can raise. Measured on this tree:
+#: ``RuntimeError("Symlink loop from ...")`` for a self-referencing symlink on
+#: Python 3.11 (what the image ships) and 3.12 (what the venv runs), and
+#: ``ValueError("embedded null character")`` for a ``directory: "/music/\0evil"``,
+#: which ruamel accepts. ``OSError`` covers the strict-mode shape 3.13 uses and
+#: any I/O fault under the ``lstat`` chain.
+_UNRESOLVABLE: Final = (OSError, RuntimeError, ValueError)
+
+
+def _unresolvable(setting: str, raw: str, exc: Exception) -> StoreLayoutError:
+    """The refusal for a path that will not resolve, in the same message shape.
+
+    A refusal rather than a traceback: before this, a symlink loop as
+    ``MUSICDROP_TRASH_DIR`` reached the lifespan uncaught, so the operator got a
+    stack trace and no "refusing to start" line — the one thing the boot gate
+    exists to print — and the same value through Validate/Save answered 500.
+    """
+    return StoreLayoutError(
+        f"{setting} could not be resolved. It is set to {raw!r}, and resolving it"
+        f" raised {type(exc).__name__}: {exc}. A symbolic-link loop and an embedded"
+        " NUL byte are the two inputs measured to do this. Correct the value:"
+        " until it resolves there is nothing to compare it against, so MusicDrop"
+        " treats it the same way as a directory that sits on top of the library.",
+        config_key=_CONFIG_KEY_OF.get(setting),
+    )
+
+
+def _resolved(path: Path, setting: str) -> Path:
     """Absolute, symlink-free, ``..``-free — the only form this module compares."""
-    return Path(os.path.expanduser(str(path))).resolve()
+    try:
+        return Path(os.path.expanduser(str(path))).resolve()
+    except _UNRESOLVABLE as exc:
+        raise _unresolvable(setting, str(path), exc) from exc
+
+
+def _guarded(setting: str, raw: str, resolve: Callable[[], Path]) -> Path:
+    """Run a resolver that is outside this module and relay its failure as a refusal.
+
+    ``resolve_trash_dir`` and :func:`resolve_configured_path` both call
+    ``Path.resolve()`` themselves, so they raise BEFORE
+    :func:`check_store_layout` sees anything — widening the ``except`` inside
+    the check would not have caught them.
+    """
+    try:
+        return resolve()
+    except _UNRESOLVABLE as exc:
+        raise _unresolvable(setting, raw, exc) from exc
+
+
+def _stat_id(path: Path) -> tuple[int, int] | None:
+    """``(st_dev, st_ino)`` for a path that exists, ``None`` otherwise.
+
+    The one seam :func:`_same_path` uses to ask the filesystem, kept separate so
+    a test can answer for it without patching ``os.stat`` for the whole process.
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def _same_path(a: Path, b: Path) -> bool:
+    """Whether two resolved paths name ONE directory or file.
+
+    ``resolve()`` collapses symlinks and ``..``. It does not collapse a bind
+    mount, a case-insensitive filesystem or a unicode-normalising one, so two
+    different strings can be one directory — measured in the review round with a
+    bind mount in an unprivileged user namespace: the two spellings compared as
+    unrelated trees, the layout passed, and Empty Trash removed the library.
+
+    So when BOTH paths exist the filesystem decides, by inode. When either does
+    not exist there is nothing to stat and the string comparison is all that is
+    left; that is the residual — a Trash directory the operator has not created
+    yet, aliased to the library by a mount, is not caught here. It is caught the
+    next time the check runs with the directory present, which the delete and
+    sweep call sites do.
+    """
+    if a == b:
+        return True
+    a_id = _stat_id(a)
+    return a_id is not None and a_id == _stat_id(b)
 
 
 def _relation(container: Path, inner: Path) -> str | None:
     """``"is"`` when the two are the same directory, ``"contains"`` when ``inner``
     is strictly below ``container``, ``None`` when neither holds.
 
-    Both arguments must already be ``_resolved``; ``is_relative_to`` compares
-    path components, so ``/data/trash`` does not read as containing
-    ``/data/trash-origins`` the way a string prefix would.
+    Both arguments must already be ``_resolved``. Containment walks ``inner``'s
+    ancestors and asks :func:`_same_path` about each rather than testing one
+    string prefix, because the container can be an ALIAS of an ancestor rather
+    than that ancestor's own spelling: a bind mount of ``<M>``'s parent onto the
+    Trash path leaves the two endpoints with different inodes, so an
+    identity-only fix would still have passed that layout (measured in the
+    review round, where Empty Trash then removed both the music dir and the
+    beets dir).
+
+    ``is_relative_to`` compares path components, which is what the equality
+    branch of :func:`_same_path` reproduces for a not-yet-created path, so
+    ``/data/trash`` still does not read as containing ``/data/trash-origins``
+    the way a string prefix would.
     """
-    if container == inner:
+    if _same_path(container, inner):
         return "is"
-    if inner.is_relative_to(container):
-        return "contains"
+    for ancestor in inner.parents:
+        if _same_path(container, ancestor):
+            return "contains"
     return None
 
 
@@ -239,11 +330,11 @@ def check_store_layout(
     layout raises whichever comes first. ``B`` versus ``M`` runs first because
     those two are the trees the other three are placed relative to.
     """
-    music = _resolved(music_dir)
-    beets = _resolved(beets_dir)
-    trash = _resolved(trash_dir)
-    origins = _resolved(origins_dir)
-    library = _resolved(library_path)
+    music = _resolved(music_dir, MUSIC_SETTING)
+    beets = _resolved(beets_dir, BEETS_SETTING)
+    trash = _resolved(trash_dir, TRASH_SETTING)
+    origins = _resolved(origins_dir, ORIGINS_SETTING)
+    library = _resolved(library_path, LIBRARY_SETTING)
 
     trash_fix = _trash_fix(music=music, beets=beets, origins=origins)
     origins_fix = _origins_fix(music=music, beets=beets, trash=trash)
@@ -508,13 +599,31 @@ def require_safe_store_layout(settings: Settings, handle: LibraryHandle) -> None
     pair of paths those paths use, as they stand at this moment. It says nothing
     about later moments: the delete and sweep call sites re-run it themselves.
     """
+    trash, origins = _resolve_store_dirs(settings, handle)
     check_store_layout(
         music_dir=Path(_music_dir(handle.lib)),
         beets_dir=handle.beets_dir,
-        trash_dir=resolve_trash_dir(settings, handle),
-        origins_dir=resolve_trash_origins_dir(settings, handle),
+        trash_dir=trash,
+        origins_dir=origins,
         library_path=_handle_library_path(handle),
     )
+
+
+def _resolve_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path, Path]:
+    """The Trash / origin-store pair, with a resolve failure relayed as a refusal.
+
+    Both resolvers call ``Path.resolve()`` on the configured value, which raises
+    on a symlink loop or an embedded NUL — outside every ``except
+    StoreLayoutError`` in the app. Wrapping them here means one message shape for
+    "this value is unusable" and for "this value is dangerous".
+    """
+    trash = _guarded(TRASH_SETTING, settings.trash_dir, lambda: resolve_trash_dir(settings, handle))
+    origins = _guarded(
+        ORIGINS_SETTING,
+        settings.trash_origins_dir,
+        lambda: resolve_trash_origins_dir(settings, handle),
+    )
+    return trash, origins
 
 
 def resolve_configured_path(raw: str, beets_dir: Path) -> Path:
@@ -570,12 +679,21 @@ def layout_error_for_config(
     """
     library_raw = "library.db" if raw_library is None else raw_library
     try:
+        trash, origins = _resolve_store_dirs(settings, handle)
         check_store_layout(
-            music_dir=resolve_configured_path(raw_directory, handle.beets_dir),
+            music_dir=_guarded(
+                MUSIC_SETTING,
+                raw_directory,
+                lambda: resolve_configured_path(raw_directory, handle.beets_dir),
+            ),
             beets_dir=handle.beets_dir,
-            trash_dir=resolve_trash_dir(settings, handle),
-            origins_dir=resolve_trash_origins_dir(settings, handle),
-            library_path=resolve_configured_path(library_raw, handle.beets_dir),
+            trash_dir=trash,
+            origins_dir=origins,
+            library_path=_guarded(
+                LIBRARY_SETTING,
+                library_raw,
+                lambda: resolve_configured_path(library_raw, handle.beets_dir),
+            ),
         )
     except StoreLayoutError as exc:
         return exc

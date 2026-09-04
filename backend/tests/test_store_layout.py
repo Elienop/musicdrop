@@ -13,10 +13,12 @@ real directories because the whole question there is what ``resolve()`` does.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
+from app.beets import store_layout
 from app.beets.store_layout import (
     BEETS_SETTING,
     LIBRARY_SETTING,
@@ -377,6 +379,167 @@ def test_the_default_database_beside_the_config_is_allowed(tmp_path: Path) -> No
         origins=beets / "trash-origins",
         library=beets / "library.db",
     )
+
+
+def test_two_names_for_one_file_are_one_path(tmp_path: Path) -> None:
+    """``_same_path`` asks the FILESYSTEM, not the two strings.
+
+    A hard link is the one path alias this test can build without privileges:
+    two names, one inode, neither a symlink, so ``resolve()`` leaves both
+    spellings exactly as they are. The bind-mount and case-folding aliases the
+    review round measured are the same defect and the same fix; they need a
+    mount, which a unit test does not have.
+    """
+    from app.beets.store_layout import _same_path
+
+    one = tmp_path / "one.db"
+    one.write_bytes(b"x")
+    alias = tmp_path / "alias.db"
+    os.link(one, alias)
+    other = tmp_path / "other.db"
+    other.write_bytes(b"x")
+
+    assert _same_path(one, alias) is True
+    assert _same_path(one, other) is False  # same bytes, different inode
+
+
+def test_an_aliased_trash_dir_is_refused_even_though_the_strings_differ(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bind-mount shape: two spellings, one directory, both existing.
+
+    The alias is supplied through ``_stat_id`` — the module's one seam onto the
+    filesystem — because building a real second name for a DIRECTORY needs a
+    mount. What is pinned is that the check consults inode identity at all; that
+    ``_stat_id`` reports the kernel's answer faithfully is one ``Path.stat()``
+    call, and the hard-link test above measures that end for real.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    alias = tmp_path / "alias"
+    alias.mkdir()
+
+    real_stat_id = store_layout._stat_id
+
+    def fake(path: Path) -> tuple[int, int] | None:
+        if path in (music, alias):
+            return (1, 1)
+        return real_stat_id(path)
+
+    monkeypatch.setattr(store_layout, "_stat_id", fake)
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=music,
+            beets=tmp_path / "data",
+            trash=alias,
+            origins=tmp_path / "records",
+        )
+    assert "The Trash directory is the music library" in str(exc.value)
+
+
+def test_an_alias_of_the_librarys_parent_is_refused_as_containing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The half an inode test on the two ENDPOINTS alone would miss.
+
+    A bind mount of ``<M>``'s PARENT onto the Trash path leaves ``T`` and ``M``
+    with different inodes — measured in the review round, where Empty Trash then
+    removed the music dir AND the beets dir. Containment therefore walks ``M``'s
+    ancestors and asks about each.
+    """
+    vol = tmp_path / "vol"
+    music = vol / "music"
+    music.mkdir(parents=True)
+    alias = tmp_path / "alias"
+    alias.mkdir()
+
+    real_stat_id = store_layout._stat_id
+
+    def fake(path: Path) -> tuple[int, int] | None:
+        if path in (vol, alias):
+            return (2, 2)
+        return real_stat_id(path)
+
+    monkeypatch.setattr(store_layout, "_stat_id", fake)
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=music,
+            beets=tmp_path / "data",
+            trash=alias,
+            origins=tmp_path / "records",
+        )
+    assert "The Trash directory contains the music library" in str(exc.value)
+
+
+def test_a_layout_whose_aliases_do_not_overlap_is_still_allowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control for the two above: the seam is consulted, not obeyed blindly.
+
+    Same fake in place, reporting DIFFERENT ids for every path, so a check that
+    had started refusing whenever it stats anything would fail here.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    trash = tmp_path / "bin"
+    trash.mkdir()
+
+    ids = {music: (3, 3), trash: (3, 4)}
+    monkeypatch.setattr(store_layout, "_stat_id", lambda p: ids.get(p))
+    _check(
+        music=music,
+        beets=tmp_path / "data",
+        trash=trash,
+        origins=tmp_path / "records",
+    )
+
+
+# --------------------------------------------------------------------------
+# Paths that will not resolve at all: a refusal, not a traceback.
+# --------------------------------------------------------------------------
+
+
+def test_a_symlink_loop_is_a_refusal_not_a_runtime_error(tmp_path: Path) -> None:
+    """``Path.resolve()`` raises ``RuntimeError`` on a loop, on 3.11 and 3.12.
+
+    Before this it escaped every ``except StoreLayoutError`` in the app: the
+    lifespan printed a traceback with no "refusing to start" line, and
+    Validate/Save answered 500. The message names the setting, because the
+    traceback named only the path.
+    """
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=tmp_path / "music",
+            beets=tmp_path / "data",
+            trash=loop,
+            origins=tmp_path / "records",
+        )
+    message = str(exc.value)
+    assert TRASH_SETTING in message
+    assert "could not be resolved" in message
+    assert str(loop) in message
+
+
+def test_an_embedded_nul_is_a_refusal_not_a_value_error(tmp_path: Path) -> None:
+    """``directory: "/music/\\0evil"`` is a plain double-quoted YAML scalar ruamel
+    accepts, and ``lstat`` raises ``ValueError`` on it.
+
+    The sibling of the loop case and a different exception type, which is why
+    both are pinned: one ``except`` that covered only ``RuntimeError`` would
+    pass the test above and still 500 here.
+    """
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=Path("/music/\0evil"),
+            beets=tmp_path / "data",
+            trash=tmp_path / "bin",
+            origins=tmp_path / "records",
+        )
+    message = str(exc.value)
+    assert MUSIC_SETTING in message
+    assert "could not be resolved" in message
 
 
 def test_a_symlinked_music_root_counts_as_inside(tmp_path: Path) -> None:

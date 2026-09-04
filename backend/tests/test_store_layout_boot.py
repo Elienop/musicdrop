@@ -73,6 +73,34 @@ def test_a_trash_dir_at_the_music_root_refuses_to_start(
     assert "MUSICDROP_TRASH_DIR" in message
 
 
+def test_a_trash_dir_that_will_not_resolve_still_gets_the_one_error_line(
+    beets_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A symlink loop used to escape the gate entirely.
+
+    ``Path.resolve()`` raises ``RuntimeError`` on it, ``main.py`` catches
+    ``StoreLayoutError``, so the operator got a raw lifespan traceback and NO
+    "refusing to start" line — the single diagnostic this gate exists to print.
+    Asserted on the log record, not just on the raise, for that reason.
+    """
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    monkeypatch.setattr("app.config.settings.trash_dir", str(loop))
+
+    with caplog.at_level(logging.ERROR), pytest.raises(StoreLayoutError):
+        with TestClient(real_app):
+            pass  # pragma: no cover - the lifespan raises before the body runs
+
+    refusals = [r for r in caplog.records if r.name == "uvicorn.error"]
+    assert len(refusals) == 1, [(r.name, r.getMessage()) for r in caplog.records]
+    message = refusals[0].getMessage()
+    assert "refusing to start" in message
+    assert "MUSICDROP_TRASH_DIR could not be resolved" in message
+
+
 def test_the_origin_store_inside_the_library_refuses_to_start(
     beets_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

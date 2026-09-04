@@ -132,6 +132,31 @@ def test_validate_flags_a_directory_that_would_sit_under_trash(
     assert any("The Trash directory contains the music library" in m for m in msgs), msgs
 
 
+def test_validate_answers_a_lint_row_for_a_directory_that_will_not_resolve(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """``directory: "/music/\\0evil"`` — a plain double-quoted YAML scalar.
+
+    ``lstat`` raises ``ValueError`` on an embedded NUL, and this route had no
+    handler for it: measured in the review round as an UNHANDLED ValueError, a
+    500 with a traceback, where the pre-slice route answered a clean
+    ``value_error`` row. Both rows are asserted, because the layout check runs
+    first and used to take the schema's row down with it.
+    """
+    r = client.post(
+        "/api/config/validate",
+        # The YAML source carries a backslash-zero escape; ruamel decodes it to a
+        # NUL byte, which is what reaches ``resolve()``.
+        json={"yaml_text": 'directory: "/music/\\0evil"\nlibrary: library.db\n'},
+    )
+    assert r.status_code == 200
+    rows = r.json()["errors"]
+    assert any(e["type"] == "store_layout" and "could not be resolved" in e["msg"] for e in rows), (
+        rows
+    )
+    assert any(e["type"] == "value_error" and e["loc"] == "directory" for e in rows), rows
+
+
 # --------------------------------------------------------------------------
 # POST /api/config/save — the write, refused BEFORE it happens.
 # --------------------------------------------------------------------------
