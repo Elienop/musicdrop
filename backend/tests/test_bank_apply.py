@@ -44,7 +44,7 @@ from app.models.import_models import (
     ParkedAlbum,
     Recommendation,
 )
-from tests.conftest import build_library, make_test_handle
+from tests.conftest import beets_dir_for, build_library, make_test_handle
 
 T = TypeVar("T")
 
@@ -130,7 +130,7 @@ def _library(tmp_path: Path, albums: list[tuple[str, str]]) -> tuple[LibraryHand
         beets_album = lib.add_album([Item(albumartist=artist, album=album, title=f"t{i}", track=1)])
         beets_album.store()
         ids.append(_require_id(beets_album.id))
-    return make_test_handle(lib, tmp_path), ids
+    return make_test_handle(lib, beets_dir_for(tmp_path)), ids
 
 
 def _outcome(status: AlbumOutcomeStatus, album_id: int | None = None) -> AlbumOutcome:

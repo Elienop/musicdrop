@@ -75,6 +75,7 @@ __all__ = [
     "TRASH_SETTING",
     "StoreLayoutError",
     "check_store_layout",
+    "checked_store_dirs",
     "layout_error_for_config",
     "require_safe_store_layout",
     "resolve_configured_path",
@@ -591,13 +592,24 @@ def _handle_library_path(handle: LibraryHandle) -> Path:
     return Path(os.fsdecode(handle.lib.path))
 
 
-def require_safe_store_layout(settings: Settings, handle: LibraryHandle) -> None:
-    """The boot-time and Apply-time check, from the live settings + handle.
+def checked_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path, Path]:
+    """The ``(trash_dir, origins_dir)`` pair, checked at the moment of use.
 
-    Resolves the same ``trash_dir`` / ``trash_origins_dir`` the delete paths
-    themselves resolve (``app.beets.trash``), so the check is asked of the same
-    pair of paths those paths use, as they stand at this moment. It says nothing
-    about later moments: the delete and sweep call sites re-run it themselves.
+    THE call every destructive path makes instead of the two resolvers, so a
+    site cannot take the pair without taking the check with it. The two returns
+    are exactly what ``resolve_trash_dir`` / ``resolve_trash_origins_dir`` give,
+    so nothing downstream changes shape.
+
+    It runs per call rather than once at boot because the configured STRING is
+    fixed for the process lifetime and what it resolves to is not: replacing
+    ``<M>/.trash`` with a symlink to ``<M>`` after startup was measured to turn
+    ``DELETE /api/trash/all`` into a 200 that emptied the music library. The boot
+    gate cannot see that; a check here does, because ``resolve()`` follows the
+    link at this instant.
+
+    Raises:
+        StoreLayoutError: the layout is refused, or one of the paths would not
+            resolve. Callers on a request path answer 503 with the message.
     """
     trash, origins = _resolve_store_dirs(settings, handle)
     check_store_layout(
@@ -607,6 +619,19 @@ def require_safe_store_layout(settings: Settings, handle: LibraryHandle) -> None
         origins_dir=origins,
         library_path=_handle_library_path(handle),
     )
+    return trash, origins
+
+
+def require_safe_store_layout(settings: Settings, handle: LibraryHandle) -> None:
+    """The boot-time and Apply-time check, from the live settings + handle.
+
+    :func:`checked_store_dirs` without the pair — the same question, asked where
+    there is nothing yet to hand a Trash path to. Startup is the right place for
+    it even though every destructive site re-asks: a refused layout should stop
+    the process rather than wait for the first delete, and the operator gets one
+    ERROR line naming the setting instead of a 503 on a button they pressed.
+    """
+    checked_store_dirs(settings, handle)
 
 
 def _resolve_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path, Path]:

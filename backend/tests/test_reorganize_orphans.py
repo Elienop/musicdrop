@@ -77,7 +77,7 @@ def test_registry_records_orphans() -> None:
 def test_sweep_trashes_library_orphans(reorganize_lib: Library, tmp_path: Path) -> None:
     from app.reorganize_jobs.registry import ReorganizeRegistry
     from app.reorganize_jobs.runner import sweep
-    from tests.conftest import make_test_handle, origins_for
+    from tests.conftest import beets_dir_for, make_test_handle, origins_for
 
     music_dir = Path(os.fsdecode(reorganize_lib.directory))
     husk = music_dir / "Ghost Artist"
@@ -85,7 +85,7 @@ def test_sweep_trashes_library_orphans(reorganize_lib: Library, tmp_path: Path) 
     (husk / "artist-poster.jpg").write_bytes(b"x")
     trash = tmp_path / "trash"
 
-    handle = make_test_handle(reorganize_lib, tmp_path)
+    handle = make_test_handle(reorganize_lib, beets_dir_for(tmp_path))
     reg = ReorganizeRegistry()
     reg.start(scope="library", artist=None, album_id=None, scope_label="library")
     sweep(
@@ -279,7 +279,7 @@ def test_sweep_leaves_live_multidisc_scans_alone(tmp_path: Path) -> None:
     from app.beets.reorganize import plan_reorganize
     from app.reorganize_jobs.registry import ReorganizeRegistry
     from app.reorganize_jobs.runner import sweep
-    from tests.conftest import make_test_handle, origins_for
+    from tests.conftest import beets_dir_for, make_test_handle, origins_for
 
     lib = _library(tmp_path, path_format=_DISC_FORMAT)
     music = Path(os.fsdecode(lib.directory))
@@ -304,7 +304,7 @@ def test_sweep_leaves_live_multidisc_scans_alone(tmp_path: Path) -> None:
     reg.start(scope="library", artist=None, album_id=None, scope_label="library")
     sweep(
         reg,
-        make_test_handle(lib, tmp_path),
+        make_test_handle(lib, beets_dir_for(tmp_path)),
         scope="library",
         trash_dir=trash,
         trash_origins_dir=origins_for(trash),
@@ -367,7 +367,7 @@ def test_the_orphan_pass_is_skipped_when_only_the_trash_dir_is_wired(
     """
     from app.reorganize_jobs.registry import ReorganizeRegistry
     from app.reorganize_jobs.runner import sweep
-    from tests.conftest import make_test_handle
+    from tests.conftest import beets_dir_for, make_test_handle
 
     music_dir = Path(os.fsdecode(reorganize_lib.directory))
     husk = music_dir / "Ghost Artist"
@@ -378,7 +378,7 @@ def test_the_orphan_pass_is_skipped_when_only_the_trash_dir_is_wired(
 
     sweep(
         reg,
-        make_test_handle(reorganize_lib, tmp_path),
+        make_test_handle(reorganize_lib, beets_dir_for(tmp_path)),
         scope="library",
         trash_dir=tmp_path / "trash",
         trash_origins_dir=None,
@@ -417,7 +417,7 @@ def test_the_orphan_pass_is_skipped_when_the_origin_store_cannot_be_used(
     """
     from app.reorganize_jobs.registry import ReorganizeRegistry
     from app.reorganize_jobs.runner import sweep
-    from tests.conftest import make_test_handle
+    from tests.conftest import beets_dir_for, make_test_handle
 
     music_dir = Path(os.fsdecode(reorganize_lib.directory))
     husk = music_dir / "Ghost Artist"
@@ -432,7 +432,7 @@ def test_the_orphan_pass_is_skipped_when_the_origin_store_cannot_be_used(
     with caplog.at_level(logging.WARNING, logger="app.reorganize_jobs.runner"):
         sweep(
             reg,
-            make_test_handle(reorganize_lib, tmp_path),
+            make_test_handle(reorganize_lib, beets_dir_for(tmp_path)),
             scope="library",
             trash_dir=trash,
             trash_origins_dir=origins,

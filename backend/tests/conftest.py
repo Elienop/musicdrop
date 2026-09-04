@@ -217,6 +217,25 @@ def origins_for(trash_dir: Path) -> Path:
     return trash_dir.parent / "trash-origins"
 
 
+def beets_dir_for(tmp_path: Path) -> Path:
+    """A beets data dir that does not nest with the music root under ``tmp_path``.
+
+    ``app.beets.store_layout`` refuses ``B == M``, ``M`` inside ``B`` and ``B``
+    inside ``M``, and every library fixture here puts the music root at
+    ``<tmp_path>/music`` — so handing ``tmp_path`` ITSELF to
+    :func:`make_test_handle` builds a handle the delete, duplicates, trash and
+    reorganize paths all refuse with a 503. A sibling is the shape the shipped
+    image has (``/music`` and ``/data``).
+
+    Created eagerly because a caller that leaves ``trash_dir`` empty gets
+    ``<B>/trash``, and sqlite needs the directory to exist before it will open a
+    database inside it.
+    """
+    beets = tmp_path / "beets"
+    beets.mkdir(parents=True, exist_ok=True)
+    return beets
+
+
 def make_test_handle(lib: "Library", beets_dir: Path) -> LibraryHandle:
     """Snapshot fields are SENTINELS — use a real ``setup_beets()`` handle to assert on them.
 

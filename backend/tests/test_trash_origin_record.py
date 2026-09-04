@@ -67,7 +67,7 @@ from app.config import Settings
 from app.fsutil import exists, occupied
 from app.models.bank import BankApplyDirective
 from app.models.trash import RestoreResult
-from tests.conftest import build_library, make_test_handle, origins_for
+from tests.conftest import beets_dir_for, build_library, make_test_handle, origins_for
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
 
@@ -1654,14 +1654,15 @@ def test_the_origin_store_defaults_to_a_sibling_of_the_trash_dir(tmp_path: Path)
     absolute ``beets_dir``, which sidesteps the cwd-relative gotcha.
     """
     lib = build_library(str(tmp_path / "library.db"), str(tmp_path / "music"))
-    handle = make_test_handle(lib, tmp_path)
+    beets_dir = beets_dir_for(tmp_path)
+    handle = make_test_handle(lib, beets_dir)
     settings = Settings(trash_dir="", trash_origins_dir="")
 
     trash = resolve_trash_dir(settings, handle)
     origins = resolve_trash_origins_dir(settings, handle)
 
-    assert trash == tmp_path / "trash"
-    assert origins == tmp_path / "trash-origins"
+    assert trash == beets_dir / "trash"
+    assert origins == beets_dir / "trash-origins"
     assert origins.parent == trash.parent
     assert not origins.is_relative_to(trash)
     assert not trash.is_relative_to(origins)
@@ -1675,7 +1676,7 @@ def test_a_configured_origins_dir_overrides_the_default(tmp_path: Path) -> None:
     from ``/music`` is the whole thing this store exists to avoid.
     """
     lib = build_library(str(tmp_path / "library.db"), str(tmp_path / "music"))
-    handle = make_test_handle(lib, tmp_path)
+    handle = make_test_handle(lib, beets_dir_for(tmp_path))
     elsewhere = tmp_path / "elsewhere" / "origins"
 
     resolved = resolve_trash_origins_dir(

@@ -20,7 +20,7 @@ from typing import Any
 
 from beets import config
 from beets.library import Album, Library
-from fastapi import HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
 # Reuse config-Apply's lock + settings accessors so resolve shares the SAME
@@ -36,11 +36,10 @@ from app.beets.library import (
     _coerce_str,
     _require_id,
 )
+from app.beets.store_layout import StoreLayoutError, checked_store_dirs
 from app.beets.trash import (
     album_folder,
     album_format_bitrate,
-    resolve_trash_dir,
-    resolve_trash_origins_dir,
     trash_album,
 )
 from app.library_busy import library_job_active
@@ -400,6 +399,30 @@ def resolve_duplicate_group(
         return ResolveResult(kept_album_id=keep_album_id, moved=moved)
 
 
+def _checked_store(app: FastAPI) -> tuple[LibraryHandle, Path, Path]:
+    """The handle and the CHECKED Trash / origin-store pair, or a 503.
+
+    ``resolve_trash_dir`` follows whatever the configured path points at NOW, so
+    the boot-time containment check says nothing about this request — a symlink
+    dropped at the Trash path after startup redirects the loser copies wherever
+    it points. Same helper shape (and same 503) as ``delete._checked_store``,
+    written out here rather than shared because the two files' 503 sentences
+    differ: a duplicate resolve moves copies, it does not delete an album.
+
+    Raised inline so the status stays a literal
+    tests/test_route_status_declarations.py can see.
+    """
+    handle: LibraryHandle = app.state.beets_library
+    try:
+        trash_dir, origins_dir = checked_store_dirs(_settings(app), handle)
+    except StoreLayoutError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"{exc} No copies have been moved.",
+        ) from exc
+    return handle, trash_dir, origins_dir
+
+
 async def resolve_duplicates_op(
     request: Request, req: ResolveRequest, dropped_item_ids: set[int] | None = None
 ) -> ResolveResult:
@@ -424,8 +447,7 @@ async def resolve_duplicates_op(
             detail="Import in progress; resolve available when it finishes",
         )
     async with _swap_lock(app):
-        handle: LibraryHandle = app.state.beets_library
-        trash_dir = resolve_trash_dir(_settings(app), handle)
+        handle, trash_dir, origins_dir = _checked_store(app)
         try:
             return await run_in_threadpool(
                 resolve_duplicate_group,
@@ -434,7 +456,7 @@ async def resolve_duplicates_op(
                 keep_album_id=req.keep_album_id,
                 remove_album_ids=req.remove_album_ids,
                 trash_dir=trash_dir,
-                origins_dir=resolve_trash_origins_dir(_settings(app), handle),
+                origins_dir=origins_dir,
                 dropped_item_ids=dropped_item_ids,
             )
         except StaleGroupError as exc:
@@ -519,8 +541,7 @@ async def resolve_all_op(
             detail="Import in progress; resolve available when it finishes",
         )
     async with _swap_lock(app):
-        handle: LibraryHandle = app.state.beets_library
-        trash_dir = resolve_trash_dir(_settings(app), handle)
+        handle, trash_dir, origins_dir = _checked_store(app)
         try:
             return await run_in_threadpool(
                 resolve_all_groups,
@@ -528,7 +549,7 @@ async def resolve_all_op(
                 mode=req.mode,
                 groups=req.groups,
                 trash_dir=trash_dir,
-                origins_dir=resolve_trash_origins_dir(_settings(app), handle),
+                origins_dir=origins_dir,
                 dropped_item_ids=dropped_item_ids,
             )
         except AlbumNotFoundError as exc:

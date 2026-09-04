@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient
 from app.api.albums import get_library
 from app.main import app
 from app.models.trash import RestoreResult
-from tests.conftest import build_library, make_test_handle, origins_for
+from tests.conftest import beets_dir_for, build_library, make_test_handle, origins_for
 
 # One undecodable byte, and how it must look once it reaches the wire.
 BAD_BYTES = b"Caf\xe9 Album"
@@ -88,7 +88,7 @@ def surrogate_lib(tmp_path: Path) -> SurrogateLibrary:
 
 @pytest.fixture
 def surrogate_client(surrogate_lib: SurrogateLibrary, tmp_path: Path) -> Iterator[TestClient]:
-    handle = make_test_handle(surrogate_lib.lib, tmp_path)
+    handle = make_test_handle(surrogate_lib.lib, beets_dir_for(tmp_path))
     app.dependency_overrides[get_library] = lambda: handle
     prior = getattr(app.state, "beets_library", None)
     app.state.beets_library = handle

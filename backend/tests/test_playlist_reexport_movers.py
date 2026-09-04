@@ -30,7 +30,7 @@ from app.main import app
 from app.playlists import store
 from app.playlists.reexport import export_dir_for, render_export
 from app.playlists.store import StoredEntry, StoredPlaylist, get_playlists_dir
-from tests.conftest import make_test_handle
+from tests.conftest import beets_dir_for, make_test_handle
 
 # ----- staging helpers -----
 
@@ -79,7 +79,7 @@ def _client_for(lib: Library, tmp_path: Path) -> Iterator[tuple[TestClient, Path
     ``get_playlists_dir`` is overridden rather than pointed at settings so the
     test never reads (or writes) the developer's real playlist store.
     """
-    handle = make_test_handle(lib, tmp_path)
+    handle = make_test_handle(lib, beets_dir_for(tmp_path))
     playlists_dir = tmp_path / "playlists"
     playlists_dir.mkdir()
     app.state.beets_library = handle
@@ -315,7 +315,7 @@ def test_reorganize_sweep_reexports_moved_tracks(reorganize_lib: Library, tmp_pa
     from app.reorganize_jobs.registry import ReorganizeRegistry
     from app.reorganize_jobs.runner import sweep
 
-    handle = make_test_handle(reorganize_lib, tmp_path)
+    handle = make_test_handle(reorganize_lib, beets_dir_for(tmp_path))
     playlists_dir = tmp_path / "playlists"
     playlists_dir.mkdir()
 
@@ -357,7 +357,7 @@ def test_reorganize_sweep_reexports_even_when_stopped(
     from app.reorganize_jobs.registry import ReorganizeRegistry
     from app.reorganize_jobs.runner import sweep
 
-    handle = make_test_handle(reorganize_lib, tmp_path)
+    handle = make_test_handle(reorganize_lib, beets_dir_for(tmp_path))
     playlists_dir = tmp_path / "playlists"
     playlists_dir.mkdir()
     mover = _item_by_title(reorganize_lib, "15 Step")
@@ -399,7 +399,7 @@ def test_reorganize_count_is_recorded_before_the_job_finishes(
     from app.reorganize_jobs.registry import ReorganizeRegistry
     from app.reorganize_jobs.runner import sweep
 
-    handle = make_test_handle(reorganize_lib, tmp_path)
+    handle = make_test_handle(reorganize_lib, beets_dir_for(tmp_path))
     playlists_dir = tmp_path / "playlists"
     playlists_dir.mkdir()
     mover = _item_by_title(reorganize_lib, "15 Step")
@@ -429,7 +429,7 @@ def test_reorganize_sweep_without_a_playlists_dir_skips_the_pass(
     from app.reorganize_jobs.registry import ReorganizeRegistry
     from app.reorganize_jobs.runner import sweep
 
-    handle = make_test_handle(reorganize_lib, tmp_path)
+    handle = make_test_handle(reorganize_lib, beets_dir_for(tmp_path))
     reg = ReorganizeRegistry()
     reg.start(scope="library", artist=None, album_id=None, scope_label="library")
     sweep(reg, handle, scope="library")
@@ -480,7 +480,7 @@ def test_disk_sync_sweep_prunes_a_removed_track(edit_lib: Library, tmp_path: Pat
     assert _export_text(edit_lib, record.id).count("#EXTINF:") == 2
 
     os.remove(os.fsdecode(victim.path))
-    handle = make_test_handle(edit_lib, tmp_path)
+    handle = make_test_handle(edit_lib, beets_dir_for(tmp_path))
     reg = DiskSyncRegistry()
     reg.start()
     sweep(reg, handle, playlists_dir=playlists_dir)
@@ -509,7 +509,7 @@ def test_disk_sync_sweep_that_removes_nothing_reexports_nothing(
     )
     before = _export_text(edit_lib, record.id)
 
-    handle = make_test_handle(edit_lib, tmp_path)
+    handle = make_test_handle(edit_lib, beets_dir_for(tmp_path))
     reg = DiskSyncRegistry()
     reg.start()
     sweep(reg, handle, playlists_dir=playlists_dir)
@@ -531,7 +531,7 @@ def test_disk_sync_count_is_recorded_before_the_job_finishes(
     _stage_playlist(playlists_dir, edit_lib, [_require_id(victim.id)])
     os.remove(os.fsdecode(victim.path))
 
-    handle = make_test_handle(edit_lib, tmp_path)
+    handle = make_test_handle(edit_lib, beets_dir_for(tmp_path))
     reg = DiskSyncRegistry()
     reg.start()
     real_finish = reg.finish

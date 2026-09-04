@@ -13,7 +13,7 @@ from app.api.albums import get_library
 from app.api.artists import get_artist_image_cache, get_artist_image_service
 from app.artwork.cache import ArtistImageCache
 from app.main import app
-from tests.conftest import make_test_handle
+from tests.conftest import beets_dir_for, make_test_handle
 
 
 class _RecordingBroker:
@@ -40,7 +40,7 @@ class _RecordingBroker:
 
 @pytest.fixture
 def edit_client(edit_lib: Library, tmp_path: Path) -> Iterator[tuple[TestClient, _RecordingBroker]]:
-    handle = make_test_handle(edit_lib, tmp_path)
+    handle = make_test_handle(edit_lib, beets_dir_for(tmp_path))
     broker = _RecordingBroker()
     app.state.event_broker = broker
     app.state.beets_library = handle

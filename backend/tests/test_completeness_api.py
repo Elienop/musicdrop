@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from app.api.albums import get_library
 from app.main import app
-from tests.conftest import build_library, make_test_handle
+from tests.conftest import beets_dir_for, build_library, make_test_handle
 
 
 def _make_lib(tmp_path: Path, *, mb_albumid: str, trackids: list[str]) -> Library:
@@ -70,7 +70,7 @@ def missing_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
         lambda name: _Source(),
     )
 
-    handle = make_test_handle(lib, tmp_path)
+    handle = make_test_handle(lib, beets_dir_for(tmp_path))
     app.dependency_overrides[get_library] = lambda: handle
     try:
         yield TestClient(app)

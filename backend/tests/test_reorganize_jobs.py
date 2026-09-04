@@ -12,7 +12,7 @@ from app.reorganize_jobs.registry import (
     reset_reorganize_backfill,
 )
 from app.reorganize_jobs.runner import start_backfill, sweep
-from tests.conftest import make_test_handle
+from tests.conftest import beets_dir_for, make_test_handle
 
 
 def test_start_backfill_frees_the_slot_if_the_worker_thread_refuses(
@@ -224,7 +224,7 @@ def test_module_global_active_and_reset() -> None:
 def test_sweep_library_moves_three_skips_one(reorganize_lib: Library, tmp_path: Path) -> None:
     reg = ReorganizeRegistry()
     reg.start(scope="library", artist=None, album_id=None, scope_label="library")
-    handle = make_test_handle(reorganize_lib, tmp_path)
+    handle = make_test_handle(reorganize_lib, beets_dir_for(tmp_path))
     sweep(reg, handle, scope="library", artist=None, album_id=None, delay=0.0)
     s = reg.state()
     assert s.phase == "done"
@@ -239,7 +239,7 @@ def test_sweep_honors_stop(reorganize_lib: Library, tmp_path: Path) -> None:
     reg = ReorganizeRegistry()
     reg.start(scope="library", artist=None, album_id=None, scope_label="library")
     reg.request_stop()
-    handle = make_test_handle(reorganize_lib, tmp_path)
+    handle = make_test_handle(reorganize_lib, beets_dir_for(tmp_path))
     sweep(reg, handle, scope="library", artist=None, album_id=None, delay=0.0)
     s = reg.state()
     assert s.phase == "stopped"
@@ -257,7 +257,7 @@ def test_sweep_failure_marks_failed(
         raise RuntimeError("kaboom")
 
     monkeypatch.setattr(runner, "collect_units", boom)
-    handle = make_test_handle(reorganize_lib, tmp_path)
+    handle = make_test_handle(reorganize_lib, beets_dir_for(tmp_path))
     sweep(reg, handle, scope="library", artist=None, album_id=None, delay=0.0)
     s = reg.state()
     assert s.phase == "failed"

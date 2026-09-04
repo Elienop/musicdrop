@@ -61,7 +61,7 @@ from app.beets.trash_manage import restore_album
 from app.beets.trash_origins import _NAME_MAX, read_trash_origin, write_trash_origin
 from app.reorganize_jobs.registry import ReorganizeRegistry
 from app.reorganize_jobs.runner import _sweep_orphans
-from tests.conftest import build_library, origins_for
+from tests.conftest import build_library, make_test_handle, origins_for
 
 #: A folder name exactly at NAME_MAX. " (1)" cannot be appended to it.
 LONGEST = "H" * 255
@@ -243,8 +243,18 @@ def test_the_orphan_sweep_does_not_skip_a_husk_at_the_name_limit(tmp_path: Path)
     reg = ReorganizeRegistry()
     reg.start(scope="library", artist=None, album_id=None, scope_label="library")
 
+    # A real handle: the sweep re-runs the containment check on the pair it was
+    # handed, and that check reads the music root, the beets dir and the DB path
+    # off the handle. ``beets`` is a sibling of ``music`` because the check
+    # refuses a beets data dir that nests with the library.
+    beets_dir = tmp_path / "beets"
+    beets_dir.mkdir(parents=True, exist_ok=True)
+    handle = make_test_handle(
+        build_library(str(beets_dir / "library.db"), str(tmp_path / "music")), beets_dir
+    )
     stopped = _sweep_orphans(
         reg,
+        handle,
         scope="library",
         music_dir=tmp_path / "music",
         trash_dir=trash,

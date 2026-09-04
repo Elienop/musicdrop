@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 
 from beets.library import Library
-from fastapi import HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
 from app.beets.config_editor import _settings, _swap_lock
@@ -28,12 +28,11 @@ from app.beets.library import (
     _require_id,
     require_library_root,
 )
+from app.beets.store_layout import StoreLayoutError, checked_store_dirs
 from app.beets.trash import (
     TrashDeleteIncompleteError,
     TrashMoveIncompleteError,
     TrashRowsNotRemovedError,
-    resolve_trash_dir,
-    resolve_trash_origins_dir,
     trash_album_folder,
 )
 from app.beets.trash_origins import TrashOriginsStoreUnusableError
@@ -51,6 +50,11 @@ from app.models.delete import DeleteResult
 #: ahead of every branch of it, so the refusal reaches the first album and no
 #: further.
 _NOTHING_DELETED = "Nothing has been deleted."
+
+#: The layout refusal's own wording, and it can make the same promise for the
+#: same reason: ``_checked_store`` runs before the first mutation of either op,
+#: so the delete stops at the check with nothing moved and no row dropped.
+_NOTHING_DELETED_LAYOUT = "{} " + _NOTHING_DELETED
 
 #: The recovery line for the one state where the reader must not tidy Trash up
 #: before reading the message: the rows would not go AND the folder would not
@@ -460,6 +464,28 @@ def _recovery(exc: Exception) -> str:
     )
 
 
+def _checked_store(app: FastAPI) -> tuple[LibraryHandle, Path, Path]:
+    """The handle and the CHECKED Trash / origin-store pair, or a 503.
+
+    ``resolve_trash_dir`` follows whatever the configured path points at NOW, so
+    the boot-time containment check says nothing about this request: a symlink
+    dropped at the Trash path after startup was measured to redirect a whole
+    delete into the music library. The pair is taken here, once, and handed to
+    the mover.
+
+    503 and not 500: the same tier — and the same "nothing was moved" promise —
+    that the unusable-store and unmounted-share guards above use, because this
+    one also fires before anything moves or is dropped. Raised inline so the
+    status stays a literal tests/test_route_status_declarations.py can see.
+    """
+    handle: LibraryHandle = app.state.beets_library
+    try:
+        trash_dir, origins_dir = checked_store_dirs(_settings(app), handle)
+    except StoreLayoutError as exc:
+        raise HTTPException(status_code=503, detail=_NOTHING_DELETED_LAYOUT.format(exc)) from exc
+    return handle, trash_dir, origins_dir
+
+
 def _failed(exc: Exception) -> HTTPException:
     return HTTPException(
         status_code=500,
@@ -480,15 +506,14 @@ async def delete_album_op(
     app = request.app
     _gate()
     async with _swap_lock(app):
-        handle: LibraryHandle = app.state.beets_library
-        trash_dir = resolve_trash_dir(_settings(app), handle)
+        handle, trash_dir, origins_dir = _checked_store(app)
         try:
             return await run_in_threadpool(
                 delete_album,
                 handle.lib,
                 album_id,
                 trash_dir=trash_dir,
-                origins_dir=resolve_trash_origins_dir(_settings(app), handle),
+                origins_dir=origins_dir,
                 dropped_item_ids=dropped_item_ids,
             )
         except AlbumNotFoundError as exc:
@@ -541,15 +566,14 @@ async def delete_artist_op(
     app = request.app
     _gate()
     async with _swap_lock(app):
-        handle: LibraryHandle = app.state.beets_library
-        trash_dir = resolve_trash_dir(_settings(app), handle)
+        handle, trash_dir, origins_dir = _checked_store(app)
         try:
             return await run_in_threadpool(
                 delete_artist,
                 handle.lib,
                 artist_name,
                 trash_dir=trash_dir,
-                origins_dir=resolve_trash_origins_dir(_settings(app), handle),
+                origins_dir=origins_dir,
                 dropped_item_ids=dropped_item_ids,
             )
         # Same 503-before-the-blanket-500 ordering as delete_album_op above,

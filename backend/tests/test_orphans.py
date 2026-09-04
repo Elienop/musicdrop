@@ -160,7 +160,7 @@ def test_ignore_dirs_excludes_the_trash_origin_store(tmp_path: Path) -> None:
             settings=Settings(trash_origins_dir=str(store), playlists_export_dir=""),
         )
     )
-    assert store in _ignore_dirs(app)
+    assert store in _ignore_dirs(app, store)
 
 
 def test_trash_folder_moves_whole_folder(tmp_path: Path) -> None:
@@ -469,7 +469,7 @@ def test_a_beets_dir_inside_the_library_is_never_reported(tmp_path: Path) -> Non
             settings=Settings(trash_origins_dir=str(store), playlists_export_dir=""),
         )
     )
-    ignore = _ignore_dirs(app)
+    ignore = _ignore_dirs(app, store)
     assert beets_dir in ignore
     assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=ignore) == []
 
@@ -503,7 +503,7 @@ def test_a_beets_dir_that_contains_the_library_is_not_an_ignore_root(tmp_path: P
             settings=Settings(trash_origins_dir=str(tmp_path / "records"), playlists_export_dir=""),
         )
     )
-    ignore = _ignore_dirs(app)
+    ignore = _ignore_dirs(app, tmp_path / "records")
     assert beets_dir not in ignore
     assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=ignore) == [
         root / "Old Artist"

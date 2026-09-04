@@ -50,11 +50,11 @@ def test_registry_failures_capped_at_10() -> None:
 def test_sweep_runs_to_done_and_fires_on_complete(edit_lib: Library, tmp_path: Path) -> None:
     from app.disk_sync_jobs.registry import DiskSyncRegistry
     from app.disk_sync_jobs.runner import sweep
-    from tests.conftest import make_test_handle
+    from tests.conftest import beets_dir_for, make_test_handle
 
     victim = next(iter(edit_lib.items()))
     os.remove(victim.path)
-    handle = make_test_handle(edit_lib, tmp_path)
+    handle = make_test_handle(edit_lib, beets_dir_for(tmp_path))
     reg = DiskSyncRegistry()
     reg.start()
     fired: list[bool] = []
@@ -70,10 +70,10 @@ def test_sweep_missing_root_fails_job(edit_lib: Library, tmp_path: Path) -> None
 
     from app.disk_sync_jobs.registry import DiskSyncRegistry
     from app.disk_sync_jobs.runner import sweep
-    from tests.conftest import make_test_handle
+    from tests.conftest import beets_dir_for, make_test_handle
 
     shutil.rmtree(os.fsdecode(edit_lib.directory))
-    handle = make_test_handle(edit_lib, tmp_path)
+    handle = make_test_handle(edit_lib, beets_dir_for(tmp_path))
     reg = DiskSyncRegistry()
     reg.start()
     sweep(reg, handle)
@@ -91,7 +91,7 @@ def test_sweep_crash_is_logged_and_fails_job(
 ) -> None:
     from app.disk_sync_jobs import runner
     from app.disk_sync_jobs.registry import DiskSyncRegistry
-    from tests.conftest import make_test_handle
+    from tests.conftest import beets_dir_for, make_test_handle
 
     def boom(*args: object, **kwargs: object) -> int:
         raise RuntimeError("kaboom")
@@ -100,7 +100,7 @@ def test_sweep_crash_is_logged_and_fails_job(
     reg = DiskSyncRegistry()
     reg.start()
     with caplog.at_level("ERROR"):
-        runner.sweep(reg, make_test_handle(edit_lib, tmp_path))
+        runner.sweep(reg, make_test_handle(edit_lib, beets_dir_for(tmp_path)))
     assert reg.state().phase == "failed"
     assert reg.state().error == "kaboom"
     assert any(r.exc_info for r in caplog.records)  # traceback reaches the logs
@@ -109,9 +109,9 @@ def test_sweep_crash_is_logged_and_fails_job(
 def test_stop_yields_stopped_phase(edit_lib: Library, tmp_path: Path) -> None:
     from app.disk_sync_jobs.registry import DiskSyncRegistry
     from app.disk_sync_jobs.runner import sweep
-    from tests.conftest import make_test_handle
+    from tests.conftest import beets_dir_for, make_test_handle
 
-    handle = make_test_handle(edit_lib, tmp_path)
+    handle = make_test_handle(edit_lib, beets_dir_for(tmp_path))
     reg = DiskSyncRegistry()
     reg.start()
     reg.request_stop()

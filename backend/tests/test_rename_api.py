@@ -14,7 +14,7 @@ from app.artist_art_jobs.registry import get_artist_art_backfill
 from app.artwork.cache import ArtistImageCache, CachedImage
 from app.main import app
 from app.playlists.store import get_playlists_dir
-from tests.conftest import make_test_handle
+from tests.conftest import beets_dir_for, make_test_handle
 
 
 class _ToggleOff:
@@ -52,7 +52,7 @@ class _RegistryBusy:
 def rename_client(
     rename_lib: Library, tmp_path: Path
 ) -> Iterator[tuple[TestClient, ArtistImageCache, Path]]:
-    handle = make_test_handle(rename_lib, tmp_path)
+    handle = make_test_handle(rename_lib, beets_dir_for(tmp_path))
     cache = ArtistImageCache(tmp_path / "artcache")
     playlists_dir = tmp_path / "playlists"
     playlists_dir.mkdir()

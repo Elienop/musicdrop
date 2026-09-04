@@ -47,6 +47,16 @@ _RESOLVE_FAILED_RESPONSE: Final = {
         " carries the cause and a recovery hint."
     ),
 }
+#: Both ops resolve the Trash / origin-store pair per request and run the
+#: containment check on what it resolved to, before the first copy moves.
+_RESOLVE_LAYOUT_REFUSED_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": (
+        "The Trash directory or the Trash origin store now sits where using it"
+        " would destroy data (or no longer resolves), so no copies were moved;"
+        " the message names the setting and both resolved paths."
+    ),
+}
 
 
 @router.get("/duplicates")
@@ -75,6 +85,7 @@ def get_duplicates(
             ),
         },
         500: _RESOLVE_FAILED_RESPONSE,
+        503: _RESOLVE_LAYOUT_REFUSED_RESPONSE,
     },
 )
 async def resolve_duplicates(
@@ -110,6 +121,7 @@ async def resolve_duplicates(
             ),
         },
         500: _RESOLVE_FAILED_RESPONSE,
+        503: _RESOLVE_LAYOUT_REFUSED_RESPONSE,
     },
 )
 async def resolve_all_duplicates(

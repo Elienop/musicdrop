@@ -21,7 +21,7 @@ from app.beets.library import (
 )
 from app.config import settings
 from app.main import app
-from tests.conftest import make_test_handle
+from tests.conftest import beets_dir_for, make_test_handle
 
 
 def _threadpool_spy(monkeypatch: pytest.MonkeyPatch) -> Mock:
@@ -105,7 +105,7 @@ def temp_library(tmp_path: Path) -> Library:
 
 @pytest.fixture
 def client(temp_library: Library, tmp_path: Path) -> Iterator[TestClient]:
-    handle = make_test_handle(temp_library, tmp_path)
+    handle = make_test_handle(temp_library, beets_dir_for(tmp_path))
     app.dependency_overrides[get_library] = lambda: handle
     yield TestClient(app)
     app.dependency_overrides.clear()
@@ -175,7 +175,7 @@ def test_album_cover_from_artpath(temp_library: Library, tmp_path: Path) -> None
     album["artpath"] = os.fsencode(str(art_file))
     album.store()
 
-    handle = make_test_handle(temp_library, tmp_path)
+    handle = make_test_handle(temp_library, beets_dir_for(tmp_path))
     app.dependency_overrides[get_library] = lambda: handle
     try:
         resp = TestClient(app).get(f"/api/albums/{album.id}/cover")
@@ -203,7 +203,7 @@ def test_album_cover_matching_if_none_match_returns_304(
     album["artpath"] = os.fsencode(str(art_file))
     album.store()
 
-    handle = make_test_handle(temp_library, tmp_path)
+    handle = make_test_handle(temp_library, beets_dir_for(tmp_path))
     app.dependency_overrides[get_library] = lambda: handle
     try:
         client = TestClient(app)
@@ -236,7 +236,7 @@ def test_album_cover_stale_if_none_match_returns_fresh_bytes(
     album["artpath"] = os.fsencode(str(art_file))
     album.store()
 
-    handle = make_test_handle(temp_library, tmp_path)
+    handle = make_test_handle(temp_library, beets_dir_for(tmp_path))
     app.dependency_overrides[get_library] = lambda: handle
     try:
         resp = TestClient(app).get(

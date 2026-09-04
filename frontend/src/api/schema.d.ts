@@ -9183,6 +9183,15 @@ export interface operations {
                     "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
+            /** @description The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so no copies were moved; the message names the setting and both resolved paths. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
         };
     };
     resolve_all_duplicates_api_duplicates_resolve_all_post: {
@@ -9277,6 +9286,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StructuredErrorDetail"];
+                };
+            };
+            /** @description The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so no copies were moved; the message names the setting and both resolved paths. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
         };
@@ -9518,6 +9536,15 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
+            /** @description The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so no reorganize was planned or started; the message names the setting and both resolved paths. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
         };
     };
     preview_album_reorganize_api_albums__album_id__reorganize_preview_get: {
@@ -9574,6 +9601,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so no reorganize was planned or started; the message names the setting and both resolved paths. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
         };
@@ -9641,6 +9677,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so no reorganize was planned or started; the message names the setting and both resolved paths. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
         };
@@ -9717,6 +9762,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so no reorganize was planned or started; the message names the setting and both resolved paths. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
         };
@@ -12691,6 +12745,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so nothing was read or removed; the message names the setting and both resolved paths. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
         };
     };
     empty_trash_one_api_trash_delete: {
@@ -12765,6 +12828,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so nothing was read or removed; the message names the setting and both resolved paths. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
         };
@@ -12930,6 +13002,15 @@ export interface operations {
             };
             /** @description Some Trash entries were removed and others could not be; the message names which are still there. */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so nothing was read or removed; the message names the setting and both resolved paths. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

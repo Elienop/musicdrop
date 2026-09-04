@@ -4947,6 +4947,16 @@
               }
             }
           },
+          "503": {
+            "description": "The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so no copies were moved; the message names the setting and both resolved paths.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -5055,6 +5065,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StructuredErrorDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so no copies were moved; the message names the setting and both resolved paths.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -5368,6 +5388,16 @@
               }
             }
           },
+          "503": {
+            "description": "The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so no reorganize was planned or started; the message names the setting and both resolved paths.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -5432,6 +5462,16 @@
           },
           "404": {
             "description": "No album has that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so no reorganize was planned or started; the message names the setting and both resolved paths.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5512,6 +5552,16 @@
           },
           "409": {
             "description": "A reorganize is already running, or another library job or a beets swap holds the library.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so no reorganize was planned or started; the message names the setting and both resolved paths.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5604,6 +5654,16 @@
           },
           "409": {
             "description": "A reorganize is already running, or another library job or a beets swap holds the library.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so no reorganize was planned or started; the message names the setting and both resolved paths.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9232,6 +9292,16 @@
               }
             }
           },
+          "503": {
+            "description": "The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so nothing was read or removed; the message names the setting and both resolved paths.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "400": {
             "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
             "content": {
@@ -9295,6 +9365,16 @@
           },
           "404": {
             "description": "The named folder is not in the Trash.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so nothing was read or removed; the message names the setting and both resolved paths.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9499,6 +9579,16 @@
           },
           "500": {
             "description": "Some Trash entries were removed and others could not be; the message names which are still there.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so nothing was read or removed; the message names the setting and both resolved paths.",
             "content": {
               "application/json": {
                 "schema": {

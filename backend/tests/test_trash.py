@@ -40,7 +40,7 @@ from app.beets.trash import (
 )
 from app.beets.trash_origins import TrashOriginsStoreUnusableError
 from app.wire import display_path
-from tests.conftest import build_library, make_test_handle, origins_for
+from tests.conftest import beets_dir_for, build_library, make_test_handle, origins_for
 
 
 def test_trash_album_moves_files_and_drops_db(duplicates_lib: Library, tmp_path: Path) -> None:
@@ -429,7 +429,7 @@ def test_duplicates_resolve_surfaces_the_root_cause(
         )
     assert len(list(duplicates_lib.albums())) == n_before
 
-    req = _StubRequest(_StubApp(make_test_handle(duplicates_lib, tmp_path)))
+    req = _StubRequest(_StubApp(make_test_handle(duplicates_lib, beets_dir_for(tmp_path))))
     resolve_req = ResolveRequest(
         mode=DuplicateMode.strict, keep_album_id=keep, remove_album_ids=[drop]
     )

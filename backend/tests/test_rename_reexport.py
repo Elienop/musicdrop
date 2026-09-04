@@ -11,7 +11,7 @@ from beets.library import Library
 from app.beets.library import _require_id
 from app.playlists import store
 from app.playlists.store import StoredEntry
-from tests.conftest import make_test_handle
+from tests.conftest import beets_dir_for, make_test_handle
 
 
 @pytest.mark.anyio
@@ -20,7 +20,7 @@ async def test_reexports_only_playlists_containing_the_items(
 ) -> None:
     from app.playlists.reexport import reexport_playlists_containing
 
-    handle = make_test_handle(rename_lib, tmp_path)
+    handle = make_test_handle(rename_lib, beets_dir_for(tmp_path))
     playlists_dir = tmp_path / "playlists"
     playlists_dir.mkdir()
 
@@ -55,7 +55,7 @@ async def test_empty_item_set_never_lists_playlists(
         raise AssertionError("empty id set must not touch the playlist store")
 
     monkeypatch.setattr(store, "list_playlists", boom)
-    handle = make_test_handle(rename_lib, tmp_path)
+    handle = make_test_handle(rename_lib, beets_dir_for(tmp_path))
     assert await reexport_playlists_containing(set(), handle, tmp_path / "playlists") == 0
 
 
@@ -75,7 +75,7 @@ async def test_export_failure_does_not_abort_the_fan_out(
     import app.playlists.reexport as reexport_core
     from app.playlists.reexport import reexport_playlists_containing
 
-    handle = make_test_handle(rename_lib, tmp_path)
+    handle = make_test_handle(rename_lib, beets_dir_for(tmp_path))
     playlists_dir = tmp_path / "playlists"
     playlists_dir.mkdir()
 
@@ -106,7 +106,7 @@ async def test_partial_export_failure_counts_only_the_written_playlist(
     import app.playlists.reexport as reexport_core
     from app.playlists.reexport import reexport_playlists_containing
 
-    handle = make_test_handle(rename_lib, tmp_path)
+    handle = make_test_handle(rename_lib, beets_dir_for(tmp_path))
     playlists_dir = tmp_path / "playlists"
     playlists_dir.mkdir()
 

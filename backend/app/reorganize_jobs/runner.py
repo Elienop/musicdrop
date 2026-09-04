@@ -12,7 +12,7 @@ from collections.abc import Callable, Collection
 from pathlib import Path
 from typing import Any
 
-from app.beets.library import LibraryHandle, library_paths_context
+from app.beets.library import LibraryHandle, _music_dir, library_paths_context
 from app.beets.orphans import find_orphan_folders
 from app.beets.reorganize import (
     collect_units,
@@ -20,6 +20,7 @@ from app.beets.reorganize import (
     reorganize_album,
     reorganize_singleton,
 )
+from app.beets.store_layout import StoreLayoutError, check_store_layout
 from app.beets.trash import trash_folder
 from app.beets.trash_origins import TrashOriginsStoreUnusableError, require_usable_store
 from app.models.reorganize import ReorganizeOutcome, ReorganizeScope
@@ -107,6 +108,7 @@ def sweep(
                 # phase must not pay for the DB pass.
                 stopped = _sweep_orphans(
                     reg,
+                    handle,
                     scope=scope,
                     music_dir=Path(os.fsdecode(handle.lib.directory)),
                     trash_dir=trash_dir,
@@ -181,6 +183,7 @@ def _reexport_playlists(
 
 def _sweep_orphans(
     reg: ReorganizeRegistry,
+    handle: LibraryHandle,
     *,
     scope: ReorganizeScope,
     music_dir: Path,
@@ -206,6 +209,24 @@ def _sweep_orphans(
     in silence. Failing the job instead would cost the run its `.m3u8` re-export
     tail (``sweep``'s blanket handler calls ``reg.fail`` and skips it) for a
     fault that has nothing to do with the files this run already moved."""
+    # Asked HERE and not only at boot: this phase runs on a worker thread minutes
+    # after the request that started it, and both roots are re-resolved per use,
+    # so a symlink that appeared at the Trash path in between would send every
+    # husk somewhere the boot check had approved of a different directory. Same
+    # WARNING-and-skip as the store guard below, and for the same reason: the
+    # move phase has already relocated real files, and failing the job here would
+    # cost the run its .m3u8 re-export tail for a fault about the Trash.
+    try:
+        check_store_layout(
+            music_dir=Path(_music_dir(handle.lib)),
+            beets_dir=handle.beets_dir,
+            trash_dir=trash_dir,
+            origins_dir=trash_origins_dir,
+            library_path=Path(os.fsdecode(handle.lib.path)),
+        )
+    except StoreLayoutError:
+        _log.warning("orphan sweep skipped: the store layout is refused", exc_info=True)
+        return False
     try:
         require_usable_store(trash_origins_dir)
     except TrashOriginsStoreUnusableError:

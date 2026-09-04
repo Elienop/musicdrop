@@ -19,7 +19,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.beets.config_editor import _settings, _swap_lock
 from app.beets.library import LibraryHandle, LibraryRootUnavailableError, _music_dir
-from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
+from app.beets.store_layout import StoreLayoutError, checked_store_dirs
 from app.beets.trash_manage import (
     TrashEmptyPartialError,
     empty_all,
@@ -56,6 +56,18 @@ _TRASH_RESTORE_FAILED_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": "The restore failed because re-importing the trashed folder failed.",
 }
+#: Every route here resolves the Trash / origin-store pair per request and runs
+#: the containment check on what it resolved to, so every one of them can answer
+#: this. Its own entry rather than a shared one with the unmounted-share 503:
+#: the two causes read differently to an operator and only ``restore`` has both.
+_TRASH_LAYOUT_REFUSED_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": (
+        "The Trash directory or the Trash origin store now sits where using it"
+        " would destroy data (or no longer resolves), so nothing was read or"
+        " removed; the message names the setting and both resolved paths."
+    ),
+}
 #: A move-back restore writes INTO the music library, so it answers an
 #: unavailable music share the way delete does — a 503 that says nothing was
 #: moved — rather than falling into the blanket 500 below it.
@@ -86,9 +98,31 @@ def _gate(app: Any) -> None:
     raise_if_library_busy(app)
 
 
-def _child_or_404(app: Any, folder: str) -> tuple[LibraryHandle, Path]:
+def _store(app: Any) -> tuple[LibraryHandle, Path, Path]:
+    """The handle and the CHECKED Trash / origin-store pair, or a 503.
+
+    Every route in this file resolves that pair, and ``resolve()`` follows
+    whatever the path points at NOW — so the boot-time check says nothing about
+    this request. Replacing ``<M>/.trash`` with a symlink to ``<M>`` after
+    startup was measured to make ``DELETE /api/trash/all`` answer 200 and empty
+    the music library, and ``DELETE /api/trash?folder=...`` delete a live artist.
+
+    503 rather than 409 or 500: the same tier the store's own
+    ``TrashOriginsStoreUnusableError`` uses, for the same reason — nothing has
+    been moved or removed, and the fix is on the operator's side, not a retry.
+    Raised inline so the status stays a literal
+    ``tests/test_route_status_declarations.py`` can see.
+    """
     handle: LibraryHandle = app.state.beets_library
-    trash_dir = resolve_trash_dir(_settings(app), handle)
+    try:
+        trash_dir, origins_dir = checked_store_dirs(_settings(app), handle)
+    except StoreLayoutError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return handle, trash_dir, origins_dir
+
+
+def _child_or_404(app: Any, folder: str) -> tuple[LibraryHandle, Path]:
+    handle, trash_dir, _origins = _store(app)
     try:
         return handle, resolve_trash_child(trash_dir, folder)
     except AmbiguousDisplayName:
@@ -106,16 +140,15 @@ def _child_or_404(app: Any, folder: str) -> tuple[LibraryHandle, Path]:
         raise HTTPException(status_code=404, detail="Not in Trash") from None
 
 
-@router.get("/trash")
+@router.get("/trash", responses={503: _TRASH_LAYOUT_REFUSED_RESPONSE})
 async def list_trash(request: Request) -> TrashListing:
     """List the albums sitting in Trash (read off disk; no gate)."""
     app = request.app
-    handle: LibraryHandle = app.state.beets_library
-    trash_dir = resolve_trash_dir(_settings(app), handle)
+    handle, trash_dir, origins_dir = _store(app)
     albums = await run_in_threadpool(
         list_trashed_albums,
         trash_dir,
-        origins_dir=resolve_trash_origins_dir(_settings(app), handle),
+        origins_dir=origins_dir,
         music_dir=_music_dir(handle.lib),
     )
     # The origins dir is deliberately NOT on the wire beside ``trash_path``: it
@@ -139,14 +172,14 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
     _gate(app)
     async with _swap_lock(app):
         handle, dest = _child_or_404(app, body.folder)
-        trash_dir = resolve_trash_dir(_settings(app), handle)
+        _handle, trash_dir, origins_dir = _store(app)
         try:
             result = await run_in_threadpool(
                 restore_album,
                 handle.lib,
                 str(dest),
                 trash_dir=trash_dir,
-                origins_dir=resolve_trash_origins_dir(_settings(app), handle),
+                origins_dir=origins_dir,
             )
             emit_library_changed(app)
             return result
@@ -163,17 +196,20 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
 
 @router.delete(
     "/trash",
-    responses={409: _TRASH_CONFLICT_RESPONSE, 404: _TRASH_NOT_FOUND_RESPONSE},
+    responses={
+        409: _TRASH_CONFLICT_RESPONSE,
+        404: _TRASH_NOT_FOUND_RESPONSE,
+        503: _TRASH_LAYOUT_REFUSED_RESPONSE,
+    },
 )
 async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> EmptyResult:
     """Permanently remove one trashed album folder. 409 if busy, 404 if not in Trash."""
     app = request.app
     _gate(app)
-    handle, dest = _child_or_404(app, folder)
+    _handle, dest = _child_or_404(app, folder)
     async with _swap_lock(app):
-        result = await run_in_threadpool(
-            empty_one, str(dest), origins_dir=resolve_trash_origins_dir(_settings(app), handle)
-        )
+        _handle, _trash_dir, origins_dir = _store(app)
+        result = await run_in_threadpool(empty_one, str(dest), origins_dir=origins_dir)
         emit_library_changed(app)
     return result
 
@@ -192,19 +228,19 @@ async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> 
             ),
         },
         500: _TRASH_EMPTY_PARTIAL_RESPONSE,
+        503: _TRASH_LAYOUT_REFUSED_RESPONSE,
     },
 )
 async def empty_trash_all(request: Request) -> EmptyResult:
     """Permanently clear the whole Trash dir. 409 if busy, 500 if partly cleared."""
     app = request.app
     _gate(app)
-    handle: LibraryHandle = app.state.beets_library
-    trash_dir = resolve_trash_dir(_settings(app), handle)
     async with _swap_lock(app):
+        # Inside the lock, so a config Apply cannot swap the handle between the
+        # check and the rmtree.
+        _handle, trash_dir, origins_dir = _store(app)
         try:
-            result = await run_in_threadpool(
-                empty_all, trash_dir, origins_dir=resolve_trash_origins_dir(_settings(app), handle)
-            )
+            result = await run_in_threadpool(empty_all, trash_dir, origins_dir=origins_dir)
         # A partial sweep still CHANGED the library, so the event fires before
         # the error propagates — the page must not keep showing entries that are
         # now gone just because the ones after them could not be removed.
