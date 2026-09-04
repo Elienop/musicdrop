@@ -165,6 +165,47 @@ def test_every_directory_the_rule_is_about_joins_the_set(tmp_path: Path) -> None
     assert trees.trash == (trash_st.st_dev, trash_st.st_ino)
 
 
+def test_checked_protected_trees_reads_the_music_root_and_db_off_the_handle(
+    tmp_path: Path,
+) -> None:
+    """The two the OPEN LIBRARY owns, rather than anything re-resolved.
+
+    The route tests reach this through a configured inbox, so ``music_dir`` and
+    ``library_path`` could both be wrong there and still refuse — measured, both
+    replaced by ``handle.beets_dir`` left every use-site test green. The
+    database is put in a third directory so its folder and the beets dir do not
+    share an identity and mask each other.
+    """
+    from app.beets.store_layout import checked_protected_trees
+    from tests.conftest import build_library
+
+    music = tmp_path / "music"
+    music.mkdir()
+    beets_dir = beets_dir_for(tmp_path)
+    db_dir = tmp_path / "db"
+    db_dir.mkdir()
+    trash = tmp_path / "trash"
+    trash.mkdir()
+    lib = build_library(str(db_dir / "library.db"), str(music))
+    handle = make_test_handle(lib, beets_dir)
+
+    trees = checked_protected_trees(
+        Settings(), handle, trash_dir=trash, origins_dir=origins_for(trash)
+    )
+    named = {path: trees.ids[_ident_of(path)][0] for path in (music, beets_dir, db_dir, trash)}
+    assert named == {
+        music: "the music library",
+        beets_dir: "the beets data directory",
+        db_dir: "the beets database's folder",
+        trash: "the Trash directory",
+    }
+
+
+def _ident_of(path: Path) -> tuple[int, int]:
+    st = os.stat(path)
+    return (st.st_dev, st.st_ino)
+
+
 def test_a_path_that_is_not_there_yet_has_no_identity(tmp_path: Path) -> None:
     """An uncreated store drops out rather than matching everything.
 
