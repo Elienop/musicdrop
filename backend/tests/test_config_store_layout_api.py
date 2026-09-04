@@ -1,10 +1,11 @@
 """The containment rule on the three request paths that can move ``directory:``.
 
-``M`` is the only one of the four paths that moves at runtime, and it moves
-through this editor: Validate lints a draft, Save writes it, Apply re-reads what
-is on disk. All three run the same predicate
-(``app.beets.store_layout.check_store_layout``) so the gutter, the Save refusal
-and the Apply refusal cannot disagree about which documents are acceptable.
+``M`` is the path this editor moves: Validate lints a draft, Save writes it,
+Apply re-reads what is on disk. All three run the same predicate
+(``app.beets.store_layout.check_store_layout``), so the gutter and the Save
+refusal agree by construction. Apply can still differ from both — it reads the
+file rather than the submitted document, which is the divergence
+``test_apply_refuses_after_the_rebuild_on_a_real_pre_check_divergence`` drives.
 
 Every refusal case is paired with a control that still passes — a fail-closed
 check that refused everything would satisfy each "is it refused?" assertion on

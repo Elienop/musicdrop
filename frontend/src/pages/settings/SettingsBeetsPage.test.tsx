@@ -519,9 +519,12 @@ describe("SettingsPage", () => {
         HttpResponse.json(
           {
             detail: {
-              message: "Apply refused: config.yaml would move the music library",
+              message: "Apply refused: The Trash directory is the music library",
               recovery:
-                "The Trash directory is the music library. MUSICDROP_TRASH_DIR resolves to '/music'.",
+                "The Trash directory is the music library — emptying it would" +
+                " delete the music library. MUSICDROP_TRASH_DIR: '/music';" +
+                " `directory:` in config.yaml: '/music'. Set MUSICDROP_TRASH_DIR" +
+                " to its own folder.",
             },
           },
           { status: 422 },

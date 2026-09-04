@@ -68,9 +68,8 @@ _TRASH_RESTORE_FAILED_RESPONSE: Final = {
 _TRASH_LAYOUT_REFUSED_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": (
-        "The Trash directory or the Trash origin store now sits where using it"
-        " would destroy data (or no longer resolves), so nothing was read or"
-        " removed; the message names the setting and both resolved paths."
+        "The store layout is refused, so nothing was read or removed; the message"
+        " names the setting and both resolved paths."
     ),
 }
 #: A move-back restore writes INTO the music library, so it answers an
@@ -90,10 +89,9 @@ _TRASH_EMPTY_PARTIAL_RESPONSE: Final = {
 _TRASH_LIBRARY_UNAVAILABLE_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": (
-        "The folder was not moved out of Trash. Either the music library folder is"
-        " unavailable, or the Trash directory or the Trash origin store now sits"
-        " where using it would destroy data (or no longer resolves), in which case"
-        " the message names the setting and both resolved paths."
+        # Two causes on one status, and OpenAPI carries one description per
+        # status: an unavailable music share, and a refused store layout.
+        "The folder was not moved out of Trash; the message says which setup fault refused it."
     ),
 }
 

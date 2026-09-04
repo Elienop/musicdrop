@@ -1,8 +1,8 @@
 """The containment check at the DESTRUCTIVE call sites, not only at boot.
 
-Four paths take part in the rule and three of them come from the environment, so
-the implementer's first pass checked once at startup and stopped. That is true of
-the configured STRINGS and false of what they resolve to: ``resolve_trash_dir``
+Most of the rule's paths come from the environment, so the implementer's first
+pass checked once at startup and stopped. That is true of the configured STRINGS
+and false of what they resolve to: ``resolve_trash_dir``
 calls ``Path.resolve()`` on every request, so a symlink dropped at the Trash path
 after startup re-arms the whole loss. Measured in the review round — a good boot,
 then ``rmdir <M>/.trash; ln -s <M> <M>/.trash``, then ``DELETE /api/trash/all``

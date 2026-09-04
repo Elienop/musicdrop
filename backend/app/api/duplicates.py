@@ -52,9 +52,8 @@ _RESOLVE_FAILED_RESPONSE: Final = {
 _RESOLVE_LAYOUT_REFUSED_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": (
-        "The Trash directory or the Trash origin store now sits where using it"
-        " would destroy data (or no longer resolves), so no copies were moved;"
-        " the message names the setting and both resolved paths."
+        "The store layout is refused, so no copies were moved; the message names"
+        " the setting and both resolved paths."
     ),
 }
 

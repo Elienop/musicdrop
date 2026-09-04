@@ -58,10 +58,8 @@ _ALBUM_NOT_FOUND_RESPONSE: Final = {
 _LAYOUT_REFUSED_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": (
-        "The Trash directory or the Trash origin store now sits where using it"
-        " would destroy data (or no longer resolves), so no reorganize was"
-        " planned or started; the message names the setting and both resolved"
-        " paths."
+        "The store layout is refused, so nothing was planned or started; the"
+        " message names the setting and both resolved paths."
     ),
 }
 
@@ -107,57 +105,28 @@ def _ignore_dirs(app: object, origins_dir: Path) -> tuple[Path, ...]:
     * the **export dir** holds ``.m3u8`` files;
     * the **origin store** holds ``.json`` files, and sweeping it would take
       every row's exact restore into Trash in one pass;
-    * the **beets data dir**. ``app.beets.store_layout`` refuses a layout where
-      it nests with the music root in either direction, so on an accepted layout
-      it sits outside the walked tree and ``os.walk`` never reaches it. It is
-      passed anyway, unconditionally, because the sweep is what
-      would move ``library.db`` and ``config.yaml`` if that rule were ever
-      relaxed or bypassed, and because it holds content of its own — measured on
-      ``d65e635``, before the rule existed: ``MUSICDROP_BEETS_DIR=<music>/musicdrop``
-      returned ``musicdrop``, identically with and without the store exclusion.
-      Name-based skipping does not cover it either. The sweep skips a directory
-      whose basename starts with a dot or appears in ``orphans.SKIP_DIR_NAMES``
-      (the NAS/OS housekeeping names — ``@eaDir``, ``#recycle``, ``lost+found``,
-      ``$RECYCLE.BIN``, ``System Volume Information``), and a beets dir is
-      neither: measured on ``d65e635``,
-      ``<music>/.musicdrop`` returned ``[]`` where ``<music>/musicdrop`` did not.
+    * the **beets data dir**, passed unconditionally even though the layout rule
+      already refuses it nesting with the music root: it holds content of its own
+      and name-based skipping misses it. Measured on ``d65e635``, before that
+      rule, ``MUSICDROP_BEETS_DIR=<music>/musicdrop`` returned ``musicdrop`` with
+      and without the store exclusion, while ``<music>/.musicdrop`` returned
+      ``[]``;
+    * the **directory holding the beets database**. ``library:`` may name an
+      audio-free subfolder of the music root and the layout rule allows that
+      (``L`` is refused only inside ``T`` or ``O``), which is the husk shape
+      exactly. Measured: with the other three exclusions only,
+      ``<music>/db/library.db`` reported ``db``; with this one, nothing.
 
-    * the **directory holding the beets database**. ``library:`` may name a file
-      anywhere, including an audio-free subfolder of the music root, and the
-      layout rule allows that on purpose (it refuses ``L`` only inside ``T`` or
-      ``O``). ``<music>/db/library.db`` is then a directory whose whole content
-      is a ``.db`` file and its SQLite sidecars — audio-empty, non-empty, its
-      parent audio-bearing, which is the husk shape exactly. Measured on this
-      tree: with the sweep given the other three exclusions only, a library at
-      ``<music>/db/library.db`` reported ``db``; with this one added it reported
-      nothing there. When ``L`` sits under ``B`` (the default) this adds a
-      directory the tuple already holds and nothing changes.
+    The Trash dir is excluded inside ``find_orphan_folders``, which takes it as
+    its own argument. An exclude root at or above the walk root is dropped there
+    with one WARNING — measured on ``/``, the music root's parent and the music
+    root itself: one line each, and the husk still reported. Excluding a subtree
+    is not enough on its own, because the mover takes a reported folder's WHOLE
+    subtree, so ``orphans._drop_excluded_ancestors`` drops every candidate above
+    an excluded root and this tuple is protected up as well as down.
 
-      It used to be added only when it sat strictly inside the music root,
-      because an exclude root CONTAINING the root matched every candidate and
-      the sweep returned ``[]`` for the whole library. That is now handled where
-      it belongs: the finder drops an exclude root at or above the walk root and
-      logs one WARNING. Measured on the three spellings that reach it —
-      ``/``, the music root's parent, and the music root itself — each logged
-      exactly one WARNING and the sweep still reported the husk; the same tree
-      with no exclusion at all logged none and reported the same husk. The
-      earlier version of this sentence claimed the WARNING for every such root,
-      which was false for ``/``: ``_under`` compared against the prefix ``'//'``
-      and dropped it with no line at all.
-
-    The Trash dir itself is excluded inside ``find_orphan_folders``, which takes
-    it as its own argument.
-
-    Excluding a subtree is not on its own enough, because the mover takes a
-    reported folder's WHOLE subtree: a sweep that reports an ANCESTOR of an
-    excluded dir hands the excluded dir over anyway. That hole is closed at the
-    finder now (``orphans._drop_excluded_ancestors``), which drops every
-    candidate above any excluded root, so the tuple this function returns is
-    protected up as well as down.
-
-    Both consumers read this same tuple — the dry-run preview
-    (``beets.reorganize._orphan_preview``) and the runner's ``_sweep_orphans`` —
-    so preview and outcome cannot disagree about what is spared."""
+    Both the dry-run preview and the runner's ``_sweep_orphans`` read this same
+    tuple, so preview and outcome cannot disagree about what is spared."""
     handle: LibraryHandle = app.state.beets_library  # type: ignore[attr-defined]  # app duck-typed (object)
     # ``export_dir_for`` and not a second copy of the same default: the two
     # spellings of ``<music>/.playlists`` drifted apart is exactly how a dir the
@@ -337,19 +306,15 @@ async def stop_reorganize(
 async def dismiss_reorganize(
     reg: Annotated[ReorganizeRegistry, Depends(get_reorganize_backfill)],
 ) -> ReorganizeBackfillStatus:
-    """Clear a FINISHED job's result (its failure rows) from the slot.
-
-    NO ``_gate_busy`` on purpose: this touches the in-memory registry only —
-    never the library, never beets — so an import or another sweep running
-    elsewhere has no reason to hold a stale error message on screen.
-
-    Idempotent: dismissing an already-empty slot returns the idle status rather
-    than 404. The caller is asking for "nothing displayed", and that is exactly
-    what it gets; a 404 would make the UI special-case a state indistinguishable
-    from success (a double click, a retry, or a concurrent tab that dismissed
-    first). Returns the post-dismiss status so the caller can seed its cache
-    without a follow-up GET.
-    """
+    """Clear a FINISHED job's result (its failure rows) from the slot. Idempotent."""
+    # NO ``_gate_busy`` on purpose: this touches the in-memory registry only —
+    # never the library, never beets — so an import or another sweep elsewhere
+    # has no reason to hold a stale error message on screen.
+    #
+    # Dismissing an already-empty slot returns the idle status rather than 404: a
+    # 404 would make the UI special-case a state indistinguishable from success
+    # (a double click, a retry, a concurrent tab). The post-dismiss status comes
+    # back so the caller can seed its cache without a follow-up GET.
     try:
         reg.dismiss()
     except RuntimeError:

@@ -612,47 +612,25 @@ def trash_album_folder(
     """Relocate the album's ENTIRE folder under ``trash_dir`` and drop it from the
     library. Reversible.
 
-    Unlike :func:`trash_album` (which moves items by path template and leaves
-    untracked files behind), this moves the whole folder — audio, cover art, the
-    ``.lrc``/``.txt`` lyric sidecars, and any extras — so nothing is orphaned and
-    no empty husk lingers. Falls back to the per-item ``trash_album`` when the
-    folder is shared with another album, so a sibling is never collateral.
+    Unlike :func:`trash_album` this moves the WHOLE folder — audio, art,
+    sidecars, extras — so nothing is orphaned and no husk lingers. Falls back to
+    the per-item ``trash_album`` when the folder is shared with another album.
     Caller owns the transaction.
 
-    The whole-folder branch records its origin, so Restore moves the folder
-    straight back to it. The shared-folder fallback records what
-    :func:`trash_album` records, and the two row-dropping branches below move
-    nothing, so neither has an origin to record.
+    The whole-folder branch records its origin and UNDOES itself if the rows will
+    not go (owner ruling ``decisions.md`` 28 item 4: after any delete returns,
+    files and library agree) — the folder goes back to ``album_root``, its record
+    is destroyed, and the caller gets :class:`TrashRowsNotRemovedError`, or
+    :class:`TrashDeleteIncompleteError` if the move back failed too. The
+    shared-folder fallback gets no such undo.
 
-    **The whole-folder branch UNDOES itself if the rows will not go.** Owner
-    ruling, ``decisions.md`` 28 item 4: after any delete returns, the album's
-    files and the library agree. ``album.remove`` can raise with the folder
-    already in Trash, so it is wrapped — the folder goes back to ``album_root``,
-    the record written for it is destroyed once it has landed, and the caller
-    gets :class:`TrashRowsNotRemovedError` (or
-    :class:`TrashDeleteIncompleteError`, whose message reads the disk, if the
-    move back failed as well). The shared-folder fallback gets no such undo; see
-    :func:`trash_album`.
-
-    Raises :class:`~app.beets.protected.ProtectedTreeError` when the folder is
-    or holds one of the app's own directories by inode — the alias a spelled
-    containment row misses.
-
-    Raises :class:`~app.beets.trash_origins.TrashOriginsStoreUnusableError`
-    before ANY branch runs when the origin-records store cannot be used, which
-    covers the two branches below that drop rows having moved nothing as well as
-    the two that move something.
-
-    Raises :class:`~app.beets.library.LibraryRootUnavailableError` when the
-    library's music cannot be found — an unmounted share, not a deleted album.
-    TWO arms can raise it, and both use
-    :func:`~app.beets.library.require_library_present` rather than the cheap root
-    predicate, because both drop rows on nothing but an absence: the
-    missing-folder branch below, and the shared-folder fallback into
-    :func:`trash_album`, whose ghost arm (:func:`_require_move_happened`) asks
-    the same question after the moves. The second is not a corner case — on a
-    FLAT layout every album's folder IS the music root, so the folder is never
-    missing and the fallback is the arm that fires. See the branch below.
+    Raises: :class:`~app.beets.protected.ProtectedTreeError` when the folder is
+    or holds an app directory by inode (the alias a spelled row misses);
+    :class:`~app.beets.trash_origins.TrashOriginsStoreUnusableError` before ANY
+    branch runs; :class:`~app.beets.library.LibraryRootUnavailableError` from the
+    two arms that drop rows on nothing but an absence, both through
+    ``require_library_present`` — on a FLAT layout every album's folder IS the
+    music root, so the shared-folder fallback is the arm that fires.
     """
     # AHEAD of every branch, including the two that drop rows having moved
     # nothing: the invariant the owner ruled on is that a delete drops no LIBRARY
@@ -852,13 +830,12 @@ def trash_folder(
     folders hold only art/sidecars, never library items (unlike
     :func:`trash_album_folder`). Caller owns guard/selection (``find_orphan_folders``).
 
-    The origin record matters most here: a folder with no audio cannot be
-    imported, so before it these husks had no exit from Trash except permanent
-    deletion — which is why this mover, like the other two, refuses
-    (:class:`~app.beets.trash_origins.TrashOriginsStoreUnusableError`) rather
-    than moving a husk it could not record. Raises
-    :class:`~app.beets.protected.ProtectedTreeError` when the husk is or holds
-    one of the app's own directories by inode.
+    The origin record matters most here — a folder with no audio cannot be
+    imported, so a husk with no record has no exit from Trash but deletion — so
+    this mover refuses (``TrashOriginsStoreUnusableError``) rather than move one
+    it could not record. Also raises
+    :class:`~app.beets.protected.ProtectedTreeError` when the husk is or holds an
+    app directory by inode.
     """
     require_usable_store(origins_dir)
     refuse_protected_tree(folder, protected, action="moved")
@@ -881,11 +858,11 @@ def resolve_trash_dir(settings: Settings, handle: LibraryHandle) -> Path:
     absolute. Synchronous (pathlib I/O must not run on the event loop).
 
     Resolving is all this does; WHERE the result may sit is
-    :mod:`app.beets.store_layout`'s question, enforced at startup and on every
-    Save/Apply, because ``trash_manage.empty_all`` ``rmtree``s every child of
-    whatever comes back. A Trash strictly inside the music library is allowed
-    (and makes deletes same-disk renames); one that is, or contains, the music
-    library or the beets data dir is refused.
+    :mod:`app.beets.store_layout`'s question — at startup, on Save/Apply, and at
+    every destructive use site, because ``trash_manage.empty_all`` runs ``rmtree``
+    on every child of whatever comes back. A Trash strictly inside the music library
+    is allowed (deletes become same-disk renames); overlapping the library, the
+    beets dir, the database, the origin store or another app store is refused.
     """
     if settings.trash_dir:
         return Path(settings.trash_dir).resolve()

@@ -147,34 +147,18 @@ def _at_or_above(target: PathId, start: str) -> bool:
 def _exclude_ids(
     root: str, exclude_roots: tuple[str, ...]
 ) -> tuple[frozenset[PathId], tuple[str, ...]]:
-    """The identity of every exclude root the walk should stop at, and their spellings.
+    """The identity of every exclude root the walk stops at, and their spellings.
 
-    Identity and not a path prefix, because a path prefix cannot see an ALIAS.
-    Two aliases were measured to defeat the string form:
+    Identity, not a path prefix: two aliases defeat the string form — a
+    symlinked library (the walk root is ``lib.directory``, normpath'd not
+    realpath'd) and a BIND MOUNT of a library directory at the Trash path, where
+    ``realpath`` dropped the Trash as "outside the tree", the sweep reported it
+    as a husk and the mover deleted every entry (measured under ``unshare -Urm``).
+    A mount point's ancestors are its own, so only the root's inode sees it.
 
-    * a symlinked library — ``/music -> /mnt/tank/music`` — where the walk root
-      is beets' ``lib.directory`` (``normpath``'d, not realpath'd) while the
-      exclusion roots arrive resolved. The previous fix translated the roots into
-      the walk's spelling with ``realpath``, which handled this one;
-    * a BIND MOUNT of a directory inside the library at the Trash path
-      (``-v /srv/music:/music`` plus ``-v /srv/music/Trash:/trash``). ``realpath``
-      does not collapse a bind mount, so the translation dropped the Trash as
-      "outside the tree", the sweep reported the Trash itself as a husk, and the
-      mover deleted every entry in it — measured under ``unshare -Urm``, with the
-      copy-into-itself fallback ``shutil.move`` takes when ``rename`` returns
-      EXDEV. Walking the ALIAS's ancestors cannot find the library either: a
-      mount point's ancestors are the mount point's, never the source's. Only
-      comparing the root's own inode against each walked directory sees it.
-
-    A root that cannot be stat'd contributes no identity — it is not there (or
-    not readable), so ``os.walk`` will not reach it either — but it keeps its
-    SPELLING, which is what spares its ancestors from being reported.
-
-    A root at or ABOVE the walk root is dropped entirely, with the one WARNING
-    this module logs: excluding it would exclude the whole library.
-    ``MUSICDROP_PLAYLISTS_EXPORT_DIR`` is the reachable way in — an operator-set
-    absolute path with no rule of its own (``app.beets.store_layout`` refuses a
-    Trash, origin store or beets dir there).
+    A root that cannot be stat'd keeps its SPELLING, which still spares its
+    ancestors. A root at or ABOVE the walk root is dropped with the one WARNING
+    this module logs; ``MUSICDROP_PLAYLISTS_EXPORT_DIR`` is the way in.
     """
     ids: set[PathId] = set()
     kept: list[str] = []
@@ -197,23 +181,16 @@ def _exclude_ids(
 def _scan_tree(
     root: str, excluded: _Exclusion
 ) -> tuple[dict[str, bool], dict[str, bool], dict[str, bool]]:
-    """Bottom-up fold: ``has_audio[dir]`` / ``has_file[dir]`` / ``has_own_audio[dir]``
-    for every dir at/under ``root``. ``has_audio`` folds in descendants; ``has_own_audio``
-    is audio DIRECTLY in the dir (marks a live album dir). Excluded subtrees (trash,
-    ignore-dirs, dotdirs/NAS names) are skipped entirely (never recorded, never
-    counted as audio for their parent).
+    """Bottom-up fold: ``has_audio`` / ``has_file`` / ``has_own_audio`` per dir.
 
-    The walk itself is TOP-DOWN so ``dirnames`` can be pruned — an excluded root
-    is then identified once, by inode, rather than re-tested for every directory
-    beneath it — and the fold runs over the collected list in reverse, which is
-    the bottom-up order the ``has_audio`` roll-up needs.
+    ``has_audio`` folds in descendants; ``has_own_audio`` is audio DIRECTLY in
+    the dir (a live album). Excluded subtrees are never recorded and count as no
+    audio for their parent. The walk is TOP-DOWN so ``dirnames`` can be pruned
+    (an excluded root is identified once, by inode); the fold runs in reverse.
 
-    A directory ``os.walk`` cannot read is marked audio-BEARING rather than
-    ignored. It used to be swallowed by ``onerror``, so it was never recorded and
-    contributed no audio to its parent: measured, ``music/Perm/Album`` at mode 000
-    with ``music/Perm/cover.jpg`` beside it made ``Perm`` read as a husk, and the
-    mover relocated the audio into Trash. Err toward keeping is this module's
-    posture, and "I could not look" is not "there is nothing there".
+    A directory ``os.walk`` cannot read is marked audio-BEARING, not ignored:
+    ``music/Perm/Album`` at mode 000 with ``music/Perm/cover.jpg`` beside it made
+    ``Perm`` read as a husk whose audio the mover trashed.
     """
     has_audio: dict[str, bool] = {}
     has_file: dict[str, bool] = {}
@@ -304,17 +281,13 @@ def _subtree(dirpath: str, excluded: _Exclusion) -> tuple[bool, bool]:
 
 
 def _seed_orphan(seed: str, root: str, excluded: _Exclusion) -> str | None:
-    """The top-most audio-empty (and non-empty) ancestor of ``seed`` below ``root``,
-    or None. Starts at the nearest existing ancestor (the seed itself may have been
-    pruned).
+    """The top-most audio-empty (non-empty) ancestor of ``seed`` below ``root``.
 
-    The climb stops at a SYMLINK. A symlink is not a husk the mover may relocate:
-    ``shutil.move`` moves the link, so every path beneath it leaves the library
-    at once and the Trash row it makes is not restorable (``trash._record_origin``
-    writes no record for a symlinked destination, and the listing renders such an
-    entry "refused"). Measured on the parent commit, where a library with a
-    symlinked component and an exclude root spelled through it reported the
-    symlink itself and the mover took it.
+    Starts at the nearest EXISTING ancestor — the seed may have been pruned — and
+    the climb stops at a SYMLINK: ``shutil.move`` moves the link, so everything
+    beneath it leaves the library at once and the Trash row is unrestorable
+    (``_record_origin`` writes nothing for a symlinked destination). Measured on
+    the parent commit: the symlink itself was reported and the mover took it.
     """
     d = os.path.normpath(seed)
     while d and not os.path.isdir(d):
@@ -343,19 +316,13 @@ def _seed_orphan(seed: str, root: str, excluded: _Exclusion) -> str | None:
 class _Exclusion:
     """Whether a walked directory is outside the sweep — and which roots were hit.
 
-    Three ways out, asked in this order because they cost that order:
+    Three ways out, in cost order: inside an already-matched subtree (a prefix,
+    but on strings this walk produced); the directory IS an exclude root, by
+    ``(st_dev, st_ino)``, which is the test that sees an alias
+    (:func:`_exclude_ids`); a dotdir or a known NAS/OS name.
 
-    1. inside a subtree already matched (a string prefix, but on strings this
-       walk itself produced, so no spelling question arises);
-    2. the directory IS an exclude root, by ``(st_dev, st_ino)``. This is the one
-       that sees an alias — a bind mount or a symlinked library — where a path
-       prefix does not (see :func:`_exclude_ids`);
-    3. a dotdir or a known NAS/OS housekeeping name, relative to ``root``.
-
-    ``hits`` is the walk's own spelling of every root matched, which is what
-    :func:`_drop_excluded_ancestors` needs: an ancestor of an excluded dir may
-    not be spelled the way the CALLER spelled that dir, and the mover takes a
-    reported folder's whole subtree.
+    ``hits`` is the WALK's spelling of each matched root, which is what
+    :func:`_drop_excluded_ancestors` needs — the caller may spell it otherwise.
     """
 
     def __init__(self, root: str, exclude_ids: frozenset[PathId], spelled: tuple[str, ...]) -> None:
@@ -419,38 +386,18 @@ def _ancestor_chain(roots: Collection[str]) -> set[str]:
 def _drop_excluded_ancestors(raw: list[str], exclude_roots: tuple[str, ...]) -> list[str]:
     """Drop any candidate that CONTAINS an excluded root.
 
-    :class:`_Exclusion` keeps the sweep out of Trash and every ``ignore_dirs``
-    subtree, and that is the whole guard only if a report is the thing that gets
-    trashed. It is not: the mover takes the reported folder WITH ITS SUBTREE, so
-    reporting an ancestor of an excluded dir hands over the excluded dir too.
+    The mover takes a reported folder WITH ITS SUBTREE, so reporting an ancestor
+    of an excluded dir hands that dir over. It happens because an excluded
+    subtree is never recorded and so contributes no audio above it: measured on
+    ``d65e635`` with ``ignore_dirs=(<M>/data/exports,)`` and a stray
+    ``<M>/data/notes.txt``, ``find_orphan_folders`` returned ``data``; without
+    the stray file, ``[]``.
 
-    It happens for one reason: an excluded subtree is never recorded, so it
-    contributes no audio to the dir above it. Give that dir a non-audio file of
-    its own and it reads as a husk. Measured on ``d65e635`` with
-    ``ignore_dirs=(<M>/data/exports,)`` and a stray ``<M>/data/notes.txt`` —
-    ``find_orphan_folders`` returned ``data``, whose subtree holds the exports;
-    remove the stray file and it returned ``[]`` (an only-child parent records no
-    ``has_file`` and empty dirs are skipped), which is why the hole needed a file
-    to show at all.
-
-    Sparing the whole ancestor CHAIN, not just the immediate parent, is what
-    makes this a guard rather than a nudge: sparing one level only moves the
-    report one level up when the excluded dir is nested deeper. Same shape (and
-    the same helper) as :func:`_drop_protected`'s live-album-root ancestors.
-
-    What it costs: the dropped candidate is the TOP of an audio-empty run, and
-    nothing below it is re-selected, so a real husk under an audio-free ancestor
-    of an excluded root is kept rather than reported. Err toward keeping is this
-    module's posture — a husk left alone is a folder somebody deletes by hand,
-    where the other direction moves an excluded dir into Trash.
-
-    Outside the run — still reported — are a husk whose parent IS the root, and
-    (library mode) one whose parent holds audio somewhere BENEATH it while
-    holding none directly. Both are pinned in ``tests/test_orphans.py``; the
-    second is the shape of ``test_a_husk_under_an_audio_BEARING_ancestor_...``.
-    A parent holding audio DIRECTLY does not reach this filter in library mode at
-    all — ``_library_orphans``' multi-disc art guard has already skipped the
-    child — which is measured, and is why that shape is not named here.
+    The whole ancestor CHAIN, not the immediate parent — sparing one level moves
+    the report one level up. COST: the dropped candidate is the top of an
+    audio-empty run and nothing below it is re-selected, so a real husk under an
+    audio-free ancestor of an excluded root is kept
+    (``test_a_husk_under_an_audio_free_ancestor_of_an_ignored_dir_is_kept``).
     """
     if not exclude_roots:
         return raw
@@ -461,28 +408,17 @@ def _drop_excluded_ancestors(raw: list[str], exclude_roots: tuple[str, ...]) -> 
 def _drop_protected(raw: list[str], protected_dirs: Collection[str]) -> list[str]:
     """Drop the candidates a LIVE album owns (see :func:`find_orphan_folders`).
 
-    Three ways a candidate ``dp`` can belong to an album whose root is in the set:
-    ``dp`` IS a root (a live album whose audio has vanished from disk — err toward
-    keeping until a disk-sync says otherwise), ``dp``'s PARENT is a root (the album's
-    own ``Scans (LP)``/booklet folder, whatever its basename — the case ART_DIR_NAMES
-    could not cover), or a root lies strictly UNDER ``dp`` (``dp`` is an ancestor:
-    a lone album whose audio is gone reports the whole ARTIST dir, and trashing that
-    would take the live album's folder with it).
+    Three ways ``dp`` can belong to an album root: it IS one, its PARENT is one
+    (the album's own booklet folder, whatever its basename), or a root lies
+    strictly under it (a lone album whose audio is gone reports the ARTIST dir).
+    The ancestor test is a set lookup over each root's folded chain, so the
+    filter stays O(candidates).
 
-    The ancestor test is a set lookup, not a scan of the roots: every root's ancestor
-    chain is folded once, so the filter stays O(candidates) however large the set.
-
-    All three comparisons run in the SAME identity namespace the exclusion does —
-    ``(st_dev, st_ino)`` beside the string. A protected root can arrive in a
-    different spelling from the walk's: measured with the walk root a symlink
-    (``music -> tank/music``) and ``protected_dirs={<real>/Live/Box}``, the string
-    form reported the live album's ``Scans (LP)`` folder, where the link-spelled
-    set did not.
-
-    Note what this does NOT reach: ``app.beets.reorganize.live_album_roots`` filters
-    a foreign-spelled row out of the set BEFORE this function is called, with a
-    lexical containment test of its own. That is upstream of this module and is
-    recorded as a residual rather than fixed here.
+    All three run in the same ``(st_dev, st_ino)``-beside-the-string namespace
+    the exclusion uses: with the walk root a symlink, the string form reported
+    the live album's ``Scans (LP)`` folder and the link-spelled set did not.
+    RESIDUAL: ``reorganize.live_album_roots`` filters a foreign-spelled row out
+    upstream, lexically.
     """
     if not protected_dirs:
         return raw
@@ -514,50 +450,21 @@ def find_orphan_folders(
 ) -> list[Path]:
     """Top-most audio-empty, non-empty folders under ``music_dir`` to move to Trash.
 
-    ``seeds is None`` -> scan the whole library (clears the backlog). Otherwise seed
-    from the given (vacated) dirs and climb to each one's top-most audio-empty
-    ancestor (a renamed husk is a sibling of the new folder). The result is
-    deduped, holds no path that is an ancestor of another, and excludes the root
-    itself.
+    ``seeds is None`` -> scan the whole library. Otherwise seed from the vacated
+    dirs and climb to each one's top-most audio-empty ancestor. Deduped, no path
+    an ancestor of another, root excluded. ``ignore_dirs`` are extra roots to
+    skip; dotdirs and known NAS/OS names are skipped by name.
 
-    ``ignore_dirs`` are extra roots to skip (the playlists export dir, the Trash
-    origin store, the beets data dir, and the directory holding the beets
-    database). Directories whose name is a dotdir or a known NAS/OS housekeeping
-    name are skipped by name.
+    A returned path is not at, below or ABOVE ``trash_dir`` or any
+    ``ignore_dirs`` entry (:func:`_drop_excluded_ancestors`), compared by
+    ``(st_dev, st_ino)`` so a symlink and a bind mount both hold
+    (:func:`_exclude_ids`). ``protected_dirs`` are LIVE album roots: nothing at,
+    directly under, or above one is returned.
 
-    What the exclusion is measured to give (``tests/test_orphans.py``), and where
-    it stops:
-
-    * a returned path is not at, below or above ``trash_dir`` or any
-      ``ignore_dirs`` entry — the mover takes a reported folder's whole subtree,
-      so an ancestor of an excluded dir would hand that dir over anyway (see
-      :func:`_drop_excluded_ancestors`). Both modes get it from the same drop:
-      seeds mode stops its climb AT an excluded ancestor, which is a different
-      guard, because the candidate it has already banked below that stop can
-      still be an ancestor of a different excluded dir;
-    * the comparison is by ``(st_dev, st_ino)`` (:func:`_exclude_ids`), so it
-      holds whichever side arrives through a symlink AND whichever side arrives
-      through a bind mount — the two aliases measured to defeat the string form;
-    * RESIDUAL — an exclude root at or above ``music_dir`` is DROPPED with a
-      WARNING rather than excluding the whole library, so directories under such
-      a root are reported like any other. It is a deliberate change of DIRECTION:
-      measured on the parent commit, such a root matched every candidate and the
-      sweep returned nothing, so a misconfiguration did nothing; now it sweeps.
-      Two settings reach the position — ``MUSICDROP_PLAYLISTS_EXPORT_DIR``, which
-      ``export_dir_for`` hands through unchanged, and ``library:``, whose parent
-      directory joins the list and has no rule against sitting above ``M``.
-      ``app.beets.store_layout`` refuses the position for the Trash, the origin
-      store and the beets data dir;
-    * RESIDUAL — a husk sitting beside an excluded root under an ancestor that
-      holds no audio ANYWHERE is kept rather than reported: the ancestor drop
-      removes the top of the audio-empty run and nothing below it is re-selected.
-      That is this module's err-toward-keeping posture, pinned in
-      ``test_a_husk_under_an_audio_free_ancestor_of_an_ignored_dir_is_kept``.
-
-    ``protected_dirs`` are normalized absolute dirs owned by LIVE beets albums
-    (``app.beets.reorganize.live_album_roots``): nothing at, directly under, or above
-    one of them is ever returned, in either mode. Empty by default, so a caller that
-    knows nothing about the DB keeps exactly the old behaviour.
+    Two residuals, both err-toward-keeping and both pinned in
+    ``tests/test_orphans.py``: an exclude root at or above ``music_dir`` is
+    DROPPED with a WARNING (it used to match every candidate and return nothing),
+    and a husk beside an excluded root under an audio-free ancestor is kept.
     """
     root = os.path.normpath(str(music_dir))
     exclude_ids, spelled = _exclude_ids(root, tuple(str(d) for d in (trash_dir, *ignore_dirs)))

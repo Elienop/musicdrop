@@ -79,12 +79,10 @@ _SAVE_CAS_CONFLICT_RESPONSE: Final = {
 _SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
     ConfigValidationErrorDetail,
     (
-        "The submitted YAML did not parse, a key MusicDrop models has the wrong"
-        " shape, or the submitted directory: would put the music library at or"
-        " under the Trash directory (or over the Trash origin store); the body"
-        " lists one item per problem, with the 1-based line and 0-based column to"
-        " mark where there is one. A malformed request body answers with"
-        " FastAPI's validation shape instead."
+        # The rows carry a 1-based line and 0-based column where there is one,
+        # and a malformed request body answers with FastAPI's own shape instead.
+        "The YAML did not parse, a key has the wrong shape, or its directory:/"
+        "library: would break the store layout; the body lists one item per problem."
     ),
 )
 
@@ -155,10 +153,10 @@ def validate_config(req: ValidateRequest, request: Request) -> ValidateResponse:
     # guard tests (test_origin_guard / test_host_guard) exercise it in a
     # lifespan-less child process for exactly that reason.
     #
-    # The empty branch fails OPEN — no containment row at all — so the gutter can
-    # lag the Save refusal in a process where the lifespan has not run: the
-    # document lints clean and ``config_editor.save``, which reads the handle
-    # directly, refuses it. Under the lifespan the handle is set before the
+    # The empty branch fails OPEN — no containment row at all — in a process
+    # where the lifespan has not run: the document lints clean, and Save then
+    # answers 500 (AttributeError on the direct handle read) rather than a
+    # layout refusal, measured. Under the lifespan the handle is set before the
     # server accepts a request, so that gap is the child-process case the two
     # guard tests create.
     handle: LibraryHandle | None = getattr(request.app.state, "beets_library", None)
@@ -255,10 +253,8 @@ def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSn
         422: {
             "model": StructuredErrorDetail,
             "description": (
-                "The config.yaml on disk declares a directory: that would put the"
-                " music library at or under the Trash directory, or over the Trash"
-                " origin store, so beets was NOT reloaded and the previously"
-                " loaded library is still serving."
+                "The config.yaml on disk breaks the store layout, so beets was NOT"
+                " reloaded and the previously loaded library is still serving."
             ),
         },
         500: {
@@ -271,12 +267,9 @@ def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSn
     },
 )
 async def apply_config(request: Request) -> BeetsConfigSnapshot:
-    """Reload beets in-process after a Save, swapping ``app.state.beets_library``.
-
-    Thin pass-through to :func:`apply_config_op`; all the gating
-    (import-in-progress -> 409), locking (``asyncio.Lock`` on
-    ``app.state.beets_swap_lock``), threadpool offload, and recovery-hint
-    error mapping live in the adapter so the beets boundary stays clean
-    (CLAUDE.md rule 3: no beets touched outside ``app/beets/``).
-    """
+    """Reload beets in-process after a Save, swapping ``app.state.beets_library``."""
+    # Thin pass-through: the gating (import-in-progress -> 409), the
+    # ``asyncio.Lock`` on ``app.state.beets_swap_lock``, the threadpool offload
+    # and the recovery-hint error mapping all live in the adapter, so the beets
+    # boundary stays clean (CLAUDE.md rule 3).
     return await apply_config_op(request)

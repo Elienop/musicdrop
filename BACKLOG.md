@@ -1045,125 +1045,39 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - ~~**`MUSICDROP_TRASH_DIR` is an unvalidated `rmtree` root.**~~ — **FIXED on
   `fix/trash-root-containment`** (the PR number and squash sha go here after merge).
-  One predicate in a new `app/beets/store_layout.py`, run at startup (refuse to boot,
-  one `ERROR` line through `uvicorn.error` naming the setting, both resolved paths, the
-  loss and the fix), on Save + Validate as a lint row against the offending key, on Apply
-  before the handle is torn down and again on the handle beets actually built, and at
-  every destructive use site — the four Trash routes, both delete ops, both duplicates
-  ops, the two Reorganize routes and the runner's orphan sweep. The use-site check is not
-  belt-and-braces: the configured STRING is fixed for the process lifetime and what it
-  resolves to is not, and a symlink dropped at the Trash path after a clean boot was
-  measured to make `DELETE /api/trash/all` answer 200 with the music library gone.
-  **The fix shape recorded below was half wrong, and the half matters.** It read "refuse
-  at startup when trash resolves inside or equal to the music dir or the beets dir" —
-  but the DEFAULT Trash *is* inside the beets dir (`<beets_dir>/trash`), so that rule
-  refuses every install, and the owner's ruling (vault `decisions.md` 35, 2026-09-04) is
-  that a Trash inside the *music library* is ALLOWED and is the point of setting the var
-  at all (`/music/.trash` makes a delete a same-disk rename). What is refused is Trash
-  that IS, or CONTAINS, the music dir or the beets dir — plus the origin store anywhere
-  under the music library, and the two stores overlapping each other in either
-  direction.
-  **Two more pairs were added after the review round**, both set in `config.yaml` rather
-  than by env var: `MUSICDROP_BEETS_DIR` and `directory:` may not nest in EITHER direction
-  (the owner's decision — a beets dir inside the library exposes bank/, plex/, slskd/,
-  playlists/ and inbox/ to the sweep, and one above it makes every app-owned exclusion an
-  ancestor of the walk root), and `library:` may not sit in the Trash or in the origin
-  store (measured: `library:` under the Trash dir passed, and Empty Trash deleted
-  `library.db`). The editor gates resolve both keys through beets' own config class, so an
-  `include:` file that overrides `directory:` is refused with the value it would actually
-  load rather than the one the top-level key shows. Original text below.
-  (Found 2026-08-28.)
-  `resolve_trash_dir` returns `Path(settings.trash_dir).resolve()` with no containment
-  check (`app/beets/trash.py`), and `empty_all` then `shutil.rmtree`s every child
-  of whatever came back (`app/beets/trash_manage.py`). Symbols, not line numbers: both
-  functions have since moved by hundreds of lines. Nothing asserts the trash dir is not
-  the music root, not inside it, and not the beets dir — and pointing trash at the music
-  dataset (so deletes are same-filesystem renames instead of cross-device copies; the
-  default sits on the small `/data` volume, which README's "Backup & restore" calls the
-  only GB-scale item there) is a plausible operator move one
-  typo away from `MUSICDROP_TRASH_DIR=/music`. Every other destructive path here has a
-  containment check (`resolve_trash_child`, `_folder_is_shared`,
-  `orphans._excluded_predicate`); the trash root has none. Small: refuse at startup when
-  trash resolves inside or equal to the music dir or the beets dir.
+  One table in `app/beets/store_layout.py` refuses every overlap among the music library,
+  the beets data dir, the Trash, the origin store, `library:` and the six app-owned stores,
+  at startup and again at every destructive use site (the string is fixed for the process
+  lifetime; what it resolves to is not). A Trash strictly INSIDE the music library is
+  allowed and is the point of the var (`decisions.md` 35).
 
 - ~~**The orphan sweep's ignore list does not protect an ignored dir's ANCESTORS.**~~ —
   **FIXED on `fix/trash-root-containment`** (the PR number and squash sha go here after
-  merge), in the same series as the entry above. `orphans._drop_excluded_ancestors` folds
-  every excluded root's ancestor CHAIN into the drop `_drop_protected` already does for
-  live album roots, so `find_orphan_folders` returns nothing at, below or above
-  `trash_dir` or any `ignore_dirs` entry, in BOTH modes. `api.reorganize._ignore_dirs`
-  also passes `beets_dir`, unconditionally.
-  **The conditional it used to carry moved into the finder after the review round.** The
-  condition was "only when the beets dir sits strictly inside the music root", because an
-  ignore root ABOVE the root is a prefix match for every candidate and silences the whole
-  sweep — but it left the same hole open for the two roots that had no such condition,
-  `MUSICDROP_PLAYLISTS_EXPORT_DIR` above all (an operator-set path with no rule of its
-  own). `orphans._exclude_roots_for_walk` now drops an exclude root at or above the walk
-  root and logs one WARNING, so no caller can silence a sweep by passing one. The same
-  function fixed a second, worse miss: the walk root is beets' `lib.directory`, which is
-  normpath'd and NOT realpath'd, while the exclusion roots arrive resolved — under a
-  symlinked library (`/music -> /mnt/tank/music`, the Docker norm) every exclusion missed,
-  and the beets data dir was reported as a husk. Comparisons run on realpath forms on both
-  sides now, and the walk's own spelling is what comes back.
-  **The entry's own closing argument turned out to be about a different fix.** It said
-  sparing ancestors "would only push the report one level up whenever the store is
-  nested deeper" — true of sparing the immediate PARENT, which is what
-  `_ignore_dirs`' docstring was arguing against; sparing the whole chain leaves nothing
-  to push up to. Original text below.
-  (Found 2026-09-02, same class as the entry above: a missing containment check between
-  the music root and a `/data`-side directory.) Trigger: `MUSICDROP_BEETS_DIR` pointed at a path
-  *inside* the music library, plus a library-scope Reorganize. Symbols, not line numbers:
-  `reorganize._ignore_dirs` hands the store and the export dir to
-  `orphans.find_orphan_folders`, whose `_excluded_predicate` skips those subtrees — and
-  `_library_orphans` then reports the TOP-MOST audio-empty ancestor of the excluded dir.
-  There is no upward climb in library scope (read at `backend/app/beets/orphans.py:130-150`,
-  2026-09-02): every dir the walk recorded is judged on its own, and it is reported when it
-  holds a file, holds no audio anywhere beneath it, is not named in `ART_DIR_NAMES` (`:136`),
-  its parent holds no audio DIRECTLY (`:144` — the multi-disc art guard, so an album's own
-  `Scans/` is spared), and its parent is either the root or holds audio somewhere beneath it
-  (`:148`). "Top-most" falls out of that last condition rather than out of a walk: an
-  audio-empty parent gets reported instead of its child. So the dir that gets reported need
-  not be the one holding the content that made it non-empty. (Seeds mode `_seed_orphan`
-  (`:168-191`) IS a climb, and this trigger — a library-scope Reorganize — takes the other
-  path.)
-  **Which var triggers it alone, measured on `fix/undoable-deletes`** (probe: build a music
-  tree with one healthy album, then call `find_orphan_folders(music, seeds=None, ...)` — one
-  call per layout, so re-deriving it costs nothing):
-  * `MUSICDROP_BEETS_DIR=<music>/beets` → `['beets']`. It is the only one that fires
-    unaided, and not really as an ancestor: beets plants `library.db` and `config.yaml`
-    directly in that dir, so `beets_dir` has content of its own and is reported DIRECTLY —
-    identically with and without the store exclusion.
-  * `MUSICDROP_TRASH_ORIGINS_DIR=<music>/origins` → `[]`. Its parent is the root, and the
-    root is skipped.
-  * `MUSICDROP_TRASH_ORIGINS_DIR=<music>/data/origins` → `[]`. An excluded subtree is never
-    recorded, so an only-child parent contributes no `has_file` and reads as empty; empty
-    dirs are skipped.
-  * the same placement with one file of the parent's own (`<music>/data/notes.txt`) →
-    `['data']`. That is the hole: an ancestor with other content.
-  * `MUSICDROP_TRASH_ORIGINS_DIR=<music>/data/sub/origins` with the file one level DOWN
-    (`<music>/data/sub/notes.txt`) → `['data']`, **not** `['data/sub']` (measured
-    2026-09-02 at this tip). This is the case that tells the two readings apart: `data`
-    holds nothing of its own, so what is reported is the top of the audio-empty run, not
-    the dir the content sits in. Whatever ends up under Trash is that whole subtree.
-  * `MUSICDROP_PLAYLISTS_EXPORT_DIR=<music>/exports` → `[]`, for the reason above.
+  merge), same series. `orphans._drop_excluded_ancestors` folds each excluded root's
+  ancestor chain into the drop, and `_exclude_roots_for_walk` drops (with one WARNING) an
+  exclude root at or above the walk root, which would otherwise silence the whole sweep.
+  Both sides compare realpath forms, so a symlinked library no longer misses every
+  exclusion.
 
-  So the two pure-container vars need at least one non-excluded file somewhere under a
-  non-root ancestor before anything is reported at all — and what gets reported then is the
-  top of the audio-empty run above that file, which can be several levels higher than the
-  ignored dir. Blast radius depends on where Trash sits, and
-  `_ignore_dirs`' docstring states both outcomes: in the DEFAULT
-  layout (`trash_dir` = `<beets_dir>/trash`) the move is a directory into its own subtree,
-  `shutil.move` raises, and `reorganize_jobs.runner`'s `except OSError: continue` swallows
-  it — nothing is lost; with `MUSICDROP_TRASH_DIR` pointing outside `beets_dir`,
-  `library.db`, `config.yaml` and every origin record land under Trash in one pass.
-  **Not reachable in the shipped image**: `Dockerfile` sets `MUSICDROP_BEETS_DIR=/data/beets`
-  and `docker-compose.yml` mounts music at `/music`, so the two are separate volumes; it
-  needs an operator override. Not fixed on `fix/undoable-deletes`, and the docstring argues
-  against the obvious fix — sparing every ancestor only moves the report one level up when
-  the ignored dir is nested deeper, so it changes what the finder REPORTS rather than
-  adding a guard. If it is worth closing, the cheap version is the same shape as the entry
-  above: refuse at startup when `beets_dir` (or either configured store) resolves inside
-  the music dir.
+- ~~**The layout predicate compares SPELLINGS, so an alias walks past it; and a refused
+  Reorganize keeps the job slot.**~~ — **FIXED on `fix/trash-root-containment`** (PR number
+  and squash sha after merge), found by the 2026-09-04 review round of the two entries
+  above. A bind mount gives one directory two spellings: `-v /srv/music/musicdrop:/data/beets`
+  booted clean and Empty Trash removed the beets dir. `app/beets/protected.py` re-asks by
+  `(st_dev, st_ino)` at the moment a tree is moved or removed; `reg.start` now runs after
+  the store check, so a 503 no longer leaves `phase=running` until restart.
+
+  Residuals, accepted:
+  * A path that does not exist yet has no inode, so an alias onto a not-yet-created Trash is
+    caught on the next check, not the first.
+  * A mount point as the INNER path is caught at the mover, not by the predicate.
+  * A Trash inside a live album folder is not refused — one album, visible on the Trash page,
+    and the check would cost a DB query per request.
+  * `library:` in an audio-free subfolder of the music library stays a husk: `dirname(L)` is
+    excluded from the sweep rather than refused.
+  * The playlist export dir at or above the music root is dropped from the sweep with a
+    WARNING rather than refused.
+  * The Apply backstop's degraded state has no API field of its own; it is the 422's message.
 
 - ~~**A FLAT library layout defeats the delete path's presence check — it samples the music
   root against itself.**~~ (Found 2026-09-02, on `fix/undoable-deletes`, while re-reading the

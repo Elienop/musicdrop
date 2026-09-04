@@ -132,29 +132,19 @@ def _line_col_for_path(
 ) -> tuple[int, int] | tuple[None, None]:
     """Resolve a Pydantic error ``loc`` to a 1-based ``(line, column)``.
 
-    Walks ``root`` along ``path[:-1]`` to land on the parent node, then
-    asks ruamel's line-column tracker for the offending child's position
-    (per https://yaml.dev/doc/ruamel.yaml/detail/). The accessor differs
-    by container type:
+    Walks ``root`` along ``path[:-1]``, then asks ruamel's tracker for the
+    child's 0-based position — ``lc.value(key)`` on a map, ``lc.item(idx)`` on a
+    sequence. The line is bumped by 1 for CodeMirror's 1-based ``doc.line(n)``.
+    Always calling ``.lc.value(...)`` raises ``IndexError`` on a sequence parent,
+    which lost ``('plugins', 2)`` its gutter marker.
 
-    * ``CommentedMap``  -> ``parent.lc.value(key)`` for a ``str`` key.
-    * ``CommentedSeq``  -> ``parent.lc.item(idx)``  for an ``int`` index.
-
-    Both return ``(line0, col0)`` (0-based). We bump the line by 1 because
-    CodeMirror's ``state.doc.line(n)`` is 1-based (CodeMirror reference
-    manual § ``Text.line``). The original implementation always called
-    ``.lc.value(...)`` which raises ``IndexError`` on a sequence parent —
-    so e.g. ``('plugins', 2)`` silently lost its gutter marker.
-
-    Defensively swallows missing keys, missing ``.lc``, and non-map nodes
-    — these can happen mid-edit when the schema and the parsed doc
-    disagree on shape. Returning ``(None, None)`` lets the response carry
-    the ``loc`` string without a gutter marker.
+    Swallows missing keys, missing ``.lc`` and non-map nodes, which happen
+    mid-edit when the schema and the parsed doc disagree on shape:
+    ``(None, None)`` carries the ``loc`` with no gutter marker.
 
     A key that arrived through a ``<<:`` merge is PRESENT in the mapping and
-    absent from ``lc.data``, so the plain lookup answers ``(None, None)`` and the
-    editor disables Save with nothing marked. :func:`_merged_line_col` then asks
-    the anchor's own mapping, which records the line the value is written on.
+    absent from ``lc.data``, so :func:`_merged_line_col` asks the anchor's own
+    mapping, which records the line the value is written on.
     """
     if not path:
         return (None, None)
@@ -259,42 +249,24 @@ def store_layout_errors(
     """Zero or one row: the ``directory:`` and ``library:`` the submitted document
     would LOAD, against where Trash, the origin store and the beets data dir resolve.
 
-    "Would load" and not ``data["directory"]``: an ``include:`` entry is merged at
-    higher priority than the document's own keys, so the value the next boot uses
-    can come from a file the editor is not showing. :func:`effective_config_paths`
-    asks beets' own config class that question.
+    "Would load" and not ``data["directory"]``: an ``include:`` is merged ABOVE
+    the document's own keys, so :func:`effective_config_paths` asks beets' own
+    config class. THE SINGLE SOURCE for Validate and :func:`save`, so the gutter
+    and the Save refusal cannot disagree.
 
-    THE SINGLE SOURCE for both ``POST /api/config/validate`` and
-    :func:`save`, so the editor's gutter and the Save refusal agree about which
-    documents are acceptable — the frontend disables Save while the validate
-    route reports any error, so a Save-only check would refuse a document the
-    gutter called clean.
+    Silent when the document has no ``directory:`` or its value is not a
+    filename — ``KnownKeysSchema`` reports both. A missing ``library:`` is held
+    to beets' own ``library.db`` default instead, which is what the next boot
+    opens; the schema requires that key too, so at Validate and Save the default
+    adds no row and only Apply's on-disk read reaches it. The ``isinstance`` on
+    ``data`` is load-bearing; ruamel returns ``None`` for an empty document.
 
-    Silent when the document has no ``directory:`` of its own, and when its value
-    is not a filename: ``KnownKeysSchema`` requires the key and reports both cases
-    itself, so a second row would be noise about a value the operator did not
-    write. (beets would fall back to its bundled ``directory: ~/Music``; the boot
-    check covers that on the next start, and Save is refused by the schema row in
-    the meantime.)
-
-    A missing ``library:`` is NOT silent, because beets has a usable default for
-    it (``library.db`` beside ``config.yaml``) and that default is what the next
-    boot will open — so the row is computed against it.
-
-    The ``isinstance`` on ``data`` is not defensive padding: ruamel returns
-    ``None`` for an empty document, and the annotation cannot say so because the
-    same value is what ``validate_known_keys`` is handed and reports on.
-
-    ``reported_keys`` are the ``loc``s the schema pass already painted. They
-    suppress exactly one row: the refusal that is about a single UNUSABLE VALUE
-    (it would not resolve, or it cannot be stat'd) on a key the schema has
-    reported too, where the two sentences say the same thing. Measured:
-    ``directory: "/music/\\0evil"`` produced a ``value_error`` row ("embedded
-    null character") and a ``store_layout`` row ("could not be resolved …
-    embedded null character") on one key. A refusal about the LAYOUT is never
-    suppressed — ``directory: /`` also draws two rows, and there the schema's
-    "not writable" and the layout's "the music library contains the beets data
-    directory" are different facts, the second being the one that names the loss.
+    ``reported_keys`` suppress exactly one row: a single-UNUSABLE-VALUE refusal
+    on a key the schema also reported, where both say the same thing. Measured,
+    ``directory: "/music/\\0evil"`` drew a ``value_error`` and a ``store_layout``
+    row both naming the NUL. A LAYOUT refusal is never suppressed — under
+    ``directory: /`` the schema's "not writable" and the layout row are different
+    facts, and only the second names the loss.
     """
     if not isinstance(data, dict) or "directory" not in data:
         return []

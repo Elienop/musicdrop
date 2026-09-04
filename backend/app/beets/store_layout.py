@@ -1,69 +1,26 @@
 """Where MusicDrop's own stores may sit relative to the music library.
 
-Two directories in this app delete things wholesale. ``trash_manage.empty_all``
-``rmtree``s every child of the Trash dir, and ``trash_origins.clear_trash_origins``
-unlinks every ``*.json`` directly inside the origin store. Neither asks what the
-directory it was handed actually holds, so where those two resolve decides
-whether "Empty Trash" removes a hundred trashed albums or the library.
+``empty_all`` runs ``rmtree`` on every child of the Trash and
+``clear_trash_origins`` unlinks every ``*.json`` in the origin store, so where
+those two resolve decides whether "Empty Trash" removes a hundred albums or the
+library.
 
-The rule this module enforces — the owner's ruling of 2026-09-04, plus the
-beets-dir clause added after the review round: **a Trash inside the music library
-is allowed; one on top of or around it is refused. The origin store stays out of
-the music library. The beets data directory and the music library do not nest, in
-either direction.** Five paths take part —
+``M`` music library (``directory:``) · ``B`` beets data dir · ``T`` Trash · ``O``
+origin store · ``L`` ``library.db`` · six app-owned stores (bank, plex, slskd,
+playlists, inbox, exports). :data:`_ROWS` IS the rule, a row per refusal with the
+loss it causes; its shape:
 
-``M`` the music library (``directory:`` in ``config.yaml``), ``B`` the beets data
-directory (``MUSICDROP_BEETS_DIR``, holding ``library.db`` + ``config.yaml``),
-``T`` the Trash (``MUSICDROP_TRASH_DIR``, default ``<B>/trash``), ``O`` the
-origin store (``MUSICDROP_TRASH_ORIGINS_DIR``, default ``<B>/trash-origins``)
-and ``L`` the beets database FILE (``library:`` in ``config.yaml``, default
-``<B>/library.db``).
+* ``B`` and ``M`` may not be, or nest with, each other.
+* ``T`` and ``O`` may not be or contain ``M`` or ``B``, nor overlap each other or
+  any app-owned store (D2); ``M`` may not hold ``O``; ``L`` may sit in neither.
+* Allowed on purpose (``decisions.md`` 35, and the shipped defaults): ``T``
+  inside ``M``; ``T``, ``O``, ``L`` under ``B``; ``M`` and ``B`` disjoint.
 
-Refused, with the loss each one would cause:
-
-=========================  =========================================================
-``B`` is ``M``             the app's own folders (bank, plex, slskd, playlists,
-                           inbox) sit in the tree the orphan sweep walks
-``M`` contains ``B``       a library-scope sweep and a whole-folder delete can move
-                           ``library.db`` + ``config.yaml``
-``B`` contains ``M``       every app-owned exclusion becomes an ancestor of the
-                           music root, so each is dropped with a WARNING and the
-                           sweep runs with no app-owned exclusion at all
-``T`` is / contains ``M``  Empty Trash deletes the music library
-``T`` is / contains ``B``  Empty Trash deletes ``library.db`` + ``config.yaml``
-``O`` is / contains ``M``  the store sweep unlinks ``*.json`` in the library
-``O`` is / contains ``B``  the store sweep unlinks ``*.json`` in the beets dir
-``M`` contains ``O``       a folder delete above the store trashes the records
-``O`` is / inside ``T``    Empty Trash deletes the records; they also list as Trash
-                           entries
-``T`` inside ``O``         trashed albums land among the origin records
-``L`` is / inside ``T``    Empty Trash deletes the beets database
-``L`` is / inside ``O``    the database sits in the directory the store sweep prunes
-``T`` overlaps a store     Empty Trash deletes that store, or trashed albums land in it
-``O`` overlaps a store     the store sweep unlinks its ``*.json``, or the records land
-                           in it
-=========================  =========================================================
-
-The last two rows are D2, and "a store" is each of the six directories the app
-owns beside these five: the import bank, the Plex settings store, the slskd
-settings store, the playlist store, the inbox and the playlist export dir. Four
-generated rows each — ``T``/``O`` is one, holds one, sits in one — because
-``MUSICDROP_TRASH_DIR=<B>/plex`` booted clean and the first Empty Trash wiped
-that store.
-
-Allowed, and each one is a shape somebody really runs: ``T`` strictly inside
-``M`` (the ruling — ``/music/.trash`` makes a delete a same-disk rename), ``T``
-and ``O`` under ``B`` (the DEFAULT), ``L`` under ``B`` (beets' own default
-``library.db``), and disjoint trees for ``M`` and ``B`` (the shipped image:
-``/music`` for the library, ``/data`` for everything of ours).
-
-Comparisons run on FULLY RESOLVED absolute paths, both sides. ``is_relative_to``
-is lexical — ``<T>/../Sibling`` reads as "under ``<T>``" until ``resolve()``
-normalises the ``..`` away, the same trap ``trash_manage.resolve_trash_child``
-documents — and ``_music_dir`` is not symlink-resolved, so a library reached
-through ``/music -> /mnt/tank/music`` would otherwise compare unequal to a Trash
-spelled ``/mnt/tank/music/.trash``. ``Path.resolve()`` runs non-strict here: none
-of the five has to exist yet.
+Comparisons run on resolved paths and, where both exist, on ``(st_dev, st_ino)``
+— ``resolve()`` collapses symlinks and ``..``, not a bind mount. Residuals: an
+absent path has no inode, so an alias onto one is caught on the next check; a
+mount point as the INNER path is caught at the mover (``app.beets.protected``);
+a Trash inside a live album folder is not refused, at one DB query per request.
 """
 
 from __future__ import annotations
@@ -123,30 +80,15 @@ _CONFIG_KEY_OF: Final[dict[str, str]] = {
 
 
 class StoreLayoutError(Exception):
-    """Trash or the origin store sits where using it would destroy data.
+    """A refused store layout. One exception for every row: same remedy, so a
+    caller branching on WHICH would be branching on prose.
 
-    One exception for every refused relationship: each is the same operator
-    action (move a directory) and the same remedy (point the setting somewhere
-    else), so a caller that wants to branch on WHICH would be branching on
-    prose. What varies is the message, which names the setting to change, both
-    resolved paths, the loss the layout would cause and the fix.
-
-    ``config_key`` is the one machine-readable field: the ``config.yaml`` key the
-    editor should paint, or ``None`` when the refusal is between two env-derived
-    paths and no submitted value is at fault.
-
-    ``unusable_value`` marks the two refusals that are about ONE value rather
-    than a pair — it would not resolve, or it resolved to something the app
-    cannot stat. ``config_editor.store_layout_errors`` reads it to drop a row the
-    schema has already painted on the same key: measured, a ``directory:``
-    holding a NUL produced two rows saying the same thing, while a
-    ``directory: /`` produced a schema row about writability plus the layout row
-    that explains the loss, and only the first pair is a duplicate.
-
-    ``headline`` is the refusal's first clause — the pair, without the paths or
-    the loss. Apply's 422 is built from it rather than from a sentence of its
-    own: that sentence said "config.yaml would move the music library" for every
-    refusal, including the ones where the Trash is what moved.
+    ``config_key`` — the ``config.yaml`` key the editor paints, ``None`` between
+    two env-derived paths. ``unusable_value`` — set on the two ONE-value
+    refusals (would not resolve, cannot be stat'd), read by
+    ``store_layout_errors`` to drop a row the schema already painted: a
+    ``directory:`` holding a NUL produced two rows saying the same thing.
+    ``headline`` — the pair alone, which Apply's 422 is built from.
     """
 
     def __init__(
@@ -223,15 +165,10 @@ def _unexaminable(setting: str, resolved: str, exc: OSError) -> StoreLayoutError
 def _resolved(path: Path, setting: str) -> Path:
     """Absolute, symlink-free, ``..``-free — the form this module compares.
 
-    Every path entering :func:`check_store_layout` goes through here, so a call
-    site cannot hold one side of a comparison in a lexical spelling.
-
-    It also refuses a path that EXISTS and cannot be stat'd. Non-strict
-    ``Path.resolve()`` re-raises only ELOOP, so a Trash behind a mode-000
-    directory came back as the string it was handed and every inode comparison
-    became a string comparison: measured, that layout was allowed at boot and
-    then answered 500 at all four Trash routes. ENOENT and ENOTDIR pass — none
-    of the paths has to exist yet.
+    Also refuses a path that EXISTS and cannot be stat'd: ``Path.resolve()``
+    re-raises only ELOOP, so a Trash behind a mode-000 directory came back as
+    the string it was handed, was allowed at boot, and answered 500 at all four
+    Trash routes. ENOENT and ENOTDIR pass — nothing has to exist yet.
     """
     resolved = _guarded(setting, str(path), lambda: Path(os.path.expanduser(str(path))).resolve())
     try:
@@ -257,14 +194,10 @@ def _guarded(setting: str, raw: str, resolve: Callable[[], Path]) -> Path:
 def _stat_id(path: Path) -> tuple[int, int] | None:
     """``(st_dev, st_ino)`` for a path this process can stat, ``None`` otherwise.
 
-    The module's one seam onto the filesystem, kept separate so a test can answer
-    for it without patching ``os.stat`` for the whole process.
-
-    ``None`` means "no identity to compare", not "absent": any ``stat`` failure
-    lands here. The participants do not reach it in that state —
-    :func:`_resolved` refuses every errno outside :data:`_ABSENT_ERRNOS` first —
-    so a ``None`` covers a not-yet-created path and an ANCESTOR walked by
-    :func:`_chain`.
+    The module's one seam onto the filesystem, so a test can answer for it
+    without patching ``os.stat`` process-wide. ``None`` is "no identity to
+    compare", not "absent" — :func:`_resolved` has already refused every errno
+    outside :data:`_ABSENT_ERRNOS`, so it covers an absent path and an ancestor.
     """
     try:
         st = path.stat()
@@ -293,18 +226,12 @@ def _chain(path: Path) -> tuple[_Rung, ...]:
 def _same_rung(a: _Rung, b: _Rung) -> bool:
     """Whether two rungs name ONE directory or file.
 
-    ``resolve()`` collapses symlinks and ``..``. It does not collapse a bind
-    mount, a case-insensitive filesystem or a unicode-normalising one, so two
-    strings can be one directory — measured with a bind mount in an unprivileged
-    user namespace: the spellings compared as unrelated trees, the layout passed,
-    and Empty Trash removed the library.
-
-    So the filesystem decides when both rungs have an identity. When either does
-    not, the spelling is all that is left; that is the residual — a Trash the
-    operator has not created yet, aliased to the library by a mount, is not
-    caught here. It is caught the next time the check runs with the directory
-    present (every delete, every sweep) and at the moment of destruction by
-    ``app.beets.protected``.
+    ``resolve()`` does not collapse a bind mount, a case-insensitive filesystem
+    or a unicode-normalising one, so the filesystem decides whenever both rungs
+    have an inode: measured with a real bind mount, the two spellings compared
+    as unrelated trees and Empty Trash removed the library. With no inode the
+    spelling is all that is left — the residual an absent path leaves, caught on
+    the next check and at destruction by ``app.beets.protected``.
     """
     if a[1] == b[1]:
         return True
@@ -347,15 +274,10 @@ def _refuse(
     """Compose the one message shape, so boot, Save, Validate and Apply agree.
 
     ``<Subject> <relation> <other> - <loss>. <SETTING>: <path>; <other>: <path>.
-    <Fix>`` - one line in ``docker logs``, one paragraph on the Trash page. Owner
-    ruling 2026-09-04: "please please simplify the notes and descriptions on the
-    app - long paragraphs are just a waste of space."
-
-    Both paths go through ``repr``: two characters against a path holding a
-    newline or an ANSI escape forging a second log line, which is the promise the
-    shape above makes. Echoing them at all is a deliberate trade for a
-    single-operator, session-gated app - the operator needs to see where their
-    own setting landed, and the same session can read those paths from
+    <Fix>`` - one line in ``docker logs``, one paragraph on the Trash page (owner
+    ruling 2026-09-04). Both paths go through ``repr``, against one holding a
+    newline forging a second log line; echoing them at all is the trade a
+    single-operator app makes, and the same session can read them from
     ``GET /api/config``.
     """
     return StoreLayoutError(
@@ -548,10 +470,11 @@ def check_store_layout(
 ) -> None:
     """Raise :class:`StoreLayoutError` on any refused relationship among the paths.
 
-    The paths are resolved here rather than by the caller, so no call site can
-    compare a lexical spelling against a resolved one. ``settings`` brings the
-    app-owned stores in as participants (D2); it is required rather than
-    defaulted so a new call site cannot silently lose those rows.
+    The paths are resolved HERE rather than by the caller, which is what keeps a
+    caller from comparing a lexical spelling against a resolved one — pinned by
+    ``test_a_symlinked_music_root_is_still_refused_when_trash_is_the_real_dir``.
+    ``settings`` brings the app-owned stores in as participants (D2), required
+    rather than defaulted so a new call site cannot silently lose those rows.
 
     Raises:
         StoreLayoutError: a refused relation, or a path that would not resolve.
@@ -619,24 +542,15 @@ def handle_music_and_library(handle: LibraryHandle) -> tuple[Path, Path]:
 def checked_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path, Path]:
     """The ``(trash_dir, origins_dir)`` pair, checked at the moment of use.
 
-    THE call every path that takes the pair makes instead of the two resolvers,
-    including the lifespan, which hands what it returns to the import registry.
-    The two returns are exactly what ``resolve_trash_dir`` /
-    ``resolve_trash_origins_dir`` give, so nothing downstream changes shape.
-    (``app/main.py`` used to check here and then resolve the pair AGAIN from the
-    bare resolvers; measured, a Trash swapped between the two came up attached
-    and unchecked, and only the import path's own re-check caught it.)
-
-    It runs per call rather than once at boot because the configured STRING is
-    fixed for the process lifetime and what it resolves to is not: replacing
-    ``<M>/.trash`` with a symlink to ``<M>`` after startup was measured to turn
-    ``DELETE /api/trash/all`` into a 200 that emptied the music library. The boot
-    gate cannot see that; a check here does, because ``resolve()`` follows the
-    link at this instant.
+    THE call every taker of the pair makes instead of the two resolvers, and it
+    returns exactly what they return. Per call, not once at boot: the configured
+    STRING is fixed for the process lifetime and what it resolves to is not —
+    replacing ``<M>/.trash`` with a symlink to ``<M>`` after startup turned
+    ``DELETE /api/trash/all`` into a 200 that emptied the music library.
 
     Raises:
-        StoreLayoutError: the layout is refused, or one of the paths would not
-            resolve. Callers on a request path answer 503 with the message.
+        StoreLayoutError: refused, or a path would not resolve; request paths
+            answer 503 with the message.
     """
     trash, origins = _resolve_store_dirs(settings, handle)
     music, library = handle_music_and_library(handle)
@@ -744,13 +658,9 @@ def _refuse_include_the_gate_will_not_open(target: str) -> None:
     """Ask ``stat`` about an ``include:`` entry before ``open`` gets a turn.
 
     ``os.stat`` returns for a FIFO where ``open`` does not: an include naming one
-    was measured to hang Validate, Save and Apply until the process restarted,
-    each pinning a threadpool worker, because confuse's ``YamlSource.__init__``
-    reads the file eagerly.
-
-    A ``stat`` that FAILS is left to ``set_file``, deliberately: confuse turns the
-    same ``OSError`` into ``ConfigReadError``, and reproducing what beets then
-    does with it is the caller's job, not this one's.
+    hung Validate, Save and Apply until restart, each pinning a threadpool
+    worker. A ``stat`` that FAILS is left to ``set_file`` — confuse turns the
+    same ``OSError`` into ``ConfigReadError``, which beets already handles.
     """
     try:
         st = os.stat(target)
@@ -817,7 +727,11 @@ def effective_config_paths(
     except (confuse.ConfigError, TypeError, ValueError) as exc:
         # Everything else. Measured on this tree, all three escaped the old
         # ``except confuse.ConfigError`` or were swallowed by it, and Validate,
-        # Save and Apply answered a bare 500 or reported the document CLEAN:
+        # Save and Apply answered a bare 500 or reported the document CLEAN.
+        # A FOURTH shape is not caught here and does not need to be:
+        # ``include: [ov.yaml, 5]`` makes this report the PARTIAL merge while
+        # beets raises ``ConfigTypeError`` and never loads, so no layout can hide
+        # behind it. The three that are:
         # ``ConfigTypeError`` for an ``include:`` that is not a list of filenames
         # (beets raises the same at startup, so Save was writing a config the
         # next start refuses), ``TypeError`` for an include file whose top level

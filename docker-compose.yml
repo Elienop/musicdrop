@@ -29,15 +29,10 @@ services:
       # Optional integrations (see README):
       # - MUSICDROP_ARTIST_IMAGE_FANARTTV_API_KEY=...
       # - MUSICDROP_INBOX_DIR=/inbox   # pair with the /inbox volume below
-      # Trash lives on /data by default, so a delete COPIES across volumes and
-      # the deleted album eats the small disk until you empty it. Put it inside
-      # the music mount and the same delete is a rename:
+      # Trash defaults to /data, so a delete COPIES across volumes; inside the
+      # music mount it is a rename. It may not overlap /music, /data/beets or
+      # another app folder — MusicDrop refuses to start and says so.
       # - MUSICDROP_TRASH_DIR=/music/.trash
-      # It may be inside /music; it may NOT be /music itself or contain it, and
-      # it may not be or contain /data/beets — MusicDrop refuses to start and
-      # says so, and re-checks before each delete or Empty Trash (see README).
-      # Same rule for /data/beets against beets' own `directory:`: the two must
-      # not nest in either direction, which the /data + /music split above gives.
       # Browsing MusicDrop via a DNS name (e.g. behind Caddy/Traefik/nginx)?
       # List every such name here or those requests are rejected with a 400
       # (the DNS-rebinding guard). By-IP access needs nothing.

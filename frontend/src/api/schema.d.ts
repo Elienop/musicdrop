@@ -86,19 +86,8 @@ export interface paths {
          * Setup Password
          * @description Set the FIRST password, on a server that has none, and sign the caller in.
          *
-         *     Gate-exempt by necessity — there is no credential to hold a session with
-         *     yet — and therefore refused with a 409 the moment any source exists. The
-         *     two halves of that decision (read the source, write the file) run under one
-         *     lock, because the atomic writer publishes with ``os.replace``, which is
-         *     last-writer-wins rather than create-or-fail: without the lock two
-         *     simultaneous first-run POSTs would each pass the check and the second would
-         *     overwrite the first, leaving the operator holding a cookie for a password
-         *     that is no longer stored. The image runs a single uvicorn worker by design,
-         *     so an in-process lock is what "first wins" means here; a multi-worker
-         *     deployment would need the check in the filesystem instead.
-         *
-         *     The 503 arm runs BEFORE anything is written: a cookie that cannot be signed
-         *     would leave a password stored and nobody able to use it until a restart.
+         *     Gate-exempt by necessity — there is no credential to hold a session with yet
+         *     — and refused with a 409 the moment any source exists.
          */
         post: operations["setup_password_api_auth_setup_post"];
         delete?: never;
@@ -353,11 +342,6 @@ export interface paths {
         /**
          * Fetch Album Cover Endpoint
          * @description Fetch beets' best cover candidate. Returns the image (preview) or 404. No write.
-         *
-         *     Origin-guarded: a body-less POST is a CORS-simple request, so without this a
-         *     foreign page could drive this install's outbound cover lookups. It writes
-         *     nothing, which is why this guard arrived later than the install route's -
-         *     but "changes no state" is not the same as "costs nothing to trigger".
          */
         post: operations["fetch_album_cover_endpoint_api_albums__album_id__cover_fetch_post"];
         delete?: never;
@@ -554,35 +538,6 @@ export interface paths {
         /**
          * Fetch Artist Image Endpoint
          * @description Fetch ONE source's portrait candidate for ``name``. Writes NOTHING.
-         *
-         *     The preview half of the manual re-fetch: the response is the image itself
-         *     (``no-store``, provenance in ``X-Art-Source``), matching the album cover's
-         *     fetch route so the two panels share one shape. Installing is a SEPARATE
-         *     call - the client posts the very bytes it previewed to
-         *     ``POST /api/artists/image/override``, so nothing can substitute a different
-         *     image between "looks good" and "use it".
-         *
-         *     The cache is bypassed in BOTH directions: a fresh ``.miss`` marker does not
-         *     suppress the call (the user asked for it explicitly), and a result is not
-         *     stored (an approved image lands in the override slot, a rejected one leaves
-         *     no trace). The call still takes the service's own rate/concurrency slot, so
-         *     a burst of manual fetches paces against the same 5/s bucket the automatic
-         *     chain uses - ``sources.get`` hands back a bare source with no limiter
-         *     attached, so resolving it directly is the easy thing to write and would
-         *     double the real outbound rate against fanart.tv / Spotify / Deezer.
-         *
-         *     ``source`` is typed as the ``Literal``, not ``str``, and that gate is
-         *     load-bearing rather than cosmetic: ``label_for`` echoes an unknown id back
-         *     verbatim and the result lands in the ``X-Art-Source`` header, so a plain
-         *     ``str`` would let a client put its own bytes in a response header. An id
-         *     outside the Literal is refused by validation before this body runs.
-         *
-         *     Origin-guarded. A body-less POST is a CORS-simple request, so a foreign page
-         *     can send this one without a preflight - and unlike the album cover's fetch,
-         *     where the only attacker input is a local album id, here the caller picks the
-         *     UPSTREAM and the query it is sent, and that request goes out carrying this
-         *     install's own fanart.tv / Spotify credentials. The route bypasses the cache
-         *     by design, so repeats are not deduplicated either.
          */
         post: operations["fetch_artist_image_endpoint_api_artists_image_fetch_post"];
         delete?: never;
@@ -1106,12 +1061,6 @@ export interface paths {
         /**
          * Apply Config
          * @description Reload beets in-process after a Save, swapping ``app.state.beets_library``.
-         *
-         *     Thin pass-through to :func:`apply_config_op`; all the gating
-         *     (import-in-progress -> 409), locking (``asyncio.Lock`` on
-         *     ``app.state.beets_swap_lock``), threadpool offload, and recovery-hint
-         *     error mapping live in the adapter so the beets boundary stays clean
-         *     (CLAUDE.md rule 3: no beets touched outside ``app/beets/``).
          */
         post: operations["apply_config_api_config_apply_post"];
         delete?: never;
@@ -1364,18 +1313,7 @@ export interface paths {
         put?: never;
         /**
          * Dismiss Reorganize
-         * @description Clear a FINISHED job's result (its failure rows) from the slot.
-         *
-         *     NO ``_gate_busy`` on purpose: this touches the in-memory registry only —
-         *     never the library, never beets — so an import or another sweep running
-         *     elsewhere has no reason to hold a stale error message on screen.
-         *
-         *     Idempotent: dismissing an already-empty slot returns the idle status rather
-         *     than 404. The caller is asking for "nothing displayed", and that is exactly
-         *     what it gets; a 404 would make the UI special-case a state indistinguishable
-         *     from success (a double click, a retry, or a concurrent tab that dismissed
-         *     first). Returns the post-dismiss status so the caller can seed its cache
-         *     without a follow-up GET.
+         * @description Clear a FINISHED job's result (its failure rows) from the slot. Idempotent.
          */
         post: operations["dismiss_reorganize_api_reorganize_dismiss_post"];
         delete?: never;
@@ -6032,7 +5970,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description Deleting the album failed. The structured body's recovery line says what state the files are in — it promises recovery from the Trash folder only when something really reached it, and a delete that failed on the way there leaves the album in the library. A failure AFTER the whole folder reached Trash, where removing the library rows raised, moves the folder back to where it came from: that body then says the files are in the music folder and Trash holds nothing for this album, and says it cannot tell whether the album is still listed — beets commits what it had already done on the way out of the transaction, so the same failure covers an album left intact and one whose row is already gone. Only if the move back ALSO fails does the message name both paths, from the disk. */
+            /** @description Deleting the album failed; the body promises recovery from the Trash folder only when the files really reached it. */
             500: {
                 headers: {
                     [name: string]: unknown;
@@ -6041,7 +5979,7 @@ export interface operations {
                     "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
-            /** @description One of the three setup faults a delete refuses on. The music library root is missing, empty or unreadable (the guard against an unmounted share); or the folder MusicDrop records Trash origins in cannot be read or written — a bad PUID/PGID, a restored backup, a read-only /data; or the Trash directory or that origin store now sits where using it would destroy data (or no longer resolves), in which case the message names the setting to move and both resolved paths. The message says which. The album is still in the library. Its files are a separate question for the FIRST cause only: that guard also answers a share that drops DURING the move, and that can leave part of the album under the Trash folder — check there before retrying. The other two refuse before anything is created, moved or dropped, so nothing needs checking after them. */
+            /** @description A setup fault refused the delete. The album is still in the library, and a share that dropped mid-move can leave part of it under Trash — check there before retrying. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -6702,7 +6640,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description Deleting the artist failed. Also the status for a fault PART-WAY through the fan-out: the message then names how far it got, and says the albums it never reached are untouched. The structured body's recovery line promises recovery from the Trash folder only when albums really reached it — a fan-out that stops on its first album, and one whose albums were all rows with no files left to move, both moved nothing. That promise covers the albums BEFORE the one it stopped on, which cannot be taken back; the album it stopped on has its own folder moved back out of Trash when what failed was removing its library rows. */
+            /** @description Deleting the artist failed; the message names how far the fan-out got, and the body promises recovery from the Trash folder only when albums really reached it. */
             500: {
                 headers: {
                     [name: string]: unknown;
@@ -6711,7 +6649,7 @@ export interface operations {
                     "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
-            /** @description One of the three setup faults a delete refuses on. The music library root is missing, empty or unreadable (the guard against an unmounted share); or the folder MusicDrop records Trash origins in cannot be read or written — a bad PUID/PGID, a restored backup, a read-only /data; or the Trash directory or that origin store now sits where using it would destroy data (or no longer resolves), in which case the message names the setting to move and both resolved paths. The message says which. None of the artist's albums has been dropped from the library: once one has, the same cause is reported as the 500 instead, which names how far the fan-out got. Files are a separate question for the FIRST cause only — a share that drops during the move of the album the fan-out is on can leave part of it under the Trash folder, so check there before retrying. The other two fire before anything is created, moved or dropped. */
+            /** @description A setup fault refused the delete. None of the artist's albums has been dropped, and a share that dropped mid-move can leave part of one under Trash — check there before retrying. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -8736,7 +8674,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The submitted YAML did not parse, a key MusicDrop models has the wrong shape, or the submitted directory: would put the music library at or under the Trash directory (or over the Trash origin store); the body lists one item per problem, with the 1-based line and 0-based column to mark where there is one. A malformed request body answers with FastAPI's validation shape instead. */
+            /** @description The YAML did not parse, a key has the wrong shape, or its directory:/library: would break the store layout; the body lists one item per problem. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -9010,7 +8948,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The config.yaml on disk declares a directory: that would put the music library at or under the Trash directory, or over the Trash origin store, so beets was NOT reloaded and the previously loaded library is still serving. */
+            /** @description The config.yaml on disk breaks the store layout, so beets was NOT reloaded and the previously loaded library is still serving. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -9173,7 +9111,7 @@ export interface operations {
                     "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
-            /** @description The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so no copies were moved; the message names the setting and both resolved paths. */
+            /** @description The store layout is refused, so no copies were moved; the message names the setting and both resolved paths. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -9278,7 +9216,7 @@ export interface operations {
                     "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
-            /** @description The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so no copies were moved; the message names the setting and both resolved paths. */
+            /** @description The store layout is refused, so no copies were moved; the message names the setting and both resolved paths. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -9526,7 +9464,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so no reorganize was planned or started; the message names the setting and both resolved paths. */
+            /** @description The store layout is refused, so nothing was planned or started; the message names the setting and both resolved paths. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -9593,7 +9531,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so no reorganize was planned or started; the message names the setting and both resolved paths. */
+            /** @description The store layout is refused, so nothing was planned or started; the message names the setting and both resolved paths. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -9669,7 +9607,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so no reorganize was planned or started; the message names the setting and both resolved paths. */
+            /** @description The store layout is refused, so nothing was planned or started; the message names the setting and both resolved paths. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -9754,7 +9692,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so no reorganize was planned or started; the message names the setting and both resolved paths. */
+            /** @description The store layout is refused, so nothing was planned or started; the message names the setting and both resolved paths. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -12735,7 +12673,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so nothing was read or removed; the message names the setting and both resolved paths. */
+            /** @description The store layout is refused, so nothing was read or removed; the message names the setting and both resolved paths. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -12820,7 +12758,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so nothing was read or removed; the message names the setting and both resolved paths. */
+            /** @description The store layout is refused, so nothing was read or removed; the message names the setting and both resolved paths. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -12925,7 +12863,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The folder was not moved out of Trash. Either the music library folder is unavailable, or the Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), in which case the message names the setting and both resolved paths. */
+            /** @description The folder was not moved out of Trash; the message says which setup fault refused it. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -12999,7 +12937,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The Trash directory or the Trash origin store now sits where using it would destroy data (or no longer resolves), so nothing was read or removed; the message names the setting and both resolved paths. */
+            /** @description The store layout is refused, so nothing was read or removed; the message names the setting and both resolved paths. */
             503: {
                 headers: {
                     [name: string]: unknown;

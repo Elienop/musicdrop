@@ -1049,16 +1049,11 @@ def resolve_trash_child(trash_dir: Path, rel: str) -> Path:
 def empty_one(folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees) -> EmptyResult:
     """Permanently remove one trashed entry — a folder or a loose file.
 
-    Its OWN record goes with it, and strictly AFTER: a failed ``rmtree`` raises
-    out of here, and losing the record for an entry that is still sitting in
-    Trash would silently downgrade its row to an import-restore. With the sidecar
-    this ordering was free (the ``rmtree`` took the record with it); keyed on the
-    name in a sibling dir, it is a rule.
-
-    A record naming a DIFFERENT entry stays, and that is not this line's doing:
-    two long names can share one truncated key, and
-    :func:`~app.beets.trash_origins.delete_trash_origin` reads the payload's own
-    ``name`` before unlinking. Its docstring owns that exception.
+    Its OWN record goes with it, strictly AFTER: a failed ``rmtree`` raises out
+    of here, and losing the record for an entry still in Trash would downgrade
+    its row to an import-restore. A record naming a DIFFERENT entry stays — two
+    long names can share one truncated key, and ``delete_trash_origin`` reads the
+    payload's own ``name`` first.
 
     Raises :class:`~app.beets.protected.ProtectedTreeError` (503) when the entry
     is or holds one of the app's own directories by inode.
@@ -1086,44 +1081,22 @@ def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) 
     (503), which outranks the partial below: the others are worth retrying and
     this one needs the layout fixed first.
 
-    ``is_dir()`` FOLLOWS symlinks and ``shutil.rmtree`` refuses one, so a
-    symlinked entry used to raise ``OSError`` here and wedge the whole
-    operation: nothing after it in ``iterdir`` order was removed, and every
-    retry failed identically, leaving Trash impossible to empty through the app.
-    ``empty_one`` cannot clear it either -- ``resolve_trash_child`` refuses a
-    child that is a link before it resolves anything, which is a guard worth
-    keeping -- so the entry is unremovable by any other route. This is the one
-    place a symlinked entry is acted on, and it acts on the LINK.
+    A symlinked entry is acted on as the LINK. ``is_dir()`` follows links and
+    ``rmtree`` refuses one, so such an entry used to raise ``OSError`` and wedge
+    the whole operation — nothing after it in ``iterdir`` order was removed, and
+    ``empty_one`` cannot clear it either (``resolve_trash_child`` refuses a link
+    first), so it was unremovable by any route. Nothing hostile is needed:
+    ``_album_root`` is ``dirname(item.path)``, and ``shutil.move`` preserves a
+    link. Following it would ``rm -rf`` a directory merely pointed at.
 
-    An entry gets there without anything hostile: ``_album_root`` is
-    ``dirname(item.path)``, so an album whose own folder is a symlink into
-    another volume is trashed as a symlink, because ``shutil.move`` preserves
-    them. Treating it as a leaf is also the only safe reading of "remove
-    everything under ``trash_dir``" -- following it would ``rm -rf`` a directory
-    that merely happens to be pointed at.
-
-    Each entry's origin record is dropped INSIDE the loop, right after that entry
-    is removed, so a fault part-way through leaves a consistent pair rather than
-    a set of records for entries that are still there: the survivors keep theirs.
-
-    Then the whole store is swept (``clear_trash_origins``), but only when this
-    call REMOVED something and ``trash_dir`` is empty afterwards. Neither
-    condition is enough alone. Emptiness alone is not: a ``trash_dir`` whose
-    share has dropped presents as an empty directory, and a sweep reading that
-    as "Trash is empty" would destroy the origins of every entry still on the
-    real volume — having removed an entry is the evidence that the directory
-    walked was the real one. "Removed something" alone is not either: a partial
-    failure leaves entries that still need their records, which is why the sweep
-    sits past the raise.
-
-    That is what now clears the litter the per-child drop cannot reach — a
-    record whose entry left Trash without this app noticing (a file manager, an
-    SMB client, ``docker volume rm``), which is never handed to
-    ``delete_trash_origin`` at all and used to survive every per-row action for
-    good. Until an Empty all lands, such a record still costs a burnt name
-    (``trash._unique_trash_dest`` will not hand that name out again) and can
-    still be adopted by a folder that reaches Trash by another route — a
-    residual ``trash_origins`` states rather than closes.
+    Each origin record is dropped INSIDE the loop, right after its entry, so a
+    fault part-way through leaves a consistent pair. The whole store is then
+    swept, but only when this call REMOVED something AND Trash is empty
+    afterwards: emptiness alone would destroy every origin when the share has
+    dropped, and "removed something" alone would strip the records a partial
+    failure's survivors still need. That sweep is what clears a record whose
+    entry left Trash without this app noticing — a residual ``trash_origins``
+    states rather than closes, since until then the name stays burnt.
     """
     if not trash_dir.exists():
         return EmptyResult(removed=0)

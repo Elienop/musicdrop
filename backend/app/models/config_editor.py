@@ -62,19 +62,14 @@ def _resolve_or_row(p: Path) -> Path:
 
 
 def _writable_path(p: Path) -> Path:
-    """``AfterValidator`` for ``WritablePath``.
+    """``AfterValidator`` for ``WritablePath`` — ``p`` is already a ``Path``.
 
-    Per Pydantic v2 docs (Validators), ``AfterValidator`` runs after Pydantic
-    has coerced the value to ``Path`` — so ``p`` is already a ``Path`` here.
+    An existing directory passes on its OWN writability: the Docker norm is a
+    volume at the root, whose parent ``/`` the app user can never write. The
+    parent check applies only to a directory beets would have to create.
 
-    An existing directory passes on its own writability: the Docker norm is a
-    volume mounted at the root (e.g. ``/library``), whose parent ``/`` is never
-    writable by the app user. The parent check applies only when the directory
-    doesn't exist yet and beets would have to create it.
-
-    Every filesystem call is inside :func:`_resolve_or_row` or the ``try`` below,
-    because this validator runs BEFORE the layout gate, so its failures are the
-    ones that reach the client.
+    Every filesystem call sits inside :func:`_resolve_or_row` or the ``try``
+    below: this runs BEFORE the layout gate, so its failures reach the client.
     """
     resolved = _resolve_or_row(p)
     try:
@@ -99,19 +94,14 @@ def _library_file(p: Path) -> Path:
     """``AfterValidator`` for ``library:`` — the beets DATABASE FILE.
 
     beets hands this path to SQLite. Two values pass every other check and make
-    that open fail: an empty one (Pydantic coerces ``""`` to ``Path(".")``, the
-    beets data directory itself) and one naming an existing directory. Measured
-    before this validator existed: both linted clean with zero rows, Save wrote
-    them, the Apply after answered 500 ("unable to open database file"), and the
-    next cold start died inside beets' ``_create_connection`` with a traceback
-    instead of a refusal line.
+    that open fail: an empty one (Pydantic coerces ``""`` to ``Path(".")``) and
+    one naming an existing directory. Measured before this validator: both linted
+    clean, Save wrote them, Apply answered 500 ("unable to open database file"),
+    and the next cold start died inside beets' ``_create_connection``.
 
-    RESIDUAL, and the same one :func:`_writable_path` carries: a RELATIVE value
-    is resolved against the process CWD here, while beets resolves it against the
-    beets data directory (confuse's ``Filename`` template). So a
-    relative ``library:`` naming an existing directory under the beets dir is
-    caught here only when the two coincide; the Apply refusal is what covers it
-    otherwise.
+    RESIDUAL (shared with :func:`_writable_path`): a RELATIVE value resolves
+    against the process CWD here and against the beets data dir in confuse, so
+    such a value is caught here only when the two coincide. Apply covers it.
     """
     if str(p) == ".":
         raise ValueError(

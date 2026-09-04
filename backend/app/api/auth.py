@@ -493,20 +493,20 @@ async def login(body: LoginRequest, request: Request, response: Response) -> Aut
 async def setup_password(body: SetupRequest, request: Request, response: Response) -> AuthStatus:
     """Set the FIRST password, on a server that has none, and sign the caller in.
 
-    Gate-exempt by necessity — there is no credential to hold a session with
-    yet — and therefore refused with a 409 the moment any source exists. The
-    two halves of that decision (read the source, write the file) run under one
-    lock, because the atomic writer publishes with ``os.replace``, which is
-    last-writer-wins rather than create-or-fail: without the lock two
-    simultaneous first-run POSTs would each pass the check and the second would
-    overwrite the first, leaving the operator holding a cookie for a password
-    that is no longer stored. The image runs a single uvicorn worker by design,
-    so an in-process lock is what "first wins" means here; a multi-worker
-    deployment would need the check in the filesystem instead.
-
-    The 503 arm runs BEFORE anything is written: a cookie that cannot be signed
-    would leave a password stored and nobody able to use it until a restart.
+    Gate-exempt by necessity — there is no credential to hold a session with yet
+    — and refused with a 409 the moment any source exists.
     """
+    # Read-the-source and write-the-file run under ONE lock: the atomic writer
+    # publishes with ``os.replace``, which is last-writer-wins rather than
+    # create-or-fail, so without it two simultaneous first-run POSTs would each
+    # pass the check and the second would overwrite the first — leaving the
+    # operator holding a cookie for a password that is no longer stored. The
+    # image runs a single uvicorn worker by design, so an in-process lock is what
+    # "first wins" means here; a multi-worker deployment needs it in the
+    # filesystem instead.
+    #
+    # The 503 arm runs BEFORE anything is written: a cookie that cannot be signed
+    # would leave a password stored and nobody able to use it until a restart.
     _reject_a_blank_password(body.password)
     secret = _session_secret(request)
     async with _PASSWORD_WRITE_LOCK:

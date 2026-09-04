@@ -317,13 +317,11 @@ async def fetch_album_cover_endpoint(
     request: Request,
     handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> Response:
-    """Fetch beets' best cover candidate. Returns the image (preview) or 404. No write.
-
-    Origin-guarded: a body-less POST is a CORS-simple request, so without this a
-    foreign page could drive this install's outbound cover lookups. It writes
-    nothing, which is why this guard arrived later than the install route's -
-    but "changes no state" is not the same as "costs nothing to trigger".
-    """
+    """Fetch beets' best cover candidate. Returns the image (preview) or 404. No write."""
+    # Origin-guarded: a body-less POST is a CORS-simple request, so without the
+    # guard a foreign page could drive this install's outbound cover lookups. It
+    # writes nothing, which is why the guard arrived later than the install
+    # route's — "changes no state" is not "costs nothing to trigger".
     image_bytes, mime, source = await fetch_cover_op(request, album_id)
     return Response(
         content=image_bytes,
@@ -448,20 +446,15 @@ async def fetch_album_lyrics_endpoint(
                 "A library operation is in progress, so the delete is refused until it finishes."
             ),
         },
+        # The body's `recovery` line, not this text, is what says where the
+        # files are: it promises the Trash only when something reached it, and
+        # a failure after the folder was moved puts it back and says so. A
+        # failed move-back is the one case that names both paths from disk.
         500: {
             "model": StructuredErrorDetail,
             "description": (
-                "Deleting the album failed. The structured body's recovery line says what"
-                " state the files are in — it promises recovery from the Trash folder only"
-                " when something really reached it, and a delete that failed on the way"
-                " there leaves the album in the library. A failure AFTER the whole folder"
-                " reached Trash, where removing the library rows raised, moves the folder"
-                " back to where it came from: that body then says the files are in the"
-                " music folder and Trash holds nothing for this album, and says it cannot"
-                " tell whether the album is still listed — beets commits what it had"
-                " already done on the way out of the transaction, so the same failure"
-                " covers an album left intact and one whose row is already gone. Only if"
-                " the move back ALSO fails does the message name both paths, from the disk."
+                "Deleting the album failed; the body promises recovery from the Trash"
+                " folder only when the files really reached it."
             ),
         },
         # Flat ErrorDetail, unlike the 500 beside it: what this status carries is
@@ -469,20 +462,14 @@ async def fetch_album_lyrics_endpoint(
         # with no per-failure recovery line to choose between.
         503: {
             "model": ErrorDetail,
+            # Three causes, and the message says which: an unmounted music
+            # share, an origin store that cannot be read or written, and a store
+            # layout that would destroy data. Only the first can fire DURING the
+            # move, so only it can leave part of the album under Trash.
             "description": (
-                "One of the three setup faults a delete refuses on. The music library"
-                " root is missing, empty or unreadable (the guard against an unmounted"
-                " share); or the folder MusicDrop records Trash origins in cannot be read"
-                " or written — a bad PUID/PGID, a restored backup, a read-only /data; or"
-                " the Trash directory or that origin store now sits where using it would"
-                " destroy data (or no longer resolves), in which case the message names"
-                " the setting to move and both resolved paths. The message says which."
-                " The album is still in the library. Its files are a"
-                " separate question for the FIRST cause only: that guard also answers a"
-                " share that drops DURING the move, and that can leave part of the album"
-                " under the Trash folder — check there before retrying. The other two"
-                " refuse before anything is created, moved or dropped, so nothing"
-                " needs checking after them."
+                "A setup fault refused the delete. The album is still in the library, and a"
+                " share that dropped mid-move can leave part of it under Trash — check"
+                " there before retrying."
             ),
         },
     },

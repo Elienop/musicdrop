@@ -123,12 +123,9 @@ const refusedAlbum: TrashedAlbum = {
  * arrived — which is why it asserts the whole string rather than a fragment: a
  * page printing copy of its own would satisfy any fragment this file chose. */
 const LAYOUT_REFUSAL =
-  "The Trash directory is the music library. MUSICDROP_TRASH_DIR resolves to" +
-  " '/srv/media/music'; `directory:` in config.yaml resolves to" +
-  " '/srv/media/music'. Emptying the Trash permanently removes every entry under" +
-  " it, so this layout would delete the music library. Point MUSICDROP_TRASH_DIR" +
-  " at a directory that neither is nor contains the music library, the beets data" +
-  " directory, the beets database or the Trash origin store.";
+  "The Trash directory is the music library — emptying it would delete the music" +
+  " library. MUSICDROP_TRASH_DIR: '/srv/media/music'; `directory:` in config.yaml:" +
+  " '/srv/media/music'. Set MUSICDROP_TRASH_DIR to its own folder.";
 
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });

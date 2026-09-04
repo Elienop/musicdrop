@@ -105,17 +105,12 @@ def _boot_log() -> logging.Logger:
 def _leftovers_note(handle: LibraryHandle) -> str:
     """Where to look for what this start wrote before the layout gate refused it.
 
-    beets' startup has to run first: the gate compares the ``directory:`` and
-    ``library:`` beets LOADS, and neither is known until confuse has resolved the
-    config — which means the config must exist, which on a first run means
-    writing the starter. So the earliest honest point is here, after the fact.
-
-    It names the two directories rather than a file list because only some of
-    what lands is new. Measured: a refused ``MUSICDROP_BEETS_DIR=<music>`` left 13
-    files inside the music library (config.yaml, library.db and 11 of beets'
-    migration backups) and a refused ``library: trash/library.db`` left 12 under
-    the Trash dir. They are litter, not Trash entries — ``list_trashed_albums``
-    returned ``[]`` with all 12 present — so nothing removes them on its own.
+    beets' startup runs first — the gate compares the paths beets LOADS, and on a
+    first run the starter config has to exist to be loaded — so this is the
+    earliest honest point. Two directories, not a file list, because only some of
+    what lands is new: a refused ``MUSICDROP_BEETS_DIR=<music>`` left 13 files in
+    the music library and a refused ``library: trash/library.db`` left 12 under
+    Trash, and ``list_trashed_albums`` returned ``[]`` with all 12 present.
     """
     db_dir = Path(os.fsdecode(handle.lib.path)).parent
     places = {str(handle.beets_dir), str(db_dir)}
@@ -175,12 +170,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         raise
 
-    # Before ANYTHING is attached or started: refuse to come up when Trash or
-    # the Trash origin store sits somewhere using it would destroy data (see
-    # app/beets/store_layout.py for the table and the reasoning). The check is
-    # here rather than inside a request path because all four inputs are settled
-    # exactly once — three come from the environment, and the fourth
-    # (``directory:``) only moves through Save/Apply, which run the same check.
+    # Before ANYTHING is attached or started: refuse to come up on a refused
+    # store layout (see app/beets/store_layout.py for the table). Here as well as
+    # at the use sites, not instead of them — what the configured strings resolve
+    # to moves after boot, which is why the same check runs at every destructive
+    # route and job. This one is what keeps the process from serving at all.
     # Logged through ``uvicorn.error`` (see ``_boot_log``). ERROR, not WARNING —
     # the process does not come up, and the operator grepping for the reason
     # after "Application startup failed" must find a line whose level says so.
