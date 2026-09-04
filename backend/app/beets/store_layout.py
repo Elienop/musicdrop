@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import errno
 import os
+import stat
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Final
@@ -777,6 +778,56 @@ class _CandidateConfig(beets.IncludeLazyConfig):
         return self._pinned_config_dir
 
 
+#: The largest ``include:`` file this gate will read. beets' own starter config
+#: is under 4 KiB, so a megabyte is generous by more than two orders of
+#: magnitude; what it bounds is the work ONE authenticated
+#: ``POST /api/config/validate`` can ask a Starlette threadpool worker to do on a
+#: route that writes nothing. Measured before the cap: a 195 MiB include took
+#: 32.7 seconds inside :func:`effective_config_paths`.
+_MAX_INCLUDE_BYTES: Final = 1 << 20
+
+
+def _unreadable_include(detail: str) -> StoreLayoutError:
+    """The refusal for an ``include:`` the gate could not follow.
+
+    Painted against the ``include:`` key, so the editor's gutter marks the line
+    the operator has to change.
+    """
+    return StoreLayoutError(
+        f"`include:` in config.yaml could not be read: {detail}. An included"
+        " file's `directory:` overrides the one in this document, so until this"
+        " resolves there is no saying where the music library would end up."
+        " Correct the include: list, or the file it names.",
+        config_key="include",
+        unusable_value=True,
+    )
+
+
+def _refuse_include_the_gate_will_not_open(target: str) -> None:
+    """Ask ``stat`` about an ``include:`` entry before ``open`` gets a turn.
+
+    ``os.stat`` returns for a FIFO where ``open`` does not: an include naming one
+    was measured to hang Validate, Save and Apply until the process restarted,
+    each pinning a threadpool worker, because confuse's ``YamlSource.__init__``
+    reads the file eagerly.
+
+    A ``stat`` that FAILS is left to ``set_file``, deliberately: confuse turns the
+    same ``OSError`` into ``ConfigReadError``, and reproducing what beets then
+    does with it is the caller's job, not this one's.
+    """
+    try:
+        st = os.stat(target)
+    except OSError:
+        return
+    if not stat.S_ISREG(st.st_mode):
+        raise _unreadable_include(f"{target!r} is not a regular file")
+    if st.st_size > _MAX_INCLUDE_BYTES:
+        raise _unreadable_include(
+            f"{target!r} is {st.st_size} bytes, over the {_MAX_INCLUDE_BYTES}-byte"
+            " limit this check reads"
+        )
+
+
 def effective_config_paths(
     document: Mapping[str, Any], beets_dir: Path
 ) -> tuple[str | None, str | None]:
@@ -803,19 +854,44 @@ def effective_config_paths(
     # The loop ``IncludeLazyConfig.read`` runs after reading, reproduced here
     # because we are replacing the user source rather than reading it: each entry
     # is ``set_file``'d, which inserts it at the FRONT, so the last include wins.
+    #
+    # Includes are NOT confined to the beets dir. beets does not confine them, and
+    # a gate that refused a config beets loads would be worse than the read this
+    # exposes — which is bounded by the session gate, and which the size/type
+    # guard plus the rows below narrow to "this file exists and parses as a
+    # mapping" rather than "here is its content".
     try:
         for view in cfg["include"].sequence():
-            cfg.set_file(view.as_filename())
-    except confuse.ConfigError:
-        # Three shapes reach here and all three leave the document's own value
-        # standing, which is what would have been checked without this loop:
-        # no ``include:`` key (``NotFoundError`` — beets catches that too), an
-        # entry naming a file that will not parse (``ConfigReadError`` — beets
-        # writes to stderr and carries on), and an ``include:`` that is not a
-        # list of filenames (``ConfigTypeError``). The third is a config beets
-        # raises on at startup, so a gate that reports it clean is not hiding a
-        # layout — the process would not come up to use one.
+            target = view.as_filename()
+            _refuse_include_the_gate_will_not_open(target)
+            cfg.set_file(target)
+    except (confuse.NotFoundError, confuse.ConfigReadError):
+        # The two shapes beets itself tolerates, so the gate tolerates them and
+        # whatever has been merged so far stands: no ``include:`` key at all
+        # (``NotFoundError``), and an entry naming a file that will not open or
+        # parse (``ConfigReadError`` — ``beets/__init__.py:29-38`` writes to
+        # stderr and carries on). Reproducing beets is the whole contract here,
+        # and the ``except`` sits OUTSIDE the loop in beets too, so the FIRST
+        # unreadable entry ends the merge and the ones after it are never read.
+        # That is not a rewrite worth "fixing": measured with the guard placed
+        # per-entry instead, this function reported an overlay's ``directory:``
+        # that a real ``setup_beets`` over the same file never loaded.
         pass
+    except (confuse.ConfigError, TypeError, ValueError) as exc:
+        # Everything else. Measured on this tree, all three escaped the old
+        # ``except confuse.ConfigError`` or were swallowed by it, and Validate,
+        # Save and Apply answered a bare 500 or reported the document CLEAN:
+        # ``ConfigTypeError`` for an ``include:`` that is not a list of filenames
+        # (beets raises the same at startup, so Save was writing a config the
+        # next start refuses), ``TypeError`` for an include file whose top level
+        # is not a mapping, and ``ValueError`` for an entry holding a NUL.
+        #
+        # The NUL is a deliberate divergence: beets boots with it, because
+        # ``setup.py``'s ``exists()`` turns the ValueError into a NotFoundError
+        # and the entry is dropped. That tolerance is an accident of an
+        # ``exists()`` call rather than a decision, and an entry with a NUL in it
+        # cannot name a file — so this says so instead of reproducing it.
+        raise _unreadable_include(str(exc)) from exc
     try:
         return cfg["directory"].as_filename(), cfg["library"].as_filename()
     except confuse.ConfigError:

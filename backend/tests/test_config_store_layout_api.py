@@ -14,11 +14,13 @@ its own.
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.beets.config_editor import parse_yaml
 from app.beets.library import LibraryHandle
 
 
@@ -400,23 +402,100 @@ def test_an_include_naming_a_file_that_is_not_there_leaves_the_document_standing
     assert len(_layout_rows(client, _with_include(beets_library.beets_dir, "gone.yaml"))) == 1
 
 
-def test_an_include_that_is_not_a_list_answers_a_lint_row_rather_than_a_500(
-    client: TestClient, beets_library: LibraryHandle
+@pytest.mark.parametrize(
+    "include_block",
+    [
+        "include:\n  a: b\n",  # a mapping — ConfigTypeError
+        "include: overlay.yaml\n",  # a bare string — ConfigTypeError
+        "include:\n  - null\n",  # an entry that is not a filename
+        "include:\n  - 7\n",
+    ],
+)
+def test_an_include_beets_raises_on_answers_a_lint_row_rather_than_nothing(
+    client: TestClient, beets_library: LibraryHandle, include_block: str
 ) -> None:
-    """``include:`` as a mapping — a shape beets raises on at startup.
+    """Shapes ``setup_beets`` raises ``ConfigTypeError`` on at startup.
 
-    confuse answers ``ConfigTypeError`` for it, which is neither of the two cases
-    beets tolerates. The gate reports the document's own ``directory:`` instead
-    of propagating, so a hand-edited draft gets a lint gutter rather than a 500
-    from the editor; the config itself would stop the next start.
+    Measured on the parent commit for all four: Validate answered 200 with NO row
+    of any type, Save wrote the file, and the Apply after answered 500 while a
+    fresh start would not come up — the one thing this gate exists to prevent. It
+    is the ``except confuse.ConfigError`` that swallowed them, ``ConfigTypeError``
+    being a subclass. The test was named for the row it did not assert.
     """
     music = Path(beets_library.lib.directory.decode())
-    text = f"directory: {music}\nlibrary: library.db\ninclude:\n  a: b\n"
+    text = f"directory: {music}\nlibrary: library.db\n{include_block}"
 
     r = client.post("/api/config/validate", json={"yaml_text": text})
 
     assert r.status_code == 200, r.text
-    assert [e for e in r.json()["errors"] if e["type"] == "store_layout"] == []
+    rows = [e for e in r.json()["errors"] if e["type"] == "store_layout"]
+    assert len(rows) == 1, r.json()
+    assert rows[0]["loc"] == "include", rows
+    assert "could not be read" in str(rows[0]["msg"]), rows
+
+
+@pytest.mark.parametrize("shape", ["fifo", "oversized", "nul", "not-a-mapping"])
+def test_an_include_the_gate_will_not_read_answers_a_lint_row(
+    client: TestClient, beets_library: LibraryHandle, shape: str
+) -> None:
+    """The four the gate refuses to follow, each measured on the parent commit.
+
+    * ``fifo`` — ``open`` on a FIFO with no writer never returns, and confuse's
+      ``YamlSource.__init__`` reads eagerly: Validate, Save and Apply each hung
+      until the process was killed, pinning a threadpool worker per request.
+    * ``oversized`` — a 195 MiB include was read and parsed in 32.7 seconds.
+    * ``nul`` — ``open`` raises ``ValueError``, which the old ``except`` missed:
+      a bare 500 at all three routes.
+    * ``not-a-mapping`` — confuse raises a bare ``TypeError``: a bare 500 too.
+
+    ``os.stat`` is what makes the first two answerable at all; it returns for a
+    FIFO where ``open`` does not.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    name = "overlay.yaml"
+    target = beets_library.beets_dir / name
+    if shape == "fifo":
+        os.mkfifo(target)
+    elif shape == "oversized":
+        with target.open("wb") as fh:
+            fh.truncate(2 << 20)
+    elif shape == "nul":
+        # A double-quoted YAML scalar carrying a backslash-zero escape, the same
+        # spelling the ``directory:`` NUL case uses; ruamel decodes it to a NUL.
+        name = '"over\\0lay.yaml"'
+    else:
+        target.write_text("- a\n- b\n", encoding="utf-8")
+
+    rows = _layout_rows(client, _with_include(music, name))
+
+    assert len(rows) == 1, rows
+    assert rows[0]["loc"] == "include", rows
+    assert "could not be read" in str(rows[0]["msg"]), rows
+
+
+def test_an_include_just_under_the_size_cap_is_still_read(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """The control for the cap: a real include is kilobytes, not megabytes.
+
+    Padded to just under a megabyte with comment lines, so a cap set at the wrong
+    order of magnitude — or one applied to every include — refuses a file the
+    gate must still follow. Its ``directory:`` is the refused one, which is what
+    proves the file was actually merged rather than skipped.
+    """
+    overlay = beets_library.beets_dir / "overlay.yaml"
+    padding = "# " + ("y" * 60) + "\n"
+    overlay.write_text(
+        f"directory: {beets_library.beets_dir}\n" + padding * 16_000, encoding="utf-8"
+    )
+    assert 900_000 < overlay.stat().st_size < (1 << 20)
+
+    rows = _layout_rows(
+        client, _with_include(Path(beets_library.lib.directory.decode()), "overlay.yaml")
+    )
+
+    assert len(rows) == 1, rows
+    assert "The beets data directory is the music library" in str(rows[0]["msg"]), rows
 
 
 def test_save_refuses_a_document_whose_include_moves_the_directory(
@@ -591,3 +670,57 @@ def test_the_library_value_beets_actually_ships_still_passes(
     r = client.post("/api/config/validate", json={"yaml_text": _yaml_pointing_at(music)})
     assert r.status_code == 200, r.text
     assert r.json()["errors"] == []
+
+
+# --------------------------------------------------------------------------
+# The include reproduction, checked against BEETS rather than against itself.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "include_block",
+    [
+        "",  # no include: at all
+        "include:\n  - overlay.yaml\n",  # the overlay wins
+        "include:\n  - gone.yaml\n",  # beets prints and carries on
+        "include:\n  - gone.yaml\n  - overlay.yaml\n",  # one absent, one not
+        "include:\n  - overlay.yaml\n  - second.yaml\n",  # the LAST one wins
+    ],
+)
+def test_the_include_reproduction_agrees_with_a_real_beets_startup(
+    tmp_path: Path, include_block: str
+) -> None:
+    """``effective_config_paths`` against ``setup_beets`` over the same file.
+
+    Every other include test asserts the app against itself, so a change to
+    beets' ``IncludeLazyConfig.read`` — the loop this function reproduces from
+    ``beets/__init__.py:29-38`` — would leave the whole suite green while the
+    gate silently evaluated a document beets does not load. This is the only test
+    that would go red for that.
+    """
+    import beets
+
+    from app.beets.library import close_library
+    from app.beets.setup import setup_beets
+    from app.beets.store_layout import effective_config_paths
+
+    beets_dir = tmp_path / "beets"
+    beets_dir.mkdir()
+    music = tmp_path / "music"
+    music.mkdir()
+    (beets_dir / "overlay.yaml").write_text(f"directory: {tmp_path / 'from-overlay'}\n")
+    (beets_dir / "second.yaml").write_text(f"directory: {tmp_path / 'from-second'}\n")
+    text = f"directory: {music}\nlibrary: library.db\n{include_block}"
+    (beets_dir / "config.yaml").write_text(text, encoding="utf-8")
+
+    handle = setup_beets(str(beets_dir))
+    try:
+        from_beets = (
+            beets.config["directory"].as_filename(),
+            beets.config["library"].as_filename(),
+        )
+    finally:
+        close_library(handle.lib)
+
+    document = parse_yaml(text)
+    assert effective_config_paths(document, beets_dir) == from_beets
