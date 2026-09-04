@@ -12,8 +12,15 @@ from typing import Final
 from fastapi import APIRouter, Request
 from ruamel.yaml.error import YAMLError
 
+from app.beets.config_editor import (
+    _settings,
+    directory_layout_errors,
+    parse_yaml,
+    read_naming,
+    save_naming,
+    validate_known_keys,
+)
 from app.beets.config_editor import apply as apply_config_op
-from app.beets.config_editor import parse_yaml, read_naming, save_naming, validate_known_keys
 from app.beets.config_editor import save as save_config_op
 from app.beets.config_snapshot import build_config_snapshot
 from app.beets.library import LibraryHandle
@@ -72,10 +79,12 @@ _SAVE_CAS_CONFLICT_RESPONSE: Final = {
 _SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
     ConfigValidationErrorDetail,
     (
-        "The submitted YAML did not parse, or a key MusicDrop models has the wrong"
-        " shape; the body lists one item per problem, with the 1-based line and"
-        " 0-based column to mark where there is one. A malformed request body"
-        " answers with FastAPI's validation shape instead."
+        "The submitted YAML did not parse, a key MusicDrop models has the wrong"
+        " shape, or the submitted directory: would put the music library at or"
+        " under the Trash directory (or over the Trash origin store); the body"
+        " lists one item per problem, with the 1-based line and 0-based column to"
+        " mark where there is one. A malformed request body answers with"
+        " FastAPI's validation shape instead."
     ),
 )
 
@@ -103,9 +112,17 @@ def get_config(request: Request) -> BeetsConfigSnapshot:
 
 
 @router.post("/config/validate")
-def validate_config(req: ValidateRequest) -> ValidateResponse:
+def validate_config(req: ValidateRequest, request: Request) -> ValidateResponse:
     """Cheap lint pass — never writes. Returns 200 even on errors so the
-    CodeMirror async lint source can display them inline."""
+    CodeMirror async lint source can display them inline.
+
+    Takes ``request`` for the settings + live handle the containment check needs:
+    whether a ``directory:`` is acceptable is not a property of the document
+    alone, it depends on where ``MUSICDROP_TRASH_DIR`` /
+    ``MUSICDROP_TRASH_ORIGINS_DIR`` / ``MUSICDROP_BEETS_DIR`` resolve. Same
+    helper ``config_editor.save`` calls, so the gutter and the Save refusal
+    cannot disagree.
+    """
     try:
         data = parse_yaml(req.yaml_text)
     except YAMLError as e:
@@ -128,9 +145,24 @@ def validate_config(req: ValidateRequest) -> ValidateResponse:
         )
     # Two independent channels: an advisory is a valid setting MusicDrop
     # overrides, so it is computed from the same document but never merged into
-    # ``errors`` (the editor paints that list red).
+    # ``errors`` (the editor paints that list red). The containment row DOES
+    # belong in ``errors``: a document that would delete the library on the next
+    # Empty Trash is not a setting we merely override.
+    # ``getattr``, not the direct read every other route in this file does: this
+    # is the one config route that never needed a library, and two guard tests
+    # (test_origin_guard / test_host_guard) exercise it in a lifespan-less child
+    # process for exactly that reason. Production always has the handle — the
+    # lifespan sets it before the server accepts a request — so the empty branch
+    # is unreachable there. It fails OPEN only for the lint hint: the enforcing
+    # gate is ``config_editor.save``, which holds a real handle and refuses.
+    handle: LibraryHandle | None = getattr(request.app.state, "beets_library", None)
+    layout_errors = (
+        []
+        if handle is None
+        else directory_layout_errors(data, settings=_settings(request.app), handle=handle)
+    )
     return ValidateResponse(
-        errors=validate_known_keys(data),
+        errors=validate_known_keys(data) + layout_errors,
         advisories=import_advisories(data),
     )
 
@@ -145,10 +177,12 @@ def save_config(req: SaveRequest, request: Request) -> BeetsConfigSnapshot:
     Returns the freshly-built :class:`BeetsConfigSnapshot` (whose
     ``apply_pending`` will be ``True`` until the upcoming Apply endpoint
     reloads beets' globals). Error mapping lives entirely inside
-    :func:`save_config_op`: 422 on parse/schema, 409 on CAS mismatch.
+    :func:`save_config_op`: 422 on parse/schema/containment, 409 on CAS mismatch.
+    The settings are threaded in because the containment row needs them — a
+    ``directory:`` is only refusable relative to where Trash resolves.
     """
     handle: LibraryHandle = request.app.state.beets_library
-    return save_config_op(handle, req)
+    return save_config_op(handle, req, settings=_settings(request.app))
 
 
 @router.get("/config/naming")
@@ -199,6 +233,18 @@ def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSn
                 "A library job (an import, a lyrics backfill, an artist-art backfill, a"
                 " reorganize backfill, or a disk sync) is running, so the reload is refused"
                 " until it finishes."
+            ),
+        },
+        # Same structured body as the 500 and for the same reader: the page
+        # prints `detail.recovery` after "Apply failed. ". A 409 could not carry
+        # it — the frontend renders every Apply 409 as the library-job sentence.
+        422: {
+            "model": StructuredErrorDetail,
+            "description": (
+                "The config.yaml on disk declares a directory: that would put the"
+                " music library at or under the Trash directory, or over the Trash"
+                " origin store, so beets was NOT reloaded and the previously"
+                " loaded library is still serving."
             ),
         },
         500: {

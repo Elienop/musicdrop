@@ -42,6 +42,7 @@ from app.auth.session import load_or_create_session_secret, session_secret_path
 from app.bank.store import reconcile_interrupted
 from app.beets.library import LibraryHandle, close_library
 from app.beets.setup import setup_beets
+from app.beets.store_layout import StoreLayoutError, require_safe_store_layout
 from app.body_limit import BodySizeLimitMiddleware
 from app.config import resolve_artist_image_cache_dir, resolve_cover_thumb_cache_dir, settings
 from app.events.emit import emit_art_changed
@@ -109,6 +110,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # a handle — missing BEETSDIR / config.yaml are created from the starter —
     # so there is no "library disabled" branch in production.
     handle = _resolve_library()
+
+    # Before ANYTHING is attached or started: refuse to come up when Trash or
+    # the Trash origin store sits somewhere using it would destroy data (see
+    # app/beets/store_layout.py for the table and the reasoning). The check is
+    # here rather than inside a request path because all four inputs are settled
+    # exactly once — three come from the environment, and the fourth
+    # (``directory:``) only moves through Save/Apply, which run the same check.
+    # Logged through ``uvicorn.error`` for the reason the posture line below
+    # gives: under the Dockerfile CMD an app-namespace record never reaches the
+    # container's output at all. ERROR, not WARNING — the process does not come
+    # up, and the operator grepping for the reason after "Application startup
+    # failed" must find a line whose level says so.
+    try:
+        require_safe_store_layout(settings, handle)
+    except StoreLayoutError as exc:
+        logging.getLogger("uvicorn.error").error("refusing to start: %s", exc)
+        # Give back the SQLite connection ``_resolve_library`` just opened. The
+        # raise below skips the ``finally`` teardown further down (it has not
+        # been entered yet), so this is the only place that can.
+        close_library(handle.lib)
+        raise
+
     app.state.beets_library = handle
 
     # Settings + the swap lock back the Apply endpoint (Task 8). The lock

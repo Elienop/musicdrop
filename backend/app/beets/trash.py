@@ -862,6 +862,13 @@ def resolve_trash_dir(settings: Settings, handle: LibraryHandle) -> Path:
     Empty setting = default under the handle's already-absolute ``beets_dir``
     (sidesteps the cwd-relative gotcha). A configured override is resolved to
     absolute. Synchronous (pathlib I/O must not run on the event loop).
+
+    Resolving is all this does; WHERE the result may sit is
+    :mod:`app.beets.store_layout`'s question, enforced at startup and on every
+    Save/Apply, because ``trash_manage.empty_all`` ``rmtree``s every child of
+    whatever comes back. A Trash strictly inside the music library is allowed
+    (and makes deletes same-disk renames); one that is, or contains, the music
+    library or the beets data dir is refused.
     """
     if settings.trash_dir:
         return Path(settings.trash_dir).resolve()
@@ -876,6 +883,11 @@ def resolve_trash_origins_dir(settings: Settings, handle: LibraryHandle) -> Path
     the resolved ``trash_dir``: a configured Trash dir may point anywhere,
     including inside the music library, and a record reachable from ``/music`` is
     the whole thing this store exists to avoid.
+
+    That last sentence is enforced rather than merely intended:
+    :mod:`app.beets.store_layout` refuses a store at, above or inside the music
+    library, at or above the beets data dir, and one that overlaps ``trash_dir``
+    in either direction — at startup and on every Save/Apply.
     """
     if settings.trash_origins_dir:
         return Path(settings.trash_origins_dir).resolve()

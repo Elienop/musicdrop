@@ -125,16 +125,19 @@ def test_preexisting_richer_403_is_preserved() -> None:
     _assert_error_detail(post, "post", "/api/artists/image/fetch", "403")
 
 
-#: What a 422 arm may name. ``HTTPValidationError`` is FastAPI's own; the other
-#: three are the bodies routes really raise with - a sentence (``ErrorDetail``)
-#: or, for the two config-editor saves, a LIST of per-error rows whose own model
-#: says which shape (``app/models/errors.py``).
+#: What a 422 arm may name. ``HTTPValidationError`` is FastAPI's own; the others
+#: are the bodies routes really raise with - a sentence (``ErrorDetail``), for
+#: the two config-editor saves a LIST of per-error rows whose own model says
+#: which shape, or the ``{message, recovery}`` object ``POST /api/config/apply``
+#: answers with when the config on disk would move the music library under Trash
+#: (``app/models/errors.py``).
 _ALLOWED_422_ARMS = frozenset(
     {
         "HTTPValidationError",
         "ErrorDetail",
         "ConfigValidationErrorDetail",
         "NamingValidationErrorDetail",
+        "StructuredErrorDetail",
     }
 )
 
@@ -178,10 +181,25 @@ def test_422_entries_stay_fastapi_validation_and_are_never_invented() -> None:
             media = _as_dict(content.get("application/json"))
             arms = _schema_arms(_as_dict(media.get("schema")))
             # The validation shape is never traded away: a route may ADD its own
-            # body to the 422, never replace FastAPI's with it.
-            assert "HTTPValidationError" in arms, (
-                f"{method.upper()} {path} 422 no longer references HTTPValidationError: {arms!r}"
-            )
+            # body to the 422, never replace FastAPI's with it. "Never replace"
+            # can only bind where there is something to replace - FastAPI emits
+            # its 422 for operations with a body or parameters, and a bodyless,
+            # parameterless operation that declares its own 422 (today:
+            # POST /api/config/apply, refusing a config.yaml that would move the
+            # music library under Trash) has no generated arm to have traded.
+            # Asked of the SPEC, not of a name list, so a route that grows a body
+            # later is held to the stronger rule again automatically.
+            fastapi_generated_one = "requestBody" in operation or "parameters" in operation
+            if fastapi_generated_one:
+                assert "HTTPValidationError" in arms, (
+                    f"{method.upper()} {path} 422 no longer references"
+                    f" HTTPValidationError: {arms!r}"
+                )
+            else:
+                assert "HTTPValidationError" not in arms, (
+                    f"{method.upper()} {path} declares FastAPI's validation shape"
+                    f" but has nothing to validate: {arms!r}"
+                )
             assert set(arms) <= _ALLOWED_422_ARMS, (
                 f"{method.upper()} {path} 422 references an unexpected schema: {arms!r}"
             )

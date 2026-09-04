@@ -11,9 +11,10 @@ The default ``extra='ignore'`` on Pydantic (per Pydantic v2 docs § Models)
 is correct here: we never round-trip through the schema, only validate.
 Unknown beets/plugin keys live on disk in the ruamel ``CommentedMap``.
 
-Currently exports: ``parse_yaml``, ``validate_known_keys``, ``atomic_write``,
-``read_naming``, ``save``, ``save_naming``, and ``apply`` (asyncio-locked
-threadpool rebuild that swaps ``app.state.beets_library``).
+Currently exports: ``parse_yaml``, ``validate_known_keys``,
+``directory_layout_errors``, ``atomic_write``, ``read_naming``, ``save``,
+``save_naming``, and ``apply`` (asyncio-locked threadpool rebuild that swaps
+``app.state.beets_library``).
 
 Save writes the submitted document straight back to disk (the editor serves and
 edits the RAW ``config.yaml``): there is no secret-preserve merge — masking the
@@ -32,7 +33,7 @@ import shutil
 import threading
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Final, cast
 
 import beets
 from fastapi import FastAPI, HTTPException, Request
@@ -54,6 +55,7 @@ from app.beets.library import LibraryHandle
 # would defeat that patch and the 500 path would silently call the real
 # beets setup.
 from app.beets.setup import reset_beets_globals, setup_beets
+from app.beets.store_layout import StoreLayoutError, layout_error_for_music_dir
 from app.config import Settings
 from app.config import settings as _module_settings
 from app.library_busy import library_job_active
@@ -72,6 +74,7 @@ from app.models.config_editor import (
 __all__ = [
     "apply",
     "atomic_write",
+    "directory_layout_errors",
     "parse_yaml",
     "read_naming",
     "save",
@@ -205,6 +208,55 @@ def validate_known_keys(
         return out
 
 
+#: The ``type`` on the row a refused ``directory:`` produces. Not a Pydantic
+#: error type — nothing in ``KnownKeysSchema`` can express "this value is fine on
+#: its own but destroys data given where Trash resolves", so the check runs
+#: beside the schema rather than inside it.
+_STORE_LAYOUT_ERROR_TYPE: Final = "store_layout"
+
+
+def directory_layout_errors(
+    data: CommentedMap | dict[str, Any],
+    *,
+    settings: Settings,
+    handle: LibraryHandle,
+) -> list[ValidationErrorItem]:
+    """Zero or one row: the submitted ``directory:`` against where Trash resolves.
+
+    THE SINGLE SOURCE for both ``POST /api/config/validate`` and
+    :func:`save`, so the editor's gutter and the Save refusal can never disagree
+    about which documents are acceptable — the frontend disables Save while the
+    validate route reports any error, so a Save-only check would refuse a
+    document the gutter called clean.
+
+    Silent when ``directory:`` is missing or is not a string: ``KnownKeysSchema``
+    already requires it and reports that itself, and a second row about the same
+    key would just be noise. (beets would then fall back to its bundled
+    ``directory: ~/Music`` — a value the boot check covers on the next start.)
+
+    The ``isinstance`` on ``data`` is not defensive padding: ruamel returns
+    ``None`` for an empty document, and the annotation cannot say so because the
+    same value is what ``validate_known_keys`` is handed and reports on.
+    """
+    raw = data.get("directory") if isinstance(data, dict) else None
+    if not isinstance(raw, str):
+        return []
+    error = layout_error_for_music_dir(raw, settings=settings, handle=handle)
+    if error is None:
+        return []
+    root = data if isinstance(data, CommentedMap) else None
+    line, col = _line_col_for_path(root, ("directory",)) if root is not None else (None, None)
+    return [
+        ValidationErrorItem(
+            loc="directory",
+            msg=str(error),
+            type=_STORE_LAYOUT_ERROR_TYPE,
+            line=line,
+            column=col,
+        )
+    ]
+
+
 def _strip_yaml_directive(text: str) -> str:
     """Drop a leading ``%YAML 1.1`` directive line and its ``---`` document-start.
 
@@ -308,14 +360,19 @@ def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
 _SAVE_LOCK = threading.Lock()
 
 
-def save(handle: LibraryHandle, req: SaveRequest) -> BeetsConfigSnapshot:
+def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> BeetsConfigSnapshot:
     """Persist ``req.yaml_text`` to ``handle.config_path``, returning the new snapshot.
 
     Sequence (spec § "Layer 3 — Backend: Save flow"):
 
     1. **Parse** with ruamel — bad YAML -> HTTP 422 with ``problem_mark`` line/col.
     2. **Schema validate** via ``KnownKeysSchema`` — known-key errors -> 422 with
-       per-error ``ValidationErrorItem`` payloads.
+       per-error ``ValidationErrorItem`` payloads. Then the same
+       :func:`directory_layout_errors` row ``POST /api/config/validate`` paints
+       in the gutter: a ``directory:`` that would put the music library at or
+       under Trash (or over the origin store) is refused HERE, before the write,
+       because the file this writes is also the file the process boots from — a
+       config saved in that shape would refuse to start on the next restart.
     3. **SHA-256 CAS** — compare ``req.base_sha256`` to the SHA-256 of the
        on-disk bytes. Mismatch -> 409 with ``current_yaml_text`` (raw on-disk
        file) and ``current_sha256`` so the frontend's merge view can render
@@ -364,8 +421,13 @@ def save(handle: LibraryHandle, req: SaveRequest) -> BeetsConfigSnapshot:
             ],
         ) from exc
 
-    # 2. Schema validate.
-    errors = validate_known_keys(new_map)
+    # 2. Schema validate, then the containment check on ``directory:``. Same
+    # list, same 422: to the editor both are lint rows on the same document, and
+    # splitting them into two statuses would make the gutter and the Save button
+    # disagree about what "there is an error" means.
+    errors = validate_known_keys(new_map) + directory_layout_errors(
+        new_map, settings=settings, handle=handle
+    )
     if errors:
         raise HTTPException(
             status_code=422,
@@ -539,6 +601,11 @@ def save_naming(handle: LibraryHandle, req: SaveNamingRequest) -> BeetsConfigSna
        and secret is untouched.
     4. **Atomic write** + return the standard snapshot (``apply_pending`` True
        until Apply reloads beets).
+
+    No :func:`directory_layout_errors` step, unlike :func:`save`: step 3 rewrites
+    exactly two nodes and neither is ``directory:``, so the music root this
+    document resolves to is the same one before and after — a naming Save cannot
+    move ``M`` into a refused relationship with Trash or the origin store.
     """
     yaml = _yaml()
 
@@ -589,6 +656,29 @@ def save_naming(handle: LibraryHandle, req: SaveNamingRequest) -> BeetsConfigSna
         # 4. Atomic write + snapshot.
         atomic_write(handle.config_path, doc, yaml)
     return build_config_snapshot(handle)
+
+
+def on_disk_layout_error(handle: LibraryHandle, settings: Settings) -> StoreLayoutError | None:
+    """The refusal ``config.yaml`` AS IT SITS ON DISK would cause, or ``None``.
+
+    Apply's input is the file, not a request body, so a hand edit (or an editor
+    session from before a restart) can carry a ``directory:`` no Save ever saw.
+    Read fresh here rather than from the handle: ``handle.lib.directory`` is the
+    music root of the load being replaced.
+
+    Silent on an unreadable or unparseable file. That is not this check's
+    question — ``setup_beets`` will fail on the same file moments later and
+    :func:`apply` already answers 500 with the restart hint — and returning a
+    layout refusal for a YAML syntax error would name the wrong problem.
+    """
+    try:
+        doc = parse_yaml(handle.config_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, YAMLError):
+        return None
+    raw = doc.get("directory") if isinstance(doc, CommentedMap) else None
+    if not isinstance(raw, str):
+        return None
+    return layout_error_for_music_dir(raw, settings=settings, handle=handle)
 
 
 def _rebuild_beets_handle(old: LibraryHandle, beets_dir: str) -> LibraryHandle:
@@ -660,6 +750,18 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
        racing through ``reset_beets_globals`` + ``setup_beets`` would leave
        ``app.state.beets_library`` non-deterministic and could close the
        library twice (``sqlite3.ProgrammingError``).
+    2b. **Containment gate** — 422 if the ``directory:`` ON DISK would put the
+       music library at or under Trash, or over the origin store
+       (:func:`on_disk_layout_error`). Deliberately BEFORE
+       ``_rebuild_beets_handle``: that function's own docstring records that a
+       failure after its teardown leaves the process degraded until restart, and
+       a config in this shape would not boot either — so refusing after the
+       teardown would strand the process with no working config to fall back to.
+       422 and not 409: the frontend renders every Apply 409 as the fixed
+       sentence "A library job is running…" (SettingsBeetsPage.tsx), and this
+       refusal has to carry its own reason. The body is the same
+       ``{message, recovery}`` shape the 500 uses, with the operator sentence in
+       ``recovery`` — that is the field the page prints after "Apply failed. ".
     3. **Threadpool rebuild** — beets setup is blocking I/O (filesystem +
        SQLite); ``run_in_threadpool`` hands it to FastAPI's worker pool so
        the event loop stays responsive. Any exception from the rebuild
@@ -691,6 +793,15 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
     async with _swap_lock(app):
         old: LibraryHandle = app.state.beets_library
         settings = _settings(app)
+        layout_error = await run_in_threadpool(on_disk_layout_error, old, settings)
+        if layout_error is not None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Apply refused: config.yaml would move the music library",
+                    "recovery": str(layout_error),
+                },
+            )
         try:
             new = await run_in_threadpool(_rebuild_beets_handle, old, settings.beets_dir)
         except Exception as exc:

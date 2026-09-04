@@ -1,0 +1,392 @@
+"""The containment rule: where Trash and the Trash origin store may sit.
+
+One test per refused relationship and one per allowed one, because the two
+halves prove different things. The refusals are the guard; the allowances are
+the controls that keep it from degenerating into "refuse everything" — and two
+of them (a Trash inside the music library, a Trash under the beets dir) are
+respectively the owner's ruling and the SHIPPED DEFAULT, so a guard that took
+either would break every install.
+
+Pure path arithmetic apart from ``test_a_symlinked_music_root_...``, which needs
+real directories because the whole question there is what ``resolve()`` does.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from app.beets.store_layout import (
+    MUSIC_SETTING,
+    ORIGINS_SETTING,
+    TRASH_SETTING,
+    StoreLayoutError,
+    check_store_layout,
+    resolve_configured_music_dir,
+)
+
+
+def _check(*, music: Path, beets: Path, trash: Path, origins: Path) -> None:
+    check_store_layout(music_dir=music, beets_dir=beets, trash_dir=trash, origins_dir=origins)
+
+
+# --------------------------------------------------------------------------
+# REFUSED — one test per relationship in the rule table.
+# --------------------------------------------------------------------------
+
+
+def test_trash_equal_to_the_music_dir_is_refused(tmp_path: Path) -> None:
+    """The typo the whole slice exists for: ``MUSICDROP_TRASH_DIR=/music``.
+
+    ``trash_manage.empty_all`` rmtrees every child of what ``resolve_trash_dir``
+    returns, so Empty Trash on this layout removes every artist folder.
+    """
+    music = tmp_path / "music"
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=music,
+            beets=tmp_path / "data",
+            trash=music,
+            origins=tmp_path / "data" / "trash-origins",
+        )
+    assert "The Trash directory is the music library" in str(exc.value)
+
+
+def test_trash_containing_the_music_dir_is_refused(tmp_path: Path) -> None:
+    """One level worse than the case above: ``/music`` under ``MUSICDROP_TRASH_DIR=/``
+    parent — Empty Trash removes the music dir itself, not just its contents."""
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=tmp_path / "vol" / "music",
+            beets=tmp_path / "data",
+            trash=tmp_path / "vol",
+            origins=tmp_path / "data" / "trash-origins",
+        )
+    assert "The Trash directory contains the music library" in str(exc.value)
+
+
+def test_trash_equal_to_the_beets_dir_is_refused(tmp_path: Path) -> None:
+    beets = tmp_path / "data"
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=tmp_path / "music",
+            beets=beets,
+            trash=beets,
+            origins=tmp_path / "records",
+        )
+    assert "The Trash directory is the beets data directory" in str(exc.value)
+    assert "library.db, config.yaml" in str(exc.value)
+
+
+def test_trash_containing_the_beets_dir_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=tmp_path / "music",
+            beets=tmp_path / "vol" / "data",
+            trash=tmp_path / "vol",
+            origins=tmp_path / "records",
+        )
+    assert "The Trash directory contains the beets data directory" in str(exc.value)
+
+
+def test_origin_store_equal_to_the_music_dir_is_refused(tmp_path: Path) -> None:
+    """``clear_trash_origins`` unlinks every ``*.json`` directly in the store."""
+    music = tmp_path / "music"
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=music,
+            beets=tmp_path / "data",
+            trash=tmp_path / "data" / "trash",
+            origins=music,
+        )
+    assert "The Trash origin store is the music library" in str(exc.value)
+
+
+def test_origin_store_containing_the_music_dir_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=tmp_path / "vol" / "music",
+            beets=tmp_path / "data",
+            trash=tmp_path / "data" / "trash",
+            origins=tmp_path / "vol",
+        )
+    assert "The Trash origin store contains the music library" in str(exc.value)
+
+
+def test_origin_store_inside_the_music_dir_is_refused(tmp_path: Path) -> None:
+    """The direction Trash is ALLOWED in and the store is not.
+
+    ``app/config.py`` has said "one NOT under the music library" since the store
+    was split out; this is what makes that sentence enforced rather than
+    advisory. A whole-folder delete of any folder above the store takes the
+    records into Trash with it.
+    """
+    music = tmp_path / "music"
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=music,
+            beets=tmp_path / "data",
+            trash=music / ".trash",
+            origins=music / ".trash-origins",
+        )
+    assert "The music library contains the Trash origin store" in str(exc.value)
+
+
+def test_origin_store_equal_to_the_beets_dir_is_refused(tmp_path: Path) -> None:
+    beets = tmp_path / "data"
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=tmp_path / "music",
+            beets=beets,
+            trash=beets / "trash",
+            origins=beets,
+        )
+    assert "The Trash origin store is the beets data directory" in str(exc.value)
+
+
+def test_origin_store_containing_the_beets_dir_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=tmp_path / "music",
+            beets=tmp_path / "vol" / "data",
+            trash=tmp_path / "vol" / "data" / "trash",
+            origins=tmp_path / "vol",
+        )
+    assert "The Trash origin store contains the beets data directory" in str(exc.value)
+
+
+def test_origin_store_equal_to_trash_is_refused(tmp_path: Path) -> None:
+    """Records in the entry namespace: each one would list as a trashed album."""
+    trash = tmp_path / "data" / "trash"
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=tmp_path / "music",
+            beets=tmp_path / "data",
+            trash=trash,
+            origins=trash,
+        )
+    assert "The Trash directory is the Trash origin store" in str(exc.value)
+
+
+def test_origin_store_inside_trash_is_refused(tmp_path: Path) -> None:
+    trash = tmp_path / "data" / "trash"
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=tmp_path / "music",
+            beets=tmp_path / "data",
+            trash=trash,
+            origins=trash / "origins",
+        )
+    assert "The Trash directory contains the Trash origin store" in str(exc.value)
+
+
+def test_trash_inside_the_origin_store_is_refused(tmp_path: Path) -> None:
+    origins = tmp_path / "data" / "records"
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=tmp_path / "music",
+            beets=tmp_path / "data",
+            trash=origins / "trash",
+            origins=origins,
+        )
+    assert "The Trash origin store contains the Trash directory" in str(exc.value)
+
+
+# --------------------------------------------------------------------------
+# ALLOWED — the controls. Each is a layout somebody runs.
+# --------------------------------------------------------------------------
+
+
+def test_trash_strictly_inside_the_music_dir_is_allowed(tmp_path: Path) -> None:
+    """The owner's ruling, 2026-09-04: a Trash INSIDE the library is fine.
+
+    It is the reason to set the var at all — ``<music>/.trash`` makes a delete a
+    same-disk rename instead of a cross-device copy.
+    """
+    music = tmp_path / "music"
+    _check(
+        music=music,
+        beets=tmp_path / "data",
+        trash=music / ".trash",
+        origins=tmp_path / "data" / "trash-origins",
+    )
+
+
+def test_the_shipped_default_layout_is_allowed(tmp_path: Path) -> None:
+    """``<B>/trash`` + ``<B>/trash-origins``, siblings under the beets dir.
+
+    Both defaults at once, because a guard that refused this would fail every
+    install on the next restart — and the two names are one string-prefix bug
+    apart (``/data/trash`` vs ``/data/trash-origins``).
+    """
+    beets = tmp_path / "data"
+    _check(
+        music=tmp_path / "music",
+        beets=beets,
+        trash=beets / "trash",
+        origins=beets / "trash-origins",
+    )
+
+
+def test_a_beets_dir_inside_the_music_library_is_allowed(tmp_path: Path) -> None:
+    """B inside M is not itself a refusal — the ORIGIN STORE is what must move.
+
+    Consequence worth stating: with B inside M the DEFAULT store
+    (``<B>/trash-origins``) is inside the library and IS refused, so this layout
+    obliges the operator to set ``MUSICDROP_TRASH_ORIGINS_DIR`` outside. The
+    sweep half of the same shape is
+    ``test_orphans.py::test_a_beets_dir_inside_the_library_is_never_reported``.
+    """
+    music = tmp_path / "music"
+    beets = music / "musicdrop"
+    _check(
+        music=music,
+        beets=beets,
+        trash=beets / "trash",
+        origins=tmp_path / "records",
+    )
+
+
+def test_disjoint_directories_are_allowed(tmp_path: Path) -> None:
+    """Four unrelated trees — the layout the shipped image has (/music, /data)."""
+    _check(
+        music=tmp_path / "music",
+        beets=tmp_path / "data",
+        trash=tmp_path / "bin",
+        origins=tmp_path / "records",
+    )
+
+
+def test_a_symlinked_music_root_counts_as_inside(tmp_path: Path) -> None:
+    """``/music -> /mnt/tank/music`` with Trash spelled on the REAL path.
+
+    ``_music_dir`` normalises but does not resolve symlinks, so without
+    resolving both sides these two compare as unrelated trees and the layout
+    reads as "disjoint" instead of "Trash inside the library". Allowed either
+    way — the point is that it is allowed for the RIGHT reason, which the
+    refusing twin below is what proves.
+    """
+    real = tmp_path / "tank" / "music"
+    real.mkdir(parents=True)
+    (real / ".trash").mkdir()
+    link = tmp_path / "music"
+    link.symlink_to(real)
+
+    _check(
+        music=link,
+        beets=tmp_path / "data",
+        trash=real / ".trash",
+        origins=tmp_path / "records",
+    )
+
+
+def test_a_symlinked_music_root_is_still_refused_when_trash_is_the_real_dir(
+    tmp_path: Path,
+) -> None:
+    """The twin that makes the test above mean something.
+
+    Same symlink, but Trash points at the REAL directory the link targets.
+    Compared lexically the two strings are unrelated and this passes; compared
+    resolved they are the same directory and Empty Trash would delete the
+    library.
+    """
+    real = tmp_path / "tank" / "music"
+    real.mkdir(parents=True)
+    link = tmp_path / "music"
+    link.symlink_to(real)
+
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=link,
+            beets=tmp_path / "data",
+            trash=real,
+            origins=tmp_path / "records",
+        )
+    assert "The Trash directory is the music library" in str(exc.value)
+
+
+def test_a_dotdot_spelling_is_normalised_before_comparing(tmp_path: Path) -> None:
+    """``is_relative_to`` is lexical, which ``resolve_trash_child`` documents too.
+
+    ``<music>/../music`` is the music dir; without ``resolve()`` it is a
+    different string and the equality check misses it.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    with pytest.raises(StoreLayoutError):
+        _check(
+            music=music,
+            beets=tmp_path / "data",
+            trash=music / ".." / "music",
+            origins=tmp_path / "records",
+        )
+
+
+# --------------------------------------------------------------------------
+# The message, and how a candidate ``directory:`` is resolved.
+# --------------------------------------------------------------------------
+
+
+def test_the_message_names_the_setting_both_paths_the_loss_and_the_fix(
+    tmp_path: Path,
+) -> None:
+    """Four things an operator reading ``docker logs`` needs, in one line.
+
+    Asserted as four separate substrings rather than one golden string: the
+    wording is meant to be edited, the four ingredients are not.
+    """
+    music = tmp_path / "music"
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=music,
+            beets=tmp_path / "data",
+            trash=music,
+            origins=tmp_path / "records",
+        )
+    message = str(exc.value)
+    assert TRASH_SETTING in message  # which setting is wrong
+    assert MUSIC_SETTING in message  # ...and what it was compared against
+    assert str(music) in message  # both resolved paths, so no guessing
+    assert "would delete the music library" in message  # what it would have cost
+    assert str(music / ".trash") in message  # a spelling that WOULD work
+
+
+def test_the_origin_store_message_names_its_own_setting(tmp_path: Path) -> None:
+    """The trash message must not be reused for the store: different var, different fix."""
+    music = tmp_path / "music"
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=music,
+            beets=tmp_path / "data",
+            trash=tmp_path / "data" / "trash",
+            origins=music / "records",
+        )
+    message = str(exc.value)
+    assert ORIGINS_SETTING in message
+    assert str(tmp_path / "data" / "trash-origins") in message  # the default, as the fix
+
+
+def test_a_relative_directory_resolves_against_the_beets_dir_not_the_cwd(
+    tmp_path: Path,
+) -> None:
+    """confuse joins a relative ``directory:`` to ``config_dir()`` = ``BEETSDIR``.
+
+    (``confuse/templates.py``, ``Filename.value``: expanduser, then — with the
+    default ``in_source_dir=False`` and no ``base_for_paths`` on beets' source —
+    ``os.path.join(view.root().config_dir(), path_str)``, then ``abspath``. The
+    starter config says the same in its own words: "Paths are relative to this
+    file's directory", shipping ``directory: ../music``.)
+
+    Resolving against the CWD instead would compare the WRONG directory against
+    Trash, which is the whole reason this helper is not ``Path(raw).resolve()``.
+    """
+    beets = tmp_path / "data" / "beets"
+    beets.mkdir(parents=True)
+    assert resolve_configured_music_dir("../music", beets) == (tmp_path / "data" / "music")
+    assert resolve_configured_music_dir("inner", beets) == (beets / "inner")
+
+
+def test_an_absolute_directory_ignores_the_beets_dir(tmp_path: Path) -> None:
+    absolute = tmp_path / "elsewhere" / "music"
+    assert resolve_configured_music_dir(str(absolute), tmp_path / "data") == absolute

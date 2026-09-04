@@ -20,7 +20,12 @@ def test_validate_returns_empty_on_starter(client: TestClient) -> None:
 
 
 def test_validate_returns_errors_on_invalid_bool(client: TestClient) -> None:
-    text = "directory: /tmp\nlibrary: /tmp/x\nimport:\n  copy: maybe\n"
+    # ``/tmp/music`` rather than a bare ``/tmp``: the fixture's beets dir is a
+    # pytest tmp path UNDER /tmp, so ``directory: /tmp`` really would put the
+    # Trash origin store inside the music library and earn a second error row
+    # (app/beets/store_layout.py). Every throwaway value in this file is one
+    # level down for that reason.
+    text = "directory: /tmp/music\nlibrary: /tmp/x\nimport:\n  copy: maybe\n"
     r = client.post("/api/config/validate", json={"yaml_text": text})
     assert r.status_code == 200
     errors = r.json()["errors"]
@@ -74,7 +79,9 @@ def test_validate_surfaces_advisories_through_the_api(client: TestClient) -> Non
     Rule-level coverage lives in ``test_config_advisories.py``; this pins that
     the field is actually serialised onto the 200 body the editor reads.
     """
-    text = "directory: /tmp\nlibrary: /tmp/x\nimport:\n  autotag: no\n  duplicate_action: skip\n"
+    text = (
+        "directory: /tmp/music\nlibrary: /tmp/x\nimport:\n  autotag: no\n  duplicate_action: skip\n"
+    )
     r = client.post("/api/config/validate", json={"yaml_text": text})
     assert r.status_code == 200
     advisories = r.json()["advisories"]
@@ -89,7 +96,9 @@ def test_validate_advisory_only_config_is_still_valid(client: TestClient) -> Non
     on is valid — so a config whose only problem is an inert key must come back
     with an empty ``errors`` list.
     """
-    text = "directory: /tmp\nlibrary: /tmp/x\nimport:\n  singletons: yes\n  incremental: yes\n"
+    text = (
+        "directory: /tmp/music\nlibrary: /tmp/x\nimport:\n  singletons: yes\n  incremental: yes\n"
+    )
     r = client.post("/api/config/validate", json={"yaml_text": text})
     assert r.status_code == 200
     body = r.json()
@@ -125,7 +134,7 @@ def test_validate_openapi_declares_advisories_as_required(client: TestClient) ->
 def test_validate_returns_all_distinct_schema_errors(client: TestClient) -> None:
     """One YAML body with TWO known-key errors must surface both, not just the first."""
     text = (
-        "directory: /tmp\nlibrary: /tmp/x\n"
+        "directory: /tmp/music\nlibrary: /tmp/x\n"
         "import:\n  copy: maybe\n"
         "match:\n  strong_rec_thresh: 5.0\n"
     )

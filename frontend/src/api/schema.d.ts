@@ -1001,6 +1001,13 @@ export interface paths {
          * Validate Config
          * @description Cheap lint pass — never writes. Returns 200 even on errors so the
          *     CodeMirror async lint source can display them inline.
+         *
+         *     Takes ``request`` for the settings + live handle the containment check needs:
+         *     whether a ``directory:`` is acceptable is not a property of the document
+         *     alone, it depends on where ``MUSICDROP_TRASH_DIR`` /
+         *     ``MUSICDROP_TRASH_ORIGINS_DIR`` / ``MUSICDROP_BEETS_DIR`` resolve. Same
+         *     helper ``config_editor.save`` calls, so the gutter and the Save refusal
+         *     cannot disagree.
          */
         post: operations["validate_config_api_config_validate_post"];
         delete?: never;
@@ -1025,7 +1032,9 @@ export interface paths {
          *     Returns the freshly-built :class:`BeetsConfigSnapshot` (whose
          *     ``apply_pending`` will be ``True`` until the upcoming Apply endpoint
          *     reloads beets' globals). Error mapping lives entirely inside
-         *     :func:`save_config_op`: 422 on parse/schema, 409 on CAS mismatch.
+         *     :func:`save_config_op`: 422 on parse/schema/containment, 409 on CAS mismatch.
+         *     The settings are threaded in because the containment row needs them — a
+         *     ``directory:`` is only refusable relative to where Trash resolves.
          */
         post: operations["save_config_api_config_save_post"];
         delete?: never;
@@ -8737,7 +8746,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The submitted YAML did not parse, or a key MusicDrop models has the wrong shape; the body lists one item per problem, with the 1-based line and 0-based column to mark where there is one. A malformed request body answers with FastAPI's validation shape instead. */
+            /** @description The submitted YAML did not parse, a key MusicDrop models has the wrong shape, or the submitted directory: would put the music library at or under the Trash directory (or over the Trash origin store); the body lists one item per problem, with the 1-based line and 0-based column to mark where there is one. A malformed request body answers with FastAPI's validation shape instead. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -9009,6 +9018,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The config.yaml on disk declares a directory: that would put the music library at or under the Trash directory, or over the Trash origin store, so beets was NOT reloaded and the previously loaded library is still serving. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
             /** @description The library rebuild failed during apply, but the saved config is safe on disk and will load on the next start. */

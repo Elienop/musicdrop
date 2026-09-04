@@ -69,7 +69,10 @@ def test_save_422_on_invalid_yaml(client: TestClient) -> None:
 
 def test_save_422_on_schema_error(client: TestClient) -> None:
     sha = _cas(client)
-    text = "directory: /tmp\nlibrary: /tmp/x\nimport:\n  copy: maybe\n"
+    # Not a bare ``/tmp``: the fixture's beets dir sits under it, so that value
+    # would also trip the containment row (app/beets/store_layout.py) and this
+    # test would pass while asking a different question.
+    text = "directory: /tmp/music\nlibrary: /tmp/x\nimport:\n  copy: maybe\n"
     r = client.post(
         "/api/config/save",
         json={
