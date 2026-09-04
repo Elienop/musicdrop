@@ -114,6 +114,56 @@ def test_export_dir_names_what_export_dir_for_names(
     assert export_dir(settings, music) == export_dir_for(_Lib())
 
 
+def test_every_directory_the_rule_is_about_joins_the_set(tmp_path: Path) -> None:
+    """The membership list itself, one row at a time.
+
+    Without this, dropping any single entry from ``protected_trees`` leaves the
+    suite green — measured: removing the playlist-exports row survived the whole
+    file. ``trash`` is asserted beside them because ``empty_all`` fstat-compares
+    against it and a ``None`` there turns that compare off.
+    """
+    dirs = {
+        name: tmp_path / name.replace(" ", "-")
+        for name in (
+            "the music library",
+            "the beets data directory",
+            "the Trash directory",
+            "the Trash origin store",
+            "the beets database's folder",
+            "the playlist exports",
+            "the import bank",
+            "the Plex settings store",
+            "the slskd settings store",
+            "the playlist store",
+            "the inbox",
+        )
+    }
+    for path in dirs.values():
+        path.mkdir()
+    trees = protected_trees(
+        settings=Settings(
+            playlists_export_dir=str(dirs["the playlist exports"]),
+            bank_dir=str(dirs["the import bank"]),
+            plex_settings_dir=str(dirs["the Plex settings store"]),
+            slskd_settings_dir=str(dirs["the slskd settings store"]),
+            playlists_dir=str(dirs["the playlist store"]),
+            inbox_dir=str(dirs["the inbox"]),
+        ),
+        music_dir=dirs["the music library"],
+        beets_dir=dirs["the beets data directory"],
+        trash_dir=dirs["the Trash directory"],
+        origins_dir=dirs["the Trash origin store"],
+        library_path=dirs["the beets database's folder"] / "library.db",
+    )
+
+    assert {name for name, _setting in trees.ids.values()} == set(dirs)
+    for name, path in dirs.items():
+        st = os.stat(path)
+        assert trees.ids[(st.st_dev, st.st_ino)][0] == name
+    trash_st = os.stat(dirs["the Trash directory"])
+    assert trees.trash == (trash_st.st_dev, trash_st.st_ino)
+
+
 def test_a_path_that_is_not_there_yet_has_no_identity(tmp_path: Path) -> None:
     """An uncreated store drops out rather than matching everything.
 
