@@ -450,8 +450,16 @@ def test_an_ancestor_of_an_ignored_dir_is_not_reported(tmp_path: Path) -> None:
     assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=(exports,)) == []
 
 
-def test_a_genuine_husk_beside_an_ignored_dir_is_still_reported(tmp_path: Path) -> None:
+def test_a_husk_under_an_audio_BEARING_ancestor_is_reported_beside_an_ignored_dir(
+    tmp_path: Path,
+) -> None:
     """The control: the guard spares ancestors, not the whole sweep.
+
+    The qualifier in the name is the whole of it. This husk's ancestor holds
+    audio somewhere beneath it (``Real/Album/01.flac``), so the husk is not part
+    of an audio-empty run and the ancestor drop does not reach it. A husk whose
+    ancestors hold no audio at all is a different answer — see
+    ``test_a_husk_under_an_audio_free_ancestor_of_an_ignored_dir_is_kept``.
 
     Same run as the spared ancestor, so a drop that returned ``[]`` for
     everything would fail here instead of passing the test above for free.
@@ -467,6 +475,54 @@ def test_a_genuine_husk_beside_an_ignored_dir_is_still_reported(tmp_path: Path) 
     assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=(exports,)) == [
         root / "Real" / "Old Album"
     ]
+
+
+def test_a_husk_directly_under_the_music_root_is_reported_beside_an_ignored_dir(
+    tmp_path: Path,
+) -> None:
+    """The second reported case: the husk's parent IS the root.
+
+    The root is never a candidate, so the audio-empty run cannot start above the
+    husk and there is nothing for the ancestor drop to remove. Named separately
+    from the audio-bearing case because the two are reported for different
+    reasons and a change could break one without the other.
+    """
+    root = tmp_path / "music"
+    _touch(root / "Real" / "Album" / "01.flac")
+    _touch(root / "Old Artist" / "poster.jpg")  # husk directly under the root
+    exports = root / "data" / "exports"
+    _touch(exports / "p1.m3u8")
+    _touch(root / "data" / "notes.txt")
+    trash = tmp_path / "trash"
+
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=(exports,)) == [
+        root / "Old Artist"
+    ]
+
+
+def test_a_husk_under_an_audio_free_ancestor_of_an_ignored_dir_is_kept(tmp_path: Path) -> None:
+    """The RESIDUAL, pinned rather than fixed: this husk is not reported.
+
+    ``data`` holds no audio anywhere beneath it, so the sweep's candidate is
+    ``data`` — the top of the audio-empty run — and ``data`` is an ancestor of
+    the excluded ``data/exports``, so the drop removes it. Nothing below is
+    re-selected, so ``data/Old Album`` goes unreported even though it is a
+    genuine husk.
+
+    Err toward keeping is the module's stated posture and the reason this is a
+    pin and not a bug: a husk left alone is a folder somebody deletes by hand,
+    where the other direction moves an excluded dir into Trash with its whole
+    subtree. The pin exists so a later change that starts reporting
+    ``data/Old Album`` is a decision rather than an accident.
+    """
+    root = tmp_path / "music"
+    _touch(root / "Real" / "Album" / "01.flac")
+    exports = root / "data" / "exports"
+    _touch(exports / "p1.m3u8")
+    _touch(root / "data" / "Old Album" / "cover.jpg")  # a genuine husk, and it is KEPT
+    trash = tmp_path / "trash"
+
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=(exports,)) == []
 
 
 def test_a_deeper_ignored_dir_does_not_push_the_report_one_level_up(tmp_path: Path) -> None:

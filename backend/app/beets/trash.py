@@ -884,10 +884,14 @@ def resolve_trash_origins_dir(settings: Settings, handle: LibraryHandle) -> Path
     including inside the music library, and a record reachable from ``/music`` is
     the whole thing this store exists to avoid.
 
-    That last sentence is enforced rather than merely intended:
-    :mod:`app.beets.store_layout` refuses a store at, above or inside the music
-    library, at or above the beets data dir, and one that overlaps ``trash_dir``
-    in either direction — at startup and on every Save/Apply.
+    :mod:`app.beets.store_layout` is what holds that to it. It refuses a store
+    at, above or inside the music library, at or above the beets data dir, and
+    one that overlaps ``trash_dir`` in either direction. Where it is asked: at
+    startup, on Validate/Save/Apply, and — because this function calls
+    ``Path.resolve()`` on every call, so what the configured string points at can
+    change under a running process — at each destructive use site, through
+    :func:`app.beets.store_layout.checked_store_dirs`. What is left uncovered is
+    the interval between that check and the syscall beside it.
     """
     if settings.trash_origins_dir:
         return Path(settings.trash_origins_dir).resolve()

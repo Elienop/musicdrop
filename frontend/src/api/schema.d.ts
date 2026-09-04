@@ -999,15 +999,8 @@ export interface paths {
         put?: never;
         /**
          * Validate Config
-         * @description Cheap lint pass — never writes. Returns 200 even on errors so the
-         *     CodeMirror async lint source can display them inline.
-         *
-         *     Takes ``request`` for the settings + live handle the containment check needs:
-         *     whether a ``directory:`` is acceptable is not a property of the document
-         *     alone, it depends on where ``MUSICDROP_TRASH_DIR`` /
-         *     ``MUSICDROP_TRASH_ORIGINS_DIR`` / ``MUSICDROP_BEETS_DIR`` resolve. Same
-         *     helper ``config_editor.save`` calls, so the gutter and the Save refusal
-         *     cannot disagree.
+         * @description Read-only lint pass. Returns 200 even on errors so the CodeMirror async
+         *     lint source can display them inline.
          */
         post: operations["validate_config_api_config_validate_post"];
         delete?: never;
@@ -1029,12 +1022,9 @@ export interface paths {
          * Save Config
          * @description Persist the user-submitted YAML to disk after CAS + schema checks.
          *
-         *     Returns the freshly-built :class:`BeetsConfigSnapshot` (whose
-         *     ``apply_pending`` will be ``True`` until the upcoming Apply endpoint
-         *     reloads beets' globals). Error mapping lives entirely inside
-         *     :func:`save_config_op`: 422 on parse/schema/containment, 409 on CAS mismatch.
-         *     The settings are threaded in because the containment row needs them — a
-         *     ``directory:`` is only refusable relative to where Trash resolves.
+         *     Returns the freshly-built :class:`BeetsConfigSnapshot`, whose
+         *     ``apply_pending`` is ``True`` until Apply reloads beets' globals. 422 on a
+         *     parse, schema or store-layout failure; 409 on a CAS mismatch.
          */
         post: operations["save_config_api_config_save_post"];
         delete?: never;

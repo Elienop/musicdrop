@@ -148,7 +148,11 @@ def _unresolvable(setting: str, raw: str, exc: Exception) -> StoreLayoutError:
 
 
 def _resolved(path: Path, setting: str) -> Path:
-    """Absolute, symlink-free, ``..``-free — the only form this module compares."""
+    """Absolute, symlink-free, ``..``-free — the form this module compares.
+
+    Every path entering :func:`check_store_layout` goes through here, so a call
+    site cannot hold one side of a comparison in a lexical spelling.
+    """
     try:
         return Path(os.path.expanduser(str(path))).resolve()
     except _UNRESOLVABLE as exc:

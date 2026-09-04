@@ -61,9 +61,13 @@ class Settings(BaseSettings):
     # A value INSIDE the music library is allowed and is the reason to set this
     # at all: <music>/.trash makes a delete a same-disk rename instead of a
     # cross-device copy. A value that IS the music library or the beets data dir,
-    # or that CONTAINS either, is refused at startup — Empty Trash rmtrees every
-    # child of whatever this resolves to. app/beets/store_layout.py holds the
-    # full table and raises with the sentence the operator reads.
+    # or that CONTAINS either, is refused — Empty Trash rmtrees every child of
+    # whatever this resolves to. Refused at startup AND at each destructive use
+    # site, because the string is fixed for the process lifetime and what it
+    # resolves to is not: a symlink dropped at this path after boot was measured
+    # to turn Empty Trash into an rmtree of the library.
+    # app/beets/store_layout.py holds the full table and raises with the sentence
+    # the operator reads.
     trash_dir: str = ""
 
     # Where each trashed folder's origin record is kept — one JSON file per Trash
@@ -74,9 +78,10 @@ class Settings(BaseSettings):
     # time from the live library handle (already absolute), like trash_dir. Set
     # an absolute path to override — one NOT under the music library, because a
     # whole-folder delete of any folder above the store moves the records into
-    # Trash with it. Startup refuses the store at, above or inside the music
-    # library, at or above the beets data dir, and overlapping trash_dir either
-    # way (app/beets/store_layout.py).
+    # Trash with it. The store is refused at, above or inside the music library,
+    # at or above the beets data dir, and overlapping trash_dir either way — at
+    # startup and at each destructive use site, like trash_dir
+    # (app/beets/store_layout.py).
     # (env MUSICDROP_TRASH_ORIGINS_DIR)
     trash_origins_dir: str = ""
 

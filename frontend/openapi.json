@@ -4254,7 +4254,7 @@
           "config"
         ],
         "summary": "Validate Config",
-        "description": "Cheap lint pass \u2014 never writes. Returns 200 even on errors so the\nCodeMirror async lint source can display them inline.\n\nTakes ``request`` for the settings + live handle the containment check needs:\nwhether a ``directory:`` is acceptable is not a property of the document\nalone, it depends on where ``MUSICDROP_TRASH_DIR`` /\n``MUSICDROP_TRASH_ORIGINS_DIR`` / ``MUSICDROP_BEETS_DIR`` resolve. Same\nhelper ``config_editor.save`` calls, so the gutter and the Save refusal\ncannot disagree.",
+        "description": "Read-only lint pass. Returns 200 even on errors so the CodeMirror async\nlint source can display them inline.",
         "operationId": "validate_config_api_config_validate_post",
         "requestBody": {
           "content": {
@@ -4336,7 +4336,7 @@
           "config"
         ],
         "summary": "Save Config",
-        "description": "Persist the user-submitted YAML to disk after CAS + schema checks.\n\nReturns the freshly-built :class:`BeetsConfigSnapshot` (whose\n``apply_pending`` will be ``True`` until the upcoming Apply endpoint\nreloads beets' globals). Error mapping lives entirely inside\n:func:`save_config_op`: 422 on parse/schema/containment, 409 on CAS mismatch.\nThe settings are threaded in because the containment row needs them \u2014 a\n``directory:`` is only refusable relative to where Trash resolves.",
+        "description": "Persist the user-submitted YAML to disk after CAS + schema checks.\n\nReturns the freshly-built :class:`BeetsConfigSnapshot`, whose\n``apply_pending`` is ``True`` until Apply reloads beets' globals. 422 on a\nparse, schema or store-layout failure; 409 on a CAS mismatch.",
         "operationId": "save_config_api_config_save_post",
         "requestBody": {
           "content": {

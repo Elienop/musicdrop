@@ -1047,8 +1047,13 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `fix/trash-root-containment`** (the PR number and squash sha go here after merge).
   One predicate in a new `app/beets/store_layout.py`, run at startup (refuse to boot,
   one `ERROR` line through `uvicorn.error` naming the setting, both resolved paths, the
-  loss and the fix), on Save + Validate as a `directory:` lint row, and on Apply before
-  the handle is torn down.
+  loss and the fix), on Save + Validate as a lint row against the offending key, on Apply
+  before the handle is torn down and again on the handle beets actually built, and at
+  every destructive use site — the four Trash routes, both delete ops, both duplicates
+  ops, the two Reorganize routes and the runner's orphan sweep. The use-site check is not
+  belt-and-braces: the configured STRING is fixed for the process lifetime and what it
+  resolves to is not, and a symlink dropped at the Trash path after a clean boot was
+  measured to make `DELETE /api/trash/all` answer 200 with the music library gone.
   **The fix shape recorded below was half wrong, and the half matters.** It read "refuse
   at startup when trash resolves inside or equal to the music dir or the beets dir" —
   but the DEFAULT Trash *is* inside the beets dir (`<beets_dir>/trash`), so that rule
@@ -1057,7 +1062,16 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   at all (`/music/.trash` makes a delete a same-disk rename). What is refused is Trash
   that IS, or CONTAINS, the music dir or the beets dir — plus the origin store anywhere
   under the music library, and the two stores overlapping each other in either
-  direction. Original text below.
+  direction.
+  **Two more pairs were added after the review round**, both set in `config.yaml` rather
+  than by env var: `MUSICDROP_BEETS_DIR` and `directory:` may not nest in EITHER direction
+  (the owner's decision — a beets dir inside the library exposes bank/, plex/, slskd/,
+  playlists/ and inbox/ to the sweep, and one above it makes every app-owned exclusion an
+  ancestor of the walk root), and `library:` may not sit in the Trash or in the origin
+  store (measured: `library:` under the Trash dir passed, and Empty Trash deleted
+  `library.db`). The editor gates resolve both keys through beets' own config class, so an
+  `include:` file that overrides `directory:` is refused with the value it would actually
+  load rather than the one the top-level key shows. Original text below.
   (Found 2026-08-28.)
   `resolve_trash_dir` returns `Path(settings.trash_dir).resolve()` with no containment
   check (`app/beets/trash.py`), and `empty_all` then `shutil.rmtree`s every child
@@ -1078,9 +1092,19 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   every excluded root's ancestor CHAIN into the drop `_drop_protected` already does for
   live album roots, so `find_orphan_folders` returns nothing at, below or above
   `trash_dir` or any `ignore_dirs` entry, in BOTH modes. `api.reorganize._ignore_dirs`
-  also passes `beets_dir` now — but only when it sits strictly inside the music root:
-  an ignore root ABOVE the root is a prefix match for every candidate and would silence
-  the whole sweep, which is the ordinary dev/test layout (`directory: ../music`).
+  also passes `beets_dir`, unconditionally.
+  **The conditional it used to carry moved into the finder after the review round.** The
+  condition was "only when the beets dir sits strictly inside the music root", because an
+  ignore root ABOVE the root is a prefix match for every candidate and silences the whole
+  sweep — but it left the same hole open for the two roots that had no such condition,
+  `MUSICDROP_PLAYLISTS_EXPORT_DIR` above all (an operator-set path with no rule of its
+  own). `orphans._exclude_roots_for_walk` now drops an exclude root at or above the walk
+  root and logs one WARNING, so no caller can silence a sweep by passing one. The same
+  function fixed a second, worse miss: the walk root is beets' `lib.directory`, which is
+  normpath'd and NOT realpath'd, while the exclusion roots arrive resolved — under a
+  symlinked library (`/music -> /mnt/tank/music`, the Docker norm) every exclusion missed,
+  and the beets data dir was reported as a husk. Comparisons run on realpath forms on both
+  sides now, and the walk's own spelling is what comes back.
   **The entry's own closing argument turned out to be about a different fix.** It said
   sparing ancestors "would only push the report one level up whenever the store is
   nested deeper" — true of sparing the immediate PARENT, which is what

@@ -331,6 +331,14 @@ def _drop_excluded_ancestors(raw: list[str], exclude_roots: tuple[str, ...]) -> 
     makes this a guard rather than a nudge: sparing one level only moves the
     report one level up when the excluded dir is nested deeper. Same shape (and
     the same helper) as :func:`_drop_protected`'s live-album-root ancestors.
+
+    What it costs: the dropped candidate is the TOP of an audio-empty run, and
+    nothing below it is re-selected, so a real husk under an audio-free ancestor
+    of an excluded root is kept rather than reported. Err toward keeping is this
+    module's posture — a husk left alone is a folder somebody deletes by hand,
+    where the other direction moves an excluded dir into Trash. A husk whose
+    parent holds audio directly, or whose parent is the root, is outside the run
+    and is still reported; both cases are pinned in ``tests/test_orphans.py``.
     """
     if not exclude_roots:
         return raw
@@ -375,21 +383,37 @@ def find_orphan_folders(
 
     ``seeds is None`` -> scan the whole library (clears the backlog). Otherwise seed
     from the given (vacated) dirs and climb to each one's top-most audio-empty
-    ancestor (a renamed husk is a sibling of the new folder). Never returns the root
-    or anything inside ``trash_dir``; deduped, with no path that is an ancestor of
-    another in the result.
+    ancestor (a renamed husk is a sibling of the new folder). The result is
+    deduped, holds no path that is an ancestor of another, and excludes the root
+    itself.
 
-    ``ignore_dirs`` are extra absolute roots to skip (e.g. the playlists export
-    dir, the Trash origin store, the beets data dir). Directories whose name is a
-    dotdir or a known NAS/OS housekeeping name are always skipped.
+    ``ignore_dirs`` are extra roots to skip (the playlists export dir, the Trash
+    origin store, the beets data dir). Directories whose name is a dotdir or a
+    known NAS/OS housekeeping name are skipped by name.
 
-    No returned path is at, below, or ABOVE ``trash_dir`` or any ``ignore_dirs``
-    entry — the mover takes a reported folder's whole subtree, so an ancestor of
-    an excluded dir would hand that dir over anyway (see
-    :func:`_drop_excluded_ancestors`). Both modes get it from the same drop:
-    seeds mode stops its climb AT an excluded ancestor, which is not the same
-    guard, because the candidate it has already banked below that stop can still
-    be an ancestor of a different excluded dir.
+    What the exclusion is measured to give (``tests/test_orphans.py``), and the
+    two places it stops:
+
+    * a returned path is not at, below or above ``trash_dir`` or any
+      ``ignore_dirs`` entry — the mover takes a reported folder's whole subtree,
+      so an ancestor of an excluded dir would hand that dir over anyway (see
+      :func:`_drop_excluded_ancestors`). Both modes get it from the same drop:
+      seeds mode stops its climb AT an excluded ancestor, which is a different
+      guard, because the candidate it has already banked below that stop can
+      still be an ancestor of a different excluded dir;
+    * the comparison runs on ``realpath`` forms on both sides
+      (:func:`_exclude_roots_for_walk`), so it holds whichever side arrives
+      through a symlink;
+    * RESIDUAL — an exclude root at or above ``music_dir`` is DROPPED with a
+      WARNING rather than excluding the whole library, so directories under such
+      a root are reported like any other. ``app.beets.store_layout`` refuses that
+      position for the Trash, the origin store and the beets data dir, which
+      leaves ``MUSICDROP_PLAYLISTS_EXPORT_DIR`` as the way to reach it;
+    * RESIDUAL — a husk sitting beside an excluded root under an ancestor that
+      holds no audio ANYWHERE is kept rather than reported: the ancestor drop
+      removes the top of the audio-empty run and nothing below it is re-selected.
+      That is this module's err-toward-keeping posture, pinned in
+      ``test_a_husk_under_an_audio_free_ancestor_of_an_ignored_dir_is_kept``.
 
     ``protected_dirs`` are normalized absolute dirs owned by LIVE beets albums
     (``app.beets.reorganize.live_album_roots``): nothing at, directly under, or above
