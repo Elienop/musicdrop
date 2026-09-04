@@ -522,6 +522,78 @@ def test_a_symlink_loop_is_a_refusal_not_a_runtime_error(tmp_path: Path) -> None
     assert str(loop) in message
 
 
+def test_a_trash_path_that_cannot_be_stat_d_is_a_refusal_not_a_pass(tmp_path: Path) -> None:
+    """A Trash path behind a directory this process cannot traverse.
+
+    Non-strict ``Path.resolve()`` re-raises only ELOOP, so on EACCES it hands
+    back the string it was given, ``_stat_id`` answers ``None``, and the
+    comparison silently becomes a string comparison. Measured on this tree with
+    the guard removed: ``MUSICDROP_TRASH_DIR`` set to a symlink to the music
+    library inside a mode-000 directory was ALLOWED, and the same layout with
+    that directory traversable — the control below — was refused. The four Trash
+    routes then answered 500 (``PermissionError``) rather than the sentence.
+
+    Skipped as root, which traverses a mode-000 directory regardless.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    alias = locked / "alias"
+    alias.symlink_to(music)
+    locked.chmod(0o000)
+    try:
+        if os.access(alias, os.F_OK):  # root, or an fs that ignores the mode
+            pytest.skip("this process can traverse a mode-000 directory")
+        with pytest.raises(StoreLayoutError) as exc:
+            _check(
+                music=music,
+                beets=tmp_path / "data",
+                trash=alias,
+                origins=tmp_path / "records",
+            )
+        message = str(exc.value)
+        assert TRASH_SETTING in message
+        assert "could not be examined" in message
+    finally:
+        locked.chmod(0o700)
+
+    # The control: the SAME layout, readable. It is refused for what it is.
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=music,
+            beets=tmp_path / "data",
+            trash=alias,
+            origins=tmp_path / "records",
+        )
+    assert "The Trash directory is the music library" in str(exc.value)
+
+
+def test_a_path_that_is_merely_absent_still_passes(tmp_path: Path) -> None:
+    """The other side of the stat guard: none of the five has to exist yet.
+
+    ENOENT and ENOTDIR are the allowed errnos — a first boot creates the Trash
+    on demand, and the module docstring says so. A guard that refused every
+    ``stat`` failure would refuse the shipped default before the first delete.
+    """
+    _check(
+        music=tmp_path / "music",
+        beets=tmp_path / "data",
+        trash=tmp_path / "data" / "trash",
+        origins=tmp_path / "data" / "trash-origins",
+    )
+    # ENOTDIR: a path whose PARENT is a regular file.
+    notdir = tmp_path / "data" / "afile"
+    notdir.parent.mkdir(parents=True, exist_ok=True)
+    notdir.write_text("x", encoding="utf-8")
+    _check(
+        music=tmp_path / "music",
+        beets=tmp_path / "data",
+        trash=notdir / "trash",
+        origins=tmp_path / "data" / "trash-origins",
+    )
+
+
 def test_an_embedded_nul_is_a_refusal_not_a_value_error(tmp_path: Path) -> None:
     """``directory: "/music/\\0evil"`` is a plain double-quoted YAML scalar ruamel
     accepts, and ``lstat`` raises ``ValueError`` on it.

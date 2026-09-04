@@ -193,6 +193,81 @@ def test_a_database_inside_the_trash_refuses_to_start(
     assert "The Trash directory contains the beets database" in str(exc.value)
 
 
+@pytest.mark.parametrize(
+    "library_value",
+    [
+        "loop",  # a symlink loop -> sqlite3.OperationalError
+        r'"/x/\0evil.db"',  # an embedded NUL -> ValueError
+    ],
+)
+def test_a_library_beets_cannot_open_gets_the_one_error_line_too(
+    beets_dir: Path,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    library_value: str,
+) -> None:
+    """beets' own startup runs BEFORE the layout gate and can fail on the same input.
+
+    Measured by calling ``setup_beets`` directly on this tree: a ``library:``
+    that is a symlink loop raises ``sqlite3.OperationalError``, one holding a NUL
+    raises ``ValueError``, and a ``MUSICDROP_BEETS_DIR`` that is a symlink loop
+    raises ``RuntimeError`` from ``Path.resolve``. Each already failed CLOSED —
+    under a real uvicorn all three exited 3 and never bound the port — but with a
+    traceback and no level-tagged line naming a setting. The assertion is on the
+    LINE, because failing closed was never the part that was missing.
+    """
+    loop = tmp_path / "loopdb"
+    loop.symlink_to(loop)
+    written = str(loop) if library_value == "loop" else library_value
+    (beets_dir / "config.yaml").write_text(
+        f"directory: {tmp_path / 'music'}\nlibrary: {written}\nplugins:\n  - musicbrainz\n"
+    )
+
+    with caplog.at_level(logging.ERROR), pytest.raises(Exception) as exc:
+        with TestClient(real_app):
+            pass  # pragma: no cover - the lifespan raises before the body runs
+
+    assert not isinstance(exc.value, StoreLayoutError), exc.value
+    refusals = [r for r in caplog.records if r.name == "uvicorn.error"]
+    assert len(refusals) == 1, [(r.name, r.getMessage()) for r in caplog.records]
+    message = refusals[0].getMessage()
+    assert "refusing to start" in message
+    assert "MUSICDROP_BEETS_DIR" in message
+    assert "`library:`" in message
+
+
+def test_the_refusal_says_where_this_start_already_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A refused layout has already had beets write into it.
+
+    beets' startup has to run first — it is what supplies the ``directory:`` and
+    ``library:`` the gate compares — so by the time the refusal fires the beets
+    data directory, ``config.yaml`` and the database exist. Measured: a refused
+    ``MUSICDROP_BEETS_DIR=<music>`` left 13 files inside the music library, and a
+    refused ``library: <trash>/library.db`` left 12 under the Trash dir. Nothing
+    removes them afterwards (``list_trashed_albums`` returned ``[]`` with all 12
+    present), so the line names the two directories to look in.
+    """
+    music = tmp_path / "music"
+    beets = music / "musicdrop"
+    beets.mkdir(parents=True)
+    (beets / "config.yaml").write_text(
+        f"directory: {music}\nlibrary: library.db\nplugins:\n  - musicbrainz\n"
+    )
+    monkeypatch.setattr("app.config.settings.beets_dir", str(beets))
+    monkeypatch.setattr("app.config.settings.trash_origins_dir", str(tmp_path / "records"))
+
+    with caplog.at_level(logging.ERROR), pytest.raises(StoreLayoutError):
+        with TestClient(real_app):
+            pass  # pragma: no cover - the lifespan raises before the body runs
+
+    message = next(r.getMessage() for r in caplog.records if r.name == "uvicorn.error")
+    assert "left behind" in message, message
+    assert str(beets) in message, message
+    assert (beets / "library.db").exists()  # the files the sentence is about
+
+
 def test_the_refusal_reaches_a_real_uvicorns_output(tmp_path: Path) -> None:
     """What ``docker logs`` shows, from a separate process with no test handlers.
 

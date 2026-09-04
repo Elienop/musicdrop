@@ -132,7 +132,7 @@ def test_validate_flags_a_directory_that_would_sit_under_trash(
     assert any("The Trash directory contains the music library" in m for m in msgs), msgs
 
 
-def test_validate_answers_a_lint_row_for_a_directory_that_will_not_resolve(
+def test_validate_answers_ONE_lint_row_for_a_directory_that_will_not_resolve(
     client: TestClient, beets_library: LibraryHandle
 ) -> None:
     """``directory: "/music/\\0evil"`` — a plain double-quoted YAML scalar.
@@ -140,8 +140,12 @@ def test_validate_answers_a_lint_row_for_a_directory_that_will_not_resolve(
     ``lstat`` raises ``ValueError`` on an embedded NUL, and this route had no
     handler for it: measured in the review round as an UNHANDLED ValueError, a
     500 with a traceback, where the pre-slice route answered a clean
-    ``value_error`` row. Both rows are asserted, because the layout check runs
-    first and used to take the schema's row down with it.
+    ``value_error`` row.
+
+    ONE row, not two. Both checks reach the same conclusion about the same key
+    from the same ``lstat``, and the editor maps rows to CodeMirror diagnostics
+    1:1 with no dedupe, so the second was the same sentence twice in the gutter.
+    The control below is what keeps this from swallowing a real layout row.
     """
     r = client.post(
         "/api/config/validate",
@@ -151,10 +155,31 @@ def test_validate_answers_a_lint_row_for_a_directory_that_will_not_resolve(
     )
     assert r.status_code == 200
     rows = r.json()["errors"]
-    assert any(e["type"] == "store_layout" and "could not be resolved" in e["msg"] for e in rows), (
-        rows
+    assert [(e["type"], e["loc"]) for e in rows] == [("value_error", "directory")], rows
+    assert "could not be resolved" in rows[0]["msg"], rows
+
+
+def test_validate_keeps_the_layout_row_when_the_schema_row_is_about_something_else(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """The control for the dedupe above: ``directory: /``.
+
+    Two rows on one key again, and here they are two different facts — the
+    schema's is about writability, the layout's names the loss (the music
+    library would contain the beets data directory). Only a refusal about a
+    single UNUSABLE VALUE is suppressed, so this pair survives; without that
+    distinction the dedupe would take down the only row that explains what the
+    document would destroy.
+    """
+    r = client.post(
+        "/api/config/validate",
+        json={"yaml_text": "directory: /\nlibrary: library.db\n"},
     )
-    assert any(e["type"] == "value_error" and e["loc"] == "directory" for e in rows), rows
+    assert r.status_code == 200
+    rows = r.json()["errors"]
+    types = {e["type"] for e in rows}
+    assert "store_layout" in types, rows
+    assert "value_error" in types, rows
 
 
 # --------------------------------------------------------------------------
@@ -492,3 +517,77 @@ def test_a_document_with_no_directory_key_gets_the_schema_row_and_no_layout_row(
     errors = r.json()["errors"]
     assert [e for e in errors if e["type"] == "store_layout"] == [], errors
     assert [e for e in errors if e["loc"] == "directory"] != [], errors
+
+
+# --------------------------------------------------------------------------
+# Values the SCHEMA has to refuse, because nothing downstream can.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("route", ["validate", "save"])
+def test_a_directory_that_is_a_symlink_loop_is_a_row_not_a_500(
+    client: TestClient, beets_library: LibraryHandle, tmp_path: Path, route: str
+) -> None:
+    """``directory:`` pointing at a self-referencing symlink.
+
+    ``WritablePath``'s validator runs BEFORE the layout gate and called
+    ``resolve()`` unguarded. Pydantic converts a ``ValueError`` from a validator
+    into a row and lets ``RuntimeError`` and ``OSError`` escape, so both routes
+    answered 500 with a traceback — measured on the parent commit at both. The
+    layout gate's own "could not be resolved" refusal never got a turn.
+    """
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    body: dict[str, object] = {"yaml_text": _yaml_pointing_at(loop)}
+    if route == "save":
+        body["base_sha256"] = _sha(beets_library.config_path)
+
+    r = client.post(f"/api/config/{route}", json=body)
+
+    assert r.status_code == (200 if route == "validate" else 422), r.text
+    rows = r.json()["errors"] if route == "validate" else r.json()["detail"]
+    assert any(e["loc"] == "directory" and "could not be resolved" in e["msg"] for e in rows), rows
+
+
+@pytest.mark.parametrize(
+    ("value", "fragment"),
+    [
+        ("''", "cannot open as a database"),
+        ("{beets_dir}", "is a directory"),
+    ],
+)
+def test_a_library_value_beets_cannot_open_is_refused_at_validate(
+    client: TestClient, beets_library: LibraryHandle, value: str, fragment: str
+) -> None:
+    """``library:`` had no validator at all, so both of these linted CLEAN.
+
+    Measured on the parent commit: zero rows, Save wrote the document, the Apply
+    after answered 500 ("unable to open database file") and the next cold start
+    died inside beets' ``_create_connection`` with a traceback. An empty value is
+    ``Path(".")`` — the beets data directory itself — and a directory is a
+    directory; SQLite opens neither.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    written = value.format(beets_dir=beets_library.beets_dir)
+    r = client.post(
+        "/api/config/validate",
+        json={"yaml_text": f"directory: {music}\nlibrary: {written}\n"},
+    )
+
+    assert r.status_code == 200, r.text
+    rows = r.json()["errors"]
+    assert any(e["loc"] == "library" and fragment in e["msg"] for e in rows), rows
+
+
+def test_the_library_value_beets_actually_ships_still_passes(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """The control for the pair above: ``library: library.db`` is beets' own default.
+
+    A validator that refused every relative value, or every value whose parent is
+    a directory, would refuse the shipped config on the first Save.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    r = client.post("/api/config/validate", json={"yaml_text": _yaml_pointing_at(music)})
+    assert r.status_code == 200, r.text
+    assert r.json()["errors"] == []

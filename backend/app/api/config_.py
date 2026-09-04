@@ -162,13 +162,19 @@ def validate_config(req: ValidateRequest, request: Request) -> ValidateResponse:
     # server accepts a request, so that gap is the child-process case the two
     # guard tests create.
     handle: LibraryHandle | None = getattr(request.app.state, "beets_library", None)
+    schema_errors = validate_known_keys(data)
     layout_errors = (
         []
         if handle is None
-        else store_layout_errors(data, settings=_settings(request.app), handle=handle)
+        else store_layout_errors(
+            data,
+            settings=_settings(request.app),
+            handle=handle,
+            reported_keys={item.loc for item in schema_errors},
+        )
     )
     return ValidateResponse(
-        errors=validate_known_keys(data) + layout_errors,
+        errors=schema_errors + layout_errors,
         advisories=import_advisories(data),
     )
 

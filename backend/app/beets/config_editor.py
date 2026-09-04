@@ -32,6 +32,7 @@ import os
 import re
 import shutil
 import threading
+from collections.abc import Collection
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Final, cast
@@ -225,6 +226,7 @@ def store_layout_errors(
     *,
     settings: Settings,
     handle: LibraryHandle,
+    reported_keys: Collection[str] = (),
 ) -> list[ValidationErrorItem]:
     """Zero or one row: the ``directory:`` and ``library:`` the submitted document
     would LOAD, against where Trash, the origin store and the beets data dir resolve.
@@ -254,11 +256,24 @@ def store_layout_errors(
     The ``isinstance`` on ``data`` is not defensive padding: ruamel returns
     ``None`` for an empty document, and the annotation cannot say so because the
     same value is what ``validate_known_keys`` is handed and reports on.
+
+    ``reported_keys`` are the ``loc``s the schema pass already painted. They
+    suppress exactly one row: the refusal that is about a single UNUSABLE VALUE
+    (it would not resolve, or it cannot be stat'd) on a key the schema has
+    reported too, where the two sentences say the same thing. Measured:
+    ``directory: "/music/\\0evil"`` produced a ``value_error`` row ("embedded
+    null character") and a ``store_layout`` row ("could not be resolved …
+    embedded null character") on one key. A refusal about the LAYOUT is never
+    suppressed — ``directory: /`` also draws two rows, and there the schema's
+    "not writable" and the layout's "the music library contains the beets data
+    directory" are different facts, the second being the one that names the loss.
     """
     if not isinstance(data, dict) or "directory" not in data:
         return []
     error = layout_error_for_config(document=data, settings=settings, handle=handle)
     if error is None:
+        return []
+    if error.unusable_value and (error.config_key or "directory") in reported_keys:
         return []
     # The gutter row is painted against the key the refusal is ABOUT, so a
     # ``library:`` that lands inside Trash underlines ``library:`` and not the
@@ -447,8 +462,12 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
     # list, same 422: to the editor both are lint rows on the same document, and
     # splitting them into two statuses would make the gutter and the Save button
     # disagree about what "there is an error" means.
-    errors = validate_known_keys(new_map) + store_layout_errors(
-        new_map, settings=settings, handle=handle
+    schema_errors = validate_known_keys(new_map)
+    errors = schema_errors + store_layout_errors(
+        new_map,
+        settings=settings,
+        handle=handle,
+        reported_keys={item.loc for item in schema_errors},
     )
     if errors:
         raise HTTPException(

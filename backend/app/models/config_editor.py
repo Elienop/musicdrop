@@ -38,6 +38,29 @@ def loc_to_dot_sep(loc: tuple[str | int, ...]) -> str:
     return path
 
 
+#: What resolving an operator-supplied path raises. The same three
+#: ``app.beets.store_layout`` names, spelled again rather than imported: these
+#: models sit below the beets adapter and pull nothing from it. Pydantic turns a
+#: ``ValueError`` from a validator into a row and lets the other two escape, so
+#: every one of them has to become a ``ValueError`` here or the route answers
+#: 500 — measured: a ``directory:`` that is a self-referencing symlink raised
+#: ``RuntimeError`` out of ``validate_known_keys``, and both
+#: ``POST /api/config/validate`` and ``POST /api/config/save`` answered 500.
+_UNRESOLVABLE = (OSError, RuntimeError, ValueError)
+
+
+def _resolve_or_row(p: Path) -> Path:
+    """``p`` resolved, or a ``ValueError`` Pydantic can paint as a row."""
+    try:
+        return p.expanduser().resolve()
+    except _UNRESOLVABLE as exc:
+        raise ValueError(
+            f"{p} could not be resolved: {type(exc).__name__}: {exc}. A symbolic-link"
+            " loop, an embedded NUL byte and a component this process cannot"
+            " traverse are the inputs measured to do this."
+        ) from exc
+
+
 def _writable_path(p: Path) -> Path:
     """``AfterValidator`` for ``WritablePath``.
 
@@ -48,21 +71,65 @@ def _writable_path(p: Path) -> Path:
     volume mounted at the root (e.g. ``/library``), whose parent ``/`` is never
     writable by the app user. The parent check applies only when the directory
     doesn't exist yet and beets would have to create it.
+
+    Every filesystem call is inside :func:`_resolve_or_row` or the ``try`` below,
+    because this validator runs BEFORE the layout gate, so its failures are the
+    ones that reach the client.
     """
-    resolved = p.expanduser().resolve()
-    if resolved.exists():
-        if not resolved.is_dir():
-            raise ValueError(f"{resolved} is not a directory")
-        if not os.access(resolved, os.W_OK):
-            raise ValueError(f"directory {resolved} is not writable")
-    else:
+    resolved = _resolve_or_row(p)
+    try:
+        exists = resolved.exists()
+        is_dir = resolved.is_dir()
         parent = resolved.parent
-        if not parent.exists() or not os.access(parent, os.W_OK):
-            raise ValueError(f"parent directory {parent} is not writable")
+        parent_ok = parent.exists() and os.access(parent, os.W_OK)
+        writable = os.access(resolved, os.W_OK)
+    except _UNRESOLVABLE as exc:
+        raise ValueError(f"{resolved} could not be examined: {type(exc).__name__}: {exc}") from exc
+    if exists:
+        if not is_dir:
+            raise ValueError(f"{resolved} is not a directory")
+        if not writable:
+            raise ValueError(f"directory {resolved} is not writable")
+    elif not parent_ok:
+        raise ValueError(f"parent directory {parent} is not writable")
+    return p
+
+
+def _library_file(p: Path) -> Path:
+    """``AfterValidator`` for ``library:`` — the beets DATABASE FILE.
+
+    beets hands this path to SQLite. Two values pass every other check and make
+    that open fail: an empty one (Pydantic coerces ``""`` to ``Path(".")``, the
+    beets data directory itself) and one naming an existing directory. Measured
+    before this validator existed: both linted clean with zero rows, Save wrote
+    them, the Apply after answered 500 ("unable to open database file"), and the
+    next cold start died inside beets' ``_create_connection`` with a traceback
+    instead of a refusal line.
+
+    RESIDUAL, and the same one :func:`_writable_path` carries: a RELATIVE value
+    is resolved against the process CWD here, while beets resolves it against the
+    beets data directory (``store_layout.resolve_configured_path``). So a
+    relative ``library:`` naming an existing directory under the beets dir is
+    caught here only when the two coincide; the Apply refusal is what covers it
+    otherwise.
+    """
+    if str(p) == ".":
+        raise ValueError(
+            "library: names the beets database file, and an empty value names the"
+            " beets data directory itself, which beets cannot open as a database"
+        )
+    resolved = _resolve_or_row(p)
+    try:
+        is_dir = resolved.is_dir()
+    except _UNRESOLVABLE as exc:
+        raise ValueError(f"{resolved} could not be examined: {type(exc).__name__}: {exc}") from exc
+    if is_dir:
+        raise ValueError(f"{resolved} is a directory; library: names the beets database file")
     return p
 
 
 WritablePath = Annotated[Path, AfterValidator(_writable_path)]
+LibraryFile = Annotated[Path, AfterValidator(_library_file)]
 
 
 PluginName = Literal[
@@ -120,7 +187,7 @@ class KnownKeysSchema(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     directory: WritablePath
-    library: Path
+    library: LibraryFile
     plugins: list[PluginName] = Field(default_factory=list)
     import_: ImportSection = Field(default_factory=ImportSection, alias="import")
     match: MatchSection = Field(default_factory=MatchSection)

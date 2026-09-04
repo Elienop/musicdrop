@@ -58,6 +58,7 @@ of the five has to exist yet.
 
 from __future__ import annotations
 
+import errno
 import os
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -113,11 +114,22 @@ class StoreLayoutError(Exception):
     ``config_key`` is the one machine-readable field: the ``config.yaml`` key the
     editor should paint, or ``None`` when the refusal is between two env-derived
     paths and no submitted value is at fault.
+
+    ``unusable_value`` marks the two refusals that are about ONE value rather
+    than a pair — it would not resolve, or it resolved to something the app
+    cannot stat. ``config_editor.store_layout_errors`` reads it to drop a row the
+    schema has already painted on the same key: measured, a ``directory:``
+    holding a NUL produced two rows saying the same thing, while a
+    ``directory: /`` produced a schema row about writability plus the layout row
+    that explains the loss, and only the first pair is a duplicate.
     """
 
-    def __init__(self, message: str, *, config_key: str | None = None) -> None:
+    def __init__(
+        self, message: str, *, config_key: str | None = None, unusable_value: bool = False
+    ) -> None:
         super().__init__(message)
         self.config_key = config_key
+        self.unusable_value = unusable_value
 
 
 #: What resolving an operator-supplied path can raise. Measured on this tree:
@@ -127,6 +139,15 @@ class StoreLayoutError(Exception):
 #: which ruamel accepts. ``OSError`` covers the strict-mode shape 3.13 uses and
 #: any I/O fault under the ``lstat`` chain.
 _UNRESOLVABLE: Final = (OSError, RuntimeError, ValueError)
+
+#: The ``stat`` failures that mean "this path is not there yet", which the rule
+#: allows — none of the five has to exist. Every other errno leaves a path that
+#: IS there in a form this process cannot examine, and :func:`_same_path` then
+#: has no inode to compare and falls back to string equality. Measured on this
+#: tree: ``MUSICDROP_TRASH_DIR`` pointing at a symlink to the music library
+#: inside a mode-000 directory was ALLOWED by :func:`check_store_layout`, and the
+#: same layout with that directory traversable was refused.
+_ABSENT_ERRNOS: Final = frozenset({errno.ENOENT, errno.ENOTDIR})
 
 
 def _unresolvable(setting: str, raw: str, exc: Exception) -> StoreLayoutError:
@@ -144,6 +165,25 @@ def _unresolvable(setting: str, raw: str, exc: Exception) -> StoreLayoutError:
         " until it resolves there is nothing to compare it against, so MusicDrop"
         " treats it the same way as a directory that sits on top of the library.",
         config_key=_CONFIG_KEY_OF.get(setting),
+        unusable_value=True,
+    )
+
+
+def _unexaminable(setting: str, resolved: str, exc: OSError) -> StoreLayoutError:
+    """The refusal for a path the filesystem will not describe, same message shape.
+
+    Separate from :func:`_unresolvable` because the value DID resolve; what
+    failed is the ``stat`` this module compares by.
+    """
+    return StoreLayoutError(
+        f"{setting} could not be examined. It resolves to {resolved!r}, and asking"
+        f" the filesystem about it raised {type(exc).__name__}: {exc}. Two"
+        " spellings of one directory are told apart by inode, so until MusicDrop"
+        " can stat it there is nothing to compare and it is treated the same way"
+        " as a directory that sits on top of the library. Correct the value, or"
+        " the permissions on the path it names.",
+        config_key=_CONFIG_KEY_OF.get(setting),
+        unusable_value=True,
     )
 
 
@@ -152,11 +192,25 @@ def _resolved(path: Path, setting: str) -> Path:
 
     Every path entering :func:`check_store_layout` goes through here, so a call
     site cannot hold one side of a comparison in a lexical spelling.
+
+    It also refuses a path the process cannot ``stat``. Non-strict
+    ``Path.resolve()`` re-raises only ELOOP, so a Trash path behind an
+    untraversable directory comes back as the string it was handed and every
+    inode comparison below silently becomes a string comparison — measured, that
+    layout was allowed at boot and then answered 500 (``PermissionError``) at all
+    four Trash routes. ENOENT and ENOTDIR are allowed through: none of the five
+    has to exist yet.
     """
     try:
-        return Path(os.path.expanduser(str(path))).resolve()
+        resolved = Path(os.path.expanduser(str(path))).resolve()
     except _UNRESOLVABLE as exc:
         raise _unresolvable(setting, str(path), exc) from exc
+    try:
+        resolved.stat()
+    except OSError as exc:
+        if exc.errno not in _ABSENT_ERRNOS:
+            raise _unexaminable(setting, str(resolved), exc) from exc
+    return resolved
 
 
 def _guarded(setting: str, raw: str, resolve: Callable[[], Path]) -> Path:
@@ -174,10 +228,17 @@ def _guarded(setting: str, raw: str, resolve: Callable[[], Path]) -> Path:
 
 
 def _stat_id(path: Path) -> tuple[int, int] | None:
-    """``(st_dev, st_ino)`` for a path that exists, ``None`` otherwise.
+    """``(st_dev, st_ino)`` for a path this process can stat, ``None`` otherwise.
 
     The one seam :func:`_same_path` uses to ask the filesystem, kept separate so
     a test can answer for it without patching ``os.stat`` for the whole process.
+
+    ``None`` means "no identity to compare", which is not the same as "absent":
+    any ``stat`` failure lands here. The five paths the rule is about do not
+    reach this in that state — :func:`_resolved` refuses every errno outside
+    :data:`_ABSENT_ERRNOS` before a comparison runs — so what a ``None`` here
+    covers is a not-yet-created path, an ANCESTOR walked by :func:`_relation`,
+    and a candidate spelling a remedy is trying out.
     """
     try:
         st = path.stat()
@@ -195,12 +256,13 @@ def _same_path(a: Path, b: Path) -> bool:
     bind mount in an unprivileged user namespace: the two spellings compared as
     unrelated trees, the layout passed, and Empty Trash removed the library.
 
-    So when BOTH paths exist the filesystem decides, by inode. When either does
-    not exist there is nothing to stat and the string comparison is all that is
-    left; that is the residual — a Trash directory the operator has not created
-    yet, aliased to the library by a mount, is not caught here. It is caught the
-    next time the check runs with the directory present, which the delete and
-    sweep call sites do.
+    So when both paths can be stat'd the filesystem decides, by inode. When
+    either cannot, the string comparison is all that is left; that is the
+    residual — a Trash directory the operator has not created yet, aliased to the
+    library by a mount, is not caught here. It is caught the next time the check
+    runs with the directory present, which the delete and sweep call sites do. A
+    path that exists but cannot be stat'd does not reach the residual: it is
+    refused in :func:`_resolved`.
     """
     if a == b:
         return True

@@ -1,7 +1,10 @@
 import asyncio
 import logging
+import os
+import sqlite3
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -80,6 +83,50 @@ def _resolve_library() -> LibraryHandle:
     )
 
 
+#: What beets' own startup raises for a value it cannot open, measured on this
+#: tree by calling ``setup_beets`` directly: ``sqlite3.OperationalError`` for a
+#: ``library:`` that is a symlink loop, ``ValueError`` for one holding a NUL, and
+#: ``RuntimeError`` from ``Path.resolve`` for a ``MUSICDROP_BEETS_DIR`` that is a
+#: symlink loop. Each already failed CLOSED; what was missing was the one
+#: level-tagged line naming a setting that the layout gate below prints.
+_BEETS_STARTUP_FAILED = (OSError, RuntimeError, ValueError, sqlite3.Error)
+
+
+def _boot_log() -> logging.Logger:
+    """The logger a refusal to start goes to.
+
+    ``uvicorn.error`` and not this module's own: under the Dockerfile CMD an
+    app-namespace record never reaches the container's output at all, and the
+    operator grepping for why the process died has only ``docker logs``.
+    """
+    return logging.getLogger("uvicorn.error")
+
+
+def _leftovers_note(handle: LibraryHandle) -> str:
+    """Where to look for what this start wrote before the layout gate refused it.
+
+    beets' startup has to run first: the gate compares the ``directory:`` and
+    ``library:`` beets LOADS, and neither is known until confuse has resolved the
+    config — which means the config must exist, which on a first run means
+    writing the starter. So the earliest honest point is here, after the fact.
+
+    It names the two directories rather than a file list because only some of
+    what lands is new. Measured: a refused ``MUSICDROP_BEETS_DIR=<music>`` left 13
+    files inside the music library (config.yaml, library.db and 11 of beets'
+    migration backups) and a refused ``library: trash/library.db`` left 12 under
+    the Trash dir. They are litter, not Trash entries — ``list_trashed_albums``
+    returned ``[]`` with all 12 present — so nothing removes them on its own.
+    """
+    db_dir = Path(os.fsdecode(handle.lib.path)).parent
+    places = {str(handle.beets_dir), str(db_dir)}
+    return (
+        " beets' own startup ran first, because it is what supplies the"
+        " `directory:` and `library:` this check compares, and it creates the"
+        " beets data directory, config.yaml and the database as it goes:"
+        f" look in {', '.join(sorted(places))} for files this start left behind."
+    )
+
+
 def _build_artist_image_service(
     cache: ArtistImageCache,
     is_enabled: Callable[[], bool],
@@ -109,7 +156,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # the process lifetime) and close it on shutdown. setup_beets always returns
     # a handle — missing BEETSDIR / config.yaml are created from the starter —
     # so there is no "library disabled" branch in production.
-    handle = _resolve_library()
+    #
+    # The ``except`` is here because this runs BEFORE the layout gate below and
+    # can fail on the same class of operator input: a value beets cannot open
+    # used to leave a bare traceback with no line saying which setting to look
+    # at. It re-raises — the process still does not come up — and only adds the
+    # line.
+    try:
+        handle = _resolve_library()
+    except _BEETS_STARTUP_FAILED as exc:
+        _boot_log().error(
+            "refusing to start: beets could not open the library under %s=%r. %s: %s."
+            " Check `library:` and `directory:` in that directory's config.yaml.",
+            "MUSICDROP_BEETS_DIR",
+            settings.beets_dir,
+            type(exc).__name__,
+            exc,
+        )
+        raise
 
     # Before ANYTHING is attached or started: refuse to come up when Trash or
     # the Trash origin store sits somewhere using it would destroy data (see
@@ -117,15 +181,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # here rather than inside a request path because all four inputs are settled
     # exactly once — three come from the environment, and the fourth
     # (``directory:``) only moves through Save/Apply, which run the same check.
-    # Logged through ``uvicorn.error`` for the reason the posture line below
-    # gives: under the Dockerfile CMD an app-namespace record never reaches the
-    # container's output at all. ERROR, not WARNING — the process does not come
-    # up, and the operator grepping for the reason after "Application startup
-    # failed" must find a line whose level says so.
+    # Logged through ``uvicorn.error`` (see ``_boot_log``). ERROR, not WARNING —
+    # the process does not come up, and the operator grepping for the reason
+    # after "Application startup failed" must find a line whose level says so.
     try:
         require_safe_store_layout(settings, handle)
     except StoreLayoutError as exc:
-        logging.getLogger("uvicorn.error").error("refusing to start: %s", exc)
+        _boot_log().error("refusing to start: %s%s", exc, _leftovers_note(handle))
         # Give back the SQLite connection ``_resolve_library`` just opened. The
         # raise below skips the ``finally`` teardown further down (it has not
         # been entered yet), so this is the only place that can.
