@@ -396,6 +396,52 @@ def test_every_route_that_takes_the_pair_is_reachable_on_the_allowed_layout(
     assert "The Trash directory" not in r.text, (path, r.text)
 
 
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("POST", "/api/trash/restore", {"folder": "Old Entry"}),
+        ("DELETE", "/api/trash?folder=Old%20Entry", None),
+    ],
+)
+def test_the_two_child_routes_check_the_layout_exactly_once(
+    client: TestClient,
+    beets_library: LibraryHandle,
+    trash_inside_music: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    path: str,
+    body: dict[str, Any] | None,
+) -> None:
+    """One check per request, so the pair validated is the pair acted on.
+
+    Both of these resolved the trashed child from a FIRST check and then ran a
+    SECOND one before touching it — two instants where the route can only
+    honestly claim one, and the ``rmtree`` target came from the earlier of them.
+    Counting is what pins it: the two pairs are equal today (``resolve_trash_dir``
+    returns the same value across an Apply), so no assertion on the RESULT can
+    tell one check from two.
+
+    It is also what the duplicate cost was: a bare ``checked_store_dirs`` was
+    measured at 27 ``_relation`` calls and 222 stats, and these two paid it twice.
+    """
+    import app.api.trash as trash_api
+
+    calls = 0
+    real_store = trash_api._store
+
+    def counting_store(app: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return real_store(app)
+
+    monkeypatch.setattr(trash_api, "_store", counting_store)
+
+    r = client.request(method, path, json=body)
+
+    assert r.status_code == 200, (path, r.text)
+    assert calls == 1, (path, calls)
+
+
 @pytest.mark.parametrize("path", ["/api/reorganize", "/api/albums/1/reorganize"])
 def test_a_refused_reorganize_start_does_not_claim_the_job_slot(
     client: TestClient,
