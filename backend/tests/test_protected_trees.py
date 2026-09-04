@@ -216,6 +216,18 @@ def _trees_for(music: Path) -> ProtectedTrees:
     )
 
 
+def _trees_with_trash(trash: Path) -> ProtectedTrees:
+    """A set whose ``trash`` identity is real and whose ``ids`` hold nothing."""
+    return protected_trees(
+        settings=Settings(),
+        music_dir=trash.parent / "absent-music",
+        beets_dir=trash.parent / "absent-beets",
+        trash_dir=trash,
+        origins_dir=trash.parent / "absent-origins",
+        library_path=trash.parent / "absent" / "library.db",
+    )
+
+
 def test_the_walk_finds_a_protected_directory_below_the_root(tmp_path: Path) -> None:
     """ "contains", not just "is" — the loss is a whole-tree move or rmtree."""
     music = tmp_path / "music"
@@ -301,6 +313,25 @@ def test_open_checked_dir_refuses_an_identity_that_moved(tmp_path: Path) -> None
     (tmp_path / "trash").mkdir()
     with pytest.raises(ProtectedTreeError, match="changed between the check and the open"):
         open_checked_dir(tmp_path / "trash", (stale.st_dev, stale.st_ino))
+
+
+def test_empty_all_refuses_a_trash_directory_swapped_after_the_check(tmp_path: Path) -> None:
+    """It must pass the CHECKED identity, not ``None``.
+
+    ``open_checked_dir`` refuses either way when the path became a symlink, so
+    only a swap for a different real DIRECTORY tells the two apart — measured:
+    with ``protected.trash`` replaced by ``None`` the rest of this file stayed
+    green. Nothing in the impostor is removed.
+    """
+    trash = tmp_path / "trash"
+    (trash / "Album").mkdir(parents=True)
+    trees = _trees_with_trash(trash)
+    os.rename(trash, tmp_path / "gone")
+    (trash / "Impostor").mkdir(parents=True)
+
+    with pytest.raises(ProtectedTreeError, match="changed between the check and the open"):
+        empty_all(trash, origins_dir=origins_for(trash), protected=trees)
+    assert (trash / "Impostor").is_dir()
 
 
 def test_empty_all_enumerates_from_the_descriptor_it_checked(
