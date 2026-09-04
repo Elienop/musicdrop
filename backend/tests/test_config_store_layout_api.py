@@ -465,3 +465,30 @@ def test_apply_refuses_after_the_rebuild_when_the_pre_check_missed_it(
     assert "The beets data directory is the music library" in recovery
     assert "answer 503" in recovery
     assert app.state.beets_library is not handle_before
+
+
+def test_a_document_with_no_directory_key_gets_the_schema_row_and_no_layout_row(
+    client: TestClient,
+    beets_library: LibraryHandle,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """beets would fall back to ``~/Music``; the gutter stays quiet about it.
+
+    The fallback is real — ``directory: ~/Music`` is beets' own default
+    (``beets/config_default.yaml``) and :func:`effective_config_paths` reads the
+    defaults, so without the guard in ``store_layout_errors`` this document
+    produces a refusal about a path the operator did not write. ``HOME`` is
+    pointed at ``tmp_path`` and the origin store placed under ``~/Music`` so the
+    fallback WOULD trip a rule if it were checked: the assertion is that it is
+    not, and that ``KnownKeysSchema`` reports the absent key instead.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("app.config.settings.trash_origins_dir", str(tmp_path / "Music" / "store"))
+
+    r = client.post("/api/config/validate", json={"yaml_text": "library: library.db\n"})
+
+    assert r.status_code == 200, r.text
+    errors = r.json()["errors"]
+    assert [e for e in errors if e["type"] == "store_layout"] == [], errors
+    assert [e for e in errors if e["loc"] == "directory"] != [], errors
