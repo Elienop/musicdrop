@@ -2,6 +2,7 @@ import { useId, useState } from "react";
 
 import type { RestoreResult, TrashedAlbum } from "@/api/useTrash";
 import {
+  trashErrorDetail,
   useEmptyAllTrash,
   useEmptyTrashAlbum,
   useRestoreTrash,
@@ -29,18 +30,56 @@ import { cn } from "@/lib/utils";
  * from, or re-filed by the current naming rules, per `restore_mode` — or empty
  * (forever). */
 export function SettingsTrashPage() {
-  const { data, isPending, isError, refetch } = useTrashList();
+  const { data, error, isPending, isError, refetch } = useTrashList();
   const emptyAll = useEmptyAllTrash();
 
   if (isPending) {
     return <p className="text-muted-foreground text-sm">Loading Trash…</p>;
   }
   if (isError) {
+    // The listing's 503s are the operator's OWN misconfiguration answered in
+    // full — the Trash directory resolving onto the music library, or a setting
+    // that will not resolve at all — and the sentence names the setting, both
+    // resolved paths and the fix (`store_layout._refuse`). Without it the page
+    // says only that something failed, and the one screen that could act on the
+    // answer is the one that hides it.
+    //
+    // `trashErrorDetail`, not `error.message`: the message is never empty, so
+    // rendering it would put "Failed to fetch" under the headline for a dropped
+    // connection and "Something went wrong" for a bodyless 500 — words no one
+    // chose for a user, dressed as the server's advice. Null means the body had
+    // nothing to say, and then this branch renders exactly what it always did.
+    const detail = trashErrorDetail(error);
     return (
       <div className="flex flex-col items-start gap-2">
-        <p className="text-destructive text-sm" role="alert">
-          Couldn’t load Trash.
-        </p>
+        {/* Both lines inside ONE alert: a screen reader announces the live
+          * region as a whole, so headline-alert + sentence-outside would speak
+          * the failure and swallow the reason. `w-full` is what keeps a long
+          * path in — this is a flex item of a column with `items-start`, so it
+          * is otherwise sized fit-content and its min-content width (which
+          * `break-words` does NOT lower — see `RestoreOutlook`) becomes the
+          * page's. With a fixed 100% width there is no min-content floor to
+          * exceed and `break-words` breaks the path to fit. Measured at 320px
+          * with a 130-character separator-free path inside the sentence:
+          * scrollWidth 608 vs clientWidth 320 without this class, 320 with it.
+          * The REAL refusals do not need it — their paths break at their
+          * slashes — so nothing in the app as it stands would have shown the
+          * overflow, which is why the number is written down here.
+          *
+          * `max-w-prose` because the sentence is four clauses long and the
+          * settings pane is ~770px wide on a desktop — about 110 characters a
+          * line, which is where a reader loses the return sweep. It cannot
+          * reintroduce the overflow: a max-width only ever narrows, and below
+          * ~65ch the `w-full` width wins. The headline-only case is unchanged
+          * by it — one short line looks the same in either box. */}
+        <div role="alert" className="flex w-full max-w-prose flex-col gap-1">
+          <p className="text-destructive text-sm">Couldn’t load Trash.</p>
+          {detail && (
+            <p className="text-muted-foreground text-sm break-words">
+              {detail}
+            </p>
+          )}
+        </div>
         <Button variant="outline" size="sm" onClick={() => void refetch()}>
           Try again
         </Button>
