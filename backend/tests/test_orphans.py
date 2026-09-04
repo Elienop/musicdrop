@@ -1128,3 +1128,56 @@ def test_the_ignore_list_holds_the_default_library_directory_once(tmp_path: Path
     ignore = _ignore_dirs(app, tmp_path / "records")
     assert len(ignore) == len(set(ignore))
     assert ignore.count(beets_dir) == 1
+
+
+def test_the_containment_helper_holds_for_the_filesystem_root() -> None:
+    """``_under`` compares with ``commonpath``, not a ``root + os.sep`` prefix.
+
+    For ``root == '/'`` that prefix is ``'//'`` and every absolute path reads as
+    OUTSIDE. This is a unit assertion because the end-to-end route to it is
+    ``directory: /`` — a music library configured at the filesystem root, which
+    no fixture can build. Measured with the prefix form in place, the four cases
+    below answer ``False, False, False, False``; the two ordinary ones are the
+    control that says the helper still refuses a sibling and a self-comparison.
+
+    The at-or-above WARNING does NOT depend on this: ``_exclude_ids`` decides
+    that by climbing the walk root's ancestors and comparing inodes, so ``/``
+    logs its one line whichever form ``_under`` takes. What this pins is the
+    seeds climb, which walks up while ``_under`` says it is still inside.
+    """
+    from app.beets.orphans import _under
+
+    assert _under("/x", "/") is True
+    assert _under("/x/y", "/") is True
+    assert _under("/", "/") is False
+    assert _under("/xy", "/x") is False
+    assert _under("/x/y", "/x") is True
+    assert _under("relative/y", "/x") is False
+
+
+def test_an_exclude_root_is_matched_by_identity_not_by_its_own_spelling(
+    tmp_path: Path,
+) -> None:
+    """The unit half of the bind-mount pin, on a box with no mount namespace.
+
+    A hard link cannot alias a directory, so the only in-process way to give one
+    directory two paths is a symlink — and the exclusion is asked about the
+    walk's spelling, which never contains the link. Here the exclude root is
+    handed in resolved while the walk reaches it through a symlinked component,
+    the shape ``realpath`` also handled; the bind-mount test above is what
+    separates the two strategies. Kept because it runs everywhere.
+    """
+    real = tmp_path / "tank" / "music"
+    real.mkdir(parents=True)
+    link = tmp_path / "music"
+    link.symlink_to(real)
+    _touch(real / "Real" / "01.flac")
+    _touch(real / "exports" / "p.m3u8")
+    _touch(real / "exports" / "sub" / "n.txt")
+    trash = tmp_path / "trash"
+
+    assert find_orphan_folders(link, seeds=None, trash_dir=trash) == [link / "exports"]
+    assert (
+        find_orphan_folders(link, seeds=None, trash_dir=trash, ignore_dirs=(real / "exports",))
+        == []
+    )
