@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import logging
 import os
 import re
 import shutil
@@ -55,7 +56,11 @@ from app.beets.library import LibraryHandle
 # would defeat that patch and the 500 path would silently call the real
 # beets setup.
 from app.beets.setup import reset_beets_globals, setup_beets
-from app.beets.store_layout import StoreLayoutError, layout_error_for_config
+from app.beets.store_layout import (
+    StoreLayoutError,
+    checked_store_dirs,
+    layout_error_for_config,
+)
 from app.config import Settings
 from app.config import settings as _module_settings
 from app.library_busy import library_job_active
@@ -221,8 +226,13 @@ def store_layout_errors(
     settings: Settings,
     handle: LibraryHandle,
 ) -> list[ValidationErrorItem]:
-    """Zero or one row: the submitted ``directory:`` + ``library:`` against where
-    Trash, the origin store and the beets data dir resolve.
+    """Zero or one row: the ``directory:`` and ``library:`` the submitted document
+    would LOAD, against where Trash, the origin store and the beets data dir resolve.
+
+    "Would load" and not ``data["directory"]``: an ``include:`` entry is merged at
+    higher priority than the document's own keys, so the value the next boot uses
+    can come from a file the editor is not showing. :func:`effective_config_paths`
+    asks beets' own config class that question.
 
     THE SINGLE SOURCE for both ``POST /api/config/validate`` and
     :func:`save`, so the editor's gutter and the Save refusal agree about which
@@ -230,10 +240,12 @@ def store_layout_errors(
     route reports any error, so a Save-only check would refuse a document the
     gutter called clean.
 
-    Silent when ``directory:`` is missing or is not a string: ``KnownKeysSchema``
-    already requires it and reports that itself, and a second row about the same
-    key would just be noise. (beets would then fall back to its bundled
-    ``directory: ~/Music`` — a value the boot check covers on the next start.)
+    Silent when the document has no ``directory:`` of its own, and when its value
+    is not a filename: ``KnownKeysSchema`` requires the key and reports both cases
+    itself, so a second row would be noise about a value the operator did not
+    write. (beets would fall back to its bundled ``directory: ~/Music``; the boot
+    check covers that on the next start, and Save is refused by the schema row in
+    the meantime.)
 
     A missing ``library:`` is NOT silent, because beets has a usable default for
     it (``library.db`` beside ``config.yaml``) and that default is what the next
@@ -243,16 +255,9 @@ def store_layout_errors(
     ``None`` for an empty document, and the annotation cannot say so because the
     same value is what ``validate_known_keys`` is handed and reports on.
     """
-    raw = data.get("directory") if isinstance(data, dict) else None
-    if not isinstance(raw, str):
+    if not isinstance(data, dict) or "directory" not in data:
         return []
-    raw_library = data.get("library") if isinstance(data, dict) else None
-    error = layout_error_for_config(
-        raw_directory=raw,
-        raw_library=raw_library if isinstance(raw_library, str) else None,
-        settings=settings,
-        handle=handle,
-    )
+    error = layout_error_for_config(document=data, settings=settings, handle=handle)
     if error is None:
         return []
     # The gutter row is painted against the key the refusal is ABOUT, so a
@@ -692,16 +697,9 @@ def on_disk_layout_error(handle: LibraryHandle, settings: Settings) -> StoreLayo
         doc = parse_yaml(handle.config_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, YAMLError):
         return None
-    raw = doc.get("directory") if isinstance(doc, CommentedMap) else None
-    if not isinstance(raw, str):
+    if not isinstance(doc, CommentedMap):
         return None
-    raw_library = doc.get("library") if isinstance(doc, CommentedMap) else None
-    return layout_error_for_config(
-        raw_directory=raw,
-        raw_library=raw_library if isinstance(raw_library, str) else None,
-        settings=settings,
-        handle=handle,
-    )
+    return layout_error_for_config(document=doc, settings=settings, handle=handle)
 
 
 def _rebuild_beets_handle(old: LibraryHandle, beets_dir: str) -> LibraryHandle:
@@ -864,16 +862,52 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
         # api.bank → beets.duplicates → beets.config_editor cycle. Inside the
         # swap lock, after the state swap, mirroring the lifespan wiring.
         from app.api.bank import get_bank_dir
-        from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
         from app.import_jobs.registry import get_registry
         from app.playlists.store import get_playlists_dir
 
+        # 4b. Backstop — the same question, asked of what beets ACTUALLY loaded.
+        # Step 2b reproduces beets' include merge over the candidate document;
+        # this one reads ``new.lib.directory`` and ``new.lib.path`` off the live
+        # handle, so a divergence between that reproduction and beets (an
+        # ``include:`` shape we read differently, a beets upgrade) is caught here
+        # instead of shipping a refused layout into the process.
+        #
+        # It also supplies the pair the registry needs. Resolving those two paths
+        # raises on a symlink loop, outside every ``except StoreLayoutError`` the
+        # Apply path has; taking them from ``checked_store_dirs`` gives that the
+        # same 422 as a refusal.
+        try:
+            trash_dir, origins_dir = checked_store_dirs(settings, new)
+        except StoreLayoutError as exc:
+            # The rebuild has already closed the old library, so there is no
+            # handle to put back — the swap above stands and the process serves
+            # the new config. Every delete, Empty Trash, duplicate resolve and
+            # Reorganize re-asks this question per request and answers 503, and
+            # the next start refuses to boot; the import registry is left holding
+            # the previous (now closed) library, so an import started against
+            # this config fails loudly rather than running inside a layout that
+            # was refused.
+            logging.getLogger("uvicorn.error").error(
+                "Apply loaded a config whose store layout is refused: %s", exc
+            )
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Apply loaded config.yaml, but its store layout is refused",
+                    "recovery": (
+                        f"{exc} The new config is loaded; deletes, Empty Trash and Reorganize"
+                        " answer 503 until it is corrected, and the next start will refuse"
+                        " to boot."
+                    ),
+                },
+            ) from exc
+
         get_registry().attach_library(
             new.lib,
-            resolve_trash_dir(settings, new),
+            trash_dir,
             bank_dir=get_bank_dir(),
             playlists_dir=get_playlists_dir(),
-            trash_origins_dir=resolve_trash_origins_dir(settings, new),
+            trash_origins_dir=origins_dir,
         )
 
     return build_config_snapshot(new)

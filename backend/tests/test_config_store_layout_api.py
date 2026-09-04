@@ -277,3 +277,191 @@ def test_apply_lets_an_unparseable_config_reach_the_rebuild(
     r = client.post("/api/config/apply")
     assert r.status_code == 500
     assert "Apply failed during rebuild" in r.json()["detail"]["message"]
+
+
+# --------------------------------------------------------------------------
+# ``include:`` — the key that decides ``directory:`` from a file the editor is
+# not showing.
+# --------------------------------------------------------------------------
+
+
+def _with_include(directory: Path, *includes: str) -> str:
+    """A document whose own ``directory:`` is ``directory``, plus ``include:`` rows."""
+    rows = "".join(f"  - {name}\n" for name in includes)
+    return f"directory: {directory}\nlibrary: library.db\ninclude:\n{rows}"
+
+
+def _layout_rows(client: TestClient, yaml_text: str) -> list[dict[str, object]]:
+    r = client.post("/api/config/validate", json={"yaml_text": yaml_text})
+    assert r.status_code == 200, r.text
+    rows: list[dict[str, object]] = [e for e in r.json()["errors"] if e["type"] == "store_layout"]
+    return rows
+
+
+def test_validate_flags_a_directory_an_include_overrides(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """The document's own ``directory:`` is safe; the included file's is not.
+
+    beets merges every file under ``include:`` at HIGHEST priority
+    (``beets/__init__.py:29-38``), so this document's effective music root is the
+    beets data directory. Measured in the review round against the first pass of
+    this gate, which read ``data["directory"]``: Validate reported clean, Save
+    wrote the file, Apply reloaded it, and the process was left serving a layout
+    the next start refuses.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    overlay = beets_library.beets_dir / "overlay.yaml"
+    overlay.write_text(f"directory: {beets_library.beets_dir}\n", encoding="utf-8")
+
+    rows = _layout_rows(client, _with_include(music, "overlay.yaml"))
+
+    assert len(rows) == 1, rows
+    assert "The beets data directory is the music library" in str(rows[0]["msg"])
+
+
+def test_validate_accepts_a_dangerous_directory_an_include_replaces(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """The inverse, and the control: the top-level value is the refused one.
+
+    A gate that refused any document carrying an ``include:``, or that merged in
+    the wrong direction, fails here — the effective root is the included file's
+    music dir and the document is acceptable.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    overlay = beets_library.beets_dir / "overlay.yaml"
+    overlay.write_text(f"directory: {music}\n", encoding="utf-8")
+
+    rows = _layout_rows(client, _with_include(beets_library.beets_dir, "overlay.yaml"))
+
+    assert rows == []
+
+
+def test_the_last_include_wins_when_two_of_them_disagree(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """Order inside ``include:`` decides, and the LAST entry is the one that does.
+
+    ``set_file`` inserts at the front of the source list (``confuse/core.py:415``
+    — ``RootView.set`` is ``sources.insert(0, ...)``), so each successive include
+    outranks the one before it. Both directions are asserted from one fixture,
+    because a merge that ignored order would satisfy either half alone.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    (beets_library.beets_dir / "safe.yaml").write_text(f"directory: {music}\n", encoding="utf-8")
+    (beets_library.beets_dir / "unsafe.yaml").write_text(
+        f"directory: {beets_library.beets_dir}\n", encoding="utf-8"
+    )
+
+    assert _layout_rows(client, _with_include(music, "unsafe.yaml", "safe.yaml")) == []
+    assert len(_layout_rows(client, _with_include(music, "safe.yaml", "unsafe.yaml"))) == 1
+
+
+def test_an_include_naming_a_file_that_is_not_there_leaves_the_document_standing(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """An unreadable include is beets' own tolerated case, and both halves matter.
+
+    beets writes the failure to stderr and carries on with what it has
+    (``beets/__init__.py:29-38``), so the value that survives is the document's.
+    The second half is what keeps the tolerance from becoming a hole: a document
+    whose OWN ``directory:`` is refused stays refused when its include is
+    missing.
+    """
+    music = Path(beets_library.lib.directory.decode())
+
+    assert _layout_rows(client, _with_include(music, "not-written-yet.yaml")) == []
+    assert len(_layout_rows(client, _with_include(beets_library.beets_dir, "gone.yaml"))) == 1
+
+
+def test_an_include_that_is_not_a_list_answers_a_lint_row_rather_than_a_500(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """``include:`` as a mapping — a shape beets raises on at startup.
+
+    confuse answers ``ConfigTypeError`` for it, which is neither of the two cases
+    beets tolerates. The gate reports the document's own ``directory:`` instead
+    of propagating, so a hand-edited draft gets a lint gutter rather than a 500
+    from the editor; the config itself would stop the next start.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    text = f"directory: {music}\nlibrary: library.db\ninclude:\n  a: b\n"
+
+    r = client.post("/api/config/validate", json={"yaml_text": text})
+
+    assert r.status_code == 200, r.text
+    assert [e for e in r.json()["errors"] if e["type"] == "store_layout"] == []
+
+
+def test_save_refuses_a_document_whose_include_moves_the_directory(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """Save takes the same helper, so the write is refused before it happens."""
+    music = Path(beets_library.lib.directory.decode())
+    (beets_library.beets_dir / "overlay.yaml").write_text(
+        f"directory: {beets_library.beets_dir}\n", encoding="utf-8"
+    )
+    config_path = beets_library.config_path
+    before = config_path.read_bytes()
+
+    r = client.post(
+        "/api/config/save",
+        json={
+            "yaml_text": _with_include(music, "overlay.yaml"),
+            "base_sha256": _sha(config_path),
+        },
+    )
+
+    assert r.status_code == 422, r.text
+    rows = [d for d in r.json()["detail"] if d["type"] == "store_layout"]
+    assert len(rows) == 1, r.json()
+    assert config_path.read_bytes() == before
+
+
+def test_apply_refuses_an_on_disk_include_that_moves_the_directory(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """Apply reads the file, and the file's ``include:`` is part of what it reads."""
+    from app.main import app
+
+    music = Path(beets_library.lib.directory.decode())
+    (beets_library.beets_dir / "overlay.yaml").write_text(
+        f"directory: {beets_library.beets_dir}\n", encoding="utf-8"
+    )
+    beets_library.config_path.write_text(_with_include(music, "overlay.yaml"), encoding="utf-8")
+    handle_before = app.state.beets_library
+
+    r = client.post("/api/config/apply")
+
+    assert r.status_code == 422, r.text
+    assert "The beets data directory is the music library" in r.json()["detail"]["recovery"]
+    assert app.state.beets_library is handle_before
+
+
+def test_apply_refuses_after_the_rebuild_when_the_pre_check_missed_it(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The backstop, driven by simulating the divergence it exists for.
+
+    ``on_disk_layout_error`` reproduces beets' merge over the file; this test
+    blinds that reproduction so the only thing left to catch the layout is the
+    check that reads ``new.lib.directory`` off the handle beets actually built.
+    The handle IS swapped — the rebuild closed the old library, so there is
+    nothing to put back — and the 422 says so.
+    """
+    from app.main import app
+
+    monkeypatch.setattr("app.beets.config_editor.on_disk_layout_error", lambda *a, **k: None)
+    beets_library.config_path.write_text(
+        _yaml_pointing_at(beets_library.beets_dir), encoding="utf-8"
+    )
+    handle_before = app.state.beets_library
+
+    r = client.post("/api/config/apply")
+
+    assert r.status_code == 422, r.text
+    recovery = r.json()["detail"]["recovery"]
+    assert "The beets data directory is the music library" in recovery
+    assert "answer 503" in recovery
+    assert app.state.beets_library is not handle_before

@@ -59,9 +59,12 @@ of the five has to exist yet.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
+
+import beets
+import confuse
 
 from app.beets.library import LibraryHandle, _music_dir
 from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
@@ -76,6 +79,7 @@ __all__ = [
     "StoreLayoutError",
     "check_store_layout",
     "checked_store_dirs",
+    "effective_config_paths",
     "layout_error_for_config",
     "require_safe_store_layout",
     "resolve_configured_path",
@@ -681,29 +685,95 @@ def resolve_configured_path(raw: str, beets_dir: Path) -> Path:
     return Path(os.path.abspath(expanded)).resolve()
 
 
+class _CandidateConfig(beets.IncludeLazyConfig):
+    """beets' own config class, over a document that is not on disk yet.
+
+    Two departures from ``beets.config``, both required and neither global:
+
+    * ``config_dir`` is pinned to the handle's beets dir instead of read from
+      ``BEETSDIR``, so a relative ``directory:``, ``library:`` or ``include:``
+      resolves against the directory beets will use for THIS handle;
+    * the user source is the SUBMITTED document rather than ``config.yaml`` as it
+      sits on disk, which is the whole point at Validate and Save time.
+
+    Constructing one touches no beets global. ``confuse.Configuration.__init__``
+    records the appname, the modname's package path and the env-var name and
+    calls ``RootView.__init__([])`` — every source it later holds is its own list
+    (``confuse/core.py:504-537``). ``beets.config``, confuse's caches and the
+    plugin registry are untouched.
+    """
+
+    def __init__(self, beets_dir: Path) -> None:
+        super().__init__("beets", "beets")
+        self._pinned_config_dir = str(beets_dir)
+
+    def config_dir(self) -> str:
+        return self._pinned_config_dir
+
+
+def effective_config_paths(
+    document: Mapping[str, Any], beets_dir: Path
+) -> tuple[str | None, str | None]:
+    """The ``directory:`` and ``library:`` beets would LOAD from ``document``.
+
+    Not ``document["directory"]``: beets merges every file listed under
+    ``include:`` at HIGHEST priority (``beets/__init__.py:29-38``, and
+    ``confuse/core.py:617`` documents ``set_file`` as "highest priority"), so an
+    included file's ``directory:`` overrides the top-level key the editor shows.
+    Measured in the review round: a document whose own ``directory:`` was safe,
+    with an include pointing the library at the Trash dir, passed all three gates
+    and left the process serving a layout the next boot refuses.
+
+    Returns ``(None, None)`` when the document does not resolve to a filename at
+    all — a ``directory:`` that is not a string, say. The caller reports that
+    through the schema, which owns the "this key has the wrong type" message.
+    """
+    cfg = _CandidateConfig(beets_dir)
+    # Defaults first, so the document sits ABOVE them: `library: library.db` and
+    # `directory: ~/Music` are beets' own (`beets/config_default.yaml:3-4`), and
+    # a document that drops either key is held to the value beets would then use.
+    cfg.read(user=False, defaults=True)
+    cfg.set(confuse.ConfigSource(dict(document), filename=str(beets_dir / "config.yaml")))
+    # The loop ``IncludeLazyConfig.read`` runs after reading, reproduced here
+    # because we are replacing the user source rather than reading it: each entry
+    # is ``set_file``'d, which inserts it at the FRONT, so the last include wins.
+    try:
+        for view in cfg["include"].sequence():
+            cfg.set_file(view.as_filename())
+    except confuse.ConfigError:
+        # Three shapes reach here and all three leave the document's own value
+        # standing, which is what would have been checked without this loop:
+        # no ``include:`` key (``NotFoundError`` — beets catches that too), an
+        # entry naming a file that will not parse (``ConfigReadError`` — beets
+        # writes to stderr and carries on), and an ``include:`` that is not a
+        # list of filenames (``ConfigTypeError``). The third is a config beets
+        # raises on at startup, so a gate that reports it clean is not hiding a
+        # layout — the process would not come up to use one.
+        pass
+    try:
+        return cfg["directory"].as_filename(), cfg["library"].as_filename()
+    except confuse.ConfigError:
+        return None, None
+
+
 def layout_error_for_config(
     *,
-    raw_directory: str,
-    raw_library: str | None,
+    document: Mapping[str, Any],
     settings: Settings,
     handle: LibraryHandle,
 ) -> StoreLayoutError | None:
-    """The refusal a candidate ``directory:`` + ``library:`` pair would cause.
+    """The refusal a candidate ``config.yaml`` document would cause, or ``None``.
 
     Returns rather than raises: its callers (Save, Validate, Apply) turn it into
     a response body, and every one of them wants the message rather than a
     traceback. ``B``, ``T`` and ``O`` come from the LIVE settings and handle:
     they are env-derived, and the two values that move through the editor are the
-    two this takes.
-
-    ``raw_library`` of ``None`` means the document has no ``library:`` key, which
-    is what beets' own bundled default covers — ``library: library.db``, relative
-    to ``BEETSDIR`` (``beets/config_default.yaml:3``). That default is what gets
-    checked, so a document that drops the key is held to the same rule as one
-    that spells it out.
+    two :func:`effective_config_paths` reads back out of the document.
     """
-    library_raw = "library.db" if raw_library is None else raw_library
     try:
+        raw_directory, raw_library = effective_config_paths(document, handle.beets_dir)
+        if raw_directory is None or raw_library is None:
+            return None
         trash, origins = _resolve_store_dirs(settings, handle)
         check_store_layout(
             music_dir=_guarded(
@@ -716,8 +786,8 @@ def layout_error_for_config(
             origins_dir=origins,
             library_path=_guarded(
                 LIBRARY_SETTING,
-                library_raw,
-                lambda: resolve_configured_path(library_raw, handle.beets_dir),
+                raw_library,
+                lambda: resolve_configured_path(raw_library, handle.beets_dir),
             ),
         )
     except StoreLayoutError as exc:
