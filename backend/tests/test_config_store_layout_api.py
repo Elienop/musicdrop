@@ -36,14 +36,40 @@ def _yaml_pointing_at(directory: Path) -> str:
 
 
 def test_validate_flags_a_directory_that_would_swallow_the_origin_store(
-    client: TestClient, beets_library: LibraryHandle
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``directory:`` pointed at the beets dir puts ``<B>/trash-origins`` in the library.
+    """A ``directory:`` that CONTAINS the origin store, and breaks nothing else.
+
+    The store is moved to a tree of its own first, so the candidate music root
+    can sit above it without also nesting with the beets data dir — that pair
+    has its own rule and its own message, and this row has to come from the
+    ``M contains O`` one.
 
     ``loc`` and ``line`` matter as much as the refusal: the frontend paints the
     gutter from those two, and disables Save while any error row is present
     (SettingsBeetsPage) — so a row with no position would refuse the save with
     nothing on screen to explain it.
+    """
+    outside = beets_library.beets_dir.parent / "records"
+    monkeypatch.setattr("app.config.settings.trash_origins_dir", str(outside / "store"))
+
+    r = client.post("/api/config/validate", json={"yaml_text": _yaml_pointing_at(outside)})
+    assert r.status_code == 200
+    rows = [e for e in r.json()["errors"] if e["type"] == "store_layout"]
+    assert len(rows) == 1, r.json()
+    assert rows[0]["loc"] == "directory"
+    assert rows[0]["line"] == 1
+    assert "The music library contains the Trash origin store" in rows[0]["msg"]
+
+
+def test_validate_flags_a_directory_that_nests_with_the_beets_dir(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """``directory:`` pointed AT the beets data dir — the ``B is M`` row.
+
+    This document used to be accepted (the rule table had no B-vs-M entry) and
+    the review round measured what it costs: one library-scope Reorganize
+    offered bank/, inbox/, playlists/, plex/ and slskd/ for trashing.
     """
     r = client.post(
         "/api/config/validate",
@@ -53,8 +79,30 @@ def test_validate_flags_a_directory_that_would_swallow_the_origin_store(
     rows = [e for e in r.json()["errors"] if e["type"] == "store_layout"]
     assert len(rows) == 1, r.json()
     assert rows[0]["loc"] == "directory"
-    assert rows[0]["line"] == 1
-    assert "The music library contains the Trash origin store" in rows[0]["msg"]
+    assert "The beets data directory is the music library" in rows[0]["msg"]
+
+
+def test_validate_flags_a_library_key_that_would_sit_under_trash(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``library:`` row, and the gutter marks THAT key rather than ``directory:``.
+
+    ``library:`` is an independent beets key: the database file can be moved into
+    Trash while all four directories stay disjoint. Measured in the review round —
+    the document passed and Empty Trash removed ``library.db``.
+    """
+    trash = beets_library.beets_dir.parent / "bin"
+    monkeypatch.setattr("app.config.settings.trash_dir", str(trash))
+    music = Path(beets_library.lib.directory.decode())
+    text = f"directory: {music}\nlibrary: {trash / 'library.db'}\n"
+
+    r = client.post("/api/config/validate", json={"yaml_text": text})
+    assert r.status_code == 200
+    rows = [e for e in r.json()["errors"] if e["type"] == "store_layout"]
+    assert len(rows) == 1, r.json()
+    assert rows[0]["loc"] == "library"
+    assert rows[0]["line"] == 2  # the ``library:`` line, not the ``directory:`` one
+    assert "The Trash directory contains the beets database" in rows[0]["msg"]
 
 
 def test_validate_accepts_the_directory_the_library_already_uses(
@@ -76,7 +124,7 @@ def test_validate_flags_a_directory_that_would_sit_under_trash(
     only ever looked at ``directory:`` against the beets dir would pass the case
     above and miss this one.
     """
-    trash = beets_library.beets_dir / "bin"
+    trash = beets_library.beets_dir.parent / "bin"
     monkeypatch.setattr("app.config.settings.trash_dir", str(trash))
     r = client.post("/api/config/validate", json={"yaml_text": _yaml_pointing_at(trash / "music")})
     assert r.status_code == 200
@@ -90,21 +138,26 @@ def test_validate_flags_a_directory_that_would_sit_under_trash(
 
 
 def test_save_refuses_the_same_document_the_gutter_flags(
-    client: TestClient, beets_library: LibraryHandle
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """422 with the same sentence, and — the part that matters — nothing written.
 
     A config saved in this shape would also refuse to BOOT, so a Save that wrote
     it first and complained afterwards would leave the operator with a process
     that will not come back up after the next restart.
+
+    Same layout as the validate test above, deliberately: the two routes share
+    one helper, and pinning them on the same document is what shows they agree.
     """
+    outside = beets_library.beets_dir.parent / "records"
+    monkeypatch.setattr("app.config.settings.trash_origins_dir", str(outside / "store"))
     config_path = beets_library.config_path
     before = config_path.read_bytes()
 
     r = client.post(
         "/api/config/save",
         json={
-            "yaml_text": _yaml_pointing_at(beets_library.beets_dir),
+            "yaml_text": _yaml_pointing_at(outside),
             "base_sha256": _sha(config_path),
         },
     )

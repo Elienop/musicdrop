@@ -12,7 +12,7 @@ is correct here: we never round-trip through the schema, only validate.
 Unknown beets/plugin keys live on disk in the ruamel ``CommentedMap``.
 
 Currently exports: ``parse_yaml``, ``validate_known_keys``,
-``directory_layout_errors``, ``atomic_write``, ``read_naming``, ``save``,
+``store_layout_errors``, ``atomic_write``, ``read_naming``, ``save``,
 ``save_naming``, and ``apply`` (asyncio-locked threadpool rebuild that swaps
 ``app.state.beets_library``).
 
@@ -55,7 +55,7 @@ from app.beets.library import LibraryHandle
 # would defeat that patch and the 500 path would silently call the real
 # beets setup.
 from app.beets.setup import reset_beets_globals, setup_beets
-from app.beets.store_layout import StoreLayoutError, layout_error_for_music_dir
+from app.beets.store_layout import StoreLayoutError, layout_error_for_config
 from app.config import Settings
 from app.config import settings as _module_settings
 from app.library_busy import library_job_active
@@ -74,11 +74,11 @@ from app.models.config_editor import (
 __all__ = [
     "apply",
     "atomic_write",
-    "directory_layout_errors",
     "parse_yaml",
     "read_naming",
     "save",
     "save_naming",
+    "store_layout_errors",
     "validate_known_keys",
 ]
 
@@ -215,24 +215,29 @@ def validate_known_keys(
 _STORE_LAYOUT_ERROR_TYPE: Final = "store_layout"
 
 
-def directory_layout_errors(
+def store_layout_errors(
     data: CommentedMap | dict[str, Any],
     *,
     settings: Settings,
     handle: LibraryHandle,
 ) -> list[ValidationErrorItem]:
-    """Zero or one row: the submitted ``directory:`` against where Trash resolves.
+    """Zero or one row: the submitted ``directory:`` + ``library:`` against where
+    Trash, the origin store and the beets data dir resolve.
 
     THE SINGLE SOURCE for both ``POST /api/config/validate`` and
-    :func:`save`, so the editor's gutter and the Save refusal can never disagree
-    about which documents are acceptable — the frontend disables Save while the
-    validate route reports any error, so a Save-only check would refuse a
-    document the gutter called clean.
+    :func:`save`, so the editor's gutter and the Save refusal agree about which
+    documents are acceptable — the frontend disables Save while the validate
+    route reports any error, so a Save-only check would refuse a document the
+    gutter called clean.
 
     Silent when ``directory:`` is missing or is not a string: ``KnownKeysSchema``
     already requires it and reports that itself, and a second row about the same
     key would just be noise. (beets would then fall back to its bundled
     ``directory: ~/Music`` — a value the boot check covers on the next start.)
+
+    A missing ``library:`` is NOT silent, because beets has a usable default for
+    it (``library.db`` beside ``config.yaml``) and that default is what the next
+    boot will open — so the row is computed against it.
 
     The ``isinstance`` on ``data`` is not defensive padding: ruamel returns
     ``None`` for an empty document, and the annotation cannot say so because the
@@ -241,14 +246,26 @@ def directory_layout_errors(
     raw = data.get("directory") if isinstance(data, dict) else None
     if not isinstance(raw, str):
         return []
-    error = layout_error_for_music_dir(raw, settings=settings, handle=handle)
+    raw_library = data.get("library") if isinstance(data, dict) else None
+    error = layout_error_for_config(
+        raw_directory=raw,
+        raw_library=raw_library if isinstance(raw_library, str) else None,
+        settings=settings,
+        handle=handle,
+    )
     if error is None:
         return []
+    # The gutter row is painted against the key the refusal is ABOUT, so a
+    # ``library:`` that lands inside Trash underlines ``library:`` and not the
+    # ``directory:`` line above it. A refusal between two env-derived paths names
+    # no config key; it still has to be shown, and ``directory:`` is the line the
+    # editor can act from.
+    key = error.config_key or "directory"
     root = data if isinstance(data, CommentedMap) else None
-    line, col = _line_col_for_path(root, ("directory",)) if root is not None else (None, None)
+    line, col = _line_col_for_path(root, (key,)) if root is not None else (None, None)
     return [
         ValidationErrorItem(
-            loc="directory",
+            loc=key,
             msg=str(error),
             type=_STORE_LAYOUT_ERROR_TYPE,
             line=line,
@@ -368,7 +385,7 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
     1. **Parse** with ruamel — bad YAML -> HTTP 422 with ``problem_mark`` line/col.
     2. **Schema validate** via ``KnownKeysSchema`` — known-key errors -> 422 with
        per-error ``ValidationErrorItem`` payloads. Then the same
-       :func:`directory_layout_errors` row ``POST /api/config/validate`` paints
+       :func:`store_layout_errors` row ``POST /api/config/validate`` paints
        in the gutter: a ``directory:`` that would put the music library at or
        under Trash (or over the origin store) is refused HERE, before the write,
        because the file this writes is also the file the process boots from — a
@@ -425,7 +442,7 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
     # list, same 422: to the editor both are lint rows on the same document, and
     # splitting them into two statuses would make the gutter and the Save button
     # disagree about what "there is an error" means.
-    errors = validate_known_keys(new_map) + directory_layout_errors(
+    errors = validate_known_keys(new_map) + store_layout_errors(
         new_map, settings=settings, handle=handle
     )
     if errors:
@@ -602,7 +619,7 @@ def save_naming(handle: LibraryHandle, req: SaveNamingRequest) -> BeetsConfigSna
     4. **Atomic write** + return the standard snapshot (``apply_pending`` True
        until Apply reloads beets).
 
-    No :func:`directory_layout_errors` step, unlike :func:`save`: step 3 rewrites
+    No :func:`store_layout_errors` step, unlike :func:`save`: step 3 rewrites
     exactly two nodes and neither is ``directory:``, so the music root this
     document resolves to is the same one before and after — a naming Save cannot
     move ``M`` into a refused relationship with Trash or the origin store.
@@ -678,7 +695,13 @@ def on_disk_layout_error(handle: LibraryHandle, settings: Settings) -> StoreLayo
     raw = doc.get("directory") if isinstance(doc, CommentedMap) else None
     if not isinstance(raw, str):
         return None
-    return layout_error_for_music_dir(raw, settings=settings, handle=handle)
+    raw_library = doc.get("library") if isinstance(doc, CommentedMap) else None
+    return layout_error_for_config(
+        raw_directory=raw,
+        raw_library=raw_library if isinstance(raw_library, str) else None,
+        settings=settings,
+        handle=handle,
+    )
 
 
 def _rebuild_beets_handle(old: LibraryHandle, beets_dir: str) -> LibraryHandle:

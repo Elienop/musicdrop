@@ -18,22 +18,145 @@ from pathlib import Path
 import pytest
 
 from app.beets.store_layout import (
+    BEETS_SETTING,
+    LIBRARY_SETTING,
     MUSIC_SETTING,
     ORIGINS_SETTING,
     TRASH_SETTING,
     StoreLayoutError,
     check_store_layout,
-    resolve_configured_music_dir,
+    resolve_configured_path,
 )
 
 
-def _check(*, music: Path, beets: Path, trash: Path, origins: Path) -> None:
-    check_store_layout(music_dir=music, beets_dir=beets, trash_dir=trash, origins_dir=origins)
+def _check(
+    *, music: Path, beets: Path, trash: Path, origins: Path, library: Path | None = None
+) -> None:
+    """``library`` defaults to where beets' own bundled default puts it.
+
+    ``library: library.db`` (``beets/config_default.yaml:3``) is relative, so
+    confuse joins it to ``BEETSDIR`` — the default database really does sit
+    inside ``B``. Using that as the helper's default keeps every test that is
+    about the four DIRECTORIES on a realistic ``L``, rather than on a path
+    invented to be harmless.
+    """
+    check_store_layout(
+        music_dir=music,
+        beets_dir=beets,
+        trash_dir=trash,
+        origins_dir=origins,
+        library_path=beets / "library.db" if library is None else library,
+    )
 
 
 # --------------------------------------------------------------------------
 # REFUSED — one test per relationship in the rule table.
 # --------------------------------------------------------------------------
+
+
+def test_the_beets_dir_equal_to_the_music_library_is_refused(tmp_path: Path) -> None:
+    """``directory: .`` — the beets data dir IS the library beets indexes.
+
+    The data dir holds ``bank/``, ``plex/``, ``slskd/``, ``playlists/`` and
+    ``inbox/``, none of which holds audio; as the music library it is also the
+    tree the orphan sweep walks, which offered all five for trashing when the
+    review round measured it.
+    """
+    both = tmp_path / "data"
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=both,
+            beets=both,
+            trash=both / "trash",
+            origins=tmp_path / "records",
+        )
+    assert "The beets data directory is the music library" in str(exc.value)
+    assert BEETS_SETTING in str(exc.value)
+
+
+def test_a_beets_dir_inside_the_music_library_is_refused(tmp_path: Path) -> None:
+    """``MUSICDROP_BEETS_DIR=/music/musicdrop`` — refused as of the review round.
+
+    It used to be allowed with the origin store moved out. Two loose ends closed
+    together by refusing it: the DEFAULT origin store is then inside the library
+    and refused (so the layout secretly obliged a second env var), and
+    ``library.db`` + ``config.yaml`` sit where a library-scope sweep and a
+    whole-folder delete can move them — measured on ``d65e635``, where a
+    plain-named beets dir inside the library was reported by the sweep.
+    """
+    music = tmp_path / "music"
+    beets = music / "musicdrop"
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=music,
+            beets=beets,
+            trash=beets / "trash",
+            origins=tmp_path / "records",
+        )
+    assert "The music library contains the beets data directory" in str(exc.value)
+    assert str(music) in str(exc.value)
+    assert str(beets) in str(exc.value)
+
+
+def test_a_music_library_inside_the_beets_dir_is_refused(tmp_path: Path) -> None:
+    """The other direction, and the one the sweep cannot survive.
+
+    Every app-owned exclusion (``ignore_dirs``, the origin store, the export
+    dir) is then an ancestor of the walk root, and an exclude root at or above
+    the walk root matched every candidate when the implementer measured it — the
+    sweep returns nothing for the whole library.
+    """
+    beets = tmp_path / "data"
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=beets / "music",
+            beets=beets,
+            trash=beets / "trash",
+            origins=beets / "trash-origins",
+        )
+    assert "The beets data directory contains the music library" in str(exc.value)
+
+
+def test_the_database_inside_the_trash_is_refused(tmp_path: Path) -> None:
+    """``library:`` is its own key: the DB can move while B, T and O stay disjoint.
+
+    Measured in the review round: with ``library:`` under the Trash dir the
+    layout passed and Empty Trash removed ``library.db``.
+    """
+    beets = tmp_path / "data"
+    trash = beets / "trash"
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=tmp_path / "music",
+            beets=beets,
+            trash=trash,
+            origins=beets / "trash-origins",
+            library=trash / "library.db",
+        )
+    assert "The Trash directory contains the beets database" in str(exc.value)
+    assert LIBRARY_SETTING in str(exc.value)
+
+
+def test_the_database_inside_the_origin_store_is_refused(tmp_path: Path) -> None:
+    """The store's own sweep unlinks ``*.json`` only, so this one is not a delete.
+
+    It is refused because the store has to be a directory only the app's records
+    live in — and the message says exactly that rather than claiming a loss the
+    sweep does not cause.
+    """
+    beets = tmp_path / "data"
+    origins = beets / "trash-origins"
+    with pytest.raises(StoreLayoutError) as exc:
+        _check(
+            music=tmp_path / "music",
+            beets=beets,
+            trash=beets / "trash",
+            origins=origins,
+            library=origins / "library.db",
+        )
+    message = str(exc.value)
+    assert "The Trash origin store contains the beets database" in message
+    assert "library.db is not a *.json, so that sweep leaves it" in message
 
 
 def test_trash_equal_to_the_music_dir_is_refused(tmp_path: Path) -> None:
@@ -229,25 +352,6 @@ def test_the_shipped_default_layout_is_allowed(tmp_path: Path) -> None:
     )
 
 
-def test_a_beets_dir_inside_the_music_library_is_allowed(tmp_path: Path) -> None:
-    """B inside M is not itself a refusal — the ORIGIN STORE is what must move.
-
-    Consequence worth stating: with B inside M the DEFAULT store
-    (``<B>/trash-origins``) is inside the library and IS refused, so this layout
-    obliges the operator to set ``MUSICDROP_TRASH_ORIGINS_DIR`` outside. The
-    sweep half of the same shape is
-    ``test_orphans.py::test_a_beets_dir_inside_the_library_is_never_reported``.
-    """
-    music = tmp_path / "music"
-    beets = music / "musicdrop"
-    _check(
-        music=music,
-        beets=beets,
-        trash=beets / "trash",
-        origins=tmp_path / "records",
-    )
-
-
 def test_disjoint_directories_are_allowed(tmp_path: Path) -> None:
     """Four unrelated trees — the layout the shipped image has (/music, /data)."""
     _check(
@@ -255,6 +359,23 @@ def test_disjoint_directories_are_allowed(tmp_path: Path) -> None:
         beets=tmp_path / "data",
         trash=tmp_path / "bin",
         origins=tmp_path / "records",
+    )
+
+
+def test_the_default_database_beside_the_config_is_allowed(tmp_path: Path) -> None:
+    """The control for the two ``library:`` rows below.
+
+    beets' bundled ``library: library.db`` puts the database inside ``B``, which
+    is also where the DEFAULT Trash and origin store sit — so a rule about ``L``
+    that was one comparison too wide would refuse every shipped install.
+    """
+    beets = tmp_path / "data"
+    _check(
+        music=tmp_path / "music",
+        beets=beets,
+        trash=beets / "trash",
+        origins=beets / "trash-origins",
+        library=beets / "library.db",
     )
 
 
@@ -383,10 +504,10 @@ def test_a_relative_directory_resolves_against_the_beets_dir_not_the_cwd(
     """
     beets = tmp_path / "data" / "beets"
     beets.mkdir(parents=True)
-    assert resolve_configured_music_dir("../music", beets) == (tmp_path / "data" / "music")
-    assert resolve_configured_music_dir("inner", beets) == (beets / "inner")
+    assert resolve_configured_path("../music", beets) == (tmp_path / "data" / "music")
+    assert resolve_configured_path("inner", beets) == (beets / "inner")
 
 
 def test_an_absolute_directory_ignores_the_beets_dir(tmp_path: Path) -> None:
     absolute = tmp_path / "elsewhere" / "music"
-    assert resolve_configured_music_dir(str(absolute), tmp_path / "data") == absolute
+    assert resolve_configured_path(str(absolute), tmp_path / "data") == absolute

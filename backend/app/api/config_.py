@@ -14,10 +14,10 @@ from ruamel.yaml.error import YAMLError
 
 from app.beets.config_editor import (
     _settings,
-    directory_layout_errors,
     parse_yaml,
     read_naming,
     save_naming,
+    store_layout_errors,
     validate_known_keys,
 )
 from app.beets.config_editor import apply as apply_config_op
@@ -159,7 +159,7 @@ def validate_config(req: ValidateRequest, request: Request) -> ValidateResponse:
     layout_errors = (
         []
         if handle is None
-        else directory_layout_errors(data, settings=_settings(request.app), handle=handle)
+        else store_layout_errors(data, settings=_settings(request.app), handle=handle)
     )
     return ValidateResponse(
         errors=validate_known_keys(data) + layout_errors,

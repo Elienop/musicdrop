@@ -27,12 +27,21 @@ from app.main import app
 _VALID = {"type": "DownloadDirectoryComplete", "localDirectoryName": "/downloads/Artist/Album"}
 
 
-def _write_config(tmp_path: Path) -> None:
+def _write_config(tmp_path: Path) -> Path:
+    """Write a hermetic beets config and return the BEETSDIR it lives in.
+
+    The beets dir is a SIBLING of the music dir, never its parent:
+    ``app.beets.store_layout`` refuses a beets data directory that contains the
+    music library, and the real lifespan these tests boot runs that check.
+    """
     music = tmp_path / "music"
     music.mkdir()
-    (tmp_path / "config.yaml").write_text(
+    beets = tmp_path / "beets"
+    beets.mkdir()
+    (beets / "config.yaml").write_text(
         f"directory: {music}\nlibrary: library.db\nplugins:\n  - musicbrainz\n"
     )
+    return beets
 
 
 def _probe_queue(tmp_path: Path) -> AcquisitionQueue:
@@ -48,7 +57,7 @@ def _configure(client: TestClient, **kwargs: object) -> None:
 
 def test_webhook_missing_token_returns_401(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_config(tmp_path)
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
     app.dependency_overrides.clear()
     with TestClient(app) as client:
         _configure(client, base_url="http://slskd:5030", token="t", webhook_secret="hook")
@@ -58,7 +67,7 @@ def test_webhook_missing_token_returns_401(tmp_path: Path, monkeypatch: pytest.M
 
 def test_webhook_wrong_token_returns_401(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_config(tmp_path)
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
     app.dependency_overrides.clear()
     with TestClient(app) as client:
         _configure(client, base_url="http://slskd:5030", token="t", webhook_secret="hook")
@@ -68,8 +77,8 @@ def test_webhook_wrong_token_returns_401(tmp_path: Path, monkeypatch: pytest.Mon
 
 def test_webhook_queues_valid_event(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_config(tmp_path)
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
-    (tmp_path / "inbox" / "Artist" / "Album").mkdir(parents=True)
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
+    (tmp_path / "beets" / "inbox" / "Artist" / "Album").mkdir(parents=True)
     app.dependency_overrides.clear()
     with TestClient(app) as client:
         probe = _probe_queue(tmp_path)
@@ -85,7 +94,7 @@ def test_webhook_queues_valid_event(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         r = client.post("/api/slskd/webhook", headers={"X-API-Key": "hook"}, json=_VALID)
         assert r.status_code == 200
         assert r.json() == {"status": "queued"}
-        expected = tmp_path.resolve() / "inbox" / "Artist" / "Album"
+        expected = (tmp_path / "beets").resolve() / "inbox" / "Artist" / "Album"
         assert probe.status().queued == 1
         assert str(expected) in probe._dedupe
 
@@ -94,8 +103,8 @@ def test_webhook_offloads_blocking_fs_io(tmp_path: Path, monkeypatch: pytest.Mon
     # contain / coalesce_album_root / enqueue do blocking FS I/O and must run in
     # the threadpool, not on the event loop.
     _write_config(tmp_path)
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
-    (tmp_path / "inbox" / "Artist" / "Album").mkdir(parents=True)
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
+    (tmp_path / "beets" / "inbox" / "Artist" / "Album").mkdir(parents=True)
     app.dependency_overrides.clear()
 
     import app.api.slskd as slskd_mod
@@ -126,7 +135,7 @@ def test_webhook_ignores_non_directory_complete(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_config(tmp_path)
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
     app.dependency_overrides.clear()
     with TestClient(app) as client:
         probe = _probe_queue(tmp_path)
@@ -153,8 +162,8 @@ def test_webhook_ignores_when_auto_import_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_config(tmp_path)
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
-    (tmp_path / "inbox" / "Artist" / "Album").mkdir(parents=True)
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
+    (tmp_path / "beets" / "inbox" / "Artist" / "Album").mkdir(parents=True)
     app.dependency_overrides.clear()
     with TestClient(app) as client:
         probe = _probe_queue(tmp_path)
@@ -177,7 +186,7 @@ def test_webhook_ignores_path_escaping_inbox(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_config(tmp_path)
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
     app.dependency_overrides.clear()
     with TestClient(app) as client:
         probe = _probe_queue(tmp_path)
@@ -210,8 +219,8 @@ def test_webhook_ignores_empty_remainder_inbox_root(
     # A whole-inbox MOVE would sweep in unrelated siblings, so it is refused with a
     # 200/ignored (never queued), not allowed through like a real album drop.
     _write_config(tmp_path)
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
-    (tmp_path / "inbox").mkdir()
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
+    (tmp_path / "beets" / "inbox").mkdir()
     app.dependency_overrides.clear()
     with TestClient(app) as client:
         probe = _probe_queue(tmp_path)
@@ -240,8 +249,8 @@ def test_webhook_ignores_root_slash_under_empty_prefix(
     # Default empty downloads_prefix + localDirectoryName "/" -> lstrip("/") -> ""
     # -> the inbox ROOT again. Same whole-inbox MOVE; refused 200/ignored.
     _write_config(tmp_path)
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
-    (tmp_path / "inbox").mkdir()
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
+    (tmp_path / "beets" / "inbox").mkdir()
     app.dependency_overrides.clear()
     with TestClient(app) as client:
         probe = _probe_queue(tmp_path)
@@ -266,8 +275,8 @@ def test_webhook_ignores_root_slash_under_empty_prefix(
 
 def test_webhook_remaps_prefix_to_inbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_config(tmp_path)
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
-    (tmp_path / "inbox" / "Beatles" / "Abbey Road").mkdir(parents=True)
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
+    (tmp_path / "beets" / "inbox" / "Beatles" / "Abbey Road").mkdir(parents=True)
     app.dependency_overrides.clear()
     with TestClient(app) as client:
         probe = _probe_queue(tmp_path)
@@ -289,7 +298,7 @@ def test_webhook_remaps_prefix_to_inbox(tmp_path: Path, monkeypatch: pytest.Monk
             },
         )
         assert r.json() == {"status": "queued"}
-        expected = tmp_path.resolve() / "inbox" / "Beatles" / "Abbey Road"
+        expected = (tmp_path / "beets").resolve() / "inbox" / "Beatles" / "Abbey Road"
         assert str(expected) in probe._dedupe
 
 
@@ -297,8 +306,8 @@ def test_webhook_duplicate_event_enqueues_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_config(tmp_path)
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
-    (tmp_path / "inbox" / "Artist" / "Album").mkdir(parents=True)
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
+    (tmp_path / "beets" / "inbox" / "Artist" / "Album").mkdir(parents=True)
     app.dependency_overrides.clear()
     with TestClient(app) as client:
         probe = _probe_queue(tmp_path)
@@ -323,9 +332,9 @@ def test_webhook_coalesces_multidisc_to_album(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_config(tmp_path)
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
-    (tmp_path / "inbox" / "Artist" / "Album" / "CD1").mkdir(parents=True)
-    (tmp_path / "inbox" / "Artist" / "Album" / "CD2").mkdir(parents=True)
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
+    (tmp_path / "beets" / "inbox" / "Artist" / "Album" / "CD1").mkdir(parents=True)
+    (tmp_path / "beets" / "inbox" / "Artist" / "Album" / "CD2").mkdir(parents=True)
     app.dependency_overrides.clear()
     with TestClient(app) as client:
         probe = _probe_queue(tmp_path)
@@ -349,7 +358,7 @@ def test_webhook_coalesces_multidisc_to_album(
             )
             assert r.json() == {"status": "queued"}
         # Both disc events coalesced to the album parent + the dedupe collapsed them.
-        album = tmp_path.resolve() / "inbox" / "Artist" / "Album"
+        album = (tmp_path / "beets").resolve() / "inbox" / "Artist" / "Album"
         assert probe.status().queued == 1
         assert str(album) in probe._dedupe
 
@@ -371,7 +380,7 @@ def test_a_non_ascii_api_key_is_refused_not_a_500(
     ``str`` header at all — which is also why no existing test caught this.
     """
     _write_config(tmp_path)
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
     app.dependency_overrides.clear()
     with TestClient(app, raise_server_exceptions=False) as client:
         _configure(client, base_url="http://slskd:5030", token="t", webhook_secret="hook")
@@ -398,7 +407,7 @@ def test_a_wrong_shaped_body_cannot_read_the_contract_without_the_secret(
     FastAPI solves those before it validates the body.
     """
     _write_config(tmp_path)
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
     app.dependency_overrides.clear()
     with TestClient(app) as client:
         _configure(client, base_url="http://slskd:5030", token="t", webhook_secret="hook")
@@ -419,7 +428,7 @@ def test_an_authenticated_caller_still_gets_its_422(
     Without this, deleting body validation entirely would pass the test above.
     """
     _write_config(tmp_path)
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
     app.dependency_overrides.clear()
     with TestClient(app) as client:
         _configure(client, base_url="http://slskd:5030", token="t", webhook_secret="hook")

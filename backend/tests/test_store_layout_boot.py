@@ -96,16 +96,15 @@ def test_the_default_layout_still_boots(beets_dir: Path) -> None:
         assert client.get("/api/health").status_code == 200
 
 
-def test_a_beets_dir_inside_the_library_boots_with_the_store_moved_out(
+def test_a_beets_dir_inside_the_library_refuses_to_start(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The allowed shape that costs the operator one extra setting.
+    """``MUSICDROP_BEETS_DIR=/music/musicdrop`` — refused as of the review round.
 
-    ``B`` inside ``M`` is not itself refused, but the DEFAULT store
-    ``<B>/trash-origins`` is then inside the music library and IS — so this
-    layout boots only with ``MUSICDROP_TRASH_ORIGINS_DIR`` pointed outside. Pinned
-    because it is the one place the rule obliges a config change rather than
-    just refusing a mistake.
+    It used to boot with ``MUSICDROP_TRASH_ORIGINS_DIR`` pointed outside, which
+    is why the store is moved out HERE too: without that the refusal could come
+    from the old ``M contains O`` rule instead, and the test would pass without
+    the beets-dir rule existing at all.
     """
     music = tmp_path / "music"
     beets = music / "musicdrop"
@@ -115,8 +114,55 @@ def test_a_beets_dir_inside_the_library_boots_with_the_store_moved_out(
     )
     monkeypatch.setattr("app.config.settings.beets_dir", str(beets))
     monkeypatch.setattr("app.config.settings.trash_origins_dir", str(tmp_path / "records"))
-    with TestClient(real_app) as client:
-        assert client.get("/api/health").status_code == 200
+    with pytest.raises(StoreLayoutError) as exc:
+        with TestClient(real_app):
+            pass  # pragma: no cover - the lifespan raises before the body runs
+    assert "The music library contains the beets data directory" in str(exc.value)
+
+
+def test_a_library_inside_the_beets_dir_refuses_to_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other nesting direction, at the same gate.
+
+    Trash and the store are left at their defaults under ``B`` — both allowed —
+    so the only thing this layout breaks is the new ``B contains M`` rule.
+    """
+    beets = tmp_path / "beets"
+    beets.mkdir()
+    music = beets / "music"
+    music.mkdir()
+    (beets / "config.yaml").write_text(
+        f"directory: {music}\nlibrary: library.db\nplugins:\n  - musicbrainz\n"
+    )
+    monkeypatch.setattr("app.config.settings.beets_dir", str(beets))
+    with pytest.raises(StoreLayoutError) as exc:
+        with TestClient(real_app):
+            pass  # pragma: no cover - the lifespan raises before the body runs
+    assert "The beets data directory contains the music library" in str(exc.value)
+
+
+def test_a_database_inside_the_trash_refuses_to_start(
+    beets_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``library:`` pointed into Trash — the DB file, not one of the four dirs.
+
+    The boot check reads it off the handle that was actually opened
+    (``handle.lib.path``), so a hand-edited ``library:`` is caught by the same
+    gate as a hand-edited ``directory:``.
+    """
+    trash = tmp_path / "bin"
+    trash.mkdir()  # beets opens the DB before the gate runs; sqlite needs the dir
+    monkeypatch.setattr("app.config.settings.trash_dir", str(trash))
+    (beets_dir / "config.yaml").write_text(
+        f"directory: {tmp_path / 'music'}\n"
+        f"library: {trash / 'library.db'}\n"
+        "plugins:\n  - musicbrainz\n"
+    )
+    with pytest.raises(StoreLayoutError) as exc:
+        with TestClient(real_app):
+            pass  # pragma: no cover - the lifespan raises before the body runs
+    assert "The Trash directory contains the beets database" in str(exc.value)
 
 
 def test_the_refusal_reaches_a_real_uvicorns_output(tmp_path: Path) -> None:

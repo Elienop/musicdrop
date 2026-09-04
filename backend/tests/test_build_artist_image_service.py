@@ -118,10 +118,15 @@ def test_lifespan_exposes_one_registry_shared_with_the_service(
     """
     music = tmp_path / "music"
     music.mkdir()
-    (tmp_path / "config.yaml").write_text(f"directory: {music}\nlibrary: library.db\nplugins: []\n")
+    # A SIBLING of the music dir, not its parent: app.beets.store_layout refuses
+    # a beets data directory that contains the music library, and this lifespan
+    # runs that check.
+    beets = tmp_path / "beets"
+    beets.mkdir()
+    (beets / "config.yaml").write_text(f"directory: {music}\nlibrary: library.db\nplugins: []\n")
     # beets_dir comes from backend/.env on a dev box and points at the REAL
     # library; the lifespan opens it for real, so pin it at a temp dir.
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "beets_dir", str(beets))
     monkeypatch.setattr(settings, "artist_image_cache_dir", str(tmp_path / "cache"))
     app = main_mod.app
     with TestClient(app):  # context-manager form runs the lifespan
@@ -154,8 +159,13 @@ def test_lifespan_teardown_drops_the_registry(
     """
     music = tmp_path / "music"
     music.mkdir()
-    (tmp_path / "config.yaml").write_text(f"directory: {music}\nlibrary: library.db\nplugins: []\n")
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    # A SIBLING of the music dir, not its parent: app.beets.store_layout refuses
+    # a beets data directory that contains the music library, and this lifespan
+    # runs that check.
+    beets = tmp_path / "beets"
+    beets.mkdir()
+    (beets / "config.yaml").write_text(f"directory: {music}\nlibrary: library.db\nplugins: []\n")
+    monkeypatch.setattr(settings, "beets_dir", str(beets))
     monkeypatch.setattr(settings, "artist_image_cache_dir", str(tmp_path / "cache"))
     app = main_mod.app
     with TestClient(app):

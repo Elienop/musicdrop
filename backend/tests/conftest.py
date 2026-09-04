@@ -430,18 +430,26 @@ def beets_library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[L
     ``setup_beets()`` against it. Tests that want a different ``config.yaml``
     should write their own BEFORE calling ``setup_beets`` directly rather than
     relying on this fixture.
+
+    BEETSDIR is ``<tmp_path>/beets``, a SIBLING of the music dir, rather than
+    ``tmp_path`` itself: ``app.beets.store_layout`` refuses a beets data
+    directory that contains the music library, so the old shape was a layout the
+    app declines to boot with — the Save/Validate/Apply gates flagged every
+    document written against it.
     """
     music_dir = tmp_path / "music"
     music_dir.mkdir()
-    cfg = tmp_path / "config.yaml"
+    beets_dir = tmp_path / "beets"
+    beets_dir.mkdir()
+    cfg = beets_dir / "config.yaml"
     cfg.write_text(
         f"directory: {music_dir}\n"
         "library: library.db\n"
         "plugins:\n  - musicbrainz\n"
         "import:\n  autotag: yes\n  copy: yes\n"
     )
-    monkeypatch.setattr("app.config.settings.beets_dir", str(tmp_path))
-    handle = setup_beets(str(tmp_path))
+    monkeypatch.setattr("app.config.settings.beets_dir", str(beets_dir))
+    handle = setup_beets(str(beets_dir))
     try:
         yield handle
     finally:
