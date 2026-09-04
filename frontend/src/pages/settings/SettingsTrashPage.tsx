@@ -37,41 +37,19 @@ export function SettingsTrashPage() {
     return <p className="text-muted-foreground text-sm">Loading Trash…</p>;
   }
   if (isError) {
-    // The listing's 503s are the operator's OWN misconfiguration answered in
-    // full — the Trash directory resolving onto the music library, or a setting
-    // that will not resolve at all — and the sentence names the setting, both
-    // resolved paths and the fix (`store_layout._refuse`). Without it the page
-    // says only that something failed, and the one screen that could act on the
-    // answer is the one that hides it.
-    //
-    // `trashErrorDetail`, not `error.message`: the message is never empty, so
-    // rendering it would put "Failed to fetch" under the headline for a dropped
-    // connection and "Something went wrong" for a bodyless 500 — words no one
-    // chose for a user, dressed as the server's advice. Null means the body had
-    // nothing to say, and then this branch renders exactly what it always did.
+    // The 503s here are the operator's own misconfiguration answered in full
+    // (`store_layout._refuse`: the setting, both resolved paths, the fix), so
+    // the page shows the sentence. `trashErrorDetail`, not `error.message`:
+    // the message is never empty ("Failed to fetch" on a dropped connection),
+    // and null is the signal that the body had nothing a user should read.
     const detail = trashErrorDetail(error);
     return (
       <div className="flex flex-col items-start gap-2">
-        {/* Both lines inside ONE alert: a screen reader announces the live
-          * region as a whole, so headline-alert + sentence-outside would speak
-          * the failure and swallow the reason. `w-full` is what keeps a long
-          * path in — this is a flex item of a column with `items-start`, so it
-          * is otherwise sized fit-content and its min-content width (which
-          * `break-words` does NOT lower — see `RestoreOutlook`) becomes the
-          * page's. With a fixed 100% width there is no min-content floor to
-          * exceed and `break-words` breaks the path to fit. Measured at 320px
-          * with a 130-character separator-free path inside the sentence:
-          * scrollWidth 608 vs clientWidth 320 without this class, 320 with it.
-          * The REAL refusals do not need it — their paths break at their
-          * slashes — so nothing in the app as it stands would have shown the
-          * overflow, which is why the number is written down here.
-          *
-          * `max-w-prose` because the sentence is four clauses long and the
-          * settings pane is ~770px wide on a desktop — about 110 characters a
-          * line, which is where a reader loses the return sweep. It cannot
-          * reintroduce the overflow: a max-width only ever narrows, and below
-          * ~65ch the `w-full` width wins. The headline-only case is unchanged
-          * by it — one short line looks the same in either box. */}
+        {/* One alert for both lines, so a screen reader hears the reason.
+          * `w-full` is load-bearing: as a fit-content flex item the sentence's
+          * min-content width becomes the page's (measured at 320px with a
+          * 130-char unbroken path: scrollWidth 608 without it, 320 with it);
+          * `max-w-prose` keeps a ~770px pane from running 110-char lines. */}
         <div role="alert" className="flex w-full max-w-prose flex-col gap-1">
           <p className="text-destructive text-sm">Couldn’t load Trash.</p>
           {detail && (
