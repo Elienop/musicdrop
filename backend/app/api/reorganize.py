@@ -207,13 +207,21 @@ async def start_reorganize(
     _gate_busy(request.app)
     scope: ReorganizeScope = "artist" if artist is not None else "library"
     label = artist if artist is not None else "library"
+    app = request.app
+    handle = app.state.beets_library
+    # Everything that can refuse this start runs BEFORE the slot is claimed.
+    # ``reg.start`` used to come first, and the 503 below then left the registry
+    # holding a job at phase=running with no worker to finish it — measured:
+    # every library-mutating write answered 409 until the process restarted,
+    # ``stop`` was a no-op, ``dismiss`` refuses a running job, and repairing the
+    # layout did not clear it. ``_store`` and ``_ignore_dirs`` need nothing from
+    # the registry, so the order costs nothing.
+    trash_dir, origins_dir = _store(app)
+    ignore_dirs = _ignore_dirs(app, origins_dir)
     try:
         reg.start(scope=scope, artist=artist, album_id=None, scope_label=label)
     except RuntimeError:
         raise HTTPException(status.HTTP_409_CONFLICT, "A reorganize is already running") from None
-    app = request.app
-    handle = app.state.beets_library
-    trash_dir, origins_dir = _store(app)
     start_backfill(
         reg,
         handle,
@@ -222,7 +230,7 @@ async def start_reorganize(
         album_id=None,
         trash_dir=trash_dir,
         trash_origins_dir=origins_dir,
-        ignore_dirs=_ignore_dirs(app, origins_dir),
+        ignore_dirs=ignore_dirs,
         playlists_dir=playlists_dir,
         on_complete=lambda: emit_library_changed(app),
     )
@@ -249,12 +257,15 @@ async def start_album_reorganize(
     if label is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Album not found")
     _gate_busy(request.app)
+    app = request.app
+    # Same order, same reason as ``start_reorganize``: nothing claims the single
+    # slot until every refusal has had its turn.
+    trash_dir, origins_dir = _store(app)
+    ignore_dirs = _ignore_dirs(app, origins_dir)
     try:
         reg.start(scope="album", artist=None, album_id=album_id, scope_label=label)
     except RuntimeError:
         raise HTTPException(status.HTTP_409_CONFLICT, "A reorganize is already running") from None
-    app = request.app
-    trash_dir, origins_dir = _store(app)
     start_backfill(
         reg,
         handle,
@@ -263,7 +274,7 @@ async def start_album_reorganize(
         album_id=album_id,
         trash_dir=trash_dir,
         trash_origins_dir=origins_dir,
-        ignore_dirs=_ignore_dirs(app, origins_dir),
+        ignore_dirs=ignore_dirs,
         playlists_dir=playlists_dir,
         on_complete=lambda: emit_library_changed(app),
     )

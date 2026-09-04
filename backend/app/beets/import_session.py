@@ -44,7 +44,6 @@ from app.beets.relookup import relookup
 from app.beets.research import _read_items, lookup_items
 from app.beets.store_layout import StoreLayoutError, check_store_layout
 from app.beets.trash import album_format_bitrate, trash_album
-from app.config import settings
 from app.models.album import ReleaseIdentity
 from app.models.bank import BankApplyDirective, BankReason
 from app.models.import_models import (
@@ -1676,7 +1675,15 @@ def _trash_replaced_albums(session: WebImportSession) -> None:
     try:
         check_store_layout(
             music_dir=Path(_music_dir(lib)),
-            beets_dir=Path(settings.beets_dir),
+            # beets' own ``config.config_dir()`` and not ``settings.beets_dir``: the
+            # setting's DEFAULT is the relative string "data/beets", and
+            # ``_resolved`` joins a relative path to the process CWD at the
+            # moment of the call — which here is a worker thread, possibly hours
+            # after startup. beets keeps this one absolute (``setup_beets``
+            # resolves it and exports BEETSDIR before confuse's first resolve),
+            # it is the same directory the setting names, and it is what beets
+            # itself resolved the ``directory:`` and ``library:`` below against.
+            beets_dir=Path(config.config_dir()),
             trash_dir=trash_dir,
             origins_dir=origins_dir,
             library_path=Path(os.fsdecode(lib.path)),

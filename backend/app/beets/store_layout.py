@@ -83,7 +83,6 @@ __all__ = [
     "checked_store_dirs",
     "effective_config_paths",
     "layout_error_for_config",
-    "require_safe_store_layout",
     "resolve_configured_path",
 ]
 
@@ -666,10 +665,13 @@ def _handle_library_path(handle: LibraryHandle) -> Path:
 def checked_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path, Path]:
     """The ``(trash_dir, origins_dir)`` pair, checked at the moment of use.
 
-    THE call every destructive path makes instead of the two resolvers, so a
-    site cannot take the pair without taking the check with it. The two returns
-    are exactly what ``resolve_trash_dir`` / ``resolve_trash_origins_dir`` give,
-    so nothing downstream changes shape.
+    THE call every path that takes the pair makes instead of the two resolvers,
+    including the lifespan, which hands what it returns to the import registry.
+    The two returns are exactly what ``resolve_trash_dir`` /
+    ``resolve_trash_origins_dir`` give, so nothing downstream changes shape.
+    (``app/main.py`` used to check here and then resolve the pair AGAIN from the
+    bare resolvers; measured, a Trash swapped between the two came up attached
+    and unchecked, and only the import path's own re-check caught it.)
 
     It runs per call rather than once at boot because the configured STRING is
     fixed for the process lifetime and what it resolves to is not: replacing
@@ -691,18 +693,6 @@ def checked_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path,
         library_path=_handle_library_path(handle),
     )
     return trash, origins
-
-
-def require_safe_store_layout(settings: Settings, handle: LibraryHandle) -> None:
-    """The boot-time and Apply-time check, from the live settings + handle.
-
-    :func:`checked_store_dirs` without the pair — the same question, asked where
-    there is nothing yet to hand a Trash path to. Startup is the right place for
-    it even though every destructive site re-asks: a refused layout should stop
-    the process rather than wait for the first delete, and the operator gets one
-    ERROR line naming the setting instead of a 503 on a button they pressed.
-    """
-    checked_store_dirs(settings, handle)
 
 
 def _resolve_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path, Path]:

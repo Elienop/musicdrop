@@ -1050,18 +1050,20 @@ def _start(
         503: {
             "model": ErrorDetail,
             "description": (
-                "One of the two setup faults a delete refuses on. Either the music library"
+                "One of the three setup faults a delete refuses on. The music library"
                 " root is missing, empty or unreadable (the guard against an unmounted"
-                " share), or the folder MusicDrop records Trash origins in cannot be read"
-                " or written — a bad PUID/PGID, a restored backup, a read-only /data. The"
-                " message says which. None of the artist's"
+                " share); or the folder MusicDrop records Trash origins in cannot be read"
+                " or written — a bad PUID/PGID, a restored backup, a read-only /data; or"
+                " the Trash directory or that origin store now sits where using it would"
+                " destroy data (or no longer resolves), in which case the message names"
+                " the setting to move and both resolved paths. The message says which."
+                " None of the artist's"
                 " albums has been dropped from the library: once one has, the same cause"
                 " is reported as the 500 instead, which names how far the fan-out got."
                 " Files are a separate question for the FIRST cause only — a share that"
                 " drops during the move of the album the fan-out is on can leave part of"
-                " it under the Trash folder, so check there before retrying. The"
-                " origin-store refusal fires on the first album before anything is"
-                " created, moved or dropped."
+                " it under the Trash folder, so check there before retrying. The other"
+                " two fire before anything is created, moved or dropped."
             ),
         },
     },

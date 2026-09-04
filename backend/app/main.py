@@ -45,7 +45,7 @@ from app.auth.session import load_or_create_session_secret, session_secret_path
 from app.bank.store import reconcile_interrupted
 from app.beets.library import LibraryHandle, close_library
 from app.beets.setup import setup_beets
-from app.beets.store_layout import StoreLayoutError, require_safe_store_layout
+from app.beets.store_layout import StoreLayoutError, checked_store_dirs
 from app.body_limit import BodySizeLimitMiddleware
 from app.config import resolve_artist_image_cache_dir, resolve_cover_thumb_cache_dir, settings
 from app.events.emit import emit_art_changed
@@ -184,8 +184,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Logged through ``uvicorn.error`` (see ``_boot_log``). ERROR, not WARNING —
     # the process does not come up, and the operator grepping for the reason
     # after "Application startup failed" must find a line whose level says so.
+    #
+    # The PAIR it returns is what the import registry is handed below, so the
+    # boot gate and the values the process actually runs on come from one call.
+    # Taking them from the bare resolvers afterwards, as this did, left a window
+    # where a Trash swapped between the two reached ``attach_library`` unchecked.
     try:
-        require_safe_store_layout(settings, handle)
+        boot_trash_dir, boot_origins_dir = checked_store_dirs(settings, handle)
     except StoreLayoutError as exc:
         _boot_log().error("refusing to start: %s%s", exc, _leftovers_note(handle))
         # Give back the SQLite connection ``_resolve_library`` just opened. The
@@ -226,19 +231,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.event_broker = EventBroker(loop=asyncio.get_running_loop())
 
-    from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
     from app.import_jobs.registry import registry as import_registry
 
     # The import runner builds a WebImportSession from a beets Library, so feed
     # it the raw lib (not the snapshot handle). The Trash dir is where the
     # duplicate-on-import Replace action moves the old copies (same reversible
-    # Trash the /duplicates page uses).
+    # Trash the /duplicates page uses) — and it is the pair the gate above
+    # checked, not a second resolve of the same setting.
     import_registry.attach_library(
         handle.lib,
-        resolve_trash_dir(settings, handle),
+        boot_trash_dir,
         bank_dir=get_bank_dir(),
         playlists_dir=get_playlists_dir(),
-        trash_origins_dir=resolve_trash_origins_dir(settings, handle),
+        trash_origins_dir=boot_origins_dir,
     )
     import_registry.attach_event_broker(app.state.event_broker)
 

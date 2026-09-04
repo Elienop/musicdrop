@@ -37,10 +37,21 @@ def trash_inside_music(
     Returns the Trash dir, with one album in the library and one entry already in
     Trash, so a route that removed everything and a route that removed nothing
     are told apart by what is left on disk rather than by the status alone.
+
+    The album is a real DB ROW, not just files: the album-scoped routes check
+    that the album exists BEFORE they take the pair, so against an empty library
+    every one of them answers 404 and a layout assertion on them proves nothing.
     """
+    import os
+
+    from beets.library import Item
+
     music = Path(beets_library.lib.directory.decode())
     (music / "Artist A" / "Album").mkdir(parents=True)
     (music / "Artist A" / "Album" / "01.flac").write_bytes(b"\x00")
+    item = Item(album="Album", albumartist="Artist A", artist="Artist A", title="Track 1", track=1)
+    item.path = os.fsencode(str(music / "Artist A" / "Album" / "01.flac"))
+    beets_library.lib.add_album([item])
     trash = music / ".trash"
     (trash / "Old Entry").mkdir(parents=True)
     (trash / "Old Entry" / "cover.jpg").write_bytes(b"\x00")
@@ -104,6 +115,9 @@ def test_empty_one_refuses_after_the_swap(
     r = client.delete("/api/trash", params={"folder": "Artist A"})
 
     assert r.status_code == 503, r.text
+    # The SENTENCE, not just the tier: this route can 503 for an unusable origin
+    # store too, and a status-only assertion is satisfied by either.
+    assert "The Trash directory is the music library" in r.json()["detail"]
     assert (music / "Artist A" / "Album" / "01.flac").is_file()
 
 
@@ -117,6 +131,7 @@ def test_listing_the_trash_refuses_after_the_swap(
     r = client.get("/api/trash")
 
     assert r.status_code == 503, r.text
+    assert "The Trash directory is the music library" in r.json()["detail"]
 
 
 def test_the_reorganize_preview_refuses_after_the_swap(
@@ -276,3 +291,141 @@ def test_the_duplicates_resolve_route_refuses_after_the_swap(
 
     assert r.status_code == 503, r.text
     assert "No copies have been moved." in r.json()["detail"]
+
+
+# --------------------------------------------------------------------------
+# EVERY route that takes the pair, on one fixture.
+# --------------------------------------------------------------------------
+
+#: ``(method, path, body-or-None)`` for every route that resolves the Trash /
+#: origin-store pair. Written as one list because the gap this closes was not a
+#: missing assertion but a missing ROW: six of these had no test that booted a
+#: good layout, swapped the Trash and asked them, and the pair that included both
+#: Reorganize starts is where the wedged-job-slot defect lived. A new route that
+#: takes the pair and forgets the check belongs here on the day it is written.
+_ROUTES_THAT_TAKE_THE_PAIR: list[tuple[str, str, dict[str, Any] | None]] = [
+    ("GET", "/api/trash", None),
+    ("POST", "/api/trash/restore", {"folder": "Old Entry"}),
+    ("DELETE", "/api/trash?folder=Old%20Entry", None),
+    ("DELETE", "/api/trash/all", None),
+    ("DELETE", "/api/albums/1", None),
+    ("DELETE", "/api/artists?name=Artist%20A", None),
+    (
+        "POST",
+        "/api/duplicates/resolve",
+        {"mode": "strict", "keep_album_id": 1, "remove_album_ids": [2]},
+    ),
+    (
+        "POST",
+        "/api/duplicates/resolve-all",
+        {"mode": "strict", "groups": [{"keep_album_id": 1, "remove_album_ids": [2]}]},
+    ),
+    ("GET", "/api/reorganize/preview", None),
+    ("GET", "/api/albums/1/reorganize/preview", None),
+    ("POST", "/api/reorganize", None),
+    ("POST", "/api/albums/1/reorganize", None),
+]
+
+
+@pytest.fixture
+def no_background_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drive a started reorganize to ``done`` synchronously.
+
+    The real ``start_backfill`` spawns a daemon thread that calls into beets;
+    left running past teardown it reads a torn-down config and, measured here,
+    segfaulted the interpreter inside SQLite when the library closed under it.
+    Same seam ``test_reorganize_api._fake_sweep`` uses, and it sits BELOW what
+    these tests are about: the layout check runs before ``start_backfill`` on
+    both routes now, so a fake sweep cannot make a refused start look accepted.
+    """
+    import app.api.reorganize as reorganize_api
+
+    def fake_start_backfill(reg: Any, handle: Any, **kwargs: Any) -> None:
+        reg.set_total(0)
+        reg.finish("done")
+
+    monkeypatch.setattr(reorganize_api, "start_backfill", fake_start_backfill)
+
+
+@pytest.mark.parametrize(("method", "path", "body"), _ROUTES_THAT_TAKE_THE_PAIR)
+def test_every_route_that_takes_the_pair_refuses_after_the_swap(
+    client: TestClient,
+    beets_library: LibraryHandle,
+    trash_inside_music: Path,
+    no_background_sweep: None,
+    method: str,
+    path: str,
+    body: dict[str, Any] | None,
+) -> None:
+    """503 with the refusal's own sentence, and the library still on disk.
+
+    The sentence and not only the tier: several of these routes have a second
+    503 (an unmounted share, an unusable origin store), so a status-only
+    assertion is satisfied by a guard that is not this one.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    _point_trash_at_the_library(trash_inside_music, music)
+
+    r = client.request(method, path, json=body)
+
+    assert r.status_code == 503, (path, r.status_code, r.text)
+    assert "The Trash directory is the music library" in r.json()["detail"], (path, r.text)
+    assert (music / "Artist A" / "Album" / "01.flac").is_file(), path
+
+
+@pytest.mark.parametrize(("method", "path", "body"), _ROUTES_THAT_TAKE_THE_PAIR)
+def test_every_route_that_takes_the_pair_is_reachable_on_the_allowed_layout(
+    client: TestClient,
+    beets_library: LibraryHandle,
+    trash_inside_music: Path,
+    no_background_sweep: None,
+    method: str,
+    path: str,
+    body: dict[str, Any] | None,
+) -> None:
+    """The control for the sweep above, one row per row.
+
+    Not "answers 200": ``DELETE /api/trash?folder=`` on an entry another case
+    already removed is a legitimate 404, and the duplicates routes can 404 on
+    ids this fixture does not have. What is asserted is that the layout gate is
+    not what answered — no 503 and no layout sentence anywhere in the body.
+    """
+    r = client.request(method, path, json=body)
+
+    assert r.status_code != 503, (path, r.text)
+    assert "The Trash directory" not in r.text, (path, r.text)
+
+
+@pytest.mark.parametrize("path", ["/api/reorganize", "/api/albums/1/reorganize"])
+def test_a_refused_reorganize_start_does_not_claim_the_job_slot(
+    client: TestClient,
+    beets_library: LibraryHandle,
+    trash_inside_music: Path,
+    no_background_sweep: None,
+    path: str,
+) -> None:
+    """The 503 must leave the single job slot free.
+
+    ``reg.start`` used to run before the layout check, and nothing after the
+    claim calls ``reg.fail`` — the only guard that does is ``spawn_worker``,
+    which the 503 skips. Measured: the status stayed ``running`` with no worker,
+    ``stop`` was a no-op, ``dismiss`` refuses a running job, every
+    library-mutating write answered 409, and repairing the layout did not clear
+    it — a restart was the only way out.
+
+    Three assertions, because the first alone would pass on a registry that had
+    claimed and released: idle after the refusal, every other library write
+    still accepted, and a start on the healed layout taken.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    _point_trash_at_the_library(trash_inside_music, music)
+
+    assert client.post(path).status_code == 503
+
+    assert client.get("/api/reorganize/status").json()["phase"] == "idle"
+    trash_inside_music.unlink()
+    trash_inside_music.mkdir()
+    # The slot is takeable, and so is every other library write. Order matters:
+    # the delete removes the album this path names.
+    assert client.post(path).status_code == 200, client.get("/api/reorganize/status").text
+    assert client.delete("/api/albums/1").status_code != 409

@@ -78,10 +78,17 @@ _TRASH_EMPTY_PARTIAL_RESPONSE: Final = {
         " which are still there."
     ),
 }
+#: Restore is the one route with BOTH 503 causes, and OpenAPI carries one
+#: description per status — so this one says both. It used to name only the
+#: unavailable share, which for a refused layout was not merely incomplete but
+#: wrong about what had happened.
 _TRASH_LIBRARY_UNAVAILABLE_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": (
-        "The music library folder is unavailable, so the folder was not moved out of Trash."
+        "The folder was not moved out of Trash. Either the music library folder is"
+        " unavailable, or the Trash directory or the Trash origin store now sits"
+        " where using it would destroy data (or no longer resolves), in which case"
+        " the message names the setting and both resolved paths."
     ),
 }
 
@@ -121,10 +128,18 @@ def _store(app: Any) -> tuple[LibraryHandle, Path, Path]:
     return handle, trash_dir, origins_dir
 
 
-def _child_or_404(app: Any, folder: str) -> tuple[LibraryHandle, Path]:
-    handle, trash_dir, _origins = _store(app)
+def _child_or_404(app: Any, folder: str) -> tuple[LibraryHandle, Path, Path, Path]:
+    """The handle, the resolved child, and the pair the child was resolved FROM.
+
+    The pair is returned rather than re-taken by the caller because the child is
+    what gets ``rmtree``'d or moved: deriving it from one check and acting under
+    a second is two instants where the route can only honestly claim one. It also
+    halves the work — a bare ``checked_store_dirs`` was measured at 27
+    ``_relation`` calls and 222 stats, and both routes were paying it twice.
+    """
+    handle, trash_dir, origins_dir = _store(app)
     try:
-        return handle, resolve_trash_child(trash_dir, folder)
+        return handle, resolve_trash_child(trash_dir, folder), trash_dir, origins_dir
     except AmbiguousDisplayName:
         # Two trashed folders whose names are not valid UTF-8 can display
         # identically. Restoring or deleting the wrong one is irreversible, so
@@ -171,8 +186,7 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
     app = request.app
     _gate(app)
     async with _swap_lock(app):
-        handle, dest = _child_or_404(app, body.folder)
-        _handle, trash_dir, origins_dir = _store(app)
+        handle, dest, trash_dir, origins_dir = _child_or_404(app, body.folder)
         try:
             result = await run_in_threadpool(
                 restore_album,
@@ -206,9 +220,12 @@ async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> 
     """Permanently remove one trashed album folder. 409 if busy, 404 if not in Trash."""
     app = request.app
     _gate(app)
-    _handle, dest = _child_or_404(app, folder)
     async with _swap_lock(app):
-        _handle, _trash_dir, origins_dir = _store(app)
+        # Inside the lock, and ONE check: the path that gets ``rmtree``'d is
+        # derived from the pair that check approved. It used to resolve the
+        # child outside the lock from a first check and re-check inside, so the
+        # pair that was validated and the path acted on came from two instants.
+        _handle, dest, _trash_dir, origins_dir = _child_or_404(app, folder)
         result = await run_in_threadpool(empty_one, str(dest), origins_dir=origins_dir)
         emit_library_changed(app)
     return result

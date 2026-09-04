@@ -470,16 +470,19 @@ async def fetch_album_lyrics_endpoint(
         503: {
             "model": ErrorDetail,
             "description": (
-                "One of the two setup faults a delete refuses on. Either the music library"
+                "One of the three setup faults a delete refuses on. The music library"
                 " root is missing, empty or unreadable (the guard against an unmounted"
-                " share), or the folder MusicDrop records Trash origins in cannot be read"
-                " or written — a bad PUID/PGID, a restored backup, a read-only /data. The"
-                " message says which. The album is still in the library. Its files are a"
+                " share); or the folder MusicDrop records Trash origins in cannot be read"
+                " or written — a bad PUID/PGID, a restored backup, a read-only /data; or"
+                " the Trash directory or that origin store now sits where using it would"
+                " destroy data (or no longer resolves), in which case the message names"
+                " the setting to move and both resolved paths. The message says which."
+                " The album is still in the library. Its files are a"
                 " separate question for the FIRST cause only: that guard also answers a"
                 " share that drops DURING the move, and that can leave part of the album"
-                " under the Trash folder — check there before retrying. The origin-store"
-                " refusal runs before anything is created, moved or dropped, so nothing"
-                " needs checking after it."
+                " under the Trash folder — check there before retrying. The other two"
+                " refuse before anything is created, moved or dropped, so nothing"
+                " needs checking after them."
             ),
         },
     },
