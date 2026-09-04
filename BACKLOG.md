@@ -579,9 +579,15 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   deleting a no-album artist with the root unavailable now 503s instead of returning
   `trashed_albums=0`.
 
-- **`GET /api/config` serves the user's raw `config.yaml` — every credential in it,
-  unmasked — to any caller who can reach port 3030.** (Found 2026-08-28, auth-posture
-  audit.) `yaml_text` is documented verbatim as the raw on-disk text with "secrets are NOT
+- ~~**`GET /api/config` serves the user's raw `config.yaml` — every credential in it,
+  unmasked — to any caller who can reach port 3030.**~~ — **CLOSED by the auth slice
+  (PRs #199, #200 and #201), 2026-08-29 to 2026-08-30.** The entry's own text named the
+  remedy — "Auth is the fix … there is no sensible in-place patch that preserves the
+  round-trip editor" — and that is what shipped: the session gate now covers every
+  `/api/*` route, so `yaml_text` is served to a signed-in caller and nobody else. The
+  route's body is unchanged and deliberately so; what changed is that there is now a
+  caller identity. Original text kept below for the record.
+  (Found 2026-08-28, auth-posture audit.) `yaml_text` is documented verbatim as the raw on-disk text with "secrets are NOT
   masked here" (`app/models/config_api.py:16-20`); the sibling `effective_yaml` is
   redacted through two passes (confuse's `redact` flag plus the `SECRET_KEY_PATTERN`
   safety net), but `yaml_text` bypasses both — deliberately, because Save writes it back
@@ -1037,7 +1043,22 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   job is saying what the import will change. Not executed against a fetchart-enabled
   import; verify that first, then make the caption read the live plugin list.
 
-- **`MUSICDROP_TRASH_DIR` is an unvalidated `rmtree` root.** (Found 2026-08-28.)
+- ~~**`MUSICDROP_TRASH_DIR` is an unvalidated `rmtree` root.**~~ — **FIXED on
+  `fix/trash-root-containment`** (the PR number and squash sha go here after merge).
+  One predicate in a new `app/beets/store_layout.py`, run at startup (refuse to boot,
+  one `ERROR` line through `uvicorn.error` naming the setting, both resolved paths, the
+  loss and the fix), on Save + Validate as a `directory:` lint row, and on Apply before
+  the handle is torn down.
+  **The fix shape recorded below was half wrong, and the half matters.** It read "refuse
+  at startup when trash resolves inside or equal to the music dir or the beets dir" —
+  but the DEFAULT Trash *is* inside the beets dir (`<beets_dir>/trash`), so that rule
+  refuses every install, and the owner's ruling (vault `decisions.md` 35, 2026-09-04) is
+  that a Trash inside the *music library* is ALLOWED and is the point of setting the var
+  at all (`/music/.trash` makes a delete a same-disk rename). What is refused is Trash
+  that IS, or CONTAINS, the music dir or the beets dir — plus the origin store anywhere
+  under the music library, and the two stores overlapping each other in either
+  direction. Original text below.
+  (Found 2026-08-28.)
   `resolve_trash_dir` returns `Path(settings.trash_dir).resolve()` with no containment
   check (`app/beets/trash.py`), and `empty_all` then `shutil.rmtree`s every child
   of whatever came back (`app/beets/trash_manage.py`). Symbols, not line numbers: both
@@ -1051,9 +1072,22 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `orphans._excluded_predicate`); the trash root has none. Small: refuse at startup when
   trash resolves inside or equal to the music dir or the beets dir.
 
-- **The orphan sweep's ignore list does not protect an ignored dir's ANCESTORS.** (Found
-  2026-09-02, same class as the entry above: a missing containment check between the
-  music root and a `/data`-side directory.) Trigger: `MUSICDROP_BEETS_DIR` pointed at a path
+- ~~**The orphan sweep's ignore list does not protect an ignored dir's ANCESTORS.**~~ —
+  **FIXED on `fix/trash-root-containment`** (the PR number and squash sha go here after
+  merge), in the same series as the entry above. `orphans._drop_excluded_ancestors` folds
+  every excluded root's ancestor CHAIN into the drop `_drop_protected` already does for
+  live album roots, so `find_orphan_folders` returns nothing at, below or above
+  `trash_dir` or any `ignore_dirs` entry, in BOTH modes. `api.reorganize._ignore_dirs`
+  also passes `beets_dir` now — but only when it sits strictly inside the music root:
+  an ignore root ABOVE the root is a prefix match for every candidate and would silence
+  the whole sweep, which is the ordinary dev/test layout (`directory: ../music`).
+  **The entry's own closing argument turned out to be about a different fix.** It said
+  sparing ancestors "would only push the report one level up whenever the store is
+  nested deeper" — true of sparing the immediate PARENT, which is what
+  `_ignore_dirs`' docstring was arguing against; sparing the whole chain leaves nothing
+  to push up to. Original text below.
+  (Found 2026-09-02, same class as the entry above: a missing containment check between
+  the music root and a `/data`-side directory.) Trigger: `MUSICDROP_BEETS_DIR` pointed at a path
   *inside* the music library, plus a library-scope Reorganize. Symbols, not line numbers:
   `reorganize._ignore_dirs` hands the store and the export dir to
   `orphans.find_orphan_folders`, whose `_excluded_predicate` skips those subtrees — and
