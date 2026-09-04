@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.beets.library import _require_id
@@ -509,6 +510,61 @@ def test_delete_refuses_an_album_folder_that_holds_an_app_store(
         protected=protected_for(lib, trash_dir=trash, origins_dir=origins_for(trash)),
     )
     assert list(lib.albums()) == []
+
+
+@pytest.mark.parametrize("route", ["album", "artist"])
+def test_the_delete_ops_build_the_set_they_hand_the_mover(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    """Both ops, through ``_checked_store``, answering 503 with the sentence.
+
+    Measured without this: handing ``delete_album`` an EMPTY set in the op left
+    ``test_delete.py`` and this file green, because every other test here calls
+    the mover directly. The op is where the set is BUILT, so it needs its own
+    pin — one per route, since each has its own arm.
+    """
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.beets.delete import delete_album_op, delete_artist_op
+    from tests.conftest import build_library
+
+    music = tmp_path / "music"
+    folder = music / "Radiohead" / "Kid A"
+    folder.mkdir(parents=True)
+    beets_dir = beets_dir_for(tmp_path)
+    lib = build_library(str(beets_dir / "library.db"), str(music))
+    _add_album(lib, folder)
+    (folder / "inbox").mkdir()
+    trash = tmp_path / "trash"
+    monkeypatch.setattr("app.config.settings.inbox_dir", str(folder / "inbox"))
+
+    class _App:
+        state = SimpleNamespace(
+            beets_library=make_test_handle(lib, beets_dir),
+            settings=Settings(
+                trash_dir=str(trash),
+                trash_origins_dir=str(origins_for(trash)),
+                inbox_dir=str(folder / "inbox"),
+            ),
+        )
+
+    class _Req:
+        app = _App()
+
+    album_id = _require_id(next(iter(lib.albums())).id)
+    op = (
+        delete_album_op(_Req(), album_id)  # type: ignore[arg-type]  # stub req
+        if route == "album"
+        else delete_artist_op(_Req(), "Radiohead")  # type: ignore[arg-type]  # ditto
+    )
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(op)
+    assert caught.value.status_code == 503
+    assert "'Kid A' contains the inbox" in str(caught.value.detail)
+    assert "Nothing has been deleted." in str(caught.value.detail)
+    assert len(list(lib.albums())) == 1
+    assert not trash.exists()
 
 
 # --------------------------------------------------------------------------
