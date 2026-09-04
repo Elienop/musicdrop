@@ -110,7 +110,11 @@ def _ignore_dirs(app: object, origins_dir: Path) -> tuple[Path, ...]:
       relaxed or bypassed, and because it holds content of its own — measured on
       ``d65e635``, before the rule existed: ``MUSICDROP_BEETS_DIR=<music>/musicdrop``
       returned ``musicdrop``, identically with and without the store exclusion.
-      Name-based skipping does not cover it: a dot-prefixed name is skipped and
+      Name-based skipping does not cover it either. The sweep skips a directory
+      whose basename starts with a dot or appears in ``orphans.SKIP_DIR_NAMES``
+      (the NAS/OS housekeeping names — ``@eaDir``, ``#recycle``, ``lost+found``,
+      ``$RECYCLE.BIN``, ``System Volume Information``), and a beets dir is
+      neither: measured on ``d65e635``,
       ``<music>/.musicdrop`` returned ``[]`` where ``<music>/musicdrop`` did not.
 
       It used to be added only when it sat strictly inside the music root,
