@@ -125,14 +125,25 @@ class StoreLayoutError(Exception):
     holding a NUL produced two rows saying the same thing, while a
     ``directory: /`` produced a schema row about writability plus the layout row
     that explains the loss, and only the first pair is a duplicate.
+
+    ``headline`` is the refusal's first clause — the pair, without the paths or
+    the loss. Apply's 422 is built from it rather than from a sentence of its
+    own: that sentence said "config.yaml would move the music library" for every
+    refusal, including the ones where the Trash is what moved.
     """
 
     def __init__(
-        self, message: str, *, config_key: str | None = None, unusable_value: bool = False
+        self,
+        message: str,
+        *,
+        config_key: str | None = None,
+        unusable_value: bool = False,
+        headline: str = "",
     ) -> None:
         super().__init__(message)
         self.config_key = config_key
         self.unusable_value = unusable_value
+        self.headline = headline or message
 
 
 #: What resolving an operator-supplied path can raise. Measured on this tree:
@@ -169,6 +180,7 @@ def _unresolvable(setting: str, raw: str, exc: Exception) -> StoreLayoutError:
         " treats it the same way as a directory that sits on top of the library.",
         config_key=_CONFIG_KEY_OF.get(setting),
         unusable_value=True,
+        headline=f"{setting} could not be resolved",
     )
 
 
@@ -187,6 +199,7 @@ def _unexaminable(setting: str, resolved: str, exc: OSError) -> StoreLayoutError
         " the permissions on the path it names.",
         config_key=_CONFIG_KEY_OF.get(setting),
         unusable_value=True,
+        headline=f"{setting} could not be examined",
     )
 
 
@@ -328,6 +341,7 @@ def _refuse(
         f"{setting} resolves to {str(subject_path)!r}; "
         f"{other_setting} resolves to {str(other_path)!r}. "
         f"{loss} {fix}",
+        headline=f"{subject} {relation} {other}",
         # Either side of the pair can be the config.yaml key; the subject is
         # asked first because that is the setting the message tells the operator
         # to move, and the gutter should mark the line the sentence is about.
@@ -335,57 +349,19 @@ def _refuse(
     )
 
 
-def _disjoint(a: Path, b: Path) -> bool:
-    """Neither path is the other, and neither contains the other."""
-    return _relation(a, b) is None and _relation(b, a) is None
-
-
-def _trash_fix(*, music: Path, beets: Path, origins: Path) -> str:
-    """The remedy sentence for a refused ``MUSICDROP_TRASH_DIR``.
-
-    Each spelling it offers is tested against the layout at hand first, because a
-    fix that names a directory this same function would refuse sends the operator
-    round the loop again. What is left when a spelling drops out is the PROPERTY
-    the directory needs, which is still actionable.
-    """
-    offers = []
-    inside_music = music / ".trash"
-    if _disjoint(inside_music, beets) and _disjoint(inside_music, origins):
-        offers.append(
-            f" A folder INSIDE the music library, such as {str(inside_music)!r},"
-            " is allowed and makes deletes same-disk renames."
-        )
-    default = beets / "trash"
-    if _disjoint(default, music) and _disjoint(default, origins):
-        offers.append(f" Unsetting {TRASH_SETTING} falls back to {str(default)!r}.")
-    return (
-        f"Point {TRASH_SETTING} at a directory that neither is nor contains the"
-        " music library, the beets data directory, the beets database or the"
-        " Trash origin store." + "".join(offers)
-    )
-
-
-def _origins_fix(*, music: Path, beets: Path, trash: Path) -> str:
-    """The remedy sentence for a refused ``MUSICDROP_TRASH_ORIGINS_DIR``.
-
-    Same rule as :func:`_trash_fix`: the default sibling is offered only when the
-    default itself passes. It used to be offered unconditionally, and with the
-    beets dir inside the music library that default WAS the refused path — the
-    message named the directory it had just refused as the way out.
-    """
-    default = beets / "trash-origins"
-    offer = ""
-    default_ok = (
-        _disjoint(default, music)
-        and _disjoint(default, trash)
-        and _relation(default, beets) is None
-    )
-    if default_ok:
-        offer = f" Unsetting it falls back to {str(default)!r}."
-    return (
-        f"Point {ORIGINS_SETTING} at a directory of its own, outside the music"
-        " library and not overlapping the Trash." + offer
-    )
+#: The remedy each refusal ends with. FIXED strings, one per setting the row
+#: tells the operator to move — no computed example spellings. Those were built
+#: by testing candidate paths against the rule and dropping the ones it would
+#: refuse, which is a second copy of the rule carrying its own guards: the
+#: reviewers found three rows it had never been taught about, and no test failed
+#: when the guards were removed. What is left is the PROPERTY the directory
+#: needs, which is the part an operator can act on either way.
+_FIX_TRASH: Final = "Set MUSICDROP_TRASH_DIR to its own folder."
+_FIX_ORIGINS: Final = "Set MUSICDROP_TRASH_ORIGINS_DIR to its own folder."
+_FIX_BEETS: Final = "Move MUSICDROP_BEETS_DIR out of the music library."
+_FIX_MUSIC: Final = "Point `directory:` outside the beets data directory."
+_FIX_LIBRARY_TRASH: Final = "Move `library:` out of the Trash."
+_FIX_LIBRARY_ORIGINS: Final = "Move `library:` out of the Trash origin store."
 
 
 def check_store_layout(
@@ -410,31 +386,6 @@ def check_store_layout(
     origins = _resolved(origins_dir, ORIGINS_SETTING)
     library = _resolved(library_path, LIBRARY_SETTING)
 
-    trash_fix = _trash_fix(music=music, beets=beets, origins=origins)
-    origins_fix = _origins_fix(music=music, beets=beets, trash=trash)
-    # No spelling is offered for the beets dir unless it passes the rule that
-    # just fired: the shipped ``/data/beets`` is a good answer only when the
-    # music library is somewhere else, which is the layout this rule is about.
-    beets_elsewhere = Path("/data/beets")
-    beets_fix = (
-        f"Point {BEETS_SETTING} at a directory that neither is, contains, nor sits"
-        f" inside the music library — the shipped image uses {str(beets_elsewhere)!r}"
-        f" with the library at '/music' — or point {MUSIC_SETTING} at a library"
-        " that does not overlap it."
-        if _disjoint(beets_elsewhere, music)
-        else (
-            f"Point {BEETS_SETTING} at a directory that neither is, contains, nor"
-            f" sits inside the music library, or point {MUSIC_SETTING} at a library"
-            " that does not overlap it."
-        )
-    )
-    library_fix = (
-        f"Point {LIBRARY_SETTING} at a file outside the Trash and outside the"
-        " Trash origin store — a relative value is taken from the beets data"
-        f" directory, so the default 'library.db' resolves to"
-        f" {str(beets / 'library.db')!r}."
-    )
-
     if _relation(beets, music) == "is":
         raise _refuse(
             subject="The beets data directory",
@@ -450,7 +401,7 @@ def check_store_layout(
                 " audio, so as the music library it is also the tree a"
                 " library-scope Reorganize walks and offers for trashing."
             ),
-            fix=beets_fix,
+            fix=_FIX_BEETS,
         )
 
     if _relation(music, beets) == "contains":
@@ -469,7 +420,7 @@ def check_store_layout(
                 " them — measured on d65e635: a plain-named beets dir inside the"
                 " library was reported by the orphan sweep."
             ),
-            fix=beets_fix,
+            fix=_FIX_BEETS,
         )
 
     if _relation(beets, music) == "contains":
@@ -489,7 +440,7 @@ def check_store_layout(
                 " longer kept out of it, and the sweep's every run logs the"
                 " warning."
             ),
-            fix=beets_fix,
+            fix=_FIX_MUSIC,
         )
 
     relation = _relation(trash, music)
@@ -506,7 +457,7 @@ def check_store_layout(
                 "Emptying the Trash permanently removes every entry under it,"
                 " so this layout would delete the music library."
             ),
-            fix=trash_fix,
+            fix=_FIX_TRASH,
         )
 
     relation = _relation(trash, beets)
@@ -524,7 +475,7 @@ def check_store_layout(
                 " this layout would delete library.db, config.yaml and the Trash"
                 " origin records."
             ),
-            fix=trash_fix,
+            fix=_FIX_TRASH,
         )
 
     relation = _relation(origins, music)
@@ -542,7 +493,7 @@ def check_store_layout(
                 " file directly inside it, so this layout would delete JSON"
                 " files from the music library."
             ),
-            fix=origins_fix,
+            fix=_FIX_ORIGINS,
         )
 
     relation = _relation(origins, beets)
@@ -560,7 +511,7 @@ def check_store_layout(
                 " file directly inside it, so this layout would delete JSON"
                 " files from the beets data directory."
             ),
-            fix=origins_fix,
+            fix=_FIX_ORIGINS,
         )
 
     if _relation(music, origins) == "contains":
@@ -577,7 +528,7 @@ def check_store_layout(
                 " Trash with it, and the record is what Restore reads to put a"
                 " trashed folder back where it came from."
             ),
-            fix=origins_fix,
+            fix=_FIX_ORIGINS,
         )
 
     relation = _relation(trash, origins)
@@ -594,7 +545,7 @@ def check_store_layout(
                 "Emptying the Trash would delete the records it needs, and each"
                 " record file would also be listed as a trashed entry of its own."
             ),
-            fix=origins_fix,
+            fix=_FIX_ORIGINS,
         )
 
     if _relation(origins, trash) == "contains":
@@ -610,7 +561,7 @@ def check_store_layout(
                 "Trashed albums would land among the origin records, which both"
                 " the store sweep and the Trash listing walk."
             ),
-            fix=origins_fix,
+            fix=_FIX_ORIGINS,
         )
 
     # ``library:`` is its own beets key, so the database file can be moved into
@@ -632,7 +583,7 @@ def check_store_layout(
                 " this layout would delete library.db and the migration backups"
                 " beets writes beside it."
             ),
-            fix=library_fix,
+            fix=_FIX_LIBRARY_TRASH,
         )
 
     relation = _relation(origins, library)
@@ -652,7 +603,7 @@ def check_store_layout(
                 " prunes on its own schedule, beside records it keys by Trash"
                 " entry name."
             ),
-            fix=library_fix,
+            fix=_FIX_LIBRARY_ORIGINS,
         )
 
 
@@ -819,6 +770,7 @@ def _unreadable_include(detail: str) -> StoreLayoutError:
         " Correct the include: list, or the file it names.",
         config_key="include",
         unusable_value=True,
+        headline="`include:` in config.yaml could not be read",
     )
 
 

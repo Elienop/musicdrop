@@ -20,6 +20,7 @@ import pytest
 
 from app.beets import store_layout
 from app.beets.store_layout import (
+    _FIX_TRASH,
     BEETS_SETTING,
     LIBRARY_SETTING,
     MUSIC_SETTING,
@@ -694,6 +695,11 @@ def test_the_message_names_the_setting_both_paths_the_loss_and_the_fix(
 
     Asserted as four separate substrings rather than one golden string: the
     wording is meant to be edited, the four ingredients are not.
+
+    The fix is a FIXED sentence per setting, not a computed spelling. The
+    remedies used to offer example paths tested against the rule first, which
+    was a second copy of the rule with its own unpinned guards; owner ruling
+    2026-09-04 ("long paragraphs are just a waste of space") retired them.
     """
     music = tmp_path / "music"
     with pytest.raises(StoreLayoutError) as exc:
@@ -708,7 +714,7 @@ def test_the_message_names_the_setting_both_paths_the_loss_and_the_fix(
     assert MUSIC_SETTING in message  # ...and what it was compared against
     assert str(music) in message  # both resolved paths, so no guessing
     assert "would delete the music library" in message  # what it would have cost
-    assert str(music / ".trash") in message  # a spelling that WOULD work
+    assert message.endswith("Set MUSICDROP_TRASH_DIR to its own folder.")  # what to do
 
 
 def test_the_origin_store_message_names_its_own_setting(tmp_path: Path) -> None:
@@ -723,7 +729,9 @@ def test_the_origin_store_message_names_its_own_setting(tmp_path: Path) -> None:
         )
     message = str(exc.value)
     assert ORIGINS_SETTING in message
-    assert str(tmp_path / "data" / "trash-origins") in message  # the default, as the fix
+    assert message.endswith("Set MUSICDROP_TRASH_ORIGINS_DIR to its own folder.")
+    # ...and NOT the Trash's fix, which the row above gets.
+    assert _FIX_TRASH not in message
 
 
 def test_a_relative_directory_resolves_against_the_beets_dir_not_the_cwd(

@@ -543,32 +543,122 @@ def test_apply_refuses_an_on_disk_include_that_moves_the_directory(
     assert app.state.beets_library is handle_before
 
 
-def test_apply_refuses_after_the_rebuild_when_the_pre_check_missed_it(
+def test_the_apply_headline_names_the_pair_that_was_refused(
     client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The backstop, driven by simulating the divergence it exists for.
+    """Two different refusals, two different headlines.
 
-    ``on_disk_layout_error`` reproduces beets' merge over the file; this test
-    blinds that reproduction so the only thing left to catch the layout is the
-    check that reads ``new.lib.directory`` off the handle beets actually built.
-    The handle IS swapped — the rebuild closed the old library, so there is
-    nothing to put back — and the 422 says so.
+    The pre-check's 422 ``message`` read "config.yaml would move the music
+    library" for EVERY refusal — including the ones where the Trash moved and
+    the library did not. It is derived from the refused pair now, so the two
+    rows below cannot share a sentence.
     """
     from app.main import app
 
-    monkeypatch.setattr("app.beets.config_editor.on_disk_layout_error", lambda *a, **k: None)
+    music = Path(beets_library.lib.directory.decode())
     beets_library.config_path.write_text(
         _yaml_pointing_at(beets_library.beets_dir), encoding="utf-8"
+    )
+    first = client.post("/api/config/apply")
+    assert first.status_code == 422, first.text
+    assert first.json()["detail"]["message"] == (
+        "Apply refused: The beets data directory is the music library"
+    )
+
+    # The same route, a refusal about the TRASH: the headline moves with it.
+    monkeypatch.setattr("app.config.settings.trash_dir", str(music))
+    beets_library.config_path.write_text(_yaml_pointing_at(music), encoding="utf-8")
+    second = client.post("/api/config/apply")
+    assert second.status_code == 422, second.text
+    assert second.json()["detail"]["message"] == (
+        "Apply refused: The Trash directory is the music library"
+    )
+    assert app.state.beets_library is not None
+
+
+def test_a_directory_that_arrives_through_a_merge_key_gets_a_gutter_line(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``<<: *base`` — present in the mapping, absent from ruamel's position map.
+
+    The row was painted with ``line=None`` while the editor disabled Save on it,
+    so the operator got a refusal with nothing marked. The fallback answers with
+    the ANCHOR's line, which is where the value is actually written — line 3
+    here, not the ``<<:`` on line 4 and not a bare 1.
+
+    The control is the row's ``line`` for the same key written plainly, and the
+    other control is a MISSING key, which still gets no marker because there is
+    no line to mark.
+    """
+    monkeypatch.setattr("app.config.settings.trash_dir", str(beets_library.beets_dir / "trash"))
+    merged = (
+        f"library: library.db\n_base: &base\n  directory: {beets_library.beets_dir}\n<<: *base\n"
+    )
+
+    r = client.post("/api/config/validate", json={"yaml_text": merged})
+    assert r.status_code == 200, r.text
+    rows = [e for e in r.json()["errors"] if e["type"] == "store_layout"]
+    assert len(rows) == 1, r.json()
+    assert rows[0]["loc"] == "directory"
+    assert rows[0]["line"] == 3
+
+    plain = client.post(
+        "/api/config/validate",
+        json={"yaml_text": _yaml_pointing_at(beets_library.beets_dir)},
+    )
+    plain_rows = [e for e in plain.json()["errors"] if e["type"] == "store_layout"]
+    assert plain_rows[0]["line"] == 1
+
+    absent = client.post("/api/config/validate", json={"yaml_text": "library: library.db\n"})
+    missing = [e for e in absent.json()["errors"] if e["loc"] == "directory"]
+    assert len(missing) == 1
+    assert missing[0]["line"] is None
+
+
+def test_apply_refuses_after_the_rebuild_on_a_real_pre_check_divergence(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """The backstop, driven by a divergence that exists rather than by a patch.
+
+    DUPLICATE ``directory:`` keys. ``on_disk_layout_error`` parses with ruamel,
+    which raises ``DuplicateKeyError`` (a ``YAMLError``) and is answered with
+    ``None`` — the pre-check is blind by its own rules. beets parses the same
+    file with PyYAML, which takes the LAST key, so the rebuild loads a music
+    root that IS the beets dir. Measured both halves before writing this:
+    ruamel raised, PyYAML returned ``{'directory': '/b', ...}``.
+
+    The previous version monkeypatched ``on_disk_layout_error`` to ``None``,
+    which proved the mechanism runs and nothing about whether it is reachable.
+
+    The handle IS swapped — the rebuild closed the old library, so there is
+    nothing to put back — and D5's invariant is asserted with it: the import
+    registry holds the SAME library the app now serves, not the closed one.
+    """
+    from app.import_jobs.registry import get_registry
+    from app.main import app
+
+    beets_library.config_path.write_text(
+        f"directory: {beets_library.beets_dir.parent}\n"
+        f"library: library.db\n"
+        f"directory: {beets_library.beets_dir}\n",
+        encoding="utf-8",
     )
     handle_before = app.state.beets_library
 
     r = client.post("/api/config/apply")
 
     assert r.status_code == 422, r.text
-    recovery = r.json()["detail"]["recovery"]
-    assert "The beets data directory is the music library" in recovery
-    assert "answer 503" in recovery
+    body = r.json()["detail"]
+    assert body["message"] == (
+        "Apply loaded config.yaml, but The beets data directory is the music library"
+    )
+    assert "The beets data directory is the music library" in body["recovery"]
+    assert body["recovery"].endswith("Then restart MusicDrop.")
     assert app.state.beets_library is not handle_before
+    # D5: one library after Apply, whatever the outcome. It used to keep the
+    # CLOSED old one, which SQLite reopens on demand — an import then landed in
+    # the pre-Apply store while the UI read the new one.
+    assert get_registry()._lib is app.state.beets_library.lib
 
 
 def test_a_document_with_no_directory_key_gets_the_schema_row_and_no_layout_row(

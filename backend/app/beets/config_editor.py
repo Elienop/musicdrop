@@ -150,6 +150,11 @@ def _line_col_for_path(
     — these can happen mid-edit when the schema and the parsed doc
     disagree on shape. Returning ``(None, None)`` lets the response carry
     the ``loc`` string without a gutter marker.
+
+    A key that arrived through a ``<<:`` merge is PRESENT in the mapping and
+    absent from ``lc.data``, so the plain lookup answers ``(None, None)`` and the
+    editor disables Save with nothing marked. :func:`_merged_line_col` then asks
+    the anchor's own mapping, which records the line the value is written on.
     """
     if not path:
         return (None, None)
@@ -159,15 +164,38 @@ def _line_col_for_path(
             node = node[key]
         if hasattr(node, "lc") and node.lc.data is not None:
             last = path[-1]
-            if isinstance(node, CommentedSeq) and isinstance(last, int):
-                line_col = node.lc.item(last)
-            else:
-                line_col = node.lc.value(last)
+            try:
+                if isinstance(node, CommentedSeq) and isinstance(last, int):
+                    line_col = node.lc.item(last)
+                else:
+                    line_col = node.lc.value(last)
+            except (KeyError, IndexError):
+                # RAISES rather than returning None for a merged key, so the
+                # fallback has to sit inside its own ``except`` — measured:
+                # ``lc.value('directory')`` on a ``<<: *base`` document raised
+                # ``KeyError`` while the key was present in the mapping.
+                line_col = None
             if line_col is not None:
                 line0, col0 = line_col
                 return (line0 + 1, col0)
+            return _merged_line_col(node, last)
     except (KeyError, IndexError, AttributeError, TypeError):
         pass
+    return (None, None)
+
+
+def _merged_line_col(node: Any, key: str | int) -> tuple[int, int] | tuple[None, None]:
+    """Where a merged-in key is WRITTEN: its anchor's line, not the ``<<:`` line.
+
+    ``_base: &base\n  directory: /music\n<<: *base`` gave the refusal no gutter
+    position at all (measured). ``CommentedMap.merge`` holds each merged mapping,
+    and those are ``CommentedMap``s with their own ``lc.data``.
+    """
+    for merged in getattr(node, "merge", ()) or ():
+        data = getattr(getattr(merged, "lc", None), "data", None)
+        if data is not None and key in data:
+            line0, col0 = merged.lc.value(key)
+            return (line0 + 1, col0)
     return (None, None)
 
 
@@ -835,10 +863,13 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
         settings = _settings(app)
         layout_error = await run_in_threadpool(on_disk_layout_error, old, settings)
         if layout_error is not None:
+            # The headline is the refused PAIR, not a fixed sentence: this used
+            # to read "config.yaml would move the music library" for every
+            # refusal, including the ones where the Trash is what moved.
             raise HTTPException(
                 status_code=422,
                 detail={
-                    "message": "Apply refused: config.yaml would move the music library",
+                    "message": f"Apply refused: {layout_error.headline}",
                     "recovery": str(layout_error),
                 },
             )
@@ -898,26 +929,28 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
         try:
             trash_dir, origins_dir = checked_store_dirs(settings, new)
         except StoreLayoutError as exc:
-            # The rebuild has already closed the old library, so there is no
-            # handle to put back — the swap above stands and the process serves
-            # the new config. Every delete, Empty Trash, duplicate resolve and
-            # Reorganize re-asks this question per request and answers 503, and
-            # the next start refuses to boot; the import registry is left holding
-            # the previous (now closed) library, so an import started against
-            # this config fails loudly rather than running inside a layout that
-            # was refused.
+            # ONE library after Apply, whatever the outcome. The rebuild has
+            # already closed the old one and the swap above stands, so leaving
+            # the registry holding it was measured to let an import "succeed"
+            # into the pre-Apply store — SQLite reopens a closed handle on
+            # demand — while the UI read the new one. The registry gets the NEW
+            # library with no store pair, so the delete-on-replace step refuses
+            # instead of running against a layout this call just refused.
             logging.getLogger("uvicorn.error").error(
                 "Apply loaded a config whose store layout is refused: %s", exc
+            )
+            get_registry().attach_library(
+                new.lib,
+                None,
+                bank_dir=get_bank_dir(),
+                playlists_dir=get_playlists_dir(),
+                trash_origins_dir=None,
             )
             raise HTTPException(
                 status_code=422,
                 detail={
-                    "message": "Apply loaded config.yaml, but its store layout is refused",
-                    "recovery": (
-                        f"{exc} The new config is loaded; deletes, Empty Trash and Reorganize"
-                        " answer 503 until it is corrected, and the next start will refuse"
-                        " to boot."
-                    ),
+                    "message": f"Apply loaded config.yaml, but {exc.headline}",
+                    "recovery": f"{exc} Then restart MusicDrop.",
                 },
             ) from exc
 
