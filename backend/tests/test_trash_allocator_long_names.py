@@ -61,7 +61,7 @@ from app.beets.trash_manage import restore_album
 from app.beets.trash_origins import _NAME_MAX, read_trash_origin, write_trash_origin
 from app.reorganize_jobs.registry import ReorganizeRegistry
 from app.reorganize_jobs.runner import _sweep_orphans
-from tests.conftest import build_library, make_test_handle, origins_for
+from tests.conftest import build_library, make_test_handle, origins_for, protected_for
 
 #: A folder name exactly at NAME_MAX. " (1)" cannot be appended to it.
 LONGEST = "H" * 255
@@ -159,7 +159,12 @@ def test_a_husk_at_the_name_limit_with_an_ORPHANED_RECORD_still_reaches_trash(
     write_trash_origin(origins, LONGEST, origin="/music/gone", moved="folder")
     husk = _husk(tmp_path, LONGEST)
 
-    dest = trash_folder(husk, trash_dir=trash, origins_dir=origins)
+    dest = trash_folder(
+        husk,
+        trash_dir=trash,
+        origins_dir=origins,
+        protected=protected_for(trash_dir=trash, origins_dir=origins),
+    )
 
     assert dest.is_dir()
     assert (dest / "cover.jpg").is_file()
@@ -189,7 +194,12 @@ def test_a_husk_at_the_name_limit_moves_back_to_where_it_came_from(tmp_path: Pat
     origins.mkdir(parents=True)
     write_trash_origin(origins, LONGEST, origin="/music/gone", moved="folder")
     husk = _husk(tmp_path, LONGEST)
-    dest = trash_folder(husk, trash_dir=trash, origins_dir=origins)
+    dest = trash_folder(
+        husk,
+        trash_dir=trash,
+        origins_dir=origins,
+        protected=protected_for(trash_dir=trash, origins_dir=origins),
+    )
 
     result = restore_album(lib, str(dest), trash_dir=trash, origins_dir=origins)
 
@@ -215,7 +225,15 @@ def test_an_album_folder_at_the_name_limit_deletes_past_an_EXISTING_trash_entry(
     source = tmp_path / "music" / LONGEST
 
     with lib.transaction():
-        dest = Path(trash_album_folder(lib, _dummy(lib), trash_dir=trash, origins_dir=origins))
+        dest = Path(
+            trash_album_folder(
+                lib,
+                _dummy(lib),
+                trash_dir=trash,
+                origins_dir=origins,
+                protected=protected_for(lib, trash_dir=trash, origins_dir=origins),
+            )
+        )
 
     assert dest.is_dir()
     assert (dest / "01 t.flac").is_file()
@@ -285,7 +303,12 @@ def test_a_multibyte_name_is_shortened_on_a_CHARACTER_boundary(tmp_path: Path) -
     write_trash_origin(origins, name, origin="/music/gone", moved="folder")
     husk = _husk(tmp_path, name)
 
-    dest = trash_folder(husk, trash_dir=trash, origins_dir=origins)
+    dest = trash_folder(
+        husk,
+        trash_dir=trash,
+        origins_dir=origins,
+        protected=protected_for(trash_dir=trash, origins_dir=origins),
+    )
 
     assert len(os.fsencode(dest.name)) <= 255
     # Round-trips as strict UTF-8: no character was cut in half.
@@ -309,7 +332,12 @@ def test_a_non_utf8_name_at_the_limit_keeps_its_bytes(tmp_path: Path) -> None:
     write_trash_origin(origins, name, origin="/music/gone", moved="folder")
     husk = _husk(tmp_path, name)
 
-    dest = trash_folder(husk, trash_dir=trash, origins_dir=origins)
+    dest = trash_folder(
+        husk,
+        trash_dir=trash,
+        origins_dir=origins,
+        protected=protected_for(trash_dir=trash, origins_dir=origins),
+    )
 
     encoded = os.fsencode(dest.name)
     assert len(encoded) <= 255
@@ -371,8 +399,18 @@ def test_fit_name_leaves_a_name_that_already_fits_alone(tmp_path: Path) -> None:
     husk = _husk(tmp_path, "Portishead - Dummy")
     longest_husk = _husk(tmp_path, LONGEST)
 
-    dest = trash_folder(husk, trash_dir=trash, origins_dir=origins)
-    longest_dest = trash_folder(longest_husk, trash_dir=trash, origins_dir=origins)
+    dest = trash_folder(
+        husk,
+        trash_dir=trash,
+        origins_dir=origins,
+        protected=protected_for(trash_dir=trash, origins_dir=origins),
+    )
+    longest_dest = trash_folder(
+        longest_husk,
+        trash_dir=trash,
+        origins_dir=origins,
+        protected=protected_for(trash_dir=trash, origins_dir=origins),
+    )
 
     assert dest.name == "Portishead - Dummy"
     assert longest_dest.name == LONGEST, "nothing was in the way, so nothing may be trimmed"
@@ -438,7 +476,12 @@ def test_a_trash_path_over_PATH_MAX_fails_at_the_MOVE_and_not_at_the_allocator(
     assert raw.value.errno == errno.ENAMETOOLONG
 
     with pytest.raises(OSError) as caught:
-        trash_folder(husk, trash_dir=trash, origins_dir=origins)
+        trash_folder(
+            husk,
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=protected_for(trash_dir=trash, origins_dir=origins),
+        )
 
     assert caught.value.errno == errno.ENAMETOOLONG
     ours = [

@@ -69,6 +69,7 @@ import beets
 import confuse
 
 from app.beets.library import LibraryHandle, _music_dir
+from app.beets.protected import ProtectedTrees, protected_trees
 from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
 from app.config import Settings
 
@@ -80,6 +81,7 @@ __all__ = [
     "TRASH_SETTING",
     "StoreLayoutError",
     "check_store_layout",
+    "checked_protected_trees",
     "checked_store_dirs",
     "effective_config_paths",
     "handle_music_and_library",
@@ -700,6 +702,26 @@ def checked_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path,
         library_path=library,
     )
     return trash, origins
+
+
+def checked_protected_trees(
+    settings: Settings, handle: LibraryHandle, *, trash_dir: Path, origins_dir: Path
+) -> ProtectedTrees:
+    """The identities the movers and the remover refuse, for THIS request.
+
+    Taken beside :func:`checked_store_dirs`, from the pair it returned, by the
+    three sites that destroy or relocate a tree. Separate from that call because
+    the other five callers do neither and would pay a dozen stats for nothing.
+    """
+    music, library = handle_music_and_library(handle)
+    return protected_trees(
+        settings=settings,
+        music_dir=music,
+        beets_dir=handle.beets_dir,
+        trash_dir=trash_dir,
+        origins_dir=origins_dir,
+        library_path=library,
+    )
 
 
 def _resolve_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path, Path]:

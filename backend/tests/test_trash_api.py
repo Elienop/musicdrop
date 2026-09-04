@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.beets.config_editor import _settings
+from app.beets.protected import ProtectedTrees
 from app.beets.trash import resolve_trash_origins_dir
 from app.beets.trash_origins import write_trash_origin
 from app.models.trash import EmptyResult
@@ -211,10 +212,10 @@ def test_empty_one_holds_swap_lock_during_removal(
     (trash / "Album").mkdir(parents=True)
     seen: dict[str, bool] = {}
 
-    def spy(path: str, *, origins_dir: Path) -> EmptyResult:
+    def spy(path: str, *, origins_dir: Path, protected: ProtectedTrees) -> EmptyResult:
         lock = getattr(app.state, "beets_swap_lock", None)
         seen["locked"] = lock is not None and lock.locked()
-        return real_empty_one(path, origins_dir=origins_dir)
+        return real_empty_one(path, origins_dir=origins_dir, protected=protected)
 
     monkeypatch.setattr(trash_mod, "empty_one", spy)
     r = client.delete("/api/trash", params={"folder": "Album"})
@@ -234,10 +235,10 @@ def test_empty_all_holds_swap_lock_during_removal(
     (trash / "A").mkdir(parents=True)
     seen: dict[str, bool] = {}
 
-    def spy(trash_dir: Path, *, origins_dir: Path) -> EmptyResult:
+    def spy(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) -> EmptyResult:
         lock = getattr(app.state, "beets_swap_lock", None)
         seen["locked"] = lock is not None and lock.locked()
-        return real_empty_all(trash_dir, origins_dir=origins_dir)
+        return real_empty_all(trash_dir, origins_dir=origins_dir, protected=protected)
 
     monkeypatch.setattr(trash_mod, "empty_all", spy)
     r = client.delete("/api/trash/all")

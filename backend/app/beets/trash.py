@@ -48,6 +48,7 @@ from app.beets.library import (
     require_library_present,
     require_library_root,
 )
+from app.beets.protected import ProtectedTrees, refuse_protected_tree
 from app.beets.trash_origins import (
     _NAME_MAX,
     MovedShape,
@@ -605,7 +606,9 @@ def _record_origin(origins_dir: Path, dest: Path, *, origin: str, moved: MovedSh
     write_trash_origin(origins_dir, dest.name, origin=origin, moved=moved)
 
 
-def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path, origins_dir: Path) -> str:
+def trash_album_folder(
+    lib: Library, album: Any, *, trash_dir: Path, origins_dir: Path, protected: ProtectedTrees
+) -> str:
     """Relocate the album's ENTIRE folder under ``trash_dir`` and drop it from the
     library. Reversible.
 
@@ -630,6 +633,10 @@ def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path, origins_dir
     :class:`TrashDeleteIncompleteError`, whose message reads the disk, if the
     move back failed as well). The shared-folder fallback gets no such undo; see
     :func:`trash_album`.
+
+    Raises :class:`~app.beets.protected.ProtectedTreeError` when the folder is
+    or holds one of the app's own directories by inode — the alias a spelled
+    containment row misses.
 
     Raises :class:`~app.beets.trash_origins.TrashOriginsStoreUnusableError`
     before ANY branch runs when the origin-records store cannot be used, which
@@ -694,6 +701,11 @@ def trash_album_folder(lib: Library, album: Any, *, trash_dir: Path, origins_dir
         return str(trash_dir)
     if _folder_is_shared(lib, album, album_root):
         return trash_album(lib, album, trash_dir=trash_dir, origins_dir=origins_dir)
+    # The whole-folder branch relocates a TREE, so the alias question is asked
+    # here by inode: a folder that is (or holds) the music library, the beets
+    # dir, an app-owned store or the Trash itself passes every spelled row in
+    # ``store_layout`` when a bind mount is what made them one directory.
+    refuse_protected_tree(Path(album_root), protected, action="moved")
     trash_dir.mkdir(parents=True, exist_ok=True)
     dest = _unique_trash_dest(
         trash_dir, origins_dir, os.path.basename(os.path.normpath(album_root))
@@ -830,7 +842,9 @@ def _delete_undo_failure(
     )
 
 
-def trash_folder(folder: Path, *, trash_dir: Path, origins_dir: Path) -> Path:
+def trash_folder(
+    folder: Path, *, trash_dir: Path, origins_dir: Path, protected: ProtectedTrees
+) -> Path:
     """Move an orphan husk folder (no tracked items) wholesale into Trash.
 
     Reversible: ``shutil.move`` relocates the whole directory under ``trash_dir`` to
@@ -842,9 +856,12 @@ def trash_folder(folder: Path, *, trash_dir: Path, origins_dir: Path) -> Path:
     imported, so before it these husks had no exit from Trash except permanent
     deletion — which is why this mover, like the other two, refuses
     (:class:`~app.beets.trash_origins.TrashOriginsStoreUnusableError`) rather
-    than moving a husk it could not record.
+    than moving a husk it could not record. Raises
+    :class:`~app.beets.protected.ProtectedTreeError` when the husk is or holds
+    one of the app's own directories by inode.
     """
     require_usable_store(origins_dir)
+    refuse_protected_tree(folder, protected, action="moved")
     trash_dir.mkdir(parents=True, exist_ok=True)
     dest = _unique_trash_dest(trash_dir, origins_dir, folder.name)
     origin = os.path.abspath(str(folder))

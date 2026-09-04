@@ -40,7 +40,13 @@ from app.beets.trash import (
 )
 from app.beets.trash_origins import TrashOriginsStoreUnusableError
 from app.wire import display_path
-from tests.conftest import beets_dir_for, build_library, make_test_handle, origins_for
+from tests.conftest import (
+    beets_dir_for,
+    build_library,
+    make_test_handle,
+    origins_for,
+    protected_for,
+)
 
 
 def test_trash_album_moves_files_and_drops_db(duplicates_lib: Library, tmp_path: Path) -> None:
@@ -87,7 +93,13 @@ def test_trash_album_folder_takes_whole_folder_incl_sidecars(
 
     with duplicates_lib.transaction():
         dest = trash_album_folder(
-            duplicates_lib, album, trash_dir=trash, origins_dir=origins_for(trash)
+            duplicates_lib,
+            album,
+            trash_dir=trash,
+            origins_dir=origins_for(trash),
+            protected=protected_for(
+                duplicates_lib, trash_dir=trash, origins_dir=origins_for(trash)
+            ),
         )
 
     assert duplicates_lib.get_album(album_id) is None  # dropped from the library
@@ -111,7 +123,13 @@ def test_trash_album_folder_ghost_folder_already_gone_drops_rows(
 
     with duplicates_lib.transaction():
         dest = trash_album_folder(
-            duplicates_lib, album, trash_dir=trash, origins_dir=origins_for(trash)
+            duplicates_lib,
+            album,
+            trash_dir=trash,
+            origins_dir=origins_for(trash),
+            protected=protected_for(
+                duplicates_lib, trash_dir=trash, origins_dir=origins_for(trash)
+            ),
         )
 
     assert duplicates_lib.get_album(album_id) is None  # ghost rows dropped
@@ -340,7 +358,13 @@ def test_trash_album_folder_root_gone_raises_and_keeps_rows(
     origins = origins_for(trash)
     tx = duplicates_lib.transaction()
     with pytest.raises(LibraryRootUnavailableError), tx:
-        trash_album_folder(duplicates_lib, album, trash_dir=trash, origins_dir=origins)
+        trash_album_folder(
+            duplicates_lib,
+            album,
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins),
+        )
 
     assert duplicates_lib.get_album(album_id) is not None  # rows survive the commit-on-exit
     assert not trash.exists()  # nothing relocated either
@@ -367,7 +391,13 @@ def test_trash_album_folder_root_present_but_empty_raises(
     origins = origins_for(trash)
     tx = duplicates_lib.transaction()
     with pytest.raises(LibraryRootUnavailableError), tx:
-        trash_album_folder(duplicates_lib, album, trash_dir=trash, origins_dir=origins)
+        trash_album_folder(
+            duplicates_lib,
+            album,
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins),
+        )
 
     assert duplicates_lib.get_album(album_id) is not None
     assert not trash.exists()
@@ -546,7 +576,13 @@ def test_trash_album_folder_fallback_inherits_the_post_condition(
     origins = origins_for(trash)
     tx = duplicates_lib.transaction()
     with pytest.raises(LibraryRootUnavailableError), tx:
-        trash_album_folder(duplicates_lib, album, trash_dir=trash, origins_dir=origins)
+        trash_album_folder(
+            duplicates_lib,
+            album,
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins),
+        )
 
     assert duplicates_lib.get_album(album_id) is not None
     assert list(trash.iterdir()) == []
@@ -661,7 +697,13 @@ def test_trash_album_folder_refuses_a_dropped_share_masked_by_a_stray(
     origins = origins_for(trash)
     tx = duplicates_lib.transaction()
     with pytest.raises(LibraryRootUnavailableError), tx:
-        trash_album_folder(duplicates_lib, album, trash_dir=trash, origins_dir=origins)
+        trash_album_folder(
+            duplicates_lib,
+            album,
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins),
+        )
 
     assert duplicates_lib.get_album(album_id) is not None  # rows kept
     assert len(list(duplicates_lib.albums())) == total_before
@@ -708,7 +750,13 @@ def test_delete_artist_fan_out_stops_on_the_first_masked_drop(
 
     origins = origins_for(trash)
     with pytest.raises(LibraryRootUnavailableError):
-        delete_artist(duplicates_lib, "Radiohead", trash_dir=trash, origins_dir=origins)
+        delete_artist(
+            duplicates_lib,
+            "Radiohead",
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins),
+        )
 
     assert len(list(duplicates_lib.albums())) == total_before
     assert not trash.exists()
@@ -777,7 +825,13 @@ def test_trash_album_folder_refuses_a_dropped_flat_share_masked_by_a_stray(
     origins = origins_for(trash)
     tx = lib.transaction()
     with pytest.raises(LibraryRootUnavailableError), tx:
-        trash_album_folder(lib, album, trash_dir=trash, origins_dir=origins)
+        trash_album_folder(
+            lib,
+            album,
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=protected_for(lib, trash_dir=trash, origins_dir=origins),
+        )
 
     assert lib.get_album(album_id) is not None  # rows kept
     assert len(list(lib.albums())) == total_before
@@ -854,7 +908,13 @@ def test_trash_album_folder_refuses_an_unusable_store_before_the_GHOST_branch(
     origins = origins_for(trash)
     tx = duplicates_lib.transaction()
     with pytest.raises(TrashOriginsStoreUnusableError), tx:
-        trash_album_folder(duplicates_lib, album, trash_dir=trash, origins_dir=origins)
+        trash_album_folder(
+            duplicates_lib,
+            album,
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins),
+        )
 
     assert duplicates_lib.get_album(album_id) is not None, "the ghost rows must survive"
     assert not trash.exists()
@@ -877,7 +937,13 @@ def test_a_store_that_does_not_exist_yet_is_created_by_the_delete(
 
     with duplicates_lib.transaction():
         dest = trash_album_folder(
-            duplicates_lib, album, trash_dir=trash, origins_dir=origins_for(trash)
+            duplicates_lib,
+            album,
+            trash_dir=trash,
+            origins_dir=origins_for(trash),
+            protected=protected_for(
+                duplicates_lib, trash_dir=trash, origins_dir=origins_for(trash)
+            ),
         )
 
     assert duplicates_lib.get_album(album_id) is None, "the delete must have completed"
@@ -935,7 +1001,13 @@ def test_trash_album_folder_puts_the_folder_back_when_the_rows_will_not_go(
     _rows_wont_go(monkeypatch, album)
 
     with pytest.raises(TrashRowsNotRemovedError) as ei, duplicates_lib.transaction():
-        trash_album_folder(duplicates_lib, album, trash_dir=trash, origins_dir=origins)
+        trash_album_folder(
+            duplicates_lib,
+            album,
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins),
+        )
 
     # The cause is relayed. The string is deliberately NOT a paraphrase of the
     # message's own prose: with the fixture raising "removing the album's
@@ -983,7 +1055,13 @@ def test_the_move_back_says_nothing_about_rows_a_listener_already_took(
     monkeypatch.setattr(beets_plugins, "send", _refuse_album_removed)
 
     with pytest.raises(TrashRowsNotRemovedError) as ei, duplicates_lib.transaction():
-        trash_album_folder(duplicates_lib, album, trash_dir=trash, origins_dir=origins)
+        trash_album_folder(
+            duplicates_lib,
+            album,
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins),
+        )
 
     message = str(ei.value)
     assert "a plugin listener refused, forced by the fixture" in message, "the cause is named"
@@ -1031,7 +1109,13 @@ def test_the_undo_reports_from_the_DISK_when_the_trash_name_is_retaken(
     monkeypatch.setattr(type(album), "remove", _retake_the_origin_then_fail)
 
     with pytest.raises(TrashDeleteIncompleteError) as ei, duplicates_lib.transaction():
-        trash_album_folder(duplicates_lib, album, trash_dir=trash, origins_dir=origins)
+        trash_album_folder(
+            duplicates_lib,
+            album,
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins),
+        )
 
     message = str(ei.value)
     entry = next(iter(trash.iterdir()))
@@ -1076,7 +1160,13 @@ def test_a_failed_undo_destroys_the_record_once_the_trash_entry_is_gone(
     _rows_wont_go(monkeypatch, album)
 
     with pytest.raises(TrashDeleteIncompleteError) as ei, duplicates_lib.transaction():
-        trash_album_folder(duplicates_lib, album, trash_dir=trash, origins_dir=origins)
+        trash_album_folder(
+            duplicates_lib,
+            album,
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins),
+        )
 
     assert "can no longer find the folder at EITHER path" in str(ei.value), "read from the disk"
     assert list(trash.iterdir()) == [], "nothing is at the Trash entry any more"
@@ -1109,7 +1199,13 @@ def test_a_swallowed_record_write_does_not_trigger_the_undo(
     monkeypatch.setattr(trash_origins_mod, "write_atomic_text", _boom)
 
     with duplicates_lib.transaction():
-        dest = trash_album_folder(duplicates_lib, album, trash_dir=trash, origins_dir=origins)
+        dest = trash_album_folder(
+            duplicates_lib,
+            album,
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins),
+        )
 
     assert duplicates_lib.get_album(album_id) is None, "the delete completed"
     assert (Path(dest) / "01 Track 1.mp3").is_file(), "the files stayed in Trash"

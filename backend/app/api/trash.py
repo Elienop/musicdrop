@@ -19,7 +19,12 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.beets.config_editor import _settings, _swap_lock
 from app.beets.library import LibraryHandle, LibraryRootUnavailableError, _music_dir
-from app.beets.store_layout import StoreLayoutError, checked_store_dirs
+from app.beets.protected import ProtectedTreeError, ProtectedTrees
+from app.beets.store_layout import (
+    StoreLayoutError,
+    checked_protected_trees,
+    checked_store_dirs,
+)
 from app.beets.trash_manage import (
     TrashEmptyPartialError,
     empty_all,
@@ -105,7 +110,7 @@ def _gate(app: Any) -> None:
     raise_if_library_busy(app)
 
 
-def _store(app: Any) -> tuple[LibraryHandle, Path, Path]:
+def _store(app: Any) -> tuple[LibraryHandle, Path, Path, ProtectedTrees]:
     """The handle and the CHECKED Trash / origin-store pair, or a 503.
 
     Every route in this file resolves that pair, and ``resolve()`` follows
@@ -121,14 +126,18 @@ def _store(app: Any) -> tuple[LibraryHandle, Path, Path]:
     ``tests/test_route_status_declarations.py`` can see.
     """
     handle: LibraryHandle = app.state.beets_library
+    settings = _settings(app)
     try:
-        trash_dir, origins_dir = checked_store_dirs(_settings(app), handle)
+        trash_dir, origins_dir = checked_store_dirs(settings, handle)
     except StoreLayoutError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return handle, trash_dir, origins_dir
+    protected = checked_protected_trees(
+        settings, handle, trash_dir=trash_dir, origins_dir=origins_dir
+    )
+    return handle, trash_dir, origins_dir, protected
 
 
-def _child_or_404(app: Any, folder: str) -> tuple[LibraryHandle, Path, Path, Path]:
+def _child_or_404(app: Any, folder: str) -> tuple[LibraryHandle, Path, Path, Path, ProtectedTrees]:
     """The handle, the resolved child, and the pair the child was resolved FROM.
 
     The pair is returned rather than re-taken by the caller because the child is
@@ -137,9 +146,9 @@ def _child_or_404(app: Any, folder: str) -> tuple[LibraryHandle, Path, Path, Pat
     halves the work — a bare ``checked_store_dirs`` was measured at 27
     ``_relation`` calls and 222 stats, and both routes were paying it twice.
     """
-    handle, trash_dir, origins_dir = _store(app)
+    handle, trash_dir, origins_dir, protected = _store(app)
     try:
-        return handle, resolve_trash_child(trash_dir, folder), trash_dir, origins_dir
+        return handle, resolve_trash_child(trash_dir, folder), trash_dir, origins_dir, protected
     except AmbiguousDisplayName:
         # Two trashed folders whose names are not valid UTF-8 can display
         # identically. Restoring or deleting the wrong one is irreversible, so
@@ -159,7 +168,7 @@ def _child_or_404(app: Any, folder: str) -> tuple[LibraryHandle, Path, Path, Pat
 async def list_trash(request: Request) -> TrashListing:
     """List the albums sitting in Trash (read off disk; no gate)."""
     app = request.app
-    handle, trash_dir, origins_dir = _store(app)
+    handle, trash_dir, origins_dir, _protected = _store(app)
     albums = await run_in_threadpool(
         list_trashed_albums,
         trash_dir,
@@ -186,7 +195,7 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
     app = request.app
     _gate(app)
     async with _swap_lock(app):
-        handle, dest, trash_dir, origins_dir = _child_or_404(app, body.folder)
+        handle, dest, trash_dir, origins_dir, _protected = _child_or_404(app, body.folder)
         try:
             result = await run_in_threadpool(
                 restore_album,
@@ -225,8 +234,16 @@ async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> 
         # derived from the pair that check approved. It used to resolve the
         # child outside the lock from a first check and re-check inside, so the
         # pair that was validated and the path acted on came from two instants.
-        _handle, dest, _trash_dir, origins_dir = _child_or_404(app, folder)
-        result = await run_in_threadpool(empty_one, str(dest), origins_dir=origins_dir)
+        _handle, dest, _trash_dir, origins_dir, protected = _child_or_404(app, folder)
+        try:
+            result = await run_in_threadpool(
+                empty_one, str(dest), origins_dir=origins_dir, protected=protected
+            )
+        # 503, like the layout refusal it completes: the entry is still in Trash
+        # and the fix is the operator's. Raised inline so the status stays a
+        # literal tests/test_route_status_declarations.py can see.
+        except ProtectedTreeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         emit_library_changed(app)
     return result
 
@@ -255,14 +272,21 @@ async def empty_trash_all(request: Request) -> EmptyResult:
     async with _swap_lock(app):
         # Inside the lock, so a config Apply cannot swap the handle between the
         # check and the rmtree.
-        _handle, trash_dir, origins_dir = _store(app)
+        _handle, trash_dir, origins_dir, protected = _store(app)
         try:
-            result = await run_in_threadpool(empty_all, trash_dir, origins_dir=origins_dir)
+            result = await run_in_threadpool(
+                empty_all, trash_dir, origins_dir=origins_dir, protected=protected
+            )
         # A partial sweep still CHANGED the library, so the event fires before
         # the error propagates — the page must not keep showing entries that are
         # now gone just because the ones after them could not be removed.
         except TrashEmptyPartialError as exc:
             emit_library_changed(app)
             raise HTTPException(status_code=500, detail=f"Empty Trash: {exc}") from exc
+        # Entries the guard left behind. Same event-first reason as the partial
+        # above — the ones this call DID remove are gone from the page.
+        except ProtectedTreeError as exc:
+            emit_library_changed(app)
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         emit_library_changed(app)
     return result

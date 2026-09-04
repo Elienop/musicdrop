@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from app.beets.orphans import find_orphan_folders
-from tests.conftest import origins_for
+from tests.conftest import origins_for, protected_for
 
 
 def _touch(p: Path) -> None:
@@ -257,7 +257,12 @@ def test_trash_folder_moves_whole_folder(tmp_path: Path) -> None:
     _touch(husk / "artist-background.jpg")
     trash = tmp_path / "trash"
 
-    dest = trash_folder(husk, trash_dir=trash, origins_dir=origins_for(trash))
+    dest = trash_folder(
+        husk,
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
+        protected=protected_for(trash_dir=trash, origins_dir=origins_for(trash)),
+    )
 
     assert not husk.exists()  # source gone
     assert dest.parent == trash
@@ -273,7 +278,12 @@ def test_trash_folder_collision_gets_unique_name(tmp_path: Path) -> None:
     husk = tmp_path / "music" / "Old Name"
     _touch(husk / "cover.jpg")
 
-    dest = trash_folder(husk, trash_dir=trash, origins_dir=origins_for(trash))
+    dest = trash_folder(
+        husk,
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
+        protected=protected_for(trash_dir=trash, origins_dir=origins_for(trash)),
+    )
     assert dest.name == "Old Name (1)"
     assert (dest / "cover.jpg").exists()
 
@@ -285,7 +295,12 @@ def test_art_only_husk_is_listed_for_visibility(tmp_path: Path) -> None:
     husk = tmp_path / "music" / "Old Name"
     _touch(husk / "artist-poster.jpg")  # no audio
     trash = tmp_path / "trash"
-    trash_folder(husk, trash_dir=trash, origins_dir=origins_for(trash))
+    trash_folder(
+        husk,
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
+        protected=protected_for(trash_dir=trash, origins_dir=origins_for(trash)),
+    )
 
     # Audio-free trashed folders (husks the orphan sweep moves here) must appear in
     # the listing as zero-track entries — otherwise the Trash UI never shows them

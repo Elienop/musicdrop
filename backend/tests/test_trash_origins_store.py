@@ -54,7 +54,7 @@ from app.beets.trash_origins import (
     require_usable_store,
     write_trash_origin,
 )
-from tests.conftest import build_library
+from tests.conftest import build_library, protected_for
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
 
@@ -298,7 +298,14 @@ def test_emptying_the_losing_row_keeps_the_other_entrys_record(tmp_path: Path) -
         (trash / name).mkdir(parents=True)
     write_trash_origin(origins, long_name, origin="/music/A/Long", moved="folder")
 
-    assert empty_one(str(trash / short_name), origins_dir=origins).removed == 1
+    assert (
+        empty_one(
+            str(trash / short_name),
+            origins_dir=origins,
+            protected=protected_for(origins_dir=origins),
+        ).removed
+        == 1
+    )
 
     assert not (trash / short_name).exists()
     survivor = read_trash_origin(origins, long_name)
@@ -485,7 +492,12 @@ def test_a_record_the_json_parser_gives_up_on_does_not_escape_empty_one(
     (trash / "Deep" / "01 t.flac").write_bytes(b"\x00")
     origin_file(origins, "Deep").write_text(_deeply_nested_json(), encoding="ascii")
 
-    assert empty_one(str(trash / "Deep"), origins_dir=origins).removed == 1
+    assert (
+        empty_one(
+            str(trash / "Deep"), origins_dir=origins, protected=protected_for(origins_dir=origins)
+        ).removed
+        == 1
+    )
 
     assert not (trash / "Deep").exists()
     assert not origin_file(origins, "Deep").exists()
@@ -515,7 +527,14 @@ def test_a_record_the_json_parser_gives_up_on_does_not_abort_empty_all(
         (trash / name / "01 t.flac").write_bytes(b"\x00")
         origin_file(origins, name).write_text(deep, encoding="ascii")
 
-    assert empty_all(trash, origins_dir=origins).removed == 3
+    assert (
+        empty_all(
+            trash,
+            origins_dir=origins,
+            protected=protected_for(trash_dir=trash, origins_dir=origins),
+        ).removed
+        == 3
+    )
 
     assert list(trash.iterdir()) == []
 

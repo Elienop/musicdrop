@@ -47,8 +47,10 @@ from fastapi.testclient import TestClient
 
 from app.auth.session import SESSION_COOKIE_NAME, mint_session_token
 from app.auth.source import effective_password, password_hash_path
-from app.beets.library import LibraryHandle, close_library
+from app.beets.library import LibraryHandle, _music_dir, close_library
+from app.beets.protected import ProtectedTrees, protected_trees
 from app.beets.setup import setup_beets
+from app.config import settings
 from app.main import app as _real_app
 
 if TYPE_CHECKING:
@@ -215,6 +217,32 @@ def origins_for(trash_dir: Path) -> Path:
     and show up as a trashed album of its own.
     """
     return trash_dir.parent / "trash-origins"
+
+
+def protected_for(
+    lib: "Library | None" = None,
+    *,
+    trash_dir: Path | None = None,
+    origins_dir: Path | None = None,
+) -> ProtectedTrees:
+    """The identity set a destructive request builds, for a test's own fixtures.
+
+    The real :func:`app.beets.protected.protected_trees`, so a test calling a
+    mover or the remover exercises the guard rather than an empty stand-in. A
+    piece the caller has no handle on resolves under a path that is not there
+    and therefore has no identity — the same way production drops a store that
+    has not been created yet.
+    """
+    absent = Path("/nonexistent-musicdrop-absent")
+    library_path = Path(os.fsdecode(lib.path)) if lib is not None else absent / "library.db"
+    return protected_trees(
+        settings=settings,
+        music_dir=Path(_music_dir(lib)) if lib is not None else absent / "music",
+        beets_dir=library_path.parent,
+        trash_dir=trash_dir if trash_dir is not None else absent / "trash",
+        origins_dir=origins_dir if origins_dir is not None else absent / "trash-origins",
+        library_path=library_path,
+    )
 
 
 def beets_dir_for(tmp_path: Path) -> Path:

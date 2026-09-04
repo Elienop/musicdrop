@@ -22,10 +22,17 @@ from app.beets.delete import (
     delete_artist_op,
 )
 from app.beets.library import LibraryRootUnavailableError, _require_id
+from app.beets.protected import ProtectedTrees
 from app.beets.trash import album_folder, trash_album_folder
 from app.beets.trash_origins import require_usable_store
 from app.config import Settings
-from tests.conftest import beets_dir_for, build_library, make_test_handle, origins_for
+from tests.conftest import (
+    beets_dir_for,
+    build_library,
+    make_test_handle,
+    origins_for,
+    protected_for,
+)
 
 
 def test_delete_album_trashes_whole_folder_and_drops(
@@ -37,7 +44,13 @@ def test_delete_album_trashes_whole_folder_and_drops(
     folder = album_folder(duplicates_lib, list(album.items()))
     (Path(folder) / "cover-extra.lrc").write_text("[00:01.00] x", encoding="utf-8")
 
-    result = delete_album(duplicates_lib, album_id, trash_dir=trash, origins_dir=origins_for(trash))
+    result = delete_album(
+        duplicates_lib,
+        album_id,
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
+        protected=protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins_for(trash)),
+    )
 
     assert result.trashed_albums == 1
     assert str(trash) in result.trash_path
@@ -59,7 +72,13 @@ def test_delete_album_ghost_folder_already_gone(duplicates_lib: Library, tmp_pat
     folder = album_folder(duplicates_lib, list(album.items()))
     shutil.rmtree(folder)  # ghost: DB rows remain, the files are gone
 
-    result = delete_album(duplicates_lib, album_id, trash_dir=trash, origins_dir=origins_for(trash))
+    result = delete_album(
+        duplicates_lib,
+        album_id,
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
+        protected=protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins_for(trash)),
+    )
 
     assert result.trashed_albums == 1
     assert duplicates_lib.get_album(album_id) is None  # ghost rows dropped
@@ -73,6 +92,9 @@ def test_delete_album_unknown_id_raises(duplicates_lib: Library, tmp_path: Path)
             999_999,
             trash_dir=tmp_path / "trash",
             origins_dir=tmp_path / "trash-origins",
+            protected=protected_for(
+                duplicates_lib, trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins"
+            ),
         )
 
 
@@ -82,7 +104,11 @@ def test_delete_artist_trashes_all_their_albums(duplicates_lib: Library, tmp_pat
     assert before, "fixture should have at least one Daft Punk album"
 
     result = delete_artist(
-        duplicates_lib, "Daft Punk", trash_dir=trash, origins_dir=origins_for(trash)
+        duplicates_lib,
+        "Daft Punk",
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
+        protected=protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins_for(trash)),
     )
 
     assert result.trashed_albums == len(before)
@@ -95,6 +121,9 @@ def test_delete_artist_unknown_is_noop(duplicates_lib: Library, tmp_path: Path) 
         "Nobody At All",
         trash_dir=tmp_path / "trash",
         origins_dir=tmp_path / "trash-origins",
+        protected=protected_for(
+            duplicates_lib, trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins"
+        ),
     )
     assert result.trashed_albums == 0
 
@@ -143,7 +172,13 @@ def test_delete_album_root_unavailable_keeps_rows(duplicates_lib: Library, tmp_p
 
     origins = origins_for(trash)
     with pytest.raises(LibraryRootUnavailableError):
-        delete_album(duplicates_lib, album_id, trash_dir=trash, origins_dir=origins)
+        delete_album(
+            duplicates_lib,
+            album_id,
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins),
+        )
 
     assert duplicates_lib.get_album(album_id) is not None  # still queryable
     assert not trash.exists()
@@ -165,7 +200,13 @@ def test_delete_artist_root_unavailable_drops_nothing(
 
     origins = origins_for(trash)
     with pytest.raises(LibraryRootUnavailableError):
-        delete_artist(duplicates_lib, "Radiohead", trash_dir=trash, origins_dir=origins)
+        delete_artist(
+            duplicates_lib,
+            "Radiohead",
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins),
+        )
 
     assert [_require_id(a.id) for a in duplicates_lib.albums() if a.albumartist == "Radiohead"] == (
         before
@@ -487,6 +528,9 @@ def test_delete_artist_root_gone_raises_before_the_transaction(
             "Radiohead",
             trash_dir=tmp_path / "trash",
             origins_dir=tmp_path / "trash-origins",
+            protected=protected_for(
+                duplicates_lib, trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins"
+            ),
         )
 
     assert calls == []  # the fan-out never started
@@ -513,12 +557,19 @@ def test_delete_artist_op_reports_partial_progress_for_ANY_cause(
     calls = {"n": 0}
 
     def _fails_on_the_second(
-        lib: Library, album: object, *, trash_dir: Path, origins_dir: Path
+        lib: Library,
+        album: object,
+        *,
+        trash_dir: Path,
+        origins_dir: Path,
+        protected: ProtectedTrees,
     ) -> str:
         calls["n"] += 1
         if calls["n"] == 2:
             raise PermissionError(13, "Permission denied")
-        return str(real(lib, album, trash_dir=trash_dir, origins_dir=origins_dir))
+        return str(
+            real(lib, album, trash_dir=trash_dir, origins_dir=origins_dir, protected=protected)
+        )
 
     monkeypatch.setattr(delete_mod, "trash_album_folder", _fails_on_the_second)
 
@@ -557,14 +608,21 @@ def test_delete_artist_op_mid_flight_drop_reports_partial_progress(
     calls = {"n": 0}
 
     def _drops_on_the_second(
-        lib: Library, album: object, *, trash_dir: Path, origins_dir: Path
+        lib: Library,
+        album: object,
+        *,
+        trash_dir: Path,
+        origins_dir: Path,
+        protected: ProtectedTrees,
     ) -> str:
         calls["n"] += 1
         if calls["n"] == 2:
             raise LibraryRootUnavailableError(
                 "Library folder unavailable. Is the music share mounted?"
             )
-        return str(real(lib, album, trash_dir=trash_dir, origins_dir=origins_dir))
+        return str(
+            real(lib, album, trash_dir=trash_dir, origins_dir=origins_dir, protected=protected)
+        )
 
     monkeypatch.setattr(delete_mod, "trash_album_folder", _drops_on_the_second)
 
@@ -787,12 +845,19 @@ def test_delete_artist_partial_counts_moves_not_row_drops(
     calls = {"n": 0}
 
     def _fails_on_the_fourth(
-        lib: Library, album: object, *, trash_dir: Path, origins_dir: Path
+        lib: Library,
+        album: object,
+        *,
+        trash_dir: Path,
+        origins_dir: Path,
+        protected: ProtectedTrees,
     ) -> str:
         calls["n"] += 1
         if calls["n"] == 4:
             raise PermissionError(13, "Permission denied")
-        return str(real(lib, album, trash_dir=trash_dir, origins_dir=origins_dir))
+        return str(
+            real(lib, album, trash_dir=trash_dir, origins_dir=origins_dir, protected=protected)
+        )
 
     monkeypatch.setattr(delete_mod, "trash_album_folder", _fails_on_the_fourth)
 
@@ -973,7 +1038,12 @@ def test_delete_artist_500_on_the_FIRST_album_does_not_promise_trash(
     handle = make_test_handle(duplicates_lib, beets_dir_for(tmp_path))
 
     def _fails_on_the_first(
-        lib: Library, album: object, *, trash_dir: Path, origins_dir: Path
+        lib: Library,
+        album: object,
+        *,
+        trash_dir: Path,
+        origins_dir: Path,
+        protected: ProtectedTrees,
     ) -> str:
         raise PermissionError(13, "Permission denied")
 
@@ -1396,12 +1466,19 @@ def test_delete_artist_does_not_count_a_shared_folder_ghost_as_moved(
     calls = {"n": 0}
 
     def _fails_on_the_second(
-        lib: Library, album: object, *, trash_dir: Path, origins_dir: Path
+        lib: Library,
+        album: object,
+        *,
+        trash_dir: Path,
+        origins_dir: Path,
+        protected: ProtectedTrees,
     ) -> str:
         calls["n"] += 1
         if calls["n"] == 2:
             raise PermissionError(13, "Permission denied")
-        return str(real(lib, album, trash_dir=trash_dir, origins_dir=origins_dir))
+        return str(
+            real(lib, album, trash_dir=trash_dir, origins_dir=origins_dir, protected=protected)
+        )
 
     monkeypatch.setattr(delete_mod, "trash_album_folder", _fails_on_the_second)
 

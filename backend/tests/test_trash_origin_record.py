@@ -67,7 +67,13 @@ from app.config import Settings
 from app.fsutil import exists, occupied
 from app.models.bank import BankApplyDirective
 from app.models.trash import RestoreResult
-from tests.conftest import beets_dir_for, build_library, make_test_handle, origins_for
+from tests.conftest import (
+    beets_dir_for,
+    build_library,
+    make_test_handle,
+    origins_for,
+    protected_for,
+)
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
 
@@ -170,7 +176,13 @@ def test_trash_album_folder_records_the_folder_it_came_from(tmp_path: Path) -> N
     with lib.transaction():
         dest = Path(
             trash_album_folder(
-                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                lib,
+                album,
+                trash_dir=tmp_path / "trash",
+                origins_dir=_origins(tmp_path),
+                protected=protected_for(
+                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                ),
             )
         )
 
@@ -187,7 +199,12 @@ def test_trash_folder_records_the_husk_origin(tmp_path: Path) -> None:
     husk.mkdir(parents=True)
     (husk / "cover.jpg").write_bytes(b"\x00")
 
-    dest = trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+    dest = trash_folder(
+        husk,
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)),
+    )
 
     record = _record(tmp_path, dest)
     assert record.origin == str(husk)
@@ -233,7 +250,12 @@ def test_the_record_carries_a_trash_time_nothing_else_on_disk_keeps(tmp_path: Pa
     (husk / "cover.jpg").write_bytes(b"\x00")
     before = datetime.now(UTC)
 
-    dest = trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+    dest = trash_folder(
+        husk,
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)),
+    )
 
     record_path = origin_file(_origins(tmp_path), dest.name)
     payload = json.loads(record_path.read_text(encoding="ascii"))
@@ -306,7 +328,12 @@ def test_a_husk_is_refused_when_the_store_is_not_a_folder(tmp_path: Path) -> Non
     origins.write_bytes(b"not a directory")
 
     with pytest.raises(TrashOriginsStoreUnusableError) as ei:
-        trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=origins)
+        trash_folder(
+            husk,
+            trash_dir=tmp_path / "trash",
+            origins_dir=origins,
+            protected=protected_for(trash_dir=tmp_path / "trash", origins_dir=origins),
+        )
 
     assert "trash-origins" in str(ei.value)
     assert (husk / "cover.jpg").is_file(), "the husk must not have moved"
@@ -350,7 +377,13 @@ def test_an_album_is_refused_when_the_store_is_not_a_folder(tmp_path: Path, fold
     tx = lib.transaction()
 
     with pytest.raises(TrashOriginsStoreUnusableError), tx:
-        trash_album_folder(lib, album, trash_dir=tmp_path / "trash", origins_dir=origins)
+        trash_album_folder(
+            lib,
+            album,
+            trash_dir=tmp_path / "trash",
+            origins_dir=origins,
+            protected=protected_for(lib, trash_dir=tmp_path / "trash", origins_dir=origins),
+        )
 
     assert lib.get_album(album_id) is not None, "the rows must survive the refusal"
     assert len(list(album_root.glob("*.flac"))) == 2, "the files must not have moved"
@@ -429,7 +462,15 @@ def test_listing_offers_a_move_back_for_a_recorded_album(tmp_path: Path) -> None
     lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
     album = _dummy(lib)
     with lib.transaction():
-        trash_album_folder(lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+        trash_album_folder(
+            lib,
+            album,
+            trash_dir=tmp_path / "trash",
+            origins_dir=_origins(tmp_path),
+            protected=protected_for(
+                lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+            ),
+        )
 
     (row,) = list_trashed_albums(
         tmp_path / "trash", origins_dir=_origins(tmp_path), music_dir=str(tmp_path / "music")
@@ -514,7 +555,12 @@ def test_a_recorded_husk_is_a_zero_track_row_that_can_still_move_back(tmp_path: 
     husk = tmp_path / "music" / "Portishead" / "Dummy"
     husk.mkdir(parents=True)
     (husk / "cover.jpg").write_bytes(b"\x00")
-    trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+    trash_folder(
+        husk,
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)),
+    )
 
     (row,) = list_trashed_albums(
         tmp_path / "trash", origins_dir=_origins(tmp_path), music_dir=str(tmp_path / "music")
@@ -538,7 +584,13 @@ def test_restore_puts_an_album_back_at_its_exact_origin(tmp_path: Path) -> None:
     with lib.transaction():
         dest = Path(
             trash_album_folder(
-                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                lib,
+                album,
+                trash_dir=tmp_path / "trash",
+                origins_dir=_origins(tmp_path),
+                protected=protected_for(
+                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                ),
             )
         )
     assert not source.exists()
@@ -573,7 +625,13 @@ def test_restore_recreates_an_artist_folder_that_was_swept_away(tmp_path: Path) 
     with lib.transaction():
         dest = Path(
             trash_album_folder(
-                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                lib,
+                album,
+                trash_dir=tmp_path / "trash",
+                origins_dir=_origins(tmp_path),
+                protected=protected_for(
+                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                ),
             )
         )
     artist_dir.rmdir()
@@ -624,7 +682,13 @@ def test_restore_never_links_the_album_when_the_user_config_asks_for_links(
     with lib.transaction():
         dest = Path(
             trash_album_folder(
-                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                lib,
+                album,
+                trash_dir=tmp_path / "trash",
+                origins_dir=_origins(tmp_path),
+                protected=protected_for(
+                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                ),
             )
         )
 
@@ -695,7 +759,13 @@ def test_a_landed_in_place_restore_hands_the_link_flags_back(tmp_path: Path) -> 
     with lib.transaction():
         dest = Path(
             trash_album_folder(
-                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                lib,
+                album,
+                trash_dir=tmp_path / "trash",
+                origins_dir=_origins(tmp_path),
+                protected=protected_for(
+                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                ),
             )
         )
 
@@ -734,7 +804,12 @@ def test_restore_puts_an_audio_free_husk_back(tmp_path: Path) -> None:
     husk = tmp_path / "music" / "Artist Extras"
     husk.mkdir(parents=True)
     (husk / "booklet.jpg").write_bytes(b"\x00")
-    dest = trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+    dest = trash_folder(
+        husk,
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)),
+    )
 
     result = restore_album(
         lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
@@ -803,7 +878,13 @@ def test_restore_refuses_when_the_origin_is_occupied_and_keeps_the_files_in_tras
     with lib.transaction():
         dest = Path(
             trash_album_folder(
-                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                lib,
+                album,
+                trash_dir=tmp_path / "trash",
+                origins_dir=_origins(tmp_path),
+                protected=protected_for(
+                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                ),
             )
         )
     source.mkdir(parents=True)
@@ -831,7 +912,13 @@ def test_restore_returns_the_folder_to_trash_when_the_album_is_already_in_the_li
     with lib.transaction():
         dest = Path(
             trash_album_folder(
-                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                lib,
+                album,
+                trash_dir=tmp_path / "trash",
+                origins_dir=_origins(tmp_path),
+                protected=protected_for(
+                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                ),
             )
         )
     replacement = Item(
@@ -876,7 +963,15 @@ def test_a_row_with_NO_record_also_refuses_an_unavailable_music_share(tmp_path: 
     origins = origins_for(trash)
     album = _dummy(lib)
     with lib.transaction():
-        dest = Path(trash_album_folder(lib, album, trash_dir=trash, origins_dir=origins))
+        dest = Path(
+            trash_album_folder(
+                lib,
+                album,
+                trash_dir=trash,
+                origins_dir=origins,
+                protected=protected_for(lib, trash_dir=trash, origins_dir=origins),
+            )
+        )
     delete_trash_origin(origins, dest.name)  # a pre-feature row
     assert read_trash_origin(origins, dest.name) is None
     shutil.rmtree(tmp_path / "music")
@@ -898,7 +993,13 @@ def test_restore_refuses_to_move_into_an_unavailable_music_share(tmp_path: Path)
     with lib.transaction():
         dest = Path(
             trash_album_folder(
-                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                lib,
+                album,
+                trash_dir=tmp_path / "trash",
+                origins_dir=_origins(tmp_path),
+                protected=protected_for(
+                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                ),
             )
         )
     shutil.rmtree(tmp_path / "music")
@@ -1109,7 +1210,12 @@ def test_a_row_whose_record_could_not_be_written_no_longer_blames_its_age(
     monkeypatch.setattr(trash_origins_mod, "write_atomic_text", _boom)
 
     with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
-        trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+        trash_folder(
+            husk,
+            trash_dir=tmp_path / "trash",
+            origins_dir=_origins(tmp_path),
+            protected=protected_for(trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)),
+        )
 
     # The delete itself still completed. That is the invariant the two refusal
     # tests above gave up when their fixture changed meaning, so it is asserted
@@ -1194,7 +1300,13 @@ def test_an_album_named_with_a_no_break_space_keeps_its_exact_restore(tmp_path: 
     with lib.transaction():
         dest = Path(
             trash_album_folder(
-                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                lib,
+                album,
+                trash_dir=tmp_path / "trash",
+                origins_dir=_origins(tmp_path),
+                protected=protected_for(
+                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                ),
             )
         )
 
@@ -1386,7 +1498,13 @@ def test_a_failed_restore_whose_undo_also_fails_says_where_the_folder_went(
     with lib.transaction():
         entry = Path(
             trash_album_folder(
-                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                lib,
+                album,
+                trash_dir=tmp_path / "trash",
+                origins_dir=_origins(tmp_path),
+                protected=protected_for(
+                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                ),
             )
         )
 
@@ -1451,7 +1569,13 @@ def test_a_media_album_whose_import_lands_nothing_still_goes_back_to_trash(
     with lib.transaction():
         entry = Path(
             trash_album_folder(
-                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                lib,
+                album,
+                trash_dir=tmp_path / "trash",
+                origins_dir=_origins(tmp_path),
+                protected=protected_for(
+                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+                ),
             )
         )
 
@@ -1612,7 +1736,12 @@ def test_a_non_utf8_folder_name_round_trips_through_the_ascii_record(tmp_path: P
     husk.mkdir()
     (husk / "booklet.jpg").write_bytes(b"\x00")
 
-    dest = trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+    dest = trash_folder(
+        husk,
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)),
+    )
 
     record_path = origin_file(_origins(tmp_path), dest.name)
     assert record_path.is_file(), "the key itself carries the undecodable byte"
@@ -1700,10 +1829,22 @@ def test_empty_one_removes_the_origin_record(tmp_path: Path) -> None:
     husk = tmp_path / "music" / "Old Name"
     husk.mkdir(parents=True)
     (husk / "cover.jpg").write_bytes(b"\x00")
-    dest = trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+    dest = trash_folder(
+        husk,
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)),
+    )
     assert read_trash_origin(_origins(tmp_path), dest.name) is not None
 
-    assert empty_one(str(dest), origins_dir=_origins(tmp_path)).removed == 1
+    assert (
+        empty_one(
+            str(dest),
+            origins_dir=_origins(tmp_path),
+            protected=protected_for(origins_dir=_origins(tmp_path)),
+        ).removed
+        == 1
+    )
 
     assert not dest.exists()
     assert read_trash_origin(_origins(tmp_path), dest.name) is None
@@ -1726,14 +1867,19 @@ def test_empty_one_keeps_the_record_when_the_removal_itself_fails(tmp_path: Path
     husk = tmp_path / "music" / "Old Name"
     husk.mkdir(parents=True)
     (husk / "cover.jpg").write_bytes(b"\x00")
-    dest = trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+    dest = trash_folder(
+        husk,
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)),
+    )
     (tmp_path / "trash").chmod(0o500)  # rmtree cannot unlink out of a read-only dir
 
     try:
         entry_path = str(dest)
         origins = _origins(tmp_path)
         with pytest.raises(OSError):
-            empty_one(entry_path, origins_dir=origins)
+            empty_one(entry_path, origins_dir=origins, protected=protected_for(origins_dir=origins))
     finally:
         (tmp_path / "trash").chmod(0o700)
 
@@ -1756,12 +1902,24 @@ def test_empty_all_removes_every_origin_record_including_a_symlinked_entry(
         husk = tmp_path / "music" / name
         husk.mkdir(parents=True)
         (husk / "cover.jpg").write_bytes(b"\x00")
-        trash_folder(husk, trash_dir=trash, origins_dir=origins)
+        trash_folder(
+            husk,
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=protected_for(trash_dir=trash, origins_dir=origins),
+        )
     (tmp_path / "linked").mkdir()
     (trash / "C").symlink_to(tmp_path / "linked", target_is_directory=True)
     write_trash_origin(origins, "C", origin=str(tmp_path / "music" / "C"), moved="folder")
 
-    assert empty_all(trash, origins_dir=origins).removed == 3
+    assert (
+        empty_all(
+            trash,
+            origins_dir=origins,
+            protected=protected_for(trash_dir=trash, origins_dir=origins),
+        ).removed
+        == 3
+    )
 
     assert list(trash.iterdir()) == []
     assert (tmp_path / "linked").is_dir(), "the link was unlinked, not followed"
@@ -1793,7 +1951,14 @@ def test_empty_all_leaves_a_record_whose_entry_was_removed_outside_the_app(
         origins, "Gone By Hand", origin=str(tmp_path / "music" / "X"), moved="folder"
     )
 
-    assert empty_all(trash, origins_dir=origins).removed == 0
+    assert (
+        empty_all(
+            trash,
+            origins_dir=origins,
+            protected=protected_for(trash_dir=trash, origins_dir=origins),
+        ).removed
+        == 0
+    )
 
     assert read_trash_origin(origins, "Gone By Hand") is not None
 
@@ -1818,7 +1983,12 @@ def test_a_name_whose_record_survives_is_never_handed_to_another_folder(tmp_path
     husk.mkdir(parents=True)
     (husk / "cover.jpg").write_bytes(b"\x00")
 
-    dest = trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=origins)
+    dest = trash_folder(
+        husk,
+        trash_dir=tmp_path / "trash",
+        origins_dir=origins,
+        protected=protected_for(trash_dir=tmp_path / "trash", origins_dir=origins),
+    )
 
     assert dest.name == "Old Name (1)", "the recorded name was still taken"
     assert _record(tmp_path, dest).origin == str(husk)
@@ -1917,7 +2087,12 @@ def test_an_entry_name_too_long_for_a_json_suffix_still_gets_its_record(tmp_path
     husk = tmp_path / "music" / ("H" * 255)
     husk.mkdir(parents=True)
     (husk / "cover.jpg").write_bytes(b"\x00")
-    dest = trash_folder(husk, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+    dest = trash_folder(
+        husk,
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)),
+    )
     assert _record(tmp_path, dest).origin == str(husk)
 
 
@@ -1970,7 +2145,13 @@ def test_a_landed_restore_drops_the_record_keyed_on_the_TRASH_name(tmp_path: Pat
 
     with lib.transaction():
         dest = Path(
-            trash_album_folder(lib, album, trash_dir=tmp_path / "trash", origins_dir=origins)
+            trash_album_folder(
+                lib,
+                album,
+                trash_dir=tmp_path / "trash",
+                origins_dir=origins,
+                protected=protected_for(lib, trash_dir=tmp_path / "trash", origins_dir=origins),
+            )
         )
     assert dest.name == "Weird Folder (1)", "the names must really differ for this to test anything"
 

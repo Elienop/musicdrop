@@ -14,6 +14,7 @@ from typing import Any
 
 from app.beets.library import LibraryHandle, _music_dir, library_paths_context
 from app.beets.orphans import find_orphan_folders
+from app.beets.protected import ProtectedTreeError, protected_trees
 from app.beets.reorganize import (
     collect_units,
     live_album_roots,
@@ -23,6 +24,7 @@ from app.beets.reorganize import (
 from app.beets.store_layout import StoreLayoutError, check_store_layout
 from app.beets.trash import trash_folder
 from app.beets.trash_origins import TrashOriginsStoreUnusableError, require_usable_store
+from app.config import settings
 from app.models.reorganize import ReorganizeOutcome, ReorganizeScope
 from app.playlists.reexport import reexport_playlists_containing_sync
 from app.reorganize_jobs.registry import ReorganizeRegistry
@@ -216,17 +218,29 @@ def _sweep_orphans(
     # WARNING-and-skip as the store guard below, and for the same reason: the
     # move phase has already relocated real files, and failing the job here would
     # cost the run its .m3u8 re-export tail for a fault about the Trash.
+    music_root = Path(_music_dir(handle.lib))
+    library_path = Path(os.fsdecode(handle.lib.path))
     try:
         check_store_layout(
-            music_dir=Path(_music_dir(handle.lib)),
+            music_dir=music_root,
             beets_dir=handle.beets_dir,
             trash_dir=trash_dir,
             origins_dir=trash_origins_dir,
-            library_path=Path(os.fsdecode(handle.lib.path)),
+            library_path=library_path,
         )
     except StoreLayoutError:
         _log.warning("orphan sweep skipped: the store layout is refused", exc_info=True)
         return False
+    # Beside the layout check, from the pair it just approved: the spelled rows
+    # above miss an alias, so each candidate is asked again by inode below.
+    protected = protected_trees(
+        settings=settings,
+        music_dir=music_root,
+        beets_dir=handle.beets_dir,
+        trash_dir=trash_dir,
+        origins_dir=trash_origins_dir,
+        library_path=library_path,
+    )
     try:
         require_usable_store(trash_origins_dir)
     except TrashOriginsStoreUnusableError:
@@ -243,8 +257,17 @@ def _sweep_orphans(
         if reg.should_stop():
             return True
         try:
-            trash_folder(folder, trash_dir=trash_dir, origins_dir=trash_origins_dir)
+            trash_folder(
+                folder, trash_dir=trash_dir, origins_dir=trash_origins_dir, protected=protected
+            )
             reg.record_orphans(1)
+        except ProtectedTreeError as exc:
+            # Its own arm above ``OSError``, which is not a supertype of it: a
+            # candidate that is or holds one of the app's own directories is
+            # skipped with a WARNING, like an unusable store, so the rest of the
+            # pass still runs.
+            _log.warning("orphan sweep skipped a folder: %s", exc)
+            continue
         except OSError:
             continue
     return False

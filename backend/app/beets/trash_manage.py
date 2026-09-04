@@ -37,6 +37,13 @@ from app.beets.library import (
     _music_dir,
     require_library_present,
 )
+from app.beets.protected import (
+    ProtectedTreeError,
+    ProtectedTrees,
+    open_checked_dir,
+    protected_match,
+    refuse_protected_tree,
+)
 from app.beets.trash_origins import (
     clear_trash_origins,
     delete_trash_origin,
@@ -1039,7 +1046,7 @@ def resolve_trash_child(trash_dir: Path, rel: str) -> Path:
     return dest
 
 
-def empty_one(folder_abs: str, *, origins_dir: Path) -> EmptyResult:
+def empty_one(folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees) -> EmptyResult:
     """Permanently remove one trashed entry — a folder or a loose file.
 
     Its OWN record goes with it, and strictly AFTER: a failed ``rmtree`` raises
@@ -1052,8 +1059,12 @@ def empty_one(folder_abs: str, *, origins_dir: Path) -> EmptyResult:
     two long names can share one truncated key, and
     :func:`~app.beets.trash_origins.delete_trash_origin` reads the payload's own
     ``name`` before unlinking. Its docstring owns that exception.
+
+    Raises :class:`~app.beets.protected.ProtectedTreeError` (503) when the entry
+    is or holds one of the app's own directories by inode.
     """
     path = Path(folder_abs)
+    refuse_protected_tree(path, protected, action="removed")
     if path.is_dir():
         shutil.rmtree(path)
     else:
@@ -1062,8 +1073,18 @@ def empty_one(folder_abs: str, *, origins_dir: Path) -> EmptyResult:
     return EmptyResult(removed=1)
 
 
-def empty_all(trash_dir: Path, *, origins_dir: Path) -> EmptyResult:
+def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) -> EmptyResult:
     """Permanently remove everything under ``trash_dir``.
+
+    The root is opened ``O_NOFOLLOW`` and fstat-compared against the identity
+    the caller checked, and the entries come from THAT descriptor
+    (:func:`~app.beets.protected.open_checked_dir`): ``iterdir()`` followed a
+    symlink planted at the Trash path in the 0.115-0.260 ms between the two.
+
+    An entry that is or holds one of the app's own directories by inode is left
+    where it is and named in a :class:`~app.beets.protected.ProtectedTreeError`
+    (503), which outranks the partial below: the others are worth retrying and
+    this one needs the layout fixed first.
 
     ``is_dir()`` FOLLOWS symlinks and ``shutil.rmtree`` refuses one, so a
     symlinked entry used to raise ``OSError`` here and wedge the whole
@@ -1108,8 +1129,19 @@ def empty_all(trash_dir: Path, *, origins_dir: Path) -> EmptyResult:
         return EmptyResult(removed=0)
     removed = 0
     failed: list[str] = []
+    refused: list[str] = []
     first: OSError | None = None
-    for child in trash_dir.iterdir():
+    fd = open_checked_dir(trash_dir, protected.trash)
+    try:
+        entries = sorted(entry.name for entry in os.scandir(fd))
+    finally:
+        os.close(fd)
+    for name in entries:
+        child = trash_dir / name
+        clause = protected_match(child, protected)
+        if clause is not None:
+            refused.append(f"{display_path(name)!r} {clause}")
+            continue
         try:
             if child.is_dir() and not child.is_symlink():
                 shutil.rmtree(child)
@@ -1121,11 +1153,17 @@ def empty_all(trash_dir: Path, *, origins_dir: Path) -> EmptyResult:
             # whole sweep and take the count with it, so the user was told
             # nothing and could not tell 1-of-12 from 11-of-12. The entry stays
             # in Trash either way; only the reporting was ever at stake.
-            failed.append(display_path(child.name))
+            failed.append(display_path(name))
             first = first or exc
             continue
-        delete_trash_origin(origins_dir, child.name)
+        delete_trash_origin(origins_dir, name)
         removed += 1
+    if refused:
+        shown = "; ".join(refused[:5])
+        more = f" and {len(refused) - 5} more" if len(refused) > 5 else ""
+        raise ProtectedTreeError(
+            f"Refused: {shown}{more}. Removed {removed}; fix the layout, then retry."
+        )
     if failed:
         # Named, not just counted: the user's next move is to look at them, and
         # a bare number does not say which. Capped because Trash can be large

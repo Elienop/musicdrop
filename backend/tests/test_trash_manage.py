@@ -19,7 +19,7 @@ from app.beets.trash_manage import (
     restore_album,
 )
 from app.beets.trash_origins import read_trash_origin, write_trash_origin
-from tests.conftest import build_library, origins_for
+from tests.conftest import build_library, origins_for, protected_for
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
 
@@ -366,9 +366,23 @@ def test_empty_one_and_all(tmp_path: Path) -> None:
     trash = tmp_path / "trash"
     (trash / "A").mkdir(parents=True)
     (trash / "B").mkdir(parents=True)
-    assert empty_one(str(trash / "A"), origins_dir=origins_for(trash)).removed == 1
+    assert (
+        empty_one(
+            str(trash / "A"),
+            origins_dir=origins_for(trash),
+            protected=protected_for(origins_dir=origins_for(trash)),
+        ).removed
+        == 1
+    )
     assert not (trash / "A").exists()
-    assert empty_all(trash, origins_dir=origins_for(trash)).removed == 1  # B remains
+    assert (
+        empty_all(
+            trash,
+            origins_dir=origins_for(trash),
+            protected=protected_for(trash_dir=trash, origins_dir=origins_for(trash)),
+        ).removed
+        == 1
+    )  # B remains
     assert list(trash.iterdir()) == []
 
 
@@ -398,7 +412,11 @@ def test_empty_all_finishes_what_it_can_and_names_what_it_could_not(tmp_path: Pa
 
     try:
         with pytest.raises(TrashEmptyPartialError) as ei:
-            empty_all(trash, origins_dir=origins)
+            empty_all(
+                trash,
+                origins_dir=origins,
+                protected=protected_for(trash_dir=trash, origins_dir=origins),
+            )
     finally:
         (trash / "B Album").chmod(0o700)  # or the tmp_path teardown cannot clean up
 
@@ -442,7 +460,14 @@ def test_empty_all_clears_the_store_once_trash_is_empty(tmp_path: Path) -> None:
     # Its entry left Trash without this app noticing, so nothing ever dropped it.
     write_trash_origin(origins, "Gone Album", origin="/music/Gone Album", moved="folder")
 
-    assert empty_all(trash, origins_dir=origins).removed == 1
+    assert (
+        empty_all(
+            trash,
+            origins_dir=origins,
+            protected=protected_for(trash_dir=trash, origins_dir=origins),
+        ).removed
+        == 1
+    )
 
     assert list(trash.iterdir()) == []
     assert list(origins.iterdir()) == [], "an emptied Trash must leave an empty store"
@@ -469,7 +494,14 @@ def test_empty_all_keeps_every_record_when_it_removed_nothing(tmp_path: Path) ->
     origins.mkdir()
     write_trash_origin(origins, "Real Album", origin="/music/Real Album", moved="folder")
 
-    assert empty_all(trash, origins_dir=origins).removed == 0
+    assert (
+        empty_all(
+            trash,
+            origins_dir=origins,
+            protected=protected_for(trash_dir=trash, origins_dir=origins),
+        ).removed
+        == 0
+    )
 
     record = read_trash_origin(origins, "Real Album")
     assert record is not None, "a Trash dir that reads as empty is not proof that it is"
@@ -499,7 +531,14 @@ def test_empty_all_clears_a_symlinked_entry_without_following_it(tmp_path: Path)
     (trash / "Real Album" / "a.flac").write_bytes(b"\x00")
     (trash / "Symlinked Album").symlink_to(elsewhere, target_is_directory=True)
 
-    assert empty_all(trash, origins_dir=origins_for(trash)).removed == 2
+    assert (
+        empty_all(
+            trash,
+            origins_dir=origins_for(trash),
+            protected=protected_for(trash_dir=trash, origins_dir=origins_for(trash)),
+        ).removed
+        == 2
+    )
 
     assert list(trash.iterdir()) == []
     assert (elsewhere / "keepme.txt").is_file()
@@ -511,5 +550,12 @@ def test_empty_one_removes_a_loose_file(tmp_path: Path) -> None:
     trash = tmp_path / "trash"
     trash.mkdir()
     (trash / "loose.flac").write_bytes(b"x")
-    assert empty_one(str(trash / "loose.flac"), origins_dir=origins_for(trash)).removed == 1
+    assert (
+        empty_one(
+            str(trash / "loose.flac"),
+            origins_dir=origins_for(trash),
+            protected=protected_for(origins_dir=origins_for(trash)),
+        ).removed
+        == 1
+    )
     assert not (trash / "loose.flac").exists()

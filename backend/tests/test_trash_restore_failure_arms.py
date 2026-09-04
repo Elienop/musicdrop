@@ -47,7 +47,7 @@ from app.beets.trash_manage import (
 )
 from app.beets.trash_origins import read_trash_origin
 from app.models.trash import RestoreResult
-from tests.conftest import build_library, origins_for
+from tests.conftest import build_library, origins_for, protected_for
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
 
@@ -112,6 +112,9 @@ def _trash_the_album(lib: Library, tmp_path: Path) -> Path:
                 album,
                 trash_dir=tmp_path / "trash",
                 origins_dir=origins_for(tmp_path / "trash"),
+                protected=protected_for(
+                    lib, trash_dir=tmp_path / "trash", origins_dir=origins_for(tmp_path / "trash")
+                ),
             )
         )
 

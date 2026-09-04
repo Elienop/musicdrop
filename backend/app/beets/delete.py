@@ -28,7 +28,8 @@ from app.beets.library import (
     _require_id,
     require_library_root,
 )
-from app.beets.store_layout import StoreLayoutError, checked_store_dirs
+from app.beets.protected import ProtectedTreeError, ProtectedTrees
+from app.beets.store_layout import StoreLayoutError, checked_protected_trees, checked_store_dirs
 from app.beets.trash import (
     TrashDeleteIncompleteError,
     TrashMoveIncompleteError,
@@ -121,6 +122,7 @@ def delete_album(
     *,
     trash_dir: Path,
     origins_dir: Path,
+    protected: ProtectedTrees,
     dropped_item_ids: set[int] | None = None,
 ) -> DeleteResult:
     """Move one album's whole folder to Trash and drop it. 404 on unknown id.
@@ -144,7 +146,7 @@ def delete_album(
             dropped_item_ids.update(_require_id(i.id) for i in album.items())
         with lib.transaction():
             trash_path = trash_album_folder(
-                lib, album, trash_dir=trash_dir, origins_dir=origins_dir
+                lib, album, trash_dir=trash_dir, origins_dir=origins_dir, protected=protected
             )
     return DeleteResult(trashed_albums=1, trash_path=trash_path)
 
@@ -155,6 +157,7 @@ def delete_artist(
     *,
     trash_dir: Path,
     origins_dir: Path,
+    protected: ProtectedTrees,
     dropped_item_ids: set[int] | None = None,
 ) -> DeleteResult:
     """Move EVERY album of ``artist_name`` (matched on albumartist) to Trash.
@@ -240,7 +243,11 @@ def delete_artist(
                     dropped_item_ids.update(_require_id(i.id) for i in album.items())
                 try:
                     dest = trash_album_folder(
-                        lib, album, trash_dir=trash_dir, origins_dir=origins_dir
+                        lib,
+                        album,
+                        trash_dir=trash_dir,
+                        origins_dir=origins_dir,
+                        protected=protected,
                     )
                 except Exception as exc:
                     # ONE arm, for every cause. It used to be two, and the
@@ -464,7 +471,7 @@ def _recovery(exc: Exception) -> str:
     )
 
 
-def _checked_store(app: FastAPI) -> tuple[LibraryHandle, Path, Path]:
+def _checked_store(app: FastAPI) -> tuple[LibraryHandle, Path, Path, ProtectedTrees]:
     """The handle and the CHECKED Trash / origin-store pair, or a 503.
 
     ``resolve_trash_dir`` follows whatever the configured path points at NOW, so
@@ -479,11 +486,15 @@ def _checked_store(app: FastAPI) -> tuple[LibraryHandle, Path, Path]:
     status stays a literal tests/test_route_status_declarations.py can see.
     """
     handle: LibraryHandle = app.state.beets_library
+    settings = _settings(app)
     try:
-        trash_dir, origins_dir = checked_store_dirs(_settings(app), handle)
+        trash_dir, origins_dir = checked_store_dirs(settings, handle)
     except StoreLayoutError as exc:
         raise HTTPException(status_code=503, detail=_NOTHING_DELETED_LAYOUT.format(exc)) from exc
-    return handle, trash_dir, origins_dir
+    protected = checked_protected_trees(
+        settings, handle, trash_dir=trash_dir, origins_dir=origins_dir
+    )
+    return handle, trash_dir, origins_dir, protected
 
 
 def _failed(exc: Exception) -> HTTPException:
@@ -506,7 +517,7 @@ async def delete_album_op(
     app = request.app
     _gate()
     async with _swap_lock(app):
-        handle, trash_dir, origins_dir = _checked_store(app)
+        handle, trash_dir, origins_dir, protected = _checked_store(app)
         try:
             return await run_in_threadpool(
                 delete_album,
@@ -514,6 +525,7 @@ async def delete_album_op(
                 album_id,
                 trash_dir=trash_dir,
                 origins_dir=origins_dir,
+                protected=protected,
                 dropped_item_ids=dropped_item_ids,
             )
         except AlbumNotFoundError as exc:
@@ -548,6 +560,11 @@ async def delete_album_op(
         # having already moved albums (see ``_NOTHING_DELETED``).
         except TrashOriginsStoreUnusableError as exc:
             raise HTTPException(status_code=503, detail=exc.worded_with(_NOTHING_DELETED)) from exc
+        # The identity guard, same tier and same promise: it runs before the
+        # folder moves, so nothing has been dropped. A fan-out past its first
+        # album re-raises as ArtistDeletePartialError and takes the 500 below.
+        except ProtectedTreeError as exc:
+            raise HTTPException(status_code=503, detail=f"{exc} {_NOTHING_DELETED}") from exc
         except Exception as exc:
             raise _failed(exc) from exc
 
@@ -566,7 +583,7 @@ async def delete_artist_op(
     app = request.app
     _gate()
     async with _swap_lock(app):
-        handle, trash_dir, origins_dir = _checked_store(app)
+        handle, trash_dir, origins_dir, protected = _checked_store(app)
         try:
             return await run_in_threadpool(
                 delete_artist,
@@ -574,6 +591,7 @@ async def delete_artist_op(
                 artist_name,
                 trash_dir=trash_dir,
                 origins_dir=origins_dir,
+                protected=protected,
                 dropped_item_ids=dropped_item_ids,
             )
         # Same 503-before-the-blanket-500 ordering as delete_album_op above,
@@ -589,5 +607,10 @@ async def delete_artist_op(
         # below, whose message names how far the fan-out got.
         except TrashOriginsStoreUnusableError as exc:
             raise HTTPException(status_code=503, detail=exc.worded_with(_NOTHING_DELETED)) from exc
+        # The identity guard, same tier and same promise: it runs before the
+        # folder moves, so nothing has been dropped. A fan-out past its first
+        # album re-raises as ArtistDeletePartialError and takes the 500 below.
+        except ProtectedTreeError as exc:
+            raise HTTPException(status_code=503, detail=f"{exc} {_NOTHING_DELETED}") from exc
         except Exception as exc:
             raise _failed(exc) from exc
