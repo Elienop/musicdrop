@@ -497,6 +497,56 @@ describe("SettingsPage", () => {
     expect(banner).toHaveTextContent(/restart musicdrop/i);
   });
 
+  test("an Apply refused for a bad Trash layout shows the reason, not the job sentence", async () => {
+    // The backend answers 422 (not 409) precisely so this branch runs: every
+    // Apply 409 renders the fixed "A library job is running" line, which would
+    // tell the operator the opposite of what happened. Pinned on the STATUS the
+    // containment refusal uses, so a later `status === 422` branch that showed
+    // generic copy would fail here.
+    let getCalls = 0;
+    server.use(
+      http.get(CONFIG_URL, () => {
+        getCalls += 1;
+        return HttpResponse.json(
+          snapshotFixture({ apply_pending: true, sha256: `sha-${getCalls}` }),
+        );
+      }),
+      http.get(ACTIVE_IMPORT_URL, () => HttpResponse.json({ active: false })),
+      http.post(VALIDATE_URL, () =>
+        HttpResponse.json({ errors: [], advisories: [] }),
+      ),
+      http.post(APPLY_URL, () =>
+        HttpResponse.json(
+          {
+            detail: {
+              message: "Apply refused: config.yaml would move the music library",
+              recovery:
+                "The Trash directory is the music library. MUSICDROP_TRASH_DIR resolves to '/music'.",
+            },
+          },
+          { status: 422 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await findEditorContent();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /apply changes/i }),
+      ).toBeEnabled(),
+    );
+
+    await user.click(screen.getByRole("button", { name: /apply changes/i }));
+
+    const banner = await screen.findByText(/apply failed/i);
+    expect(banner).toHaveAttribute("role", "alert");
+    expect(banner).toHaveTextContent(/MUSICDROP_TRASH_DIR/);
+    expect(
+      screen.queryByText(/a library job is running/i),
+    ).not.toBeInTheDocument();
+  });
+
   test("a non-409 Save failure surfaces a destructive banner", async () => {
     defaultMocks();
     server.use(
