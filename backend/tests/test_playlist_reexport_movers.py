@@ -662,6 +662,47 @@ def test_import_replace_skips_the_trashing_when_the_store_layout_is_refused(
     ]
 
 
+def test_import_replace_reads_the_beets_dir_beets_itself_resolved(
+    duplicates_lib: Library,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WHICH beets dir the post-run layout check compares against.
+
+    It used to be ``Path(settings.beets_dir)``, whose default is the RELATIVE
+    string "data/beets" — joined to the process CWD by ``_resolved``, on a worker
+    thread, possibly hours after startup, while every other call site passes the
+    resolved handle dir. The two agree only while nothing changes the working
+    directory, which is a condition nothing states or enforces.
+
+    The layout used here is refused ONLY when the check sees the beets dir
+    ``setup_beets`` exported: it CONTAINS the music library (the ``B contains M``
+    row), while Trash and the origin store sit where no other row fires. Read the
+    setting's relative default instead and the whole layout is disjoint, so the
+    replaced album is trashed and the assertions below flip.
+    """
+    import logging
+
+    from app.beets.import_session import _trash_replaced_albums
+
+    music = Path(os.fsdecode(duplicates_lib.directory))
+    monkeypatch.setenv("BEETSDIR", str(music.parent))
+    superseded = _album_by_title(duplicates_lib, "Discovery")
+    session = _replace_session(
+        duplicates_lib, trash_dir=tmp_path / "elsewhere" / "trash", playlists_dir=None
+    )
+    session._replace_album_ids = {_require_id(superseded.id)}
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.import_session"):
+        _trash_replaced_albums(session)
+
+    assert duplicates_lib.get_album(_require_id(superseded.id)) is not None
+    assert any("store layout is refused" in r.getMessage() for r in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]
+
+
 def test_run_import_worker_post_run_pass_tolerates_a_minimal_session(
     caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

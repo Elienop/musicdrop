@@ -44,6 +44,7 @@ from app.beets.relookup import relookup
 from app.beets.research import _read_items, lookup_items
 from app.beets.store_layout import StoreLayoutError, check_store_layout
 from app.beets.trash import album_format_bitrate, trash_album
+from app.config import settings
 from app.models.album import ReleaseIdentity
 from app.models.bank import BankApplyDirective, BankReason
 from app.models.import_models import (
@@ -1675,15 +1676,21 @@ def _trash_replaced_albums(session: WebImportSession) -> None:
     try:
         check_store_layout(
             music_dir=Path(_music_dir(lib)),
-            # beets' own ``config.config_dir()`` and not ``settings.beets_dir``: the
-            # setting's DEFAULT is the relative string "data/beets", and
-            # ``_resolved`` joins a relative path to the process CWD at the
-            # moment of the call — which here is a worker thread, possibly hours
-            # after startup. beets keeps this one absolute (``setup_beets``
-            # resolves it and exports BEETSDIR before confuse's first resolve),
-            # it is the same directory the setting names, and it is what beets
-            # itself resolved the ``directory:`` and ``library:`` below against.
-            beets_dir=Path(config.config_dir()),
+            # BEETSDIR before ``settings.beets_dir``, which every other call site
+            # reaches through the resolved ``handle.beets_dir``. The setting's
+            # DEFAULT is the RELATIVE string "data/beets", and ``_resolved``
+            # joins a relative path to the process CWD at the moment of the
+            # call — here a worker thread, possibly hours after startup, so what
+            # the guard compares against would follow the CWD. ``setup_beets``
+            # exports BEETSDIR as the resolved directory before confuse's first
+            # resolve and re-exports it on every Apply rebuild, so it names the
+            # same directory the setting does and is the one beets resolved the
+            # ``directory:`` and ``library:`` below against. (beets' own
+            # ``config.config_dir()`` returns the same value but CREATES the
+            # directory on the way, which this pass has no business doing.) The
+            # fallback covers a process where setup never ran, which is not one
+            # that can reach an import.
+            beets_dir=Path(os.environ.get("BEETSDIR") or settings.beets_dir),
             trash_dir=trash_dir,
             origins_dir=origins_dir,
             library_path=Path(os.fsdecode(lib.path)),
