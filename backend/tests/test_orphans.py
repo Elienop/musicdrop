@@ -1201,3 +1201,39 @@ def test_an_exclude_root_is_matched_by_identity_not_by_its_own_spelling(
         find_orphan_folders(link, seeds=None, trash_dir=trash, ignore_dirs=(real / "exports",))
         == []
     )
+
+
+def test_an_ancestor_of_an_ignored_dir_is_spared_in_the_walks_own_spelling(
+    tmp_path: Path,
+) -> None:
+    """The ancestor drop reads the walk's spelling of each root it matched.
+
+    The caller's spelling and the walk's are two paths to one directory whenever
+    a component is a symlink, and the candidates are in the walk's. Handing
+    ``_drop_excluded_ancestors`` the CALLER's spellings instead builds an
+    ancestor chain the candidates are not in, and the ancestor is reported —
+    measured, this exact fixture returned ``[<link>/data]`` that way, and the
+    mover takes a reported folder with its whole subtree, so the ignored export
+    dir would have gone to Trash inside it.
+
+    The stray file is what makes the hole visible at all: an only-child parent
+    records no ``has_file`` of its own and empty dirs are skipped, so ``data``
+    needs a non-audio file to become a candidate.
+    """
+    real = tmp_path / "tank" / "music"
+    link = tmp_path / "music"
+    real.mkdir(parents=True)
+    link.symlink_to(real)
+    _touch(real / "Real" / "01.flac")
+    _touch(real / "data" / "exports" / "p1.m3u8")
+    _touch(real / "data" / "notes.txt")
+    trash = tmp_path / "trash"
+
+    # Without the exclusion the ancestor IS the reported husk (pins the shape).
+    assert find_orphan_folders(link, seeds=None, trash_dir=trash) == [link / "data"]
+    assert (
+        find_orphan_folders(
+            link, seeds=None, trash_dir=trash, ignore_dirs=(real / "data" / "exports",)
+        )
+        == []
+    )
