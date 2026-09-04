@@ -17,7 +17,11 @@ from app.api.albums import get_library
 from app.beets.config_editor import _settings
 from app.beets.library import LibraryHandle, album_exists
 from app.beets.reorganize import album_scope_label, plan_reorganize
-from app.beets.store_layout import StoreLayoutError, checked_store_dirs
+from app.beets.store_layout import (
+    StoreLayoutError,
+    checked_store_dirs,
+    handle_music_and_library,
+)
 from app.events.emit import emit_library_changed
 from app.library_busy import raise_if_library_busy
 from app.models.errors import ErrorDetail
@@ -92,9 +96,10 @@ def _store(app: object) -> tuple[Path, Path]:
 def _ignore_dirs(app: object, origins_dir: Path) -> tuple[Path, ...]:
     """The app-owned dirs the orphan sweep must never trash: the resolved
     playlists export dir (defaults to <music>/.playlists), the Trash origin store,
-    and the beets data dir. Dotdirs/NAS dirs are handled name-based in the
-    scanner; these three cover the case where the configured path is an ordinary
-    name the scanner has no reason to skip.
+    the beets data dir, and the directory holding the beets database file.
+    Dotdirs/NAS dirs are handled name-based in the scanner; these four cover the
+    case where the configured path is an ordinary name the scanner has no reason
+    to skip.
 
     Each earns its place by being audio-empty BY DEFINITION while looking exactly
     like a husk:
@@ -104,8 +109,8 @@ def _ignore_dirs(app: object, origins_dir: Path) -> tuple[Path, ...]:
       every row's exact restore into Trash in one pass;
     * the **beets data dir**. ``app.beets.store_layout`` refuses a layout where
       it nests with the music root in either direction, so on an accepted layout
-      it resolves outside the walked tree and ``orphans._exclude_roots_for_walk``
-      drops it. It is passed anyway, unconditionally, because the sweep is what
+      it sits outside the walked tree and ``os.walk`` never reaches it. It is
+      passed anyway, unconditionally, because the sweep is what
       would move ``library.db`` and ``config.yaml`` if that rule were ever
       relaxed or bypassed, and because it holds content of its own — measured on
       ``d65e635``, before the rule existed: ``MUSICDROP_BEETS_DIR=<music>/musicdrop``
@@ -117,12 +122,28 @@ def _ignore_dirs(app: object, origins_dir: Path) -> tuple[Path, ...]:
       neither: measured on ``d65e635``,
       ``<music>/.musicdrop`` returned ``[]`` where ``<music>/musicdrop`` did not.
 
+    * the **directory holding the beets database**. ``library:`` may name a file
+      anywhere, including an audio-free subfolder of the music root, and the
+      layout rule allows that on purpose (it refuses ``L`` only inside ``T`` or
+      ``O``). ``<music>/db/library.db`` is then a directory whose whole content
+      is a ``.db`` file and its SQLite sidecars — audio-empty, non-empty, its
+      parent audio-bearing, which is the husk shape exactly. Measured on this
+      tree: with the sweep given the other three exclusions only, a library at
+      ``<music>/db/library.db`` reported ``db``; with this one added it reported
+      nothing there. When ``L`` sits under ``B`` (the default) this adds a
+      directory the tuple already holds and nothing changes.
+
       It used to be added only when it sat strictly inside the music root,
-      because an exclude root CONTAINING the root excluded every candidate —
-      ``excluded()`` is a prefix test — and the sweep returned ``[]`` for the
-      whole library. That is now handled where it belongs: the finder drops an
-      exclude root at or above the walk root and logs one WARNING, so a caller
-      cannot silence a sweep by passing one.
+      because an exclude root CONTAINING the root matched every candidate and
+      the sweep returned ``[]`` for the whole library. That is now handled where
+      it belongs: the finder drops an exclude root at or above the walk root and
+      logs one WARNING. Measured on the three spellings that reach it —
+      ``/``, the music root's parent, and the music root itself — each logged
+      exactly one WARNING and the sweep still reported the husk; the same tree
+      with no exclusion at all logged none and reported the same husk. The
+      earlier version of this sentence claimed the WARNING for every such root,
+      which was false for ``/``: ``_under`` compared against the prefix ``'//'``
+      and dropped it with no line at all.
 
     The Trash dir itself is excluded inside ``find_orphan_folders``, which takes
     it as its own argument.
@@ -144,7 +165,12 @@ def _ignore_dirs(app: object, origins_dir: Path) -> tuple[Path, ...]:
     # what it is given, which is what makes a RELATIVE
     # ``MUSICDROP_PLAYLISTS_EXPORT_DIR`` match — ``export_dir_for`` hands the
     # configured value through unchanged and ``open()`` joins it to the CWD.
-    return (export_dir_for(handle.lib), origins_dir, handle.beets_dir)
+    _music, library_path = handle_music_and_library(handle)
+    entries = (export_dir_for(handle.lib), origins_dir, handle.beets_dir, library_path.parent)
+    # Deduped in order: on the DEFAULT layout ``library:`` resolves to
+    # ``<B>/library.db``, so the last two entries are the same directory and the
+    # finder would log its at-or-above WARNING twice for one root.
+    return tuple(dict.fromkeys(entries))
 
 
 @router.get("/reorganize/preview", responses={503: _LAYOUT_REFUSED_RESPONSE})

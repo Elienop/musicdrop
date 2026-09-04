@@ -101,12 +101,15 @@ def test_a_beets_dir_inside_the_music_library_is_refused(tmp_path: Path) -> None
 
 
 def test_a_music_library_inside_the_beets_dir_is_refused(tmp_path: Path) -> None:
-    """The other direction, and the one the sweep cannot survive.
+    """The other direction, and the one that costs the sweep its exclusions.
 
     Every app-owned exclusion (``ignore_dirs``, the origin store, the export
-    dir) is then an ancestor of the walk root, and an exclude root at or above
-    the walk root matched every candidate when the implementer measured it — the
-    sweep returns nothing for the whole library.
+    dir) is then an ancestor of the walk root, and ``orphans._exclude_ids``
+    drops such a root with one WARNING. Measured on this tree with the three
+    app-owned roots passed as ``ignore_dirs``: the sweep reported the husk and
+    logged one warning per root, so the layout costs the sweep every app-owned
+    exclusion rather than the whole library. The refusal is the same either way;
+    what changed is the loss it names.
     """
     beets = tmp_path / "data"
     with pytest.raises(StoreLayoutError) as exc:

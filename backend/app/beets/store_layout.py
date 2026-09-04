@@ -27,8 +27,8 @@ Refused, with the loss each one would cause:
 ``M`` contains ``B``       a library-scope sweep and a whole-folder delete can move
                            ``library.db`` + ``config.yaml``
 ``B`` contains ``M``       every app-owned exclusion becomes an ancestor of the
-                           music root, and an exclude root at or above the walk
-                           root matched every candidate when it was measured
+                           music root, so each is dropped with a WARNING and the
+                           sweep runs with no app-owned exclusion at all
 ``T`` is / contains ``M``  Empty Trash deletes the music library
 ``T`` is / contains ``B``  Empty Trash deletes ``library.db`` + ``config.yaml``
 ``O`` is / contains ``M``  the store sweep unlinks ``*.json`` in the library
@@ -82,6 +82,7 @@ __all__ = [
     "check_store_layout",
     "checked_store_dirs",
     "effective_config_paths",
+    "handle_music_and_library",
     "layout_error_for_config",
     "resolve_configured_path",
 ]
@@ -479,11 +480,12 @@ def check_store_layout(
             other_setting=MUSIC_SETTING,
             other_path=music,
             loss=(
-                "The orphan sweep keeps away from the app's own folders by path"
-                " prefix, so a beets data directory above the music library makes"
-                " every one of those exclusions an ancestor of the walk root — and"
-                " an exclude root at or above the walk root matched every candidate"
-                " when it was measured, which reports nothing at all."
+                "A beets data directory above the music library makes every"
+                " app-owned exclusion an ancestor of the walk root. The orphan"
+                " sweep drops such a root with a WARNING and runs on, so it runs"
+                " with none of those exclusions: the app's own folders are no"
+                " longer kept out of it, and the sweep's every run logs the"
+                " warning."
             ),
             fix=beets_fix,
         )
@@ -652,14 +654,18 @@ def check_store_layout(
         )
 
 
-def _handle_library_path(handle: LibraryHandle) -> Path:
-    """The beets database file the handle actually opened.
+def handle_music_and_library(handle: LibraryHandle) -> tuple[Path, Path]:
+    """``(M, L)`` as the opened library actually has them: music root, DB file.
+
+    One function rather than a reach into ``handle.lib`` per caller, so the two
+    beets attributes this app reads off an open ``Library`` are named once and
+    stay inside the adapter boundary (CLAUDE.md rule 3).
 
     ``Library.path`` is what ``dbcore.Database.__init__`` stored, which is
     ``Path(os.fsdecode(path))`` on beets 2.13 — but ``os.fsdecode`` is applied
     here too so a bytes path from an older beets still lands as a ``Path``.
     """
-    return Path(os.fsdecode(handle.lib.path))
+    return Path(_music_dir(handle.lib)), Path(os.fsdecode(handle.lib.path))
 
 
 def checked_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path, Path]:
@@ -685,12 +691,13 @@ def checked_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path,
             resolve. Callers on a request path answer 503 with the message.
     """
     trash, origins = _resolve_store_dirs(settings, handle)
+    music, library = handle_music_and_library(handle)
     check_store_layout(
-        music_dir=Path(_music_dir(handle.lib)),
+        music_dir=music,
         beets_dir=handle.beets_dir,
         trash_dir=trash,
         origins_dir=origins,
-        library_path=_handle_library_path(handle),
+        library_path=library,
     )
     return trash, origins
 

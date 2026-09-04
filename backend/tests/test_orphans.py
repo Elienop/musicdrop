@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -863,3 +865,266 @@ def test_the_default_trash_position_already_spares_the_beets_dir(tmp_path: Path)
     _touch(beets_dir / "config.yaml")
 
     assert find_orphan_folders(root, seeds=None, trash_dir=beets_dir / "trash") == []
+
+
+# --------------------------------------------------------------------------
+# An exclude root is matched by ``(st_dev, st_ino)``, not by a path prefix.
+# A bind mount is the alias a prefix (translated or not) does not see.
+# --------------------------------------------------------------------------
+
+_BIND_PROBE = """
+import subprocess, sys
+from pathlib import Path
+base = Path(sys.argv[1])
+src = base / "srv" / "music"
+(src / "Real").mkdir(parents=True)
+(src / "Real" / "01.flac").write_bytes(b"x")
+(src / "Old Artist").mkdir()
+(src / "Old Artist" / "poster.jpg").write_bytes(b"x")
+(src / "bin").mkdir()
+(src / "bin" / "note.txt").write_bytes(b"x")
+mnt = base / "music"
+mnt.mkdir()
+trash = base / "trash"
+trash.mkdir()
+subprocess.run(["mount", "--bind", str(src), str(mnt)], check=True)
+subprocess.run(["mount", "--bind", str(src / "bin"), str(trash)], check=True)
+from app.beets.orphans import find_orphan_folders
+assert (mnt / "bin").samefile(trash), "the fixture did not alias the Trash"
+print(sorted(p.name for p in find_orphan_folders(mnt, seeds=None, trash_dir=trash)))
+"""
+
+
+def _unshare_works() -> bool:
+    """Whether this box grants an unprivileged mount namespace.
+
+    Measured rather than assumed: the probe below is the only shape that tells
+    inode identity apart from a path prefix, and a box without user namespaces
+    would otherwise fail the test for a reason that is not about this code.
+    """
+    try:
+        done = subprocess.run(
+            ["unshare", "-Urm", "true"], capture_output=True, timeout=30, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
+@pytest.mark.skipif(not _unshare_works(), reason="no unprivileged mount namespace on this box")
+def test_a_bind_mounted_trash_is_excluded_where_a_path_prefix_does_not_see_it(
+    tmp_path: Path,
+) -> None:
+    """The alias that makes exclusion an IDENTITY question rather than a string one.
+
+    ``-v /srv/music:/music`` plus ``-v /srv/music/bin:/trash`` is one directory
+    reached by two paths, and ``realpath`` collapses neither: a mount point's
+    ancestors are the mount point's, never the source's. Measured on the parent
+    commit's finder with this exact fixture — it reported ``['Old Artist', 'bin']``
+    and the mover would have emptied the Trash into itself; on this one it
+    reports ``['Old Artist']``. ``samefile`` inside the probe asserts the fixture
+    really aliased the two, so a mount that silently did nothing fails loudly
+    rather than passing for the wrong reason.
+
+    Run in a child process because the bind mounts need a mount namespace of
+    their own; the child imports the app package from this repo.
+    """
+    work = tmp_path / "work"
+    work.mkdir()
+    script = tmp_path / "probe.py"
+    script.write_text(_BIND_PROBE, encoding="utf-8")
+    backend = Path(__file__).resolve().parent.parent
+    # The child inherits this process's environment, which the rootdir conftest
+    # has already floored (``BEETSDIR`` under the test tree), and adds only the
+    # import root — ``app.beets.orphans`` imports nothing but the stdlib, so the
+    # child opens no beets config either way.
+    env = {**os.environ, "PYTHONPATH": str(backend)}
+    done = subprocess.run(
+        ["unshare", "-Urm", sys.executable, str(script), str(work)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=str(backend),
+        env=env,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "['Old Artist']", done.stdout + done.stderr
+
+
+# --------------------------------------------------------------------------
+# "I could not look" is not "there is nothing there".
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(os.getuid() == 0, reason="root reads a mode-000 directory anyway")
+def test_an_unreadable_album_dir_does_not_make_its_parent_a_husk(tmp_path: Path) -> None:
+    """A walk error marks the subtree audio-BEARING, in both modes.
+
+    Measured on the parent commit: ``music/Perm/Album`` at mode 000 with
+    ``music/Perm/cover.jpg`` beside it made ``Perm`` read as a husk in library
+    mode, and the mover relocates a reported folder with its whole subtree — the
+    audio inside the unreadable dir went to Trash. ``os.walk``'s ``onerror`` had
+    swallowed the ``PermissionError``, so the dir was never recorded and
+    contributed no audio to its parent.
+
+    The control is the same tree readable: ``Perm`` is not a husk then either,
+    for the ordinary reason, so the third case below (no audio anywhere) is what
+    shows the guard has not simply switched the sweep off.
+    """
+    root = tmp_path / "music"
+    _touch(root / "Perm" / "Album" / "01.flac")
+    _touch(root / "Perm" / "cover.jpg")
+    _touch(root / "Real" / "Album" / "01.flac")
+    trash = tmp_path / "trash"
+
+    os.chmod(root / "Perm" / "Album", 0o000)
+    try:
+        assert find_orphan_folders(root, seeds=None, trash_dir=trash) == []
+        assert find_orphan_folders(root, seeds=[root / "Perm" / "Gone"], trash_dir=trash) == []
+    finally:
+        os.chmod(root / "Perm" / "Album", 0o755)
+
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash) == []
+
+    # ... and a husk with nothing unreadable about it is still reported, so the
+    # guard above is not a blanket "report nothing".
+    _touch(root / "Old Artist" / "poster.jpg")
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash) == [root / "Old Artist"]
+
+
+def test_the_seeds_climb_stops_at_a_symlinked_ancestor(tmp_path: Path) -> None:
+    """A symlink is not a husk the mover may relocate.
+
+    ``shutil.move`` moves the LINK, so everything beneath it leaves the library
+    in one step and the Trash row is not restorable — ``trash._record_origin``
+    writes no record for a symlinked destination and the listing renders such an
+    entry refused. Measured on the parent commit with this fixture: seeds mode
+    returned ``['Sub']``, the symlink holding the configured export dir.
+
+    The assertion is two-sided. ``Sub`` is not reported (the climb stopped), and
+    the real directory below it still is, so the stop did not turn the whole
+    subtree off.
+    """
+    elsewhere = tmp_path / "elsewhere"
+    _touch(elsewhere / "Album" / "cover.jpg")
+    _touch(elsewhere / "exports" / "p1.m3u8")
+    root = tmp_path / "music"
+    root.mkdir()
+    (root / "Sub").symlink_to(elsewhere)
+
+    found = find_orphan_folders(
+        root,
+        seeds=[root / "Sub" / "Album" / "gone"],
+        trash_dir=tmp_path / "trash",
+        ignore_dirs=(root / "Sub" / "exports",),
+    )
+
+    assert found == [root / "Sub" / "Album"]
+
+
+def test_a_protected_root_in_another_spelling_still_shields(tmp_path: Path) -> None:
+    """``protected_dirs`` is compared in the same identity namespace as the exclusion.
+
+    The set comes from the beets DB, which stores what the operator configured;
+    the walk uses ``lib.directory``. With the library reached through a symlink
+    the two spellings differ, and the string comparison alone reported the live
+    album's own booklet folder. Both spellings are asserted, so a fix that
+    dropped the string test would fail here too.
+    """
+    real = tmp_path / "tank" / "music"
+    link = tmp_path / "music"
+    real.mkdir(parents=True)
+    link.symlink_to(real)
+    _touch(real / "Live" / "Box" / "Disc 1" / "01.flac")
+    _touch(real / "Live" / "Box" / "Scans (LP)" / "front.jpg")
+    trash = tmp_path / "trash"
+
+    # Unprotected, the booklet folder is the reported husk (pins the shape).
+    assert find_orphan_folders(link, seeds=None, trash_dir=trash) == [
+        link / "Live" / "Box" / "Scans (LP)"
+    ]
+    for spelling in (real / "Live" / "Box", link / "Live" / "Box"):
+        assert (
+            find_orphan_folders(link, seeds=None, trash_dir=trash, protected_dirs={str(spelling)})
+            == []
+        ), spelling
+
+
+# --------------------------------------------------------------------------
+# D3: the directory holding ``library.db`` is excluded, not refused.
+# --------------------------------------------------------------------------
+
+
+def test_the_ignore_list_names_the_directory_holding_the_beets_database(
+    tmp_path: Path,
+) -> None:
+    """``library:`` may sit in an audio-free subfolder of the music root.
+
+    ``app.beets.store_layout`` allows that on purpose — it refuses ``L`` only
+    inside the Trash or the origin store — and ``<music>/db/library.db`` is then
+    a directory whose whole content is a ``.db`` file and its SQLite sidecars:
+    audio-empty, non-empty, parent audio-bearing, which is the husk shape
+    exactly.
+
+    The control is the same tree with that one entry removed from the tuple: it
+    reports ``db``. Without it the assertion would pass on a tuple that had
+    stopped carrying the entry at all.
+    """
+    from types import SimpleNamespace
+
+    from app.api.reorganize import _ignore_dirs
+    from app.config import Settings
+    from tests.conftest import build_library, make_test_handle
+
+    beets_dir = tmp_path / "data"
+    beets_dir.mkdir()
+    root = tmp_path / "music"
+    _touch(root / "Real" / "Album" / "01.flac")
+    db_dir = root / "db"
+    db_dir.mkdir()
+
+    handle = make_test_handle(build_library(str(db_dir / "library.db"), str(root)), beets_dir)
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_origins_dir=str(tmp_path / "records"), playlists_export_dir=""),
+        )
+    )
+    ignore = _ignore_dirs(app, tmp_path / "records")
+    assert db_dir in ignore
+
+    trash = beets_dir / "trash"
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=ignore) == []
+    without = tuple(d for d in ignore if d != db_dir)
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=without) == [db_dir]
+
+
+def test_the_ignore_list_holds_the_default_library_directory_once(tmp_path: Path) -> None:
+    """On the DEFAULT layout ``library:`` resolves to ``<B>/library.db``.
+
+    The beets dir would then appear twice and the finder — which logs one
+    WARNING per at-or-above root — would log it twice for one directory. Pinned
+    as a count rather than a membership, which is what a duplicate breaks.
+    """
+    from types import SimpleNamespace
+
+    from app.api.reorganize import _ignore_dirs
+    from app.config import Settings
+    from tests.conftest import build_library, make_test_handle
+
+    beets_dir = tmp_path / "data"
+    beets_dir.mkdir()
+    root = tmp_path / "music"
+    root.mkdir()
+
+    handle = make_test_handle(build_library(str(beets_dir / "library.db"), str(root)), beets_dir)
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_origins_dir=str(tmp_path / "records"), playlists_export_dir=""),
+        )
+    )
+    ignore = _ignore_dirs(app, tmp_path / "records")
+    assert len(ignore) == len(set(ignore))
+    assert ignore.count(beets_dir) == 1
