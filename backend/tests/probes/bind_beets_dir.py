@@ -67,7 +67,7 @@ def trees() -> ProtectedTrees:
 def bare() -> ProtectedTrees:
     """No protected identities, but a real Trash: this tree before the guard."""
     st = os.stat(T)
-    return ProtectedTrees(ids={}, trash=(st.st_dev, st.st_ino))
+    return ProtectedTrees(ids={}, trash=(st.st_dev, st.st_ino), trash_alias=None)
 
 
 print("spelled-rule", layout())

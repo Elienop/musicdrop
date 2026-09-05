@@ -49,15 +49,21 @@ class ProtectedTrees:
     :func:`open_checked_dir` re-asks the kernel for through an ``O_NOFOLLOW``
     descriptor. ``None`` when the Trash was not there to stat, which that
     function refuses on rather than skipping the compare.
+
+    ``trash_alias`` is the first OTHER participant sharing that identity, and is
+    carried separately because ``ids`` keeps one owner per inode: the Trash is
+    listed third, so for every directory after it ``ids[trash]`` says "the Trash
+    directory" and an alias reads as no alias at all.
     """
 
     ids: ProtectedIds
     trash: tuple[int, int] | None
+    trash_alias: tuple[str, str] | None
 
 
-#: What :func:`protected_trees` calls the Trash. Read back by
-#: :func:`open_checked_dir`: when the Trash's own inode is named as something
-#: ELSE, a bind mount has aliased it onto one of the app's other directories.
+#: What :func:`protected_trees` calls the Trash. Read back there to find the
+#: OTHER participants sharing its inode: a bind mount aliases the Trash onto one
+#: of the app's own directories, and every spelled row allows it.
 _TRASH_NAME: Final = "the Trash directory"
 
 
@@ -135,17 +141,25 @@ def protected_trees(
     )
     ids: dict[tuple[int, int], tuple[str, str]] = {}
     trash: tuple[int, int] | None = None
+    seen: list[tuple[tuple[int, int], str, str]] = []
     for path, name, setting in entries:
         ident = _ident(path)
         if ident is None:
             continue
         if name == _TRASH_NAME:
             trash = ident  # the same stat the loop already took
+        seen.append((ident, name, setting))
         # First writer wins, so the five the rule is about name themselves when a
         # store shares their directory (the default `library:` sits in the beets
         # dir, whose parent entry was added first).
         ids.setdefault(ident, (name, setting))
-    return ProtectedTrees(ids=ids, trash=trash)
+    # Read off the full list rather than `ids`, so the answer does not depend on
+    # where the Trash sits in `protected_entries`.
+    alias = next(
+        ((n, s) for ident, n, s in seen if ident == trash and n != _TRASH_NAME),
+        None,
+    )
+    return ProtectedTrees(ids=ids, trash=trash, trash_alias=alias)
 
 
 def _note_walk_error(exc: OSError) -> None:
@@ -262,8 +276,8 @@ def open_checked_dir(path: Path, protected: ProtectedTrees) -> int:
             f"Refused: {str(path)!r} could not be examined when MusicDrop checked it."
             " Nothing was removed."
         )
-    alias = protected.ids.get(expected)
-    if alias is not None and alias[0] != _TRASH_NAME:
+    alias = protected.trash_alias
+    if alias is not None:
         raise ProtectedTreeError(
             f"Refused: the Trash directory is {alias[0]} (same inode as {alias[1]})."
             " Nothing was removed."

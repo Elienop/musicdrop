@@ -487,6 +487,48 @@ def test_empty_all_refuses_a_trash_that_is_one_of_the_apps_own_directories(
     assert (trash / "Artist" / "01.flac").exists()
 
 
+@pytest.mark.parametrize(
+    ("setting", "phrase"),
+    [
+        ("origins", "is the Trash origin store"),
+        ("inbox_dir", "is the inbox"),
+        ("cover_thumb_cache_dir", "is the cover-thumbnail cache"),
+    ],
+)
+def test_the_trash_root_alias_is_found_wherever_the_twin_is_listed(
+    tmp_path: Path, setting: str, phrase: str
+) -> None:
+    """The alias check does not depend on where the twin sits in the list.
+
+    ``protected_entries`` names the Trash third and ``ids`` keeps one owner per
+    inode, so reading ``ids[trash]`` back answered "the Trash directory" for
+    every participant listed after it and the root alias went unseen. Measured:
+    the Trash spelled as the origin store, the inbox or either cache OPENED.
+    """
+    trash = tmp_path / "trash"
+    (trash / "Artist").mkdir(parents=True)
+    (trash / "Artist" / "01.flac").write_bytes(b"x")
+
+    def spelled(name: str, absent: str) -> str:
+        return str(trash if setting == name else tmp_path / absent)
+
+    trees = protected_trees(
+        settings=Settings(
+            inbox_dir=spelled("inbox_dir", "absent-inbox"),
+            cover_thumb_cache_dir=spelled("cover_thumb_cache_dir", "absent-thumbs"),
+        ),
+        music_dir=tmp_path / "absent-music",
+        beets_dir=tmp_path / "absent-beets",
+        trash_dir=trash,
+        origins_dir=trash if setting == "origins" else tmp_path / "absent-origins",
+        library_path=tmp_path / "absent" / "library.db",
+    )
+
+    with pytest.raises(ProtectedTreeError, match=f"the Trash directory {phrase}"):
+        empty_all(trash, origins_dir=origins_for(trash), protected=trees)
+    assert (trash / "Artist" / "01.flac").exists()
+
+
 def test_a_protected_directory_the_walk_cannot_open_is_still_refused(tmp_path: Path) -> None:
     """``stat`` needs the parent's ``x`` bit; ``opendir`` needs the ``r`` bit.
 
@@ -999,7 +1041,10 @@ def test_the_sweep_builds_its_set_from_the_pair_the_layout_check_approved(
     monkeypatch.setattr(
         runner_mod,
         "protected_trees",
-        lambda **kwargs: (seen.update(kwargs), ProtectedTrees(ids={}, trash=None))[1],
+        lambda **kwargs: (
+            seen.update(kwargs),
+            ProtectedTrees(ids={}, trash=None, trash_alias=None),
+        )[1],
     )
 
     reg = ReorganizeRegistry()
@@ -1088,7 +1133,7 @@ def test_the_empty_set_refuses_nothing(tmp_path: Path) -> None:
     """The control for every assertion above: with no identities, nothing matches."""
     music = tmp_path / "music"
     music.mkdir()
-    empty = ProtectedTrees(ids={}, trash=None)
+    empty = ProtectedTrees(ids={}, trash=None, trash_alias=None)
     assert protected_match(music, empty) is None
     refuse_protected_tree(music, empty, action="moved")
 

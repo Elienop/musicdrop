@@ -84,7 +84,7 @@ def trees() -> ProtectedTrees:
 def bare() -> ProtectedTrees:
     """No protected identities, but a real Trash: the guard switched off."""
     st = os.stat(T)
-    return ProtectedTrees(ids={}, trash=(st.st_dev, st.st_ino))
+    return ProtectedTrees(ids={}, trash=(st.st_dev, st.st_ino), trash_alias=None)
 
 
 def track_survives() -> bool:
