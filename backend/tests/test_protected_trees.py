@@ -1028,6 +1028,52 @@ def test_the_orphan_sweep_skips_a_protected_candidate_with_one_warning(
     assert not (music / "Plain").exists()
 
 
+def test_the_orphan_sweep_reads_the_settings_the_route_threaded_in(tmp_path: Path) -> None:
+    """The route's instance decides the protected set, not the module global.
+
+    The test above configures the inbox by patching ``app.config.settings``, so
+    it passes either way. Here nothing is patched: the inbox is set only on the
+    ``Settings`` handed to the sweep. ``app.state.settings`` is what the route
+    reads to build its ignore list, and this phase runs on another thread minutes
+    later — reading the import-bound global here let the two name different
+    objects.
+
+    The control is the husk beside it, which still reaches Trash.
+    """
+    from app.reorganize_jobs.registry import ReorganizeRegistry
+    from app.reorganize_jobs.runner import _sweep_orphans
+    from tests.conftest import build_library
+
+    music = tmp_path / "music"
+    music.mkdir()
+    beets_dir = beets_dir_for(tmp_path)
+    handle = make_test_handle(build_library(str(beets_dir / "library.db"), str(music)), beets_dir)
+    trash = tmp_path / "trash"
+    inbox = music / "Downloads" / "inbox"
+    inbox.mkdir(parents=True)
+    (music / "Downloads" / "poster.jpg").write_bytes(b"x")
+    (music / "Plain").mkdir()
+    (music / "Plain" / "poster.jpg").write_bytes(b"x")
+
+    reg = ReorganizeRegistry()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+    _sweep_orphans(
+        reg,
+        handle,
+        scope="library",
+        music_dir=music,
+        trash_dir=trash,
+        trash_origins_dir=origins_for(trash),
+        vacated=[],
+        ignore_dirs=(),
+        protected_dirs=(),
+        settings=Settings(inbox_dir=str(inbox)),
+    )
+
+    assert (music / "Downloads" / "poster.jpg").exists()
+    assert not (music / "Plain").exists()
+
+
 def test_the_sweep_builds_its_set_from_the_pair_the_layout_check_approved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

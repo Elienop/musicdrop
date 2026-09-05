@@ -217,6 +217,7 @@ async def start_reorganize(
         trash_origins_dir=origins_dir,
         ignore_dirs=ignore_dirs,
         playlists_dir=playlists_dir,
+        settings=_settings(app),
         on_complete=lambda: emit_library_changed(app),
     )
     return reg.state()
@@ -261,6 +262,7 @@ async def start_album_reorganize(
         trash_origins_dir=origins_dir,
         ignore_dirs=ignore_dirs,
         playlists_dir=playlists_dir,
+        settings=_settings(app),
         on_complete=lambda: emit_library_changed(app),
     )
     return reg.state()

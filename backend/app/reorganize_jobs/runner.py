@@ -28,7 +28,8 @@ from app.beets.store_layout import (
 )
 from app.beets.trash import trash_folder
 from app.beets.trash_origins import TrashOriginsStoreUnusableError, require_usable_store
-from app.config import settings
+from app.config import Settings
+from app.config import settings as module_settings
 from app.models.reorganize import ReorganizeOutcome, ReorganizeScope
 from app.playlists.reexport import reexport_playlists_containing_sync
 from app.reorganize_jobs.registry import ReorganizeRegistry
@@ -47,6 +48,7 @@ def sweep(
     trash_origins_dir: Path | None = None,
     ignore_dirs: tuple[Path, ...] = (),
     playlists_dir: Path | None = None,
+    settings: Settings | None = None,
     delay: float = 0.0,
     reorg_album: Callable[..., ReorganizeOutcome] = reorganize_album,
     reorg_singleton: Callable[..., ReorganizeOutcome] = reorganize_singleton,
@@ -71,6 +73,11 @@ def sweep(
     that no longer exists. It runs on a STOP too (a stopped run still moved
     files) and before ``reg.finish``, so the terminal status already carries the
     count. Omit it and the pass is skipped, leaving existing callers unchanged.
+
+    ``settings`` is the route's own instance, threaded in the way the two store
+    directories are: the orphan pass asks the layout rule and the identity guard
+    the same questions the route asked before it spawned this run. It falls back
+    to the module singleton for the callers that pass nothing.
     """
     try:
         with library_paths_context(handle):
@@ -122,6 +129,7 @@ def sweep(
                     vacated=vacated,
                     ignore_dirs=ignore_dirs,
                     protected_dirs=live_album_roots(handle.lib),
+                    settings=settings,
                 )
             _reexport_playlists(reg, handle, moved_ids, playlists_dir)
             reg.finish("stopped" if stopped else "done")
@@ -198,6 +206,7 @@ def _sweep_orphans(
     vacated: list[Path],
     ignore_dirs: tuple[Path, ...],
     protected_dirs: Collection[str],
+    settings: Settings | None = None,
 ) -> bool:
     """Move audio-empty husks to Trash. Library scope scans the whole root; a
     narrower scope seeds from the dirs this run vacated. Per-folder failures are
@@ -223,6 +232,11 @@ def _sweep_orphans(
     # move phase has already relocated real files, and failing the job here would
     # cost the run its .m3u8 re-export tail for a fault about the Trash.
     music_root, library_path = lib_music_and_library(handle.lib)
+    # The route's own ``Settings`` when it threaded one in, so the layout this
+    # phase checks and the ignore list the route built come from ONE object.
+    # ``app.state.settings`` is the monkeypatch surface, and reading the module
+    # global here let the two name different instances.
+    store_settings = module_settings if settings is None else settings
     try:
         check_store_layout(
             music_dir=music_root,
@@ -230,7 +244,7 @@ def _sweep_orphans(
             trash_dir=trash_dir,
             origins_dir=trash_origins_dir,
             library_path=library_path,
-            settings=settings,
+            settings=store_settings,
         )
     except StoreLayoutError:
         _log.warning("orphan sweep skipped: the store layout is refused", exc_info=True)
@@ -238,7 +252,7 @@ def _sweep_orphans(
     # Beside the layout check, from the pair it just approved: the spelled rows
     # above miss an alias, so each candidate is asked again by inode below.
     protected = protected_trees(
-        settings=settings,
+        settings=store_settings,
         music_dir=music_root,
         beets_dir=handle.beets_dir,
         trash_dir=trash_dir,
@@ -288,6 +302,7 @@ def start_backfill(
     trash_origins_dir: Path | None = None,
     ignore_dirs: tuple[Path, ...] = (),
     playlists_dir: Path | None = None,
+    settings: Settings | None = None,
     delay: float = 0.0,
     on_complete: Callable[[], None] | None = None,
 ) -> None:
@@ -306,6 +321,7 @@ def start_backfill(
             trash_origins_dir=trash_origins_dir,
             ignore_dirs=ignore_dirs,
             playlists_dir=playlists_dir,
+            settings=settings,
             delay=delay,
             on_complete=on_complete,
         ),
