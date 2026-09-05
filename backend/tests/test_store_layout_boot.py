@@ -17,6 +17,7 @@ Two levels of pin, because they answer different questions:
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -99,6 +100,42 @@ def test_a_trash_dir_that_will_not_resolve_still_gets_the_one_error_line(
     message = refusals[0].getMessage()
     assert "refusing to start" in message
     assert "MUSICDROP_TRASH_DIR could not be resolved" in message
+
+
+def test_an_unreadable_import_bank_gets_the_one_error_line_too(
+    beets_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The boot's other refusal, reached after the gate rather than at it.
+
+    ``reconcile_interrupted`` runs on the bank before anything reads the layout
+    at that path, and ``bank_dir.exists()`` raises ``PermissionError`` behind a
+    mode-000 parent — measured. That was a bare lifespan traceback with no ERROR
+    record naming the setting, where the inbox, the playlist store and the
+    artist-image cache all boot in the same state.
+    """
+    if os.getuid() == 0:
+        pytest.skip("root reads a mode-000 directory anyway")
+    locked = tmp_path / "locked"
+    (locked / "bank").mkdir(parents=True)
+    monkeypatch.setattr("app.config.settings.bank_dir", str(locked / "bank"))
+    os.chmod(locked, 0o000)
+
+    try:
+        with caplog.at_level(logging.ERROR), pytest.raises(PermissionError):
+            with TestClient(real_app):
+                pass  # pragma: no cover - the lifespan raises before the body runs
+    finally:
+        os.chmod(locked, 0o755)
+
+    refusals = [r for r in caplog.records if r.name == "uvicorn.error"]
+    assert len(refusals) == 1, [(r.name, r.getMessage()) for r in caplog.records]
+    assert refusals[0].levelno == logging.ERROR
+    message = refusals[0].getMessage()
+    assert "refusing to start" in message
+    assert "MUSICDROP_BANK_DIR" in message
 
 
 def test_the_origin_store_inside_the_library_refuses_to_start(

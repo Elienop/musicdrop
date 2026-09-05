@@ -260,7 +260,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Bank reconciliation: rows stuck in "applying" from a mid-apply crash
     # revert to needs_review with a note (never blind-requeued).
-    reconcile_interrupted(get_bank_dir())
+    #
+    # A bank the process cannot reach still stops the boot, but through the same
+    # one line the layout gate writes: measured, a mode-000 parent gives
+    # ``PermissionError`` out of ``bank_dir.exists()`` and the operator got a
+    # traceback with no ERROR record naming the setting.
+    try:
+        reconcile_interrupted(get_bank_dir())
+    except OSError as exc:
+        _boot_log().error(
+            "refusing to start: the import bank at %s could not be read (%s)."
+            " Set MUSICDROP_BANK_DIR to a folder MusicDrop can read and write.",
+            get_bank_dir(),
+            exc,
+        )
+        raise
 
     # The bank apply runner drains decided (queued) rows through the SAME
     # single import slot, deferring on the same gate union the acquisition
