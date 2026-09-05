@@ -588,37 +588,26 @@ async def fetch_artist_image_endpoint(
     sources: Annotated[ArtistImageSources, Depends(get_artist_image_sources)],
     handle: Annotated[LibraryHandle, Depends(get_library)],
 ) -> Response:
-    """Fetch ONE source's portrait candidate for ``name``. Writes NOTHING.
-
-    The preview half of the manual re-fetch: the response is the image itself
-    (``no-store``, provenance in ``X-Art-Source``), matching the album cover's
-    fetch route so the two panels share one shape. Installing is a SEPARATE
-    call - the client posts the very bytes it previewed to
-    ``POST /api/artists/image/override``, so nothing can substitute a different
-    image between "looks good" and "use it".
-
-    The cache is bypassed in BOTH directions: a fresh ``.miss`` marker does not
-    suppress the call (the user asked for it explicitly), and a result is not
-    stored (an approved image lands in the override slot, a rejected one leaves
-    no trace). The call still takes the service's own rate/concurrency slot, so
-    a burst of manual fetches paces against the same 5/s bucket the automatic
-    chain uses - ``sources.get`` hands back a bare source with no limiter
-    attached, so resolving it directly is the easy thing to write and would
-    double the real outbound rate against fanart.tv / Spotify / Deezer.
-
-    ``source`` is typed as the ``Literal``, not ``str``, and that gate is
-    load-bearing rather than cosmetic: ``label_for`` echoes an unknown id back
-    verbatim and the result lands in the ``X-Art-Source`` header, so a plain
-    ``str`` would let a client put its own bytes in a response header. An id
-    outside the Literal is refused by validation before this body runs.
-
-    Origin-guarded. A body-less POST is a CORS-simple request, so a foreign page
-    can send this one without a preflight - and unlike the album cover's fetch,
-    where the only attacker input is a local album id, here the caller picks the
-    UPSTREAM and the query it is sent, and that request goes out carrying this
-    install's own fanart.tv / Spotify credentials. The route bypasses the cache
-    by design, so repeats are not deduplicated either.
-    """
+    """Fetch ONE source's portrait candidate for ``name``. Writes NOTHING."""
+    # The preview half of the manual re-fetch: the response is the image itself
+    # (``no-store``, provenance in ``X-Art-Source``), matching the album cover's
+    # fetch route. Installing is a SEPARATE call — the client posts the very
+    # bytes it previewed to ``POST /api/artists/image/override``, so nothing can
+    # substitute a different image between "looks good" and "use it".
+    #
+    # The cache is bypassed in BOTH directions: a fresh ``.miss`` marker does not
+    # suppress the call, and a result is not stored. It still takes the service's
+    # own rate/concurrency slot, so a burst paces against the same 5/s bucket the
+    # automatic chain uses — ``sources.get`` hands back a bare source with no
+    # limiter, so resolving it directly would double the real outbound rate.
+    #
+    # ``source`` is the ``Literal``, not ``str``: ``label_for`` echoes an unknown
+    # id back verbatim into the ``X-Art-Source`` header, so a plain ``str`` would
+    # let a client put its own bytes in a response header.
+    #
+    # Origin-guarded. A body-less POST is CORS-simple, and unlike the album
+    # cover's fetch the caller picks the UPSTREAM and the query, on a request
+    # that carries this install's fanart.tv / Spotify credentials.
     if not service.is_enabled():
         raise HTTPException(status_code=403, detail="Turn on artist images first")
     picked = sources.get(source)
@@ -1031,15 +1020,12 @@ def _start(
         500: {
             "model": StructuredErrorDetail,
             "description": (
-                "Deleting the artist failed. Also the status for a fault PART-WAY through"
-                " the fan-out: the message then names how far it got, and says the albums"
-                " it never reached are untouched. The structured body's recovery line"
-                " promises recovery from the Trash folder only when albums really reached"
-                " it — a fan-out that stops on its first album, and one whose albums were"
-                " all rows with no files left to move, both moved nothing. That promise"
-                " covers the albums BEFORE the one it stopped on, which cannot be taken"
-                " back; the album it stopped on has its own folder moved back out of Trash"
-                " when what failed was removing its library rows."
+                # Also the status for a fault PART-WAY through the fan-out. The
+                # promise excludes the album it stopped on: that folder is moved
+                # back out of Trash when dropping its rows failed.
+                "Deleting the artist failed; the message names how far the fan-out got,"
+                " and the body promises recovery from the Trash folder only when albums"
+                " really reached it."
             ),
         },
         # Flat ErrorDetail, unlike the 500 beside it: this one is raised only
@@ -1050,18 +1036,12 @@ def _start(
         503: {
             "model": ErrorDetail,
             "description": (
-                "One of the two setup faults a delete refuses on. Either the music library"
-                " root is missing, empty or unreadable (the guard against an unmounted"
-                " share), or the folder MusicDrop records Trash origins in cannot be read"
-                " or written — a bad PUID/PGID, a restored backup, a read-only /data. The"
-                " message says which. None of the artist's"
-                " albums has been dropped from the library: once one has, the same cause"
-                " is reported as the 500 instead, which names how far the fan-out got."
-                " Files are a separate question for the FIRST cause only — a share that"
-                " drops during the move of the album the fan-out is on can leave part of"
-                " it under the Trash folder, so check there before retrying. The"
-                " origin-store refusal fires on the first album before anything is"
-                " created, moved or dropped."
+                # Same three causes as the album route; the message says which.
+                # Once an album HAS been dropped the same fault is reported as the
+                # 500 above instead, which names how far the fan-out got.
+                "None of the artist's albums has been dropped: a setup fault refused the"
+                " delete, and a share that dropped mid-move can leave part of one under"
+                " Trash — check there before retrying."
             ),
         },
     },

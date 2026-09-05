@@ -35,7 +35,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.beets.library import LibraryHandle
 from app.beets.playlists import m3u_entries
-from app.config import settings
+from app.config import EXPORT_STORE, settings, store_dir
 from app.playlists import store
 from app.playlists.m3u import write_m3u
 from app.playlists.store import StoredPlaylist
@@ -46,10 +46,7 @@ logger = logging.getLogger(__name__)
 
 def export_dir_for(lib: Any) -> Path:  # lib: beets Library, untyped at the adapter boundary
     """Where the `.m3u8` exports live: the configured dir, else ``<music>/.playlists``."""
-    configured = settings.playlists_export_dir.strip()
-    if configured:
-        return Path(configured)
-    return Path(os.fsdecode(lib.directory)) / ".playlists"
+    return store_dir(settings, EXPORT_STORE, Path(os.fsdecode(lib.directory)))
 
 
 def render_export(

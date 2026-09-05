@@ -1189,9 +1189,18 @@ def test_run_import_worker_forces_autotag_on_and_restores_it() -> None:
     assert config["import"]["autotag"].get(bool) is False
 
 
-def test_run_import_worker_trashes_replace_ids_after_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Recorded Replace ids are moved to Trash AFTER run() returns, by id."""
-    from pathlib import Path
+def test_run_import_worker_trashes_replace_ids_after_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Recorded Replace ids are moved to Trash AFTER run() returns, by id.
+
+    The fake library carries a ``directory`` and a ``path`` because the post-run
+    pass re-checks the store layout before it moves anything: the Trash pair was
+    resolved when the registry was handed the library, and an import can run
+    hours later. The four paths here are siblings under ``tmp_path``, which is a
+    layout the check accepts — ``settings.beets_dir`` is pinned alongside them so
+    the fixture does not depend on where the session's BEETSDIR happens to be.
+    """
 
     import app.beets.import_session as session_mod
     from app.beets.import_session import run_import_worker
@@ -1203,6 +1212,7 @@ def test_run_import_worker_trashes_replace_ids_after_run(monkeypatch: pytest.Mon
         return str(trash_dir)
 
     monkeypatch.setattr(session_mod, "trash_album", fake_trash)
+    monkeypatch.setattr("app.config.settings.beets_dir", str(tmp_path / "beets"))
 
     class _Album:
         def __init__(self, album_id: int) -> None:
@@ -1215,6 +1225,9 @@ def test_run_import_worker_trashes_replace_ids_after_run(monkeypatch: pytest.Mon
             return []
 
     class _Lib(_BindOnlyLib):
+        directory = os.fsencode(str(tmp_path / "music"))
+        path = os.fsencode(str(tmp_path / "beets" / "library.db"))
+
         def get_album(self, album_id: int) -> Any:
             return _Album(album_id)
 
@@ -1225,10 +1238,10 @@ def test_run_import_worker_trashes_replace_ids_after_run(monkeypatch: pytest.Mon
         lib = _Lib()
         paths: ClassVar[list[bytes]] = []
         _replace_album_ids: ClassVar[set[int]] = {11, 22}
-        _trash_dir = Path("/tmp/trash")
+        _trash_dir = tmp_path / "trash"
         # Wired as a PAIR with _trash_dir: the post-run pass skips unless both
         # are set, so a fake with only one silently stops trashing.
-        _trash_origins_dir = Path("/tmp/trash-origins")
+        _trash_origins_dir = tmp_path / "trash-origins"
         # Unwired playlist store -> the post-trash `.m3u8` re-export is skipped
         # (it is pinned in tests/test_playlist_reexport_movers.py instead).
         _playlists_dir = None

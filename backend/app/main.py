@@ -1,7 +1,10 @@
 import asyncio
 import logging
+import os
+import sqlite3
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -42,6 +45,7 @@ from app.auth.session import load_or_create_session_secret, session_secret_path
 from app.bank.store import reconcile_interrupted
 from app.beets.library import LibraryHandle, close_library
 from app.beets.setup import setup_beets
+from app.beets.store_layout import StoreLayoutError, checked_store_dirs
 from app.body_limit import BodySizeLimitMiddleware
 from app.config import resolve_artist_image_cache_dir, resolve_cover_thumb_cache_dir, settings
 from app.events.emit import emit_art_changed
@@ -79,6 +83,56 @@ def _resolve_library() -> LibraryHandle:
     )
 
 
+#: What beets' own startup raises for a value it cannot open, measured on this
+#: tree by calling ``setup_beets`` directly: ``sqlite3.OperationalError`` for a
+#: ``library:`` that is a symlink loop, ``ValueError`` for one holding a NUL, and
+#: ``RuntimeError`` from ``Path.resolve`` for a ``MUSICDROP_BEETS_DIR`` that is a
+#: symlink loop. Each already failed CLOSED; what was missing was the one
+#: level-tagged line naming a setting that the layout gate below prints.
+_BEETS_STARTUP_FAILED = (OSError, RuntimeError, ValueError, sqlite3.Error)
+
+
+def _boot_log() -> logging.Logger:
+    """The logger a refusal to start goes to.
+
+    ``uvicorn.error`` and not this module's own: under the Dockerfile CMD an
+    app-namespace record reaches stderr only through logging's ``lastResort``
+    handler, with no level tag — and the operator grepping for why the process
+    died has only ``docker logs``.
+    """
+    return logging.getLogger("uvicorn.error")
+
+
+def _refuse_boot(message: str, *args: object) -> None:
+    """The one ERROR line a refusal to start writes: which setting, and why.
+
+    ERROR and not ``.exception()``. Every caller re-raises, and Starlette sends
+    the traceback on as the ``lifespan.startup.failed`` message for uvicorn to
+    print — so ``.exception()`` here put the SAME traceback in the operator's
+    console twice on every refused boot. One line naming the setting, one
+    traceback, and it is the lifespan's.
+    """
+    _boot_log().error(message, *args)
+
+
+def _refusal_with_leftovers(refusal: str, handle: LibraryHandle) -> str:
+    """The refusal, with where this start already wrote folded into its last sentence.
+
+    beets' startup runs first — it is what supplies the ``directory:`` and
+    ``library:`` this check compares — so this is the earliest honest point. Two
+    directories, not a file list: a refused ``MUSICDROP_BEETS_DIR=<music>`` left
+    13 files in the music library, a refused ``library: trash/library.db`` left
+    12 under Trash. ``repr``, like every other path this module logs.
+
+    A clause on the refusal's own fix sentence rather than a fourth sentence,
+    which is what put this line past the three the operator reads.
+    """
+    db_dir = Path(os.fsdecode(handle.lib.path)).parent
+    places = sorted({str(handle.beets_dir), str(db_dir)})
+    where = ", ".join(repr(p) for p in places)
+    return f"{refusal.rstrip().removesuffix('.')}; files this start created may be in {where}."
+
+
 def _build_artist_image_service(
     cache: ArtistImageCache,
     is_enabled: Callable[[], bool],
@@ -108,7 +162,49 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # the process lifetime) and close it on shutdown. setup_beets always returns
     # a handle — missing BEETSDIR / config.yaml are created from the starter —
     # so there is no "library disabled" branch in production.
-    handle = _resolve_library()
+    #
+    # The ``except`` is here because this runs BEFORE the layout gate below and
+    # can fail on the same class of operator input: a value beets cannot open
+    # used to leave a bare traceback with no line saying which setting to look
+    # at. It re-raises — the process still does not come up — and only adds the
+    # line, through ``_refuse_boot``, which is where the traceback's one owner
+    # is written down.
+    try:
+        handle = _resolve_library()
+    except _BEETS_STARTUP_FAILED as exc:
+        _refuse_boot(
+            "refusing to start: beets could not open the library under %s=%r. %s: %s."
+            " Check `library:` and `directory:` in that directory's config.yaml.",
+            "MUSICDROP_BEETS_DIR",
+            settings.beets_dir,
+            type(exc).__name__,
+            exc,
+        )
+        raise
+
+    # Before ANYTHING is attached or started: refuse to come up on a refused
+    # store layout (see app/beets/store_layout.py for the table). Here as well as
+    # at the use sites, not instead of them — what the configured strings resolve
+    # to moves after boot, which is why the same check runs at every destructive
+    # route and job. This one is what keeps the process from serving at all.
+    # Logged through ``uvicorn.error`` (see ``_boot_log``). ERROR, not WARNING —
+    # the process does not come up, and the operator grepping for the reason
+    # after "Application startup failed" must find a line whose level says so.
+    #
+    # The PAIR it returns is what the import registry is handed below, so the
+    # boot gate and the values the process actually runs on come from one call.
+    # Taking them from the bare resolvers afterwards, as this did, left a window
+    # where a Trash swapped between the two reached ``attach_library`` unchecked.
+    try:
+        boot_trash_dir, boot_origins_dir = checked_store_dirs(settings, handle)
+    except StoreLayoutError as exc:
+        _refuse_boot("refusing to start: %s", _refusal_with_leftovers(str(exc), handle))
+        # Give back the SQLite connection ``_resolve_library`` just opened. The
+        # raise below skips the ``finally`` teardown further down (it has not
+        # been entered yet), so this is the only place that can.
+        close_library(handle.lib)
+        raise
+
     app.state.beets_library = handle
 
     # Settings + the swap lock back the Apply endpoint (Task 8). The lock
@@ -141,19 +237,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.event_broker = EventBroker(loop=asyncio.get_running_loop())
 
-    from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
     from app.import_jobs.registry import registry as import_registry
 
     # The import runner builds a WebImportSession from a beets Library, so feed
     # it the raw lib (not the snapshot handle). The Trash dir is where the
     # duplicate-on-import Replace action moves the old copies (same reversible
-    # Trash the /duplicates page uses).
+    # Trash the /duplicates page uses) — and it is the pair the gate above
+    # checked, not a second resolve of the same setting.
     import_registry.attach_library(
         handle.lib,
-        resolve_trash_dir(settings, handle),
+        boot_trash_dir,
         bank_dir=get_bank_dir(),
         playlists_dir=get_playlists_dir(),
-        trash_origins_dir=resolve_trash_origins_dir(settings, handle),
+        trash_origins_dir=boot_origins_dir,
     )
     import_registry.attach_event_broker(app.state.event_broker)
 
@@ -182,7 +278,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Bank reconciliation: rows stuck in "applying" from a mid-apply crash
     # revert to needs_review with a note (never blind-requeued).
-    reconcile_interrupted(get_bank_dir())
+    #
+    # A bank the process cannot reach still stops the boot, but through the same
+    # one line the layout gate writes: measured, a mode-000 parent gives
+    # ``PermissionError`` out of ``bank_dir.exists()`` and the operator got a
+    # traceback with no ERROR record naming the setting.
+    try:
+        reconcile_interrupted(get_bank_dir())
+    except OSError as exc:
+        # ``%r`` of the STRING, like every other path this module logs: a
+        # newline in MUSICDROP_BANK_DIR forged a second line in ``docker logs``,
+        # and the repr of a ``Path`` prints ``PosixPath('...')`` around it. The
+        # exception is repr'd for the same reason, and it carries its class name
+        # that way — its own ``str`` names the path a second time.
+        _refuse_boot(
+            "refusing to start: the import bank at %r could not be read (%r)."
+            " Set MUSICDROP_BANK_DIR to a folder MusicDrop can read and write.",
+            str(get_bank_dir()),
+            exc,
+        )
+        raise
 
     # The bank apply runner drains decided (queued) rows through the SAME
     # single import slot, deferring on the same gate union the acquisition
@@ -285,7 +400,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # (which the filler expects) rather than "client has been closed".
         await artist_image_filler.close()
         await http_client.aclose()
-        close_library(handle.lib)
+        # ``app.state.beets_library``, not the ``handle`` bound at boot: a
+        # successful Apply rebinds it, and measured, closing the boot handle left
+        # the LIVE connection open (its fd still on ``/proc/self/fd`` and ``select
+        # 1`` still answering). beets' ``_close`` on an already-closed library is
+        # a no-op, so the pre-Apply case is unchanged.
+        live: LibraryHandle = app.state.beets_library
+        close_library(live.lib)
         # Remove the broker before the event loop is torn down so that any
         # subsequent test that skips the lifespan (and therefore has no broker)
         # does not find a stale EventBroker whose loop is already closed.

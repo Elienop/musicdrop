@@ -34,7 +34,7 @@ from app.beets.library import LibraryHandle, _require_id
 from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
 from app.beets.trash_origins import origin_recorded, write_trash_origin
 from app.config import Settings
-from tests.conftest import build_library, make_test_handle, origins_for
+from tests.conftest import beets_dir_for, build_library, make_test_handle, origins_for
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
 
@@ -128,7 +128,7 @@ def test_delete_artist_op_records_origins_in_the_store_not_in_trash(
 
     trash = tmp_path / "trash"
     origins = tmp_path / "trash-origins"
-    handle = make_test_handle(duplicates_lib, tmp_path)
+    handle = make_test_handle(duplicates_lib, beets_dir_for(tmp_path))
     roots = {
         os.path.dirname(os.fsdecode(next(iter(a.items())).path))
         for a in duplicates_lib.albums()
@@ -217,7 +217,9 @@ def test_restore_route_reads_the_record_from_the_origin_store(
     write_trash_origin(origins, entry.name, origin=str(origin), moved="folder")
     # Both dirs pinned inside tmp_path AND at different names, so the route has
     # a real choice to get wrong.
-    monkeypatch.setattr(app.state, "beets_library", make_test_handle(lib, tmp_path), raising=False)
+    monkeypatch.setattr(
+        app.state, "beets_library", make_test_handle(lib, beets_dir_for(tmp_path)), raising=False
+    )
     monkeypatch.setattr(
         app.state,
         "settings",
@@ -302,7 +304,7 @@ def test_orphan_sweep_records_the_husks_origin_in_the_store(
     reg.start(scope="library", artist=None, album_id=None, scope_label="library")
     sweep(
         reg,
-        make_test_handle(reorganize_lib, tmp_path),
+        make_test_handle(reorganize_lib, beets_dir_for(tmp_path)),
         scope="library",
         trash_dir=trash,
         trash_origins_dir=origins,
@@ -345,7 +347,7 @@ def test_the_reorganize_worker_THREAD_is_handed_the_origin_store(
     reg.start(scope="library", artist=None, album_id=None, scope_label="library")
     start_backfill(
         reg,
-        make_test_handle(reorganize_lib, tmp_path),
+        make_test_handle(reorganize_lib, beets_dir_for(tmp_path)),
         scope="library",
         trash_dir=trash,
         trash_origins_dir=origins,
@@ -372,7 +374,7 @@ def test_album_reorganize_passes_the_trash_origin_store_to_the_worker(
     from app.api.albums import get_library
     from app.main import app
 
-    handle = make_test_handle(reorganize_lib, tmp_path)
+    handle = make_test_handle(reorganize_lib, beets_dir_for(tmp_path))
     app.dependency_overrides[get_library] = lambda: handle
     app.state.beets_library = handle
     received: dict[str, object] = {}
@@ -421,7 +423,7 @@ def test_resolve_duplicates_op_records_origins_in_the_store(
     keep = group.suggested_keeper_id
     losers = [m.id for m in group.members if m.id != keep]
     req = ResolveRequest(mode=DuplicateMode.strict, keep_album_id=keep, remove_album_ids=losers)
-    handle = make_test_handle(duplicates_lib, tmp_path)
+    handle = make_test_handle(duplicates_lib, beets_dir_for(tmp_path))
 
     result = asyncio.run(
         resolve_duplicates_op(_stub_app(handle, trash, origins), req)  # type: ignore[arg-type]  # stub req
@@ -449,7 +451,7 @@ def test_resolve_all_op_records_origins_in_the_store(
         for g in report.groups
     ]
     req = ResolveAllRequest(mode=DuplicateMode.strict, groups=decisions)
-    handle = make_test_handle(duplicates_lib, tmp_path)
+    handle = make_test_handle(duplicates_lib, beets_dir_for(tmp_path))
 
     result = asyncio.run(
         resolve_all_op(_stub_app(handle, trash, origins), req)  # type: ignore[arg-type]  # stub req

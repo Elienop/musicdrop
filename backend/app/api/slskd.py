@@ -33,7 +33,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
 from app.acquisition.inbox import coalesce_album_root, contain
-from app.config import settings
+from app.config import SLSKD_STORE, settings, store_dir
 from app.models.errors import ErrorDetail
 from app.models.slskd import (
     SlskdConnection,
@@ -51,8 +51,7 @@ router = APIRouter(tags=["slskd"])
 
 
 def get_slskd_store() -> SlskdConfigStore:
-    base = settings.slskd_settings_dir.strip()
-    directory = Path(base) if base else Path(settings.beets_dir) / "slskd"
+    directory = store_dir(settings, SLSKD_STORE, Path(settings.beets_dir))
     env = SlskdConfig(
         base_url=settings.slskd_url,
         token=settings.slskd_token,

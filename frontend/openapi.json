@@ -189,7 +189,7 @@
           "auth"
         ],
         "summary": "Setup Password",
-        "description": "Set the FIRST password, on a server that has none, and sign the caller in.\n\nGate-exempt by necessity \u2014 there is no credential to hold a session with\nyet \u2014 and therefore refused with a 409 the moment any source exists. The\ntwo halves of that decision (read the source, write the file) run under one\nlock, because the atomic writer publishes with ``os.replace``, which is\nlast-writer-wins rather than create-or-fail: without the lock two\nsimultaneous first-run POSTs would each pass the check and the second would\noverwrite the first, leaving the operator holding a cookie for a password\nthat is no longer stored. The image runs a single uvicorn worker by design,\nso an in-process lock is what \"first wins\" means here; a multi-worker\ndeployment would need the check in the filesystem instead.\n\nThe 503 arm runs BEFORE anything is written: a cookie that cannot be signed\nwould leave a password stored and nobody able to use it until a restart.",
+        "description": "Set the FIRST password, on a server that has none, and sign the caller in.",
         "operationId": "setup_password_api_auth_setup_post",
         "requestBody": {
           "content": {
@@ -754,7 +754,7 @@
             }
           },
           "500": {
-            "description": "Deleting the album failed. The structured body's recovery line says what state the files are in \u2014 it promises recovery from the Trash folder only when something really reached it, and a delete that failed on the way there leaves the album in the library. A failure AFTER the whole folder reached Trash, where removing the library rows raised, moves the folder back to where it came from: that body then says the files are in the music folder and Trash holds nothing for this album, and says it cannot tell whether the album is still listed \u2014 beets commits what it had already done on the way out of the transaction, so the same failure covers an album left intact and one whose row is already gone. Only if the move back ALSO fails does the message name both paths, from the disk.",
+            "description": "Deleting the album failed; the body promises recovery from the Trash folder only when the files really reached it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -764,7 +764,7 @@
             }
           },
           "503": {
-            "description": "One of the two setup faults a delete refuses on. Either the music library root is missing, empty or unreadable (the guard against an unmounted share), or the folder MusicDrop records Trash origins in cannot be read or written \u2014 a bad PUID/PGID, a restored backup, a read-only /data. The message says which. The album is still in the library. Its files are a separate question for the FIRST cause only: that guard also answers a share that drops DURING the move, and that can leave part of the album under the Trash folder \u2014 check there before retrying. The origin-store refusal runs before anything is created, moved or dropped, so nothing needs checking after it.",
+            "description": "The album is still in the library: a setup fault refused the delete, and a share that dropped mid-move can leave part of it under Trash \u2014 check there before retrying.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1357,7 +1357,7 @@
           "albums"
         ],
         "summary": "Fetch Album Cover Endpoint",
-        "description": "Fetch beets' best cover candidate. Returns the image (preview) or 404. No write.\n\nOrigin-guarded: a body-less POST is a CORS-simple request, so without this a\nforeign page could drive this install's outbound cover lookups. It writes\nnothing, which is why this guard arrived later than the install route's -\nbut \"changes no state\" is not the same as \"costs nothing to trigger\".",
+        "description": "Fetch beets' best cover candidate. Returns the image (preview) or 404. No write.",
         "operationId": "fetch_album_cover_endpoint_api_albums__album_id__cover_fetch_post",
         "parameters": [
           {
@@ -1611,7 +1611,7 @@
             }
           },
           "500": {
-            "description": "Deleting the artist failed. Also the status for a fault PART-WAY through the fan-out: the message then names how far it got, and says the albums it never reached are untouched. The structured body's recovery line promises recovery from the Trash folder only when albums really reached it \u2014 a fan-out that stops on its first album, and one whose albums were all rows with no files left to move, both moved nothing. That promise covers the albums BEFORE the one it stopped on, which cannot be taken back; the album it stopped on has its own folder moved back out of Trash when what failed was removing its library rows.",
+            "description": "Deleting the artist failed; the message names how far the fan-out got, and the body promises recovery from the Trash folder only when albums really reached it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1621,7 +1621,7 @@
             }
           },
           "503": {
-            "description": "One of the two setup faults a delete refuses on. Either the music library root is missing, empty or unreadable (the guard against an unmounted share), or the folder MusicDrop records Trash origins in cannot be read or written \u2014 a bad PUID/PGID, a restored backup, a read-only /data. The message says which. None of the artist's albums has been dropped from the library: once one has, the same cause is reported as the 500 instead, which names how far the fan-out got. Files are a separate question for the FIRST cause only \u2014 a share that drops during the move of the album the fan-out is on can leave part of it under the Trash folder, so check there before retrying. The origin-store refusal fires on the first album before anything is created, moved or dropped.",
+            "description": "None of the artist's albums has been dropped: a setup fault refused the delete, and a share that dropped mid-move can leave part of one under Trash \u2014 check there before retrying.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2154,7 +2154,7 @@
           "artists"
         ],
         "summary": "Fetch Artist Image Endpoint",
-        "description": "Fetch ONE source's portrait candidate for ``name``. Writes NOTHING.\n\nThe preview half of the manual re-fetch: the response is the image itself\n(``no-store``, provenance in ``X-Art-Source``), matching the album cover's\nfetch route so the two panels share one shape. Installing is a SEPARATE\ncall - the client posts the very bytes it previewed to\n``POST /api/artists/image/override``, so nothing can substitute a different\nimage between \"looks good\" and \"use it\".\n\nThe cache is bypassed in BOTH directions: a fresh ``.miss`` marker does not\nsuppress the call (the user asked for it explicitly), and a result is not\nstored (an approved image lands in the override slot, a rejected one leaves\nno trace). The call still takes the service's own rate/concurrency slot, so\na burst of manual fetches paces against the same 5/s bucket the automatic\nchain uses - ``sources.get`` hands back a bare source with no limiter\nattached, so resolving it directly is the easy thing to write and would\ndouble the real outbound rate against fanart.tv / Spotify / Deezer.\n\n``source`` is typed as the ``Literal``, not ``str``, and that gate is\nload-bearing rather than cosmetic: ``label_for`` echoes an unknown id back\nverbatim and the result lands in the ``X-Art-Source`` header, so a plain\n``str`` would let a client put its own bytes in a response header. An id\noutside the Literal is refused by validation before this body runs.\n\nOrigin-guarded. A body-less POST is a CORS-simple request, so a foreign page\ncan send this one without a preflight - and unlike the album cover's fetch,\nwhere the only attacker input is a local album id, here the caller picks the\nUPSTREAM and the query it is sent, and that request goes out carrying this\ninstall's own fanart.tv / Spotify credentials. The route bypasses the cache\nby design, so repeats are not deduplicated either.",
+        "description": "Fetch ONE source's portrait candidate for ``name``. Writes NOTHING.",
         "operationId": "fetch_artist_image_endpoint_api_artists_image_fetch_post",
         "parameters": [
           {
@@ -3440,6 +3440,16 @@
               }
             }
           },
+          "503": {
+            "description": "The store layout is refused, so no import can start.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "400": {
             "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
             "content": {
@@ -4254,7 +4264,7 @@
           "config"
         ],
         "summary": "Validate Config",
-        "description": "Cheap lint pass \u2014 never writes. Returns 200 even on errors so the\nCodeMirror async lint source can display them inline.",
+        "description": "Read-only lint pass, 200 even on errors so the editor can show them inline.",
         "operationId": "validate_config_api_config_validate_post",
         "requestBody": {
           "content": {
@@ -4336,7 +4346,7 @@
           "config"
         ],
         "summary": "Save Config",
-        "description": "Persist the user-submitted YAML to disk after CAS + schema checks.\n\nReturns the freshly-built :class:`BeetsConfigSnapshot` (whose\n``apply_pending`` will be ``True`` until the upcoming Apply endpoint\nreloads beets' globals). Error mapping lives entirely inside\n:func:`save_config_op`: 422 on parse/schema, 409 on CAS mismatch.",
+        "description": "Persist the user-submitted YAML to disk after CAS + schema checks.",
         "operationId": "save_config_api_config_save_post",
         "requestBody": {
           "content": {
@@ -4370,7 +4380,7 @@
             }
           },
           "422": {
-            "description": "The submitted YAML did not parse, or a key MusicDrop models has the wrong shape; the body lists one item per problem, with the 1-based line and 0-based column to mark where there is one. A malformed request body answers with FastAPI's validation shape instead.",
+            "description": "The YAML did not parse, a key has the wrong shape, or its directory:/library: would break the store layout; the body lists one item per problem.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4750,7 +4760,7 @@
           "config"
         ],
         "summary": "Apply Config",
-        "description": "Reload beets in-process after a Save, swapping ``app.state.beets_library``.\n\nThin pass-through to :func:`apply_config_op`; all the gating\n(import-in-progress -> 409), locking (``asyncio.Lock`` on\n``app.state.beets_swap_lock``), threadpool offload, and recovery-hint\nerror mapping live in the adapter so the beets boundary stays clean\n(CLAUDE.md rule 3: no beets touched outside ``app/beets/``).",
+        "description": "Reload beets in-process after a Save, swapping ``app.state.beets_library``.",
         "operationId": "apply_config_api_config_apply_post",
         "responses": {
           "200": {
@@ -4769,6 +4779,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The config.yaml on disk breaks the store layout; the recovery line says how to fix it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredErrorDetail"
                 }
               }
             }
@@ -4937,6 +4957,16 @@
               }
             }
           },
+          "503": {
+            "description": "A store-layout refusal; no copies were moved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -5045,6 +5075,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StructuredErrorDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A store-layout refusal; no copies were moved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -5358,6 +5398,16 @@
               }
             }
           },
+          "503": {
+            "description": "A store-layout refusal; nothing was planned or started.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -5422,6 +5472,16 @@
           },
           "404": {
             "description": "No album has that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A store-layout refusal; nothing was planned or started.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5502,6 +5562,16 @@
           },
           "409": {
             "description": "A reorganize is already running, or another library job or a beets swap holds the library.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A store-layout refusal; nothing was planned or started.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5594,6 +5664,16 @@
           },
           "409": {
             "description": "A reorganize is already running, or another library job or a beets swap holds the library.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A store-layout refusal; nothing was planned or started.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5743,7 +5823,7 @@
           "reorganize"
         ],
         "summary": "Dismiss Reorganize",
-        "description": "Clear a FINISHED job's result (its failure rows) from the slot.\n\nNO ``_gate_busy`` on purpose: this touches the in-memory registry only \u2014\nnever the library, never beets \u2014 so an import or another sweep running\nelsewhere has no reason to hold a stale error message on screen.\n\nIdempotent: dismissing an already-empty slot returns the idle status rather\nthan 404. The caller is asking for \"nothing displayed\", and that is exactly\nwhat it gets; a 404 would make the UI special-case a state indistinguishable\nfrom success (a double click, a retry, or a concurrent tab that dismissed\nfirst). Returns the post-dismiss status so the caller can seed its cache\nwithout a follow-up GET.",
+        "description": "Clear a FINISHED job's result (its failure rows) from the slot. Idempotent.",
         "operationId": "dismiss_reorganize_api_reorganize_dismiss_post",
         "responses": {
           "200": {
@@ -8171,6 +8251,16 @@
               }
             }
           },
+          "503": {
+            "description": "The store layout is refused, so no import can start.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "400": {
             "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
             "content": {
@@ -8271,6 +8361,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReviewInboxResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The store layout is refused, so no import can start.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -9222,6 +9322,16 @@
               }
             }
           },
+          "503": {
+            "description": "A store-layout or identity refusal; the message names the cause.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "400": {
             "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
             "content": {
@@ -9293,6 +9403,26 @@
               }
             }
           },
+          "500": {
+            "description": "The entry could not be removed; the message names the fault.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A store-layout or identity refusal; the message names the cause.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -9342,7 +9472,7 @@
           "trash"
         ],
         "summary": "Restore Trash",
-        "description": "Put a trashed folder back. 409 if busy, 404 if not in Trash, 503 if unmounted.",
+        "description": "Put a trashed folder back. 409 if busy, 404 if not in Trash, 503 if it cannot be moved.",
         "operationId": "restore_trash_api_trash_restore_post",
         "requestBody": {
           "content": {
@@ -9396,7 +9526,7 @@
             }
           },
           "503": {
-            "description": "The music library folder is unavailable, so the folder was not moved out of Trash.",
+            "description": "The folder was not moved out of Trash; the message says which setup fault refused it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9489,6 +9619,16 @@
           },
           "500": {
             "description": "Some Trash entries were removed and others could not be; the message names which are still there.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A store-layout or identity refusal; the message names the cause.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11643,7 +11783,7 @@
           "message"
         ],
         "title": "ConfigAdvisory",
-        "description": "One row of the config editor's ADVISORY channel \u2014 a valid setting that\nMusicDrop-driven imports force or discard.\n\nDeliberately NOT a :class:`ValidationErrorItem`: the editor paints the error\nlist red in CodeMirror's lint gutter, and every config an advisory fires on\nis valid YAML that both this app and beets accept. Merging the two channels\nwould make a correct config look broken.\n\nNo ``line``/``column``: resolving those needs the ruamel ``CommentedMap``\naccessor that lives behind the beets adapter (``_line_col_for_path``), and\nthis module is import-clean of beets. ``key`` is the dotted path in the same\nshape as ``ValidationErrorItem.loc`` (e.g. ``\"import.autotag\"``), which is\nenough for the panel to name the setting."
+        "description": "One note about a config that is valid and does not do what it says."
       },
       "ConfigSaveConflict": {
         "properties": {

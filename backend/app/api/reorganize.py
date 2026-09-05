@@ -17,8 +17,13 @@ from fastapi.concurrency import run_in_threadpool
 from app.api.albums import get_library
 from app.beets.config_editor import _settings
 from app.beets.library import LibraryHandle, album_exists
+from app.beets.protected import protected_entries
 from app.beets.reorganize import album_scope_label, plan_reorganize
-from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
+from app.beets.store_layout import (
+    StoreLayoutError,
+    checked_store_dirs,
+    lib_music_and_library,
+)
 from app.events.emit import emit_library_changed
 from app.library_busy import raise_if_library_busy
 from app.models.errors import ErrorDetail
@@ -48,6 +53,13 @@ _ALBUM_NOT_FOUND_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": "No album has that id.",
 }
+#: Both the preview and the start route resolve the Trash / origin-store pair
+#: per request and run the containment check on what it resolved to, so both can
+#: refuse before the sweep is planned or spawned.
+_LAYOUT_REFUSED_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "A store-layout refusal; nothing was planned or started.",
+}
 
 
 def _gate_busy(app: object) -> None:
@@ -56,75 +68,71 @@ def _gate_busy(app: object) -> None:
     raise_if_library_busy(app, exclude=("reorganize",), message=_BUSY)
 
 
-def _trash_dir(app: object) -> Path:
-    """The configured Trash dir for the orphan sweep (resolved like the trash API)."""
+def _store(app: object) -> tuple[Path, Path]:
+    """The CHECKED Trash / origin-store pair for the orphan sweep, or a 503.
+
+    Resolved exactly as the trash API resolves them, and checked at the same
+    moment: ``resolve()`` follows whatever the configured path points at NOW, so
+    a symlink dropped at the Trash path after startup would send every husk this
+    run moves wherever it points. The runner re-asks on its own thread when the
+    sweep actually begins (``reorganize_jobs.runner._sweep_orphans``); this one
+    is what stops the preview from describing a run that would not be allowed.
+
+    503 with the refusal's own sentence, the tier the delete paths use for the
+    same class of fault. Raised inline so the status stays a literal
+    ``tests/test_route_status_declarations.py`` can see.
+    """
     handle: LibraryHandle = app.state.beets_library  # type: ignore[attr-defined]  # app duck-typed (object)
-    return resolve_trash_dir(_settings(app), handle)  # type: ignore[arg-type]  # app duck-typed (object)
+    try:
+        return checked_store_dirs(_settings(app), handle)  # type: ignore[arg-type]  # app duck-typed (object)
+    except StoreLayoutError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-def _origins_dir(app: object) -> Path:
-    """The Trash origin store, resolved like the trash API. Its sibling."""
+def _ignore_dirs(app: object, trash_dir: Path, origins_dir: Path) -> tuple[Path, ...]:
+    """Every directory the app owns, so the sweep spares what the movers refuse.
+
+    One list with ``protected_trees`` (``beets.protected.protected_entries``),
+    not a second hand-written tuple. They were two, and the shorter one was the
+    sweep's: with ``MUSICDROP_INBOX_DIR=<M>/Downloads/inbox`` — a layout the
+    rule allows — the walk went into the live download inbox, the preview
+    offered a still-arriving album's cover-art folder, and the run moved it to
+    Trash. Measured in the review round and pinned by
+    ``tests/test_orphans.py::test_the_ignore_list_names_every_app_store_the_guard_protects``.
+
+    Two entries are dropped: the music root (the walk root, which
+    ``orphans._exclude_ids`` would drop with a WARNING on every sweep) and the
+    Trash (``find_orphan_folders``' own argument). A path outside the music tree
+    costs one ``stat`` and matches nothing, so the rest are passed as they come.
+
+    The mover's guard still decides: it compares IDENTITY, so a bind-mounted alias
+    no spelling here can name is refused at the move, and the run reports that
+    folder as skipped.
+    """
     handle: LibraryHandle = app.state.beets_library  # type: ignore[attr-defined]  # app duck-typed (object)
-    return resolve_trash_origins_dir(_settings(app), handle)  # type: ignore[arg-type]  # app duck-typed (object)
-
-
-def _ignore_dirs(app: object) -> tuple[Path, ...]:
-    """Dirs under the music root the orphan sweep must never trash — the resolved
-    playlists export dir (defaults to <music>/.playlists) and the Trash origin store.
-    Dotdirs/NAS dirs are handled name-based in the scanner; this covers a configured
-    non-dotfile export dir.
-
-    The origin store earns its place the moment it stops being a sidecar: it is a
-    non-dotfile directory holding only ``.json`` files, so it is audio-empty BY
-    DEFINITION, and a ``trash_origins_dir`` configured under the music root reads
-    as a husk — the sweep would relocate the whole store into Trash, taking every
-    row's exact restore with it in one pass. The Trash dir itself is already
-    excluded by ``find_orphan_folders``; this one is new because it is no longer
-    inside it.
-
-    That covers a sweep reaching the store DIRECTLY, and only that. Excluding a
-    directory does not protect it from a sweep that takes its PARENT:
-    ``find_orphan_folders`` reports the TOP-MOST audio-empty dir, and an excluded
-    subtree is not counted as audio for the dir above it. Measured with
-    ``beets_dir`` itself under the music root — the sweep returns ``beets_dir``,
-    the same list with and without this exclusion. What happens NEXT depends on
-    where Trash sits, and only one of the two loses anything:
-
-    * **Default layout** (``trash_dir`` unset = ``<beets_dir>/trash``): the move
-      is a directory into its own subtree, so ``shutil.move`` refuses it —
-      ``Cannot move a directory '<music>/<beets>' into itself
-      '<music>/<beets>/trash/<beets>'``. ``shutil.Error`` IS an ``OSError``, so
-      ``reorganize_jobs.runner``'s per-folder ``except OSError: continue``
-      swallows it on every sweep. ``library.db``, ``config.yaml`` and the store
-      all survive; the visible residue is an empty ``<beets_dir>/trash`` the
-      mover created before failing, and a report that counts no orphan.
-    * **``MUSICDROP_TRASH_DIR`` pointing OUTSIDE ``beets_dir``**: the move
-      succeeds and all three land under Trash. ``beets_dir`` is then recreated
-      as an empty shell holding one origin record — the one written for the
-      folder that just left.
-
-    The exclusion is also not useless above the store: a parent whose ONLY child
-    is the excluded dir, and which holds no file of its own, reads as EMPTY
-    (never recorded, so it contributes no ``has_file``) and empty dirs are
-    skipped. Give that parent one file of its own and it is reported again. So
-    the hole is the ancestor that has other content, not every ancestor.
-
-    That is the shape the ``trash_dir`` exclusion has always had rather than
-    anything the sibling store introduced, and the shipped image does not reach
-    it (``/data`` and ``/music`` are separate mounts); it needs a beets dir
-    deliberately placed inside the music library. Not fixed here: sparing every
-    ancestor of an ignored dir would only push the report one level up whenever
-    the store is nested deeper, so it is a change to what the finder reports and
-    not a guard to bolt on."""
-    handle: LibraryHandle = app.state.beets_library  # type: ignore[attr-defined]  # app duck-typed (object)
-    configured = _settings(app).playlists_export_dir.strip()  # type: ignore[arg-type]  # app duck-typed (object)
-    export_dir = (
-        Path(configured) if configured else Path(os.fsdecode(handle.lib.directory)) / ".playlists"
+    music, library_path = lib_music_and_library(handle.lib)
+    entries = protected_entries(
+        settings=_settings(app),  # type: ignore[arg-type]  # app duck-typed (object)
+        music_dir=music,
+        beets_dir=handle.beets_dir,
+        trash_dir=trash_dir,
+        origins_dir=origins_dir,
+        library_path=library_path,
     )
-    return (export_dir, _origins_dir(app))
+    skip = {music, trash_dir}
+    # Deduped in order, on the NORMALISED spelling: on the default layout
+    # ``library:`` resolves to ``<B>/library.db``, so two entries are the same
+    # directory and the finder would climb from one root twice. ``Path``
+    # equality does not fold ``<M>/..`` into ``<M>``'s parent, and measured, the
+    # sweep then logged its one at-or-above WARNING twice for one directory.
+    seen: dict[str, Path] = {}
+    for path, _name, _setting in entries:
+        if path not in skip:
+            seen.setdefault(os.path.normpath(str(path)), path)
+    return tuple(seen.values())
 
 
-@router.get("/reorganize/preview")
+@router.get("/reorganize/preview", responses={503: _LAYOUT_REFUSED_RESPONSE})
 async def preview_reorganize(
     request: Request,
     handle: Annotated[LibraryHandle, Depends(get_library)],
@@ -132,20 +140,21 @@ async def preview_reorganize(
 ) -> ReorganizePlan:
     """Dry run: what would move under the current path config. Read-only."""
     scope: ReorganizeScope = "artist" if artist is not None else "library"
+    trash_dir, origins_dir = _store(request.app)
     return await run_in_threadpool(
         plan_reorganize,
         handle.lib,
         scope=scope,
         artist=artist,
         album_id=None,
-        trash_dir=_trash_dir(request.app),
-        ignore_dirs=_ignore_dirs(request.app),
+        trash_dir=trash_dir,
+        ignore_dirs=_ignore_dirs(request.app, trash_dir, origins_dir),
     )
 
 
 @router.get(
     "/albums/{album_id}/reorganize/preview",
-    responses={404: _ALBUM_NOT_FOUND_RESPONSE},
+    responses={404: _ALBUM_NOT_FOUND_RESPONSE, 503: _LAYOUT_REFUSED_RESPONSE},
 )
 async def preview_album_reorganize(
     album_id: int,
@@ -155,18 +164,22 @@ async def preview_album_reorganize(
     exists = await run_in_threadpool(album_exists, handle, album_id)
     if not exists:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Album not found")
+    trash_dir, origins_dir = _store(request.app)
     return await run_in_threadpool(
         plan_reorganize,
         handle.lib,
         scope="album",
         artist=None,
         album_id=album_id,
-        trash_dir=_trash_dir(request.app),
-        ignore_dirs=_ignore_dirs(request.app),
+        trash_dir=trash_dir,
+        ignore_dirs=_ignore_dirs(request.app, trash_dir, origins_dir),
     )
 
 
-@router.post("/reorganize", responses={409: _REORGANIZE_BUSY_RESPONSE})
+@router.post(
+    "/reorganize",
+    responses={409: _REORGANIZE_BUSY_RESPONSE, 503: _LAYOUT_REFUSED_RESPONSE},
+)
 async def start_reorganize(
     request: Request,
     reg: Annotated[ReorganizeRegistry, Depends(get_reorganize_backfill)],
@@ -179,22 +192,32 @@ async def start_reorganize(
     _gate_busy(request.app)
     scope: ReorganizeScope = "artist" if artist is not None else "library"
     label = artist if artist is not None else "library"
+    app = request.app
+    handle = app.state.beets_library
+    # Everything that can refuse this start runs BEFORE the slot is claimed.
+    # ``reg.start`` used to come first, and the 503 below then left the registry
+    # holding a job at phase=running with no worker to finish it — measured:
+    # every library-mutating write answered 409 until the process restarted,
+    # ``stop`` was a no-op, ``dismiss`` refuses a running job, and repairing the
+    # layout did not clear it. ``_store`` and ``_ignore_dirs`` need nothing from
+    # the registry, so the order costs nothing.
+    trash_dir, origins_dir = _store(app)
+    ignore_dirs = _ignore_dirs(app, trash_dir, origins_dir)
     try:
         reg.start(scope=scope, artist=artist, album_id=None, scope_label=label)
     except RuntimeError:
         raise HTTPException(status.HTTP_409_CONFLICT, "A reorganize is already running") from None
-    app = request.app
-    handle = app.state.beets_library
     start_backfill(
         reg,
         handle,
         scope=scope,
         artist=artist,
         album_id=None,
-        trash_dir=_trash_dir(app),
-        trash_origins_dir=_origins_dir(app),
-        ignore_dirs=_ignore_dirs(app),
+        trash_dir=trash_dir,
+        trash_origins_dir=origins_dir,
+        ignore_dirs=ignore_dirs,
         playlists_dir=playlists_dir,
+        settings=_settings(app),
         on_complete=lambda: emit_library_changed(app),
     )
     return reg.state()
@@ -202,7 +225,11 @@ async def start_reorganize(
 
 @router.post(
     "/albums/{album_id}/reorganize",
-    responses={404: _ALBUM_NOT_FOUND_RESPONSE, 409: _REORGANIZE_BUSY_RESPONSE},
+    responses={
+        404: _ALBUM_NOT_FOUND_RESPONSE,
+        409: _REORGANIZE_BUSY_RESPONSE,
+        503: _LAYOUT_REFUSED_RESPONSE,
+    },
 )
 async def start_album_reorganize(
     album_id: int,
@@ -216,21 +243,26 @@ async def start_album_reorganize(
     if label is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Album not found")
     _gate_busy(request.app)
+    app = request.app
+    # Same order, same reason as ``start_reorganize``: nothing claims the single
+    # slot until every refusal has had its turn.
+    trash_dir, origins_dir = _store(app)
+    ignore_dirs = _ignore_dirs(app, trash_dir, origins_dir)
     try:
         reg.start(scope="album", artist=None, album_id=album_id, scope_label=label)
     except RuntimeError:
         raise HTTPException(status.HTTP_409_CONFLICT, "A reorganize is already running") from None
-    app = request.app
     start_backfill(
         reg,
         handle,
         scope="album",
         artist=None,
         album_id=album_id,
-        trash_dir=_trash_dir(app),
-        trash_origins_dir=_origins_dir(app),
-        ignore_dirs=_ignore_dirs(app),
+        trash_dir=trash_dir,
+        trash_origins_dir=origins_dir,
+        ignore_dirs=ignore_dirs,
         playlists_dir=playlists_dir,
+        settings=_settings(app),
         on_complete=lambda: emit_library_changed(app),
     )
     return reg.state()
@@ -266,19 +298,15 @@ async def stop_reorganize(
 async def dismiss_reorganize(
     reg: Annotated[ReorganizeRegistry, Depends(get_reorganize_backfill)],
 ) -> ReorganizeBackfillStatus:
-    """Clear a FINISHED job's result (its failure rows) from the slot.
-
-    NO ``_gate_busy`` on purpose: this touches the in-memory registry only —
-    never the library, never beets — so an import or another sweep running
-    elsewhere has no reason to hold a stale error message on screen.
-
-    Idempotent: dismissing an already-empty slot returns the idle status rather
-    than 404. The caller is asking for "nothing displayed", and that is exactly
-    what it gets; a 404 would make the UI special-case a state indistinguishable
-    from success (a double click, a retry, or a concurrent tab that dismissed
-    first). Returns the post-dismiss status so the caller can seed its cache
-    without a follow-up GET.
-    """
+    """Clear a FINISHED job's result (its failure rows) from the slot. Idempotent."""
+    # NO ``_gate_busy`` on purpose: this touches the in-memory registry only —
+    # never the library, never beets — so an import or another sweep elsewhere
+    # has no reason to hold a stale error message on screen.
+    #
+    # Dismissing an already-empty slot returns the idle status rather than 404: a
+    # 404 would make the UI special-case a state indistinguishable from success
+    # (a double click, a retry, a concurrent tab). The post-dismiss status comes
+    # back so the caller can seed its cache without a follow-up GET.
     try:
         reg.dismiss()
     except RuntimeError:

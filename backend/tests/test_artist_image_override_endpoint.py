@@ -349,8 +349,13 @@ def _pin_beets_at(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """
     music = root / "music"
     music.mkdir(parents=True)
-    (root / "config.yaml").write_text(f"directory: {music}\nlibrary: library.db\nplugins: []\n")
-    monkeypatch.setattr(app_settings, "beets_dir", str(root))
+    # A SIBLING of the music dir, not its parent: app.beets.store_layout refuses
+    # a beets data directory that contains the music library, and this lifespan
+    # runs that check.
+    beets = root / "beets"
+    beets.mkdir(parents=True)
+    (beets / "config.yaml").write_text(f"directory: {music}\nlibrary: library.db\nplugins: []\n")
+    monkeypatch.setattr(app_settings, "beets_dir", str(beets))
     monkeypatch.setattr(app_settings, "artist_image_cache_dir", str(root / "cache"))
 
 

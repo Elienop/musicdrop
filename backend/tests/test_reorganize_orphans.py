@@ -77,7 +77,7 @@ def test_registry_records_orphans() -> None:
 def test_sweep_trashes_library_orphans(reorganize_lib: Library, tmp_path: Path) -> None:
     from app.reorganize_jobs.registry import ReorganizeRegistry
     from app.reorganize_jobs.runner import sweep
-    from tests.conftest import make_test_handle, origins_for
+    from tests.conftest import beets_dir_for, make_test_handle, origins_for
 
     music_dir = Path(os.fsdecode(reorganize_lib.directory))
     husk = music_dir / "Ghost Artist"
@@ -85,7 +85,7 @@ def test_sweep_trashes_library_orphans(reorganize_lib: Library, tmp_path: Path) 
     (husk / "artist-poster.jpg").write_bytes(b"x")
     trash = tmp_path / "trash"
 
-    handle = make_test_handle(reorganize_lib, tmp_path)
+    handle = make_test_handle(reorganize_lib, beets_dir_for(tmp_path))
     reg = ReorganizeRegistry()
     reg.start(scope="library", artist=None, album_id=None, scope_label="library")
     sweep(
@@ -279,7 +279,7 @@ def test_sweep_leaves_live_multidisc_scans_alone(tmp_path: Path) -> None:
     from app.beets.reorganize import plan_reorganize
     from app.reorganize_jobs.registry import ReorganizeRegistry
     from app.reorganize_jobs.runner import sweep
-    from tests.conftest import make_test_handle, origins_for
+    from tests.conftest import beets_dir_for, make_test_handle, origins_for
 
     lib = _library(tmp_path, path_format=_DISC_FORMAT)
     music = Path(os.fsdecode(lib.directory))
@@ -304,7 +304,7 @@ def test_sweep_leaves_live_multidisc_scans_alone(tmp_path: Path) -> None:
     reg.start(scope="library", artist=None, album_id=None, scope_label="library")
     sweep(
         reg,
-        make_test_handle(lib, tmp_path),
+        make_test_handle(lib, beets_dir_for(tmp_path)),
         scope="library",
         trash_dir=trash,
         trash_origins_dir=origins_for(trash),
@@ -367,7 +367,7 @@ def test_the_orphan_pass_is_skipped_when_only_the_trash_dir_is_wired(
     """
     from app.reorganize_jobs.registry import ReorganizeRegistry
     from app.reorganize_jobs.runner import sweep
-    from tests.conftest import make_test_handle
+    from tests.conftest import beets_dir_for, make_test_handle
 
     music_dir = Path(os.fsdecode(reorganize_lib.directory))
     husk = music_dir / "Ghost Artist"
@@ -378,7 +378,7 @@ def test_the_orphan_pass_is_skipped_when_only_the_trash_dir_is_wired(
 
     sweep(
         reg,
-        make_test_handle(reorganize_lib, tmp_path),
+        make_test_handle(reorganize_lib, beets_dir_for(tmp_path)),
         scope="library",
         trash_dir=tmp_path / "trash",
         trash_origins_dir=None,
@@ -417,7 +417,7 @@ def test_the_orphan_pass_is_skipped_when_the_origin_store_cannot_be_used(
     """
     from app.reorganize_jobs.registry import ReorganizeRegistry
     from app.reorganize_jobs.runner import sweep
-    from tests.conftest import make_test_handle
+    from tests.conftest import beets_dir_for, make_test_handle
 
     music_dir = Path(os.fsdecode(reorganize_lib.directory))
     husk = music_dir / "Ghost Artist"
@@ -432,7 +432,7 @@ def test_the_orphan_pass_is_skipped_when_the_origin_store_cannot_be_used(
     with caplog.at_level(logging.WARNING, logger="app.reorganize_jobs.runner"):
         sweep(
             reg,
-            make_test_handle(reorganize_lib, tmp_path),
+            make_test_handle(reorganize_lib, beets_dir_for(tmp_path)),
             scope="library",
             trash_dir=trash,
             trash_origins_dir=origins,
@@ -450,3 +450,53 @@ def test_the_orphan_pass_is_skipped_when_the_origin_store_cannot_be_used(
     # ``except OSError`` into ``sweep``'s blanket handler, which calls reg.fail.
     assert reg.state().phase == "done"
     assert reg.state().failures == []
+
+
+def test_a_real_spelled_album_root_under_a_symlinked_directory_still_shields(
+    tmp_path: Path,
+) -> None:
+    """The row spelling and the walk spelling name one directory.
+
+    ``directory:`` is a symlink and the rows were imported in place from the real
+    path — what ``beet import <real path>`` leaves behind, because an in-place
+    import does not rewrite ``item.path``. ``live_album_roots`` dropped such a
+    root lexically, so the album was not in the protected set at all: measured,
+    its ``Scans (LP)`` folder was reported by the finder, listed by the preview,
+    and moved to Trash while the rows still pointed into it.
+
+    Asserted end-to-end through ``find_orphan_folders``, which is what the
+    preview and the sweep both call, and two-sided: the genuine husk beside the
+    album is still reported, so the fix did not simply protect everything.
+    """
+    from app.beets.orphans import find_orphan_folders
+    from app.beets.reorganize import live_album_roots
+    from tests.conftest import build_library
+
+    real = tmp_path / "real"
+    real.mkdir()
+    music = tmp_path / "music"
+    music.symlink_to(real)
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+
+    album_dir = real / "Live" / "Box"
+    (album_dir / "Disc 01").mkdir(parents=True)
+    track = album_dir / "Disc 01" / "01 T1.mp3"
+    track.write_bytes(b"\x00")
+    item = Item(album="Box", albumartist="Live", artist="Live", title="T1", track=1, disc=1)
+    item.path = os.fsencode(str(track))
+    lib.add_album([item]).store()
+    (album_dir / "Scans (LP)").mkdir()
+    (album_dir / "Scans (LP)" / "front.jpg").write_bytes(b"x")
+    (music / "Old Artist").mkdir()
+    (music / "Old Artist" / "poster.jpg").write_bytes(b"x")
+
+    roots = live_album_roots(lib)
+    found = find_orphan_folders(
+        music,
+        seeds=None,
+        trash_dir=tmp_path / "trash",
+        protected_dirs=roots,
+    )
+
+    assert str(music / "Live" / "Box" / "Disc 01") in roots
+    assert found == [music / "Old Artist"]

@@ -33,7 +33,7 @@ from typing import Literal
 
 from pydantic import BaseModel, model_validator
 
-from app.config import settings
+from app.config import PLAYLISTS_STORE, settings, store_dir
 from app.models.playlist import PendingTrack
 from app.models.plex import PlexTargetState
 from app.playlists.atomic import write_atomic_text
@@ -51,10 +51,7 @@ def get_playlists_dir() -> Path:
     every ``Depends(get_playlists_dir)`` names, so one override still moves every
     route at once.
     """
-    configured = settings.playlists_dir.strip()
-    if configured:
-        return Path(configured)
-    return Path(settings.beets_dir) / "playlists"
+    return store_dir(settings, PLAYLISTS_STORE, Path(settings.beets_dir))
 
 
 # Playlist ids are ``uuid.uuid4().hex`` — exactly 32 lowercase hex chars. Any

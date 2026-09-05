@@ -12,8 +12,16 @@ from typing import Final
 from fastapi import APIRouter, Request
 from ruamel.yaml.error import YAMLError
 
+from app.beets.config_editor import (
+    StoreLayoutReport,
+    _settings,
+    parse_yaml,
+    read_naming,
+    save_naming,
+    store_layout_report,
+    validate_known_keys,
+)
 from app.beets.config_editor import apply as apply_config_op
-from app.beets.config_editor import parse_yaml, read_naming, save_naming, validate_known_keys
 from app.beets.config_editor import save as save_config_op
 from app.beets.config_snapshot import build_config_snapshot
 from app.beets.library import LibraryHandle
@@ -72,10 +80,10 @@ _SAVE_CAS_CONFLICT_RESPONSE: Final = {
 _SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
     ConfigValidationErrorDetail,
     (
-        "The submitted YAML did not parse, or a key MusicDrop models has the wrong"
-        " shape; the body lists one item per problem, with the 1-based line and"
-        " 0-based column to mark where there is one. A malformed request body"
-        " answers with FastAPI's validation shape instead."
+        # The rows carry a 1-based line and 0-based column where there is one,
+        # and a malformed request body answers with FastAPI's own shape instead.
+        "The YAML did not parse, a key has the wrong shape, or its directory:/"
+        "library: would break the store layout; the body lists one item per problem."
     ),
 )
 
@@ -103,12 +111,23 @@ def get_config(request: Request) -> BeetsConfigSnapshot:
 
 
 @router.post("/config/validate")
-def validate_config(req: ValidateRequest) -> ValidateResponse:
-    """Cheap lint pass — never writes. Returns 200 even on errors so the
-    CodeMirror async lint source can display them inline."""
+def validate_config(req: ValidateRequest, request: Request) -> ValidateResponse:
+    """Read-only lint pass, 200 even on errors so the editor can show them inline."""
+    # Everything below stays a COMMENT: FastAPI publishes a route docstring as
+    # the operation's OpenAPI description, and these paragraphs are about how
+    # this file works rather than about the endpoint's contract.
+    #
+    # ``request`` is taken for the settings + live handle the containment check
+    # needs: whether a ``directory:`` is acceptable is not a property of the
+    # document alone, it depends on where MUSICDROP_TRASH_DIR,
+    # MUSICDROP_TRASH_ORIGINS_DIR and MUSICDROP_BEETS_DIR resolve. Same helper
+    # ``config_editor.save`` calls, so the gutter and the Save refusal are
+    # computed from one function.
     try:
         data = parse_yaml(req.yaml_text)
-    except YAMLError as e:
+    # Not YAMLError alone: ruamel raises RecursionError on a document nested past
+    # the limit and ValueError on an integer over 4300 digits, both bare 500s.
+    except (YAMLError, RecursionError, ValueError) as e:
         mark = getattr(e, "problem_mark", None)
         return ValidateResponse(
             errors=[
@@ -128,10 +147,35 @@ def validate_config(req: ValidateRequest) -> ValidateResponse:
         )
     # Two independent channels: an advisory is a valid setting MusicDrop
     # overrides, so it is computed from the same document but never merged into
-    # ``errors`` (the editor paints that list red).
+    # ``errors`` (the editor paints that list red). The containment row DOES
+    # belong in ``errors``: a document that would delete the library on the next
+    # Empty Trash is not a setting we merely override.
+    # ``getattr``, not the direct read every other route in this file does: this
+    # is the one config route that does not otherwise need a library, and two
+    # guard tests (test_origin_guard / test_host_guard) exercise it in a
+    # lifespan-less child process for exactly that reason.
+    #
+    # The empty branch fails OPEN — no containment row at all — in a process
+    # where the lifespan has not run: the document lints clean, and Save then
+    # answers 500 (AttributeError on the direct handle read) rather than a
+    # layout refusal, measured. Under the lifespan the handle is set before the
+    # server accepts a request, so that gap is the child-process case the two
+    # guard tests create.
+    handle: LibraryHandle | None = getattr(request.app.state, "beets_library", None)
+    schema_errors = validate_known_keys(data)
+    layout = (
+        StoreLayoutReport([], [])
+        if handle is None
+        else store_layout_report(
+            data,
+            settings=_settings(request.app),
+            handle=handle,
+            reported_keys={item.loc for item in schema_errors},
+        )
+    )
     return ValidateResponse(
-        errors=validate_known_keys(data),
-        advisories=import_advisories(data),
+        errors=schema_errors + layout.errors,
+        advisories=import_advisories(data) + layout.advisories,
     )
 
 
@@ -140,15 +184,20 @@ def validate_config(req: ValidateRequest) -> ValidateResponse:
     responses={409: _SAVE_CAS_CONFLICT_RESPONSE, 422: _SAVE_VALIDATION_RESPONSE},
 )
 def save_config(req: SaveRequest, request: Request) -> BeetsConfigSnapshot:
-    """Persist the user-submitted YAML to disk after CAS + schema checks.
-
-    Returns the freshly-built :class:`BeetsConfigSnapshot` (whose
-    ``apply_pending`` will be ``True`` until the upcoming Apply endpoint
-    reloads beets' globals). Error mapping lives entirely inside
-    :func:`save_config_op`: 422 on parse/schema, 409 on CAS mismatch.
-    """
+    """Persist the user-submitted YAML to disk after CAS + schema checks."""
+    # The rest of the contract is here rather than in the docstring, which
+    # FastAPI publishes whole: the response is the freshly-built
+    # ``BeetsConfigSnapshot``, whose ``apply_pending`` is ``True`` until Apply
+    # reloads beets' globals; 422 on a parse, schema or store-layout failure;
+    # 409 on a CAS mismatch.
+    #
+    # A comment, not a docstring paragraph — FastAPI publishes the docstring as
+    # this operation's OpenAPI description. The error mapping lives inside
+    # ``save_config_op``, and the settings are threaded in because the
+    # containment row needs them: a ``directory:`` is refusable only relative to
+    # where Trash, the origin store and the beets data dir resolve.
     handle: LibraryHandle = request.app.state.beets_library
-    return save_config_op(handle, req)
+    return save_config_op(handle, req, settings=_settings(request.app))
 
 
 @router.get("/config/naming")
@@ -201,6 +250,16 @@ def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSn
                 " until it finishes."
             ),
         },
+        # Same structured body as the 500 and for the same reader: the page
+        # prints `detail.recovery` after "Apply failed. ". A 409 could not carry
+        # it — the frontend renders every Apply 409 as the library-job sentence.
+        422: {
+            "model": StructuredErrorDetail,
+            "description": (
+                "The config.yaml on disk breaks the store layout; the recovery line"
+                " says how to fix it."
+            ),
+        },
         500: {
             "model": StructuredErrorDetail,
             "description": (
@@ -211,12 +270,9 @@ def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSn
     },
 )
 async def apply_config(request: Request) -> BeetsConfigSnapshot:
-    """Reload beets in-process after a Save, swapping ``app.state.beets_library``.
-
-    Thin pass-through to :func:`apply_config_op`; all the gating
-    (import-in-progress -> 409), locking (``asyncio.Lock`` on
-    ``app.state.beets_swap_lock``), threadpool offload, and recovery-hint
-    error mapping live in the adapter so the beets boundary stays clean
-    (CLAUDE.md rule 3: no beets touched outside ``app/beets/``).
-    """
+    """Reload beets in-process after a Save, swapping ``app.state.beets_library``."""
+    # Thin pass-through: the gating (import-in-progress -> 409), the
+    # ``asyncio.Lock`` on ``app.state.beets_swap_lock``, the threadpool offload
+    # and the recovery-hint error mapping all live in the adapter, so the beets
+    # boundary stays clean (CLAUDE.md rule 3).
     return await apply_config_op(request)

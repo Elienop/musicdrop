@@ -371,13 +371,22 @@ class _UvicornChild:
 
 
 @contextmanager
-def _real_uvicorn(beets_dir: Path, *, static_dir: Path | None = None) -> Iterator[_UvicornChild]:
+def _real_uvicorn(
+    beets_dir: Path,
+    *,
+    static_dir: Path | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> Iterator[_UvicornChild]:
     """Boot ``app.main:app`` under real uvicorn, exactly as the Dockerfile CMD does.
 
     No ``--log-level`` and no ``--log-config``, because ``Dockerfile:61`` passes
     neither: what these tests are for is the output an operator gets from the
     SHIPPED command, and a flag here would be a configuration the container does
     not have.
+
+    ``extra_env`` is merged LAST, so a caller can set a ``MUSICDROP_*`` the
+    fixed block above does not (``tests/test_store_layout_boot.py`` boots a
+    refused Trash layout that way).
     """
     env = {
         **os.environ,
@@ -390,6 +399,7 @@ def _real_uvicorn(beets_dir: Path, *, static_dir: Path | None = None) -> Iterato
         # beats `backend/.env`, so an owner who sets a real hash locally does
         # not turn these assertions red.
         "MUSICDROP_PASSWORD_HASH": "",
+        **(extra_env or {}),
     }
     backend = Path(__file__).resolve().parents[1]
     proc = subprocess.Popen(

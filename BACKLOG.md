@@ -579,9 +579,15 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   deleting a no-album artist with the root unavailable now 503s instead of returning
   `trashed_albums=0`.
 
-- **`GET /api/config` serves the user's raw `config.yaml` — every credential in it,
-  unmasked — to any caller who can reach port 3030.** (Found 2026-08-28, auth-posture
-  audit.) `yaml_text` is documented verbatim as the raw on-disk text with "secrets are NOT
+- ~~**`GET /api/config` serves the user's raw `config.yaml` — every credential in it,
+  unmasked — to any caller who can reach port 3030.**~~ — **CLOSED by the auth slice
+  (PRs #199, #200 and #201), 2026-08-29 to 2026-08-30.** The entry's own text named the
+  remedy — "Auth is the fix … there is no sensible in-place patch that preserves the
+  round-trip editor" — and that is what shipped: the session gate now covers every
+  `/api/*` route, so `yaml_text` is served to a signed-in caller and nobody else. The
+  route's body is unchanged and deliberately so; what changed is that there is now a
+  caller identity. Original text kept below for the record.
+  (Found 2026-08-28, auth-posture audit.) `yaml_text` is documented verbatim as the raw on-disk text with "secrets are NOT
   masked here" (`app/models/config_api.py:16-20`); the sibling `effective_yaml` is
   redacted through two passes (confuse's `redact` flag plus the `SECRET_KEY_PATTERN`
   safety net), but `yaml_text` bypasses both — deliberately, because Save writes it back
@@ -1037,75 +1043,71 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   job is saying what the import will change. Not executed against a fetchart-enabled
   import; verify that first, then make the caption read the live plugin list.
 
-- **`MUSICDROP_TRASH_DIR` is an unvalidated `rmtree` root.** (Found 2026-08-28.)
-  `resolve_trash_dir` returns `Path(settings.trash_dir).resolve()` with no containment
-  check (`app/beets/trash.py`), and `empty_all` then `shutil.rmtree`s every child
-  of whatever came back (`app/beets/trash_manage.py`). Symbols, not line numbers: both
-  functions have since moved by hundreds of lines. Nothing asserts the trash dir is not
-  the music root, not inside it, and not the beets dir — and pointing trash at the music
-  dataset (so deletes are same-filesystem renames instead of cross-device copies; the
-  default sits on the small `/data` volume, which README's "Backup & restore" calls the
-  only GB-scale item there) is a plausible operator move one
-  typo away from `MUSICDROP_TRASH_DIR=/music`. Every other destructive path here has a
-  containment check (`resolve_trash_child`, `_folder_is_shared`,
-  `orphans._excluded_predicate`); the trash root has none. Small: refuse at startup when
-  trash resolves inside or equal to the music dir or the beets dir.
+- ~~**`MUSICDROP_TRASH_DIR` is an unvalidated `rmtree` root.**~~ — **SHIPPED — PR #215**
+  (2026-09-05).
+  One table in `app/beets/store_layout.py` refuses the Trash or the origin store being or
+  holding the music library, the beets dir, `library.db` or an app store, and the beets dir
+  nesting with the music library. Asked at startup and at each destructive use site.
 
-- **The orphan sweep's ignore list does not protect an ignored dir's ANCESTORS.** (Found
-  2026-09-02, same class as the entry above: a missing containment check between the
-  music root and a `/data`-side directory.) Trigger: `MUSICDROP_BEETS_DIR` pointed at a path
-  *inside* the music library, plus a library-scope Reorganize. Symbols, not line numbers:
-  `reorganize._ignore_dirs` hands the store and the export dir to
-  `orphans.find_orphan_folders`, whose `_excluded_predicate` skips those subtrees — and
-  `_library_orphans` then reports the TOP-MOST audio-empty ancestor of the excluded dir.
-  There is no upward climb in library scope (read at `backend/app/beets/orphans.py:130-150`,
-  2026-09-02): every dir the walk recorded is judged on its own, and it is reported when it
-  holds a file, holds no audio anywhere beneath it, is not named in `ART_DIR_NAMES` (`:136`),
-  its parent holds no audio DIRECTLY (`:144` — the multi-disc art guard, so an album's own
-  `Scans/` is spared), and its parent is either the root or holds audio somewhere beneath it
-  (`:148`). "Top-most" falls out of that last condition rather than out of a walk: an
-  audio-empty parent gets reported instead of its child. So the dir that gets reported need
-  not be the one holding the content that made it non-empty. (Seeds mode `_seed_orphan`
-  (`:168-191`) IS a climb, and this trigger — a library-scope Reorganize — takes the other
-  path.)
-  **Which var triggers it alone, measured on `fix/undoable-deletes`** (probe: build a music
-  tree with one healthy album, then call `find_orphan_folders(music, seeds=None, ...)` — one
-  call per layout, so re-deriving it costs nothing):
-  * `MUSICDROP_BEETS_DIR=<music>/beets` → `['beets']`. It is the only one that fires
-    unaided, and not really as an ancestor: beets plants `library.db` and `config.yaml`
-    directly in that dir, so `beets_dir` has content of its own and is reported DIRECTLY —
-    identically with and without the store exclusion.
-  * `MUSICDROP_TRASH_ORIGINS_DIR=<music>/origins` → `[]`. Its parent is the root, and the
-    root is skipped.
-  * `MUSICDROP_TRASH_ORIGINS_DIR=<music>/data/origins` → `[]`. An excluded subtree is never
-    recorded, so an only-child parent contributes no `has_file` and reads as empty; empty
-    dirs are skipped.
-  * the same placement with one file of the parent's own (`<music>/data/notes.txt`) →
-    `['data']`. That is the hole: an ancestor with other content.
-  * `MUSICDROP_TRASH_ORIGINS_DIR=<music>/data/sub/origins` with the file one level DOWN
-    (`<music>/data/sub/notes.txt`) → `['data']`, **not** `['data/sub']` (measured
-    2026-09-02 at this tip). This is the case that tells the two readings apart: `data`
-    holds nothing of its own, so what is reported is the top of the audio-empty run, not
-    the dir the content sits in. Whatever ends up under Trash is that whole subtree.
-  * `MUSICDROP_PLAYLISTS_EXPORT_DIR=<music>/exports` → `[]`, for the reason above.
+- ~~**The orphan sweep's ignore list does not protect an ignored dir's ANCESTORS.**~~ —
+  **SHIPPED — PR #215** (2026-09-05), same series. `orphans._drop_excluded_ancestors` folds
+  each excluded root's ancestor
+  chain into the drop, and `orphans._exclude_ids` drops (with one WARNING) an exclude root at
+  or above the walk root. Exclusion is by inode, not by spelling.
 
-  So the two pure-container vars need at least one non-excluded file somewhere under a
-  non-root ancestor before anything is reported at all — and what gets reported then is the
-  top of the audio-empty run above that file, which can be several levels higher than the
-  ignored dir. Blast radius depends on where Trash sits, and
-  `_ignore_dirs`' docstring states both outcomes: in the DEFAULT
-  layout (`trash_dir` = `<beets_dir>/trash`) the move is a directory into its own subtree,
-  `shutil.move` raises, and `reorganize_jobs.runner`'s `except OSError: continue` swallows
-  it — nothing is lost; with `MUSICDROP_TRASH_DIR` pointing outside `beets_dir`,
-  `library.db`, `config.yaml` and every origin record land under Trash in one pass.
-  **Not reachable in the shipped image**: `Dockerfile` sets `MUSICDROP_BEETS_DIR=/data/beets`
-  and `docker-compose.yml` mounts music at `/music`, so the two are separate volumes; it
-  needs an operator override. Not fixed on `fix/undoable-deletes`, and the docstring argues
-  against the obvious fix — sparing every ancestor only moves the report one level up when
-  the ignored dir is nested deeper, so it changes what the finder REPORTS rather than
-  adding a guard. If it is worth closing, the cheap version is the same shape as the entry
-  above: refuse at startup when `beets_dir` (or either configured store) resolves inside
-  the music dir.
+- ~~**The layout predicate compares SPELLINGS, so an alias walks past it; and a refused
+  Reorganize keeps the job slot.**~~ — **SHIPPED — PR #215** (2026-09-05), found by the
+  2026-09-04 review round of the two entries above.
+  `app/beets/protected.py` re-asks by `(st_dev, st_ino)` at the moment a tree is moved or
+  removed; `reg.start` runs after the store check, so a 503 no longer leaves `phase=running`.
+
+  Residuals, accepted. This list is the one place they live; the modules point here.
+  * A path that does not exist yet has no inode, so an alias onto a not-yet-created Trash is
+    caught on the next check, not the first.
+  * A mount point as the INNER path is caught at the mover, not by the predicate.
+  * The set holds the protected ROOTS' inodes, so a Trash entry that aliases a SUBFOLDER of
+    one is not recognised; the mount point itself survives `rmtree` with EBUSY.
+  * Identity is `(st_dev, st_ino)` from two `os.stat` calls. A filesystem that synthesises
+    inode numbers client-side (CIFS `noserverino`, some FUSE) could disagree between them —
+    not measured, no such mount here.
+  * A union filesystem (overlayfs, mergerfs) gives one directory two `st_dev`s, so a Trash
+    spelled through a layer is walked by the sweep. Spell it through `directory:`'s mount.
+  * A protected directory the guard could not LIST is logged, not refused: its own identity
+    was compared from its parent's descriptor, an alias hidden below it was not.
+  * beets' `prune_dirs` after a per-item move removes an EMPTY app store that is an ancestor
+    of the album; a bind-mounted store answers EBUSY and survives.
+  * The Trash and origin store reach the sweep RESOLVED, so the spelled-ancestor mechanism
+    has no input for them: an ancestor of the CONFIGURED spelling can be reported as a husk.
+  * A Trash inside a live album folder is not refused — one album, visible on the Trash page,
+    and the check would cost a DB query per request.
+  * `library:` in an audio-free subfolder of the music library stays a husk: `dirname(L)` is
+    excluded from the sweep rather than refused.
+  * A husk beside an excluded root is skipped when the ancestor's only audio sits INSIDE
+    that root.
+  * The seeds climb starts below a symlink where the library walk does not descend, so the
+    two modes disagree on a symlinked subtree. Kept: seeds mode is what sweeps such a tree.
+  * The playlist export dir at or above the music root is dropped from the sweep with a
+    WARNING rather than refused.
+  * The two image caches are participants; the static dir (`/app/static`) is not — it is
+    served code, not data.
+  * The Apply backstop's degraded state has no API field of its own; it is the 422's message.
+  * The three movers (`trash_folder`, `trash_album_folder`, `restore_album`) guard by PATH; a
+    swap after the guard lands in Trash, where the delete side refuses it by identity.
+  * `delete_artist` pre-checks every album with a full walk and the mover walks each one
+    again — the artist's subtree is stat-walked twice per delete.
+  * No read deadline on an `include:` file: a dead hard-mounted NFS include blocks the
+    worker in `os.read`, as it would block beets.
+  * The `include:` read is a path existence/type oracle for an authenticated session, and it
+    follows `~`. No content is disclosed; beets does not confine includes either.
+  * A hand-edited `config.yaml` nested deeply enough answers a bare 500:
+    `build_config_snapshot`'s `yaml.safe_dump` raises `RecursionError`, which no handler
+    catches. Measured: 400 levels, default limit 1000. `GET /api/config` and
+    `POST /api/config/apply` both return that snapshot. Authenticated, and nothing is lost.
+  * One in-budget `POST /api/config/validate` costs ~1.5 s of threadpool CPU (32 includes
+    summing to 1 MiB) and `/api/config/*` has no inbound rate limit. Accepted: the app is
+    session-gated and single-operator.
+  * Next touch of the destructive primitives: one `CheckedStore` (trash_dir, origins_dir,
+    protected) so they take one keyword rather than three.
 
 - ~~**A FLAT library layout defeats the delete path's presence check — it samples the music
   root against itself.**~~ (Found 2026-09-02, on `fix/undoable-deletes`, while re-reading the
@@ -2096,6 +2098,12 @@ Added by the 2026-08-28 sweeps:
 
 ## Recently shipped
 
+- **Trash and store containment — #215 (2026-09-05).** Vault decision 35: a Trash inside the
+  music library is allowed; one that is or contains the music library, the beets dir, the origin
+  store or an app folder is refused at startup, on Save/Validate/Apply and at every destructive
+  route, by one table over resolved paths plus an inode guard at the point of destruction. Empty
+  Trash removes through the descriptor it checked. Closes the three struck entries above; the
+  residual list under them is the one place the accepted leftovers live.
 - **Sign-in form field marking — #214 (2026-09-04).** Owner ruling `decisions.md` 31, asked after
   v0.50.0: every password form marks a field invalid only while the error shown is about that
   field. The sign-in form had kept painting its one field red for every answer (429, 503, the

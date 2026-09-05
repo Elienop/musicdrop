@@ -12,6 +12,7 @@ from app.beets.config_editor import (
     save_naming,
 )
 from app.beets.library import LibraryHandle
+from app.config import Settings
 from app.models.config_editor import (
     NamingRuleInput,
     ReplaceRuleInput,
@@ -46,6 +47,10 @@ def test_config_saves_hold_the_save_lock_during_write(
     save(
         beets_library,
         SaveRequest(yaml_text=cfg_path.read_text() + "\n# x\n", base_sha256=_sha(cfg_path)),
+        # Default settings: trash/origins resolve under the fixture's own beets
+        # dir, which holds no music, so the containment check passes and this
+        # test keeps asking only about the lock.
+        settings=Settings(),
     )
     assert locked_during == [True, True]  # both writes ran under the lock
 

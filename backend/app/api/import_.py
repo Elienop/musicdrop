@@ -19,7 +19,11 @@ from app.api.http_cache import NO_SNIFF
 from app.artwork.images import FALLBACK_CONTENT_TYPE, header_safe_content_type
 from app.beets.duplicates import find_import_duplicates
 from app.beets.library import LibraryHandle
-from app.import_jobs.registry import ImportJobRegistry, get_registry
+from app.import_jobs.registry import (
+    ImportJobRegistry,
+    LibraryRefusedError,
+    get_registry,
+)
 from app.import_jobs.runner import InLibraryCopyError
 from app.models.errors import ErrorDetail, validation_or_detail_422
 from app.models.import_api import (
@@ -52,6 +56,11 @@ router = APIRouter(tags=["import"])
 _JOB_NOT_FOUND_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": "No import job has that id.",
+}
+#: Set by Apply's backstop when beets loaded a layout the rule refuses.
+_LIBRARY_REFUSED_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "The store layout is refused, so no import can start.",
 }
 #: ``reg.candidate`` / ``parked_album`` raise KeyError for BOTH an unknown job
 #: and an index with nothing parked on it, and the route cannot tell them apart.
@@ -140,6 +149,7 @@ def ensure_import_can_start(request: Request) -> None:
             "A copy-mode import was asked for a folder inside the music library,"
             " or the request failed validation."
         ),
+        503: _LIBRARY_REFUSED_RESPONSE,
     },
 )
 async def start_import(
@@ -153,6 +163,10 @@ async def start_import(
     except InLibraryCopyError as exc:
         # Guard refusal (validated before any slot was taken): actionable 422.
         raise HTTPException(status_code=422, detail=str(exc)) from None
+    except LibraryRefusedError as exc:
+        # Apply loaded a refused layout: an import here would write into the root
+        # it refused. Ahead of the RuntimeError arm — this IS a RuntimeError.
+        raise HTTPException(status_code=503, detail=str(exc)) from None
     except RuntimeError:
         # An import is already running (single-slot policy).
         raise HTTPException(

@@ -25,7 +25,7 @@ from pathlib import Path
 
 from app.acquisition.ledger import AcquisitionLedger
 from app.beets.library import LibraryHandle
-from app.config import Settings
+from app.config import INBOX_STORE, Settings, store_dir
 from app.models.acquisition import InboxItem, LedgerEntry, LedgerOutcome
 from app.wire import display_path
 
@@ -46,12 +46,10 @@ def resolve_inbox_dir(settings: Settings, handle: LibraryHandle) -> Path:
     """Where completed downloads land: configured ``inbox_dir`` or ``<beets_dir>/inbox``.
 
     Empty setting = default under the handle's already-absolute ``beets_dir``; a
-    configured override is resolved to absolute. Synchronous (pathlib I/O must
-    not run on the event loop). Mirrors ``resolve_trash_dir``.
+    configured override is made absolute for the containment checks below, which
+    compare real paths. Synchronous (pathlib I/O must not run on the event loop).
     """
-    if settings.inbox_dir:
-        return Path(settings.inbox_dir).resolve()
-    return handle.beets_dir / "inbox"
+    return store_dir(settings, INBOX_STORE, handle.beets_dir).resolve()
 
 
 def contain(path: str, inbox_dir: Path, *, strict: bool = False) -> Path | None:

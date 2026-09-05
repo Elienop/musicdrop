@@ -13,7 +13,7 @@ from typing import Annotated, Final
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
-from app.config import settings
+from app.config import PLEX_STORE, settings, store_dir
 from app.models.errors import ErrorDetail
 from app.models.plex import (
     PlexConnection,
@@ -43,8 +43,7 @@ _PLEX_CONNECTION_RESPONSE: Final = {
 
 
 def get_plex_store() -> PlexConfigStore:
-    base = settings.plex_settings_dir.strip()
-    directory = Path(base) if base else Path(settings.beets_dir) / "plex"
+    directory = store_dir(settings, PLEX_STORE, Path(settings.beets_dir))
     env = PlexConfig(
         base_url=settings.plex_url,
         token=settings.plex_token,

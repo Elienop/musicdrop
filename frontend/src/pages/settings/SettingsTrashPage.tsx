@@ -2,6 +2,7 @@ import { useId, useState } from "react";
 
 import type { RestoreResult, TrashedAlbum } from "@/api/useTrash";
 import {
+  trashErrorDetail,
   useEmptyAllTrash,
   useEmptyTrashAlbum,
   useRestoreTrash,
@@ -29,18 +30,34 @@ import { cn } from "@/lib/utils";
  * from, or re-filed by the current naming rules, per `restore_mode` — or empty
  * (forever). */
 export function SettingsTrashPage() {
-  const { data, isPending, isError, refetch } = useTrashList();
+  const { data, error, isPending, isError, refetch } = useTrashList();
   const emptyAll = useEmptyAllTrash();
 
   if (isPending) {
     return <p className="text-muted-foreground text-sm">Loading Trash…</p>;
   }
   if (isError) {
+    // The 503s here are the operator's own misconfiguration answered in full
+    // (`store_layout._refuse`: the setting, both resolved paths, the fix), so
+    // the page shows the sentence. `trashErrorDetail`, not `error.message`:
+    // the message is never empty ("Failed to fetch" on a dropped connection),
+    // and null is the signal that the body had nothing a user should read.
+    const detail = trashErrorDetail(error);
     return (
       <div className="flex flex-col items-start gap-2">
-        <p className="text-destructive text-sm" role="alert">
-          Couldn’t load Trash.
-        </p>
+        {/* One alert for both lines, so a screen reader hears the reason.
+          * `w-full` is load-bearing: as a fit-content flex item the sentence's
+          * min-content width becomes the page's (measured at 320px with a
+          * 130-char unbroken path: scrollWidth 608 without it, 320 with it);
+          * `max-w-prose` keeps a ~770px pane from running 110-char lines. */}
+        <div role="alert" className="flex w-full max-w-prose flex-col gap-1">
+          <p className="text-destructive text-sm">Couldn’t load Trash.</p>
+          {detail && (
+            <p className="text-muted-foreground text-sm break-words">
+              {detail}
+            </p>
+          )}
+        </div>
         <Button variant="outline" size="sm" onClick={() => void refetch()}>
           Try again
         </Button>

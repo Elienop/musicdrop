@@ -30,7 +30,7 @@ from app.main import app
 from app.playlists import store
 from app.playlists.reexport import export_dir_for, render_export
 from app.playlists.store import StoredEntry, StoredPlaylist, get_playlists_dir
-from tests.conftest import make_test_handle
+from tests.conftest import beets_dir_for, make_test_handle
 
 # ----- staging helpers -----
 
@@ -79,7 +79,7 @@ def _client_for(lib: Library, tmp_path: Path) -> Iterator[tuple[TestClient, Path
     ``get_playlists_dir`` is overridden rather than pointed at settings so the
     test never reads (or writes) the developer's real playlist store.
     """
-    handle = make_test_handle(lib, tmp_path)
+    handle = make_test_handle(lib, beets_dir_for(tmp_path))
     playlists_dir = tmp_path / "playlists"
     playlists_dir.mkdir()
     app.state.beets_library = handle
@@ -315,7 +315,7 @@ def test_reorganize_sweep_reexports_moved_tracks(reorganize_lib: Library, tmp_pa
     from app.reorganize_jobs.registry import ReorganizeRegistry
     from app.reorganize_jobs.runner import sweep
 
-    handle = make_test_handle(reorganize_lib, tmp_path)
+    handle = make_test_handle(reorganize_lib, beets_dir_for(tmp_path))
     playlists_dir = tmp_path / "playlists"
     playlists_dir.mkdir()
 
@@ -357,7 +357,7 @@ def test_reorganize_sweep_reexports_even_when_stopped(
     from app.reorganize_jobs.registry import ReorganizeRegistry
     from app.reorganize_jobs.runner import sweep
 
-    handle = make_test_handle(reorganize_lib, tmp_path)
+    handle = make_test_handle(reorganize_lib, beets_dir_for(tmp_path))
     playlists_dir = tmp_path / "playlists"
     playlists_dir.mkdir()
     mover = _item_by_title(reorganize_lib, "15 Step")
@@ -399,7 +399,7 @@ def test_reorganize_count_is_recorded_before_the_job_finishes(
     from app.reorganize_jobs.registry import ReorganizeRegistry
     from app.reorganize_jobs.runner import sweep
 
-    handle = make_test_handle(reorganize_lib, tmp_path)
+    handle = make_test_handle(reorganize_lib, beets_dir_for(tmp_path))
     playlists_dir = tmp_path / "playlists"
     playlists_dir.mkdir()
     mover = _item_by_title(reorganize_lib, "15 Step")
@@ -429,7 +429,7 @@ def test_reorganize_sweep_without_a_playlists_dir_skips_the_pass(
     from app.reorganize_jobs.registry import ReorganizeRegistry
     from app.reorganize_jobs.runner import sweep
 
-    handle = make_test_handle(reorganize_lib, tmp_path)
+    handle = make_test_handle(reorganize_lib, beets_dir_for(tmp_path))
     reg = ReorganizeRegistry()
     reg.start(scope="library", artist=None, album_id=None, scope_label="library")
     sweep(reg, handle, scope="library")
@@ -480,7 +480,7 @@ def test_disk_sync_sweep_prunes_a_removed_track(edit_lib: Library, tmp_path: Pat
     assert _export_text(edit_lib, record.id).count("#EXTINF:") == 2
 
     os.remove(os.fsdecode(victim.path))
-    handle = make_test_handle(edit_lib, tmp_path)
+    handle = make_test_handle(edit_lib, beets_dir_for(tmp_path))
     reg = DiskSyncRegistry()
     reg.start()
     sweep(reg, handle, playlists_dir=playlists_dir)
@@ -509,7 +509,7 @@ def test_disk_sync_sweep_that_removes_nothing_reexports_nothing(
     )
     before = _export_text(edit_lib, record.id)
 
-    handle = make_test_handle(edit_lib, tmp_path)
+    handle = make_test_handle(edit_lib, beets_dir_for(tmp_path))
     reg = DiskSyncRegistry()
     reg.start()
     sweep(reg, handle, playlists_dir=playlists_dir)
@@ -531,7 +531,7 @@ def test_disk_sync_count_is_recorded_before_the_job_finishes(
     _stage_playlist(playlists_dir, edit_lib, [_require_id(victim.id)])
     os.remove(os.fsdecode(victim.path))
 
-    handle = make_test_handle(edit_lib, tmp_path)
+    handle = make_test_handle(edit_lib, beets_dir_for(tmp_path))
     reg = DiskSyncRegistry()
     reg.start()
     real_finish = reg.finish
@@ -626,8 +626,85 @@ def test_import_replace_without_a_playlists_dir_leaves_exports_alone(
     assert _export_text(duplicates_lib, record.id) == before
 
 
+def test_import_replace_skips_the_trashing_when_the_store_layout_is_refused(
+    duplicates_lib: Library, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The Trash pair here was resolved when the registry got the library, not now.
+
+    ``ImportRegistry.attach_library`` freezes ``(trash_dir, origins_dir)`` at
+    lifespan or after an Apply, and an import can run hours later — the same gap
+    the request paths close by re-resolving per call. Pointing the Trash at the
+    music library is the shape measured to cost the library on Empty Trash; here
+    it costs less and still costs something, because this pass MOVES rather than
+    deletes: the replaced album's files would be relocated inside the library
+    under a container name and its rows dropped. WARNING and skip, so the old
+    copy stays where the operator can still see it.
+
+    The control is
+    ``test_import_replace_without_a_playlists_dir_leaves_exports_alone``, which
+    runs the same helper on an accepted layout and asserts the album IS gone.
+    """
+    import logging
+
+    from app.beets.import_session import _trash_replaced_albums
+
+    music = Path(os.fsdecode(duplicates_lib.directory))
+    superseded = _album_by_title(duplicates_lib, "Discovery")
+    session = _replace_session(duplicates_lib, trash_dir=music, playlists_dir=None)
+    session._replace_album_ids = {_require_id(superseded.id)}
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.import_session"):
+        _trash_replaced_albums(session)
+
+    assert duplicates_lib.get_album(_require_id(superseded.id)) is not None
+    assert any("store layout is refused" in r.getMessage() for r in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]
+
+
+def test_import_replace_reads_the_beets_dir_beets_itself_resolved(
+    duplicates_lib: Library,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WHICH beets dir the post-run layout check compares against.
+
+    It used to be ``Path(settings.beets_dir)``, whose default is the RELATIVE
+    string "data/beets" — joined to the process CWD by ``_resolved``, on a worker
+    thread, possibly hours after startup, while every other call site passes the
+    resolved handle dir. The two agree only while nothing changes the working
+    directory, which is a condition nothing states or enforces.
+
+    The layout used here is refused ONLY when the check sees the beets dir
+    ``setup_beets`` exported: it CONTAINS the music library (the ``B contains M``
+    row), while Trash and the origin store sit where no other row fires. Read the
+    setting's relative default instead and the whole layout is disjoint, so the
+    replaced album is trashed and the assertions below flip.
+    """
+    import logging
+
+    from app.beets.import_session import _trash_replaced_albums
+
+    music = Path(os.fsdecode(duplicates_lib.directory))
+    monkeypatch.setenv("BEETSDIR", str(music.parent))
+    superseded = _album_by_title(duplicates_lib, "Discovery")
+    session = _replace_session(
+        duplicates_lib, trash_dir=tmp_path / "elsewhere" / "trash", playlists_dir=None
+    )
+    session._replace_album_ids = {_require_id(superseded.id)}
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.import_session"):
+        _trash_replaced_albums(session)
+
+    assert duplicates_lib.get_album(_require_id(superseded.id)) is not None
+    assert any("store layout is refused" in r.getMessage() for r in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]
+
+
 def test_run_import_worker_post_run_pass_tolerates_a_minimal_session(
-    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A REPLICA of the fake-session shape in tests/test_import_session.py.
 
@@ -660,6 +737,13 @@ def test_run_import_worker_post_run_pass_tolerates_a_minimal_session(
             return []
 
     class _Lib:
+        # ``directory`` and ``path``: the post-run pass re-checks the store
+        # layout before moving anything, so a fake standing in for a beets
+        # Library has to say where the music and the DB are. Siblings under
+        # ``tmp_path``, which the check accepts.
+        directory = os.fsencode(str(tmp_path / "music"))
+        path = os.fsencode(str(tmp_path / "beets" / "library.db"))
+
         def music_dir_context(self) -> AbstractContextManager[None]:
             return contextlib.nullcontext()
 
@@ -673,8 +757,8 @@ def test_run_import_worker_post_run_pass_tolerates_a_minimal_session(
         lib = _Lib()
         paths: ClassVar[list[bytes]] = []
         _replace_album_ids: ClassVar[set[int]] = {11, 22}
-        _trash_dir = Path("/tmp/trash")
-        _trash_origins_dir = Path("/tmp/trash-origins")
+        _trash_dir = tmp_path / "trash"
+        _trash_origins_dir = tmp_path / "trash-origins"
         _playlists_dir = None
 
         def run(self) -> None:
@@ -685,6 +769,7 @@ def test_run_import_worker_post_run_pass_tolerates_a_minimal_session(
         return str(trash_dir)
 
     monkeypatch.setattr(session_mod, "trash_album", fake_trash)
+    monkeypatch.setattr("app.config.settings.beets_dir", str(tmp_path / "beets"))
     with caplog.at_level(logging.ERROR, logger="app.beets.import_session"):
         run_import_worker(_FakeSession())  # type: ignore[arg-type]  # minimal duck-typed session
 

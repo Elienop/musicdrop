@@ -17,7 +17,7 @@ from app.beets.playlists import (
 )
 from app.models.playlist import PendingTrack
 from app.playlists.store import StoredEntry
-from tests.conftest import build_library, make_test_handle
+from tests.conftest import beets_dir_for, build_library, make_test_handle
 
 
 def _lib_with_items(tmp_path: Path) -> tuple[Library, list[int]]:
@@ -85,7 +85,7 @@ def _lib_with_albums_and_singleton(tmp_path: Path) -> tuple[object, dict[str, in
     si = Item(artist="C", albumartist="C", title="Solo", track=1)
     si.path = os.fsencode(str(sf))
     lib.add(si)
-    handle = make_test_handle(lib, tmp_path)
+    handle = make_test_handle(lib, beets_dir_for(tmp_path))
     return handle, {
         "a1": _require_id(a1.id),
         "a2": _require_id(a2.id),

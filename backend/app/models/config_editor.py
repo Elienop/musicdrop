@@ -38,31 +38,90 @@ def loc_to_dot_sep(loc: tuple[str | int, ...]) -> str:
     return path
 
 
+#: What resolving an operator-supplied path raises. The same three
+#: ``app.beets.store_layout`` names, spelled again rather than imported: these
+#: models sit below the beets adapter and pull nothing from it. Pydantic turns a
+#: ``ValueError`` from a validator into a row and lets the other two escape, so
+#: every one of them has to become a ``ValueError`` here or the route answers
+#: 500 — measured: a ``directory:`` that is a self-referencing symlink raised
+#: ``RuntimeError`` out of ``validate_known_keys``, and both
+#: ``POST /api/config/validate`` and ``POST /api/config/save`` answered 500.
+_UNRESOLVABLE = (OSError, RuntimeError, ValueError)
+
+
+def _resolve_or_row(p: Path) -> Path:
+    """``p`` resolved, or a ``ValueError`` Pydantic can paint as a row."""
+    try:
+        return p.expanduser().resolve()
+    except _UNRESOLVABLE as exc:
+        raise ValueError(f"{str(p)!r} could not be resolved: {type(exc).__name__}: {exc}.") from exc
+
+
 def _writable_path(p: Path) -> Path:
-    """``AfterValidator`` for ``WritablePath``.
+    """``AfterValidator`` for ``WritablePath`` — ``p`` is already a ``Path``.
 
-    Per Pydantic v2 docs (Validators), ``AfterValidator`` runs after Pydantic
-    has coerced the value to ``Path`` — so ``p`` is already a ``Path`` here.
+    An existing directory passes on its OWN writability: the Docker norm is a
+    volume at the root, whose parent ``/`` the app user can never write. The
+    parent check applies only to a directory beets would have to create.
 
-    An existing directory passes on its own writability: the Docker norm is a
-    volume mounted at the root (e.g. ``/library``), whose parent ``/`` is never
-    writable by the app user. The parent check applies only when the directory
-    doesn't exist yet and beets would have to create it.
+    Every filesystem call sits inside :func:`_resolve_or_row` or the ``try``
+    below: this runs BEFORE the layout gate, so its failures reach the client.
     """
-    resolved = p.expanduser().resolve()
-    if resolved.exists():
-        if not resolved.is_dir():
-            raise ValueError(f"{resolved} is not a directory")
-        if not os.access(resolved, os.W_OK):
-            raise ValueError(f"directory {resolved} is not writable")
-    else:
+    resolved = _resolve_or_row(p)
+    try:
+        exists = resolved.exists()
+        is_dir = resolved.is_dir()
         parent = resolved.parent
-        if not parent.exists() or not os.access(parent, os.W_OK):
-            raise ValueError(f"parent directory {parent} is not writable")
+        parent_ok = parent.exists() and os.access(parent, os.W_OK)
+        writable = os.access(resolved, os.W_OK)
+    except _UNRESOLVABLE as exc:
+        raise ValueError(
+            f"{str(resolved)!r} could not be examined: {type(exc).__name__}: {exc}"
+        ) from exc
+    if exists:
+        if not is_dir:
+            raise ValueError(f"{str(resolved)!r} is not a directory")
+        if not writable:
+            raise ValueError(f"directory {str(resolved)!r} is not writable")
+    elif not parent_ok:
+        raise ValueError(f"parent directory {str(parent)!r} is not writable")
+    return p
+
+
+def _library_file(p: Path) -> Path:
+    """``AfterValidator`` for ``library:`` — the beets DATABASE FILE.
+
+    beets hands this path to SQLite. Two values pass every other check and make
+    that open fail: an empty one (Pydantic coerces ``""`` to ``Path(".")``) and
+    one naming an existing directory. Measured before this validator: both linted
+    clean, Save wrote them, Apply answered 500 ("unable to open database file"),
+    and the next cold start died inside beets' ``_create_connection``.
+
+    RESIDUAL (shared with :func:`_writable_path`): a RELATIVE value resolves
+    against the process CWD here and against the beets data dir in confuse, so
+    such a value is caught here only when the two coincide. Apply covers it.
+    """
+    if str(p) == ".":
+        raise ValueError(
+            "library: names the beets database file, and an empty value names the"
+            " beets data directory itself, which beets cannot open as a database"
+        )
+    resolved = _resolve_or_row(p)
+    try:
+        is_dir = resolved.is_dir()
+    except _UNRESOLVABLE as exc:
+        raise ValueError(
+            f"{str(resolved)!r} could not be examined: {type(exc).__name__}: {exc}"
+        ) from exc
+    if is_dir:
+        raise ValueError(
+            f"{str(resolved)!r} is a directory; library: names the beets database file"
+        )
     return p
 
 
 WritablePath = Annotated[Path, AfterValidator(_writable_path)]
+LibraryFile = Annotated[Path, AfterValidator(_library_file)]
 
 
 PluginName = Literal[
@@ -120,7 +179,7 @@ class KnownKeysSchema(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     directory: WritablePath
-    library: Path
+    library: LibraryFile
     plugins: list[PluginName] = Field(default_factory=list)
     import_: ImportSection = Field(default_factory=ImportSection, alias="import")
     match: MatchSection = Field(default_factory=MatchSection)
@@ -141,27 +200,25 @@ class ValidationErrorItem(BaseModel):
 
 
 class ConfigAdvisory(BaseModel):
-    """One row of the config editor's ADVISORY channel — a valid setting that
-    MusicDrop-driven imports force or discard.
+    """One note about a config that is valid and does not do what it says."""
 
-    Deliberately NOT a :class:`ValidationErrorItem`: the editor paints the error
-    list red in CodeMirror's lint gutter, and every config an advisory fires on
-    is valid YAML that both this app and beets accept. Merging the two channels
-    would make a correct config look broken.
-
-    No ``line``/``column``: resolving those needs the ruamel ``CommentedMap``
-    accessor that lives behind the beets adapter (``_line_col_for_path``), and
-    this module is import-clean of beets. ``key`` is the dotted path in the same
-    shape as ``ValidationErrorItem.loc`` (e.g. ``"import.autotag"``), which is
-    enough for the panel to name the setting.
-    """
+    # This docstring is PUBLISHED as the schema description, so the rest is a
+    # comment. Deliberately not a ``ValidationErrorItem``: the editor paints the
+    # error list red in CodeMirror's lint gutter, and every config an advisory
+    # fires on is one both this app and beets accept. Two sources today — an
+    # ``import:`` key MusicDrop overrides, and an ``include:`` entry beets drops.
+    #
+    # No ``line``/``column``: resolving those needs the ruamel ``CommentedMap``
+    # accessor that lives behind the beets adapter (``_line_col_for_path``), and
+    # this module is import-clean of beets. ``key`` is the dotted path in the
+    # same shape as ``ValidationErrorItem.loc``, which is enough to name the
+    # setting.
 
     key: str
-    """Dotted path of the setting the advisory is about, e.g. ``"import.autotag"``."""
+    """The setting this is about, dotted: ``"import.autotag"``, ``"include"``."""
 
     message: str
-    """One-or-two-sentence explanation: what MusicDrop forces, and that a CLI
-    ``beet import`` outside MusicDrop still honours the value."""
+    """One or two sentences: what really happens, and where the value still counts."""
 
 
 def _autotag_advisory(section: ImportSection) -> str | None:

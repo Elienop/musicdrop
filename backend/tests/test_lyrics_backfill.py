@@ -8,7 +8,7 @@ from beets.library import Library
 
 from app.beets.library import _require_id
 from app.models.lyrics import ItemLyricsOutcome, ItemLyricsStatus
-from tests.conftest import make_test_handle
+from tests.conftest import beets_dir_for, make_test_handle
 
 
 def test_backfill_status_model() -> None:
@@ -128,7 +128,7 @@ def test_sweep_processes_all_items_and_finishes_done(edit_lib: Library, tmp_path
 
     sweep(
         reg,
-        make_test_handle(edit_lib, tmp_path),
+        make_test_handle(edit_lib, beets_dir_for(tmp_path)),
         delay=0.0,
         write=False,
         fetch_one=fake_fetch_one,
@@ -158,7 +158,7 @@ def test_sweep_honours_stop(edit_lib: Library, tmp_path: Path) -> None:
 
     sweep(
         reg,
-        make_test_handle(edit_lib, tmp_path),
+        make_test_handle(edit_lib, beets_dir_for(tmp_path)),
         delay=0.0,
         write=False,
         fetch_one=fake_fetch_one,
@@ -179,7 +179,13 @@ def test_sweep_failure_sets_failed_phase(edit_lib: Library, tmp_path: Path) -> N
     def boom(**_: Any) -> Any:
         raise RuntimeError("kaboom")
 
-    sweep(reg, make_test_handle(edit_lib, tmp_path), delay=0.0, write=False, make_plugin=boom)
+    sweep(
+        reg,
+        make_test_handle(edit_lib, beets_dir_for(tmp_path)),
+        delay=0.0,
+        write=False,
+        make_plugin=boom,
+    )
     s = reg.state()
     assert s.phase == "failed"
     assert "kaboom" in (s.error or "")
@@ -384,7 +390,7 @@ def test_sweep_album_scope_only_touches_that_album(edit_lib: Library, tmp_path: 
 
     sweep(
         reg,
-        make_test_handle(edit_lib, tmp_path),
+        make_test_handle(edit_lib, beets_dir_for(tmp_path)),
         delay=0.0,
         write=False,
         album_id=target_id,
@@ -428,7 +434,7 @@ def test_sweep_threads_recheck_misses(edit_lib: Library, tmp_path: Path) -> None
 
     sweep(
         reg,
-        make_test_handle(edit_lib, tmp_path),
+        make_test_handle(edit_lib, beets_dir_for(tmp_path)),
         delay=0.0,
         write=False,
         recheck_misses=True,
@@ -458,7 +464,7 @@ def test_sweep_logs_end_summary(
     with caplog.at_level(logging.INFO, logger="app.lyrics_jobs.runner"):
         sweep(
             reg,
-            make_test_handle(edit_lib, tmp_path),
+            make_test_handle(edit_lib, beets_dir_for(tmp_path)),
             delay=0.0,
             write=False,
             fetch_one=fake_fetch_one,
@@ -487,7 +493,7 @@ def test_sweep_library_scope_queries_lrclib_only(edit_lib: Library, tmp_path: Pa
 
     sweep(  # album_id=None -> library scope
         reg,
-        make_test_handle(edit_lib, tmp_path),
+        make_test_handle(edit_lib, beets_dir_for(tmp_path)),
         delay=0.0,
         write=False,
         fetch_one=fake_fetch_one,
@@ -516,7 +522,7 @@ def test_sweep_album_scope_keeps_genius(edit_lib: Library, tmp_path: Path) -> No
 
     sweep(
         reg,
-        make_test_handle(edit_lib, tmp_path),
+        make_test_handle(edit_lib, beets_dir_for(tmp_path)),
         delay=0.0,
         write=False,
         album_id=aid,

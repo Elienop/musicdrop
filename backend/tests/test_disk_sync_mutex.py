@@ -12,12 +12,12 @@ from fastapi.testclient import TestClient
 from app.api.albums import get_library
 from app.beets.library import _require_id
 from app.main import app
-from tests.conftest import make_test_handle
+from tests.conftest import beets_dir_for, make_test_handle
 
 
 @pytest.fixture
 def sync_client(edit_lib: Library, tmp_path: Path) -> Iterator[TestClient]:
-    handle = make_test_handle(edit_lib, tmp_path)
+    handle = make_test_handle(edit_lib, beets_dir_for(tmp_path))
     app.dependency_overrides[get_library] = lambda: handle
     app.state.beets_library = handle
     try:

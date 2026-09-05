@@ -34,7 +34,7 @@ from beets.library import Item, Library
 from app.beets.library import LibraryRootUnavailableError, require_library_root
 from app.beets.trash_manage import restore_album
 from app.beets.trash_origins import write_trash_origin
-from tests.conftest import build_library, origins_for
+from tests.conftest import build_library, origins_for, protected_for
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
 
@@ -103,9 +103,11 @@ def test_restore_refuses_a_dropped_share_a_stray_entry_hides(
         write_trash_origin(origins, entry.name, origin=str(music / "Weird Folder"), moved="folder")
 
     require_library_root(lib)  # accepts the stray-entry mountpoint — this is the gap
+    entry_path = str(entry)
+    trees = protected_for(lib)
 
     with pytest.raises(LibraryRootUnavailableError):
-        restore_album(lib, str(entry), trash_dir=trash, origins_dir=origins)
+        restore_album(lib, entry_path, trash_dir=trash, origins_dir=origins, protected=trees)
 
     assert list(entry.glob("*.flac")), "the files must not have left Trash"
     assert list(music.iterdir()) == [music / ".stfolder"], "nothing may land on the mountpoint"

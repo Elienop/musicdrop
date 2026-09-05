@@ -21,23 +21,32 @@ if TYPE_CHECKING:
     from beets.library import Library
 
 
-def _write_config(tmp_path: Path) -> None:
+def _write_config(tmp_path: Path) -> Path:
+    """Write a hermetic beets config and return the BEETSDIR it lives in.
+
+    A SIBLING of the music dir, never its parent: ``app.beets.store_layout``
+    refuses a beets data directory that contains the music library, and the real
+    lifespan these tests boot runs that check.
+    """
     music = tmp_path / "music"
     music.mkdir()
-    (tmp_path / "config.yaml").write_text(
+    beets = tmp_path / "beets"
+    beets.mkdir()
+    (beets / "config.yaml").write_text(
         f"directory: {music}\nlibrary: library.db\nplugins:\n  - musicbrainz\n"
     )
+    return beets
 
 
 def test_acquisition_status_idle_via_lifespan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_config(tmp_path)
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
     app.dependency_overrides.clear()
     with TestClient(app) as client:  # context-manager form runs the lifespan
         assert getattr(app.state, "acquisition_queue", None) is not None
-        assert getattr(app.state, "inbox_dir", None) == tmp_path.resolve() / "inbox"
+        assert getattr(app.state, "inbox_dir", None) == (tmp_path / "beets").resolve() / "inbox"
         resp = client.get("/api/acquisition/status")
     assert resp.status_code == 200
     assert resp.json() == {
@@ -64,7 +73,7 @@ def test_lifespan_waits_for_in_flight_import_before_closing_library(
     from app.beets.library import close_library as real_close
 
     _write_config(tmp_path)
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
     app.dependency_overrides.clear()
 
     poll_count = 0

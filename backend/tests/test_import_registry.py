@@ -1274,3 +1274,32 @@ def test_buffered_parked_replay_restores_art_source() -> None:
     assert row is not None
     assert row.parked is parked
     assert row.art_source == art
+
+
+def test_start_refuses_while_the_attached_library_is_refused() -> None:
+    """A refusal recorded at ``attach_library`` stops every import at ``start``.
+
+    Measured on the parent commit: after Apply's backstop 422 an import was
+    accepted (202), ran to ``done``, and its files landed under the beets data
+    dir. Only the post-import Replace-trash step was neutralised, because the
+    registry's store pair was ``None``.
+
+    ``LibraryRefusedError`` is a ``RuntimeError`` so the drain and the two inbox
+    routes keep their existing "not now" arms; the routes an operator drives
+    catch it first and answer 503.
+    """
+    from app.import_jobs.registry import ImportJobRegistry, LibraryRefusedError
+
+    runner = FakeImportRunner()
+    reg = ImportJobRegistry(runner)
+    reg.attach_library(object(), refusal="Apply loaded config.yaml, but T is M.")
+
+    with pytest.raises(LibraryRefusedError, match="but T is M"):
+        reg.start("/x")
+
+    assert runner.validate_calls == []  # nothing reached the runner
+    assert isinstance(LibraryRefusedError("x"), RuntimeError)
+
+    # A clean attach clears it: the field is assigned on every call.
+    reg.attach_library(object())
+    assert reg.start("/x")

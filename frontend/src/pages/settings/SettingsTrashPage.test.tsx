@@ -111,6 +111,22 @@ const refusedAlbum: TrashedAlbum = {
   origin: null,
 };
 
+/** A COPY of what `store_layout._refuse` composes when the Trash directory
+ * resolves onto the music library: subject, relation, both settings with their
+ * resolved paths, the loss, the fix — in that order, and reaching the client as
+ * `str(StoreLayoutError)` inside FastAPI's `detail` on a 503.
+ *
+ * Hand-kept, like `NO_RECORD_NOTE` above and for the same reason: the string
+ * never crosses the OpenAPI schema, so nothing across the boundary can check
+ * this copy and it will drift the day the backend rewords the refusal. What the
+ * test below pins is not the wording but that the PAGE renders whatever
+ * arrived — which is why it asserts the whole string rather than a fragment: a
+ * page printing copy of its own would satisfy any fragment this file chose. */
+const LAYOUT_REFUSAL =
+  "The Trash directory is the music library — emptying it would delete the music" +
+  " library. MUSICDROP_TRASH_DIR: '/srv/media/music'; `directory:` in config.yaml:" +
+  " '/srv/media/music'. Set MUSICDROP_TRASH_DIR to its own folder.";
+
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -691,5 +707,61 @@ describe("SettingsTrashPage", () => {
     // Positive control for the matcher itself: without it the assertion above
     // also passes on a button that is described by nothing at all.
     expect(restore).toHaveAccessibleDescription(/never moved/i);
+  });
+
+  test("a listing 503 shows the server's own sentence under the headline", async () => {
+    // GET /api/trash answers 503 when the Trash directory or the origin store
+    // now sits where using it would destroy data (`app/api/trash.py::_store`).
+    // That sentence names the setting to change and both resolved paths — the
+    // only thing on this screen the operator can act on — and the page dropped
+    // it on the floor, saying "Couldn't load Trash." and nothing else.
+    server.use(
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ detail: LAYOUT_REFUSAL }, { status: 503 }),
+      ),
+    );
+    renderPage();
+
+    // Inside the alert, not merely somewhere on the page: the live region is
+    // announced as a whole, so a sentence outside it is one a screen reader
+    // never hears.
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Couldn’t load Trash.");
+    const sentence = within(alert).getByText(LAYOUT_REFUSAL);
+    // Secondary to the headline, which keeps the destructive tone to itself.
+    expect(sentence).toHaveClass("text-muted-foreground");
+    expect(within(alert).getByText("Couldn’t load Trash.")).toHaveClass(
+      "text-destructive",
+    );
+    // Two absolute paths in one sentence, so it has to wrap rather than push
+    // the page sideways. `break-words` chooses where lines break; `w-full` is
+    // what stops this flex item from sizing to its own min-content — see the
+    // page, and `RestoreOutlook` for why one class does not do both jobs.
+    expect(sentence).toHaveClass("break-words");
+    expect(alert).toHaveClass("w-full");
+    // The retry is untouched by any of this.
+    expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled();
+  });
+
+  test("a listing failure with no usable detail adds nothing to the headline", async () => {
+    // A proxy's HTML 502, a dropped connection, a bodyless 5xx: nobody wrote a
+    // sentence for a user here. `error.message` is never empty in this branch —
+    // it is "Failed to fetch", or our own "Something went wrong" — so rendering
+    // the message rather than the detail would put transport noise under the
+    // headline dressed as the server's advice, and send the operator hunting
+    // for a setting no one named.
+    server.use(
+      http.get(TRASH_URL, () =>
+        HttpResponse.text("<html>502 Bad Gateway</html>", { status: 502 }),
+      ),
+    );
+    renderPage();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Couldn’t load Trash.");
+    // The WHOLE alert, not a `queryByText` per phrase: naming the strings this
+    // test happens to think of would pass on any second line it did not.
+    expect(alert.textContent).toBe("Couldn’t load Trash.");
+    expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled();
   });
 });

@@ -1,27 +1,34 @@
 """The reorganize worker — a sequential library/artist/album sweep (the `beet move`
 analog). ``sweep`` is the synchronous, directly-testable loop; ``start_backfill``
 runs it on a daemon thread so the API start endpoint returns immediately. Pure
-local file IO, so no courtesy delay is needed (default 0)."""
+local file IO, so it runs flat out: nothing here is rate-limited."""
 
 from __future__ import annotations
 
 import logging
 import os
-import time
 from collections.abc import Callable, Collection
 from pathlib import Path
 from typing import Any
 
 from app.beets.library import LibraryHandle, library_paths_context
 from app.beets.orphans import find_orphan_folders
+from app.beets.protected import ProtectedTreeError, protected_trees
 from app.beets.reorganize import (
     collect_units,
     live_album_roots,
     reorganize_album,
     reorganize_singleton,
 )
+from app.beets.store_layout import (
+    StoreLayoutError,
+    check_store_layout,
+    lib_music_and_library,
+)
 from app.beets.trash import trash_folder
 from app.beets.trash_origins import TrashOriginsStoreUnusableError, require_usable_store
+from app.config import Settings
+from app.config import settings as module_settings
 from app.models.reorganize import ReorganizeOutcome, ReorganizeScope
 from app.playlists.reexport import reexport_playlists_containing_sync
 from app.reorganize_jobs.registry import ReorganizeRegistry
@@ -40,7 +47,7 @@ def sweep(
     trash_origins_dir: Path | None = None,
     ignore_dirs: tuple[Path, ...] = (),
     playlists_dir: Path | None = None,
-    delay: float = 0.0,
+    settings: Settings | None = None,
     reorg_album: Callable[..., ReorganizeOutcome] = reorganize_album,
     reorg_singleton: Callable[..., ReorganizeOutcome] = reorganize_singleton,
     on_complete: Callable[[], None] | None = None,
@@ -64,6 +71,11 @@ def sweep(
     that no longer exists. It runs on a STOP too (a stopped run still moved
     files) and before ``reg.finish``, so the terminal status already carries the
     count. Omit it and the pass is skipped, leaving existing callers unchanged.
+
+    ``settings`` is the route's own instance, threaded in the way the two store
+    directories are: the orphan pass asks the layout rule and the identity guard
+    the same questions the route asked before it spawned this run. It falls back
+    to the module singleton for the callers that pass nothing.
     """
     try:
         with library_paths_context(handle):
@@ -84,7 +96,6 @@ def sweep(
                 reorg_album,
                 vacated=vacated,
                 moved_ids=moved_ids,
-                delay=delay,
             )
             if not stopped:
                 stopped = _sweep_units(
@@ -94,7 +105,6 @@ def sweep(
                     reorg_singleton,
                     vacated=vacated,
                     moved_ids=moved_ids,
-                    delay=delay,
                 )
             if not stopped and trash_dir is not None and trash_origins_dir is not None:
                 # Read AFTER the unit loops, because the roots move during the
@@ -107,6 +117,7 @@ def sweep(
                 # phase must not pay for the DB pass.
                 stopped = _sweep_orphans(
                     reg,
+                    handle,
                     scope=scope,
                     music_dir=Path(os.fsdecode(handle.lib.directory)),
                     trash_dir=trash_dir,
@@ -114,6 +125,7 @@ def sweep(
                     vacated=vacated,
                     ignore_dirs=ignore_dirs,
                     protected_dirs=live_album_roots(handle.lib),
+                    settings=settings,
                 )
             _reexport_playlists(reg, handle, moved_ids, playlists_dir)
             reg.finish("stopped" if stopped else "done")
@@ -132,15 +144,14 @@ def _sweep_units(
     *,
     vacated: list[Path],
     moved_ids: set[int],
-    delay: float,
 ) -> bool:
     """Sweep one unit list (albums or singletons), the runner's twin loops.
 
     Per unit: the outcome is recorded via ``reg.record`` and then
     ``reg.set_current(outcome.label)``; the vacated source dir (when set) is
     appended to ``vacated``; every item the unit actually relocated is added to
-    ``moved_ids`` (a FAILED unit contributes too — see ``ReorganizeOutcome``);
-    the courtesy delay is honored. Returns ``True`` on a Stop request WITHOUT
+    ``moved_ids`` (a FAILED unit contributes too — see ``ReorganizeOutcome``).
+    Returns ``True`` on a Stop request WITHOUT
     finishing the job — ``sweep`` owns every ``reg.finish`` so the `.m3u8` tail
     pass still runs on the stopped path."""
     for unit in units:
@@ -152,8 +163,6 @@ def _sweep_units(
         if outcome.source_dir:
             vacated.append(Path(outcome.source_dir))
         moved_ids.update(outcome.moved_item_ids)
-        if delay:
-            time.sleep(delay)
     return False
 
 
@@ -181,6 +190,7 @@ def _reexport_playlists(
 
 def _sweep_orphans(
     reg: ReorganizeRegistry,
+    handle: LibraryHandle,
     *,
     scope: ReorganizeScope,
     music_dir: Path,
@@ -189,6 +199,7 @@ def _sweep_orphans(
     vacated: list[Path],
     ignore_dirs: tuple[Path, ...],
     protected_dirs: Collection[str],
+    settings: Settings | None = None,
 ) -> bool:
     """Move audio-empty husks to Trash. Library scope scans the whole root; a
     narrower scope seeds from the dirs this run vacated. Per-folder failures are
@@ -206,6 +217,41 @@ def _sweep_orphans(
     in silence. Failing the job instead would cost the run its `.m3u8` re-export
     tail (``sweep``'s blanket handler calls ``reg.fail`` and skips it) for a
     fault that has nothing to do with the files this run already moved."""
+    # Asked HERE and not only at boot: this phase runs on a worker thread minutes
+    # after the request that started it, and both roots are re-resolved per use,
+    # so a symlink that appeared at the Trash path in between would send every
+    # husk somewhere the boot check had approved of a different directory. Same
+    # WARNING-and-skip as the store guard below, and for the same reason: the
+    # move phase has already relocated real files, and failing the job here would
+    # cost the run its .m3u8 re-export tail for a fault about the Trash.
+    music_root, library_path = lib_music_and_library(handle.lib)
+    # The route's own ``Settings`` when it threaded one in, so the layout this
+    # phase checks and the ignore list the route built come from ONE object.
+    # ``app.state.settings`` is the monkeypatch surface, and reading the module
+    # global here let the two name different instances.
+    store_settings = module_settings if settings is None else settings
+    try:
+        check_store_layout(
+            music_dir=music_root,
+            beets_dir=handle.beets_dir,
+            trash_dir=trash_dir,
+            origins_dir=trash_origins_dir,
+            library_path=library_path,
+            settings=store_settings,
+        )
+    except StoreLayoutError:
+        _log.warning("orphan sweep skipped: the store layout is refused", exc_info=True)
+        return False
+    # Beside the layout check, from the pair it just approved: the spelled rows
+    # above miss an alias, so each candidate is asked again by inode below.
+    protected = protected_trees(
+        settings=store_settings,
+        music_dir=music_root,
+        beets_dir=handle.beets_dir,
+        trash_dir=trash_dir,
+        origins_dir=trash_origins_dir,
+        library_path=library_path,
+    )
     try:
         require_usable_store(trash_origins_dir)
     except TrashOriginsStoreUnusableError:
@@ -222,8 +268,17 @@ def _sweep_orphans(
         if reg.should_stop():
             return True
         try:
-            trash_folder(folder, trash_dir=trash_dir, origins_dir=trash_origins_dir)
+            trash_folder(
+                folder, trash_dir=trash_dir, origins_dir=trash_origins_dir, protected=protected
+            )
             reg.record_orphans(1)
+        except ProtectedTreeError as exc:
+            # Its own arm above ``OSError``, which is not a supertype of it: a
+            # candidate that is or holds one of the app's own directories is
+            # skipped with a WARNING, like an unusable store, so the rest of the
+            # pass still runs.
+            _log.warning("orphan sweep skipped a folder: %s", exc)
+            continue
         except OSError:
             continue
     return False
@@ -240,7 +295,7 @@ def start_backfill(
     trash_origins_dir: Path | None = None,
     ignore_dirs: tuple[Path, ...] = (),
     playlists_dir: Path | None = None,
-    delay: float = 0.0,
+    settings: Settings | None = None,
     on_complete: Callable[[], None] | None = None,
 ) -> None:
     """Spawn the scoped sweep on a daemon thread (non-blocking).
@@ -258,7 +313,7 @@ def start_backfill(
             trash_origins_dir=trash_origins_dir,
             ignore_dirs=ignore_dirs,
             playlists_dir=playlists_dir,
-            delay=delay,
+            settings=settings,
             on_complete=on_complete,
         ),
         name="musicdrop-reorganize",

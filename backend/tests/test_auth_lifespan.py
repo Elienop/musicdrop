@@ -25,16 +25,21 @@ from tests.conftest import TEST_SESSION_SECRET
 def beets_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A throwaway BEETSDIR with a minimal config, so the lifespan can boot.
 
-    Aimed at ``tmp_path`` rather than the default, so a real lifespan here can
-    never touch the dev library ``backend/.env`` points at.
+    Aimed under ``tmp_path`` rather than at the default, so a real lifespan here
+    can never touch the dev library ``backend/.env`` points at. It is a SIBLING
+    of the music dir, not its parent: ``app.beets.store_layout`` refuses a beets
+    data directory that contains the music library, and this lifespan runs that
+    check.
     """
     music = tmp_path / "music"
     music.mkdir()
-    (tmp_path / "config.yaml").write_text(
+    beets = tmp_path / "beets"
+    beets.mkdir()
+    (beets / "config.yaml").write_text(
         f"directory: {music}\nlibrary: library.db\nplugins:\n  - musicbrainz\n"
     )
-    monkeypatch.setattr("app.config.settings.beets_dir", str(tmp_path))
-    return tmp_path
+    monkeypatch.setattr("app.config.settings.beets_dir", str(beets))
+    return beets
 
 
 def test_a_preseeded_secret_survives_the_lifespan(beets_dir: Path) -> None:

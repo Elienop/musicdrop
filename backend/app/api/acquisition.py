@@ -28,7 +28,11 @@ from app.acquisition.ledger import AcquisitionLedger
 from app.api.import_ import ensure_import_can_start
 from app.config import settings
 from app.fsutil import is_dir
-from app.import_jobs.registry import ImportJobRegistry, get_registry
+from app.import_jobs.registry import (
+    ImportJobRegistry,
+    LibraryRefusedError,
+    get_registry,
+)
 from app.models.acquisition import (
     AcquisitionQueueStatus,
     ImportInboxItemRequest,
@@ -47,6 +51,11 @@ router = APIRouter(tags=["acquisition"])
 #: at ``reg.start``.
 #: Declared with a named model because a description-only entry would drop the
 #: ``content`` block - see app/models/errors.py.
+#: Set by Apply's backstop when beets loaded a layout the rule refuses.
+_LIBRARY_REFUSED_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "The store layout is refused, so no import can start.",
+}
 _IMPORT_SLOT_TAKEN_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": (
@@ -82,7 +91,7 @@ async def get_acquisition_status(request: Request) -> AcquisitionQueueStatus:
 
 @router.post(
     "/acquisition/review-inbox",
-    responses={409: _IMPORT_SLOT_TAKEN_RESPONSE},
+    responses={409: _IMPORT_SLOT_TAKEN_RESPONSE, 503: _LIBRARY_REFUSED_RESPONSE},
 )
 async def review_inbox(
     request: Request,
@@ -130,6 +139,8 @@ async def review_inbox(
             options=ImportOptions(operation="move"),
             origin="inbox",
         )
+    except LibraryRefusedError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
     except RuntimeError:
         # An import is already running (single-slot policy) — TOCTOU after the gate.
         raise HTTPException(
@@ -162,6 +173,7 @@ async def list_inbox_items(request: Request) -> InboxListing:
 @router.post(
     "/acquisition/inbox/items/import",
     responses={
+        503: _LIBRARY_REFUSED_RESPONSE,
         404: {
             "model": ErrorDetail,
             "description": (
@@ -217,6 +229,8 @@ async def import_inbox_item(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inbox item not found")
     try:
         job_id = reg.start(str(contained), options=ImportOptions(operation="move"), origin="inbox")
+    except LibraryRefusedError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
     except RuntimeError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="An import is already running"

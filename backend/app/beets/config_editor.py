@@ -11,9 +11,10 @@ The default ``extra='ignore'`` on Pydantic (per Pydantic v2 docs § Models)
 is correct here: we never round-trip through the schema, only validate.
 Unknown beets/plugin keys live on disk in the ruamel ``CommentedMap``.
 
-Currently exports: ``parse_yaml``, ``validate_known_keys``, ``atomic_write``,
-``read_naming``, ``save``, ``save_naming``, and ``apply`` (asyncio-locked
-threadpool rebuild that swaps ``app.state.beets_library``).
+Currently exports: ``parse_yaml``, ``validate_known_keys``,
+``store_layout_report``, ``atomic_write``, ``read_naming``, ``save``,
+``save_naming``, and ``apply`` (asyncio-locked threadpool rebuild that swaps
+``app.state.beets_library``).
 
 Save writes the submitted document straight back to disk (the editor serves and
 edits the RAW ``config.yaml``): there is no secret-preserve merge — masking the
@@ -26,13 +27,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import logging
 import os
 import re
 import shutil
 import threading
+from collections.abc import Collection
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Final, NamedTuple, cast
 
 import beets
 from fastapi import FastAPI, HTTPException, Request
@@ -54,11 +57,17 @@ from app.beets.library import LibraryHandle
 # would defeat that patch and the 500 path would silently call the real
 # beets setup.
 from app.beets.setup import reset_beets_globals, setup_beets
+from app.beets.store_layout import (
+    StoreLayoutError,
+    checked_store_dirs,
+    layout_check_for_config,
+)
 from app.config import Settings
 from app.config import settings as _module_settings
 from app.library_busy import library_job_active
 from app.models.config_api import BeetsConfigSnapshot
 from app.models.config_editor import (
+    ConfigAdvisory,
     KnownKeysSchema,
     NamingConfig,
     NamingRuleInput,
@@ -76,6 +85,7 @@ __all__ = [
     "read_naming",
     "save",
     "save_naming",
+    "store_layout_report",
     "validate_known_keys",
 ]
 
@@ -123,24 +133,19 @@ def _line_col_for_path(
 ) -> tuple[int, int] | tuple[None, None]:
     """Resolve a Pydantic error ``loc`` to a 1-based ``(line, column)``.
 
-    Walks ``root`` along ``path[:-1]`` to land on the parent node, then
-    asks ruamel's line-column tracker for the offending child's position
-    (per https://yaml.dev/doc/ruamel.yaml/detail/). The accessor differs
-    by container type:
+    Walks ``root`` along ``path[:-1]``, then asks ruamel's tracker for the
+    child's 0-based position — ``lc.value(key)`` on a map, ``lc.item(idx)`` on a
+    sequence. The line is bumped by 1 for CodeMirror's 1-based ``doc.line(n)``.
+    Always calling ``.lc.value(...)`` raises ``IndexError`` on a sequence parent,
+    which lost ``('plugins', 2)`` its gutter marker.
 
-    * ``CommentedMap``  -> ``parent.lc.value(key)`` for a ``str`` key.
-    * ``CommentedSeq``  -> ``parent.lc.item(idx)``  for an ``int`` index.
+    Swallows missing keys, missing ``.lc`` and non-map nodes, which happen
+    mid-edit when the schema and the parsed doc disagree on shape:
+    ``(None, None)`` carries the ``loc`` with no gutter marker.
 
-    Both return ``(line0, col0)`` (0-based). We bump the line by 1 because
-    CodeMirror's ``state.doc.line(n)`` is 1-based (CodeMirror reference
-    manual § ``Text.line``). The original implementation always called
-    ``.lc.value(...)`` which raises ``IndexError`` on a sequence parent —
-    so e.g. ``('plugins', 2)`` silently lost its gutter marker.
-
-    Defensively swallows missing keys, missing ``.lc``, and non-map nodes
-    — these can happen mid-edit when the schema and the parsed doc
-    disagree on shape. Returning ``(None, None)`` lets the response carry
-    the ``loc`` string without a gutter marker.
+    A key that arrived through a ``<<:`` merge is PRESENT in the mapping and
+    absent from ``lc.data``, so :func:`_merged_line_col` asks the anchor's own
+    mapping, which records the line the value is written on.
     """
     if not path:
         return (None, None)
@@ -150,15 +155,38 @@ def _line_col_for_path(
             node = node[key]
         if hasattr(node, "lc") and node.lc.data is not None:
             last = path[-1]
-            if isinstance(node, CommentedSeq) and isinstance(last, int):
-                line_col = node.lc.item(last)
-            else:
-                line_col = node.lc.value(last)
+            try:
+                if isinstance(node, CommentedSeq) and isinstance(last, int):
+                    line_col = node.lc.item(last)
+                else:
+                    line_col = node.lc.value(last)
+            except (KeyError, IndexError):
+                # RAISES rather than returning None for a merged key, so the
+                # fallback has to sit inside its own ``except`` — measured:
+                # ``lc.value('directory')`` on a ``<<: *base`` document raised
+                # ``KeyError`` while the key was present in the mapping.
+                line_col = None
             if line_col is not None:
                 line0, col0 = line_col
                 return (line0 + 1, col0)
+            return _merged_line_col(node, last)
     except (KeyError, IndexError, AttributeError, TypeError):
         pass
+    return (None, None)
+
+
+def _merged_line_col(node: Any, key: str | int) -> tuple[int, int] | tuple[None, None]:
+    """Where a merged-in key is WRITTEN: its anchor's line, not the ``<<:`` line.
+
+    ``_base: &base\n  directory: /music\n<<: *base`` gave the refusal no gutter
+    position at all (measured). ``CommentedMap.merge`` holds each merged mapping,
+    and those are ``CommentedMap``s with their own ``lc.data``.
+    """
+    for merged in getattr(node, "merge", ()) or ():
+        data = getattr(getattr(merged, "lc", None), "data", None)
+        if data is not None and key in data:
+            line0, col0 = merged.lc.value(key)
+            return (line0 + 1, col0)
     return (None, None)
 
 
@@ -203,6 +231,91 @@ def validate_known_keys(
                 )
             )
         return out
+
+
+#: The ``type`` on the row a refused ``directory:`` produces. Not a Pydantic
+#: error type — nothing in ``KnownKeysSchema`` can express "this value is fine on
+#: its own but destroys data given where Trash resolves", so the check runs
+#: beside the schema rather than inside it.
+_STORE_LAYOUT_ERROR_TYPE: Final = "store_layout"
+
+
+class StoreLayoutReport(NamedTuple):
+    """The document's gutter rows, and one advisory per include beets drops."""
+
+    errors: list[ValidationErrorItem]
+    advisories: list[ConfigAdvisory]
+
+
+def _skipped_include_advisory(name: str) -> ConfigAdvisory:
+    """An include beets would drop. Advisory, not an error: beets starts."""
+    return ConfigAdvisory(
+        key="include",
+        message=(
+            f"beets could not read {name!r}, so it skips that entry and stops"
+            " reading include: there. Nothing listed after it is merged."
+        ),
+    )
+
+
+def store_layout_report(
+    data: CommentedMap | dict[str, Any],
+    *,
+    settings: Settings,
+    handle: LibraryHandle,
+    reported_keys: Collection[str] = (),
+) -> StoreLayoutReport:
+    """Zero or one row: the ``directory:`` and ``library:`` the submitted document
+    would LOAD, against where Trash, the origin store and the beets data dir resolve.
+
+    "Would load" and not ``data["directory"]``: an ``include:`` is merged ABOVE
+    the document's own keys, so :func:`effective_config_paths` asks beets' own
+    config class. THE SINGLE SOURCE for Validate and :func:`save`, so the gutter
+    and the Save refusal cannot disagree.
+
+    Silent when the document has no ``directory:`` or its value is not a
+    filename — ``KnownKeysSchema`` reports both. A missing ``library:`` is held
+    to beets' own ``library.db`` default instead, which is what the next boot
+    opens; the schema requires that key too, so at Validate and Save the default
+    adds no row and only Apply's on-disk read reaches it. The ``isinstance`` on
+    ``data`` is load-bearing; ruamel returns ``None`` for an empty document.
+
+    ``reported_keys`` suppress exactly one row: a single-UNUSABLE-VALUE refusal
+    on a key the schema also reported, where both say the same thing. Measured,
+    ``directory: "/music/\\0evil"`` drew a ``value_error`` and a ``store_layout``
+    row both naming the NUL. A LAYOUT refusal is never suppressed — under
+    ``directory: /`` the schema's "not writable" and the layout row are different
+    facts, and only the second names the loss.
+    """
+    if not isinstance(data, dict) or "directory" not in data:
+        return StoreLayoutReport([], [])
+    check = layout_check_for_config(document=data, settings=settings, handle=handle)
+    advisories = [_skipped_include_advisory(name) for name in check.skipped_includes]
+    error = check.error
+    if error is None:
+        return StoreLayoutReport([], advisories)
+    if error.unusable_value and (error.config_key or "directory") in reported_keys:
+        return StoreLayoutReport([], advisories)
+    # The gutter row is painted against the key the refusal is ABOUT, so a
+    # ``library:`` that lands inside Trash underlines ``library:`` and not the
+    # ``directory:`` line above it. A refusal between two env-derived paths names
+    # no config key; it still has to be shown, and ``directory:`` is the line the
+    # editor can act from.
+    key = error.config_key or "directory"
+    root = data if isinstance(data, CommentedMap) else None
+    line, col = _line_col_for_path(root, (key,)) if root is not None else (None, None)
+    return StoreLayoutReport(
+        [
+            ValidationErrorItem(
+                loc=key,
+                msg=str(error),
+                type=_STORE_LAYOUT_ERROR_TYPE,
+                line=line,
+                column=col,
+            )
+        ],
+        advisories,
+    )
 
 
 def _strip_yaml_directive(text: str) -> str:
@@ -308,14 +421,19 @@ def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
 _SAVE_LOCK = threading.Lock()
 
 
-def save(handle: LibraryHandle, req: SaveRequest) -> BeetsConfigSnapshot:
+def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> BeetsConfigSnapshot:
     """Persist ``req.yaml_text`` to ``handle.config_path``, returning the new snapshot.
 
     Sequence (spec § "Layer 3 — Backend: Save flow"):
 
     1. **Parse** with ruamel — bad YAML -> HTTP 422 with ``problem_mark`` line/col.
     2. **Schema validate** via ``KnownKeysSchema`` — known-key errors -> 422 with
-       per-error ``ValidationErrorItem`` payloads.
+       per-error ``ValidationErrorItem`` payloads. Then the same
+       :func:`store_layout_report` row ``POST /api/config/validate`` paints
+       in the gutter: a ``directory:`` that would put the music library at or
+       under Trash (or over the origin store) is refused HERE, before the write,
+       because the file this writes is also the file the process boots from — a
+       config saved in that shape would refuse to start on the next restart.
     3. **SHA-256 CAS** — compare ``req.base_sha256`` to the SHA-256 of the
        on-disk bytes. Mismatch -> 409 with ``current_yaml_text`` (raw on-disk
        file) and ``current_sha256`` so the frontend's merge view can render
@@ -349,7 +467,9 @@ def save(handle: LibraryHandle, req: SaveRequest) -> BeetsConfigSnapshot:
     # 1. Parse with ruamel.
     try:
         new_map = parse_yaml(req.yaml_text)
-    except YAMLError as exc:
+    # Same three as Validate's arm: ruamel raises RecursionError past the nesting
+    # limit and ValueError on an over-long integer.
+    except (YAMLError, RecursionError, ValueError) as exc:
         mark = getattr(exc, "problem_mark", None)
         raise HTTPException(
             status_code=422,
@@ -364,8 +484,20 @@ def save(handle: LibraryHandle, req: SaveRequest) -> BeetsConfigSnapshot:
             ],
         ) from exc
 
-    # 2. Schema validate.
-    errors = validate_known_keys(new_map)
+    # 2. Schema validate, then the containment check on ``directory:``. Same
+    # list, same 422: to the editor both are lint rows on the same document, and
+    # splitting them into two statuses would make the gutter and the Save button
+    # disagree about what "there is an error" means.
+    schema_errors = validate_known_keys(new_map)
+    errors = (
+        schema_errors
+        + store_layout_report(
+            new_map,
+            settings=settings,
+            handle=handle,
+            reported_keys={item.loc for item in schema_errors},
+        ).errors
+    )
     if errors:
         raise HTTPException(
             status_code=422,
@@ -539,6 +671,11 @@ def save_naming(handle: LibraryHandle, req: SaveNamingRequest) -> BeetsConfigSna
        and secret is untouched.
     4. **Atomic write** + return the standard snapshot (``apply_pending`` True
        until Apply reloads beets).
+
+    No :func:`store_layout_report` step, unlike :func:`save`: step 3 rewrites
+    exactly two nodes and neither is ``directory:``, so the music root this
+    document resolves to is the same one before and after — a naming Save cannot
+    move ``M`` into a refused relationship with Trash or the origin store.
     """
     yaml = _yaml()
 
@@ -589,6 +726,34 @@ def save_naming(handle: LibraryHandle, req: SaveNamingRequest) -> BeetsConfigSna
         # 4. Atomic write + snapshot.
         atomic_write(handle.config_path, doc, yaml)
     return build_config_snapshot(handle)
+
+
+def on_disk_layout_error(handle: LibraryHandle, settings: Settings) -> StoreLayoutError | None:
+    """The refusal ``config.yaml`` AS IT SITS ON DISK would cause, or ``None``.
+
+    Apply's input is the file, not a request body, so a hand edit (or an editor
+    session from before a restart) can carry a ``directory:`` no Save ever saw.
+    Read fresh here rather than from the handle: ``handle.lib.directory`` is the
+    music root of the load being replaced.
+
+    Silent on an unreadable or unparseable file. That is not this check's
+    question — ``setup_beets`` will fail on the same file moments later and
+    :func:`apply` already answers 500 with the restart hint — and returning a
+    layout refusal for a YAML syntax error would name the wrong problem.
+
+    ``RecursionError`` and ``ValueError`` are the two Save and Validate also
+    catch around ``parse_yaml``: ruamel raises them past the nesting limit and on
+    an over-long integer. This call sits OUTSIDE Apply's rebuild handler, so
+    either one left the route answering a bare 500. ``UnicodeDecodeError`` is not
+    named because it IS a ``ValueError``.
+    """
+    try:
+        doc = parse_yaml(handle.config_path.read_text(encoding="utf-8"))
+    except (OSError, YAMLError, RecursionError, ValueError):
+        return None
+    if not isinstance(doc, CommentedMap):
+        return None
+    return layout_check_for_config(document=doc, settings=settings, handle=handle).error
 
 
 def _rebuild_beets_handle(old: LibraryHandle, beets_dir: str) -> LibraryHandle:
@@ -650,27 +815,25 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
 
     Sequence (spec § "Layer 3 - Backend: Apply flow"):
 
-    1. **Import gate** — refuse with 409 if an import is currently active.
-       Reset_beets_globals tears down the SQLite connection the import worker
-       holds; doing that mid-import would corrupt the in-flight ImportSession.
-       ``library_job_active`` calls ``get_registry()`` (not a module-import)
-       so it reads the LIVE registry binding — ``conftest.reset_import_registry``
-       swaps it between tests.
-    2. **Per-app lock** — serialise concurrent Apply requests. Two threads
-       racing through ``reset_beets_globals`` + ``setup_beets`` would leave
-       ``app.state.beets_library`` non-deterministic and could close the
-       library twice (``sqlite3.ProgrammingError``).
-    3. **Threadpool rebuild** — beets setup is blocking I/O (filesystem +
-       SQLite); ``run_in_threadpool`` hands it to FastAPI's worker pool so
-       the event loop stays responsive. Any exception from the rebuild
-       maps to 500 with a ``recovery`` hint — the user's saved config is
-       on disk, so a restart is always the safe recovery path.
-    4. **Atomic swap** — only after the rebuild succeeds, replace
-       ``app.state.beets_library``. On a 500 the old handle stays in place
-       and the process keeps serving with the previously-loaded config.
-    5. **Return snapshot** — ``apply_pending`` will be ``False`` because the
-       new handle's ``file_mtime_at_load`` captured the current on-disk
-       mtime during ``setup_beets``.
+    1. **Import gate** — 409 while an import is active; the rebuild tears down
+       the SQLite connection its worker holds.
+    2. **Per-app lock** — two Applies racing through ``reset_beets_globals`` +
+       ``setup_beets`` could close the library twice.
+    2b. **Containment gate** — 422 on a refused store layout in the config ON
+       DISK (:func:`on_disk_layout_error`, ``store_layout._ROWS``). Before the
+       rebuild, because a failure after its teardown strands the process with no
+       working config; 422 and not 409, because the page renders every Apply 409
+       as the library-job sentence.
+    3. **Threadpool rebuild** — blocking I/O; any exception maps to 500 with the
+       restart hint.
+    4. **Atomic swap** — ``app.state.beets_library`` is replaced only after the
+       rebuild succeeds. On a 500 the OLD handle is already torn down
+       (:func:`_rebuild_beets_handle`), so the process is degraded until restart.
+    4b. **Backstop** — the same layout question, asked of what beets actually
+       loaded. 422, with the new handle already swapped in and the refusal
+       recorded on the import registry.
+    5. **Return snapshot** — ``apply_pending`` is ``False``: the new handle's
+       ``file_mtime_at_load`` captured the on-disk mtime during ``setup_beets``.
     """
     app = request.app
 
@@ -691,6 +854,18 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
     async with _swap_lock(app):
         old: LibraryHandle = app.state.beets_library
         settings = _settings(app)
+        layout_error = await run_in_threadpool(on_disk_layout_error, old, settings)
+        if layout_error is not None:
+            # The headline is the refused PAIR, not a fixed sentence: this used
+            # to read "config.yaml would move the music library" for every
+            # refusal, including the ones where the Trash is what moved.
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": f"Apply refused: {layout_error.headline}",
+                    "recovery": str(layout_error),
+                },
+            )
         try:
             new = await run_in_threadpool(_rebuild_beets_handle, old, settings.beets_dir)
         except Exception as exc:
@@ -730,16 +905,58 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
         # api.bank → beets.duplicates → beets.config_editor cycle. Inside the
         # swap lock, after the state swap, mirroring the lifespan wiring.
         from app.api.bank import get_bank_dir
-        from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
         from app.import_jobs.registry import get_registry
         from app.playlists.store import get_playlists_dir
 
+        # 4b. Backstop — the same question, asked of what beets ACTUALLY loaded.
+        # Step 2b reproduces beets' include merge over the candidate document;
+        # this one reads ``new.lib.directory`` and ``new.lib.path`` off the live
+        # handle, so a divergence between that reproduction and beets (an
+        # ``include:`` shape we read differently, a beets upgrade) is caught here
+        # instead of shipping a refused layout into the process.
+        #
+        # It also supplies the pair the registry needs. Resolving those two paths
+        # raises on a symlink loop, outside every ``except StoreLayoutError`` the
+        # Apply path has; taking them from ``checked_store_dirs`` gives that the
+        # same 422 as a refusal.
+        try:
+            trash_dir, origins_dir = checked_store_dirs(settings, new)
+        except StoreLayoutError as exc:
+            # ONE library after Apply, whatever the outcome. The rebuild has
+            # already closed the old one and the swap above stands, so leaving
+            # the registry holding it was measured to let an import "succeed"
+            # into the pre-Apply store — SQLite reopens a closed handle on
+            # demand — while the UI read the new one. The registry gets the NEW
+            # library, no store pair, and the refusal: measured, an import
+            # started in this state was accepted and wrote into the beets data
+            # dir, so ``start`` now refuses with this sentence.
+            # ``.exception``: the record carries the traceback with the
+            # sentence, like the three boot refusals.
+            logging.getLogger("uvicorn.error").exception(
+                "Apply loaded a config whose store layout is refused: %s", exc
+            )
+            get_registry().attach_library(
+                new.lib,
+                None,
+                bank_dir=get_bank_dir(),
+                playlists_dir=get_playlists_dir(),
+                trash_origins_dir=None,
+                refusal=f"Apply loaded config.yaml, but {exc}",
+            )
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": f"Apply loaded config.yaml, but {exc.headline}",
+                    "recovery": f"{exc} Then restart MusicDrop.",
+                },
+            ) from exc
+
         get_registry().attach_library(
             new.lib,
-            resolve_trash_dir(settings, new),
+            trash_dir,
             bank_dir=get_bank_dir(),
             playlists_dir=get_playlists_dir(),
-            trash_origins_dir=resolve_trash_origins_dir(settings, new),
+            trash_origins_dir=origins_dir,
         )
 
     return build_config_snapshot(new)

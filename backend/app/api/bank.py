@@ -21,7 +21,7 @@ from app.bank.fingerprint import folder_fingerprint
 from app.beets.duplicates import find_import_duplicates
 from app.beets.library import LibraryHandle
 from app.beets.research import NoAudioFilesError, rescan_folder, research_folder
-from app.config import settings
+from app.config import BANK_STORE, settings, store_dir
 from app.models.bank import (
     BankBulkDeleteRequest,
     BankBulkDeleteResponse,
@@ -52,10 +52,7 @@ router = APIRouter(tags=["bank"])
 
 def get_bank_dir() -> Path:
     """Empty ``MUSICDROP_BANK_DIR`` -> ``<beets_dir>/bank``."""
-    configured = settings.bank_dir.strip()
-    if configured:
-        return Path(configured)
-    return Path(settings.beets_dir) / "bank"
+    return store_dir(settings, BANK_STORE, Path(settings.beets_dir))
 
 
 @router.get("/bank")

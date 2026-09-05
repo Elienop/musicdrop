@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 
 from beets.library import Library
-from fastapi import HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
 from app.beets.config_editor import _settings, _swap_lock
@@ -28,13 +28,18 @@ from app.beets.library import (
     _require_id,
     require_library_root,
 )
+from app.beets.protected import (
+    ProtectedTreeError,
+    ProtectedTrees,
+    refuse_a_held_store,
+)
+from app.beets.store_layout import StoreLayoutError, checked_protected_trees, checked_store_dirs
 from app.beets.trash import (
     TrashDeleteIncompleteError,
     TrashMoveIncompleteError,
     TrashRowsNotRemovedError,
-    resolve_trash_dir,
-    resolve_trash_origins_dir,
     trash_album_folder,
+    whole_folder_root,
 )
 from app.beets.trash_origins import TrashOriginsStoreUnusableError
 from app.library_busy import library_job_active
@@ -51,6 +56,11 @@ from app.models.delete import DeleteResult
 #: ahead of every branch of it, so the refusal reaches the first album and no
 #: further.
 _NOTHING_DELETED = "Nothing has been deleted."
+
+#: The layout refusal's own wording, and it can make the same promise for the
+#: same reason: ``_checked_store`` runs before the first mutation of either op,
+#: so the delete stops at the check with nothing moved and no row dropped.
+_NOTHING_DELETED_LAYOUT = "{} " + _NOTHING_DELETED
 
 #: The recovery line for the one state where the reader must not tidy Trash up
 #: before reading the message: the rows would not go AND the folder would not
@@ -117,6 +127,7 @@ def delete_album(
     *,
     trash_dir: Path,
     origins_dir: Path,
+    protected: ProtectedTrees,
     dropped_item_ids: set[int] | None = None,
 ) -> DeleteResult:
     """Move one album's whole folder to Trash and drop it. 404 on unknown id.
@@ -140,9 +151,21 @@ def delete_album(
             dropped_item_ids.update(_require_id(i.id) for i in album.items())
         with lib.transaction():
             trash_path = trash_album_folder(
-                lib, album, trash_dir=trash_dir, origins_dir=origins_dir
+                lib, album, trash_dir=trash_dir, origins_dir=origins_dir, protected=protected
             )
     return DeleteResult(trashed_albums=1, trash_path=trash_path)
+
+
+def _refuse_held_stores(lib: Library, album_ids: list[int], protected: ProtectedTrees) -> None:
+    """Ask the whole-folder guard for every album, before the first one moves."""
+    for album_id in album_ids:
+        album = lib.get_album(album_id)
+        root = None if album is None else whole_folder_root(lib, album)
+        if root is not None:
+            # The same question the mover asks, so the pre-check refuses the same
+            # set: a folder that HOLDS a store stops the run, one that IS a store
+            # takes the per-item path album by album.
+            refuse_a_held_store(root, protected, action="moved")
 
 
 def delete_artist(
@@ -151,6 +174,7 @@ def delete_artist(
     *,
     trash_dir: Path,
     origins_dir: Path,
+    protected: ProtectedTrees,
     dropped_item_ids: set[int] | None = None,
 ) -> DeleteResult:
     """Move EVERY album of ``artist_name`` (matched on albumartist) to Trash.
@@ -227,6 +251,14 @@ def delete_artist(
         # ghost whose folder is already gone without relocating a byte.
         mutated = 0
         moved = 0
+        # Every folder the fan-out would relocate WHOLE is asked before the first
+        # one moves, so the guard's own "Nothing was moved." is a property of the
+        # operation. Asked per album inside the loop it was not: an album in
+        # position two refused as the partial 500, in a sentence that says one
+        # album HAD been moved. Only the whole-folder arm is asked, because the
+        # per-item fallback never reaches that guard and a flat library, where
+        # every album root is the music dir, would otherwise refuse every album.
+        _refuse_held_stores(lib, album_ids, protected)
         with lib.transaction():
             for album_id in album_ids:
                 album = lib.get_album(album_id)
@@ -236,7 +268,11 @@ def delete_artist(
                     dropped_item_ids.update(_require_id(i.id) for i in album.items())
                 try:
                     dest = trash_album_folder(
-                        lib, album, trash_dir=trash_dir, origins_dir=origins_dir
+                        lib,
+                        album,
+                        trash_dir=trash_dir,
+                        origins_dir=origins_dir,
+                        protected=protected,
                     )
                 except Exception as exc:
                     # ONE arm, for every cause. It used to be two, and the
@@ -460,6 +496,32 @@ def _recovery(exc: Exception) -> str:
     )
 
 
+def _checked_store(app: FastAPI) -> tuple[LibraryHandle, Path, Path, ProtectedTrees]:
+    """The handle and the CHECKED Trash / origin-store pair, or a 503.
+
+    ``resolve_trash_dir`` follows whatever the configured path points at NOW, so
+    the boot-time containment check says nothing about this request: a symlink
+    dropped at the Trash path after startup was measured to redirect a whole
+    delete into the music library. The pair is taken here, once, and handed to
+    the mover.
+
+    503 and not 500: the same tier — and the same "nothing was moved" promise —
+    that the unusable-store and unmounted-share guards above use, because this
+    one also fires before anything moves or is dropped. Raised inline so the
+    status stays a literal tests/test_route_status_declarations.py can see.
+    """
+    handle: LibraryHandle = app.state.beets_library
+    settings = _settings(app)
+    try:
+        trash_dir, origins_dir = checked_store_dirs(settings, handle)
+    except StoreLayoutError as exc:
+        raise HTTPException(status_code=503, detail=_NOTHING_DELETED_LAYOUT.format(exc)) from exc
+    protected = checked_protected_trees(
+        settings, handle, trash_dir=trash_dir, origins_dir=origins_dir
+    )
+    return handle, trash_dir, origins_dir, protected
+
+
 def _failed(exc: Exception) -> HTTPException:
     return HTTPException(
         status_code=500,
@@ -480,15 +542,15 @@ async def delete_album_op(
     app = request.app
     _gate()
     async with _swap_lock(app):
-        handle: LibraryHandle = app.state.beets_library
-        trash_dir = resolve_trash_dir(_settings(app), handle)
+        handle, trash_dir, origins_dir, protected = _checked_store(app)
         try:
             return await run_in_threadpool(
                 delete_album,
                 handle.lib,
                 album_id,
                 trash_dir=trash_dir,
-                origins_dir=resolve_trash_origins_dir(_settings(app), handle),
+                origins_dir=origins_dir,
+                protected=protected,
                 dropped_item_ids=dropped_item_ids,
             )
         except AlbumNotFoundError as exc:
@@ -523,6 +585,11 @@ async def delete_album_op(
         # having already moved albums (see ``_NOTHING_DELETED``).
         except TrashOriginsStoreUnusableError as exc:
             raise HTTPException(status_code=503, detail=exc.worded_with(_NOTHING_DELETED)) from exc
+        # The identity guard, same tier and same promise: it runs before the
+        # folder moves, so nothing has been dropped. A fan-out past its first
+        # album re-raises as ArtistDeletePartialError and takes the 500 below.
+        except ProtectedTreeError as exc:
+            raise HTTPException(status_code=503, detail=f"{exc} {_NOTHING_DELETED}") from exc
         except Exception as exc:
             raise _failed(exc) from exc
 
@@ -541,15 +608,15 @@ async def delete_artist_op(
     app = request.app
     _gate()
     async with _swap_lock(app):
-        handle: LibraryHandle = app.state.beets_library
-        trash_dir = resolve_trash_dir(_settings(app), handle)
+        handle, trash_dir, origins_dir, protected = _checked_store(app)
         try:
             return await run_in_threadpool(
                 delete_artist,
                 handle.lib,
                 artist_name,
                 trash_dir=trash_dir,
-                origins_dir=resolve_trash_origins_dir(_settings(app), handle),
+                origins_dir=origins_dir,
+                protected=protected,
                 dropped_item_ids=dropped_item_ids,
             )
         # Same 503-before-the-blanket-500 ordering as delete_album_op above,
@@ -565,5 +632,10 @@ async def delete_artist_op(
         # below, whose message names how far the fan-out got.
         except TrashOriginsStoreUnusableError as exc:
             raise HTTPException(status_code=503, detail=exc.worded_with(_NOTHING_DELETED)) from exc
+        # The identity guard, same tier and same promise: it runs before the
+        # folder moves, so nothing has been dropped. A fan-out past its first
+        # album re-raises as ArtistDeletePartialError and takes the 500 below.
+        except ProtectedTreeError as exc:
+            raise HTTPException(status_code=503, detail=f"{exc} {_NOTHING_DELETED}") from exc
         except Exception as exc:
             raise _failed(exc) from exc

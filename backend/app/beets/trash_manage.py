@@ -23,9 +23,10 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-import shutil
+import stat
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from beets.library import Item, Library
 
@@ -36,6 +37,15 @@ from app.beets.library import (
     _coerce_str,
     _music_dir,
     require_library_present,
+)
+from app.beets.protected import (
+    ProtectedTreeError,
+    ProtectedTrees,
+    open_checked_dir,
+    protected_id_match,
+    protected_match,
+    protected_tree_error,
+    refuse_protected_tree,
 )
 from app.beets.trash_origins import (
     clear_trash_origins,
@@ -442,7 +452,12 @@ def _audio_free_entries(
 
 
 def restore_album(
-    lib: Library, folder_abs: str, *, trash_dir: Path, origins_dir: Path
+    lib: Library,
+    folder_abs: str,
+    *,
+    trash_dir: Path,
+    origins_dir: Path,
+    protected: ProtectedTrees,
 ) -> RestoreResult:
     """Restore a trashed folder, returning the outcome. Synchronous.
 
@@ -467,9 +482,17 @@ def restore_album(
     music library folder is unavailable, so the folder was not moved out of
     Trash", and README says the same. One guard at the entry point is what
     makes that sentence true for the endpoint rather than for one of its arms.
+
+    ``protected`` is asked here for the same reason: restore is a MOVER, and
+    both arms relocate the whole entry out of Trash. On a Trash that is the host
+    parent of a bind-mounted music library, a stale record named ``music`` sent
+    the move-back through ``move_no_merge``'s copy branch and deleted the
+    library while reporting ``restored=True``; the import arm relocates an
+    aliased app store's files into the library instead.
     """
     entry = Path(folder_abs)
     require_library_present(lib)
+    refuse_protected_tree(entry, protected, action="moved")
     record = read_trash_origin(origins_dir, entry.name)
     origin = move_back_target(record, music_dir=_music_dir(lib))
     if origin is None:
@@ -540,7 +563,12 @@ def _restore_by_import(
 
 
 def _restore_to_origin(
-    lib: Library, entry: Path, origin: Path, *, trash_dir: Path, origins_dir: Path
+    lib: Library,
+    entry: Path,
+    origin: Path,
+    *,
+    trash_dir: Path,
+    origins_dir: Path,
 ) -> RestoreResult:
     """Move ``entry`` back to ``origin`` and re-import it there. All or nothing.
 
@@ -901,8 +929,20 @@ def _holds_media(folder: Path) -> bool:
     return False
 
 
+def _capped(names: list[str]) -> str:
+    """Up to five names, then a count: Trash can be large and this lands in a body."""
+    shown = ", ".join(repr(n) for n in names[:5])
+    return shown + (f" and {len(names) - 5} more" if len(names) > 5 else "")
+
+
 def _return_to_trash(origin: Path, entry: Path) -> None:
     """Undo a move-back whose import did not land. Raises if it cannot.
+
+    No identity guard: the id set is fixed per request, so every inode here was
+    either checked by the forward guard on ``entry`` or created after the set was
+    built. The one input left is another actor renaming a store into ``origin``
+    mid-import, and refusing that raised "Nothing was moved." over a folder
+    already sitting at its origin.
 
     Refuses to move onto an existing ``entry``: ``shutil.move`` would put the
     folder INSIDE it and bury the album one level down under its own name. The
@@ -1039,102 +1079,314 @@ def resolve_trash_child(trash_dir: Path, rel: str) -> Path:
     return dest
 
 
-def empty_one(folder_abs: str, *, origins_dir: Path) -> EmptyResult:
+def empty_one(folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees) -> EmptyResult:
     """Permanently remove one trashed entry — a folder or a loose file.
 
-    Its OWN record goes with it, and strictly AFTER: a failed ``rmtree`` raises
-    out of here, and losing the record for an entry that is still sitting in
-    Trash would silently downgrade its row to an import-restore. With the sidecar
-    this ordering was free (the ``rmtree`` took the record with it); keyed on the
-    name in a sibling dir, it is a rule.
+    Its OWN record goes with it, strictly AFTER: a failed ``rmtree`` raises out
+    of here, and losing the record for an entry still in Trash would downgrade
+    its row to an import-restore. A record naming a DIFFERENT entry stays — two
+    long names can share one truncated key, and ``delete_trash_origin`` reads the
+    payload's own ``name`` first.
 
-    A record naming a DIFFERENT entry stays, and that is not this line's doing:
-    two long names can share one truncated key, and
-    :func:`~app.beets.trash_origins.delete_trash_origin` reads the payload's own
-    ``name`` before unlinking. Its docstring owns that exception.
+    Raises :class:`~app.beets.protected.ProtectedTreeError` (503) when the entry
+    is or holds one of the app's own directories by inode, when the name stopped
+    naming what the guard was asked about (see :func:`_remove_checked_entry`,
+    which both delete paths share), and when the entry's parent is no longer the
+    Trash this request checked.
     """
     path = Path(folder_abs)
-    if path.is_dir():
-        shutil.rmtree(path)
-    else:
-        path.unlink()
+    # The resolved parent: ``folder_abs`` comes from ``resolve_trash_child``, so
+    # every component above the entry is already what it resolved to. Opened
+    # through the sweep's own check rather than a bare ``os.open``: the entry's
+    # identity was pinned and its PARENT's was not, so a Trash renamed away
+    # between the route's resolve and this open left the removal running by name
+    # in whatever directory took its place.
+    parent_fd = open_checked_dir(path.parent, protected)
+    try:
+        refusal = _remove_checked_entry(path.name, dir_fd=parent_fd, protected=protected)
+    finally:
+        os.close(parent_fd)
+    if refusal is not None:
+        raise _refusal_error(path, refusal)
     delete_trash_origin(origins_dir, path.name)
     return EmptyResult(removed=1)
 
 
-def empty_all(trash_dir: Path, *, origins_dir: Path) -> EmptyResult:
-    """Permanently remove everything under ``trash_dir``.
+def _refusal_error(path: Path, refusal: _Refusal) -> ProtectedTreeError:
+    """The 503 for the one entry this delete path was asked about.
 
-    ``is_dir()`` FOLLOWS symlinks and ``shutil.rmtree`` refuses one, so a
-    symlinked entry used to raise ``OSError`` here and wedge the whole
-    operation: nothing after it in ``iterdir`` order was removed, and every
-    retry failed identically, leaving Trash impossible to empty through the app.
-    ``empty_one`` cannot clear it either -- ``resolve_trash_child`` refuses a
-    child that is a link before it resolves anything, which is a guard worth
-    keeping -- so the entry is unremovable by any other route. This is the one
-    place a symlinked entry is acted on, and it acts on the LINK.
+    Two sentences, and which one is true depends on how far the removal got.
+    """
+    if not refusal.partial:
+        return protected_tree_error(path, refusal.clause, "removed")
+    return ProtectedTreeError(
+        f"Refused: {path.name!r} {refusal.clause}. The folder was left in place, and {_PARTIAL}."
+    )
 
-    An entry gets there without anything hostile: ``_album_root`` is
-    ``dirname(item.path)``, so an album whose own folder is a symlink into
-    another volume is trashed as a symlink, because ``shutil.move`` preserves
-    them. Treating it as a leaf is also the only safe reading of "remove
-    everything under ``trash_dir``" -- following it would ``rm -rf`` a directory
-    that merely happens to be pointed at.
 
-    Each entry's origin record is dropped INSIDE the loop, right after that entry
-    is removed, so a fault part-way through leaves a consistent pair rather than
-    a set of records for entries that are still there: the survivors keep theirs.
+#: What a refused entry reads with when the guard's answer stopped being about
+#: it. The wording ``open_checked_dir`` uses for the same fault on the root.
+_RACED: Final = "changed between the check and the removal"
 
-    Then the whole store is swept (``clear_trash_origins``), but only when this
-    call REMOVED something and ``trash_dir`` is empty afterwards. Neither
-    condition is enough alone. Emptiness alone is not: a ``trash_dir`` whose
-    share has dropped presents as an empty directory, and a sweep reading that
-    as "Trash is empty" would destroy the origins of every entry still on the
-    real volume — having removed an entry is the evidence that the directory
-    walked was the real one. "Removed something" alone is not either: a partial
-    failure leaves entries that still need their records, which is why the sweep
-    sits past the raise.
+#: What a refusal adds once the entry's contents have gone. Both delete paths
+#: say it, because both claim the opposite by default: ``empty_one`` raises
+#: "Nothing was removed." and the sweep's summary counts the entry under
+#: "Removed 0".
+_PARTIAL: Final = "some of its contents were removed"
 
-    That is what now clears the litter the per-child drop cannot reach — a
-    record whose entry left Trash without this app noticing (a file manager, an
-    SMB client, ``docker volume rm``), which is never handed to
-    ``delete_trash_origin`` at all and used to survive every per-row action for
-    good. Until an Empty all lands, such a record still costs a burnt name
-    (``trash._unique_trash_dest`` will not hand that name out again) and can
-    still be adopted by a folder that reaches Trash by another route — a
-    residual ``trash_origins`` states rather than closes.
+#: The same fault one level down: a DIRECTORY inside the entry stopped being
+#: what the removal chose to descend into.
+_RACED_INSIDE: Final = "holds a folder that changed between the check and the removal"
+
+
+@dataclass(frozen=True)
+class _Refusal:
+    """Why one entry was not removed, and whether its contents went first.
+
+    The guard answers at more than one point, and only the ones before the
+    children loop are answers about a directory nothing has touched.
+    """
+
+    clause: str
+    partial: bool
+
+
+#: Every directory the removal descends into is opened this way: the link is
+#: never followed, and a FIFO planted mid-tree cannot block the open.
+_DIR_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+
+
+def _open_dir(name: str, dir_fd: int) -> int:
+    """The one open the removal runs on a directory. One spelling of the flags."""
+    return os.open(name, _DIR_FLAGS, dir_fd=dir_fd)
+
+
+def _ident(st: os.stat_result) -> tuple[int, int]:
+    return (st.st_dev, st.st_ino)
+
+
+class _Remover:
+    """One entry's removal, with the identity check ON the traversal that removes.
+
+    ``shutil.rmtree(name, dir_fd=)`` was a SECOND traversal: the guard walked
+    the entry, and then rmtree enumerated it again. Measured on a 4 000-subdir
+    entry, renaming the music library to ``<trash>/<entry>/planted`` after the
+    walk's first yield had 84.8 ms to land, and both delete paths answered
+    ``removed=1`` with the library's files gone. Here every directory is opened
+    once and asked — ``fstat`` against the ``lstat`` that chose it, then a map
+    lookup against the app's own inodes — before anything under it is touched,
+    so a tree arriving mid-removal is compared whenever it arrives.
+
+    ``removed`` counts what actually went, so a refusal can say whether the
+    entry still has contents (:class:`_Refusal`).
+    """
+
+    def __init__(self, protected: ProtectedTrees) -> None:
+        self._protected = protected
+        self.removed = 0
+
+    def children(self, dir_fd: int) -> str | None:
+        """Remove everything under ``dir_fd``; the clause when one child stops it.
+
+        Sorted, so which child is reached first does not depend on the
+        directory's internal order.
+        """
+        for name in sorted(entry.name for entry in os.scandir(dir_fd)):
+            clause = self._child(name, dir_fd=dir_fd)
+            if clause is not None:
+                return clause
+        return None
+
+    def _child(self, name: str, *, dir_fd: int) -> str | None:
+        """One name in the directory ``dir_fd`` is open on.
+
+        A non-directory keeps its by-name ``unlink``: it acts on the LINK, so a
+        symlink or hardlink swapped in costs one link and its target survives.
+        """
+        st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        if not stat.S_ISDIR(st.st_mode):
+            os.unlink(name, dir_fd=dir_fd)
+            self.removed += 1
+            return None
+        return self._directory(name, st, dir_fd=dir_fd)
+
+    def _directory(self, name: str, st: os.stat_result, *, dir_fd: int) -> str | None:
+        try:
+            fd = _open_dir(name, dir_fd)
+        except OSError:
+            # It cannot be opened, so it cannot be removed either. Its own
+            # identity came from THIS descriptor, so a mode-000 app store
+            # renamed in is refused rather than reported as a failed removal.
+            clause = protected_id_match(_ident(st), self._protected)
+            if clause is None:
+                raise
+            return clause
+        try:
+            current = os.fstat(fd)
+            if _ident(current) != _ident(st):
+                return _RACED_INSIDE
+            clause = protected_id_match(_ident(current), self._protected)
+            if clause is not None:
+                return clause
+            clause = self.children(fd)
+            if clause is not None:
+                return clause
+        finally:
+            os.close(fd)
+        # ``rmdir`` removes neither a non-empty directory nor a symlink, and it
+        # runs only if the name still means what was just emptied.
+        if _ident(os.stat(name, dir_fd=dir_fd, follow_symlinks=False)) != _ident(st):
+            return _RACED_INSIDE
+        os.rmdir(name, dir_fd=dir_fd)
+        self.removed += 1
+        return None
+
+
+def _remove_checked_entry(name: str, *, dir_fd: int, protected: ProtectedTrees) -> _Refusal | None:
+    """Remove one entry so that what the guard checked is what is removed.
+
+    ``None`` when the entry is gone; otherwise why it was refused, and whether
+    its contents went before the guard stopped it — the two arms below the
+    children loop are reached with the entry already emptied, and both used to
+    read "Nothing was removed."
+
+    ``dir_fd`` is the Trash — the descriptor ``open_checked_dir`` pinned,
+    or the resolved parent for a single delete.
+
+    A name resolves anew at every syscall, so guarding ``name`` and then
+    removing ``name`` are questions about two different instants. Measured: with
+    the music library renamed onto the entry's name inside that window (3 µs for
+    a 52-directory entry), both delete paths answered ``removed=1`` and the
+    library's files were gone. So the directory is OPENED once, ``O_NOFOLLOW``,
+    its ``fstat`` compared to the ``stat`` the guard is about to be asked about,
+    and everything after that — the walk, the children — goes through THAT
+    descriptor. The entry itself is the one name left: ``rmdir`` cannot remove a
+    non-empty directory or follow a symlink, and it runs only if a fresh
+    ``lstat`` still matches.
+
+    The walk answers for the tree as it stands here; :class:`_Remover` answers
+    again at every directory it descends into, which is what covers a tree that
+    arrives afterwards.
+
+    A file or a symlink keeps its by-name ``unlink``: it acts on the LINK, so a
+    swapped-in symlink or hardlink costs one link and its target survives.
+    """
+    st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    if not stat.S_ISDIR(st.st_mode):
+        os.unlink(name, dir_fd=dir_fd)
+        return None
+    try:
+        fd = _open_dir(name, dir_fd)
+    except OSError:
+        # An entry this process cannot open is one it cannot remove either, so
+        # nothing acts on the answer: the guard is asked by NAME, which still
+        # compares the entry's own identity from the Trash's descriptor and logs
+        # the directory it could not read. A mode-000 app store is refused with
+        # its own sentence rather than reported as a failed removal.
+        clause = protected_match(name, protected, dir_fd=dir_fd)
+        if clause is not None:
+            return _Refusal(clause, partial=False)
+        raise
+    remover = _Remover(protected)
+    try:
+        if _ident(os.fstat(fd)) != _ident(st):
+            return _Refusal(_RACED, partial=False)
+        # Asked of the descriptor, not of the name: "." is this directory
+        # whatever the name now points at. Kept ahead of the removal so a
+        # protected tree that is ALREADY inside the entry is refused before
+        # anything goes.
+        clause = protected_match(".", protected, dir_fd=fd)
+        if clause is not None:
+            return _Refusal(clause, partial=False)
+        clause = remover.children(fd)
+        if clause is not None:
+            return _Refusal(clause, partial=remover.removed > 0)
+    finally:
+        os.close(fd)
+    if _ident(os.stat(name, dir_fd=dir_fd, follow_symlinks=False)) != _ident(st):
+        return _Refusal(_RACED, partial=remover.removed > 0)
+    os.rmdir(name, dir_fd=dir_fd)
+    return None
+
+
+def _refused_message(refused: list[str], *, removed: int, failed: list[str]) -> str:
+    """The 503 sentence for entries the guard would not let the sweep remove."""
+    shown = "; ".join(refused[:5])
+    more = f" and {len(refused) - 5} more" if len(refused) > 5 else ""
+    # The failed entries ride along NAMED, the way the partial below names
+    # them: this raise outranks it, so a bare count left an entry that could
+    # not be removed invisible on every retry.
+    stuck = f", {len(failed)} could not be removed ({_capped(failed)})" if failed else ""
+    those = "those entries" if len(refused) > 1 else "that entry"
+    return (
+        f"Refused: {shown}{more}. Removed {removed}{stuck}; move {those} out of Trash, then retry."
+    )
+
+
+def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) -> EmptyResult:
+    """Permanently remove every unprotected entry under ``trash_dir``.
+
+    The root is opened once through
+    :func:`~app.beets.protected.open_checked_dir`, and every name is enumerated,
+    guarded, stat'd and removed THROUGH that descriptor. Acting on
+    ``trash_dir / name`` reopened the path per entry: a rename plus a symlink
+    landing anywhere in the loop — 0.40 ms at 10 entries, 16 ms at 500 —
+    redirected the removals, measured deleting ``library.db`` and ``config.yaml``.
+    Each entry is pinned the same way by :func:`_remove_checked_entry`, which is
+    where the guard and the removal are tied to one identity.
+
+    An entry that is or holds one of the app's own directories by inode is left
+    where it is and named in a :class:`~app.beets.protected.ProtectedTreeError`
+    (503) carrying the failed count, raised AFTER the others are removed.
+
+    A symlinked entry is acted on as the LINK: following it would ``rm -rf`` a
+    directory merely pointed at, and ``rmtree`` refuses one, which used to wedge
+    every entry after it in ``iterdir`` order.
+
+    Each origin record is dropped inside the loop, right after its entry. The
+    whole store is swept only when this call REMOVED something AND Trash is
+    empty afterwards: emptiness alone would destroy every record when the share
+    has dropped.
+
+    The residual list is the BACKLOG entry for this slice.
     """
     if not trash_dir.exists():
         return EmptyResult(removed=0)
     removed = 0
     failed: list[str] = []
+    refused: list[str] = []
     first: OSError | None = None
-    for child in trash_dir.iterdir():
-        try:
-            if child.is_dir() and not child.is_symlink():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
-        except OSError as exc:
-            # Carry on. One entry the app cannot remove -- a root-owned file, a
-            # permission bit, a share that dropped half way -- used to abort the
-            # whole sweep and take the count with it, so the user was told
-            # nothing and could not tell 1-of-12 from 11-of-12. The entry stays
-            # in Trash either way; only the reporting was ever at stake.
-            failed.append(display_path(child.name))
-            first = first or exc
-            continue
-        delete_trash_origin(origins_dir, child.name)
-        removed += 1
+    fd = open_checked_dir(trash_dir, protected)
+    try:
+        for name in sorted(entry.name for entry in os.scandir(fd)):
+            try:
+                refusal = _remove_checked_entry(name, dir_fd=fd, protected=protected)
+            except OSError as exc:
+                # Carry on. One entry the app cannot remove -- a root-owned file, a
+                # permission bit, a share that dropped half way -- used to abort the
+                # whole sweep and take the count with it, so the user was told
+                # nothing and could not tell 1-of-12 from 11-of-12. The entry stays
+                # in Trash either way; only the reporting was ever at stake.
+                failed.append(display_path(name))
+                first = first or exc
+                continue
+            if refusal is not None:
+                # The partial note rides on the clause: the summary below says
+                # "Removed 0" for an entry whose contents are already gone.
+                note = f" ({_PARTIAL})" if refusal.partial else ""
+                refused.append(f"{display_path(name)!r} {refusal.clause}{note}")
+                continue
+            delete_trash_origin(origins_dir, name)
+            removed += 1
+    finally:
+        os.close(fd)
+    if refused:
+        raise ProtectedTreeError(_refused_message(refused, removed=removed, failed=failed))
     if failed:
-        # Named, not just counted: the user's next move is to look at them, and
-        # a bare number does not say which. Capped because Trash can be large
-        # and this lands in an HTTP body a browser renders.
-        shown = ", ".join(repr(n) for n in failed[:5])
-        more = f" and {len(failed) - 5} more" if len(failed) > 5 else ""
+        # Named, not just counted: the user's next move is to look at them.
         raise TrashEmptyPartialError(
             f"removed {removed} of {removed + len(failed)}."
-            f" {len(failed)} could not be removed and are still in Trash: {shown}{more}."
+            f" {len(failed)} could not be removed and are still in Trash: {_capped(failed)}."
             f" The first failure was: {_one_full_stop(str(first))}"
         )
     # Suppressed rather than allowed to escape: everything above has already
