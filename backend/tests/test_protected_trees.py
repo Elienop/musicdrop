@@ -353,12 +353,22 @@ def test_open_checked_dir_refuses_a_symlink_at_the_trash_path(tmp_path: Path) ->
 
 
 def test_open_checked_dir_refuses_an_identity_that_moved(tmp_path: Path) -> None:
-    """A directory replaced by a DIFFERENT one keeps the path and loses the inode."""
+    """A directory replaced by a DIFFERENT one keeps the path and loses the inode.
+
+    The impostor is made while the original still holds its inode, then renamed
+    over it. ``rmdir`` then ``mkdir`` at the same path hands the new directory
+    the freed inode on ext4 — the identity matched, nothing was refused, and this
+    passed locally while failing on CI.
+    """
     trash = tmp_path / "trash"
     trash.mkdir()
     trees = _trees_with_trash(trash)
+    impostor = tmp_path / "impostor"
+    impostor.mkdir()
+    checked = trash.stat()
+    assert impostor.stat().st_ino != checked.st_ino, "the impostor must be a different directory"
     trash.rmdir()
-    (tmp_path / "trash").mkdir()
+    impostor.rename(trash)
     with pytest.raises(ProtectedTreeError, match="changed between the check and the open"):
         open_checked_dir(tmp_path / "trash", trees)
 
