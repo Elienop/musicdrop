@@ -680,7 +680,7 @@ def _restore_to_origin(
         # The import failed outright. Undo the move so the caller's error is
         # about a folder still safely in Trash.
         try:
-            _return_to_trash(origin, entry, protected=protected)
+            _return_to_trash(origin, entry)
         except TrashRestoreIncompleteError as undo:
             # The propagating error is the UNDO's story, not the import's. The
             # import's exception alone answers "Restore failed: <beets error>",
@@ -732,7 +732,7 @@ def _restore_to_origin(
         # TRUE and must survive. Deleting it here would strand a returned row on
         # the import-restore fallback for good.
         try:
-            _return_to_trash(origin, entry, protected=protected)
+            _return_to_trash(origin, entry)
         except TrashRestoreIncompleteError as undo:
             # The SAME double failure as the import-raised arm above, reached the
             # other way: beets answered "not restored" (a duplicate, or nothing
@@ -930,12 +930,14 @@ def _holds_media(folder: Path) -> bool:
     return False
 
 
-def _return_to_trash(origin: Path, entry: Path, *, protected: ProtectedTrees) -> None:
+def _return_to_trash(origin: Path, entry: Path) -> None:
     """Undo a move-back whose import did not land. Raises if it cannot.
 
-    Asks the identity guard first: this is the third mover on the restore path,
-    and by here the tree sits in the music library, where the import step may
-    have filed something the forward guard never saw.
+    No identity guard: the id set is fixed per request, so every inode here was
+    either checked by the forward guard on ``entry`` or created after the set was
+    built. The one input left is another actor renaming a store into ``origin``
+    mid-import, and refusing that raised "Nothing was moved." over a folder
+    already sitting at its origin.
 
     Refuses to move onto an existing ``entry``: ``shutil.move`` would put the
     folder INSIDE it and bury the album one level down under its own name. The
@@ -958,7 +960,6 @@ def _return_to_trash(origin: Path, entry: Path, *, protected: ProtectedTrees) ->
     sentence for the same reason — "the source is gone or the entry is occupied"
     made the reader check both when the code already knew which.
     """
-    refuse_protected_tree(origin, protected, action="moved")
     if exists(entry):
         raise TrashRestoreIncompleteError(
             f"the folder at the origin {display_path(origin)!r} cannot be moved back into"

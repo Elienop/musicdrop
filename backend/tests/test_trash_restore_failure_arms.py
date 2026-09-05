@@ -494,7 +494,7 @@ def test_return_to_trash_names_the_retaken_entry_in_its_own_phrase(tmp_path: Pat
     (entry / "stranger.flac").write_bytes(b"\x00")
 
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        _return_to_trash(origin, entry, protected=protected_for())
+        _return_to_trash(origin, entry)
 
     message = str(ei.value)
     assert f"at the origin '{origin}'" in message
@@ -524,7 +524,7 @@ def test_return_to_trash_names_each_path_when_the_move_itself_fails(
 
     monkeypatch.setattr("app.beets.trash_manage.move_no_merge", _fails)
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        _return_to_trash(origin, entry, protected=protected_for())
+        _return_to_trash(origin, entry)
 
     message = str(ei.value)
     assert "the restore did not land" in message

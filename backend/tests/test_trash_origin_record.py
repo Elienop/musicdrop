@@ -807,7 +807,7 @@ def test_return_to_trash_refuses_to_bury_the_folder_inside_an_occupied_entry(
     entry.mkdir(parents=True)
 
     with pytest.raises(TrashRestoreIncompleteError):
-        _return_to_trash(origin, entry, protected=protected_for())
+        _return_to_trash(origin, entry)
 
     assert origin.is_dir()
     assert list(entry.iterdir()) == []
@@ -1462,7 +1462,7 @@ def test_return_to_trash_refuses_an_entry_that_appeared_in_the_window(
     # The window: the pre-check is told the Trash entry is free, the disk is not.
     monkeypatch.setattr("app.beets.trash_manage.exists", lambda p: Path(p) != entry)
     with pytest.raises(TrashRestoreIncompleteError):
-        _return_to_trash(origin, entry, protected=protected_for())
+        _return_to_trash(origin, entry)
 
     assert not (entry / origin.name).exists(), "the folder was buried inside the entry"
     assert (origin / "01 a.flac").is_file()
@@ -1740,7 +1740,7 @@ def test_return_to_trash_names_a_vanished_source_rather_than_the_syscall(
     entry = tmp_path / "trash" / "Dummy"
 
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        _return_to_trash(origin, entry, protected=protected_for())
+        _return_to_trash(origin, entry)
 
     message = str(ei.value)
     assert f"nothing at the origin '{origin}'" in message

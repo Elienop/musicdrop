@@ -738,31 +738,6 @@ def test_restore_refuses_a_trash_entry_that_holds_an_app_store(
     )
 
 
-def test_return_to_trash_refuses_a_protected_tree(tmp_path: Path) -> None:
-    """The restore's UNDO is a mover as well, and it runs on the library side.
-
-    By the time it runs the tree sits at its origin inside the music library,
-    where the import step may have filed something the forward guard never saw.
-    """
-    from app.beets.trash_manage import _return_to_trash
-
-    origin = tmp_path / "music" / "Album"
-    (origin / "inbox").mkdir(parents=True)
-    entry = tmp_path / "trash" / "Album"
-    trees = protected_trees(
-        settings=Settings(inbox_dir=str(origin / "inbox")),
-        music_dir=tmp_path / "music",
-        beets_dir=tmp_path / "absent-beets",
-        trash_dir=tmp_path / "absent-trash",
-        origins_dir=tmp_path / "absent-origins",
-        library_path=tmp_path / "absent" / "library.db",
-    )
-
-    with pytest.raises(ProtectedTreeError, match="'Album' contains the inbox"):
-        _return_to_trash(origin, entry, protected=trees)
-    assert (origin / "inbox").is_dir()
-
-
 def test_delete_artist_asks_the_guard_before_it_moves_the_first_album(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
