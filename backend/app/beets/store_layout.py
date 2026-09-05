@@ -645,8 +645,8 @@ _MAX_INCLUDE_BYTES: Final = 1 << 20
 
 #: The entries ONE request may read, counted on the raw list before any of them
 #: is resolved. beets' own config carries 0-2 includes and upstream caps nothing,
-#: so this is generous by an order of magnitude. Repeats cost one read each way
-#: (:func:`effective_config_paths` reads a resolved path once) but still count
+#: so this is generous by an order of magnitude. A repeated entry is read once
+#: (:func:`effective_config_paths` reads a resolved path once) and still counts
 #: here, because counting after the resolve means resolving an unbounded list.
 _MAX_INCLUDE_ENTRIES: Final = 32
 

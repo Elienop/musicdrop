@@ -1,9 +1,7 @@
 """The reorganize worker — a sequential library/artist/album sweep (the `beet move`
 analog). ``sweep`` is the synchronous, directly-testable loop; ``start_backfill``
 runs it on a daemon thread so the API start endpoint returns immediately. Pure
-local file IO, so there is no courtesy delay: the knob existed, was never passed
-anything but its 0 default, and was dropped when the route's ``Settings`` took
-its place in the signature."""
+local file IO, so it runs flat out: nothing here is rate-limited."""
 
 from __future__ import annotations
 
