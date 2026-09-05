@@ -340,7 +340,13 @@ def test_an_import_restore_of_the_losing_row_keeps_the_other_entrys_record(
     write_trash_origin(origins, long_name, origin=str(tmp_path / "music" / "Long"), moved="folder")
     assert read_trash_origin(origins, short_name) is None, "the losing row has no record of its own"
 
-    result = restore_album(lib, str(trash / short_name), trash_dir=trash, origins_dir=origins)
+    result = restore_album(
+        lib,
+        str(trash / short_name),
+        trash_dir=trash,
+        origins_dir=origins,
+        protected=protected_for(lib),
+    )
 
     assert result.restored is True
     assert (tmp_path / "music" / "Portishead" / "Dummy").is_dir()

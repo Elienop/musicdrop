@@ -24,6 +24,7 @@ from beets.library import Item, Library
 from fastapi.testclient import TestClient
 
 from app.api.albums import get_library
+from app.beets.protected import ProtectedTrees
 from app.main import app
 from app.models.trash import RestoreResult
 from tests.conftest import beets_dir_for, build_library, make_test_handle, origins_for
@@ -244,7 +245,12 @@ def test_trash_restore_resolves_the_listed_folder_to_the_real_directory(
     seen: list[str] = []
 
     def fake_restore(
-        lib: object, folder_abs: str, *, trash_dir: Path, origins_dir: Path
+        lib: object,
+        folder_abs: str,
+        *,
+        trash_dir: Path,
+        origins_dir: Path,
+        protected: ProtectedTrees,
     ) -> RestoreResult:
         seen.append(folder_abs)
         return RestoreResult(restored=True, reason="restored", album_id=1)
@@ -289,7 +295,12 @@ def test_trash_restore_refuses_when_a_real_placeholder_name_shadows_a_damaged_tw
     seen: list[str] = []
 
     def fake_restore(
-        lib: object, folder_abs: str, *, trash_dir: Path, origins_dir: Path
+        lib: object,
+        folder_abs: str,
+        *,
+        trash_dir: Path,
+        origins_dir: Path,
+        protected: ProtectedTrees,
     ) -> RestoreResult:
         seen.append(folder_abs)
         return RestoreResult(restored=True, reason="restored", album_id=1)
@@ -319,7 +330,14 @@ def test_trash_error_detail_survives_an_undecodable_path(
 
     _seed_trash(client, BAD_BYTES)
 
-    def boom(lib: object, folder_abs: str, *, trash_dir: Path, origins_dir: Path) -> RestoreResult:
+    def boom(
+        lib: object,
+        folder_abs: str,
+        *,
+        trash_dir: Path,
+        origins_dir: Path,
+        protected: ProtectedTrees,
+    ) -> RestoreResult:
         raise OSError(f"cannot move {_bad_name()}")
 
     monkeypatch.setattr(trash_api, "restore_album", boom)

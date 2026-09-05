@@ -24,6 +24,7 @@ import contextlib
 import logging
 import os
 import shutil
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -449,7 +450,12 @@ def _audio_free_entries(
 
 
 def restore_album(
-    lib: Library, folder_abs: str, *, trash_dir: Path, origins_dir: Path
+    lib: Library,
+    folder_abs: str,
+    *,
+    trash_dir: Path,
+    origins_dir: Path,
+    protected: ProtectedTrees,
 ) -> RestoreResult:
     """Restore a trashed folder, returning the outcome. Synchronous.
 
@@ -474,9 +480,17 @@ def restore_album(
     music library folder is unavailable, so the folder was not moved out of
     Trash", and README says the same. One guard at the entry point is what
     makes that sentence true for the endpoint rather than for one of its arms.
+
+    ``protected`` is asked here for the same reason: restore is a MOVER, and
+    both arms relocate the whole entry out of Trash. On a Trash that is the host
+    parent of a bind-mounted music library, a stale record named ``music`` sent
+    the move-back through ``move_no_merge``'s copy branch and deleted the
+    library while reporting ``restored=True``; the import arm relocates an
+    aliased app store's files into the library instead.
     """
     entry = Path(folder_abs)
     require_library_present(lib)
+    refuse_protected_tree(entry, protected, action="moved")
     record = read_trash_origin(origins_dir, entry.name)
     origin = move_back_target(record, music_dir=_music_dir(lib))
     if origin is None:
@@ -502,7 +516,9 @@ def restore_album(
             # call site deliberately does not repeat the test.
             delete_trash_origin(origins_dir, entry.name)
         return result
-    return _restore_to_origin(lib, entry, origin, trash_dir=trash_dir, origins_dir=origins_dir)
+    return _restore_to_origin(
+        lib, entry, origin, trash_dir=trash_dir, origins_dir=origins_dir, protected=protected
+    )
 
 
 def _restore_by_import(
@@ -547,7 +563,13 @@ def _restore_by_import(
 
 
 def _restore_to_origin(
-    lib: Library, entry: Path, origin: Path, *, trash_dir: Path, origins_dir: Path
+    lib: Library,
+    entry: Path,
+    origin: Path,
+    *,
+    trash_dir: Path,
+    origins_dir: Path,
+    protected: ProtectedTrees,
 ) -> RestoreResult:
     """Move ``entry`` back to ``origin`` and re-import it there. All or nothing.
 
@@ -658,7 +680,7 @@ def _restore_to_origin(
         # The import failed outright. Undo the move so the caller's error is
         # about a folder still safely in Trash.
         try:
-            _return_to_trash(origin, entry)
+            _return_to_trash(origin, entry, protected=protected)
         except TrashRestoreIncompleteError as undo:
             # The propagating error is the UNDO's story, not the import's. The
             # import's exception alone answers "Restore failed: <beets error>",
@@ -710,7 +732,7 @@ def _restore_to_origin(
         # TRUE and must survive. Deleting it here would strand a returned row on
         # the import-restore fallback for good.
         try:
-            _return_to_trash(origin, entry)
+            _return_to_trash(origin, entry, protected=protected)
         except TrashRestoreIncompleteError as undo:
             # The SAME double failure as the import-raised arm above, reached the
             # other way: beets answered "not restored" (a duplicate, or nothing
@@ -908,8 +930,12 @@ def _holds_media(folder: Path) -> bool:
     return False
 
 
-def _return_to_trash(origin: Path, entry: Path) -> None:
+def _return_to_trash(origin: Path, entry: Path, *, protected: ProtectedTrees) -> None:
     """Undo a move-back whose import did not land. Raises if it cannot.
+
+    Asks the identity guard first: this is the third mover on the restore path,
+    and by here the tree sits in the music library, where the import step may
+    have filed something the forward guard never saw.
 
     Refuses to move onto an existing ``entry``: ``shutil.move`` would put the
     folder INSIDE it and bury the album one level down under its own name. The
@@ -932,6 +958,7 @@ def _return_to_trash(origin: Path, entry: Path) -> None:
     sentence for the same reason — "the source is gone or the entry is occupied"
     made the reader check both when the code already knew which.
     """
+    refuse_protected_tree(origin, protected, action="moved")
     if exists(entry):
         raise TrashRestoreIncompleteError(
             f"the folder at the origin {display_path(origin)!r} cannot be moved back into"
@@ -1071,15 +1098,18 @@ def empty_one(folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees) 
 def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) -> EmptyResult:
     """Permanently remove everything under ``trash_dir``.
 
-    The root is opened ``O_NOFOLLOW`` and fstat-compared against the identity
-    the caller checked, and the entries come from THAT descriptor
-    (:func:`~app.beets.protected.open_checked_dir`): ``iterdir()`` followed a
-    symlink planted at the Trash path in the 0.115-0.260 ms between the two.
+    The root is opened once through
+    :func:`~app.beets.protected.open_checked_dir`, and every name is enumerated,
+    guarded, stat'd and removed THROUGH that descriptor. Acting on
+    ``trash_dir / name`` instead reopened the path per entry: a rename plus a
+    symlink landing anywhere in the loop — 0.40 ms at 10 entries, 16 ms at 500 —
+    redirected the removals, measured deleting ``library.db`` and ``config.yaml``.
 
     An entry that is or holds one of the app's own directories by inode is left
     where it is and named in a :class:`~app.beets.protected.ProtectedTreeError`
     (503), which outranks the partial below: the others are worth retrying and
-    this one needs the layout fixed first.
+    this one needs the layout fixed first. That refusal carries the failed COUNT
+    too, so a retry does not hide an entry that could not be removed.
 
     A symlinked entry is acted on as the LINK. ``is_dir()`` follows links and
     ``rmtree`` refuses one, so such an entry used to raise ``OSError`` and wedge
@@ -1104,38 +1134,41 @@ def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) 
     failed: list[str] = []
     refused: list[str] = []
     first: OSError | None = None
-    fd = open_checked_dir(trash_dir, protected.trash)
+    fd = open_checked_dir(trash_dir, protected)
     try:
-        entries = sorted(entry.name for entry in os.scandir(fd))
+        for name in sorted(entry.name for entry in os.scandir(fd)):
+            clause = protected_match(name, protected, dir_fd=fd)
+            if clause is not None:
+                refused.append(f"{display_path(name)!r} {clause}")
+                continue
+            try:
+                if stat.S_ISDIR(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode):
+                    shutil.rmtree(name, dir_fd=fd)
+                else:
+                    os.unlink(name, dir_fd=fd)
+            except OSError as exc:
+                # Carry on. One entry the app cannot remove -- a root-owned file, a
+                # permission bit, a share that dropped half way -- used to abort the
+                # whole sweep and take the count with it, so the user was told
+                # nothing and could not tell 1-of-12 from 11-of-12. The entry stays
+                # in Trash either way; only the reporting was ever at stake.
+                failed.append(display_path(name))
+                first = first or exc
+                continue
+            delete_trash_origin(origins_dir, name)
+            removed += 1
     finally:
         os.close(fd)
-    for name in entries:
-        child = trash_dir / name
-        clause = protected_match(child, protected)
-        if clause is not None:
-            refused.append(f"{display_path(name)!r} {clause}")
-            continue
-        try:
-            if child.is_dir() and not child.is_symlink():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
-        except OSError as exc:
-            # Carry on. One entry the app cannot remove -- a root-owned file, a
-            # permission bit, a share that dropped half way -- used to abort the
-            # whole sweep and take the count with it, so the user was told
-            # nothing and could not tell 1-of-12 from 11-of-12. The entry stays
-            # in Trash either way; only the reporting was ever at stake.
-            failed.append(display_path(name))
-            first = first or exc
-            continue
-        delete_trash_origin(origins_dir, name)
-        removed += 1
     if refused:
         shown = "; ".join(refused[:5])
         more = f" and {len(refused) - 5} more" if len(refused) > 5 else ""
+        # The failed COUNT rides along: this raise outranks the partial below, so
+        # without it an entry that could not be removed is reported nowhere and
+        # stays invisible on every retry.
+        stuck = f", {len(failed)} could not be removed" if failed else ""
         raise ProtectedTreeError(
-            f"Refused: {shown}{more}. Removed {removed}; fix the layout, then retry."
+            f"Refused: {shown}{more}. Removed {removed}{stuck};"
+            " move that entry out of Trash, then retry."
         )
     if failed:
         # Named, not just counted: the user's next move is to look at them, and

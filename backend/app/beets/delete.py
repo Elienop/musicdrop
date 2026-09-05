@@ -28,13 +28,14 @@ from app.beets.library import (
     _require_id,
     require_library_root,
 )
-from app.beets.protected import ProtectedTreeError, ProtectedTrees
+from app.beets.protected import ProtectedTreeError, ProtectedTrees, refuse_protected_tree
 from app.beets.store_layout import StoreLayoutError, checked_protected_trees, checked_store_dirs
 from app.beets.trash import (
     TrashDeleteIncompleteError,
     TrashMoveIncompleteError,
     TrashRowsNotRemovedError,
     trash_album_folder,
+    whole_folder_root,
 )
 from app.beets.trash_origins import TrashOriginsStoreUnusableError
 from app.library_busy import library_job_active
@@ -234,6 +235,18 @@ def delete_artist(
         # ghost whose folder is already gone without relocating a byte.
         mutated = 0
         moved = 0
+        # Every folder the fan-out would relocate WHOLE is asked before the first
+        # one moves, so the guard's own "Nothing was moved." is a property of the
+        # operation. Asked per album inside the loop it was not: an album in
+        # position two refused as the partial 500, in a sentence that says one
+        # album HAD been moved. Only the whole-folder arm is asked, because the
+        # per-item fallback never reaches that guard and a flat library, where
+        # every album root is the music dir, would otherwise refuse every album.
+        for album_id in album_ids:
+            album = lib.get_album(album_id)
+            root = None if album is None else whole_folder_root(lib, album)
+            if root is not None:
+                refuse_protected_tree(root, protected, action="moved")
         with lib.transaction():
             for album_id in album_ids:
                 album = lib.get_album(album_id)

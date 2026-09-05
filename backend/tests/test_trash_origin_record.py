@@ -596,7 +596,11 @@ def test_restore_puts_an_album_back_at_its_exact_origin(tmp_path: Path) -> None:
     assert not source.exists()
 
     result = restore_album(
-        lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+        lib,
+        str(dest),
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(lib),
     )
 
     assert result.restored is True
@@ -638,7 +642,11 @@ def test_restore_recreates_an_artist_folder_that_was_swept_away(tmp_path: Path) 
     inode = (dest / "01 Mysterons.flac").stat().st_ino
 
     result = restore_album(
-        lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+        lib,
+        str(dest),
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(lib),
     )
 
     assert result.restored is True
@@ -693,7 +701,11 @@ def test_restore_never_links_the_album_when_the_user_config_asks_for_links(
         )
 
     result = restore_album(
-        lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+        lib,
+        str(dest),
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(lib),
     )
 
     assert result.restored is True
@@ -770,7 +782,11 @@ def test_a_landed_in_place_restore_hands_the_link_flags_back(tmp_path: Path) -> 
         )
 
     result = restore_album(
-        lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+        lib,
+        str(dest),
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(lib),
     )
 
     assert result.restored is True  # the forcing really ran, so the finally really fired
@@ -791,7 +807,7 @@ def test_return_to_trash_refuses_to_bury_the_folder_inside_an_occupied_entry(
     entry.mkdir(parents=True)
 
     with pytest.raises(TrashRestoreIncompleteError):
-        _return_to_trash(origin, entry)
+        _return_to_trash(origin, entry, protected=protected_for())
 
     assert origin.is_dir()
     assert list(entry.iterdir()) == []
@@ -812,7 +828,11 @@ def test_restore_puts_an_audio_free_husk_back(tmp_path: Path) -> None:
     )
 
     result = restore_album(
-        lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+        lib,
+        str(dest),
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(lib),
     )
 
     assert result.restored is True
@@ -835,7 +855,11 @@ def test_an_import_restore_drops_a_record_it_has_outlived(tmp_path: Path) -> Non
     assert read_trash_origin(_origins(tmp_path), container.name) is not None
 
     result = restore_album(
-        lib, str(container), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+        lib,
+        str(container),
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(lib),
     )
 
     assert result.restored is True
@@ -859,7 +883,11 @@ def test_a_failed_import_restore_keeps_the_record(tmp_path: Path) -> None:
     lib.add_album([replacement])
 
     result = restore_album(
-        lib, str(container), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+        lib,
+        str(container),
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(lib),
     )
 
     assert result.restored is False
@@ -891,7 +919,11 @@ def test_restore_refuses_when_the_origin_is_occupied_and_keeps_the_files_in_tras
     (source / "someone else.flac").write_bytes(b"\x00")
 
     result = restore_album(
-        lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+        lib,
+        str(dest),
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(lib),
     )
 
     assert result.restored is False
@@ -928,7 +960,11 @@ def test_restore_returns_the_folder_to_trash_when_the_album_is_already_in_the_li
     lib.add_album([replacement])
 
     result = restore_album(
-        lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+        lib,
+        str(dest),
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(lib),
     )
 
     assert result.restored is False
@@ -978,7 +1014,9 @@ def test_a_row_with_NO_record_also_refuses_an_unavailable_music_share(tmp_path: 
     (tmp_path / "music").mkdir()  # the mountpoint survives a dropped share
 
     with pytest.raises(LibraryRootUnavailableError):
-        restore_album(lib, str(dest), trash_dir=trash, origins_dir=origins)
+        restore_album(
+            lib, str(dest), trash_dir=trash, origins_dir=origins, protected=protected_for(lib)
+        )
 
     assert len(list(dest.glob("*.flac"))) == 2, "the files must not have left Trash"
     assert list((tmp_path / "music").iterdir()) == [], "nothing may land on the bare mountpoint"
@@ -1007,7 +1045,13 @@ def test_restore_refuses_to_move_into_an_unavailable_music_share(tmp_path: Path)
     origins = _origins(tmp_path)
 
     with pytest.raises(LibraryRootUnavailableError):
-        restore_album(lib, entry_path, trash_dir=tmp_path / "trash", origins_dir=origins)
+        restore_album(
+            lib,
+            entry_path,
+            trash_dir=tmp_path / "trash",
+            origins_dir=origins,
+            protected=protected_for(lib),
+        )
 
     assert len(list(dest.glob("*.flac"))) == 2  # nothing left Trash
 
@@ -1028,7 +1072,11 @@ def test_restore_without_a_record_still_re_imports_as_before(tmp_path: Path) -> 
     )
 
     result = restore_album(
-        lib, str(trash / "Weird Folder"), trash_dir=trash, origins_dir=origins_for(trash)
+        lib,
+        str(trash / "Weird Folder"),
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
+        protected=protected_for(lib),
     )
 
     assert result.restored is True
@@ -1315,7 +1363,11 @@ def test_an_album_named_with_a_no_break_space_keeps_its_exact_restore(tmp_path: 
     assert move_back_target(record, music_dir=str(tmp_path / "music")) == source
 
     result = restore_album(
-        lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+        lib,
+        str(dest),
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(lib),
     )
 
     assert result.restored is True
@@ -1376,7 +1428,12 @@ def test_a_move_back_refuses_an_origin_that_appeared_in_the_window(
 
     monkeypatch.setattr("app.beets.trash_manage.exists", lambda _p: False)
     result = _restore_to_origin(
-        lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+        lib,
+        entry,
+        origin,
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(lib),
     )
 
     assert result == RestoreResult(restored=False, reason="origin_occupied")
@@ -1405,7 +1462,7 @@ def test_return_to_trash_refuses_an_entry_that_appeared_in_the_window(
     # The window: the pre-check is told the Trash entry is free, the disk is not.
     monkeypatch.setattr("app.beets.trash_manage.exists", lambda p: Path(p) != entry)
     with pytest.raises(TrashRestoreIncompleteError):
-        _return_to_trash(origin, entry)
+        _return_to_trash(origin, entry, protected=protected_for())
 
     assert not (entry / origin.name).exists(), "the folder was buried inside the entry"
     assert (origin / "01 a.flac").is_file()
@@ -1454,7 +1511,14 @@ def test_a_failed_return_to_trash_cannot_forge_a_log_line(
         # import's ``RuntimeError``; the import is still reachable as ``__cause__``.
         pytest.raises(TrashRestoreIncompleteError) as ei,
     ):
-        _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=origins)
+        _restore_to_origin(
+            lib,
+            entry,
+            origin,
+            trash_dir=tmp_path / "trash",
+            origins_dir=origins,
+            protected=protected_for(lib),
+        )
 
     assert isinstance(ei.value.__cause__, RuntimeError)
     assert any("could not return" in r.getMessage() for r in caplog.records)
@@ -1522,7 +1586,13 @@ def test_a_failed_restore_whose_undo_also_fails_says_where_the_folder_went(
     entry_path = str(entry)
     origins = _origins(tmp_path)
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        restore_album(lib, entry_path, trash_dir=tmp_path / "trash", origins_dir=origins)
+        restore_album(
+            lib,
+            entry_path,
+            trash_dir=tmp_path / "trash",
+            origins_dir=origins,
+            protected=protected_for(lib),
+        )
 
     message = str(ei.value)
     assert f"at the origin '{origin}'" in message, "the path the files are actually at"
@@ -1584,7 +1654,11 @@ def test_a_media_album_whose_import_lands_nothing_still_goes_back_to_trash(
         lambda *_a, **_k: RestoreResult(restored=False, reason="could_not_restore"),
     )
     result = restore_album(
-        lib, str(entry), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+        lib,
+        str(entry),
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(lib),
     )
 
     assert result == RestoreResult(restored=False, reason="could_not_restore")
@@ -1631,7 +1705,14 @@ def test_a_part_way_cross_filesystem_move_says_the_folder_may_be_in_both(
     origins = _origins(tmp_path)
 
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=origins)
+        _restore_to_origin(
+            lib,
+            entry,
+            origin,
+            trash_dir=tmp_path / "trash",
+            origins_dir=origins,
+            protected=protected_for(lib),
+        )
 
     message = str(ei.value)
     assert str(origin) in message
@@ -1659,7 +1740,7 @@ def test_return_to_trash_names_a_vanished_source_rather_than_the_syscall(
     entry = tmp_path / "trash" / "Dummy"
 
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        _return_to_trash(origin, entry)
+        _return_to_trash(origin, entry, protected=protected_for())
 
     message = str(ei.value)
     assert f"nothing at the origin '{origin}'" in message
@@ -1704,7 +1785,12 @@ def test_a_dangling_symlink_at_the_origin_keeps_the_files_in_trash(tmp_path: Pat
     assert not occupied(origin), "and the pre-filter is blind to it: the move must refuse"
 
     result = _restore_to_origin(
-        lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+        lib,
+        entry,
+        origin,
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(lib),
     )
 
     assert result == RestoreResult(restored=False, reason="origin_occupied")
@@ -1760,7 +1846,11 @@ def test_a_non_utf8_folder_name_round_trips_through_the_ascii_record(tmp_path: P
     assert row.restore_mode == "move_back"
 
     result = restore_album(
-        lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
+        lib,
+        str(dest),
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(lib),
     )
 
     assert result.restored is True
@@ -2155,7 +2245,13 @@ def test_a_landed_restore_drops_the_record_keyed_on_the_TRASH_name(tmp_path: Pat
         )
     assert dest.name == "Weird Folder (1)", "the names must really differ for this to test anything"
 
-    result = restore_album(lib, str(dest), trash_dir=tmp_path / "trash", origins_dir=origins)
+    result = restore_album(
+        lib,
+        str(dest),
+        trash_dir=tmp_path / "trash",
+        origins_dir=origins,
+        protected=protected_for(lib),
+    )
 
     assert result.restored is True
     assert read_trash_origin(origins, dest.name) is None, "the entry's own record must go"
@@ -2275,7 +2371,13 @@ def test_an_import_restore_drops_an_UNREADABLE_record_too(tmp_path: Path) -> Non
     origin_file(origins, "Weird Folder").write_text("{ not json at all", encoding="ascii")
     assert read_trash_origin(origins, "Weird Folder") is None  # unusable, not absent
 
-    result = restore_album(lib, str(trash / "Weird Folder"), trash_dir=trash, origins_dir=origins)
+    result = restore_album(
+        lib,
+        str(trash / "Weird Folder"),
+        trash_dir=trash,
+        origins_dir=origins,
+        protected=protected_for(lib),
+    )
 
     assert result.restored is True
     assert not origin_file(origins, "Weird Folder").exists(), "the unusable record must go too"

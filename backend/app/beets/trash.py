@@ -606,6 +606,25 @@ def _record_origin(origins_dir: Path, dest: Path, *, origin: str, moved: MovedSh
     write_trash_origin(origins_dir, dest.name, origin=origin, moved=moved)
 
 
+def whole_folder_root(lib: Library, album: Any) -> str | None:
+    """The folder :func:`trash_album_folder` would relocate WHOLE, or ``None``.
+
+    ``None`` for the three arms that relocate no tree: an album with no items,
+    one whose folder is not on disk, and one sharing its folder, which the
+    per-item mover handles. Lets ``delete_artist`` ask the identity guard for
+    every album before it moves the first — and lets it do that without refusing
+    a FLAT library, where every album root IS the music dir and so is in the
+    protected set while the shared-folder fallback is what actually runs.
+    """
+    items = list(album.items())
+    if not items:
+        return None
+    album_root = _album_root(lib, items)
+    if not os.path.isdir(album_root) or _folder_is_shared(lib, album, album_root):
+        return None
+    return album_root
+
+
 def trash_album_folder(
     lib: Library, album: Any, *, trash_dir: Path, origins_dir: Path, protected: ProtectedTrees
 ) -> str:

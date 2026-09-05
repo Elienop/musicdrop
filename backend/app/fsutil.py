@@ -116,6 +116,26 @@ def occupied(path: Path) -> bool:
         return True
 
 
+def _ident(path: Path) -> tuple[int, int] | None:
+    """``(st_dev, st_ino)``, or ``None`` for a path this process cannot stat."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def _holds(src: Path, dest: Path) -> bool:
+    """Whether ``dest``'s ancestry reaches ``src`` by identity, not by spelling.
+
+    ``shutil.move`` asks the same question with ``_destinsrc``, which compares
+    prefixes: a bind mount or a symlink gives the two ends different spellings
+    for one directory and that test answers False.
+    """
+    ident = _ident(src)
+    return ident is not None and any(_ident(rung) == ident for rung in dest.parents)
+
+
 def move_no_merge(src: Path, dest: Path) -> None:
     """Move ``src`` onto ``dest``, refusing rather than moving INSIDE it.
 
@@ -150,6 +170,17 @@ def move_no_merge(src: Path, dest: Path) -> None:
     try:
         os.rename(src, dest)
     except OSError as exc:
+        if exc.errno == errno.EXDEV and _holds(src, dest):
+            # ``dest`` sits inside ``src`` by inode, so copy-then-delete would
+            # copy the tree into itself and then ``rmtree`` the original, the
+            # copy and everything under it. Measured on a Trash that is the host
+            # parent of a bind-mounted music library: Restore reported success
+            # and both trees were empty afterwards. ``os.rename`` answers EINVAL
+            # for the same shape on one filesystem, so both branches now refuse
+            # alike and no caller has to know which one ran.
+            raise OSError(
+                errno.EINVAL, "the destination is inside the source", str(dest)
+            ) from exc
         if exc.errno == errno.EXDEV:
             # Different filesystems, so no rename can do it and the move has to
             # copy. ``copytree``'s own ``os.makedirs(..., exist_ok=False)`` is

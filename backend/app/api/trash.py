@@ -193,7 +193,7 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
     app = request.app
     _gate(app)
     async with _swap_lock(app):
-        handle, dest, trash_dir, origins_dir, _protected = _child_or_404(app, body.folder)
+        handle, dest, trash_dir, origins_dir, protected = _child_or_404(app, body.folder)
         try:
             result = await run_in_threadpool(
                 restore_album,
@@ -201,6 +201,7 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
                 str(dest),
                 trash_dir=trash_dir,
                 origins_dir=origins_dir,
+                protected=protected,
             )
             emit_library_changed(app)
             return result
@@ -210,6 +211,10 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
         # mounted" is actionable. Raised inline so the status stays a literal
         # tests/test_route_status_declarations.py can see.
         except LibraryRootUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # The same tier for the same reason: restore is a mover, the guard fires
+        # before anything leaves Trash, and the fix is the operator's.
+        except ProtectedTreeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Restore failed: {exc}") from exc

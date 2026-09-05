@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from app.beets.orphans import find_orphan_folders
+from tests._mountns import run_probe, unshare_works
 from tests.conftest import origins_for, protected_for
 
 
@@ -887,46 +886,8 @@ def test_the_default_trash_position_already_spares_the_beets_dir(tmp_path: Path)
 # A bind mount is the alias a prefix (translated or not) does not see.
 # --------------------------------------------------------------------------
 
-_BIND_PROBE = """
-import subprocess, sys
-from pathlib import Path
-base = Path(sys.argv[1])
-src = base / "srv" / "music"
-(src / "Real").mkdir(parents=True)
-(src / "Real" / "01.flac").write_bytes(b"x")
-(src / "Old Artist").mkdir()
-(src / "Old Artist" / "poster.jpg").write_bytes(b"x")
-(src / "bin").mkdir()
-(src / "bin" / "note.txt").write_bytes(b"x")
-mnt = base / "music"
-mnt.mkdir()
-trash = base / "trash"
-trash.mkdir()
-subprocess.run(["mount", "--bind", str(src), str(mnt)], check=True)
-subprocess.run(["mount", "--bind", str(src / "bin"), str(trash)], check=True)
-from app.beets.orphans import find_orphan_folders
-assert (mnt / "bin").samefile(trash), "the fixture did not alias the Trash"
-print(sorted(p.name for p in find_orphan_folders(mnt, seeds=None, trash_dir=trash)))
-"""
 
-
-def _unshare_works() -> bool:
-    """Whether this box grants an unprivileged mount namespace.
-
-    Measured rather than assumed: the probe below is the only shape that tells
-    inode identity apart from a path prefix, and a box without user namespaces
-    would otherwise fail the test for a reason that is not about this code.
-    """
-    try:
-        done = subprocess.run(
-            ["unshare", "-Urm", "true"], capture_output=True, timeout=30, check=False
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return done.returncode == 0
-
-
-@pytest.mark.skipif(not _unshare_works(), reason="no unprivileged mount namespace on this box")
+@pytest.mark.skipif(not unshare_works(), reason="no unprivileged mount namespace on this box")
 def test_a_bind_mounted_trash_is_excluded_where_a_path_prefix_does_not_see_it(
     tmp_path: Path,
 ) -> None:
@@ -946,25 +907,7 @@ def test_a_bind_mounted_trash_is_excluded_where_a_path_prefix_does_not_see_it(
     """
     work = tmp_path / "work"
     work.mkdir()
-    script = tmp_path / "probe.py"
-    script.write_text(_BIND_PROBE, encoding="utf-8")
-    backend = Path(__file__).resolve().parent.parent
-    # The child inherits this process's environment, which the rootdir conftest
-    # has already floored (``BEETSDIR`` under the test tree), and adds only the
-    # import root — ``app.beets.orphans`` imports nothing but the stdlib, so the
-    # child opens no beets config either way.
-    env = {**os.environ, "PYTHONPATH": str(backend)}
-    done = subprocess.run(
-        ["unshare", "-Urm", sys.executable, str(script), str(work)],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        cwd=str(backend),
-        env=env,
-        check=False,
-    )
-    assert done.returncode == 0, done.stderr
-    assert done.stdout.strip() == "['Old Artist']", done.stdout + done.stderr
+    assert run_probe("bind_trash_alias", work, timeout=120) == ["['Old Artist']"]
 
 
 # --------------------------------------------------------------------------

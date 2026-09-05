@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +32,7 @@ from app.beets.protected import (
 from app.beets.trash import trash_folder
 from app.beets.trash_manage import empty_all, empty_one
 from app.config import Settings, settings
+from tests._mountns import run_probe, unshare_works
 from tests.conftest import beets_dir_for, make_test_handle, origins_for, protected_for
 
 # --------------------------------------------------------------------------
@@ -246,13 +245,17 @@ def _add_album(lib: Any, folder: Path) -> None:
     lib.add_album(items)
 
 
-def _trees_for(music: Path) -> ProtectedTrees:
-    """A set holding exactly ``music``, so a test's assertion is about one id."""
+def _trees_for(music: Path, trash: Path | None = None) -> ProtectedTrees:
+    """A set holding exactly ``music``, so a test's assertion is about one id.
+
+    ``trash`` is passed whenever the test drives ``empty_all``, which refuses a
+    Trash identity it could not take.
+    """
     return protected_trees(
         settings=Settings(),
         music_dir=music,
         beets_dir=music.parent / "absent-beets",
-        trash_dir=music.parent / "absent-trash",
+        trash_dir=trash if trash is not None else music.parent / "absent-trash",
         origins_dir=music.parent / "absent-origins",
         library_path=music.parent / "absent" / "library.db",
     )
@@ -343,18 +346,18 @@ def test_open_checked_dir_refuses_a_symlink_at_the_trash_path(tmp_path: Path) ->
     link = tmp_path / "trash"
     link.symlink_to(real, target_is_directory=True)
     with pytest.raises(ProtectedTreeError, match="is not the directory MusicDrop checked"):
-        open_checked_dir(link, None)
+        open_checked_dir(link, _trees_with_trash(link))
 
 
 def test_open_checked_dir_refuses_an_identity_that_moved(tmp_path: Path) -> None:
     """A directory replaced by a DIFFERENT one keeps the path and loses the inode."""
     trash = tmp_path / "trash"
     trash.mkdir()
-    stale = os.stat(trash)
+    trees = _trees_with_trash(trash)
     trash.rmdir()
     (tmp_path / "trash").mkdir()
     with pytest.raises(ProtectedTreeError, match="changed between the check and the open"):
-        open_checked_dir(tmp_path / "trash", (stale.st_dev, stale.st_ino))
+        open_checked_dir(tmp_path / "trash", trees)
 
 
 def test_empty_all_refuses_a_trash_directory_swapped_after_the_check(tmp_path: Path) -> None:
@@ -379,37 +382,37 @@ def test_empty_all_refuses_a_trash_directory_swapped_after_the_check(tmp_path: P
 def test_empty_all_enumerates_from_the_descriptor_it_checked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The half of ``security-auditor-6`` no outcome assertion can see otherwise.
+    """The window itself: the Trash is REPLACED between the ``open`` and the loop.
 
-    The directory at the Trash path is REPLACED between the ``open`` and the
-    first read — the window itself, forced deterministically by wrapping
-    ``open_checked_dir``. Enumerating from the fd yields the entry the check
-    approved (``Album``, which the swapped-in directory does not hold, so the
-    removal fails and names it); enumerating from the path yields ``Decoy`` and
-    removes it. Measured: with ``os.scandir(trash_dir)`` in place of
-    ``os.scandir(fd)`` the rest of this file stays green.
-
-    What it does NOT close is stated in ``empty_all``: the per-entry paths are
-    still built from ``trash_dir``, so the removal targets follow the swap.
+    Forced deterministically by wrapping ``open_checked_dir``. Every name is
+    enumerated, guarded, stat'd and removed through THAT descriptor, so the run
+    acts on the tree the check approved (``Album``, now at ``gone/``) and the
+    directory now standing at the Trash path is not touched. Building
+    ``trash_dir / name`` per entry instead deleted ``Decoy`` and left ``Album``.
     """
     import app.beets.trash_manage as manage
 
     trash = tmp_path / "trash"
-    (trash / "Album").mkdir(parents=True)
+    (trash / "Album" / "art.jpg").parent.mkdir(parents=True)
+    (trash / "Album" / "art.jpg").write_bytes(b"x")
     decoy = tmp_path / "decoy"
     (decoy / "Decoy").mkdir(parents=True)
     real_open = open_checked_dir
 
-    def swapping(path: Path, expected: tuple[int, int] | None) -> int:
-        fd = real_open(path, expected)
+    def swapping(path: Path, protected: ProtectedTrees) -> int:
+        fd = real_open(path, protected)
         os.rename(path, tmp_path / "gone")
         os.rename(decoy, path)
         return fd
 
     monkeypatch.setattr(manage, "open_checked_dir", swapping)
-    with pytest.raises(manage.TrashEmptyPartialError, match="'Album'"):
-        empty_all(trash, origins_dir=origins_for(trash), protected=_trees_for(tmp_path / "music"))
-    assert (trash / "Decoy").is_dir()
+    result = empty_all(
+        trash, origins_dir=origins_for(trash), protected=_trees_for(tmp_path / "music", trash)
+    )
+
+    assert result.removed == 1
+    assert not (tmp_path / "gone" / "Album").exists(), "the entry the check approved"
+    assert (trash / "Decoy").is_dir(), "the swapped-in directory"
 
 
 def test_open_checked_dir_returns_a_usable_descriptor(tmp_path: Path) -> None:
@@ -417,8 +420,7 @@ def test_open_checked_dir_returns_a_usable_descriptor(tmp_path: Path) -> None:
     trash = tmp_path / "trash"
     trash.mkdir()
     (trash / "Album").mkdir()
-    st = os.stat(trash)
-    fd = open_checked_dir(trash, (st.st_dev, st.st_ino))
+    fd = open_checked_dir(trash, _trees_with_trash(trash))
     try:
         assert sorted(entry.name for entry in os.scandir(fd)) == ["Album"]
     finally:
@@ -438,7 +440,7 @@ def test_empty_all_leaves_the_protected_entry_and_removes_the_rest(tmp_path: Pat
     music = tmp_path / "music"
     music.mkdir()
     os.rename(music, trash / "Sneak")
-    trees = _trees_for(trash / "Sneak")
+    trees = _trees_for(trash / "Sneak", trash)
 
     with pytest.raises(ProtectedTreeError) as caught:
         empty_all(trash, origins_dir=origins_for(trash), protected=trees)
@@ -447,6 +449,120 @@ def test_empty_all_leaves_the_protected_entry_and_removes_the_rest(tmp_path: Pat
     assert "Removed 1" in str(caught.value)
     assert (trash / "Sneak").is_dir()
     assert not (trash / "Ordinary").exists()
+
+
+def test_open_checked_dir_refuses_a_trash_it_could_not_stat(tmp_path: Path) -> None:
+    """No identity to compare means no compare, so the open is refused instead.
+
+    ``protected.trash`` is ``None`` whenever the Trash was not there when the
+    request checked it. Skipping the comparison left ``O_NOFOLLOW`` as the only
+    guard, and a rename of the music library onto that path inside the window
+    was measured to pass it and rmtree every artist folder.
+    """
+    trash = tmp_path / "trash"
+    trees = _trees_with_trash(trash)
+    assert trees.trash is None, "the fixture must build the set before the Trash exists"
+    trash.mkdir()
+    (trash / "Album").mkdir()
+
+    with pytest.raises(ProtectedTreeError, match="could not be examined when MusicDrop checked"):
+        open_checked_dir(trash, trees)
+    assert (trash / "Album").is_dir()
+
+
+def test_empty_all_refuses_a_trash_that_is_one_of_the_apps_own_directories(
+    tmp_path: Path,
+) -> None:
+    """The one tree the remover does not walk: the Trash ROOT itself.
+
+    ``empty_all`` compared every ENTRY against the set and the root against
+    nothing, so a bind mount aliasing the Trash onto the music library or the
+    beets dir emptied them — measured, ``removed=2`` with the music tree left
+    empty. The set already knows: first writer wins, so the Trash's own inode is
+    named as the music library when the two are one directory. Here the two
+    settings simply point at the same path, which is the same state without a
+    mount namespace.
+    """
+    trash = tmp_path / "trash"
+    (trash / "Artist").mkdir(parents=True)
+    (trash / "Artist" / "01.flac").write_bytes(b"x")
+    trees = protected_trees(
+        settings=Settings(),
+        music_dir=trash,
+        beets_dir=tmp_path / "absent-beets",
+        trash_dir=trash,
+        origins_dir=tmp_path / "absent-origins",
+        library_path=tmp_path / "absent" / "library.db",
+    )
+
+    with pytest.raises(ProtectedTreeError, match="the Trash directory is the music library"):
+        empty_all(trash, origins_dir=origins_for(trash), protected=trees)
+    assert (trash / "Artist" / "01.flac").exists()
+
+
+def test_a_protected_directory_the_walk_cannot_open_is_still_refused(tmp_path: Path) -> None:
+    """``stat`` needs the parent's ``x`` bit; ``opendir`` needs the ``r`` bit.
+
+    Comparing each directory when the walk REACHED it meant a protected store at
+    mode 000 was never compared at all — measured, the album delete moved the
+    inbox into Trash. Every directory is stat'd from its parent's descriptor
+    instead, so the read bit decides only what is found BELOW it.
+
+    The control is the same tree readable, which must still refuse: this is the
+    permission bit ceasing to matter, not the guard firing on something else.
+    """
+    if os.getuid() == 0:
+        pytest.skip("root reads a mode-000 directory anyway")
+    entry = tmp_path / "entry"
+    store = entry / "inbox"
+    store.mkdir(parents=True)
+    trees = protected_trees(
+        settings=Settings(inbox_dir=str(store)),
+        music_dir=tmp_path / "absent-music",
+        beets_dir=tmp_path / "absent-beets",
+        trash_dir=tmp_path / "absent-trash",
+        origins_dir=tmp_path / "absent-origins",
+        library_path=tmp_path / "absent" / "library.db",
+    )
+    assert protected_match(entry, trees) == "contains the inbox (same inode as MUSICDROP_INBOX_DIR)"
+
+    store.chmod(0o000)
+    try:
+        assert protected_match(entry, trees) == (
+            "contains the inbox (same inode as MUSICDROP_INBOX_DIR)"
+        )
+    finally:
+        store.chmod(0o755)
+
+
+def test_the_refusal_names_how_many_entries_could_not_be_removed(tmp_path: Path) -> None:
+    """The refused raise outranks the partial, so it has to carry both counts.
+
+    Without the failed count an entry the app could not remove was reported
+    nowhere and stayed invisible on every retry, while the sentence told the user
+    the layout was the only thing wrong.
+    """
+    if os.getuid() == 0:
+        pytest.skip("root removes a mode-500 directory's children anyway")
+    trash = tmp_path / "trash"
+    (trash / "Ordinary").mkdir(parents=True)
+    (trash / "Stuck" / "child").mkdir(parents=True)
+    music = tmp_path / "music"
+    music.mkdir()
+    os.rename(music, trash / "Sneak")
+    (trash / "Stuck").chmod(0o500)
+    try:
+        with pytest.raises(ProtectedTreeError) as caught:
+            empty_all(
+                trash,
+                origins_dir=origins_for(trash),
+                protected=_trees_for(trash / "Sneak", trash),
+            )
+    finally:
+        (trash / "Stuck").chmod(0o700)
+
+    assert "'Sneak' is the music library" in str(caught.value)
+    assert "Removed 1, 1 could not be removed" in str(caught.value)
 
 
 def test_empty_one_refuses_a_protected_entry(tmp_path: Path) -> None:
@@ -550,6 +666,136 @@ def test_delete_refuses_an_album_folder_that_holds_an_app_store(
         origins_dir=origins_for(trash),
         protected=protected_for(lib, trash_dir=trash, origins_dir=origins_for(trash)),
     )
+    assert list(lib.albums()) == []
+
+
+def test_restore_refuses_a_trash_entry_that_holds_an_app_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restore is the third mover, and it discarded the set the route had built.
+
+    Both arms relocate the whole entry out of Trash — the move-back straight to
+    the recorded origin, the fallback through a move-import — so the guard sits
+    at the entry point above the branch. The namespace test measures the shape
+    that destroyed data; this one needs no mount and covers both arms.
+
+    The control is the same entry with the store moved out: the restore runs.
+    """
+    from app.beets.trash_manage import restore_album
+    from tests.conftest import build_library
+
+    music = tmp_path / "music"
+    (music / "Artist").mkdir(parents=True)
+    beets_dir = beets_dir_for(tmp_path)
+    lib = build_library(str(beets_dir / "library.db"), str(music))
+    trash = tmp_path / "trash"
+    entry = trash / "Some Album"
+    (entry / "inbox").mkdir(parents=True)
+    monkeypatch.setattr("app.config.settings.inbox_dir", str(entry / "inbox"))
+    trees = protected_for(lib, trash_dir=trash, origins_dir=origins_for(trash))
+
+    with pytest.raises(ProtectedTreeError, match="'Some Album' contains the inbox"):
+        restore_album(
+            lib, str(entry), trash_dir=trash, origins_dir=origins_for(trash), protected=trees
+        )
+    assert (entry / "inbox").is_dir()
+
+    (entry / "inbox").rmdir()
+    assert (
+        restore_album(
+            lib, str(entry), trash_dir=trash, origins_dir=origins_for(trash), protected=trees
+        ).restored
+        is False
+    )
+
+
+def test_return_to_trash_refuses_a_protected_tree(tmp_path: Path) -> None:
+    """The restore's UNDO is a mover as well, and it runs on the library side.
+
+    By the time it runs the tree sits at its origin inside the music library,
+    where the import step may have filed something the forward guard never saw.
+    """
+    from app.beets.trash_manage import _return_to_trash
+
+    origin = tmp_path / "music" / "Album"
+    (origin / "inbox").mkdir(parents=True)
+    entry = tmp_path / "trash" / "Album"
+    trees = protected_trees(
+        settings=Settings(inbox_dir=str(origin / "inbox")),
+        music_dir=tmp_path / "music",
+        beets_dir=tmp_path / "absent-beets",
+        trash_dir=tmp_path / "absent-trash",
+        origins_dir=tmp_path / "absent-origins",
+        library_path=tmp_path / "absent" / "library.db",
+    )
+
+    with pytest.raises(ProtectedTreeError, match="'Album' contains the inbox"):
+        _return_to_trash(origin, entry, protected=trees)
+    assert (origin / "inbox").is_dir()
+
+
+def test_delete_artist_asks_the_guard_before_it_moves_the_first_album(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fan-out's "Nothing was moved." has to be true of the OPERATION.
+
+    Asked per album inside the loop, an artist whose SECOND album held the store
+    answered the partial 500 — "the delete stopped after 1 of 2 albums had been
+    moved to Trash (... Nothing was moved.)" — after the first album's folder was
+    already in Trash and its rows dropped.
+
+    The control is a FLAT library, where every album root IS the music dir and so
+    is in the protected set: those albums take the per-item fallback, which never
+    reaches this guard, so a pre-loop check that did not mirror the branch would
+    refuse every delete on that layout.
+    """
+    from app.beets.delete import delete_artist
+    from tests.conftest import build_library
+
+    music = tmp_path / "music"
+    first = music / "Twosome" / "A First"
+    second = music / "Twosome" / "B Second"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    beets_dir = beets_dir_for(tmp_path)
+    lib = build_library(str(beets_dir / "library.db"), str(music))
+    _add_album(lib, first)
+    _add_album(lib, second)
+    (second / "inbox").mkdir()
+    monkeypatch.setattr("app.config.settings.inbox_dir", str(second / "inbox"))
+    trash = tmp_path / "trash"
+    trees = protected_for(lib, trash_dir=trash, origins_dir=origins_for(trash))
+
+    with pytest.raises(ProtectedTreeError, match="'B Second' contains the inbox"):
+        delete_artist(
+            lib, "Radiohead", trash_dir=trash, origins_dir=origins_for(trash), protected=trees
+        )
+    assert len(list(lib.albums())) == 2
+    assert (first / "01 Track.mp3").exists()
+    assert not trash.exists()
+
+
+def test_delete_artist_still_deletes_on_a_flat_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control for the pre-loop guard: the album root IS the protected music dir."""
+    from app.beets.delete import delete_artist
+    from tests.conftest import build_library
+
+    music = tmp_path / "music"
+    music.mkdir()
+    beets_dir = beets_dir_for(tmp_path)
+    lib = build_library(str(beets_dir / "library.db"), str(music))
+    _add_album(lib, music)
+    trash = tmp_path / "trash"
+    monkeypatch.setattr("app.config.settings.inbox_dir", str(tmp_path / "absent-inbox"))
+    trees = protected_for(lib, trash_dir=trash, origins_dir=origins_for(trash))
+    assert protected_match(music, trees) is not None, "the music dir must be in the set"
+
+    result = delete_artist(
+        lib, "Radiohead", trash_dir=trash, origins_dir=origins_for(trash), protected=trees
+    )
+    assert result.trashed_albums == 1
     assert list(lib.albums()) == []
 
 
@@ -795,90 +1041,8 @@ def test_the_sweep_builds_its_set_from_the_pair_the_layout_check_approved(
 # The alias no spelled rule can see.
 # --------------------------------------------------------------------------
 
-_BIND_PROBE = """
-import subprocess, sys
-from pathlib import Path
 
-from app.beets.library import _require_id
-from app.beets.protected import (
-    ProtectedTreeError, ProtectedTrees, protected_trees, refuse_protected_tree,
-)
-from app.beets.store_layout import StoreLayoutError, check_store_layout
-from app.beets.trash_manage import empty_all
-from app.config import Settings
-
-base = Path(sys.argv[1])
-src = base / "src"
-(src / "music" / "Album").mkdir(parents=True)
-(src / "music" / "Album" / "01.flac").write_bytes(b"x")
-(src / "data").mkdir()
-(src / "data" / "library.db").write_bytes(b"db")
-M, B = src / "music", src / "data"
-T, O = base / "trash", base / "origins"
-T.mkdir(); O.mkdir()
-
-# -v /srv/music/musicdrop:/data/beets — the beets dir reached from inside M.
-inside = M / "musicdrop"
-inside.mkdir()
-subprocess.run(["mount", "--bind", str(B), str(inside)], check=True)
-assert inside.samefile(B), "the fixture did not alias the beets dir"
-
-def layout():
-    try:
-        check_store_layout(music_dir=M, beets_dir=B, trash_dir=T, origins_dir=O,
-                           library_path=B / "library.db", settings=Settings())
-        return "ALLOWED"
-    except StoreLayoutError:
-        return "REFUSED"
-
-def trees():
-    return protected_trees(settings=Settings(), music_dir=M, beets_dir=B, trash_dir=T,
-                           origins_dir=O, library_path=B / "library.db")
-
-print("spelled-rule", layout())
-try:
-    refuse_protected_tree(inside, trees(), action="moved")
-    print("mover ALLOWED")
-except ProtectedTreeError as exc:
-    print("mover REFUSED")
-
-# The same alias as a Trash entry, so Empty Trash is what walks it.
-entry = T / "Looks Like An Album"
-entry.mkdir()
-subprocess.run(["mount", "--bind", str(B), str(entry)], check=True)
-try:
-    empty_all(T, origins_dir=O, protected=ProtectedTrees(ids={}, trash=None))
-    print("control-empty-all RAN")
-except ProtectedTreeError:
-    print("control-empty-all REFUSED")
-except Exception as exc:
-    # rmtree unlinks the CONTENTS and then fails to rmdir the mount point
-    # itself (EBUSY), so the loss lands before the error does.
-    print("control-empty-all", type(exc).__name__)
-print("control-lost-the-db", not (B / "library.db").exists())
-
-(B / "library.db").write_bytes(b"db")
-try:
-    empty_all(T, origins_dir=O, protected=trees())
-    print("guarded-empty-all RAN")
-except ProtectedTreeError:
-    print("guarded-empty-all REFUSED")
-print("db-survives", (B / "library.db").exists())
-"""
-
-
-def _unshare_works() -> bool:
-    """Whether this box grants an unprivileged mount namespace."""
-    try:
-        done = subprocess.run(
-            ["unshare", "-Urm", "true"], capture_output=True, timeout=30, check=False
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return done.returncode == 0
-
-
-@pytest.mark.skipif(not _unshare_works(), reason="no unprivileged mount namespace on this box")
+@pytest.mark.skipif(not unshare_works(), reason="no unprivileged mount namespace on this box")
 def test_a_bind_mounted_beets_dir_is_refused_where_the_spelled_rule_allows_it(
     tmp_path: Path,
 ) -> None:
@@ -887,33 +1051,50 @@ def test_a_bind_mounted_beets_dir_is_refused_where_the_spelled_rule_allows_it(
     One child process, four measurements: ``check_store_layout`` ALLOWS
     ``-v /srv/music/musicdrop:/data/beets`` (a mount point's ancestors are its
     own, so no "contains" row can reach the source); the mover's guard refuses
-    it; ``empty_all`` with an EMPTY set — this tree before the guard — deletes
+    it; ``empty_all`` with an EMPTY id set — this tree before the guard — deletes
     ``library.db`` through a Trash entry aliased the same way; and with the real
     set it refuses and the database survives.
     """
     work = tmp_path / "work"
     work.mkdir()
-    script = tmp_path / "probe.py"
-    script.write_text(_BIND_PROBE, encoding="utf-8")
-    backend = Path(__file__).resolve().parent.parent
-    env = {**os.environ, "PYTHONPATH": str(backend)}
-    done = subprocess.run(
-        ["unshare", "-Urm", sys.executable, str(script), str(work)],
-        capture_output=True,
-        text=True,
-        timeout=180,
-        cwd=str(backend),
-        env=env,
-        check=False,
-    )
-    assert done.returncode == 0, done.stderr
-    lines = [line for line in done.stdout.splitlines() if line and not line.startswith(" ")]
-    assert "spelled-rule ALLOWED" in lines, done.stdout
-    assert "mover REFUSED" in lines, done.stdout
-    assert "control-empty-all TrashEmptyPartialError" in lines, done.stdout
-    assert "control-lost-the-db True" in lines, done.stdout
-    assert "guarded-empty-all REFUSED" in lines, done.stdout
-    assert "db-survives True" in lines, done.stdout
+    lines = run_probe("bind_beets_dir", work)
+
+    assert "spelled-rule ALLOWED" in lines, lines
+    assert "mover REFUSED" in lines, lines
+    assert "control-empty-all TrashEmptyPartialError" in lines, lines
+    assert "control-lost-the-db True" in lines, lines
+    assert "guarded-empty-all REFUSED" in lines, lines
+    assert "db-survives True" in lines, lines
+
+
+@pytest.mark.skipif(not unshare_works(), reason="no unprivileged mount namespace on this box")
+def test_restore_refuses_a_trash_entry_that_is_the_music_library(tmp_path: Path) -> None:
+    """Restore is a mover, and this is the shape where it deleted the library.
+
+    ``-v <host>/data:/data`` beside ``-v <host>/data/trash/music:/music`` gives
+    the Trash an entry that IS the music library by inode while every spelled row
+    allows the layout. A stale ``music`` origin record then sent the move-back
+    across the two mounts: EXDEV, ``copytree`` into a destination inside its own
+    source, ``rmtree`` of the source.
+
+    Two independent refusals, so either alone holds: the request's protected set
+    reaching ``restore_album``, and — with that set emptied — ``move_no_merge``
+    answering EINVAL (22) because the destination's ancestry reaches the source
+    by identity, which is what ``os.rename`` answers for the same shape on one
+    filesystem.
+    """
+    work = tmp_path / "work"
+    work.mkdir()
+    lines = run_probe("bind_trash_holds_music", work)
+
+    assert "spelled-rule ALLOWED" in lines, lines
+    assert "guarded-restore REFUSED" in lines, lines
+    assert "guarded-track-survives True" in lines, lines
+    assert "bare-move REFUSED 22" in lines, lines
+    assert "bare-track-survives True" in lines, lines
+    assert "bare-origin-absent True" in lines, lines
+    assert "unguarded-restore TrashRestoreIncompleteError" in lines, lines
+    assert "unguarded-track-survives True" in lines, lines
 
 
 def test_the_guard_reads_identity_not_the_spelling(tmp_path: Path) -> None:

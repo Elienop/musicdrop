@@ -221,7 +221,13 @@ def test_restore_imports_as_is_and_empties_folder(tmp_path: Path) -> None:
         folder / "01 Dreams.flac", artist="2 Brothers", album="Dreams", title="Dreams", track=1
     )
 
-    result = restore_album(lib, str(folder), trash_dir=trash, origins_dir=origins_for(trash))
+    result = restore_album(
+        lib,
+        str(folder),
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
+        protected=protected_for(lib),
+    )
 
     assert result.restored is True
     assert result.reason == "restored"
@@ -247,7 +253,13 @@ def test_restore_lands_the_album_when_the_user_config_disables_autotag(tmp_path:
         folder / "01 Dreams.flac", artist="2 Brothers", album="Dreams", title="Dreams", track=1
     )
 
-    result = restore_album(lib, str(folder), trash_dir=trash, origins_dir=origins_for(trash))
+    result = restore_album(
+        lib,
+        str(folder),
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
+        protected=protected_for(lib),
+    )
 
     assert result.restored is True
     assert result.reason == "restored"
@@ -277,7 +289,11 @@ def test_restore_lands_an_album_whose_folder_name_is_not_valid_utf8(tmp_path: Pa
     )
 
     result = restore_album(
-        lib, os.fsdecode(raw_folder), trash_dir=trash, origins_dir=origins_for(trash)
+        lib,
+        os.fsdecode(raw_folder),
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
+        protected=protected_for(lib),
     )
 
     assert result.restored is True
@@ -305,7 +321,13 @@ def test_restore_duplicate_skips_and_keeps_files(tmp_path: Path) -> None:
         folder / "01 Dreams.flac", artist="2 Brothers", album="Dreams", title="Dreams", track=1
     )
 
-    result = restore_album(lib, str(folder), trash_dir=trash, origins_dir=origins_for(trash))
+    result = restore_album(
+        lib,
+        str(folder),
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
+        protected=protected_for(lib),
+    )
 
     assert result.restored is False
     assert result.reason == "already_in_library"

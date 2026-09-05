@@ -125,6 +125,7 @@ def _restore(lib: Library, entry: Path, tmp_path: Path) -> RestoreResult:
         str(entry),
         trash_dir=tmp_path / "trash",
         origins_dir=origins_for(tmp_path / "trash"),
+        protected=protected_for(lib),
     )
 
 
@@ -410,7 +411,14 @@ def test_a_failure_creating_the_destination_says_nothing_moved(tmp_path: Path) -
     origins = origins_for(tmp_path / "trash")
 
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=origins)
+        _restore_to_origin(
+            lib,
+            entry,
+            origin,
+            trash_dir=tmp_path / "trash",
+            origins_dir=origins,
+            protected=protected_for(lib),
+        )
 
     message = str(ei.value)
     assert f"could not create the folder '{origin.parent}'" in message, "the real cause"
@@ -448,7 +456,14 @@ def test_a_part_way_move_names_each_path_in_its_own_phrase(
     origins = origins_for(tmp_path / "trash")
 
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        _restore_to_origin(lib, entry, origin, trash_dir=tmp_path / "trash", origins_dir=origins)
+        _restore_to_origin(
+            lib,
+            entry,
+            origin,
+            trash_dir=tmp_path / "trash",
+            origins_dir=origins,
+            protected=protected_for(lib),
+        )
 
     message = str(ei.value)
     assert "could not move the folder back out of Trash" in message
@@ -479,7 +494,7 @@ def test_return_to_trash_names_the_retaken_entry_in_its_own_phrase(tmp_path: Pat
     (entry / "stranger.flac").write_bytes(b"\x00")
 
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        _return_to_trash(origin, entry)
+        _return_to_trash(origin, entry, protected=protected_for())
 
     message = str(ei.value)
     assert f"at the origin '{origin}'" in message
@@ -509,7 +524,7 @@ def test_return_to_trash_names_each_path_when_the_move_itself_fails(
 
     monkeypatch.setattr("app.beets.trash_manage.move_no_merge", _fails)
     with pytest.raises(TrashRestoreIncompleteError) as ei:
-        _return_to_trash(origin, entry)
+        _return_to_trash(origin, entry, protected=protected_for())
 
     message = str(ei.value)
     assert "the restore did not land" in message

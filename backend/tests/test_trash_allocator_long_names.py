@@ -201,7 +201,9 @@ def test_a_husk_at_the_name_limit_moves_back_to_where_it_came_from(tmp_path: Pat
         protected=protected_for(trash_dir=trash, origins_dir=origins),
     )
 
-    result = restore_album(lib, str(dest), trash_dir=trash, origins_dir=origins)
+    result = restore_album(
+        lib, str(dest), trash_dir=trash, origins_dir=origins, protected=protected_for(lib)
+    )
 
     assert result.restored is True
     assert (husk / "cover.jpg").is_file(), "the husk must be back at its full-length name"
