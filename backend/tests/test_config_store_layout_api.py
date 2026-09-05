@@ -309,6 +309,39 @@ def test_apply_lets_an_unparseable_config_reach_the_rebuild(
     assert "Apply failed during rebuild" in r.json()["detail"]["message"]
 
 
+def test_apply_answers_its_own_body_for_the_two_shapes_ruamel_does_not_call_yaml(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """``RecursionError`` and ``ValueError`` are parse failures too.
+
+    The pre-check runs OUTSIDE the rebuild's handler, so an on-disk document
+    ruamel answers with either of those escaped the route as a bare 500 with no
+    body at all. Both are hand-editable: a 5000-digit integer hits CPython's
+    4300-digit ``int()`` limit, and 400 levels of nesting exhaust the parser.
+
+    The route arm is the digit one — a 400-deep document reaches the snapshot
+    build, whose PyYAML dump has its own recursion limit — so the nesting shape
+    is asked of the pre-check directly. Its answer is ``None``: not a layout
+    refusal, the same silence the syntax error above gets.
+    """
+    from app.beets.config_editor import on_disk_layout_error
+    from app.config import settings
+
+    beets_library.config_path.write_text(
+        f"library: library.db\ndirectory: {'9' * 5000}\n", encoding="utf-8"
+    )
+
+    r = client.post("/api/config/apply")
+
+    assert r.status_code == 500, r.text
+    assert set(r.json()["detail"]) == {"message", "recovery"}
+
+    beets_library.config_path.write_text(
+        "".join(" " * level + "b:\n" for level in range(400)), encoding="utf-8"
+    )
+    assert on_disk_layout_error(beets_library, settings) is None
+
+
 # --------------------------------------------------------------------------
 # ``include:`` — the key that decides ``directory:`` from a file the editor is
 # not showing.

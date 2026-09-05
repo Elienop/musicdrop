@@ -740,10 +740,15 @@ def on_disk_layout_error(handle: LibraryHandle, settings: Settings) -> StoreLayo
     question — ``setup_beets`` will fail on the same file moments later and
     :func:`apply` already answers 500 with the restart hint — and returning a
     layout refusal for a YAML syntax error would name the wrong problem.
+
+    ``RecursionError`` and ``ValueError`` are the two Save and Validate also
+    catch around ``parse_yaml``: ruamel raises them past the nesting limit and on
+    an over-long integer. This call sits OUTSIDE Apply's rebuild handler, so
+    either one left the route answering a bare 500.
     """
     try:
         doc = parse_yaml(handle.config_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, YAMLError):
+    except (OSError, UnicodeDecodeError, YAMLError, RecursionError, ValueError):
         return None
     if not isinstance(doc, CommentedMap):
         return None
