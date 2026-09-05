@@ -98,6 +98,11 @@ def test_a_trash_dir_that_will_not_resolve_still_gets_the_one_error_line(
 
     refusals = [r for r in caplog.records if r.name == "uvicorn.error"]
     assert len(refusals) == 1, [(r.name, r.getMessage()) for r in caplog.records]
+    # No traceback on the record: every one of these arms re-raises, and
+    # Starlette sends that traceback on as the ``lifespan.startup.failed``
+    # message for uvicorn to print. Logged with one here, the operator read the
+    # same traceback twice per refused boot.
+    assert refusals[0].exc_info is None
     message = refusals[0].getMessage()
     assert "refusing to start" in message
     assert "MUSICDROP_TRASH_DIR could not be resolved" in message
@@ -138,11 +143,15 @@ def test_an_unreadable_import_bank_gets_the_one_error_line_too(
     refusals = [r for r in caplog.records if r.name == "uvicorn.error"]
     assert len(refusals) == 1, [(r.name, r.getMessage()) for r in caplog.records]
     assert refusals[0].levelno == logging.ERROR
+    assert refusals[0].exc_info is None
     message = refusals[0].getMessage()
     assert "refusing to start" in message
     assert "MUSICDROP_BANK_DIR" in message
     assert "\n" not in message
     assert "bank\\nFAKE-LEVEL" in message
+    # The path is repr'd as the STRING it is: ``%r`` of a ``Path`` wraps it in
+    # ``PosixPath(...)``, which the sibling refusals do not print.
+    assert "PosixPath" not in message
 
 
 def test_the_origin_store_inside_the_library_refuses_to_start(
@@ -278,6 +287,7 @@ def test_a_library_beets_cannot_open_gets_the_one_error_line_too(
 
     refusals = [r for r in caplog.records if r.name == "uvicorn.error"]
     assert len(refusals) == 1, [(r.name, r.getMessage()) for r in caplog.records]
+    assert refusals[0].exc_info is None
     message = refusals[0].getMessage()
     assert "refusing to start" in message
     assert "MUSICDROP_BEETS_DIR" in message
