@@ -1051,18 +1051,15 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - ~~**The orphan sweep's ignore list does not protect an ignored dir's ANCESTORS.**~~ —
   **FIXED on `fix/trash-root-containment`** (the PR number and squash sha go here after
-  merge), same series. `orphans._drop_excluded_ancestors` folds each excluded root's
-  ancestor chain into the drop, and `orphans._exclude_ids` drops (with one WARNING) an
-  exclude root at or above the walk root. Exclusion is decided by inode, so a symlinked or
-  bind-mounted library no longer misses it.
+  merge), same series. `orphans._drop_excluded_ancestors` folds each excluded root's ancestor
+  chain into the drop, and `orphans._exclude_ids` drops (with one WARNING) an exclude root at
+  or above the walk root. Exclusion is by inode, not by spelling.
 
 - ~~**The layout predicate compares SPELLINGS, so an alias walks past it; and a refused
   Reorganize keeps the job slot.**~~ — **FIXED on `fix/trash-root-containment`** (PR number
-  and squash sha after merge), found by the 2026-09-04 review round of the two entries
-  above. A bind mount gives one directory two spellings: `-v /srv/music/musicdrop:/data/beets`
-  booted clean and Empty Trash removed the beets dir. `app/beets/protected.py` re-asks by
-  `(st_dev, st_ino)` at the moment a tree is moved or removed; `reg.start` now runs after
-  the store check, so a 503 no longer leaves `phase=running` until restart.
+  and squash sha after merge), found by the 2026-09-04 review round of the two entries above.
+  `app/beets/protected.py` re-asks by `(st_dev, st_ino)` at the moment a tree is moved or
+  removed; `reg.start` runs after the store check, so a 503 no longer leaves `phase=running`.
 
   Residuals, accepted. This list is the one place they live; the modules point here.
   * A path that does not exist yet has no inode, so an alias onto a not-yet-created Trash is

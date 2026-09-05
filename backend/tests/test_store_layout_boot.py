@@ -301,8 +301,11 @@ def test_the_refusal_says_where_this_start_already_wrote(
             pass  # pragma: no cover - the lifespan raises before the body runs
 
     message = next(r.getMessage() for r in caplog.records if r.name == "uvicorn.error")
-    assert "Files this start created may be in" in message, message
+    assert "files this start created may be in" in message, message
     assert repr(str(beets)) in message, message
+    # One clause on the fix sentence, not a fourth sentence: the line the
+    # operator reads is three.
+    assert message.count(". ") + message.endswith(".") == 3, message
     assert (beets / "library.db").exists()  # the files the sentence is about
 
 

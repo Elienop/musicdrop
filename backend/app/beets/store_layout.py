@@ -51,7 +51,6 @@ __all__ = [
     "checked_protected_trees",
     "checked_store_dirs",
     "effective_config_paths",
-    "handle_music_and_library",
     "layout_check_for_config",
     "lib_music_and_library",
 ]
@@ -550,11 +549,6 @@ def lib_music_and_library(lib: Any) -> tuple[Path, Path]:
     return Path(_music_dir(lib)), Path(os.fsdecode(lib.path))
 
 
-def handle_music_and_library(handle: LibraryHandle) -> tuple[Path, Path]:
-    """:func:`lib_music_and_library` for a handle."""
-    return lib_music_and_library(handle.lib)
-
-
 def checked_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path, Path]:
     """The ``(trash_dir, origins_dir)`` pair, checked at the moment of use.
 
@@ -569,7 +563,7 @@ def checked_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path,
             answer 503 with the message.
     """
     trash, origins = _resolve_store_dirs(settings, handle)
-    music, library = handle_music_and_library(handle)
+    music, library = lib_music_and_library(handle.lib)
     check_store_layout(
         music_dir=music,
         beets_dir=handle.beets_dir,
@@ -591,7 +585,7 @@ def checked_protected_trees(
     its own). Separate from that call because the other four of its six callers
     do neither and would pay a dozen stats for nothing.
     """
-    music, library = handle_music_and_library(handle)
+    music, library = lib_music_and_library(handle.lib)
     return protected_trees(
         settings=settings,
         music_dir=music,

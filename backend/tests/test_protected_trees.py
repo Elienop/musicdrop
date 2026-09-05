@@ -438,6 +438,39 @@ def test_empty_all_leaves_the_protected_entry_and_removes_the_rest(tmp_path: Pat
     assert not (trash / "Ordinary").exists()
 
 
+def test_two_refused_entries_read_as_two(tmp_path: Path) -> None:
+    """Plural wording, and the entries that could not be removed by name.
+
+    The sentence said "move that entry out of Trash" over two of them, and the
+    stuck entry was a bare count while the partial twin names them.
+    """
+    if os.getuid() == 0:
+        pytest.skip("root removes a mode-000 entry anyway")
+    trash = tmp_path / "trash"
+    for name in ("bank", "inbox", "ordinary", "stuck"):
+        (trash / name).mkdir(parents=True)
+    (trash / "stuck" / "01.flac").write_bytes(b"x")
+    os.chmod(trash / "stuck", 0o500)
+    trees = protected_trees(
+        settings=Settings(bank_dir=str(trash / "bank"), inbox_dir=str(trash / "inbox")),
+        music_dir=tmp_path / "absent-music",
+        beets_dir=tmp_path / "absent-beets",
+        trash_dir=trash,
+        origins_dir=tmp_path / "absent-origins",
+        library_path=tmp_path / "absent" / "library.db",
+    )
+
+    try:
+        with pytest.raises(ProtectedTreeError) as caught:
+            empty_all(trash, origins_dir=origins_for(trash), protected=trees)
+    finally:
+        os.chmod(trash / "stuck", 0o700)
+
+    message = str(caught.value)
+    assert "move those entries out of Trash" in message, message
+    assert "1 could not be removed ('stuck')" in message, message
+
+
 def test_open_checked_dir_refuses_a_trash_it_could_not_stat(tmp_path: Path) -> None:
     """No identity to compare means no compare, so the open is refused instead.
 
@@ -618,11 +651,12 @@ def test_empty_one_refuses_a_protected_entry(tmp_path: Path) -> None:
 def test_trash_folder_refuses_a_husk_that_holds_the_inbox(tmp_path: Path) -> None:
     """The orphan sweep's mover, on a shape nothing else stops today.
 
-    ``_ignore_dirs`` (``api/reorganize.py``) excludes the export dir, the origin
-    store, the beets dir and the database's folder — not the inbox — and the
-    layout rule has no row for an inbox inside the music library. So
+    The mover is driven directly here, so the route's exclusion list stands
+    down: ``_ignore_dirs`` (``api/reorganize.py``) is built from
+    ``protected_entries`` and does cover the inbox, but the layout rule has no
+    row for an inbox inside the music library. So
     ``MUSICDROP_INBOX_DIR=<music>/Downloads/inbox`` leaves ``Downloads``
-    audio-free and reportable, and the mover takes its whole subtree.
+    audio-free and reportable, and the mover would take its whole subtree.
 
     The control is the same husk with the inbox moved out: it IS trashed.
     """
@@ -946,9 +980,10 @@ def test_the_orphan_sweep_skips_a_protected_candidate_with_one_warning(
     """A refused husk costs the run a WARNING, not the whole pass.
 
     The control is the ordinary husk beside it: it still reaches Trash, so the
-    ``continue`` skips ONE candidate rather than ending the loop. The refused
-    one is an inbox inside the library, which the sweep's exclusion list does
-    not cover (see :func:`test_trash_folder_refuses_a_husk_that_holds_the_inbox`).
+    ``continue`` skips ONE candidate rather than ending the loop. The refused one
+    is an inbox inside the library, reached here with ``ignore_dirs=()`` so the
+    route's own exclusion list — which does cover the inbox — stands down (see
+    :func:`test_trash_folder_refuses_a_husk_that_holds_the_inbox`).
     """
     from app.beets.orphans import find_orphan_folders
     from app.reorganize_jobs.registry import ReorganizeRegistry

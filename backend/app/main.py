@@ -96,24 +96,29 @@ def _boot_log() -> logging.Logger:
     """The logger a refusal to start goes to.
 
     ``uvicorn.error`` and not this module's own: under the Dockerfile CMD an
-    app-namespace record never reaches the container's output at all, and the
-    operator grepping for why the process died has only ``docker logs``.
+    app-namespace record reaches stderr only through logging's ``lastResort``
+    handler, with no level tag — and the operator grepping for why the process
+    died has only ``docker logs``.
     """
     return logging.getLogger("uvicorn.error")
 
 
-def _leftovers_note(handle: LibraryHandle) -> str:
-    """Where to look for what this start wrote before the layout gate refused it.
+def _refusal_with_leftovers(refusal: str, handle: LibraryHandle) -> str:
+    """The refusal, with where this start already wrote folded into its last sentence.
 
     beets' startup runs first — it is what supplies the ``directory:`` and
     ``library:`` this check compares — so this is the earliest honest point. Two
     directories, not a file list: a refused ``MUSICDROP_BEETS_DIR=<music>`` left
     13 files in the music library, a refused ``library: trash/library.db`` left
     12 under Trash. ``repr``, like every other path this module logs.
+
+    A clause on the refusal's own fix sentence rather than a fourth sentence,
+    which is what put this line past the three the operator reads.
     """
     db_dir = Path(os.fsdecode(handle.lib.path)).parent
     places = sorted({str(handle.beets_dir), str(db_dir)})
-    return f" Files this start created may be in {', '.join(repr(p) for p in places)}."
+    where = ", ".join(repr(p) for p in places)
+    return f"{refusal.rstrip().removesuffix('.')}; files this start created may be in {where}."
 
 
 def _build_artist_image_service(
@@ -180,7 +185,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         boot_trash_dir, boot_origins_dir = checked_store_dirs(settings, handle)
     except StoreLayoutError as exc:
-        _boot_log().error("refusing to start: %s%s", exc, _leftovers_note(handle))
+        _boot_log().error("refusing to start: %s", _refusal_with_leftovers(str(exc), handle))
         # Give back the SQLite connection ``_resolve_library`` just opened. The
         # raise below skips the ``finally`` teardown further down (it has not
         # been entered yet), so this is the only place that can.

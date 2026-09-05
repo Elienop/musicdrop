@@ -22,7 +22,7 @@ from app.beets.reorganize import album_scope_label, plan_reorganize
 from app.beets.store_layout import (
     StoreLayoutError,
     checked_store_dirs,
-    handle_music_and_library,
+    lib_music_and_library,
 )
 from app.events.emit import emit_library_changed
 from app.library_busy import raise_if_library_busy
@@ -110,7 +110,7 @@ def _ignore_dirs(app: object, trash_dir: Path, origins_dir: Path) -> tuple[Path,
     folder as skipped.
     """
     handle: LibraryHandle = app.state.beets_library  # type: ignore[attr-defined]  # app duck-typed (object)
-    music, library_path = handle_music_and_library(handle)
+    music, library_path = lib_music_and_library(handle.lib)
     entries = protected_entries(
         settings=_settings(app),  # type: ignore[arg-type]  # app duck-typed (object)
         music_dir=music,

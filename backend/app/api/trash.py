@@ -64,8 +64,7 @@ _TRASH_RESTORE_FAILED_RESPONSE: Final = {
 #: Every route here resolves the Trash / origin-store pair per request and runs
 #: the containment check on what it resolved to, so every one of them can answer
 #: this. One sentence for all three, and it says nothing about what was left:
-#: ``DELETE /api/trash/all`` removes every unprotected entry BEFORE it refuses,
-#: and the layout refusal itself names the cause, not the leftovers.
+#: ``DELETE /api/trash/all`` removes every unprotected entry BEFORE it refuses.
 _TRASH_LAYOUT_REFUSED_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": "A store-layout or identity refusal; the message names the cause.",
@@ -79,8 +78,8 @@ _TRASH_EMPTY_PARTIAL_RESPONSE: Final = {
 }
 #: A move-back restore writes INTO the music library, so it answers an
 #: unavailable music share the way delete does rather than falling into the
-#: blanket 500. Restore has that cause; the two delete routes have the identity
-#: guard. OpenAPI carries one description per status, so this one says neither
+#: blanket 500. Restore answers both causes; the delete routes answer the
+#: identity guard. OpenAPI carries one description per status, so this one says neither
 #: and points at the message.
 _TRASH_LIBRARY_UNAVAILABLE_RESPONSE: Final = {
     "model": ErrorDetail,

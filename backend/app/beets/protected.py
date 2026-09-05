@@ -5,8 +5,8 @@ ancestors are its own rather than the source's, so a bind mount whose mount
 point is the inner path passes every "contains" row — measured with ``-v
 /srv/music/musicdrop:/data/beets``, which booted clean and let Empty Trash
 remove the beets dir. The identity question is asked again where a tree is moved
-or removed, against the ``(st_dev, st_ino)`` of every DIRECTORY in it: an album
-folder costs 1-3 stats, the Trash one per entry.
+or removed, against the ``(st_dev, st_ino)`` of every DIRECTORY in it: one stat
+per directory in the tree it walks.
 
 A leaf module — ``app.config`` and nothing else of this app's — so the movers,
 the remover and ``store_layout`` can all reach it. Residuals live in one place,
@@ -21,7 +21,7 @@ import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal, NamedTuple
+from typing import Final, Literal
 
 from app.config import Settings, app_owned_dirs, export_dir
 
@@ -172,22 +172,20 @@ def _note_walk_error(exc: OSError) -> None:
     logger.warning("the protected-tree guard could not read %r: %s", str(exc.filename), exc)
 
 
-class _Match(NamedTuple):
-    """Which of the guard's two answers this is, and how it reads."""
+def _match(
+    root: str | Path, protected: ProtectedTrees, dir_fd: int | None
+) -> tuple[bool, str] | None:
+    """The walk both public forms run. ``None`` when nothing in the tree is ours.
 
-    is_root: bool
-    clause: str
-
-
-def _match(root: str | Path, protected: ProtectedTrees, dir_fd: int | None) -> _Match | None:
-    """The walk both public forms run. ``None`` when nothing in the tree is ours."""
+    ``(is the root itself, how the answer reads)``.
+    """
     top = str(root)
     st = _own_stat(top, dir_fd)
     if st is None or not stat.S_ISDIR(st.st_mode):
         return None
     found = protected.ids.get((st.st_dev, st.st_ino))
     if found is not None:
-        return _Match(True, f"is {found[0]} (same inode as {found[1]})")
+        return (True, f"is {found[0]} (same inode as {found[1]})")
     try:
         for _dirpath, dirs, _files, fd in os.fwalk(top, onerror=_note_walk_error, dir_fd=dir_fd):
             for name in dirs:
@@ -196,7 +194,7 @@ def _match(root: str | Path, protected: ProtectedTrees, dir_fd: int | None) -> _
                     continue
                 found = protected.ids.get((child.st_dev, child.st_ino))
                 if found is not None:
-                    return _Match(False, f"contains {found[0]} (same inode as {found[1]})")
+                    return (False, f"contains {found[0]} (same inode as {found[1]})")
     except OSError as exc:
         # ``os.fwalk`` hands a sub-directory it cannot open to ``onerror`` and
         # RE-RAISES for the ROOT. Same trade either way: the root's own identity
@@ -224,7 +222,7 @@ def protected_match(
     holding the Trash open asks about an entry of THAT directory.
     """
     hit = _match(root, protected, dir_fd)
-    return None if hit is None else hit.clause
+    return None if hit is None else hit[1]
 
 
 def protected_tree_error(root: str | Path, clause: str, action: _Action) -> ProtectedTreeError:
@@ -238,7 +236,7 @@ def refuse_protected_tree(root: str | Path, protected: ProtectedTrees, *, action
     """Raise if any directory at or under ``root`` is one of the app's own."""
     hit = _match(root, protected, None)
     if hit is not None:
-        raise protected_tree_error(root, hit.clause, action)
+        raise protected_tree_error(root, hit[1], action)
 
 
 def refuse_a_held_store(root: str | Path, protected: ProtectedTrees, *, action: _Action) -> bool:
@@ -251,8 +249,9 @@ def refuse_a_held_store(root: str | Path, protected: ProtectedTrees, *, action: 
     hit = _match(root, protected, None)
     if hit is None:
         return False
-    if not hit.is_root:
-        raise protected_tree_error(root, hit.clause, action)
+    is_root, clause = hit
+    if not is_root:
+        raise protected_tree_error(root, clause, action)
     return True
 
 

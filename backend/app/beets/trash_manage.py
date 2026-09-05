@@ -930,6 +930,12 @@ def _holds_media(folder: Path) -> bool:
     return False
 
 
+def _capped(names: list[str]) -> str:
+    """Up to five names, then a count: Trash can be large and this lands in a body."""
+    shown = ", ".join(repr(n) for n in names[:5])
+    return shown + (f" and {len(names) - 5} more" if len(names) > 5 else "")
+
+
 def _return_to_trash(origin: Path, entry: Path) -> None:
     """Undo a move-back whose import did not land. Raises if it cannot.
 
@@ -1155,23 +1161,20 @@ def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) 
     if refused:
         shown = "; ".join(refused[:5])
         more = f" and {len(refused) - 5} more" if len(refused) > 5 else ""
-        # The failed COUNT rides along: this raise outranks the partial below, so
-        # without it an entry that could not be removed is reported nowhere and
-        # stays invisible on every retry.
-        stuck = f", {len(failed)} could not be removed" if failed else ""
+        # The failed entries ride along NAMED, the way the partial below names
+        # them: this raise outranks it, so a bare count left an entry that could
+        # not be removed invisible on every retry.
+        stuck = f", {len(failed)} could not be removed ({_capped(failed)})" if failed else ""
+        those = "those entries" if len(refused) > 1 else "that entry"
         raise ProtectedTreeError(
             f"Refused: {shown}{more}. Removed {removed}{stuck};"
-            " move that entry out of Trash, then retry."
+            f" move {those} out of Trash, then retry."
         )
     if failed:
-        # Named, not just counted: the user's next move is to look at them, and
-        # a bare number does not say which. Capped because Trash can be large
-        # and this lands in an HTTP body a browser renders.
-        shown = ", ".join(repr(n) for n in failed[:5])
-        more = f" and {len(failed) - 5} more" if len(failed) > 5 else ""
+        # Named, not just counted: the user's next move is to look at them.
         raise TrashEmptyPartialError(
             f"removed {removed} of {removed + len(failed)}."
-            f" {len(failed)} could not be removed and are still in Trash: {shown}{more}."
+            f" {len(failed)} could not be removed and are still in Trash: {_capped(failed)}."
             f" The first failure was: {_one_full_stop(str(first))}"
         )
     # Suppressed rather than allowed to escape: everything above has already
