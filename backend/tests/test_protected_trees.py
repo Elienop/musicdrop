@@ -652,6 +652,86 @@ def test_empty_one_refuses_a_protected_entry(tmp_path: Path) -> None:
     assert empty_one(str(trash / "Ordinary"), origins_dir=origins, protected=trees).removed == 1
 
 
+def _rename_onto_the_entry_after_the_guard(
+    monkeypatch: pytest.MonkeyPatch, *, entry: Path, impostor: Path, away: Path
+) -> list[bool]:
+    """Win the guard-to-removal window deterministically. Returns the "it fired" flag.
+
+    The seam is the guard itself: the moment it answers, the entry's NAME is made
+    to mean something else. Measured on this branch, the window is 3 µs for a
+    52-directory entry — small, and it was won on the first attempt with a rename
+    loop, in both delete paths.
+    """
+    import app.beets.trash_manage as manage
+
+    real = protected_match
+    fired: list[bool] = []
+
+    def racing(
+        root: str | Path, protected: ProtectedTrees, *, dir_fd: int | None = None
+    ) -> str | None:
+        clause = real(root, protected, dir_fd=dir_fd)
+        if not fired:
+            fired.append(True)
+            os.rename(entry, away)
+            os.rename(impostor, entry)
+        return clause
+
+    monkeypatch.setattr(manage, "protected_match", racing)
+    return fired
+
+
+def test_empty_all_removes_the_entry_it_guarded_and_not_the_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A name is one identity at the guard and another at the ``rmtree``.
+
+    Measured before this: with ``<M>`` renamed onto the entry's name inside that
+    window, ``empty_all`` answered ``removed=1`` and the music library's
+    ``01.flac`` was gone — the Trash ROOT was pinned by ``open_checked_dir``, the
+    entry name was not. The entry is opened once and the removal runs through
+    THAT descriptor, so the swap costs the entry its ``rmdir`` and nothing else.
+    """
+    trash = tmp_path / "trash"
+    (trash / "Album").mkdir(parents=True)
+    (trash / "Album" / "art.jpg").write_bytes(b"x")
+    music = tmp_path / "music"
+    music.mkdir()
+    (music / "01.flac").write_bytes(b"x")
+    trees = _trees_for(music, trash)
+    fired = _rename_onto_the_entry_after_the_guard(
+        monkeypatch, entry=trash / "Album", impostor=music, away=tmp_path / "away"
+    )
+
+    with pytest.raises(ProtectedTreeError, match="changed between the check and the removal"):
+        empty_all(trash, origins_dir=origins_for(trash), protected=trees)
+
+    assert fired == [True]
+    assert (trash / "Album" / "01.flac").exists(), "the music library, under the entry's name"
+
+
+def test_empty_one_removes_the_entry_it_guarded_and_not_the_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same window, in the per-entry route. Same measurement, same answer."""
+    trash = tmp_path / "trash"
+    (trash / "Album").mkdir(parents=True)
+    (trash / "Album" / "art.jpg").write_bytes(b"x")
+    music = tmp_path / "music"
+    music.mkdir()
+    (music / "01.flac").write_bytes(b"x")
+    trees = _trees_for(music, trash)
+    fired = _rename_onto_the_entry_after_the_guard(
+        monkeypatch, entry=trash / "Album", impostor=music, away=tmp_path / "away"
+    )
+
+    with pytest.raises(ProtectedTreeError, match="changed between the check and the removal"):
+        empty_one(str(trash / "Album"), origins_dir=origins_for(trash), protected=trees)
+
+    assert fired == [True]
+    assert (trash / "Album" / "01.flac").exists(), "the music library, under the entry's name"
+
+
 def test_trash_folder_refuses_a_husk_that_holds_the_inbox(tmp_path: Path) -> None:
     """The orphan sweep's mover, on a shape nothing else stops today.
 

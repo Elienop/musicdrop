@@ -26,7 +26,7 @@ import os
 import shutil
 import stat
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from beets.library import Item, Library
 
@@ -43,6 +43,7 @@ from app.beets.protected import (
     ProtectedTrees,
     open_checked_dir,
     protected_match,
+    protected_tree_error,
     refuse_protected_tree,
 )
 from app.beets.trash_origins import (
@@ -1087,16 +1088,27 @@ def empty_one(folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees) 
     payload's own ``name`` first.
 
     Raises :class:`~app.beets.protected.ProtectedTreeError` (503) when the entry
-    is or holds one of the app's own directories by inode.
+    is or holds one of the app's own directories by inode, and when the name
+    stopped naming what the guard was asked about — see
+    :func:`_remove_checked_entry`, which both delete paths share.
     """
     path = Path(folder_abs)
-    refuse_protected_tree(path, protected, action="removed")
-    if path.is_dir():
-        shutil.rmtree(path)
-    else:
-        path.unlink()
+    # The resolved parent: ``folder_abs`` comes from ``resolve_trash_child``, so
+    # every component above the entry is already what it resolved to.
+    parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        clause = _remove_checked_entry(path.name, dir_fd=parent_fd, protected=protected)
+    finally:
+        os.close(parent_fd)
+    if clause is not None:
+        raise protected_tree_error(path, clause, "removed")
     delete_trash_origin(origins_dir, path.name)
     return EmptyResult(removed=1)
+
+
+#: What a refused entry reads with when the guard's answer stopped being about
+#: it. The wording ``open_checked_dir`` uses for the same fault on the root.
+_RACED: Final = "changed between the check and the removal"
 
 
 def _remove_entry(name: str, *, dir_fd: int) -> None:
@@ -1105,6 +1117,67 @@ def _remove_entry(name: str, *, dir_fd: int) -> None:
         shutil.rmtree(name, dir_fd=dir_fd)
     else:
         os.unlink(name, dir_fd=dir_fd)
+
+
+def _ident(st: os.stat_result) -> tuple[int, int]:
+    return (st.st_dev, st.st_ino)
+
+
+def _remove_checked_entry(name: str, *, dir_fd: int, protected: ProtectedTrees) -> str | None:
+    """Remove one entry so that what the guard checked is what is removed.
+
+    ``None`` when the entry is gone; otherwise the clause the refusal reads
+    with. ``dir_fd`` is the Trash — the descriptor ``open_checked_dir`` pinned,
+    or the resolved parent for a single delete.
+
+    A name resolves anew at every syscall, so guarding ``name`` and then
+    ``rmtree``-ing ``name`` are questions about two different instants. Measured:
+    with the music library renamed onto the entry's name inside that window (3 µs
+    for a 52-directory entry), both delete paths answered ``removed=1`` and the
+    library's files were gone. So the directory is OPENED once, ``O_NOFOLLOW``,
+    its ``fstat`` compared to the ``stat`` the guard is about to be asked about,
+    and everything after that — the walk, the children — goes through THAT
+    descriptor. The entry itself is the one name left: ``rmdir`` cannot remove a
+    non-empty directory or follow a symlink, and it runs only if a fresh
+    ``lstat`` still matches.
+
+    A file or a symlink keeps its by-name ``unlink``: it acts on the LINK, so a
+    swapped-in symlink or hardlink costs one link and its target survives.
+    """
+    st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    if not stat.S_ISDIR(st.st_mode):
+        os.unlink(name, dir_fd=dir_fd)
+        return None
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        fd = os.open(name, flags, dir_fd=dir_fd)
+    except OSError:
+        # An entry this process cannot open is one it cannot remove either, so
+        # nothing acts on the answer: the guard is asked by NAME, which still
+        # compares the entry's own identity from the Trash's descriptor and logs
+        # the directory it could not read. A mode-000 app store is refused with
+        # its own sentence rather than reported as a failed removal.
+        clause = protected_match(name, protected, dir_fd=dir_fd)
+        if clause is not None:
+            return clause
+        raise
+    try:
+        if _ident(os.fstat(fd)) != _ident(st):
+            return _RACED
+        # Asked of the descriptor, not of the name: "." is this directory
+        # whatever the name now points at.
+        clause = protected_match(".", protected, dir_fd=fd)
+        if clause is not None:
+            return clause
+        for child in sorted(entry.name for entry in os.scandir(fd)):
+            # ``rmtree``'s own per-level ``samestat`` covers everything below.
+            _remove_entry(child, dir_fd=fd)
+    finally:
+        os.close(fd)
+    if _ident(os.stat(name, dir_fd=dir_fd, follow_symlinks=False)) != _ident(st):
+        return _RACED
+    os.rmdir(name, dir_fd=dir_fd)
+    return None
 
 
 def _refused_message(refused: list[str], *, removed: int, failed: list[str]) -> str:
@@ -1130,6 +1203,8 @@ def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) 
     ``trash_dir / name`` reopened the path per entry: a rename plus a symlink
     landing anywhere in the loop — 0.40 ms at 10 entries, 16 ms at 500 —
     redirected the removals, measured deleting ``library.db`` and ``config.yaml``.
+    Each entry is pinned the same way by :func:`_remove_checked_entry`, which is
+    where the guard and the removal are tied to one identity.
 
     An entry that is or holds one of the app's own directories by inode is left
     where it is and named in a :class:`~app.beets.protected.ProtectedTreeError`
@@ -1155,12 +1230,8 @@ def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) 
     fd = open_checked_dir(trash_dir, protected)
     try:
         for name in sorted(entry.name for entry in os.scandir(fd)):
-            clause = protected_match(name, protected, dir_fd=fd)
-            if clause is not None:
-                refused.append(f"{display_path(name)!r} {clause}")
-                continue
             try:
-                _remove_entry(name, dir_fd=fd)
+                clause = _remove_checked_entry(name, dir_fd=fd, protected=protected)
             except OSError as exc:
                 # Carry on. One entry the app cannot remove -- a root-owned file, a
                 # permission bit, a share that dropped half way -- used to abort the
@@ -1169,6 +1240,9 @@ def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) 
                 # in Trash either way; only the reporting was ever at stake.
                 failed.append(display_path(name))
                 first = first or exc
+                continue
+            if clause is not None:
+                refused.append(f"{display_path(name)!r} {clause}")
                 continue
             delete_trash_origin(origins_dir, name)
             removed += 1

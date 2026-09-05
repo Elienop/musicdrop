@@ -266,8 +266,11 @@ def open_checked_dir(path: Path, protected: ProtectedTrees) -> int:
     identity is the Trash's own rather than one of the app's other directories,
     which is what a bind mount aliases and every spelled row allows.
 
-    The caller enumerates AND removes through this descriptor, so a swap after
-    the open changes nothing it acts on.
+    The caller enumerates through this descriptor, so a swap of the Trash ROOT
+    after the open changes nothing it reads. Each ENTRY name resolves anew inside
+    it: that identity is ``trash_manage._remove_checked_entry``'s to pin, and
+    measured, a rename onto an entry's name after this returns was enough to
+    delete the tree it named.
     """
     expected = protected.trash
     if expected is None:
