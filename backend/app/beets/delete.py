@@ -156,6 +156,18 @@ def delete_album(
     return DeleteResult(trashed_albums=1, trash_path=trash_path)
 
 
+def _refuse_held_stores(lib: Library, album_ids: list[int], protected: ProtectedTrees) -> None:
+    """Ask the whole-folder guard for every album, before the first one moves."""
+    for album_id in album_ids:
+        album = lib.get_album(album_id)
+        root = None if album is None else whole_folder_root(lib, album)
+        if root is not None:
+            # The same question the mover asks, so the pre-check refuses the same
+            # set: a folder that HOLDS a store stops the run, one that IS a store
+            # takes the per-item path album by album.
+            refuse_a_held_store(root, protected, action="moved")
+
+
 def delete_artist(
     lib: Library,
     artist_name: str,
@@ -246,14 +258,7 @@ def delete_artist(
         # album HAD been moved. Only the whole-folder arm is asked, because the
         # per-item fallback never reaches that guard and a flat library, where
         # every album root is the music dir, would otherwise refuse every album.
-        for album_id in album_ids:
-            album = lib.get_album(album_id)
-            root = None if album is None else whole_folder_root(lib, album)
-            if root is not None:
-                # The same question the mover asks, so the pre-check refuses the
-                # same set: a folder that HOLDS a store stops the run, one that
-                # IS a store takes the per-item path album by album.
-                refuse_a_held_store(root, protected, action="moved")
+        _refuse_held_stores(lib, album_ids, protected)
         with lib.transaction():
             for album_id in album_ids:
                 album = lib.get_album(album_id)

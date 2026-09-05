@@ -516,9 +516,7 @@ def restore_album(
             # call site deliberately does not repeat the test.
             delete_trash_origin(origins_dir, entry.name)
         return result
-    return _restore_to_origin(
-        lib, entry, origin, trash_dir=trash_dir, origins_dir=origins_dir, protected=protected
-    )
+    return _restore_to_origin(lib, entry, origin, trash_dir=trash_dir, origins_dir=origins_dir)
 
 
 def _restore_by_import(
@@ -569,7 +567,6 @@ def _restore_to_origin(
     *,
     trash_dir: Path,
     origins_dir: Path,
-    protected: ProtectedTrees,
 ) -> RestoreResult:
     """Move ``entry`` back to ``origin`` and re-import it there. All or nothing.
 
@@ -1102,6 +1099,28 @@ def empty_one(folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees) 
     return EmptyResult(removed=1)
 
 
+def _remove_entry(name: str, *, dir_fd: int) -> None:
+    """Remove one Trash entry through ``dir_fd``, acting on the LINK it may be."""
+    if stat.S_ISDIR(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode):
+        shutil.rmtree(name, dir_fd=dir_fd)
+    else:
+        os.unlink(name, dir_fd=dir_fd)
+
+
+def _refused_message(refused: list[str], *, removed: int, failed: list[str]) -> str:
+    """The 503 sentence for entries the guard would not let the sweep remove."""
+    shown = "; ".join(refused[:5])
+    more = f" and {len(refused) - 5} more" if len(refused) > 5 else ""
+    # The failed entries ride along NAMED, the way the partial below names
+    # them: this raise outranks it, so a bare count left an entry that could
+    # not be removed invisible on every retry.
+    stuck = f", {len(failed)} could not be removed ({_capped(failed)})" if failed else ""
+    those = "those entries" if len(refused) > 1 else "that entry"
+    return (
+        f"Refused: {shown}{more}. Removed {removed}{stuck}; move {those} out of Trash, then retry."
+    )
+
+
 def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) -> EmptyResult:
     """Permanently remove every unprotected entry under ``trash_dir``.
 
@@ -1141,10 +1160,7 @@ def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) 
                 refused.append(f"{display_path(name)!r} {clause}")
                 continue
             try:
-                if stat.S_ISDIR(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode):
-                    shutil.rmtree(name, dir_fd=fd)
-                else:
-                    os.unlink(name, dir_fd=fd)
+                _remove_entry(name, dir_fd=fd)
             except OSError as exc:
                 # Carry on. One entry the app cannot remove -- a root-owned file, a
                 # permission bit, a share that dropped half way -- used to abort the
@@ -1159,17 +1175,7 @@ def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) 
     finally:
         os.close(fd)
     if refused:
-        shown = "; ".join(refused[:5])
-        more = f" and {len(refused) - 5} more" if len(refused) > 5 else ""
-        # The failed entries ride along NAMED, the way the partial below names
-        # them: this raise outranks it, so a bare count left an entry that could
-        # not be removed invisible on every retry.
-        stuck = f", {len(failed)} could not be removed ({_capped(failed)})" if failed else ""
-        those = "those entries" if len(refused) > 1 else "that entry"
-        raise ProtectedTreeError(
-            f"Refused: {shown}{more}. Removed {removed}{stuck};"
-            f" move {those} out of Trash, then retry."
-        )
+        raise ProtectedTreeError(_refused_message(refused, removed=removed, failed=failed))
     if failed:
         # Named, not just counted: the user's next move is to look at them.
         raise TrashEmptyPartialError(

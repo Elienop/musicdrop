@@ -323,6 +323,38 @@ def _subtree(dirpath: str, excluded: _Exclusion) -> tuple[bool, bool]:
     return False, has_files
 
 
+def _nearest_existing_dir(seed: str) -> str | None:
+    """The nearest ancestor of ``seed`` that is a directory (the seed may be pruned)."""
+    d = os.path.normpath(seed)
+    while d and not os.path.isdir(d):
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+    return d
+
+
+def _climb_to_husk(start: str, root: str, excluded: _Exclusion) -> str | None:
+    """The top-most audio-empty (non-empty) ancestor of ``start`` below ``root``."""
+    d = start
+    candidate: str | None = None
+    while _under(d, root):
+        if excluded(d):  # an excluded ancestor stops the climb; never a candidate
+            break
+        if os.path.islink(d):
+            break
+        has_audio, has_file = _subtree(d, excluded)
+        if has_audio:
+            break
+        if has_file:
+            candidate = d
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return candidate
+
+
 def _seed_orphan(seed: str, root: str, excluded: _Exclusion) -> str | None:
     """The top-most audio-empty (non-empty) ancestor of ``seed`` below ``root``.
 
@@ -346,33 +378,15 @@ def _seed_orphan(seed: str, root: str, excluded: _Exclusion) -> str | None:
     legitimately symlinked subtree (``music/artists -> /mnt/big/artists``), which
     is the only mode that sweeps there at all — so the reach is kept and named.
     """
-    d = os.path.normpath(seed)
-    while d and not os.path.isdir(d):
-        parent = os.path.dirname(d)
-        if parent == d:
-            return None
-        d = parent
+    d = _nearest_existing_dir(seed)
+    if d is None:
+        return None
     if not _under(d, root):
         respelled = _in_walk_spelling(d, root)
         if respelled is None:
             return None
         d = respelled
-    candidate: str | None = None
-    while _under(d, root):
-        if excluded(d):  # an excluded ancestor stops the climb; never a candidate
-            break
-        if os.path.islink(d):
-            break
-        has_audio, has_file = _subtree(d, excluded)
-        if has_audio:
-            break
-        if has_file:
-            candidate = d
-        parent = os.path.dirname(d)
-        if parent == d:
-            break
-        d = parent
-    return candidate
+    return _climb_to_husk(d, root, excluded)
 
 
 class _Exclusion:

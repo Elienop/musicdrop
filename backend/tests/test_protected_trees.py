@@ -314,11 +314,12 @@ def test_empty_all_carries_on_past_an_entry_it_cannot_open(
         (trash / name / "01.flac").write_bytes(b"x")
     os.chmod(trash / "b", 0o000)
     trees = _trees_for(tmp_path / "music", trash)
+    origins = origins_for(trash)
 
     try:
         with caplog.at_level(logging.WARNING, logger="app.beets.protected"):
             with pytest.raises(TrashEmptyPartialError) as caught:
-                empty_all(trash, origins_dir=origins_for(trash), protected=trees)
+                empty_all(trash, origins_dir=origins, protected=trees)
     finally:
         os.chmod(trash / "b", 0o755)
 
@@ -344,8 +345,9 @@ def test_open_checked_dir_refuses_a_symlink_at_the_trash_path(tmp_path: Path) ->
     real.mkdir()
     link = tmp_path / "trash"
     link.symlink_to(real, target_is_directory=True)
+    trees = _trees_with_trash(link)
     with pytest.raises(ProtectedTreeError, match="is not the directory MusicDrop checked"):
-        open_checked_dir(link, _trees_with_trash(link))
+        open_checked_dir(link, trees)
 
 
 def test_open_checked_dir_refuses_an_identity_that_moved(tmp_path: Path) -> None:
@@ -372,9 +374,10 @@ def test_empty_all_refuses_a_trash_directory_swapped_after_the_check(tmp_path: P
     trees = _trees_with_trash(trash)
     os.rename(trash, tmp_path / "gone")
     (trash / "Impostor").mkdir(parents=True)
+    origins = origins_for(trash)
 
     with pytest.raises(ProtectedTreeError, match="changed between the check and the open"):
-        empty_all(trash, origins_dir=origins_for(trash), protected=trees)
+        empty_all(trash, origins_dir=origins, protected=trees)
     assert (trash / "Impostor").is_dir()
 
 
@@ -428,9 +431,10 @@ def test_empty_all_leaves_the_protected_entry_and_removes_the_rest(tmp_path: Pat
     music.mkdir()
     os.rename(music, trash / "Sneak")
     trees = _trees_for(trash / "Sneak", trash)
+    origins = origins_for(trash)
 
     with pytest.raises(ProtectedTreeError) as caught:
-        empty_all(trash, origins_dir=origins_for(trash), protected=trees)
+        empty_all(trash, origins_dir=origins, protected=trees)
 
     assert "'Sneak' is the music library" in str(caught.value)
     assert "Removed 1" in str(caught.value)
@@ -459,10 +463,11 @@ def test_two_refused_entries_read_as_two(tmp_path: Path) -> None:
         origins_dir=tmp_path / "absent-origins",
         library_path=tmp_path / "absent" / "library.db",
     )
+    origins = origins_for(trash)
 
     try:
         with pytest.raises(ProtectedTreeError) as caught:
-            empty_all(trash, origins_dir=origins_for(trash), protected=trees)
+            empty_all(trash, origins_dir=origins, protected=trees)
     finally:
         os.chmod(trash / "stuck", 0o700)
 
@@ -515,8 +520,9 @@ def test_empty_all_refuses_a_trash_that_is_one_of_the_apps_own_directories(
         library_path=tmp_path / "absent" / "library.db",
     )
 
+    origins = origins_for(trash)
     with pytest.raises(ProtectedTreeError, match="the Trash directory is the music library"):
-        empty_all(trash, origins_dir=origins_for(trash), protected=trees)
+        empty_all(trash, origins_dir=origins, protected=trees)
     assert (trash / "Artist" / "01.flac").exists()
 
 
@@ -557,8 +563,9 @@ def test_the_trash_root_alias_is_found_wherever_the_twin_is_listed(
         library_path=tmp_path / "absent" / "library.db",
     )
 
+    origins = origins_for(trash)
     with pytest.raises(ProtectedTreeError, match=f"the Trash directory {phrase}"):
-        empty_all(trash, origins_dir=origins_for(trash), protected=trees)
+        empty_all(trash, origins_dir=origins, protected=trees)
     assert (trash / "Artist" / "01.flac").exists()
 
 
@@ -612,14 +619,12 @@ def test_the_refusal_names_how_many_entries_could_not_be_removed(tmp_path: Path)
     music = tmp_path / "music"
     music.mkdir()
     os.rename(music, trash / "Sneak")
+    origins = origins_for(trash)
+    trees = _trees_for(trash / "Sneak", trash)
     (trash / "Stuck").chmod(0o500)
     try:
         with pytest.raises(ProtectedTreeError) as caught:
-            empty_all(
-                trash,
-                origins_dir=origins_for(trash),
-                protected=_trees_for(trash / "Sneak", trash),
-            )
+            empty_all(trash, origins_dir=origins, protected=trees)
     finally:
         (trash / "Stuck").chmod(0o700)
 
@@ -637,15 +642,14 @@ def test_empty_one_refuses_a_protected_entry(tmp_path: Path) -> None:
     os.rename(music, trash / "Sneak")
     (trash / "Ordinary").mkdir()
     trees = _trees_for(trash / "Sneak")
+    origins = origins_for(trash)
+    sneak = str(trash / "Sneak")
 
     with pytest.raises(ProtectedTreeError, match="'Sneak' is the music library"):
-        empty_one(str(trash / "Sneak"), origins_dir=origins_for(trash), protected=trees)
+        empty_one(sneak, origins_dir=origins, protected=trees)
     assert (trash / "Sneak" / "01.flac").exists()
 
-    assert (
-        empty_one(str(trash / "Ordinary"), origins_dir=origins_for(trash), protected=trees).removed
-        == 1
-    )
+    assert empty_one(str(trash / "Ordinary"), origins_dir=origins, protected=trees).removed == 1
 
 
 def test_trash_folder_refuses_a_husk_that_holds_the_inbox(tmp_path: Path) -> None:
@@ -665,21 +669,22 @@ def test_trash_folder_refuses_a_husk_that_holds_the_inbox(tmp_path: Path) -> Non
     husk = music / "Downloads"
     (husk / "inbox").mkdir(parents=True)
     (husk / "poster.jpg").write_bytes(b"x")
+    origins = origins_for(trash)
     trees = protected_trees(
         settings=Settings(inbox_dir=str(husk / "inbox")),
         music_dir=music,
         beets_dir=tmp_path / "absent-beets",
         trash_dir=trash,
-        origins_dir=origins_for(trash),
+        origins_dir=origins,
         library_path=tmp_path / "absent" / "library.db",
     )
 
     with pytest.raises(ProtectedTreeError, match="'Downloads' contains the inbox"):
-        trash_folder(husk, trash_dir=trash, origins_dir=origins_for(trash), protected=trees)
+        trash_folder(husk, trash_dir=trash, origins_dir=origins, protected=trees)
     assert (husk / "poster.jpg").exists()
 
     (husk / "inbox").rmdir()
-    dest = trash_folder(husk, trash_dir=trash, origins_dir=origins_for(trash), protected=trees)
+    dest = trash_folder(husk, trash_dir=trash, origins_dir=origins, protected=trees)
     assert (dest / "poster.jpg").exists()
 
 
@@ -709,15 +714,13 @@ def test_delete_refuses_an_album_folder_that_holds_an_app_store(
     monkeypatch.setattr("app.config.settings.inbox_dir", str(folder / "inbox"))
 
     trash = tmp_path / "trash"
+    origins = origins_for(trash)
     album_id = _require_id(next(iter(lib.albums())).id)
+    # Built here, while the inbox is still inside the album folder: the set is a
+    # snapshot, so the control below has to build its own after the rmdir.
+    trees = protected_for(lib, trash_dir=trash, origins_dir=origins)
     with pytest.raises(ProtectedTreeError, match="'Kid A' contains the inbox"):
-        delete_album(
-            lib,
-            album_id,
-            trash_dir=trash,
-            origins_dir=origins_for(trash),
-            protected=protected_for(lib, trash_dir=trash, origins_dir=origins_for(trash)),
-        )
+        delete_album(lib, album_id, trash_dir=trash, origins_dir=origins, protected=trees)
     assert len(list(lib.albums())) == 1
     assert (folder / "01 Track.mp3").exists()
 
@@ -726,8 +729,8 @@ def test_delete_refuses_an_album_folder_that_holds_an_app_store(
         lib,
         album_id,
         trash_dir=trash,
-        origins_dir=origins_for(trash),
-        protected=protected_for(lib, trash_dir=trash, origins_dir=origins_for(trash)),
+        origins_dir=origins,
+        protected=protected_for(lib, trash_dir=trash, origins_dir=origins),
     )
     assert list(lib.albums()) == []
 
@@ -755,18 +758,18 @@ def test_restore_refuses_a_trash_entry_that_holds_an_app_store(
     entry = trash / "Some Album"
     (entry / "inbox").mkdir(parents=True)
     monkeypatch.setattr("app.config.settings.inbox_dir", str(entry / "inbox"))
-    trees = protected_for(lib, trash_dir=trash, origins_dir=origins_for(trash))
+    origins = origins_for(trash)
+    trees = protected_for(lib, trash_dir=trash, origins_dir=origins)
+    entry_path = str(entry)
 
     with pytest.raises(ProtectedTreeError, match="'Some Album' contains the inbox"):
-        restore_album(
-            lib, str(entry), trash_dir=trash, origins_dir=origins_for(trash), protected=trees
-        )
+        restore_album(lib, entry_path, trash_dir=trash, origins_dir=origins, protected=trees)
     assert (entry / "inbox").is_dir()
 
     (entry / "inbox").rmdir()
     assert (
         restore_album(
-            lib, str(entry), trash_dir=trash, origins_dir=origins_for(trash), protected=trees
+            lib, entry_path, trash_dir=trash, origins_dir=origins, protected=trees
         ).restored
         is False
     )
@@ -802,12 +805,11 @@ def test_delete_artist_asks_the_guard_before_it_moves_the_first_album(
     (second / "inbox").mkdir()
     monkeypatch.setattr("app.config.settings.inbox_dir", str(second / "inbox"))
     trash = tmp_path / "trash"
-    trees = protected_for(lib, trash_dir=trash, origins_dir=origins_for(trash))
+    origins = origins_for(trash)
+    trees = protected_for(lib, trash_dir=trash, origins_dir=origins)
 
     with pytest.raises(ProtectedTreeError, match="'B Second' contains the inbox"):
-        delete_artist(
-            lib, "Radiohead", trash_dir=trash, origins_dir=origins_for(trash), protected=trees
-        )
+        delete_artist(lib, "Radiohead", trash_dir=trash, origins_dir=origins, protected=trees)
     assert len(list(lib.albums())) == 2
     assert (first / "01 Track.mp3").exists()
     assert not trash.exists()
@@ -1211,8 +1213,9 @@ def test_an_album_folder_that_holds_a_store_is_still_refused(
     trees = protected_for(lib, trash_dir=trash, origins_dir=origins)
 
     album = next(iter(lib.albums()))
+    tx = lib.transaction()  # constructing one is inert; the open happens on entry
     with pytest.raises(ProtectedTreeError, match="'Album' contains the inbox"):
-        with lib.transaction():
+        with tx:
             trash_album_folder(lib, album, trash_dir=trash, origins_dir=origins, protected=trees)
     assert len(list(lib.albums())) == 1
     assert (album_dir / "01 Track.mp3").exists()

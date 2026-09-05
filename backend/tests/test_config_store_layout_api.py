@@ -918,7 +918,8 @@ def test_the_include_reproduction_agrees_with_a_real_beets_startup(
 
     document = parse_yaml(text)
     paths = effective_config_paths(document, beets_dir)
-    assert (paths.directory, paths.library) == from_beets
+    reproduced = (paths.directory, paths.library)
+    assert reproduced == from_beets
 
 
 @pytest.mark.parametrize("shape", ["directory", "socket", "dev-null", "symlink-to-regular"])
@@ -971,7 +972,8 @@ def test_the_include_reproduction_agrees_with_beets_on_the_shapes_it_tolerates(
         close_library(handle.lib)
 
     paths = effective_config_paths(parse_yaml(text), beets_dir)
-    assert (paths.directory, paths.library) == from_beets
+    reproduced = (paths.directory, paths.library)
+    assert reproduced == from_beets
 
 
 def _advisories(client: TestClient, yaml_text: str) -> list[dict[str, object]]:

@@ -155,11 +155,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # can fail on the same class of operator input: a value beets cannot open
     # used to leave a bare traceback with no line saying which setting to look
     # at. It re-raises — the process still does not come up — and only adds the
-    # line.
+    # line, logged with the traceback (``.exception``) so the record carries the
+    # cause as well as the setting.
     try:
         handle = _resolve_library()
     except _BEETS_STARTUP_FAILED as exc:
-        _boot_log().error(
+        _boot_log().exception(
             "refusing to start: beets could not open the library under %s=%r. %s: %s."
             " Check `library:` and `directory:` in that directory's config.yaml.",
             "MUSICDROP_BEETS_DIR",
@@ -185,7 +186,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         boot_trash_dir, boot_origins_dir = checked_store_dirs(settings, handle)
     except StoreLayoutError as exc:
-        _boot_log().error("refusing to start: %s", _refusal_with_leftovers(str(exc), handle))
+        _boot_log().exception("refusing to start: %s", _refusal_with_leftovers(str(exc), handle))
         # Give back the SQLite connection ``_resolve_library`` just opened. The
         # raise below skips the ``finally`` teardown further down (it has not
         # been entered yet), so this is the only place that can.
@@ -273,7 +274,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         reconcile_interrupted(get_bank_dir())
     except OSError as exc:
-        _boot_log().error(
+        _boot_log().exception(
             "refusing to start: the import bank at %s could not be read (%s)."
             " Set MUSICDROP_BANK_DIR to a folder MusicDrop can read and write.",
             get_bank_dir(),
