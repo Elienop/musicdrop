@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -744,6 +745,78 @@ def test_empty_one_removes_the_entry_it_guarded_and_not_the_name(
     message = str(err.value)
     assert "some of its contents were removed" in message
     assert "Nothing was removed" not in message, "art.jpg was"
+
+
+def _plant_inside_the_entry_after_the_guard(
+    monkeypatch: pytest.MonkeyPatch, *, planted: Path, impostor: Path
+) -> list[bool]:
+    """Move ``impostor`` INTO the entry the moment the guard's walk has answered.
+
+    The other window: the entry's own identity is pinned, so the attack that is
+    left is arriving under it. The seam is the walk itself, so the plant lands
+    after the last thing that looked at the whole tree and before the first
+    child is removed — deterministically, where the real race is 84.8 ms on a
+    4 000-subdir entry.
+    """
+    import app.beets.trash_manage as manage
+
+    real = protected_match
+    fired: list[bool] = []
+
+    def racing(
+        root: str | Path, protected: ProtectedTrees, *, dir_fd: int | None = None
+    ) -> str | None:
+        clause = real(root, protected, dir_fd=dir_fd)
+        if not fired:
+            fired.append(True)
+            os.rename(impostor, planted)
+        return clause
+
+    monkeypatch.setattr(manage, "protected_match", racing)
+    return fired
+
+
+@pytest.mark.parametrize("path", ["all", "one"])
+def test_a_library_moved_in_after_the_walk_is_still_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    """The guard's walk and the removal used to be two traversals.
+
+    Measured before this: with ``<M>`` renamed to ``<trash>/Album/planted``
+    after the walk's first yield, both delete paths answered ``removed=1`` and
+    the library's ``01.flac`` was gone -- the walk had already passed, and
+    ``shutil.rmtree`` enumerated the entry a second time. The identity question
+    is now asked at every directory the removal descends into, so a tree that
+    arrives mid-removal is compared whenever it arrives.
+
+    ``art.jpg`` sorts before ``planted``: the refusal comes AFTER a real
+    removal, which is what the partial clause is about.
+    """
+    trash = tmp_path / "trash"
+    (trash / "Album").mkdir(parents=True)
+    (trash / "Album" / "art.jpg").write_bytes(b"x")
+    music = tmp_path / "music"
+    music.mkdir()
+    (music / "01.flac").write_bytes(b"x")
+    trees = _trees_for(music, trash)
+    fired = _plant_inside_the_entry_after_the_guard(
+        monkeypatch, planted=trash / "Album" / "planted", impostor=music
+    )
+    origins = origins_for(trash)
+    # Built before the block, and inert until called: the seam is already armed.
+    empty = (
+        partial(empty_all, trash, origins_dir=origins, protected=trees)
+        if path == "all"
+        else partial(empty_one, str(trash / "Album"), origins_dir=origins, protected=trees)
+    )
+
+    with pytest.raises(ProtectedTreeError, match="contains the music library") as err:
+        empty()
+
+    assert fired == [True]
+    assert (trash / "Album" / "planted" / "01.flac").exists(), "the music library"
+    assert not (trash / "Album" / "art.jpg").exists(), "the entry's own child DID go"
+    assert "some of its contents were removed" in str(err.value)
 
 
 def test_trash_folder_refuses_a_husk_that_holds_the_inbox(tmp_path: Path) -> None:

@@ -172,6 +172,23 @@ def _note_walk_error(exc: OSError) -> None:
     logger.warning("the protected-tree guard could not read %r: %s", str(exc.filename), exc)
 
 
+def _reads(found: tuple[str, str], verb: str) -> str:
+    """One wording for every refusal: what the directory is, and what spells it."""
+    return f"{verb} {found[0]} (same inode as {found[1]})"
+
+
+def protected_id_match(ident: tuple[int, int], protected: ProtectedTrees) -> str | None:
+    """``"contains the music library (same inode as ...)"`` when ``ident`` is ours.
+
+    The lookup :func:`protected_match`'s walk makes at every directory, for a
+    caller that already holds the identity. The Trash remover asks it at each
+    level it descends, through the descriptor it is about to remove through, so
+    a tree that arrives after the walk is still compared.
+    """
+    found = protected.ids.get(ident)
+    return None if found is None else _reads(found, "contains")
+
+
 def _match(
     root: str | Path, protected: ProtectedTrees, dir_fd: int | None
 ) -> tuple[bool, str] | None:
@@ -185,7 +202,7 @@ def _match(
         return None
     found = protected.ids.get((st.st_dev, st.st_ino))
     if found is not None:
-        return (True, f"is {found[0]} (same inode as {found[1]})")
+        return (True, _reads(found, "is"))
     try:
         for _dirpath, dirs, _files, fd in os.fwalk(top, onerror=_note_walk_error, dir_fd=dir_fd):
             for name in dirs:
@@ -194,7 +211,7 @@ def _match(
                     continue
                 found = protected.ids.get((child.st_dev, child.st_ino))
                 if found is not None:
-                    return (False, f"contains {found[0]} (same inode as {found[1]})")
+                    return (False, _reads(found, "contains"))
     except OSError as exc:
         # ``os.fwalk`` hands a sub-directory it cannot open to ``onerror`` and
         # RE-RAISES for the ROOT. Same trade either way: the root's own identity

@@ -23,7 +23,6 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-import shutil
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +42,7 @@ from app.beets.protected import (
     ProtectedTreeError,
     ProtectedTrees,
     open_checked_dir,
+    protected_id_match,
     protected_match,
     protected_tree_error,
     refuse_protected_tree,
@@ -1129,6 +1129,10 @@ _RACED: Final = "changed between the check and the removal"
 #: "Removed 0".
 _PARTIAL: Final = "some of its contents were removed"
 
+#: The same fault one level down: a DIRECTORY inside the entry stopped being
+#: what the removal chose to descend into.
+_RACED_INSIDE: Final = "holds a folder that changed between the check and the removal"
+
 
 @dataclass(frozen=True)
 class _Refusal:
@@ -1142,16 +1146,95 @@ class _Refusal:
     partial: bool
 
 
-def _remove_entry(name: str, *, dir_fd: int) -> None:
-    """Remove one Trash entry through ``dir_fd``, acting on the LINK it may be."""
-    if stat.S_ISDIR(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode):
-        shutil.rmtree(name, dir_fd=dir_fd)
-    else:
-        os.unlink(name, dir_fd=dir_fd)
+#: Every directory the removal descends into is opened this way: the link is
+#: never followed, and a FIFO planted mid-tree cannot block the open.
+_DIR_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+
+
+def _open_dir(name: str, dir_fd: int) -> int:
+    """The one open the removal runs on a directory. One spelling of the flags."""
+    return os.open(name, _DIR_FLAGS, dir_fd=dir_fd)
 
 
 def _ident(st: os.stat_result) -> tuple[int, int]:
     return (st.st_dev, st.st_ino)
+
+
+class _Remover:
+    """One entry's removal, with the identity check ON the traversal that removes.
+
+    ``shutil.rmtree(name, dir_fd=)`` was a SECOND traversal: the guard walked
+    the entry, and then rmtree enumerated it again. Measured on a 4 000-subdir
+    entry, renaming the music library to ``<trash>/<entry>/planted`` after the
+    walk's first yield had 84.8 ms to land, and both delete paths answered
+    ``removed=1`` with the library's files gone. Here every directory is opened
+    once and asked — ``fstat`` against the ``lstat`` that chose it, then a map
+    lookup against the app's own inodes — before anything under it is touched,
+    so a tree arriving mid-removal is compared whenever it arrives.
+
+    ``removed`` counts what actually went, so a refusal can say whether the
+    entry still has contents (:class:`_Refusal`).
+    """
+
+    def __init__(self, protected: ProtectedTrees) -> None:
+        self._protected = protected
+        self.removed = 0
+
+    def children(self, dir_fd: int) -> str | None:
+        """Remove everything under ``dir_fd``; the clause when one child stops it.
+
+        Sorted, so which child is reached first does not depend on the
+        directory's internal order.
+        """
+        for name in sorted(entry.name for entry in os.scandir(dir_fd)):
+            clause = self._child(name, dir_fd=dir_fd)
+            if clause is not None:
+                return clause
+        return None
+
+    def _child(self, name: str, *, dir_fd: int) -> str | None:
+        """One name in the directory ``dir_fd`` is open on.
+
+        A non-directory keeps its by-name ``unlink``: it acts on the LINK, so a
+        symlink or hardlink swapped in costs one link and its target survives.
+        """
+        st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        if not stat.S_ISDIR(st.st_mode):
+            os.unlink(name, dir_fd=dir_fd)
+            self.removed += 1
+            return None
+        return self._directory(name, st, dir_fd=dir_fd)
+
+    def _directory(self, name: str, st: os.stat_result, *, dir_fd: int) -> str | None:
+        try:
+            fd = _open_dir(name, dir_fd)
+        except OSError:
+            # It cannot be opened, so it cannot be removed either. Its own
+            # identity came from THIS descriptor, so a mode-000 app store
+            # renamed in is refused rather than reported as a failed removal.
+            clause = protected_id_match(_ident(st), self._protected)
+            if clause is None:
+                raise
+            return clause
+        try:
+            current = os.fstat(fd)
+            if _ident(current) != _ident(st):
+                return _RACED_INSIDE
+            clause = protected_id_match(_ident(current), self._protected)
+            if clause is not None:
+                return clause
+            clause = self.children(fd)
+            if clause is not None:
+                return clause
+        finally:
+            os.close(fd)
+        # ``rmdir`` removes neither a non-empty directory nor a symlink, and it
+        # runs only if the name still means what was just emptied.
+        if _ident(os.stat(name, dir_fd=dir_fd, follow_symlinks=False)) != _ident(st):
+            return _RACED_INSIDE
+        os.rmdir(name, dir_fd=dir_fd)
+        self.removed += 1
+        return None
 
 
 def _remove_checked_entry(name: str, *, dir_fd: int, protected: ProtectedTrees) -> _Refusal | None:
@@ -1166,15 +1249,19 @@ def _remove_checked_entry(name: str, *, dir_fd: int, protected: ProtectedTrees) 
     or the resolved parent for a single delete.
 
     A name resolves anew at every syscall, so guarding ``name`` and then
-    ``rmtree``-ing ``name`` are questions about two different instants. Measured:
-    with the music library renamed onto the entry's name inside that window (3 µs
-    for a 52-directory entry), both delete paths answered ``removed=1`` and the
+    removing ``name`` are questions about two different instants. Measured: with
+    the music library renamed onto the entry's name inside that window (3 µs for
+    a 52-directory entry), both delete paths answered ``removed=1`` and the
     library's files were gone. So the directory is OPENED once, ``O_NOFOLLOW``,
     its ``fstat`` compared to the ``stat`` the guard is about to be asked about,
     and everything after that — the walk, the children — goes through THAT
     descriptor. The entry itself is the one name left: ``rmdir`` cannot remove a
     non-empty directory or follow a symlink, and it runs only if a fresh
     ``lstat`` still matches.
+
+    The walk answers for the tree as it stands here; :class:`_Remover` answers
+    again at every directory it descends into, which is what covers a tree that
+    arrives afterwards.
 
     A file or a symlink keeps its by-name ``unlink``: it acts on the LINK, so a
     swapped-in symlink or hardlink costs one link and its target survives.
@@ -1183,9 +1270,8 @@ def _remove_checked_entry(name: str, *, dir_fd: int, protected: ProtectedTrees) 
     if not stat.S_ISDIR(st.st_mode):
         os.unlink(name, dir_fd=dir_fd)
         return None
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
     try:
-        fd = os.open(name, flags, dir_fd=dir_fd)
+        fd = _open_dir(name, dir_fd)
     except OSError:
         # An entry this process cannot open is one it cannot remove either, so
         # nothing acts on the answer: the guard is asked by NAME, which still
@@ -1196,25 +1282,24 @@ def _remove_checked_entry(name: str, *, dir_fd: int, protected: ProtectedTrees) 
         if clause is not None:
             return _Refusal(clause, partial=False)
         raise
-    children: list[str] = []
+    remover = _Remover(protected)
     try:
         if _ident(os.fstat(fd)) != _ident(st):
             return _Refusal(_RACED, partial=False)
         # Asked of the descriptor, not of the name: "." is this directory
-        # whatever the name now points at.
+        # whatever the name now points at. Kept ahead of the removal so a
+        # protected tree that is ALREADY inside the entry is refused before
+        # anything goes.
         clause = protected_match(".", protected, dir_fd=fd)
         if clause is not None:
             return _Refusal(clause, partial=False)
-        children = sorted(entry.name for entry in os.scandir(fd))
-        for child in children:
-            # ``rmtree``'s own per-level ``samestat`` covers everything below.
-            _remove_entry(child, dir_fd=fd)
+        clause = remover.children(fd)
+        if clause is not None:
+            return _Refusal(clause, partial=remover.removed > 0)
     finally:
         os.close(fd)
     if _ident(os.stat(name, dir_fd=dir_fd, follow_symlinks=False)) != _ident(st):
-        # Past the loop: the entry is empty, and an empty one is all that is
-        # left to claim.
-        return _Refusal(_RACED, partial=bool(children))
+        return _Refusal(_RACED, partial=remover.removed > 0)
     os.rmdir(name, dir_fd=dir_fd)
     return None
 
