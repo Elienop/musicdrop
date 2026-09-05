@@ -15,6 +15,7 @@ its own.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import socket
 from pathlib import Path
@@ -724,6 +725,43 @@ def test_a_directory_that_is_a_symlink_loop_is_a_row_not_a_500(
     assert r.status_code == (200 if route == "validate" else 422), r.text
     rows = r.json()["errors"] if route == "validate" else r.json()["detail"]
     assert any(e["loc"] == "directory" and "could not be resolved" in e["msg"] for e in rows), rows
+
+
+@pytest.mark.parametrize(
+    ("key", "kind", "fragment"),
+    [
+        ("directory", "loop", "could not be resolved"),
+        ("library", "dir", "is a directory"),
+    ],
+)
+def test_a_validation_row_repr_s_the_path_it_echoes(
+    client: TestClient, tmp_path: Path, key: str, kind: str, fragment: str
+) -> None:
+    """A path holding a newline comes back escaped, not verbatim.
+
+    The row goes to the app log and the CLI as well as to React, so a raw newline
+    in an operator-supplied path forges a second line in both.
+    ``store_layout._refuse`` has gone through ``repr`` for that reason since the
+    boot gate landed; these rows were the exception.
+    """
+    hostile = tmp_path / "two\nlines"
+    if kind == "loop":
+        hostile.symlink_to(hostile)
+    else:
+        hostile.mkdir()
+    other = "library: library.db" if key == "directory" else f"directory: {tmp_path}"
+    quoted = json.dumps(str(hostile))  # a YAML double-quoted scalar, \n and all
+
+    r = client.post(
+        "/api/config/validate",
+        json={"yaml_text": f"{key}: {quoted}\n{other}\n"},
+    )
+
+    assert r.status_code == 200, r.text
+    row = next(e for e in r.json()["errors"] if e["loc"] == key)
+    assert fragment in row["msg"], row
+    assert "\n" not in row["msg"], row  # the escape, not the byte
+    assert repr(str(hostile)) in row["msg"], row
 
 
 @pytest.mark.parametrize(
