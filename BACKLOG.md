@@ -1099,6 +1099,13 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     worker in `os.read`, as it would block beets.
   * The `include:` read is a path existence/type oracle for an authenticated session, and it
     follows `~`. No content is disclosed; beets does not confine includes either.
+  * A hand-edited `config.yaml` nested deeply enough answers a bare 500:
+    `build_config_snapshot`'s `yaml.safe_dump` raises `RecursionError`, which no handler
+    catches. Measured: 400 levels, default limit 1000. `GET /api/config` and
+    `POST /api/config/apply` both return that snapshot. Authenticated, and nothing is lost.
+  * One in-budget `POST /api/config/validate` costs ~1.5 s of threadpool CPU (32 includes
+    summing to 1 MiB) and `/api/config/*` has no inbound rate limit. Accepted: the app is
+    session-gated and single-operator.
   * Next touch of the destructive primitives: one `CheckedStore` (trash_dir, origins_dir,
     protected) so they take one keyword rather than three.
 
