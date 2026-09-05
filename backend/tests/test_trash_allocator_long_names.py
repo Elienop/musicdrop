@@ -477,12 +477,13 @@ def test_a_trash_path_over_PATH_MAX_fails_at_the_MOVE_and_not_at_the_allocator(
         (trash / LONGEST).exists()
     assert raw.value.errno == errno.ENAMETOOLONG
 
+    protected = protected_for(trash_dir=trash, origins_dir=origins)
     with pytest.raises(OSError) as caught:
         trash_folder(
             husk,
             trash_dir=trash,
             origins_dir=origins,
-            protected=protected_for(trash_dir=trash, origins_dir=origins),
+            protected=protected,
         )
 
     assert caught.value.errno == errno.ENAMETOOLONG

@@ -929,7 +929,9 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
             # library, no store pair, and the refusal: measured, an import
             # started in this state was accepted and wrote into the beets data
             # dir, so ``start`` now refuses with this sentence.
-            logging.getLogger("uvicorn.error").error(
+            # ``.exception``: the record carries the traceback with the
+            # sentence, like the three boot refusals.
+            logging.getLogger("uvicorn.error").exception(
                 "Apply loaded a config whose store layout is refused: %s", exc
             )
             get_registry().attach_library(

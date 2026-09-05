@@ -703,8 +703,9 @@ def test_empty_all_removes_the_entry_it_guarded_and_not_the_name(
         monkeypatch, entry=trash / "Album", impostor=music, away=tmp_path / "away"
     )
 
+    origins = origins_for(trash)
     with pytest.raises(ProtectedTreeError, match="changed between the check and the removal"):
-        empty_all(trash, origins_dir=origins_for(trash), protected=trees)
+        empty_all(trash, origins_dir=origins, protected=trees)
 
     assert fired == [True]
     assert (trash / "Album" / "01.flac").exists(), "the music library, under the entry's name"
@@ -725,8 +726,10 @@ def test_empty_one_removes_the_entry_it_guarded_and_not_the_name(
         monkeypatch, entry=trash / "Album", impostor=music, away=tmp_path / "away"
     )
 
+    origins = origins_for(trash)
+    entry = str(trash / "Album")
     with pytest.raises(ProtectedTreeError, match="changed between the check and the removal"):
-        empty_one(str(trash / "Album"), origins_dir=origins_for(trash), protected=trees)
+        empty_one(entry, origins_dir=origins, protected=trees)
 
     assert fired == [True]
     assert (trash / "Album" / "01.flac").exists(), "the music library, under the entry's name"

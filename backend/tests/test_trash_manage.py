@@ -433,11 +433,12 @@ def test_empty_all_finishes_what_it_can_and_names_what_it_could_not(tmp_path: Pa
     (trash / "B Album").chmod(0o500)
 
     try:
+        protected = protected_for(trash_dir=trash, origins_dir=origins)
         with pytest.raises(TrashEmptyPartialError) as ei:
             empty_all(
                 trash,
                 origins_dir=origins,
-                protected=protected_for(trash_dir=trash, origins_dir=origins),
+                protected=protected,
             )
     finally:
         (trash / "B Album").chmod(0o700)  # or the tmp_path teardown cannot clean up

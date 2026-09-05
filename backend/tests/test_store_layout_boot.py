@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -237,10 +238,10 @@ def test_a_database_inside_the_trash_refuses_to_start(
 
 
 @pytest.mark.parametrize(
-    "library_value",
+    ("library_value", "raised"),
     [
-        "loop",  # a symlink loop -> sqlite3.OperationalError
-        r'"/x/\0evil.db"',  # an embedded NUL -> ValueError
+        ("loop", sqlite3.OperationalError),  # a symlink loop
+        (r'"/x/\0evil.db"', ValueError),  # an embedded NUL
     ],
 )
 def test_a_library_beets_cannot_open_gets_the_one_error_line_too(
@@ -248,6 +249,7 @@ def test_a_library_beets_cannot_open_gets_the_one_error_line_too(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
     library_value: str,
+    raised: type[Exception],
 ) -> None:
     """beets' own startup runs BEFORE the layout gate and can fail on the same input.
 
@@ -258,6 +260,10 @@ def test_a_library_beets_cannot_open_gets_the_one_error_line_too(
     under a real uvicorn all three exited 3 and never bound the port — but with a
     traceback and no level-tagged line naming a setting. The assertion is on the
     LINE, because failing closed was never the part that was missing.
+
+    The class each one raises is a parameter: neither is the gate's own
+    ``StoreLayoutError``, which is what says these reach the console through the
+    startup arm rather than the layout one.
     """
     loop = tmp_path / "loopdb"
     loop.symlink_to(loop)
@@ -266,11 +272,10 @@ def test_a_library_beets_cannot_open_gets_the_one_error_line_too(
         f"directory: {tmp_path / 'music'}\nlibrary: {written}\nplugins:\n  - musicbrainz\n"
     )
 
-    with caplog.at_level(logging.ERROR), pytest.raises(Exception) as exc:
+    with caplog.at_level(logging.ERROR), pytest.raises(raised):
         with TestClient(real_app):
             pass  # pragma: no cover - the lifespan raises before the body runs
 
-    assert not isinstance(exc.value, StoreLayoutError), exc.value
     refusals = [r for r in caplog.records if r.name == "uvicorn.error"]
     assert len(refusals) == 1, [(r.name, r.getMessage()) for r in caplog.records]
     message = refusals[0].getMessage()

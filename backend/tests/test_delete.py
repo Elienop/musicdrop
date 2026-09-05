@@ -86,15 +86,16 @@ def test_delete_album_ghost_folder_already_gone(duplicates_lib: Library, tmp_pat
 
 
 def test_delete_album_unknown_id_raises(duplicates_lib: Library, tmp_path: Path) -> None:
+    protected = protected_for(
+        duplicates_lib, trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins"
+    )
     with pytest.raises(AlbumNotFoundError):
         delete_album(
             duplicates_lib,
             999_999,
             trash_dir=tmp_path / "trash",
             origins_dir=tmp_path / "trash-origins",
-            protected=protected_for(
-                duplicates_lib, trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins"
-            ),
+            protected=protected,
         )
 
 
@@ -171,13 +172,14 @@ def test_delete_album_root_unavailable_keeps_rows(duplicates_lib: Library, tmp_p
     shutil.rmtree(os.fsdecode(duplicates_lib.directory))
 
     origins = origins_for(trash)
+    protected = protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins)
     with pytest.raises(LibraryRootUnavailableError):
         delete_album(
             duplicates_lib,
             album_id,
             trash_dir=trash,
             origins_dir=origins,
-            protected=protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins),
+            protected=protected,
         )
 
     assert duplicates_lib.get_album(album_id) is not None  # still queryable
@@ -199,13 +201,14 @@ def test_delete_artist_root_unavailable_drops_nothing(
     shutil.rmtree(os.fsdecode(duplicates_lib.directory))
 
     origins = origins_for(trash)
+    protected = protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins)
     with pytest.raises(LibraryRootUnavailableError):
         delete_artist(
             duplicates_lib,
             "Radiohead",
             trash_dir=trash,
             origins_dir=origins,
-            protected=protected_for(duplicates_lib, trash_dir=trash, origins_dir=origins),
+            protected=protected,
         )
 
     assert [_require_id(a.id) for a in duplicates_lib.albums() if a.albumartist == "Radiohead"] == (
@@ -522,15 +525,16 @@ def test_delete_artist_root_gone_raises_before_the_transaction(
     before = len(list(duplicates_lib.albums()))
     shutil.rmtree(os.fsdecode(duplicates_lib.directory))
 
+    protected = protected_for(
+        duplicates_lib, trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins"
+    )
     with pytest.raises(LibraryRootUnavailableError):
         delete_artist(
             duplicates_lib,
             "Radiohead",
             trash_dir=tmp_path / "trash",
             origins_dir=tmp_path / "trash-origins",
-            protected=protected_for(
-                duplicates_lib, trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins"
-            ),
+            protected=protected,
         )
 
     assert calls == []  # the fan-out never started
