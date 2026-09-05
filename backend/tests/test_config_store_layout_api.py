@@ -667,7 +667,11 @@ def test_apply_refuses_after_the_rebuild_on_a_real_pre_check_divergence(
     # data dir — the very root the 422 above refused.
     started = client.post("/api/import", json={"path": str(beets_library.beets_dir.parent)})
     assert started.status_code == 503, started.text
-    assert "The beets data directory is the music library" in started.json()["detail"]
+    detail = started.json()["detail"]
+    assert "The beets data directory is the music library" in detail
+    # The refusal used to be built as "but {headline}. {exc}" while str(exc)
+    # already opens with the headline, so the 503 said it twice.
+    assert detail.count("The beets data directory is the music library") == 1
 
 
 def test_a_document_with_no_directory_key_gets_the_schema_row_and_no_layout_row(

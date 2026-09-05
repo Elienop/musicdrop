@@ -931,7 +931,7 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
                 bank_dir=get_bank_dir(),
                 playlists_dir=get_playlists_dir(),
                 trash_origins_dir=None,
-                refusal=f"Apply loaded config.yaml, but {exc.headline}. {exc}",
+                refusal=f"Apply loaded config.yaml, but {exc}",
             )
             raise HTTPException(
                 status_code=422,
