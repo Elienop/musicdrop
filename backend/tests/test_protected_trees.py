@@ -176,7 +176,12 @@ def test_a_path_that_is_not_there_yet_has_no_identity(tmp_path: Path) -> None:
     beets = tmp_path / "beets"
     beets.mkdir()
     trees = protected_trees(
-        settings=Settings(),
+        # The two cache dirs default to the repo root, where a dev checkout
+        # really has them; point them at absent paths so the set is empty.
+        settings=Settings(
+            artist_image_cache_dir=str(tmp_path / "gone-art"),
+            cover_thumb_cache_dir=str(tmp_path / "gone-thumbs"),
+        ),
         music_dir=tmp_path / "gone-music",
         beets_dir=beets,
         trash_dir=tmp_path / "gone-trash",
