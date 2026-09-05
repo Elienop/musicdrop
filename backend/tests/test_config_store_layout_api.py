@@ -437,7 +437,7 @@ def test_an_include_beets_raises_on_answers_a_lint_row_rather_than_nothing(
     assert "could not be read" in str(rows[0]["msg"]), rows
 
 
-@pytest.mark.parametrize("shape", ["fifo", "oversized", "nul", "not-a-mapping"])
+@pytest.mark.parametrize("shape", ["fifo", "oversized", "nul", "not-a-mapping", "deep"])
 def test_an_include_the_gate_will_not_read_answers_a_lint_row(
     client: TestClient, beets_library: LibraryHandle, shape: str
 ) -> None:
@@ -453,6 +453,9 @@ def test_an_include_the_gate_will_not_read_answers_a_lint_row(
     * ``nul`` — ``open`` raises ``ValueError``, which the old ``except`` missed:
       a bare 500 at all three routes.
     * ``not-a-mapping`` — confuse raises a bare ``TypeError``: a bare 500 too.
+    * ``deep`` — nesting past Python's recursion limit raises ``RecursionError``,
+      a ``RuntimeError`` the old arm missed: a bare 500 at all three routes,
+      where a real ``setup_beets`` over the same file does not come up.
     """
     music = Path(beets_library.lib.directory.decode())
     name = "overlay.yaml"
@@ -466,6 +469,8 @@ def test_an_include_the_gate_will_not_read_answers_a_lint_row(
         # A double-quoted YAML scalar carrying a backslash-zero escape, the same
         # spelling the ``directory:`` NUL case uses; ruamel decodes it to a NUL.
         name = '"over\\0lay.yaml"'
+    elif shape == "deep":
+        target.write_text("a: " + "[" * 5000 + "]" * 5000 + "\n", encoding="utf-8")
     else:
         target.write_text("- a\n- b\n", encoding="utf-8")
 
@@ -474,6 +479,32 @@ def test_an_include_the_gate_will_not_read_answers_a_lint_row(
     assert len(rows) == 1, rows
     assert rows[0]["loc"] == "include", rows
     assert "could not be read" in str(rows[0]["msg"]), rows
+
+
+@pytest.mark.parametrize(
+    "yaml_text",
+    ["a: " + "[" * 5000 + "]" * 5000 + "\n", "a: " + "1" * 5000 + "\n"],
+    ids=["nested-past-the-limit", "an-integer-too-long-to-build"],
+)
+def test_a_document_ruamel_will_not_parse_answers_the_parse_row(
+    client: TestClient, beets_library: LibraryHandle, yaml_text: str
+) -> None:
+    """The document's own parse arm, which caught ``YAMLError`` alone.
+
+    Measured on the parent commit: Validate and Save each answered a bare 500 —
+    ruamel raises ``RecursionError`` past the nesting limit and ``ValueError``
+    on an integer over 4300 digits, and neither is a ``YAMLError``.
+    """
+    r = client.post("/api/config/validate", json={"yaml_text": yaml_text})
+    assert r.status_code == 200, r.text
+    assert [e["type"] for e in r.json()["errors"]] == ["yaml_parse"], r.json()
+
+    saved = client.post(
+        "/api/config/save",
+        json={"yaml_text": yaml_text, "base_sha256": _sha(beets_library.config_path)},
+    )
+    assert saved.status_code == 422, saved.text
+    assert saved.json()["detail"][0]["type"] == "yaml_parse", saved.text
 
 
 def test_an_include_just_under_the_size_cap_is_still_read(

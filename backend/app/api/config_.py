@@ -126,7 +126,9 @@ def validate_config(req: ValidateRequest, request: Request) -> ValidateResponse:
     # computed from one function.
     try:
         data = parse_yaml(req.yaml_text)
-    except YAMLError as e:
+    # Not YAMLError alone: ruamel raises RecursionError on a document nested past
+    # the limit and ValueError on an integer over 4300 digits, both bare 500s.
+    except (YAMLError, RecursionError, ValueError) as e:
         mark = getattr(e, "problem_mark", None)
         return ValidateResponse(
             errors=[

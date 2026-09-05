@@ -467,7 +467,9 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
     # 1. Parse with ruamel.
     try:
         new_map = parse_yaml(req.yaml_text)
-    except YAMLError as exc:
+    # Same three as Validate's arm: ruamel raises RecursionError past the nesting
+    # limit and ValueError on an over-long integer.
+    except (YAMLError, RecursionError, ValueError) as exc:
         mark = getattr(exc, "problem_mark", None)
         raise HTTPException(
             status_code=422,

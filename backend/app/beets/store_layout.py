@@ -771,11 +771,12 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
         # reported an overlay's ``directory:`` that a real ``setup_beets`` over the
         # same file did not load.
         skipped.append(exc.name)
-    except (confuse.ConfigError, TypeError, ValueError) as exc:
+    except (confuse.ConfigError, TypeError, ValueError, RecursionError) as exc:
         # The shapes a real start does not survive: a non-list ``include:``, an
-        # include whose top level is not a mapping, an entry holding a NUL.
-        # Measured, all three escaped the old ``except confuse.ConfigError`` and the
-        # three routes answered a bare 500 or reported the document CLEAN.
+        # include whose top level is not a mapping, an entry holding a NUL, an
+        # include nested past the recursion limit. Measured, all four escaped the
+        # old ``except confuse.ConfigError`` and the three routes answered a bare
+        # 500 or reported the document CLEAN.
         raise _unreadable_include(str(exc)) from exc
     names = tuple(skipped)
     try:
