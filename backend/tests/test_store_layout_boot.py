@@ -115,12 +115,16 @@ def test_an_unreadable_import_bank_gets_the_one_error_line_too(
     mode-000 parent — measured. That was a bare lifespan traceback with no ERROR
     record naming the setting, where the inbox, the playlist store and the
     artist-image cache all boot in the same state.
+
+    The setting holds a NEWLINE here: interpolated with ``%s``, it forged a
+    second line in ``docker logs`` that reads as its own record.
     """
     if os.getuid() == 0:
         pytest.skip("root reads a mode-000 directory anyway")
     locked = tmp_path / "locked"
-    (locked / "bank").mkdir(parents=True)
-    monkeypatch.setattr("app.config.settings.bank_dir", str(locked / "bank"))
+    bank = locked / "bank\nFAKE-LEVEL: everything is fine"
+    bank.mkdir(parents=True)
+    monkeypatch.setattr("app.config.settings.bank_dir", str(bank))
     os.chmod(locked, 0o000)
 
     try:
@@ -136,6 +140,8 @@ def test_an_unreadable_import_bank_gets_the_one_error_line_too(
     message = refusals[0].getMessage()
     assert "refusing to start" in message
     assert "MUSICDROP_BANK_DIR" in message
+    assert "\n" not in message
+    assert "bank\\nFAKE-LEVEL" in message
 
 
 def test_the_origin_store_inside_the_library_refuses_to_start(

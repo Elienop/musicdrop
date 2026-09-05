@@ -274,8 +274,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         reconcile_interrupted(get_bank_dir())
     except OSError as exc:
+        # ``%r``, like every other path this module logs: a newline in
+        # MUSICDROP_BANK_DIR forged a second line in ``docker logs``. The
+        # exception is repr'd for the same reason, and it carries its class name
+        # that way — its own ``str`` names the path a second time.
         _boot_log().exception(
-            "refusing to start: the import bank at %s could not be read (%s)."
+            "refusing to start: the import bank at %r could not be read (%r)."
             " Set MUSICDROP_BANK_DIR to a folder MusicDrop can read and write.",
             get_bank_dir(),
             exc,
