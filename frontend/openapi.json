@@ -3440,6 +3440,16 @@
               }
             }
           },
+          "503": {
+            "description": "The store layout is refused, so no import can start.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "400": {
             "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
             "content": {
@@ -8241,6 +8251,16 @@
               }
             }
           },
+          "503": {
+            "description": "The store layout is refused, so no import can start.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "400": {
             "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
             "content": {
@@ -8341,6 +8361,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReviewInboxResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The store layout is refused, so no import can start.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -11743,7 +11773,7 @@
           "message"
         ],
         "title": "ConfigAdvisory",
-        "description": "One row of the config editor's ADVISORY channel \u2014 a valid setting that\nMusicDrop-driven imports force or discard.\n\nDeliberately NOT a :class:`ValidationErrorItem`: the editor paints the error\nlist red in CodeMirror's lint gutter, and every config an advisory fires on\nis valid YAML that both this app and beets accept. Merging the two channels\nwould make a correct config look broken.\n\nNo ``line``/``column``: resolving those needs the ruamel ``CommentedMap``\naccessor that lives behind the beets adapter (``_line_col_for_path``), and\nthis module is import-clean of beets. ``key`` is the dotted path in the same\nshape as ``ValidationErrorItem.loc`` (e.g. ``\"import.autotag\"``), which is\nenough for the panel to name the setting."
+        "description": "One note about a config that is valid and does not do what it says."
       },
       "ConfigSaveConflict": {
         "properties": {

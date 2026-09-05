@@ -35,7 +35,7 @@ import threading
 from collections.abc import Collection
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import Any, Final, NamedTuple, cast
 
 import beets
 from fastapi import FastAPI, HTTPException, Request
@@ -60,13 +60,14 @@ from app.beets.setup import reset_beets_globals, setup_beets
 from app.beets.store_layout import (
     StoreLayoutError,
     checked_store_dirs,
-    layout_error_for_config,
+    layout_check_for_config,
 )
 from app.config import Settings
 from app.config import settings as _module_settings
 from app.library_busy import library_job_active
 from app.models.config_api import BeetsConfigSnapshot
 from app.models.config_editor import (
+    ConfigAdvisory,
     KnownKeysSchema,
     NamingConfig,
     NamingRuleInput,
@@ -84,7 +85,7 @@ __all__ = [
     "read_naming",
     "save",
     "save_naming",
-    "store_layout_errors",
+    "store_layout_report",
     "validate_known_keys",
 ]
 
@@ -239,13 +240,31 @@ def validate_known_keys(
 _STORE_LAYOUT_ERROR_TYPE: Final = "store_layout"
 
 
-def store_layout_errors(
+class StoreLayoutReport(NamedTuple):
+    """The document's gutter rows, and one advisory per include beets drops."""
+
+    errors: list[ValidationErrorItem]
+    advisories: list[ConfigAdvisory]
+
+
+def _skipped_include_advisory(name: str) -> ConfigAdvisory:
+    """An include beets would drop. Advisory, not an error: beets starts."""
+    return ConfigAdvisory(
+        key="include",
+        message=(
+            f"beets could not read {name!r}, so it skips that entry and stops"
+            " reading include: there. Nothing listed after it is merged."
+        ),
+    )
+
+
+def store_layout_report(
     data: CommentedMap | dict[str, Any],
     *,
     settings: Settings,
     handle: LibraryHandle,
     reported_keys: Collection[str] = (),
-) -> list[ValidationErrorItem]:
+) -> StoreLayoutReport:
     """Zero or one row: the ``directory:`` and ``library:`` the submitted document
     would LOAD, against where Trash, the origin store and the beets data dir resolve.
 
@@ -269,12 +288,14 @@ def store_layout_errors(
     facts, and only the second names the loss.
     """
     if not isinstance(data, dict) or "directory" not in data:
-        return []
-    error = layout_error_for_config(document=data, settings=settings, handle=handle)
+        return StoreLayoutReport([], [])
+    check = layout_check_for_config(document=data, settings=settings, handle=handle)
+    advisories = [_skipped_include_advisory(name) for name in check.skipped_includes]
+    error = check.error
     if error is None:
-        return []
+        return StoreLayoutReport([], advisories)
     if error.unusable_value and (error.config_key or "directory") in reported_keys:
-        return []
+        return StoreLayoutReport([], advisories)
     # The gutter row is painted against the key the refusal is ABOUT, so a
     # ``library:`` that lands inside Trash underlines ``library:`` and not the
     # ``directory:`` line above it. A refusal between two env-derived paths names
@@ -283,15 +304,18 @@ def store_layout_errors(
     key = error.config_key or "directory"
     root = data if isinstance(data, CommentedMap) else None
     line, col = _line_col_for_path(root, (key,)) if root is not None else (None, None)
-    return [
-        ValidationErrorItem(
-            loc=key,
-            msg=str(error),
-            type=_STORE_LAYOUT_ERROR_TYPE,
-            line=line,
-            column=col,
-        )
-    ]
+    return StoreLayoutReport(
+        [
+            ValidationErrorItem(
+                loc=key,
+                msg=str(error),
+                type=_STORE_LAYOUT_ERROR_TYPE,
+                line=line,
+                column=col,
+            )
+        ],
+        advisories,
+    )
 
 
 def _strip_yaml_directive(text: str) -> str:
@@ -463,11 +487,14 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
     # splitting them into two statuses would make the gutter and the Save button
     # disagree about what "there is an error" means.
     schema_errors = validate_known_keys(new_map)
-    errors = schema_errors + store_layout_errors(
-        new_map,
-        settings=settings,
-        handle=handle,
-        reported_keys={item.loc for item in schema_errors},
+    errors = (
+        schema_errors
+        + store_layout_report(
+            new_map,
+            settings=settings,
+            handle=handle,
+            reported_keys={item.loc for item in schema_errors},
+        ).errors
     )
     if errors:
         raise HTTPException(
@@ -718,7 +745,7 @@ def on_disk_layout_error(handle: LibraryHandle, settings: Settings) -> StoreLayo
         return None
     if not isinstance(doc, CommentedMap):
         return None
-    return layout_error_for_config(document=doc, settings=settings, handle=handle)
+    return layout_check_for_config(document=doc, settings=settings, handle=handle).error
 
 
 def _rebuild_beets_handle(old: LibraryHandle, beets_dir: str) -> LibraryHandle:
@@ -906,8 +933,9 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
             # the registry holding it was measured to let an import "succeed"
             # into the pre-Apply store — SQLite reopens a closed handle on
             # demand — while the UI read the new one. The registry gets the NEW
-            # library with no store pair, so the delete-on-replace step refuses
-            # instead of running against a layout this call just refused.
+            # library, no store pair, and the refusal: measured, an import
+            # started in this state was accepted and wrote into the beets data
+            # dir, so ``start`` now refuses with this sentence.
             logging.getLogger("uvicorn.error").error(
                 "Apply loaded a config whose store layout is refused: %s", exc
             )
@@ -917,6 +945,7 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
                 bank_dir=get_bank_dir(),
                 playlists_dir=get_playlists_dir(),
                 trash_origins_dir=None,
+                refusal=f"Apply loaded config.yaml, but {exc.headline}. {exc}",
             )
             raise HTTPException(
                 status_code=422,

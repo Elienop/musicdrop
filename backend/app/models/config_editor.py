@@ -198,27 +198,25 @@ class ValidationErrorItem(BaseModel):
 
 
 class ConfigAdvisory(BaseModel):
-    """One row of the config editor's ADVISORY channel — a valid setting that
-    MusicDrop-driven imports force or discard.
+    """One note about a config that is valid and does not do what it says."""
 
-    Deliberately NOT a :class:`ValidationErrorItem`: the editor paints the error
-    list red in CodeMirror's lint gutter, and every config an advisory fires on
-    is valid YAML that both this app and beets accept. Merging the two channels
-    would make a correct config look broken.
-
-    No ``line``/``column``: resolving those needs the ruamel ``CommentedMap``
-    accessor that lives behind the beets adapter (``_line_col_for_path``), and
-    this module is import-clean of beets. ``key`` is the dotted path in the same
-    shape as ``ValidationErrorItem.loc`` (e.g. ``"import.autotag"``), which is
-    enough for the panel to name the setting.
-    """
+    # This docstring is PUBLISHED as the schema description, so the rest is a
+    # comment. Deliberately not a ``ValidationErrorItem``: the editor paints the
+    # error list red in CodeMirror's lint gutter, and every config an advisory
+    # fires on is one both this app and beets accept. Two sources today — an
+    # ``import:`` key MusicDrop overrides, and an ``include:`` entry beets drops.
+    #
+    # No ``line``/``column``: resolving those needs the ruamel ``CommentedMap``
+    # accessor that lives behind the beets adapter (``_line_col_for_path``), and
+    # this module is import-clean of beets. ``key`` is the dotted path in the
+    # same shape as ``ValidationErrorItem.loc``, which is enough to name the
+    # setting.
 
     key: str
-    """Dotted path of the setting the advisory is about, e.g. ``"import.autotag"``."""
+    """The setting this is about, dotted: ``"import.autotag"``, ``"include"``."""
 
     message: str
-    """One-or-two-sentence explanation: what MusicDrop forces, and that a CLI
-    ``beet import`` outside MusicDrop still honours the value."""
+    """One or two sentences: what really happens, and where the value still counts."""
 
 
 def _autotag_advisory(section: ImportSection) -> str | None:

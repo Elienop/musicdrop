@@ -602,7 +602,8 @@ function ErrorBanner({ err }: Readonly<{ err: unknown }>) {
  * One `StatusBanner` per advisory, `tone="neutral"` — the ambient treatment
  * (`role="status"`, muted icon), NOT warning or destructive. That tone choice
  * is the whole point: an advisory fires on a setting that is perfectly valid
- * and saves cleanly, it just has no effect on imports MusicDrop runs. Anything
+ * and saves cleanly, it just does not do what it reads as — a key MusicDrop
+ * overrides on import, or an `include:` entry beets drops. Anything
  * louder would read as "your config is broken", which is the error channel's
  * job and is already handled by CodeMirror's red gutter.
  *

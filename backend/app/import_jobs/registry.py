@@ -119,6 +119,15 @@ class ImportJob:
     pending_duplicate: dict[int, DuplicatePrompt] = field(default_factory=dict)
 
 
+class LibraryRefusedError(RuntimeError):
+    """The attached library sits under a layout Apply refused, so no import runs.
+
+    A ``RuntimeError`` so the three background callers that already treat a
+    failed ``start`` as "not now" keep that behaviour; the routes an operator
+    drives catch this first and answer 503 with the refusal's own sentence.
+    """
+
+
 class ImportJobRegistry:
     """Single-slot registry of the active (or last) import job."""
 
@@ -131,6 +140,7 @@ class ImportJobRegistry:
         self._trash_origins_dir: Path | None = None
         self._bank_dir: Path | None = None
         self._playlists_dir: Path | None = None
+        self._refusal: str | None = None
         self._job: ImportJob | None = None
         self._lock = threading.Lock()
         self._broker: EventBroker | None = None
@@ -160,6 +170,7 @@ class ImportJobRegistry:
         bank_dir: Path | None = None,
         playlists_dir: Path | None = None,
         trash_origins_dir: Path | None = None,
+        refusal: str | None = None,
     ) -> None:
         """Provide the beets Library + Trash dir + bank dir + playlists dir the
         production runner builds from (bank_dir feeds sweep-mode sessions;
@@ -168,12 +179,15 @@ class ImportJobRegistry:
         ``trash_origins_dir`` is keyword-last rather than beside ``trash_dir``
         only because ``trash_dir`` is passed POSITIONALLY by both callers; it is
         wired from the same resolve as ``trash_dir`` and the two are used as a
-        pair."""
+        pair. ``refusal`` is Apply's backstop sentence: measured, an import
+        started after that 422 was accepted and landed its files in the beets
+        data dir, the root the Apply had just refused."""
         self._lib = lib
         self._trash_dir = trash_dir
         self._trash_origins_dir = trash_origins_dir
         self._bank_dir = bank_dir
         self._playlists_dir = playlists_dir
+        self._refusal = refusal
 
     def _resolve_runner(self) -> ImportRunner:
         if self._runner is not None:
@@ -213,7 +227,7 @@ class ImportJobRegistry:
         origin: ImportOrigin = "manual",
         directive: BankApplyDirective | None = None,
     ) -> str:
-        """Start an import; raise RuntimeError if one is already active.
+        """Start an import; raise RuntimeError if one is already active or refused.
 
         ``source`` is one folder or a LIST of them — beets takes each as its own
         toppath, so the inbox review can hand over the settled folders
@@ -227,6 +241,8 @@ class ImportJobRegistry:
         bank apply runner's translated decision, threaded to the session so
         the one-folder run answers every hook from it (None everywhere else).
         """
+        if self._refusal is not None:
+            raise LibraryRefusedError(self._refusal)
         paths = [source] if isinstance(source, str) else list(source)
         runner = self._resolve_runner()
         runner.validate(paths, options)

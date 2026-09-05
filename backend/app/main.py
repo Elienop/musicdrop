@@ -369,7 +369,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # (which the filler expects) rather than "client has been closed".
         await artist_image_filler.close()
         await http_client.aclose()
-        close_library(handle.lib)
+        # ``app.state.beets_library``, not the ``handle`` bound at boot: a
+        # successful Apply rebinds it, and measured, closing the boot handle left
+        # the LIVE connection open (its fd still on ``/proc/self/fd`` and ``select
+        # 1`` still answering). beets' ``_close`` on an already-closed library is
+        # a no-op, so the pre-Apply case is unchanged.
+        live: LibraryHandle = app.state.beets_library
+        close_library(live.lib)
         # Remove the broker before the event loop is torn down so that any
         # subsequent test that skips the lifespan (and therefore has no broker)
         # does not find a stale EventBroker whose loop is already closed.

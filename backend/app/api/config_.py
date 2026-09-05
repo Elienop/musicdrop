@@ -13,11 +13,12 @@ from fastapi import APIRouter, Request
 from ruamel.yaml.error import YAMLError
 
 from app.beets.config_editor import (
+    StoreLayoutReport,
     _settings,
     parse_yaml,
     read_naming,
     save_naming,
-    store_layout_errors,
+    store_layout_report,
     validate_known_keys,
 )
 from app.beets.config_editor import apply as apply_config_op
@@ -161,10 +162,10 @@ def validate_config(req: ValidateRequest, request: Request) -> ValidateResponse:
     # guard tests create.
     handle: LibraryHandle | None = getattr(request.app.state, "beets_library", None)
     schema_errors = validate_known_keys(data)
-    layout_errors = (
-        []
+    layout = (
+        StoreLayoutReport([], [])
         if handle is None
-        else store_layout_errors(
+        else store_layout_report(
             data,
             settings=_settings(request.app),
             handle=handle,
@@ -172,8 +173,8 @@ def validate_config(req: ValidateRequest, request: Request) -> ValidateResponse:
         )
     )
     return ValidateResponse(
-        errors=schema_errors + layout_errors,
-        advisories=import_advisories(data),
+        errors=schema_errors + layout.errors,
+        advisories=import_advisories(data) + layout.advisories,
     )
 
 

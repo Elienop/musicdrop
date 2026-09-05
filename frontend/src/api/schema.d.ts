@@ -2914,19 +2914,7 @@ export interface components {
         };
         /**
          * ConfigAdvisory
-         * @description One row of the config editor's ADVISORY channel — a valid setting that
-         *     MusicDrop-driven imports force or discard.
-         *
-         *     Deliberately NOT a :class:`ValidationErrorItem`: the editor paints the error
-         *     list red in CodeMirror's lint gutter, and every config an advisory fires on
-         *     is valid YAML that both this app and beets accept. Merging the two channels
-         *     would make a correct config look broken.
-         *
-         *     No ``line``/``column``: resolving those needs the ruamel ``CommentedMap``
-         *     accessor that lives behind the beets adapter (``_line_col_for_path``), and
-         *     this module is import-clean of beets. ``key`` is the dotted path in the same
-         *     shape as ``ValidationErrorItem.loc`` (e.g. ``"import.autotag"``), which is
-         *     enough for the panel to name the setting.
+         * @description One note about a config that is valid and does not do what it says.
          */
         ConfigAdvisory: {
             /** Key */
@@ -7952,6 +7940,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
                 };
             };
+            /** @description The store layout is refused, so no import can start. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
         };
     };
     get_import_state_api_import__job_id__get: {
@@ -11873,6 +11870,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description The store layout is refused, so no import can start. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
         };
     };
     list_inbox_items_api_acquisition_inbox_items_get: {
@@ -11996,6 +12002,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The store layout is refused, so no import can start. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
         };

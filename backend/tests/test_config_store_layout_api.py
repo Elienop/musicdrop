@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import socket
 from pathlib import Path
 
 import pytest
@@ -441,16 +442,16 @@ def test_an_include_the_gate_will_not_read_answers_a_lint_row(
 ) -> None:
     """The four the gate refuses to follow, each measured on the parent commit.
 
-    * ``fifo`` — ``open`` on a FIFO with no writer never returns, and confuse's
+    * ``fifo`` — confuse's ``open`` on a FIFO with no writer never returns, and
       ``YamlSource.__init__`` reads eagerly: Validate, Save and Apply each hung
-      until the process was killed, pinning a threadpool worker per request.
+      until the process was killed, pinning a threadpool worker per request. The
+      gate opens ``O_NONBLOCK``, so it is ``fstat`` that names this one; a
+      non-blocking read of a writer-less FIFO answers EOF, which would report an
+      empty overlay for a file beets blocks on.
     * ``oversized`` — a 195 MiB include was read and parsed in 32.7 seconds.
     * ``nul`` — ``open`` raises ``ValueError``, which the old ``except`` missed:
       a bare 500 at all three routes.
     * ``not-a-mapping`` — confuse raises a bare ``TypeError``: a bare 500 too.
-
-    ``os.stat`` is what makes the first two answerable at all; it returns for a
-    FIFO where ``open`` does not.
     """
     music = Path(beets_library.lib.directory.decode())
     name = "overlay.yaml"
@@ -660,6 +661,12 @@ def test_apply_refuses_after_the_rebuild_on_a_real_pre_check_divergence(
     # CLOSED old one, which SQLite reopens on demand — an import then landed in
     # the pre-Apply store while the UI read the new one.
     assert get_registry()._lib is app.state.beets_library.lib
+    # And the import that would land in it: measured before this, POST
+    # /api/import answered 202 in this state and wrote its files into the beets
+    # data dir — the very root the 422 above refused.
+    started = client.post("/api/import", json={"path": str(beets_library.beets_dir.parent)})
+    assert started.status_code == 503, started.text
+    assert "The beets data directory is the music library" in started.json()["detail"]
 
 
 def test_a_document_with_no_directory_key_gets_the_schema_row_and_no_layout_row(
@@ -672,7 +679,7 @@ def test_a_document_with_no_directory_key_gets_the_schema_row_and_no_layout_row(
 
     The fallback is real — ``directory: ~/Music`` is beets' own default
     (``beets/config_default.yaml``) and :func:`effective_config_paths` reads the
-    defaults, so without the guard in ``store_layout_errors`` this document
+    defaults, so without the guard in ``store_layout_report`` this document
     produces a refusal about a path the operator did not write. ``HOME`` is
     pointed at ``tmp_path`` and the origin store placed under ``~/Music`` so the
     fallback WOULD trip a rule if it were checked: the assertion is that it is
@@ -814,4 +821,228 @@ def test_the_include_reproduction_agrees_with_a_real_beets_startup(
         close_library(handle.lib)
 
     document = parse_yaml(text)
-    assert effective_config_paths(document, beets_dir) == from_beets
+    paths = effective_config_paths(document, beets_dir)
+    assert (paths.directory, paths.library) == from_beets
+
+
+@pytest.mark.parametrize("shape", ["directory", "socket", "dev-null", "symlink-to-regular"])
+def test_the_include_reproduction_agrees_with_beets_on_the_shapes_it_tolerates(
+    tmp_path: Path, shape: str
+) -> None:
+    """The four an ``S_ISREG`` test refused and a real ``setup_beets`` survives.
+
+    Measured at the parent commit: beets booted on every one of them while the
+    gate answered a lint row, so Validate painted a config beets loads and Apply
+    refused it with 422. The last shape is the one that matters most — beets
+    FOLLOWS a symlinked include and merges it, so the gate has to read it too.
+    """
+    import beets
+
+    from app.beets.library import close_library
+    from app.beets.setup import setup_beets
+    from app.beets.store_layout import effective_config_paths
+
+    beets_dir = tmp_path / "beets"
+    beets_dir.mkdir()
+    music = tmp_path / "music"
+    music.mkdir()
+    name = "overlay.yaml"
+    target = beets_dir / name
+    if shape == "directory":
+        target.mkdir()
+    elif shape == "socket":
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.bind(str(target))
+        finally:
+            sock.close()
+    elif shape == "dev-null":
+        name = "/dev/null"
+    else:
+        (beets_dir / "real.yaml").write_text(f"directory: {tmp_path / 'from-link'}\n")
+        target.symlink_to(beets_dir / "real.yaml")
+
+    text = f"directory: {music}\nlibrary: library.db\ninclude:\n  - {name}\n"
+    (beets_dir / "config.yaml").write_text(text, encoding="utf-8")
+
+    handle = setup_beets(str(beets_dir))
+    try:
+        from_beets = (
+            beets.config["directory"].as_filename(),
+            beets.config["library"].as_filename(),
+        )
+    finally:
+        close_library(handle.lib)
+
+    paths = effective_config_paths(parse_yaml(text), beets_dir)
+    assert (paths.directory, paths.library) == from_beets
+
+
+def _advisories(client: TestClient, yaml_text: str) -> list[dict[str, object]]:
+    r = client.post("/api/config/validate", json={"yaml_text": yaml_text})
+    assert r.status_code == 200, r.text
+    rows: list[dict[str, object]] = [a for a in r.json()["advisories"] if a["key"] == "include"]
+    return rows
+
+
+@pytest.mark.parametrize("shape", ["directory", "socket", "dev-null", "symlink-to-dir"])
+def test_an_include_beets_drops_is_an_advisory_and_not_an_error(
+    client: TestClient, beets_library: LibraryHandle, shape: str
+) -> None:
+    """Four shapes a real beets START survives, so none of them is a lint row.
+
+    Measured against ``setup_beets`` over the same file: each one makes beets
+    print one stderr line (``/dev/null`` not even that) and boot with the
+    document's own ``directory:``. The gate refused all four, so a config beets
+    loads was reported broken — and Apply answered 422 on it.
+
+    The advisory says what beets does instead, because the entry IS dropped and
+    every include listed after it is skipped with it.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    name = "overlay.yaml"
+    target = beets_library.beets_dir / name
+    if shape == "directory":
+        target.mkdir()
+    elif shape == "socket":
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.bind(str(target))
+        finally:
+            sock.close()
+    elif shape == "dev-null":
+        name = "/dev/null"
+    else:
+        (beets_library.beets_dir / "adir").mkdir()
+        target.symlink_to(beets_library.beets_dir / "adir")
+
+    text = _with_include(music, name)
+
+    assert _layout_rows(client, text) == []
+    if shape == "dev-null":
+        # ``open`` succeeds and the read is empty, which is a merge of nothing —
+        # beets does exactly that, silently, so there is nothing to advise on.
+        assert _advisories(client, text) == []
+    else:
+        rows = _advisories(client, text)
+        assert len(rows) == 1, rows
+        assert name in str(rows[0]["message"]), rows
+
+
+def test_a_symlinked_include_is_followed_the_way_beets_follows_it(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """``O_NOFOLLOW`` would have made this file invisible to the gate.
+
+    Measured against a real ``setup_beets``: beets follows the link and the
+    overlay's ``directory:`` wins. So the link has to be READ here — refusing it
+    would hide the override the gate exists to catch, which is the opposite of
+    safe.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    (beets_library.beets_dir / "real.yaml").write_text(
+        f"directory: {beets_library.beets_dir}\n", encoding="utf-8"
+    )
+    (beets_library.beets_dir / "link.yaml").symlink_to(beets_library.beets_dir / "real.yaml")
+
+    rows = _layout_rows(client, _with_include(music, "link.yaml"))
+
+    assert len(rows) == 1, rows
+    assert rows[0]["loc"] == "directory", rows
+
+
+def test_the_gate_reads_an_include_through_one_descriptor(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No ``set_file``: the gate opens the include ONCE and parses those bytes.
+
+    ``os.stat`` then confuse's ``open`` asked the same NAME twice. Measured on
+    the parent commit with a symlink flipped between the two calls, the FIFO hang
+    the stat existed to prevent came back: the read did not return until a
+    3-second alarm interrupted it. This asserts the second lookup is gone by
+    making it fail loudly.
+    """
+    import confuse
+
+    def _refuse(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("the gate re-opened the include by name")
+
+    monkeypatch.setattr(confuse.Configuration, "set_file", _refuse)
+    music = Path(beets_library.lib.directory.decode())
+    (beets_library.beets_dir / "overlay.yaml").write_text(
+        f"directory: {beets_library.beets_dir}\n", encoding="utf-8"
+    )
+
+    rows = _layout_rows(client, _with_include(music, "overlay.yaml"))
+
+    assert len(rows) == 1, rows  # the overlay was merged, so its directory: won
+
+
+def test_the_cap_bounds_the_read_and_not_the_reported_size(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """``/dev/zero`` reports ``st_size`` 0 and yields bytes without end.
+
+    Every ``/proc`` file reports 0 too: measured, ``include: [/proc/kallsyms]``
+    read 22,162,180 bytes through a 1,048,576-byte ``st_size`` check, at +34 MiB
+    of RSS per authenticated request. The read is what has to stop.
+    """
+    music = Path(beets_library.lib.directory.decode())
+
+    rows = _layout_rows(client, _with_include(music, "/dev/zero"))
+
+    assert len(rows) == 1, rows
+    assert rows[0]["loc"] == "include", rows
+
+
+@pytest.mark.parametrize("value", ["", "."])
+def test_apply_refuses_an_on_disk_library_that_names_a_directory(
+    client: TestClient, beets_library: LibraryHandle, value: str
+) -> None:
+    """Two on-disk values SQLite cannot open, both reachable by a hand edit.
+
+    Measured at the parent commit: both answered 500 "Apply failed during rebuild:
+    unable to open database file" with the recovery "Restart MusicDrop. The saved
+    config is on disk; cold start will load it." — and the cold start died on the
+    same file, logging "refusing to start". The recovery sentence promised a
+    restart that could not help.
+
+    The empty value is the second spelling: confuse resolves it to the beets data
+    directory, which is a directory too. Save and Validate already refuse both
+    (``_library_file``), so only a hand edit gets here.
+    """
+    from app.main import app
+
+    music = Path(beets_library.lib.directory.decode())
+    spelling = f"library: {value}\n" if value else "library: ''\n"
+    beets_library.config_path.write_text(f"directory: {music}\n{spelling}", encoding="utf-8")
+    handle_before = app.state.beets_library
+
+    r = client.post("/api/config/apply")
+
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message"] == (
+        "Apply refused: `library:` in config.yaml is a directory"
+    )
+    assert "has to name the beets database file" in r.json()["detail"]["recovery"]
+    assert app.state.beets_library is handle_before
+
+
+def test_a_library_that_is_a_directory_draws_one_row_at_validate(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """The schema already paints this key, so the layout row is suppressed.
+
+    Measured: without the suppression the editor shows two rows on ``library:``
+    saying the same thing. ``unusable_value`` is what marks a refusal about ONE
+    value as droppable; a layout refusal (two paths, one loss) never is.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    text = f"directory: {music}\nlibrary: {beets_library.beets_dir}\n"
+
+    r = client.post("/api/config/validate", json={"yaml_text": text})
+
+    assert r.status_code == 200, r.text
+    rows = [e for e in r.json()["errors"] if e["loc"] == "library"]
+    assert len(rows) == 1, rows
+    assert rows[0]["type"] != "store_layout", rows

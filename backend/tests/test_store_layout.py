@@ -773,12 +773,11 @@ def test_a_relative_directory_resolves_against_the_beets_dir_not_the_cwd(
     beets = tmp_path / "data" / "beets"
     beets.mkdir(parents=True)
 
-    directory, library = effective_config_paths(
-        {"directory": "../music", "library": "inner/library.db"}, beets
-    )
+    paths = effective_config_paths({"directory": "../music", "library": "inner/library.db"}, beets)
+    directory = paths.directory
 
     assert directory == str(tmp_path / "data" / "music")
-    assert library == str(beets / "inner" / "library.db")
+    assert paths.library == str(beets / "inner" / "library.db")
     # The control: NOT the CWD, which is what a bare ``Path(raw).resolve()``
     # would give and what this test exists to keep out.
     assert directory != str(Path("../music").resolve())
@@ -786,10 +785,10 @@ def test_a_relative_directory_resolves_against_the_beets_dir_not_the_cwd(
 
 def test_an_absolute_directory_ignores_the_beets_dir(tmp_path: Path) -> None:
     absolute = tmp_path / "elsewhere" / "music"
-    directory, _ = effective_config_paths(
+    paths = effective_config_paths(
         {"directory": str(absolute), "library": "library.db"}, tmp_path / "data"
     )
-    assert directory == str(absolute)
+    assert paths.directory == str(absolute)
 
 
 # --------------------------------------------------------------------------
