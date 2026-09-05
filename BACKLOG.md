@@ -1043,20 +1043,21 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   job is saying what the import will change. Not executed against a fetchart-enabled
   import; verify that first, then make the caption read the live plugin list.
 
-- ~~**`MUSICDROP_TRASH_DIR` is an unvalidated `rmtree` root.**~~ — **SHIPPED — PR #215**
-  (2026-09-05).
+- ~~**`MUSICDROP_TRASH_DIR` is an unvalidated `rmtree` root.**~~ — **SHIPPED — PR #215, squash
+  `35d37bc` = v0.50.2** (2026-09-05).
   One table in `app/beets/store_layout.py` refuses the Trash or the origin store being or
   holding the music library, the beets dir, `library.db` or an app store, and the beets dir
   nesting with the music library. Asked at startup and at each destructive use site.
 
 - ~~**The orphan sweep's ignore list does not protect an ignored dir's ANCESTORS.**~~ —
-  **SHIPPED — PR #215** (2026-09-05), same series. `orphans._drop_excluded_ancestors` folds
+  **SHIPPED — PR #215, squash `35d37bc` = v0.50.2** (2026-09-05), same series. `orphans._drop_excluded_ancestors` folds
   each excluded root's ancestor
   chain into the drop, and `orphans._exclude_ids` drops (with one WARNING) an exclude root at
   or above the walk root. Exclusion is by inode, not by spelling.
 
 - ~~**The layout predicate compares SPELLINGS, so an alias walks past it; and a refused
-  Reorganize keeps the job slot.**~~ — **SHIPPED — PR #215** (2026-09-05), found by the
+  Reorganize keeps the job slot.**~~ — **SHIPPED — PR #215, squash `35d37bc` = v0.50.2**
+  (2026-09-05), found by the
   2026-09-04 review round of the two entries above.
   `app/beets/protected.py` re-asks by `(st_dev, st_ino)` at the moment a tree is moved or
   removed; `reg.start` runs after the store check, so a 503 no longer leaves `phase=running`.
@@ -2098,7 +2099,7 @@ Added by the 2026-08-28 sweeps:
 
 ## Recently shipped
 
-- **Trash and store containment — #215 (2026-09-05).** Vault decision 35: a Trash inside the
+- **Trash and store containment — PR #215, squash `35d37bc` = v0.50.2 (2026-09-05).** Vault decision 35: a Trash inside the
   music library is allowed; one that is or contains the music library, the beets dir, the origin
   store or an app folder is refused at startup, on Save/Validate/Apply and at every destructive
   route, by one table over resolved paths plus an inode guard at the point of destruction. Empty
