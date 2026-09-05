@@ -28,7 +28,7 @@ from app.beets.protected import (
     refuse_protected_tree,
 )
 from app.beets.trash import trash_folder
-from app.beets.trash_manage import empty_all, empty_one
+from app.beets.trash_manage import TrashEmptyPartialError, empty_all, empty_one
 from app.config import Settings, app_owned_dirs, settings
 from tests._mountns import run_probe, unshare_works
 from tests.conftest import beets_dir_for, make_test_handle, origins_for, protected_for
@@ -294,6 +294,39 @@ def test_a_directory_the_guard_cannot_read_is_logged_and_not_refused(
     finally:
         os.chmod(entry / "locked", 0o755)
     assert "could not read" in caplog.text
+
+
+def test_empty_all_carries_on_past_an_entry_it_cannot_open(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An unreadable ROOT is the same trade as an unreadable sub-directory.
+
+    ``os.fwalk`` hands a sub-directory to ``onerror`` and RE-RAISES for the root,
+    so the guard used to abort the whole sweep on the first mode-000 entry: the
+    count was lost, every later entry stayed, and the route answered 500. The
+    entry's own identity is compared from the Trash's descriptor either way.
+    """
+    if os.getuid() == 0:
+        pytest.skip("root reads a mode-000 directory anyway")
+    trash = tmp_path / "trash"
+    for name in ("a", "b", "c"):
+        (trash / name).mkdir(parents=True)
+        (trash / name / "01.flac").write_bytes(b"x")
+    os.chmod(trash / "b", 0o000)
+    trees = _trees_for(tmp_path / "music", trash)
+
+    try:
+        with caplog.at_level(logging.WARNING, logger="app.beets.protected"):
+            with pytest.raises(TrashEmptyPartialError) as caught:
+                empty_all(trash, origins_dir=origins_for(trash), protected=trees)
+    finally:
+        os.chmod(trash / "b", 0o755)
+
+    assert "removed 2 of 3" in str(caught.value)
+    assert "'b'" in str(caught.value)
+    assert "could not read" in caplog.text
+    assert not (trash / "a").exists()
+    assert not (trash / "c").exists()
 
 
 # --------------------------------------------------------------------------

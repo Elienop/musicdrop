@@ -174,14 +174,20 @@ def _match(root: str | Path, protected: ProtectedTrees, dir_fd: int | None) -> _
     found = protected.ids.get((st.st_dev, st.st_ino))
     if found is not None:
         return _Match(True, f"is {found[0]} (same inode as {found[1]})")
-    for _dirpath, dirnames, _files, fd in os.fwalk(top, onerror=_note_walk_error, dir_fd=dir_fd):
-        for name in dirnames:
-            child = _own_stat(name, fd)
-            if child is None:
-                continue
-            found = protected.ids.get((child.st_dev, child.st_ino))
-            if found is not None:
-                return _Match(False, f"contains {found[0]} (same inode as {found[1]})")
+    try:
+        for _dirpath, dirs, _files, fd in os.fwalk(top, onerror=_note_walk_error, dir_fd=dir_fd):
+            for name in dirs:
+                child = _own_stat(name, fd)
+                if child is None:
+                    continue
+                found = protected.ids.get((child.st_dev, child.st_ino))
+                if found is not None:
+                    return _Match(False, f"contains {found[0]} (same inode as {found[1]})")
+    except OSError as exc:
+        # ``os.fwalk`` hands a sub-directory it cannot open to ``onerror`` and
+        # RE-RAISES for the ROOT. Same trade either way: the root's own identity
+        # was compared above, from the parent's descriptor.
+        _note_walk_error(exc)
     return None
 
 
