@@ -6,13 +6,14 @@ those two resolve decides whether "Empty Trash" removes a hundred albums or the
 library.
 
 ``M`` music library (``directory:``) · ``B`` beets data dir · ``T`` Trash · ``O``
-origin store · ``L`` ``library.db`` · six app-owned stores (bank, plex, slskd,
-playlists, inbox, exports). :data:`_ROWS` IS the rule, a row per refusal with the
-loss it causes; its shape:
+origin store · ``L`` ``library.db`` · eight app-owned stores (bank, plex, slskd,
+playlists, inbox, exports, artist-image cache, cover-thumbnail cache).
+:data:`_ROWS` IS the rule, a row per refusal with the loss it causes; its shape:
 
 * ``B`` and ``M`` may not be, or nest with, each other.
-* ``T`` and ``O`` may not be or contain ``M`` or ``B``, nor overlap each other or
-  any app-owned store (D2); ``M`` may not hold ``O``; ``L`` may sit in neither.
+* ``T`` and ``O`` may not be or contain ``M`` or ``B``, nor be or contain each
+  other or any app-owned store (D2); ``M`` may not hold ``O``; ``L`` may sit in
+  neither.
 * Allowed on purpose (``decisions.md`` 35, and the shipped defaults): ``T``
   inside ``M``; ``T``, ``O``, ``L`` under ``B``; ``M`` and ``B`` disjoint.
 

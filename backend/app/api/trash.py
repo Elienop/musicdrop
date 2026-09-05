@@ -63,12 +63,12 @@ _TRASH_RESTORE_FAILED_RESPONSE: Final = {
 }
 #: Every route here resolves the Trash / origin-store pair per request and runs
 #: the containment check on what it resolved to, so every one of them can answer
-#: this. One sentence for all three, because ``DELETE /api/trash/all`` removes
-#: every unprotected entry BEFORE it refuses: "nothing was removed" was false
-#: there, and the refusals name one setting, not two paths.
+#: this. One sentence for all three, and it says nothing about what was left:
+#: ``DELETE /api/trash/all`` removes every unprotected entry BEFORE it refuses,
+#: and the layout refusal itself names the cause, not the leftovers.
 _TRASH_LAYOUT_REFUSED_RESPONSE: Final = {
     "model": ErrorDetail,
-    "description": "A store-layout refusal; the message says what was left in place.",
+    "description": "A store-layout or identity refusal; the message names the cause.",
 }
 _TRASH_EMPTY_PARTIAL_RESPONSE: Final = {
     "model": ErrorDetail,

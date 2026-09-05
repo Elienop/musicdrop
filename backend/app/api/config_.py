@@ -112,8 +112,7 @@ def get_config(request: Request) -> BeetsConfigSnapshot:
 
 @router.post("/config/validate")
 def validate_config(req: ValidateRequest, request: Request) -> ValidateResponse:
-    """Read-only lint pass. Returns 200 even on errors so the CodeMirror async
-    lint source can display them inline."""
+    """Read-only lint pass, 200 even on errors so the editor can show them inline."""
     # Everything below stays a COMMENT: FastAPI publishes a route docstring as
     # the operation's OpenAPI description, and these paragraphs are about how
     # this file works rather than about the endpoint's contract.
@@ -185,12 +184,13 @@ def validate_config(req: ValidateRequest, request: Request) -> ValidateResponse:
     responses={409: _SAVE_CAS_CONFLICT_RESPONSE, 422: _SAVE_VALIDATION_RESPONSE},
 )
 def save_config(req: SaveRequest, request: Request) -> BeetsConfigSnapshot:
-    """Persist the user-submitted YAML to disk after CAS + schema checks.
-
-    Returns the freshly-built :class:`BeetsConfigSnapshot`, whose
-    ``apply_pending`` is ``True`` until Apply reloads beets' globals. 422 on a
-    parse, schema or store-layout failure; 409 on a CAS mismatch.
-    """
+    """Persist the user-submitted YAML to disk after CAS + schema checks."""
+    # The rest of the contract is here rather than in the docstring, which
+    # FastAPI publishes whole: the response is the freshly-built
+    # ``BeetsConfigSnapshot``, whose ``apply_pending`` is ``True`` until Apply
+    # reloads beets' globals; 422 on a parse, schema or store-layout failure;
+    # 409 on a CAS mismatch.
+    #
     # A comment, not a docstring paragraph — FastAPI publishes the docstring as
     # this operation's OpenAPI description. The error mapping lives inside
     # ``save_config_op``, and the settings are threaded in because the
@@ -257,7 +257,7 @@ def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSn
             "model": StructuredErrorDetail,
             "description": (
                 "The config.yaml on disk breaks the store layout; the recovery line"
-                " says whether beets was reloaded."
+                " says how to fix it."
             ),
         },
         500: {

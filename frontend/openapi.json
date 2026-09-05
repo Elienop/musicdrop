@@ -189,7 +189,7 @@
           "auth"
         ],
         "summary": "Setup Password",
-        "description": "Set the FIRST password, on a server that has none, and sign the caller in.\n\nGate-exempt by necessity \u2014 there is no credential to hold a session with yet\n\u2014 and refused with a 409 the moment any source exists.",
+        "description": "Set the FIRST password, on a server that has none, and sign the caller in.",
         "operationId": "setup_password_api_auth_setup_post",
         "requestBody": {
           "content": {
@@ -4264,7 +4264,7 @@
           "config"
         ],
         "summary": "Validate Config",
-        "description": "Read-only lint pass. Returns 200 even on errors so the CodeMirror async\nlint source can display them inline.",
+        "description": "Read-only lint pass, 200 even on errors so the editor can show them inline.",
         "operationId": "validate_config_api_config_validate_post",
         "requestBody": {
           "content": {
@@ -4346,7 +4346,7 @@
           "config"
         ],
         "summary": "Save Config",
-        "description": "Persist the user-submitted YAML to disk after CAS + schema checks.\n\nReturns the freshly-built :class:`BeetsConfigSnapshot`, whose\n``apply_pending`` is ``True`` until Apply reloads beets' globals. 422 on a\nparse, schema or store-layout failure; 409 on a CAS mismatch.",
+        "description": "Persist the user-submitted YAML to disk after CAS + schema checks.",
         "operationId": "save_config_api_config_save_post",
         "requestBody": {
           "content": {
@@ -4784,7 +4784,7 @@
             }
           },
           "422": {
-            "description": "The config.yaml on disk breaks the store layout; the recovery line says whether beets was reloaded.",
+            "description": "The config.yaml on disk breaks the store layout; the recovery line says how to fix it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4958,7 +4958,7 @@
             }
           },
           "503": {
-            "description": "The store layout is refused, so no copies were moved; the message names the setting and both resolved paths.",
+            "description": "A store-layout refusal; no copies were moved.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5080,7 +5080,7 @@
             }
           },
           "503": {
-            "description": "The store layout is refused, so no copies were moved; the message names the setting and both resolved paths.",
+            "description": "A store-layout refusal; no copies were moved.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5399,7 +5399,7 @@
             }
           },
           "503": {
-            "description": "The store layout is refused, so nothing was planned or started; the message names the setting and both resolved paths.",
+            "description": "A store-layout refusal; nothing was planned or started.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5481,7 +5481,7 @@
             }
           },
           "503": {
-            "description": "The store layout is refused, so nothing was planned or started; the message names the setting and both resolved paths.",
+            "description": "A store-layout refusal; nothing was planned or started.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5571,7 +5571,7 @@
             }
           },
           "503": {
-            "description": "The store layout is refused, so nothing was planned or started; the message names the setting and both resolved paths.",
+            "description": "A store-layout refusal; nothing was planned or started.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5673,7 +5673,7 @@
             }
           },
           "503": {
-            "description": "The store layout is refused, so nothing was planned or started; the message names the setting and both resolved paths.",
+            "description": "A store-layout refusal; nothing was planned or started.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9323,7 +9323,7 @@
             }
           },
           "503": {
-            "description": "A store-layout refusal; the message says what was left in place.",
+            "description": "A store-layout or identity refusal; the message names the cause.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9404,7 +9404,7 @@
             }
           },
           "503": {
-            "description": "A store-layout refusal; the message says what was left in place.",
+            "description": "A store-layout or identity refusal; the message names the cause.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9618,7 +9618,7 @@
             }
           },
           "503": {
-            "description": "A store-layout refusal; the message says what was left in place.",
+            "description": "A store-layout or identity refusal; the message names the cause.",
             "content": {
               "application/json": {
                 "schema": {

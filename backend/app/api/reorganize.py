@@ -58,10 +58,7 @@ _ALBUM_NOT_FOUND_RESPONSE: Final = {
 #: refuse before the sweep is planned or spawned.
 _LAYOUT_REFUSED_RESPONSE: Final = {
     "model": ErrorDetail,
-    "description": (
-        "The store layout is refused, so nothing was planned or started; the"
-        " message names the setting and both resolved paths."
-    ),
+    "description": "A store-layout refusal; nothing was planned or started.",
 }
 
 

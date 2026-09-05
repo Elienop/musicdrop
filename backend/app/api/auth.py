@@ -491,11 +491,12 @@ async def login(body: LoginRequest, request: Request, response: Response) -> Aut
 
 @router.post("/auth/setup", responses=_SETUP_RESPONSES)
 async def setup_password(body: SetupRequest, request: Request, response: Response) -> AuthStatus:
-    """Set the FIRST password, on a server that has none, and sign the caller in.
-
-    Gate-exempt by necessity — there is no credential to hold a session with yet
-    — and refused with a 409 the moment any source exists.
-    """
+    """Set the FIRST password, on a server that has none, and sign the caller in."""
+    # Gate-exempt by necessity — there is no credential to hold a session with
+    # yet — and refused with a 409 the moment any source exists. A comment, not
+    # a docstring paragraph: FastAPI publishes the docstring as this operation's
+    # OpenAPI description.
+    #
     # Read-the-source and write-the-file run under ONE lock: the atomic writer
     # publishes with ``os.replace``, which is last-writer-wins rather than
     # create-or-fail, so without it two simultaneous first-run POSTs would each

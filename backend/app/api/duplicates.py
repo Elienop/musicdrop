@@ -51,10 +51,7 @@ _RESOLVE_FAILED_RESPONSE: Final = {
 #: containment check on what it resolved to, before the first copy moves.
 _RESOLVE_LAYOUT_REFUSED_RESPONSE: Final = {
     "model": ErrorDetail,
-    "description": (
-        "The store layout is refused, so no copies were moved; the message names"
-        " the setting and both resolved paths."
-    ),
+    "description": "A store-layout refusal; no copies were moved.",
 }
 
 

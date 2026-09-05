@@ -85,9 +85,6 @@ export interface paths {
         /**
          * Setup Password
          * @description Set the FIRST password, on a server that has none, and sign the caller in.
-         *
-         *     Gate-exempt by necessity — there is no credential to hold a session with yet
-         *     — and refused with a 409 the moment any source exists.
          */
         post: operations["setup_password_api_auth_setup_post"];
         delete?: never;
@@ -954,8 +951,7 @@ export interface paths {
         put?: never;
         /**
          * Validate Config
-         * @description Read-only lint pass. Returns 200 even on errors so the CodeMirror async
-         *     lint source can display them inline.
+         * @description Read-only lint pass, 200 even on errors so the editor can show them inline.
          */
         post: operations["validate_config_api_config_validate_post"];
         delete?: never;
@@ -976,10 +972,6 @@ export interface paths {
         /**
          * Save Config
          * @description Persist the user-submitted YAML to disk after CAS + schema checks.
-         *
-         *     Returns the freshly-built :class:`BeetsConfigSnapshot`, whose
-         *     ``apply_pending`` is ``True`` until Apply reloads beets' globals. 422 on a
-         *     parse, schema or store-layout failure; 409 on a CAS mismatch.
          */
         post: operations["save_config_api_config_save_post"];
         delete?: never;
@@ -8945,7 +8937,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The config.yaml on disk breaks the store layout; the recovery line says whether beets was reloaded. */
+            /** @description The config.yaml on disk breaks the store layout; the recovery line says how to fix it. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -9108,7 +9100,7 @@ export interface operations {
                     "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
-            /** @description The store layout is refused, so no copies were moved; the message names the setting and both resolved paths. */
+            /** @description A store-layout refusal; no copies were moved. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -9213,7 +9205,7 @@ export interface operations {
                     "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
-            /** @description The store layout is refused, so no copies were moved; the message names the setting and both resolved paths. */
+            /** @description A store-layout refusal; no copies were moved. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -9461,7 +9453,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The store layout is refused, so nothing was planned or started; the message names the setting and both resolved paths. */
+            /** @description A store-layout refusal; nothing was planned or started. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -9528,7 +9520,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The store layout is refused, so nothing was planned or started; the message names the setting and both resolved paths. */
+            /** @description A store-layout refusal; nothing was planned or started. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -9604,7 +9596,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The store layout is refused, so nothing was planned or started; the message names the setting and both resolved paths. */
+            /** @description A store-layout refusal; nothing was planned or started. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -9689,7 +9681,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The store layout is refused, so nothing was planned or started; the message names the setting and both resolved paths. */
+            /** @description A store-layout refusal; nothing was planned or started. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -12688,7 +12680,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description A store-layout refusal; the message says what was left in place. */
+            /** @description A store-layout or identity refusal; the message names the cause. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -12773,7 +12765,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description A store-layout refusal; the message says what was left in place. */
+            /** @description A store-layout or identity refusal; the message names the cause. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -12952,7 +12944,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description A store-layout refusal; the message says what was left in place. */
+            /** @description A store-layout or identity refusal; the message names the cause. */
             503: {
                 headers: {
                     [name: string]: unknown;
