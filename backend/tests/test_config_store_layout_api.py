@@ -534,7 +534,10 @@ def test_an_include_that_makes_directory_a_non_path_answers_a_lint_row(
 
     assert len(rows) == 1, rows
     assert rows[0]["loc"] == "include", rows
-    assert str(rows[0]["msg"]).startswith(f"`directory:` in {overlay} is not a path."), rows
+    # The filename is repr'd, like every other operator-supplied value this
+    # module echoes: it is an ``include:`` entry, so it carries whatever the
+    # operator wrote.
+    assert str(rows[0]["msg"]).startswith(f"`directory:` in {str(overlay)!r} is not a path."), rows
 
 
 @pytest.mark.parametrize(
@@ -1124,6 +1127,89 @@ def test_the_cap_bounds_the_read_and_not_the_reported_size(
 
     assert len(rows) == 1, rows
     assert rows[0]["loc"] == "include", rows
+
+
+def test_one_request_reads_a_bounded_number_of_includes(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """The list is what multiplies the per-file cap, so the list is bounded too.
+
+    Measured with the cap per entry: 25 entries naming one 1 MiB file answered
+    200 after 12.5 seconds of threadpool CPU, from a 2,964-byte body. The control
+    is the same document one entry shorter, which still merges.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    for index in range(33):
+        (beets_library.beets_dir / f"o{index}.yaml").write_text("x: 1\n", encoding="utf-8")
+    names = [f"o{index}.yaml" for index in range(33)]
+
+    rows = _layout_rows(client, _with_include(music, *names))
+
+    assert len(rows) == 1, rows
+    assert rows[0]["loc"] == "include", rows
+    assert "lists 33 files" in str(rows[0]["msg"]), rows
+    assert _layout_rows(client, _with_include(music, *names[:32])) == []
+
+
+def test_one_request_reads_a_bounded_total_of_include_bytes(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """Two files that each fit, and together do not.
+
+    The budget is one request's, not one file's: 0.5 s per MiB is ruamel
+    parsing, so what has to be bounded is the sum. The control is the first file
+    alone, which is well inside it.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    for name in ("big1.yaml", "big2.yaml"):
+        (beets_library.beets_dir / name).write_text(
+            f"{name[:4]}: {'x' * (600 * 1024)}\n", encoding="utf-8"
+        )
+
+    rows = _layout_rows(client, _with_include(music, "big1.yaml", "big2.yaml"))
+
+    assert len(rows) == 1, rows
+    assert rows[0]["loc"] == "include", rows
+    assert "budget" in str(rows[0]["msg"]), rows
+    assert _layout_rows(client, _with_include(music, "big1.yaml")) == []
+
+
+def test_a_repeated_include_entry_is_read_once(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """25 entries naming one file open it once, and it still wins the merge.
+
+    Counted at the reader, because the cost this bounds is the read and the
+    parse. The entry stays in the list at its own position — the LAST include
+    decides ``directory:``, so a dedupe that dropped the repeat would change
+    which file that is, which the second half asserts.
+    """
+    from app.beets import store_layout
+
+    music = Path(beets_library.lib.directory.decode())
+    (beets_library.beets_dir / "first.yaml").write_text("directory: /tmp/first\n", encoding="utf-8")
+    (beets_library.beets_dir / "again.yaml").write_text(
+        f"directory: {beets_library.beets_dir}\n", encoding="utf-8"
+    )
+    reads: list[str] = []
+    real = store_layout._include_source
+
+    def counted(target: str, budget: int) -> tuple[object, int]:
+        reads.append(target)
+        return real(target, budget)
+
+    monkeypatch.setattr(store_layout, "_include_source", counted)
+
+    rows = _layout_rows(
+        client, _with_include(music, *(["again.yaml", "first.yaml"] * 12), "again.yaml")
+    )
+
+    assert sorted(reads) == sorted(
+        {str(beets_library.beets_dir / name) for name in ("again.yaml", "first.yaml")}
+    )
+    # ``again.yaml`` is last, so its ``directory:`` — the beets data dir — is the
+    # one the rule refuses.
+    assert len(rows) == 1, rows
 
 
 @pytest.mark.parametrize("value", ["", "."])

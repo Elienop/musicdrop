@@ -634,13 +634,21 @@ class _CandidateConfig(beets.IncludeLazyConfig):
         return self._pinned_config_dir
 
 
-#: The largest ``include:`` file this gate will read. beets' own starter config
-#: is under 4 KiB, so a megabyte is generous by more than two orders of
-#: magnitude; what it bounds is the work ONE authenticated
-#: ``POST /api/config/validate`` can ask a Starlette threadpool worker to do on a
-#: route that writes nothing. Measured before the cap: a 195 MiB include took
-#: 32.7 seconds inside :func:`effective_config_paths`.
+#: The bytes ONE request may read across the WHOLE ``include:`` list, not per
+#: entry: a per-entry cap bounds a factor, and the list is what multiplies it.
+#: Measured with the cap per entry: a 2,964-byte body naming one 1 MiB include 25
+#: times took 12.5 seconds of threadpool CPU (0.5 s per MiB, which is ruamel
+#: parsing); ``max_body_bytes`` is 25 MiB, so the list itself bounds nothing.
+#: beets' own starter config is under 4 KiB. Measured at this budget: 32
+#: line-dense includes summing to 1 MiB answer in 1.5 s.
 _MAX_INCLUDE_BYTES: Final = 1 << 20
+
+#: The entries ONE request may read, counted on the raw list before any of them
+#: is resolved. beets' own config carries 0-2 includes and upstream caps nothing,
+#: so this is generous by an order of magnitude. Repeats cost one read each way
+#: (:func:`effective_config_paths` reads a resolved path once) but still count
+#: here, because counting after the resolve means resolving an unbounded list.
+_MAX_INCLUDE_ENTRIES: Final = 32
 
 
 def _unreadable_include(detail: str) -> StoreLayoutError:
@@ -657,6 +665,17 @@ def _unreadable_include(detail: str) -> StoreLayoutError:
     )
 
 
+def _too_many_includes(count: int) -> StoreLayoutError:
+    """The refusal for an ``include:`` list this gate will not read whole."""
+    return StoreLayoutError(
+        f"`include:` in config.yaml lists {count} files; the limit is"
+        f" {_MAX_INCLUDE_ENTRIES}. Shorten the include: list.",
+        config_key="include",
+        unusable_value=True,
+        headline=f"`include:` in config.yaml lists more than {_MAX_INCLUDE_ENTRIES} files",
+    )
+
+
 def _include_sets_a_non_path(key: str, source: str) -> StoreLayoutError:
     """An include gave ``directory:``/``library:`` a value that is not a filename.
 
@@ -665,10 +684,10 @@ def _include_sets_a_non_path(key: str, source: str) -> StoreLayoutError:
     the file, and the next cold start died on ``ConfigTypeError``.
     """
     return StoreLayoutError(
-        f"`{key}:` in {source} is not a path. beets will not start. Fix that include.",
+        f"`{key}:` in {source!r} is not a path. beets will not start. Fix that include.",
         config_key="include",
         unusable_value=True,
-        headline=f"`{key}:` in {source} is not a path",
+        headline=f"`{key}:` in {source!r} is not a path",
     )
 
 
@@ -680,23 +699,23 @@ def _winning_source(cfg: confuse.Configuration, key: str) -> str | None:
     return None
 
 
-def _include_bytes(fd: int) -> bytes | None:
-    """Up to :data:`_MAX_INCLUDE_BYTES` from ``fd``, or ``None`` past the cap.
+def _include_bytes(fd: int, budget: int) -> bytes | None:
+    """Up to ``budget`` bytes from ``fd``, or ``None`` past it.
 
-    The cap bounds the READ, not ``st_size``: every ``/proc`` file reports size
-    0 and ``/proc/kallsyms`` measured 22 MiB through a 1 MiB stat check.
+    The budget bounds the READ, not ``st_size``: every ``/proc`` file reports
+    size 0 and ``/proc/kallsyms`` measured 22 MiB through a 1 MiB stat check.
     """
     buf = b""
-    while len(buf) <= _MAX_INCLUDE_BYTES:
-        chunk = os.read(fd, _MAX_INCLUDE_BYTES + 1 - len(buf))
+    while len(buf) <= budget:
+        chunk = os.read(fd, budget + 1 - len(buf))
         if not chunk:
             return buf
         buf += chunk
     return None
 
 
-def _include_source(target: str) -> confuse.ConfigSource:
-    """One ``include:`` entry, read through ONE descriptor.
+def _include_source(target: str, budget: int) -> tuple[confuse.ConfigSource, int]:
+    """One ``include:`` entry, read through ONE descriptor. With its size.
 
     ``os.stat`` then confuse's ``open`` asked the same NAME twice, and flipping a
     symlink between the two put the FIFO hang back — measured, the read ran until
@@ -704,9 +723,12 @@ def _include_source(target: str) -> confuse.ConfigSource:
     all. No ``O_NOFOLLOW``: measured, a real beets start FOLLOWS a symlinked
     include and merges its ``directory:``.
 
+    ``budget`` is what is left of :data:`_MAX_INCLUDE_BYTES` for this request,
+    and the size comes back so the caller can subtract it.
+
     Raises ``ConfigReadError`` for the shapes beets prints-and-continues on, and
     :func:`_unreadable_include` for the three it does not survive: a FIFO, a
-    descriptor with nothing to read, and a read the cap stops.
+    descriptor with nothing to read, and a read the budget stops.
     """
     try:
         fd = os.open(target, os.O_RDONLY | os.O_NONBLOCK)
@@ -720,7 +742,7 @@ def _include_source(target: str) -> confuse.ConfigSource:
             # narrow on purpose — a directory, a socket and ``/dev/null`` are
             # shapes beets survives, and refusing those was the collateral.
             raise _unreadable_include(f"{target!r} is a FIFO; beets would block on it")
-        buf = _include_bytes(fd)
+        buf = _include_bytes(fd, budget)
     except BlockingIOError as exc:
         raise _unreadable_include(f"{target!r} had nothing to read") from exc
     except OSError as exc:
@@ -730,13 +752,15 @@ def _include_source(target: str) -> confuse.ConfigSource:
     finally:
         os.close(fd)
     if buf is None:
-        raise _unreadable_include(f"{target!r} is over the {_MAX_INCLUDE_BYTES}-byte cap")
+        raise _unreadable_include(
+            f"{target!r} takes the include: list over its {_MAX_INCLUDE_BYTES}-byte budget"
+        )
     data = confuse.yaml_util.load_yaml_string(buf, target) or {}
     if not isinstance(data, dict):
         # What ``YamlSource.load`` raises for the same document, so a beets start
         # over this file refuses too.
         raise TypeError(f"YAML config must be a mapping, got {type(data)}")
-    return confuse.ConfigSource(data, filename=os.path.abspath(target))
+    return confuse.ConfigSource(data, filename=os.path.abspath(target)), len(buf)
 
 
 class EffectivePaths(NamedTuple):
@@ -775,13 +799,29 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
     #
     # Includes are NOT confined to the beets dir. beets does not confine them, and
     # a gate that refused a config beets loads would be worse than the read this
-    # exposes — which is bounded by the session gate, by the read cap, and by the
-    # rows below, which narrow it to "this file parses as a mapping" rather than
-    # "here is its content".
+    # exposes — which is bounded by the session gate, by the read budget, and by
+    # the rows below, which narrow it to "this file parses as a mapping" rather
+    # than "here is its content".
     skipped: list[str] = []
+    # One read per resolved path, so a repeated entry costs one. The entry is
+    # still ``set`` again at its own position: the LAST include wins, so dropping
+    # the repeat would change which file decides ``directory:``.
+    read: dict[str, confuse.ConfigSource] = {}
+    budget = _MAX_INCLUDE_BYTES
     try:
-        for view in cfg["include"].sequence():
-            cfg.set(_include_source(view.as_filename()))
+        entries = list(cfg["include"].sequence())
+        if len(entries) > _MAX_INCLUDE_ENTRIES:
+            raise _too_many_includes(len(entries))
+        for view in entries:
+            # Resolved HERE rather than up front: each entry resolves against
+            # the sources set so far, which is what beets' own loop does.
+            target = view.as_filename()
+            merged = read.get(target)
+            if merged is None:
+                merged, used = _include_source(target, budget)
+                budget -= used
+                read[target] = merged
+            cfg.set(merged)
     except confuse.NotFoundError:
         pass  # no ``include:`` key at all
     except confuse.ConfigReadError as exc:
