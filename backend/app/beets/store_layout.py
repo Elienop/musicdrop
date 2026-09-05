@@ -662,6 +662,29 @@ def _unreadable_include(detail: str) -> StoreLayoutError:
     )
 
 
+def _include_sets_a_non_path(key: str, source: str) -> StoreLayoutError:
+    """An include gave ``directory:``/``library:`` a value that is not a filename.
+
+    Painted against ``include:``, because the document's own key is fine and the
+    editor never shows the overlay. Without a row, Validate was clean, Save wrote
+    the file, and the next cold start died on ``ConfigTypeError``.
+    """
+    return StoreLayoutError(
+        f"`{key}:` in {source} is not a path. beets will not start. Fix that include.",
+        config_key="include",
+        unusable_value=True,
+        headline=f"`{key}:` in {source} is not a path",
+    )
+
+
+def _winning_source(cfg: confuse.Configuration, key: str) -> str | None:
+    """The file whose value for ``key`` beets would use, or ``None``."""
+    for _value, source in cfg[key].resolve():
+        name = getattr(source, "filename", None)
+        return str(name) if name else None
+    return None
+
+
 def _include_bytes(fd: int) -> bytes | None:
     """Up to :data:`_MAX_INCLUDE_BYTES` from ``fd``, or ``None`` past the cap.
 
@@ -738,10 +761,12 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
     the review round: a safe document with an include pointing the library at the
     Trash passed all three gates.
 
-    ``directory``/``library`` are ``None`` when the document resolves to no
-    filename — a non-string ``directory:``, say — which the schema reports
-    instead. ``skipped`` names the includes beets drops and this gate did not
-    merge; an advisory, because beets prints them and carries on.
+    ``directory``/``library`` are ``None`` when the DOCUMENT's own key resolves to
+    no filename — a non-string ``directory:``, say — which the schema reports
+    instead. When an INCLUDE is what supplied it the schema never sees the value,
+    so this raises a row painted on ``include:``. ``skipped`` names the includes
+    beets drops and this gate did not merge; an advisory, because beets prints
+    them and carries on.
     """
     cfg = _CandidateConfig(beets_dir)
     # Defaults first, so the document sits ABOVE them: `library: library.db` and
@@ -779,10 +804,19 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
         # 500 or reported the document CLEAN.
         raise _unreadable_include(str(exc)) from exc
     names = tuple(skipped)
-    try:
-        return EffectivePaths(cfg["directory"].as_filename(), cfg["library"].as_filename(), names)
-    except confuse.ConfigError:
-        return EffectivePaths(None, None, names)
+    document_file = str(beets_dir / "config.yaml")
+    resolved: dict[str, str] = {}
+    for key in ("directory", "library"):
+        try:
+            resolved[key] = cfg[key].as_filename()
+        except confuse.ConfigError as exc:
+            source = _winning_source(cfg, key)
+            if source is not None and source != document_file:
+                raise _include_sets_a_non_path(key, source) from exc
+            # The document's OWN key: the schema paints that one, and two rows
+            # saying the same thing was the collateral of reporting it here.
+            return EffectivePaths(None, None, names)
+    return EffectivePaths(resolved["directory"], resolved["library"], names)
 
 
 class LayoutCheck(NamedTuple):

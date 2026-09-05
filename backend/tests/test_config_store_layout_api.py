@@ -481,6 +481,29 @@ def test_an_include_the_gate_will_not_read_answers_a_lint_row(
     assert "could not be read" in str(rows[0]["msg"]), rows
 
 
+@pytest.mark.parametrize("value", ["42", "~", "[/x]", "010", "yes"])
+def test_an_include_that_makes_directory_a_non_path_answers_a_lint_row(
+    client: TestClient, beets_library: LibraryHandle, value: str
+) -> None:
+    """The overlay the schema never sees, so nothing else can report it.
+
+    Measured on the parent commit for all five: Validate answered 200 with no
+    row, Save wrote the file, and Apply answered 500 "directory: must be a
+    filename, not int" — with the recovery telling the operator to restart, on a
+    config a cold start refuses.
+    """
+    overlay = beets_library.beets_dir / "overlay.yaml"
+    overlay.write_text(f"directory: {value}\n", encoding="utf-8")
+
+    rows = _layout_rows(
+        client, _with_include(Path(beets_library.lib.directory.decode()), "overlay.yaml")
+    )
+
+    assert len(rows) == 1, rows
+    assert rows[0]["loc"] == "include", rows
+    assert str(rows[0]["msg"]).startswith(f"`directory:` in {overlay} is not a path."), rows
+
+
 @pytest.mark.parametrize(
     "yaml_text",
     ["a: " + "[" * 5000 + "]" * 5000 + "\n", "a: " + "1" * 5000 + "\n"],
