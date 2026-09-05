@@ -744,11 +744,12 @@ def on_disk_layout_error(handle: LibraryHandle, settings: Settings) -> StoreLayo
     ``RecursionError`` and ``ValueError`` are the two Save and Validate also
     catch around ``parse_yaml``: ruamel raises them past the nesting limit and on
     an over-long integer. This call sits OUTSIDE Apply's rebuild handler, so
-    either one left the route answering a bare 500.
+    either one left the route answering a bare 500. ``UnicodeDecodeError`` is not
+    named because it IS a ``ValueError``.
     """
     try:
         doc = parse_yaml(handle.config_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, YAMLError, RecursionError, ValueError):
+    except (OSError, YAMLError, RecursionError, ValueError):
         return None
     if not isinstance(doc, CommentedMap):
         return None

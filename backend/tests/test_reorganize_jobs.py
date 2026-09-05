@@ -225,7 +225,7 @@ def test_sweep_library_moves_three_skips_one(reorganize_lib: Library, tmp_path: 
     reg = ReorganizeRegistry()
     reg.start(scope="library", artist=None, album_id=None, scope_label="library")
     handle = make_test_handle(reorganize_lib, beets_dir_for(tmp_path))
-    sweep(reg, handle, scope="library", artist=None, album_id=None, delay=0.0)
+    sweep(reg, handle, scope="library", artist=None, album_id=None)
     s = reg.state()
     assert s.phase == "done"
     assert s.total == 4
@@ -240,7 +240,7 @@ def test_sweep_honors_stop(reorganize_lib: Library, tmp_path: Path) -> None:
     reg.start(scope="library", artist=None, album_id=None, scope_label="library")
     reg.request_stop()
     handle = make_test_handle(reorganize_lib, beets_dir_for(tmp_path))
-    sweep(reg, handle, scope="library", artist=None, album_id=None, delay=0.0)
+    sweep(reg, handle, scope="library", artist=None, album_id=None)
     s = reg.state()
     assert s.phase == "stopped"
     assert s.processed == 0
@@ -258,7 +258,7 @@ def test_sweep_failure_marks_failed(
 
     monkeypatch.setattr(runner, "collect_units", boom)
     handle = make_test_handle(reorganize_lib, beets_dir_for(tmp_path))
-    sweep(reg, handle, scope="library", artist=None, album_id=None, delay=0.0)
+    sweep(reg, handle, scope="library", artist=None, album_id=None)
     s = reg.state()
     assert s.phase == "failed"
     assert "kaboom" in (s.error or "")

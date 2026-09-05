@@ -1,13 +1,14 @@
 """The reorganize worker — a sequential library/artist/album sweep (the `beet move`
 analog). ``sweep`` is the synchronous, directly-testable loop; ``start_backfill``
 runs it on a daemon thread so the API start endpoint returns immediately. Pure
-local file IO, so no courtesy delay is needed (default 0)."""
+local file IO, so there is no courtesy delay: the knob existed, was never passed
+anything but its 0 default, and was dropped when the route's ``Settings`` took
+its place in the signature."""
 
 from __future__ import annotations
 
 import logging
 import os
-import time
 from collections.abc import Callable, Collection
 from pathlib import Path
 from typing import Any
@@ -49,7 +50,6 @@ def sweep(
     ignore_dirs: tuple[Path, ...] = (),
     playlists_dir: Path | None = None,
     settings: Settings | None = None,
-    delay: float = 0.0,
     reorg_album: Callable[..., ReorganizeOutcome] = reorganize_album,
     reorg_singleton: Callable[..., ReorganizeOutcome] = reorganize_singleton,
     on_complete: Callable[[], None] | None = None,
@@ -98,7 +98,6 @@ def sweep(
                 reorg_album,
                 vacated=vacated,
                 moved_ids=moved_ids,
-                delay=delay,
             )
             if not stopped:
                 stopped = _sweep_units(
@@ -108,7 +107,6 @@ def sweep(
                     reorg_singleton,
                     vacated=vacated,
                     moved_ids=moved_ids,
-                    delay=delay,
                 )
             if not stopped and trash_dir is not None and trash_origins_dir is not None:
                 # Read AFTER the unit loops, because the roots move during the
@@ -148,15 +146,14 @@ def _sweep_units(
     *,
     vacated: list[Path],
     moved_ids: set[int],
-    delay: float,
 ) -> bool:
     """Sweep one unit list (albums or singletons), the runner's twin loops.
 
     Per unit: the outcome is recorded via ``reg.record`` and then
     ``reg.set_current(outcome.label)``; the vacated source dir (when set) is
     appended to ``vacated``; every item the unit actually relocated is added to
-    ``moved_ids`` (a FAILED unit contributes too — see ``ReorganizeOutcome``);
-    the courtesy delay is honored. Returns ``True`` on a Stop request WITHOUT
+    ``moved_ids`` (a FAILED unit contributes too — see ``ReorganizeOutcome``).
+    Returns ``True`` on a Stop request WITHOUT
     finishing the job — ``sweep`` owns every ``reg.finish`` so the `.m3u8` tail
     pass still runs on the stopped path."""
     for unit in units:
@@ -168,8 +165,6 @@ def _sweep_units(
         if outcome.source_dir:
             vacated.append(Path(outcome.source_dir))
         moved_ids.update(outcome.moved_item_ids)
-        if delay:
-            time.sleep(delay)
     return False
 
 
@@ -303,7 +298,6 @@ def start_backfill(
     ignore_dirs: tuple[Path, ...] = (),
     playlists_dir: Path | None = None,
     settings: Settings | None = None,
-    delay: float = 0.0,
     on_complete: Callable[[], None] | None = None,
 ) -> None:
     """Spawn the scoped sweep on a daemon thread (non-blocking).
@@ -322,7 +316,6 @@ def start_backfill(
             ignore_dirs=ignore_dirs,
             playlists_dir=playlists_dir,
             settings=settings,
-            delay=delay,
             on_complete=on_complete,
         ),
         name="musicdrop-reorganize",
