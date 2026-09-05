@@ -169,14 +169,35 @@ def _resolved(path: Path, setting: str) -> Path:
     re-raises only ELOOP, so a Trash behind a mode-000 directory came back as
     the string it was handed, was allowed at boot, and answered 500 at all four
     Trash routes. ENOENT and ENOTDIR pass — nothing has to exist yet.
+
+    No ``expanduser``: none of the app's resolvers expands ``~`` and neither does
+    pydantic-settings, so expanding it here made the rule check ``$HOME/bank``
+    while the app used ``<cwd>/~/bank`` — measured, it allowed a Trash at the
+    directory really in use and refused one at a directory nothing lived in.
     """
-    resolved = _guarded(setting, str(path), lambda: Path(os.path.expanduser(str(path))).resolve())
+    resolved = _guarded(setting, str(path), lambda: Path(path).resolve())
     try:
         resolved.stat()
     except OSError as exc:
         if exc.errno not in _ABSENT_ERRNOS:
             raise _unexaminable(setting, str(resolved), exc) from exc
     return resolved
+
+
+def _resolved_store(path: Path, setting: str) -> Path:
+    """:func:`_resolved` for a store the rule PROTECTS rather than acts through.
+
+    A permission bit or a symlink loop on the inbox, the bank, the Plex or slskd
+    store, the playlist dirs or either image cache used to refuse startup and
+    every destructive route. Those are victim-side directories: nothing here
+    empties or sweeps them. Falling back to the spelling gives the same
+    identity-less rung a not-yet-created path gets. ``T`` and ``O`` keep the
+    fail-closed arm — the rule acts THROUGH those two.
+    """
+    try:
+        return _resolved(path, setting)
+    except StoreLayoutError:
+        return path
 
 
 def _guarded(setting: str, raw: str, resolve: Callable[[], Path]) -> Path:
@@ -426,22 +447,24 @@ _ROWS: Final[tuple[_Row, ...]] = (
     ),
 )
 
-#: D2 - the Trash and the origin store are DEDICATED directories: neither may be,
-#: contain, or sit inside any other app-owned store. Measured in the review
-#: round: ``MUSICDROP_TRASH_DIR=<B>/plex`` (or ``playlists``, ``bank``,
-#: ``slskd``, ``inbox``) booted clean and Empty Trash wiped that store. Four
-#: generated rows per store rather than a hand-written block each, so a sixth
-#: store is one entry in ``protected._APP_STORES`` and nothing here.
+#: D2 - the Trash and the origin store are DEDICATED directories: neither may BE
+#: an app-owned store nor CONTAIN one. Measured in the review round:
+#: ``MUSICDROP_TRASH_DIR=<B>/plex`` (or ``playlists``, ``bank``, ``slskd``,
+#: ``inbox``) booted clean and Empty Trash wiped that store. Generated per store
+#: rather than a hand-written block each, so another store is one entry in
+#: ``config.APP_STORES`` and nothing here.
 #:
-#: ``(participant key, cost of holding a store, cost of sitting in one, fix)``.
-_DEDICATED: Final[tuple[tuple[str, str, str, str], ...]] = (
-    ("trash", "Empty Trash would delete it", "trashed albums would land in it", _FIX_TRASH),
-    (
-        "origins",
-        "the store sweep would unlink *.json files in it",
-        "restore records would land in it",
-        _FIX_ORIGINS,
-    ),
+#: The other direction — T or O sitting INSIDE a store — is deliberately not a
+#: row. It refused layouts the module allows (a store setting naming a directory
+#: ABOVE the shipped default Trash turned a clean boot into a refusal), and its
+#: loss clause was false for every store but the inbox: nothing enumerates the
+#: exports, the Plex or slskd store, and the bank and playlist stores glob
+#: ``*.json`` one level deep.
+#:
+#: ``(participant key, cost of holding a store, fix)``.
+_DEDICATED: Final[tuple[tuple[str, str, str], ...]] = (
+    ("trash", "Empty Trash would delete it", _FIX_TRASH),
+    ("origins", "the store sweep would unlink *.json files in it", _FIX_ORIGINS),
 )
 
 #: The participant keys of the five paths the rule started with. Everything else
@@ -450,13 +473,12 @@ _FIVE: Final = frozenset({"music", "beets", "trash", "origins", "library"})
 
 
 def _store_rows(stores: tuple[str, ...]) -> tuple[_Row, ...]:
-    """D2's rows: four per app-owned store the settings name."""
-    rows: list[_Row] = []
-    for key in stores:
-        for subject, holds, sits, fix in _DEDICATED:
-            rows.append(_Row(subject, key, ("is", "contains"), holds, fix))
-            rows.append(_Row(key, subject, ("contains",), sits, fix))
-    return tuple(rows)
+    """D2's rows: two per app-owned store the settings name."""
+    return tuple(
+        _Row(subject, key, ("is", "contains"), holds, fix)
+        for key in stores
+        for subject, holds, fix in _DEDICATED
+    )
 
 
 def check_store_layout(
@@ -502,7 +524,7 @@ def check_store_layout(
         *app_owned_dirs(settings, beets_root),
     ]
     for path, name, setting in stores:
-        participants[setting] = _Participant(_resolved(path, setting), name, setting)
+        participants[setting] = _Participant(_resolved_store(path, setting), name, setting)
 
     # One chain per participant, not one per row.
     chains = {key: _chain(who.path) for key, who in participants.items()}

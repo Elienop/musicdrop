@@ -157,12 +157,6 @@ def test_the_ignore_list_names_the_directory_the_exporter_writes_to(
     beets_dir = beets_dir_for(tmp_path)
     origins = tmp_path / "records"
     handle = make_test_handle(build_library(str(beets_dir / "library.db"), str(root)), beets_dir)
-    app = SimpleNamespace(
-        state=SimpleNamespace(
-            beets_library=handle,
-            settings=Settings(trash_origins_dir=str(origins)),
-        )
-    )
 
     for configured, expected in (
         ("", root / ".playlists"),
@@ -170,7 +164,13 @@ def test_the_ignore_list_names_the_directory_the_exporter_writes_to(
         ("exports", Path("exports")),
     ):
         monkeypatch.setattr("app.config.settings.playlists_export_dir", configured)
-        assert _ignore_dirs(app, origins)[0] == expected, configured
+        app = SimpleNamespace(
+            state=SimpleNamespace(
+                beets_library=handle,
+                settings=Settings(trash_origins_dir=str(origins), playlists_export_dir=configured),
+            )
+        )
+        assert expected in _ignore_dirs(app, tmp_path / "trash", origins), configured
         assert export_dir_for(handle.lib) == expected, configured
 
 
@@ -206,7 +206,7 @@ def test_the_ignore_list_names_the_beets_dir_whatever_its_position(tmp_path: Pat
                 settings=Settings(trash_origins_dir=str(origins)),
             )
         )
-        assert beets_dir in _ignore_dirs(app, origins), beets_dir
+        assert beets_dir in _ignore_dirs(app, tmp_path / "trash", origins), beets_dir
 
 
 def test_ignore_dirs_excludes_the_trash_origin_store(tmp_path: Path) -> None:
@@ -245,7 +245,110 @@ def test_ignore_dirs_excludes_the_trash_origin_store(tmp_path: Path) -> None:
             settings=Settings(trash_origins_dir=str(store), playlists_export_dir=""),
         )
     )
-    assert store in _ignore_dirs(app, store)
+    assert store in _ignore_dirs(app, trash, store)
+
+
+#: Every app-owned directory the guard protects that an operator can point INTO
+#: the music library, as ``(Settings field, the leaf this test gives it)``.
+#: Written out rather than derived from ``config.APP_STORES`` so dropping a
+#: store from that table fails here instead of silently losing an exclusion.
+_STORES_UNDER_THE_LIBRARY = (
+    ("bank_dir", "Bank"),
+    ("plex_settings_dir", "Plex"),
+    ("slskd_settings_dir", "Slskd"),
+    ("playlists_dir", "Playlists"),
+    ("inbox_dir", "Inbox"),
+    ("playlists_export_dir", "Exports"),
+    ("artist_image_cache_dir", "ArtistImages"),
+    ("cover_thumb_cache_dir", "CoverThumbs"),
+)
+
+
+@pytest.mark.parametrize(("field", "leaf"), _STORES_UNDER_THE_LIBRARY)
+def test_the_ignore_list_names_every_app_store_the_guard_protects(
+    tmp_path: Path, field: str, leaf: str
+) -> None:
+    """Each of the eight, configured directly under the music root.
+
+    The layout rule allows this on purpose — it constrains the Trash and the
+    origin store, not where a store may sit — so the sweep is what has to spare
+    them. It held four roots while the guard held twelve: measured at
+    in the review round, an app store under ``M`` was walked and reported as a
+    husk,
+    then refused at the mover, so the preview offered a move the run never made.
+
+    Both halves per store, because the second is what makes the first mean
+    anything: with the exclusion dropped, that store IS the reported husk.
+    """
+    from types import SimpleNamespace
+
+    from app.api.reorganize import _ignore_dirs
+    from app.config import Settings
+    from tests.conftest import build_library, make_test_handle
+
+    root = tmp_path / "music"
+    _touch(root / "Real" / "Album" / "01.flac")
+    store = root / leaf
+    _touch(store / "state.json")  # audio-free, exactly like a husk
+    beets_dir = tmp_path / "data"
+    beets_dir.mkdir()
+    origins = tmp_path / "records"
+    trash = beets_dir / "trash"
+
+    handle = make_test_handle(build_library(str(beets_dir / "library.db"), str(root)), beets_dir)
+    app_settings = Settings(trash_origins_dir=str(origins), playlists_export_dir="")
+    setattr(app_settings, field, str(store))
+    app = SimpleNamespace(state=SimpleNamespace(beets_library=handle, settings=app_settings))
+
+    ignore = _ignore_dirs(app, trash, origins)
+    assert store in ignore
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=ignore) == []
+    without = tuple(d for d in ignore if d != store)
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=without) == [store]
+
+
+def test_a_folder_inside_a_configured_inbox_is_not_swept(tmp_path: Path) -> None:
+    """The half no guard reached: a SUBFOLDER of a store, two levels under ``M``.
+
+    ``MUSICDROP_INBOX_DIR=<M>/Downloads/inbox`` with a finished album beside a
+    still-arriving one. The mover's guard refuses a folder that IS or CONTAINS a
+    protected directory, never one INSIDE it, so in the review round the sweep
+    reported ``Downloads/inbox/Arriving Album`` — a partial download's cover art
+    — and the run moved it to Trash while the download was still writing.
+    Excluding the store excludes its subtree, which is what closes it.
+    """
+    from types import SimpleNamespace
+
+    from app.api.reorganize import _ignore_dirs
+    from app.config import Settings
+    from tests.conftest import build_library, make_test_handle
+
+    root = tmp_path / "music"
+    _touch(root / "Real" / "Album" / "01.flac")
+    inbox = root / "Downloads" / "inbox"
+    _touch(inbox / "Done Album" / "01.flac")
+    _touch(inbox / "Arriving Album" / "cover.jpg")
+    beets_dir = tmp_path / "data"
+    beets_dir.mkdir()
+    origins = tmp_path / "records"
+    trash = beets_dir / "trash"
+
+    handle = make_test_handle(build_library(str(beets_dir / "library.db"), str(root)), beets_dir)
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(
+                inbox_dir=str(inbox), trash_origins_dir=str(origins), playlists_export_dir=""
+            ),
+        )
+    )
+
+    ignore = _ignore_dirs(app, trash, origins)
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=ignore) == []
+    without = tuple(d for d in ignore if d != inbox)
+    assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=without) == [
+        inbox / "Arriving Album"
+    ]
 
 
 def test_trash_folder_moves_whole_folder(tmp_path: Path) -> None:
@@ -625,7 +728,7 @@ def test_a_beets_dir_inside_the_library_is_never_reported(tmp_path: Path) -> Non
             settings=Settings(trash_origins_dir=str(store), playlists_export_dir=""),
         )
     )
-    ignore = _ignore_dirs(app, store)
+    ignore = _ignore_dirs(app, trash, store)
     assert beets_dir in ignore
     assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=ignore) == []
 
@@ -670,7 +773,7 @@ def test_an_ignore_root_above_the_music_root_is_dropped_with_one_warning(
             settings=Settings(trash_origins_dir=str(tmp_path / "records"), playlists_export_dir=""),
         )
     )
-    ignore = _ignore_dirs(app, tmp_path / "records")
+    ignore = _ignore_dirs(app, trash, tmp_path / "records")
     assert beets_dir in ignore
 
     with caplog.at_level(logging.WARNING, logger="app.beets.orphans"):
@@ -1069,10 +1172,10 @@ def test_the_ignore_list_names_the_directory_holding_the_beets_database(
             settings=Settings(trash_origins_dir=str(tmp_path / "records"), playlists_export_dir=""),
         )
     )
-    ignore = _ignore_dirs(app, tmp_path / "records")
+    trash = beets_dir / "trash"
+    ignore = _ignore_dirs(app, trash, tmp_path / "records")
     assert db_dir in ignore
 
-    trash = beets_dir / "trash"
     assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=ignore) == []
     without = tuple(d for d in ignore if d != db_dir)
     assert find_orphan_folders(root, seeds=None, trash_dir=trash, ignore_dirs=without) == [db_dir]
@@ -1103,7 +1206,7 @@ def test_the_ignore_list_holds_the_default_library_directory_once(tmp_path: Path
             settings=Settings(trash_origins_dir=str(tmp_path / "records"), playlists_export_dir=""),
         )
     )
-    ignore = _ignore_dirs(app, tmp_path / "records")
+    ignore = _ignore_dirs(app, beets_dir / "trash", tmp_path / "records")
     assert len(ignore) == len(set(ignore))
     assert ignore.count(beets_dir) == 1
 

@@ -16,6 +16,7 @@ from fastapi.concurrency import run_in_threadpool
 from app.api.albums import get_library
 from app.beets.config_editor import _settings
 from app.beets.library import LibraryHandle, album_exists
+from app.beets.protected import protected_entries
 from app.beets.reorganize import album_scope_label, plan_reorganize
 from app.beets.store_layout import (
     StoreLayoutError,
@@ -26,7 +27,6 @@ from app.events.emit import emit_library_changed
 from app.library_busy import raise_if_library_busy
 from app.models.errors import ErrorDetail
 from app.models.reorganize import ReorganizeBackfillStatus, ReorganizePlan, ReorganizeScope
-from app.playlists.reexport import export_dir_for
 from app.playlists.store import get_playlists_dir
 from app.reorganize_jobs.registry import (
     ReorganizeRegistry,
@@ -91,55 +91,47 @@ def _store(app: object) -> tuple[Path, Path]:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-def _ignore_dirs(app: object, origins_dir: Path) -> tuple[Path, ...]:
-    """The app-owned dirs the orphan sweep must never trash: the resolved
-    playlists export dir (defaults to <music>/.playlists), the Trash origin store,
-    the beets data dir, and the directory holding the beets database file.
-    Dotdirs/NAS dirs are handled name-based in the scanner; these four cover the
-    case where the configured path is an ordinary name the scanner has no reason
-    to skip.
+def _ignore_dirs(app: object, trash_dir: Path, origins_dir: Path) -> tuple[Path, ...]:
+    """Every directory the app owns, so the sweep spares what the movers refuse.
 
-    Each earns its place by being audio-empty BY DEFINITION while looking exactly
-    like a husk:
+    One list with ``protected_trees`` (``beets.protected.protected_entries``),
+    not a second hand-written tuple. They were two, and the shorter one was the
+    sweep's: with ``MUSICDROP_INBOX_DIR=<M>/Downloads/inbox`` — a layout the
+    rule allows — the walk went into the live download inbox, the preview
+    offered a still-arriving album's cover-art folder, and the run moved it to
+    Trash. Measured in the review round and pinned by
+    ``tests/test_orphans.py::test_the_ignore_list_names_every_protected_root``.
 
-    * the **export dir** holds ``.m3u8`` files;
-    * the **origin store** holds ``.json`` files, and sweeping it would take
-      every row's exact restore into Trash in one pass;
-    * the **beets data dir**, passed unconditionally even though the layout rule
-      already refuses it nesting with the music root: it holds content of its own
-      and name-based skipping misses it. Measured on ``d65e635``, before that
-      rule, ``MUSICDROP_BEETS_DIR=<music>/musicdrop`` returned ``musicdrop`` with
-      and without the store exclusion, while ``<music>/.musicdrop`` returned
-      ``[]``;
-    * the **directory holding the beets database**. ``library:`` may name an
-      audio-free subfolder of the music root and the layout rule allows that
-      (``L`` is refused only inside ``T`` or ``O``), which is the husk shape
-      exactly. Measured: with the other three exclusions only,
-      ``<music>/db/library.db`` reported ``db``; with this one, nothing.
+    Two of the entries are dropped here. The music root is the walk root, and an
+    exclude root at or above it is what ``orphans._exclude_ids`` drops with its
+    one WARNING — passing it would log that line on every sweep. The Trash is
+    ``find_orphan_folders``' own argument.
 
-    The Trash dir is excluded inside ``find_orphan_folders``, which takes it as
-    its own argument. An exclude root at or above the walk root is dropped there
-    with one WARNING — measured on ``/``, the music root's parent and the music
-    root itself: one line each, and the husk still reported. Excluding a subtree
-    is not enough on its own, because the mover takes a reported folder's WHOLE
-    subtree, so ``orphans._drop_excluded_ancestors`` drops every candidate above
-    an excluded root and this tuple is protected up as well as down.
+    A path outside the music tree costs one ``stat`` and matches nothing; the
+    beets dir and the database's folder are passed for that reason, since what
+    the rule refuses (B nesting with M) is checked per request and not here.
+    Dotdirs and NAS names are skipped by name inside the scanner.
 
-    Both the dry-run preview and the runner's ``_sweep_orphans`` read this same
-    tuple, so preview and outcome cannot disagree about what is spared."""
+    The mover's guard is still the one that decides: it compares IDENTITY, so a
+    bind-mounted alias of a store, which no spelling here can name, is refused
+    at the move. When that happens the run logs one WARNING and reports the
+    folder as skipped rather than moved.
+    """
     handle: LibraryHandle = app.state.beets_library  # type: ignore[attr-defined]  # app duck-typed (object)
-    # ``export_dir_for`` and not a second copy of the same default: the two
-    # spellings of ``<music>/.playlists`` drifted apart is exactly how a dir the
-    # exporter writes to becomes one the sweep can trash. The finder resolves
-    # what it is given, which is what makes a RELATIVE
-    # ``MUSICDROP_PLAYLISTS_EXPORT_DIR`` match — ``export_dir_for`` hands the
-    # configured value through unchanged and ``open()`` joins it to the CWD.
-    _music, library_path = handle_music_and_library(handle)
-    entries = (export_dir_for(handle.lib), origins_dir, handle.beets_dir, library_path.parent)
+    music, library_path = handle_music_and_library(handle)
+    entries = protected_entries(
+        settings=_settings(app),  # type: ignore[arg-type]  # app duck-typed (object)
+        music_dir=music,
+        beets_dir=handle.beets_dir,
+        trash_dir=trash_dir,
+        origins_dir=origins_dir,
+        library_path=library_path,
+    )
+    skip = {music, trash_dir}
     # Deduped in order: on the DEFAULT layout ``library:`` resolves to
-    # ``<B>/library.db``, so the last two entries are the same directory and the
-    # finder would log its at-or-above WARNING twice for one root.
-    return tuple(dict.fromkeys(entries))
+    # ``<B>/library.db``, so two entries are the same directory and the finder
+    # would climb from one root twice.
+    return tuple(dict.fromkeys(path for path, _name, _setting in entries if path not in skip))
 
 
 @router.get("/reorganize/preview", responses={503: _LAYOUT_REFUSED_RESPONSE})
@@ -158,7 +150,7 @@ async def preview_reorganize(
         artist=artist,
         album_id=None,
         trash_dir=trash_dir,
-        ignore_dirs=_ignore_dirs(request.app, origins_dir),
+        ignore_dirs=_ignore_dirs(request.app, trash_dir, origins_dir),
     )
 
 
@@ -182,7 +174,7 @@ async def preview_album_reorganize(
         artist=None,
         album_id=album_id,
         trash_dir=trash_dir,
-        ignore_dirs=_ignore_dirs(request.app, origins_dir),
+        ignore_dirs=_ignore_dirs(request.app, trash_dir, origins_dir),
     )
 
 
@@ -212,7 +204,7 @@ async def start_reorganize(
     # layout did not clear it. ``_store`` and ``_ignore_dirs`` need nothing from
     # the registry, so the order costs nothing.
     trash_dir, origins_dir = _store(app)
-    ignore_dirs = _ignore_dirs(app, origins_dir)
+    ignore_dirs = _ignore_dirs(app, trash_dir, origins_dir)
     try:
         reg.start(scope=scope, artist=artist, album_id=None, scope_label=label)
     except RuntimeError:
@@ -256,7 +248,7 @@ async def start_album_reorganize(
     # Same order, same reason as ``start_reorganize``: nothing claims the single
     # slot until every refusal has had its turn.
     trash_dir, origins_dir = _store(app)
-    ignore_dirs = _ignore_dirs(app, origins_dir)
+    ignore_dirs = _ignore_dirs(app, trash_dir, origins_dir)
     try:
         reg.start(scope="album", artist=None, album_id=album_id, scope_label=label)
     except RuntimeError:

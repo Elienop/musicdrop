@@ -178,9 +178,7 @@ def move_no_merge(src: Path, dest: Path) -> None:
             # and both trees were empty afterwards. ``os.rename`` answers EINVAL
             # for the same shape on one filesystem, so both branches now refuse
             # alike and no caller has to know which one ran.
-            raise OSError(
-                errno.EINVAL, "the destination is inside the source", str(dest)
-            ) from exc
+            raise OSError(errno.EINVAL, "the destination is inside the source", str(dest)) from exc
         if exc.errno == errno.EXDEV:
             # Different filesystems, so no rename can do it and the move has to
             # copy. ``copytree``'s own ``os.makedirs(..., exist_ok=False)`` is

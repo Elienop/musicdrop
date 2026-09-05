@@ -55,10 +55,10 @@ def _check(
     )
 
 
-#: Every app-owned store D2 brings into the rule, as ``(Settings field, the
-#: setting's name in a message, what a message calls the directory)``. Kept
-#: beside ``protected._APP_STORES`` rather than derived from it, so a store
-#: dropped from that tuple fails here instead of silently losing four rows.
+#: Every app-owned directory D2 brings into the rule, as ``(Settings field, the
+#: setting's name in a message, what a message calls the directory)``. Written
+#: out rather than derived from ``config.APP_STORES`` and ``config.app_cache_dirs``,
+#: so one dropped from those fails here instead of silently losing two rows.
 _D2_STORES = (
     ("playlists_export_dir", "MUSICDROP_PLAYLISTS_EXPORT_DIR", "the playlist exports"),
     ("bank_dir", "MUSICDROP_BANK_DIR", "the import bank"),
@@ -66,6 +66,8 @@ _D2_STORES = (
     ("slskd_settings_dir", "MUSICDROP_SLSKD_SETTINGS_DIR", "the slskd settings store"),
     ("playlists_dir", "MUSICDROP_PLAYLISTS_DIR", "the playlist store"),
     ("inbox_dir", "MUSICDROP_INBOX_DIR", "the inbox"),
+    ("artist_image_cache_dir", "MUSICDROP_ARTIST_IMAGE_CACHE_DIR", "the artist-image cache"),
+    ("cover_thumb_cache_dir", "MUSICDROP_COVER_THUMB_CACHE_DIR", "the cover-thumbnail cache"),
 )
 
 
@@ -838,27 +840,112 @@ def test_a_trash_that_holds_an_app_store_is_refused(
 
 
 @pytest.mark.parametrize(("field", "setting", "name"), _D2_STORES)
-def test_a_trash_inside_an_app_store_is_refused(
+def test_a_trash_inside_an_app_store_is_allowed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, setting: str, name: str
 ) -> None:
-    """The other direction: trashed albums land in a directory the app manages.
+    """The third direction, dropped after it refused layouts the module allows.
 
-    Not symmetric with the row above — the message names the STORE as the
-    subject, because that is the pair the operator has to separate, and the fix
-    is still the Trash's.
+    It refused a store setting that named a directory ABOVE the Trash — with
+    ``MUSICDROP_PLAYLISTS_EXPORT_DIR=<M>`` beside the compose file's own
+    ``<M>/.trash`` suggestion, the app would not boot — and its loss clause
+    ("trashed albums would land in it") is false for these: the Plex and slskd
+    stores read one file each, the bank and playlist stores glob ``*.json`` one
+    level deep, and nothing enumerates the exports or either cache. The two
+    relations that remain are ``is`` and ``contains``, tested above.
     """
     store = tmp_path / "store"
     monkeypatch.setattr(f"app.config.settings.{field}", str(store))
+    _check(
+        music=tmp_path / "music",
+        beets=tmp_path / "data",
+        trash=store / "bin",
+        origins=tmp_path / "records",
+    )
+    # The shape the finding measured: the store is the music root itself, and
+    # the Trash is where docker-compose.yml suggests putting it.
+    monkeypatch.setattr(f"app.config.settings.{field}", str(tmp_path / "music"))
+    _check(
+        music=tmp_path / "music",
+        beets=tmp_path / "data",
+        trash=tmp_path / "music" / ".trash",
+        origins=tmp_path / "records",
+    )
+
+
+def test_a_store_spelled_with_a_tilde_is_the_one_the_app_uses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``MUSICDROP_BANK_DIR=~/bank`` — nothing in this app expands ``~``.
+
+    pydantic-settings does not, and neither does any of the resolvers, so the
+    bank really is a directory named ``~`` under the process CWD. The rule
+    expanded it, and the two then disagreed: measured, a Trash at the directory
+    ``get_bank_dir()`` returns was ALLOWED, while ``$HOME/bank`` — which nothing
+    uses — was refused as "the import bank".
+    """
+    from app.api.bank import get_bank_dir
+
+    monkeypatch.setattr("app.config.settings.bank_dir", "~/bank")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # The directory the app really writes to: the value is relative, so ``open``
+    # joins it to the CWD and the leading ``~`` is a directory NAME.
+    in_use = get_bank_dir().resolve()
+    assert "~" in str(in_use)  # the control: still unexpanded on the app's side
+
     with pytest.raises(StoreLayoutError) as exc:
         _check(
             music=tmp_path / "music",
             beets=tmp_path / "data",
-            trash=store / "bin",
+            trash=in_use,
             origins=tmp_path / "records",
         )
-    message = str(exc.value)
-    assert f"{name[0].upper()}{name[1:]} contains the Trash directory" in message
-    assert message.endswith(_FIX_TRASH)
+    assert "The Trash directory is the import bank" in str(exc.value)
+
+
+@pytest.mark.parametrize(("field", "setting", "name"), _D2_STORES)
+def test_a_store_this_process_cannot_examine_does_not_refuse_the_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, setting: str, name: str
+) -> None:
+    """A store is a directory the rule PROTECTS; it is not one the rule acts on.
+
+    Every store went through the fail-closed arm, so a permission bit on an
+    ancestor of any one of them refused startup and answered 503 on every
+    destructive route — measured in the review round with the inbox behind a
+    mode-000 parent. Nothing here empties or sweeps a store, so a store with no
+    identity takes the same spelling-only rung a not-yet-created path takes.
+
+    The Trash keeps the fail-closed arm — the control below — because the rule
+    acts THROUGH it.
+
+    Skipped as root, which traverses a mode-000 directory regardless.
+    """
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    store = locked / "store"
+    store.mkdir()
+    locked.chmod(0o000)
+    try:
+        if os.access(store, os.F_OK):  # root, or an fs that ignores the mode
+            pytest.skip("this process can traverse a mode-000 directory")
+        monkeypatch.setattr(f"app.config.settings.{field}", str(store))
+        _check(
+            music=tmp_path / "music",
+            beets=tmp_path / "data",
+            trash=tmp_path / "data" / "trash",
+            origins=tmp_path / "records",
+        )
+        # The control: the same unreachable path as the TRASH is still refused.
+        with pytest.raises(StoreLayoutError) as exc:
+            _check(
+                music=tmp_path / "music",
+                beets=tmp_path / "data",
+                trash=store,
+                origins=tmp_path / "records",
+            )
+        assert "could not be examined" in str(exc.value)
+        assert TRASH_SETTING in str(exc.value)
+    finally:
+        locked.chmod(0o700)
 
 
 @pytest.mark.parametrize(("field", "setting", "name"), _D2_STORES)

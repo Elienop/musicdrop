@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Final, NamedTuple
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -176,17 +177,91 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
+def _anchored(value: str) -> Path:
+    """A cache path, anchoring a relative value to the repo root."""
+    configured = Path(value)
+    return configured if configured.is_absolute() else _REPO_ROOT / configured
+
+
 def resolve_artist_image_cache_dir() -> Path:
     """Resolve the artist-image cache dir, anchoring relatives to the repo root."""
-    configured = Path(settings.artist_image_cache_dir)
-    if configured.is_absolute():
-        return configured
-    return _REPO_ROOT / configured
+    return _anchored(settings.artist_image_cache_dir)
 
 
 def resolve_cover_thumb_cache_dir() -> Path:
     """Resolve the cover-thumb cache dir, anchoring relatives to the repo root."""
-    configured = Path(settings.cover_thumb_cache_dir)
-    if configured.is_absolute():
-        return configured
-    return _REPO_ROOT / configured
+    return _anchored(settings.cover_thumb_cache_dir)
+
+
+class AppStore(NamedTuple):
+    """One directory MusicDrop owns: the setting that spells it and its default.
+
+    ``key`` is the :class:`Settings` field, ``leaf`` the name it takes under a
+    base directory when the setting is empty, ``name`` how a message spells it
+    and ``setting`` the env var an operator has to change.
+    """
+
+    key: str
+    leaf: str
+    name: str
+    setting: str
+
+
+BANK_STORE: Final = AppStore("bank_dir", "bank", "the import bank", "MUSICDROP_BANK_DIR")
+PLEX_STORE: Final = AppStore(
+    "plex_settings_dir", "plex", "the Plex settings store", "MUSICDROP_PLEX_SETTINGS_DIR"
+)
+SLSKD_STORE: Final = AppStore(
+    "slskd_settings_dir", "slskd", "the slskd settings store", "MUSICDROP_SLSKD_SETTINGS_DIR"
+)
+PLAYLISTS_STORE: Final = AppStore(
+    "playlists_dir", "playlists", "the playlist store", "MUSICDROP_PLAYLISTS_DIR"
+)
+INBOX_STORE: Final = AppStore("inbox_dir", "inbox", "the inbox", "MUSICDROP_INBOX_DIR")
+#: Its default sits under the MUSIC library, not the beets dir, so it takes a
+#: different base and is not in :data:`APP_STORES`.
+EXPORT_STORE: Final = AppStore(
+    "playlists_export_dir",
+    ".playlists",
+    "the playlist exports",
+    "MUSICDROP_PLAYLISTS_EXPORT_DIR",
+)
+
+#: The five stores that default under the beets data dir.
+APP_STORES: Final = (BANK_STORE, PLEX_STORE, SLSKD_STORE, PLAYLISTS_STORE, INBOX_STORE)
+
+
+def store_dir(settings: Settings, store: AppStore, base: Path) -> Path:
+    """Where one app-owned store sits: the configured value, else ``base / leaf``.
+
+    The ONE owner of that formula. Six resolvers each held a copy, and the copies
+    diverged: a whitespace-only ``MUSICDROP_INBOX_DIR`` named ``<B>/inbox`` to the
+    layout rule and the guard (they stripped) and ``<cwd>/'  '`` to the inbox
+    resolver (it tested truthiness), so the two protected a directory the app
+    never used. The rule, the guard and the app now read one function.
+    """
+    configured = str(getattr(settings, store.key)).strip()
+    return Path(configured) if configured else base / store.leaf
+
+
+def app_cache_dirs(app_settings: Settings) -> list[tuple[Path, str, str]]:
+    """``(path, what it is, setting)`` for the two rebuildable image caches.
+
+    Not in :data:`APP_STORES`: both ship a non-empty default that anchors to the
+    repo root rather than to the beets dir, so :func:`store_dir`'s formula does
+    not describe them. They are here because the layout rule and the identity
+    guard need them as participants — a Trash pointed at either one booted clean
+    and Empty Trash removed it (measured in the review round).
+    """
+    return [
+        (
+            _anchored(app_settings.artist_image_cache_dir),
+            "the artist-image cache",
+            "MUSICDROP_ARTIST_IMAGE_CACHE_DIR",
+        ),
+        (
+            _anchored(app_settings.cover_thumb_cache_dir),
+            "the cover-thumbnail cache",
+            "MUSICDROP_COVER_THUMB_CACHE_DIR",
+        ),
+    ]

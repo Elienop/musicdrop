@@ -23,7 +23,6 @@ from app.beets.protected import (
     ProtectedTreeError,
     ProtectedTrees,
     app_owned_dirs,
-    export_dir,
     open_checked_dir,
     protected_match,
     protected_trees,
@@ -36,82 +35,37 @@ from tests._mountns import run_probe, unshare_works
 from tests.conftest import beets_dir_for, make_test_handle, origins_for, protected_for
 
 # --------------------------------------------------------------------------
-# The set itself: it must name the same directories the app's own resolvers do.
+# The set itself: one owner for every app-owned path.
 # --------------------------------------------------------------------------
 
 
-def _store_dirs(beets_dir: Path) -> dict[str, Path]:
-    """What each real resolver answers, for the settings in force right now."""
+@pytest.mark.parametrize("configured", ["", "  "])
+def test_a_store_setting_the_app_ignores_names_the_default_here_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured: str
+) -> None:
+    """The guard and the resolver read ONE function, so they answer alike.
+
+    They read two, and the copies diverged on a whitespace-only value: the guard
+    stripped and named ``<B>/inbox`` while ``resolve_inbox_dir`` tested
+    truthiness and named ``<cwd>/'  '`` — measured, so the guard protected a
+    directory the app was not using. ``config.store_dir`` is the owner now;
+    this is the value that showed the split.
+    """
     from app.acquisition.inbox import resolve_inbox_dir
-    from app.api.bank import get_bank_dir
-    from app.api.plex import get_plex_store
-    from app.api.slskd import get_slskd_store
-    from app.playlists.store import get_playlists_dir
+
+    beets_dir = (tmp_path / "beets").resolve()
+    beets_dir.mkdir()
+    monkeypatch.setattr("app.config.settings.inbox_dir", configured)
 
     class _Handle:
         pass
 
     handle = _Handle()
     handle.beets_dir = beets_dir  # type: ignore[attr-defined]  # only field inbox reads
-    return {
-        "the import bank": get_bank_dir(),
-        "the Plex settings store": get_plex_store()._path.parent,
-        "the slskd settings store": get_slskd_store()._path.parent,
-        "the playlist store": get_playlists_dir(),
-        "the inbox": resolve_inbox_dir(settings, handle),  # type: ignore[arg-type]  # ditto
-    }
-
-
-@pytest.mark.parametrize("configured", [False, True])
-def test_app_owned_dirs_name_what_the_five_resolvers_name(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured: bool
-) -> None:
-    """The guard's table is a COPY of five resolvers, so a copy is what is pinned.
-
-    ``app.beets.protected`` is a leaf on purpose — importing ``app.api.bank``
-    from it closes the cycle ``store_layout -> api.bank -> beets.duplicates ->
-    store_layout``, measured by reading those modules' imports — so the five
-    two-line rules are written down twice. This is the test that fails when one
-    side moves: both the unset default and a configured override.
-    """
-    beets_dir = (tmp_path / "beets").resolve()
-    beets_dir.mkdir()
-    monkeypatch.setattr("app.config.settings.beets_dir", str(beets_dir))
-    fields = {
-        "the import bank": "bank_dir",
-        "the Plex settings store": "plex_settings_dir",
-        "the slskd settings store": "slskd_settings_dir",
-        "the playlist store": "playlists_dir",
-        "the inbox": "inbox_dir",
-    }
-    if configured:
-        for field in fields.values():
-            elsewhere = (tmp_path / "elsewhere" / field).resolve()
-            elsewhere.mkdir(parents=True)
-            monkeypatch.setattr(f"app.config.settings.{field}", str(elsewhere))
 
     mine = {name: path for path, name, _setting in app_owned_dirs(settings, beets_dir)}
-    assert mine == _store_dirs(beets_dir)
-
-
-@pytest.mark.parametrize("configured", [False, True])
-def test_export_dir_names_what_export_dir_for_names(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured: bool
-) -> None:
-    """The sixth copy, whose original takes a beets ``Library`` rather than settings."""
-    from app.playlists.reexport import export_dir_for
-
-    music = (tmp_path / "music").resolve()
-    music.mkdir()
-    if configured:
-        elsewhere = (tmp_path / "exports").resolve()
-        elsewhere.mkdir()
-        monkeypatch.setattr("app.config.settings.playlists_export_dir", str(elsewhere))
-
-    class _Lib:
-        directory = os.fsencode(str(music))
-
-    assert export_dir(settings, music) == export_dir_for(_Lib())
+    assert mine["the inbox"] == beets_dir / "inbox"
+    assert resolve_inbox_dir(settings, handle) == beets_dir / "inbox"  # type: ignore[arg-type]  # ditto
 
 
 def test_every_directory_the_rule_is_about_joins_the_set(tmp_path: Path) -> None:
@@ -121,6 +75,10 @@ def test_every_directory_the_rule_is_about_joins_the_set(tmp_path: Path) -> None
     suite green — measured: removing the playlist-exports row survived the whole
     file. ``trash`` is asserted beside them because ``empty_all`` fstat-compares
     against it and a ``None`` there turns that compare off.
+
+    The two image caches are here because they were absent: a Trash pointed at
+    either of them booted clean and the first Empty Trash removed the cache
+    directory itself, measured in the review round.
     """
     dirs = {
         name: tmp_path / name.replace(" ", "-")
@@ -136,6 +94,8 @@ def test_every_directory_the_rule_is_about_joins_the_set(tmp_path: Path) -> None
             "the slskd settings store",
             "the playlist store",
             "the inbox",
+            "the artist-image cache",
+            "the cover-thumbnail cache",
         )
     }
     for path in dirs.values():
@@ -148,6 +108,8 @@ def test_every_directory_the_rule_is_about_joins_the_set(tmp_path: Path) -> None
             slskd_settings_dir=str(dirs["the slskd settings store"]),
             playlists_dir=str(dirs["the playlist store"]),
             inbox_dir=str(dirs["the inbox"]),
+            artist_image_cache_dir=str(dirs["the artist-image cache"]),
+            cover_thumb_cache_dir=str(dirs["the cover-thumbnail cache"]),
         ),
         music_dir=dirs["the music library"],
         beets_dir=dirs["the beets data directory"],

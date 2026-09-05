@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
 
-from app.config import Settings
+from app.config import APP_STORES, EXPORT_STORE, Settings, app_cache_dirs, store_dir
 
 logger = logging.getLogger(__name__)
 
@@ -60,34 +60,26 @@ class ProtectedTrees:
 _TRASH_NAME: Final = "the Trash directory"
 
 
-#: Each app-owned store under the beets dir: the ``Settings`` field, the default
-#: leaf name, how a message spells it, and its env var. Mirrors one resolver
-#: each — ``api/bank.py:get_bank_dir``, ``api/plex.py:get_plex_store``,
-#: ``api/slskd.py:get_slskd_store``, ``playlists/store.py:get_playlists_dir``,
-#: ``acquisition/inbox.py:resolve_inbox_dir`` — and
-#: ``tests/test_protected_trees.py`` compares this against all five.
-_APP_STORES: Final[tuple[tuple[str, str, str, str], ...]] = (
-    ("bank_dir", "bank", "the import bank", "MUSICDROP_BANK_DIR"),
-    ("plex_settings_dir", "plex", "the Plex settings store", "MUSICDROP_PLEX_SETTINGS_DIR"),
-    ("slskd_settings_dir", "slskd", "the slskd settings store", "MUSICDROP_SLSKD_SETTINGS_DIR"),
-    ("playlists_dir", "playlists", "the playlist store", "MUSICDROP_PLAYLISTS_DIR"),
-    ("inbox_dir", "inbox", "the inbox", "MUSICDROP_INBOX_DIR"),
-)
-
-
 def app_owned_dirs(settings: Settings, beets_dir: Path) -> list[tuple[Path, str, str]]:
-    """``(path, what it is, setting)`` for each app-owned store under the beets dir."""
-    out: list[tuple[Path, str, str]] = []
-    for field, leaf, name, setting in _APP_STORES:
-        configured = str(getattr(settings, field)).strip()
-        out.append((Path(configured) if configured else beets_dir / leaf, name, setting))
-    return out
+    """``(path, what it is, setting)`` for every directory the app owns.
+
+    The five stores under the beets dir, the playlist exports under the music
+    library, and the two image caches. All of it off ``app.config``'s one table
+    and one formula, which the app's own resolvers call too — so the rule, the
+    guard and the app cannot name different directories.
+    """
+    return [
+        *(
+            (store_dir(settings, store, beets_dir), store.name, store.setting)
+            for store in APP_STORES
+        ),
+        *app_cache_dirs(settings),
+    ]
 
 
 def export_dir(settings: Settings, music_dir: Path) -> Path:
-    """Where the ``.m3u8`` exports live. Mirrors ``playlists/reexport.export_dir_for``."""
-    configured = settings.playlists_export_dir.strip()
-    return Path(configured) if configured else music_dir / ".playlists"
+    """Where the ``.m3u8`` exports live. Same owner as ``reexport.export_dir_for``."""
+    return store_dir(settings, EXPORT_STORE, music_dir)
 
 
 def _ident(path: str | Path) -> tuple[int, int] | None:
@@ -112,6 +104,35 @@ def _own_stat(path: str, dir_fd: int | None) -> os.stat_result | None:
         return None
 
 
+def protected_entries(
+    *,
+    settings: Settings,
+    music_dir: Path,
+    beets_dir: Path,
+    trash_dir: Path,
+    origins_dir: Path,
+    library_path: Path,
+) -> list[tuple[Path, str, str]]:
+    """``(path, what it is, setting)`` for every directory this app owns.
+
+    The five the layout rule is about — with ``library_path``'s DIRECTORY, since
+    the file itself is not a tree — plus the playlist exports, the five stores
+    and the two image caches. One list, read twice: :func:`protected_trees` turns
+    it into identities for the movers, and ``api/reorganize._ignore_dirs`` hands
+    the paths to the orphan sweep, which is why the sweep spares what the movers
+    refuse.
+    """
+    return [
+        (music_dir, "the music library", "`directory:` in config.yaml"),
+        (beets_dir, "the beets data directory", "MUSICDROP_BEETS_DIR"),
+        (trash_dir, _TRASH_NAME, "MUSICDROP_TRASH_DIR"),
+        (origins_dir, "the Trash origin store", "MUSICDROP_TRASH_ORIGINS_DIR"),
+        (library_path.parent, "the beets database's folder", "`library:` in config.yaml"),
+        (export_dir(settings, music_dir), "the playlist exports", "MUSICDROP_PLAYLISTS_EXPORT_DIR"),
+        *app_owned_dirs(settings, beets_dir),
+    ]
+
+
 def protected_trees(
     *,
     settings: Settings,
@@ -123,20 +144,18 @@ def protected_trees(
 ) -> ProtectedTrees:
     """Identify the directories a mover or a remover may not act on.
 
-    The five the layout rule is about — with ``library_path``'s DIRECTORY, since
-    the file itself is not a tree — plus every app-owned store and the playlist
-    export dir. A path that is not there yet has no identity and drops out; it
-    gets one the next time this runs, which is once per destructive request.
+    :func:`protected_entries`, by identity. A path that is not there yet has no
+    identity and drops out; it gets one the next time this runs, which is once
+    per destructive request.
     """
-    entries: list[tuple[Path, str, str]] = [
-        (music_dir, "the music library", "`directory:` in config.yaml"),
-        (beets_dir, "the beets data directory", "MUSICDROP_BEETS_DIR"),
-        (trash_dir, _TRASH_NAME, "MUSICDROP_TRASH_DIR"),
-        (origins_dir, "the Trash origin store", "MUSICDROP_TRASH_ORIGINS_DIR"),
-        (library_path.parent, "the beets database's folder", "`library:` in config.yaml"),
-        (export_dir(settings, music_dir), "the playlist exports", "MUSICDROP_PLAYLISTS_EXPORT_DIR"),
-        *app_owned_dirs(settings, beets_dir),
-    ]
+    entries = protected_entries(
+        settings=settings,
+        music_dir=music_dir,
+        beets_dir=beets_dir,
+        trash_dir=trash_dir,
+        origins_dir=origins_dir,
+        library_path=library_path,
+    )
     ids: dict[tuple[int, int], tuple[str, str]] = {}
     for path, name, setting in entries:
         ident = _ident(path)
