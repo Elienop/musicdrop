@@ -48,7 +48,11 @@ from app.beets.library import (
     require_library_present,
     require_library_root,
 )
-from app.beets.protected import ProtectedTrees, refuse_protected_tree
+from app.beets.protected import (
+    ProtectedTrees,
+    refuse_a_held_store,
+    refuse_protected_tree,
+)
 from app.beets.trash_origins import (
     _NAME_MAX,
     MovedShape,
@@ -702,7 +706,19 @@ def trash_album_folder(
     # here by inode: a folder that is (or holds) the music library, the beets
     # dir, an app-owned store or the Trash itself passes every spelled row in
     # ``store_layout`` when a bind mount is what made them one directory.
-    refuse_protected_tree(Path(album_root), protected, action="moved")
+    if refuse_a_held_store(Path(album_root), protected, action="moved"):
+        # The folder IS one of ours — an album imported in place into the store
+        # root. There is a delete to do here (the FILES are the album's), so it
+        # takes the same per-item mover a shared folder takes rather than a 503
+        # that leaves the operator no way to remove the album at all.
+        #
+        # The directory is put back afterwards: beets' ``prune_dirs`` rmtree's
+        # every emptied ancestor up to ``lib.directory``, and measured, that
+        # removed the inbox AND the folder above it, with nothing in the app to
+        # recreate either.
+        moved = trash_album(lib, album, trash_dir=trash_dir, origins_dir=origins_dir)
+        Path(album_root).mkdir(parents=True, exist_ok=True)
+        return moved
     trash_dir.mkdir(parents=True, exist_ok=True)
     dest = _unique_trash_dest(
         trash_dir, origins_dir, os.path.basename(os.path.normpath(album_root))

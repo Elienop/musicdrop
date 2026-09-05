@@ -1298,3 +1298,85 @@ def test_an_ancestor_of_an_ignored_dir_is_spared_in_the_walks_own_spelling(
         )
         == []
     )
+
+
+def test_a_seed_spelled_through_another_alias_of_the_root_still_climbs(
+    tmp_path: Path,
+) -> None:
+    """The seed is a DB row\'s spelling; the walk root is ``lib.directory``.
+
+    An in-place import leaves ``item.path`` in the spelling it was imported from,
+    so a row imported from ``<real>/...`` under ``directory: <link>`` names the
+    same directory the walk does and compares unequal to it. Measured on the
+    parent commit: seeds mode returned ``[]`` for the real spelling and the husk
+    was found in library mode only.
+
+    Two-sided: the walk-spelled seed still works, so a fix that respelled
+    everything into nothing would fail here too.
+    """
+    real = tmp_path / "real"
+    _touch(real / "Live Artist" / "Album" / "01.flac")
+    _touch(real / "Old Artist" / "Album" / "cover.jpg")
+    root = tmp_path / "music"
+    root.symlink_to(real)
+    trash = tmp_path / "trash"
+
+    through_real = find_orphan_folders(
+        root, seeds=[real / "Old Artist" / "Album" / "gone"], trash_dir=trash
+    )
+    through_link = find_orphan_folders(
+        root, seeds=[root / "Old Artist" / "Album" / "gone"], trash_dir=trash
+    )
+
+    assert through_real == [root / "Old Artist"]
+    assert through_link == [root / "Old Artist"]
+
+
+def test_a_seed_outside_the_library_climbs_nothing(tmp_path: Path) -> None:
+    """The control for the respelling: a seed that is genuinely elsewhere."""
+    root = tmp_path / "music"
+    _touch(root / "Live Artist" / "Album" / "01.flac")
+    outside = tmp_path / "outside"
+    _touch(outside / "Husk" / "cover.jpg")
+
+    assert (
+        find_orphan_folders(root, seeds=[outside / "Husk" / "gone"], trash_dir=tmp_path / "trash")
+        == []
+    )
+
+
+def test_an_exclude_root_with_no_identity_that_names_the_walk_root_is_dropped(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``<M>/typo/..`` normpaths to ``<M>`` and cannot be stat\'d.
+
+    Measured on the parent commit: the spelling was KEPT, ``_Exclusion`` matched
+    the walk root by string, and the whole sweep was silenced — zero husks, and
+    not one of the WARNING lines this module logs for a root at or above the
+    music root. ``MUSICDROP_PLAYLISTS_EXPORT_DIR`` is the one setting that
+    reaches the finder unresolved.
+
+    The control is the same shape one level down, which is a legitimate exclude
+    root and must survive.
+    """
+    root = tmp_path / "music"
+    _touch(root / "Live Artist" / "Album" / "01.flac")
+    _touch(root / "Old Artist" / "cover.jpg")
+    trash = tmp_path / "trash"
+    (root / "Sub").mkdir()
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.orphans"):
+        found = find_orphan_folders(
+            root, seeds=None, trash_dir=trash, ignore_dirs=(root / "typo" / "..",)
+        )
+
+    assert found == [root / "Old Artist"]
+    assert len([r for r in caplog.records if "at or above" in r.getMessage()]) == 1
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="app.beets.orphans"):
+        kept = find_orphan_folders(
+            root, seeds=None, trash_dir=trash, ignore_dirs=(root / "Old Artist" / "gone" / "..",)
+        )
+    assert kept == []  # the husk really is excluded by the spelling that names it
+    assert [r for r in caplog.records if "at or above" in r.getMessage()] == []

@@ -7,6 +7,7 @@ three — only one reorganize at a time — and it is mutually exclusive with ev
 other library write (see _gate_busy + the gate sites in edit/cover/config/
 duplicates/import/lyrics/artists)."""
 
+import os
 from pathlib import Path
 from typing import Annotated, Final
 
@@ -128,10 +129,16 @@ def _ignore_dirs(app: object, trash_dir: Path, origins_dir: Path) -> tuple[Path,
         library_path=library_path,
     )
     skip = {music, trash_dir}
-    # Deduped in order: on the DEFAULT layout ``library:`` resolves to
-    # ``<B>/library.db``, so two entries are the same directory and the finder
-    # would climb from one root twice.
-    return tuple(dict.fromkeys(path for path, _name, _setting in entries if path not in skip))
+    # Deduped in order, on the NORMALISED spelling: on the default layout
+    # ``library:`` resolves to ``<B>/library.db``, so two entries are the same
+    # directory and the finder would climb from one root twice. ``Path``
+    # equality does not fold ``<M>/..`` into ``<M>``'s parent, and measured, the
+    # sweep then logged its one at-or-above WARNING twice for one directory.
+    seen: dict[str, Path] = {}
+    for path, _name, _setting in entries:
+        if path not in skip:
+            seen.setdefault(os.path.normpath(str(path)), path)
+    return tuple(seen.values())
 
 
 @router.get("/reorganize/preview", responses={503: _LAYOUT_REFUSED_RESPONSE})

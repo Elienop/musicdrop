@@ -1,10 +1,16 @@
 """Find orphan "husk" folders: directories under the music root that hold only
 art/sidecars (no audio anywhere beneath). Pure filesystem — audio is detected by
-file extension on disk, NOT via the beets DB, so a folder containing an
-*untracked* audio file is never reported. Inside the beets-adapter boundary
-(CLAUDE.md rule 3) for proximity to trash.py, though it touches no beets API:
-the DB-derived protection a caller may pass as ``protected_dirs`` is computed
-over in ``app.beets.reorganize.live_album_roots`` and arrives here as plain paths.
+file extension on disk, NOT via the beets DB.
+
+"Beneath" is what the walk reaches: it does not follow symlinks and it prunes
+dotdirs and NAS names, so audio behind either does not count for the parent.
+Measured: ``<M>/Various/.sync/Album/01.flac`` leaves ``Various`` reading as a
+husk, and the mover takes it with that audio inside.
+
+Inside the beets-adapter boundary (CLAUDE.md rule 3) for proximity to trash.py,
+though it touches no beets API: the DB-derived protection a caller may pass as
+``protected_dirs`` is computed over in ``app.beets.reorganize.live_album_roots``
+and arrives here as plain paths.
 """
 
 from __future__ import annotations
@@ -144,6 +150,33 @@ def _at_or_above(target: PathId, start: str) -> bool:
         d = parent
 
 
+def _in_walk_spelling(path: str, root: str) -> str | None:
+    """``path`` respelled under ``root``, or ``None`` when it is not inside it.
+
+    The walk root is ``lib.directory`` — ``normpath``'d, never ``realpath``'d —
+    while a row imported in place keeps the spelling it was imported from. The
+    two name one directory and compare unequal, so a foreign-spelled album root
+    was dropped as "outside the library" and a foreign-spelled seed never
+    started its climb. Translating by identity puts both back in the walk's
+    namespace, which is the only one the rest of this module compares in.
+
+    One ``stat`` per level, paid only when the lexical test already failed.
+    """
+    target = _path_id(root)
+    if target is None:
+        return None
+    parts: list[str] = []
+    d = os.path.normpath(path)
+    while True:
+        if _path_id(d) == target:
+            return os.path.join(root, *reversed(parts)) if parts else root
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        parts.append(os.path.basename(d))
+        d = parent
+
+
 def _exclude_ids(
     root: str, exclude_roots: tuple[str, ...]
 ) -> tuple[frozenset[PathId], tuple[str, ...]]:
@@ -159,12 +192,23 @@ def _exclude_ids(
     A root that cannot be stat'd keeps its SPELLING, which still spares its
     ancestors. A root at or ABOVE the walk root is dropped with the one WARNING
     this module logs; ``MUSICDROP_PLAYLISTS_EXPORT_DIR`` is the way in.
+
+    "At or above" is asked twice, because a root with no identity is compared by
+    spelling and the spelling can name the walk root itself:
+    ``MUSICDROP_PLAYLISTS_EXPORT_DIR=<M>/typo/..`` normpaths to ``<M>``, and
+    measured, it silenced the whole sweep with no warning at all.
     """
     ids: set[PathId] = set()
     kept: list[str] = []
     for r in exclude_roots:
         rid = _path_id(r)
-        if rid is not None and _at_or_above(rid, root):
+        norm = os.path.normpath(r)
+        above = (
+            _at_or_above(rid, root)
+            if rid is not None
+            else norm == root or root.startswith(norm + os.sep)
+        )
+        if above:
             _log.warning(
                 "orphan sweep: ignoring the exclude root %r — it is at or above the music "
                 "root %r, and excluding it would exclude the whole library",
@@ -174,7 +218,7 @@ def _exclude_ids(
             continue
         if rid is not None:
             ids.add(rid)
-        kept.append(os.path.normpath(r))
+        kept.append(norm)
     return frozenset(ids), tuple(kept)
 
 
@@ -288,6 +332,20 @@ def _seed_orphan(seed: str, root: str, excluded: _Exclusion) -> str | None:
     beneath it leaves the library at once and the Trash row is unrestorable
     (``_record_origin`` writes nothing for a symlinked destination). Measured on
     the parent commit: the symlink itself was reported and the mover took it.
+
+    A seed spelled through another alias of the walk root (an in-place import's
+    row keeps the spelling it was imported from) is RESPELLED by identity before
+    the climb; without that the climb never started and the husk was reported in
+    library mode only.
+
+    ASYMMETRY, deliberate: ``os.path.isdir`` follows links, so the nearest
+    existing ancestor can sit BELOW one and this mode reports a directory library
+    mode never descends into (``os.walk`` does not follow links). Measured, the
+    mover then relocates the real directory and writes the origin in the link
+    spelling; restore lands it on the library volume if the link is gone by then.
+    Refusing to climb through a link would make this mode blind under a
+    legitimately symlinked subtree (``music/artists -> /mnt/big/artists``), which
+    is the only mode that sweeps there at all — so the reach is kept and named.
     """
     d = os.path.normpath(seed)
     while d and not os.path.isdir(d):
@@ -295,6 +353,11 @@ def _seed_orphan(seed: str, root: str, excluded: _Exclusion) -> str | None:
         if parent == d:
             return None
         d = parent
+    if not _under(d, root):
+        respelled = _in_walk_spelling(d, root)
+        if respelled is None:
+            return None
+        d = respelled
     candidate: str | None = None
     while _under(d, root):
         if excluded(d):  # an excluded ancestor stops the climb; never a candidate
@@ -395,9 +458,12 @@ def _drop_excluded_ancestors(raw: list[str], exclude_roots: tuple[str, ...]) -> 
 
     The whole ancestor CHAIN, not the immediate parent — sparing one level moves
     the report one level up. COST: the dropped candidate is the top of an
-    audio-empty run and nothing below it is re-selected, so a real husk under an
-    audio-free ancestor of an excluded root is kept
+    audio-empty run and nothing below it is re-selected, so a real husk beside an
+    excluded root is kept
     (``test_a_husk_under_an_audio_free_ancestor_of_an_ignored_dir_is_kept``).
+    The ancestor need not be audio-free on disk — measured, an ancestor whose
+    only audio sits INSIDE the excluded root reads as audio-free here, since an
+    excluded subtree is never recorded.
     """
     if not exclude_roots:
         return raw
@@ -417,8 +483,8 @@ def _drop_protected(raw: list[str], protected_dirs: Collection[str]) -> list[str
     All three run in the same ``(st_dev, st_ino)``-beside-the-string namespace
     the exclusion uses: with the walk root a symlink, the string form reported
     the live album's ``Scans (LP)`` folder and the link-spelled set did not.
-    RESIDUAL: ``reorganize.live_album_roots`` filters a foreign-spelled row out
-    upstream, lexically.
+    ``live_album_roots`` respells a foreign row into the walk's namespace, so
+    the identity arm here is a second reader rather than the only one.
     """
     if not protected_dirs:
         return raw
@@ -457,14 +523,17 @@ def find_orphan_folders(
 
     A returned path is not at, below or ABOVE ``trash_dir`` or any
     ``ignore_dirs`` entry (:func:`_drop_excluded_ancestors`), compared by
-    ``(st_dev, st_ino)`` so a symlink and a bind mount both hold
-    (:func:`_exclude_ids`). ``protected_dirs`` are LIVE album roots: nothing at,
-    directly under, or above one is returned.
+    ``(st_dev, st_ino)`` where the root can be stat'd, so a symlink and a bind
+    mount both hold (:func:`_exclude_ids`); a root that cannot be stat'd is
+    compared by its normalised SPELLING, which one alias of it defeats.
+    ``protected_dirs`` are LIVE album roots: nothing at, directly under, or above
+    one is returned.
 
     Two residuals, both err-toward-keeping and both pinned in
     ``tests/test_orphans.py``: an exclude root at or above ``music_dir`` is
     DROPPED with a WARNING (it used to match every candidate and return nothing),
-    and a husk beside an excluded root under an audio-free ancestor is kept.
+    and a husk beside an excluded root is kept. The BACKLOG entry for this slice
+    holds the rest.
     """
     root = os.path.normpath(str(music_dir))
     exclude_ids, spelled = _exclude_ids(root, tuple(str(d) for d in (trash_dir, *ignore_dirs)))

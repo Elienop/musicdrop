@@ -450,3 +450,53 @@ def test_the_orphan_pass_is_skipped_when_the_origin_store_cannot_be_used(
     # ``except OSError`` into ``sweep``'s blanket handler, which calls reg.fail.
     assert reg.state().phase == "done"
     assert reg.state().failures == []
+
+
+def test_a_real_spelled_album_root_under_a_symlinked_directory_still_shields(
+    tmp_path: Path,
+) -> None:
+    """The row spelling and the walk spelling name one directory.
+
+    ``directory:`` is a symlink and the rows were imported in place from the real
+    path — what ``beet import <real path>`` leaves behind, because an in-place
+    import does not rewrite ``item.path``. ``live_album_roots`` dropped such a
+    root lexically, so the album was not in the protected set at all: measured,
+    its ``Scans (LP)`` folder was reported by the finder, listed by the preview,
+    and moved to Trash while the rows still pointed into it.
+
+    Asserted end-to-end through ``find_orphan_folders``, which is what the
+    preview and the sweep both call, and two-sided: the genuine husk beside the
+    album is still reported, so the fix did not simply protect everything.
+    """
+    from app.beets.orphans import find_orphan_folders
+    from app.beets.reorganize import live_album_roots
+    from tests.conftest import build_library
+
+    real = tmp_path / "real"
+    real.mkdir()
+    music = tmp_path / "music"
+    music.symlink_to(real)
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+
+    album_dir = real / "Live" / "Box"
+    (album_dir / "Disc 01").mkdir(parents=True)
+    track = album_dir / "Disc 01" / "01 T1.mp3"
+    track.write_bytes(b"\x00")
+    item = Item(album="Box", albumartist="Live", artist="Live", title="T1", track=1, disc=1)
+    item.path = os.fsencode(str(track))
+    lib.add_album([item]).store()
+    (album_dir / "Scans (LP)").mkdir()
+    (album_dir / "Scans (LP)" / "front.jpg").write_bytes(b"x")
+    (music / "Old Artist").mkdir()
+    (music / "Old Artist" / "poster.jpg").write_bytes(b"x")
+
+    roots = live_album_roots(lib)
+    found = find_orphan_folders(
+        music,
+        seeds=None,
+        trash_dir=tmp_path / "trash",
+        protected_dirs=roots,
+    )
+
+    assert str(music / "Live" / "Box" / "Disc 01") in roots
+    assert found == [music / "Old Artist"]

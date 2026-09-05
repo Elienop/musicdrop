@@ -28,7 +28,11 @@ from app.beets.library import (
     _require_id,
     require_library_root,
 )
-from app.beets.protected import ProtectedTreeError, ProtectedTrees, refuse_protected_tree
+from app.beets.protected import (
+    ProtectedTreeError,
+    ProtectedTrees,
+    refuse_a_held_store,
+)
 from app.beets.store_layout import StoreLayoutError, checked_protected_trees, checked_store_dirs
 from app.beets.trash import (
     TrashDeleteIncompleteError,
@@ -246,7 +250,10 @@ def delete_artist(
             album = lib.get_album(album_id)
             root = None if album is None else whole_folder_root(lib, album)
             if root is not None:
-                refuse_protected_tree(root, protected, action="moved")
+                # The same question the mover asks, so the pre-check refuses the
+                # same set: a folder that HOLDS a store stops the run, one that
+                # IS a store takes the per-item path album by album.
+                refuse_a_held_store(root, protected, action="moved")
         with lib.transaction():
             for album_id in album_ids:
                 album = lib.get_album(album_id)

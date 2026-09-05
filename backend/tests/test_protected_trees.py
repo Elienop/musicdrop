@@ -1082,3 +1082,73 @@ def test_the_empty_set_refuses_nothing(tmp_path: Path) -> None:
     empty = ProtectedTrees(ids={}, trash=None)
     assert protected_match(music, empty) is None
     refuse_protected_tree(music, empty, action="moved")
+
+
+def test_an_album_whose_folder_is_a_store_is_deleted_and_the_store_survives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An album imported in place into the store ROOT still has a delete.
+
+    Measured on the parent commit: it answered 503 "\'inbox\' is the inbox",
+    which leaves the operator no way to remove the album at all — while an album
+    SHARING that folder with another took the per-item mover and was removed.
+    The two shapes differ only in whether a second album is filed beside it.
+
+    The second half is why the fall-through is not just "drop the guard": beets\'
+    ``prune_dirs`` rmtree\'s every emptied ancestor up to the music root, and
+    measured, that removed the inbox AND the folder above it, with nothing in
+    the app to recreate either.
+    """
+    from app.beets.trash import trash_album_folder
+    from tests.conftest import build_library
+
+    music = tmp_path / "music"
+    inbox = music / "Downloads" / "inbox"
+    inbox.mkdir(parents=True)
+    beets_dir = beets_dir_for(tmp_path)
+    lib = build_library(str(beets_dir / "library.db"), str(music))
+    _add_album(lib, inbox)
+    monkeypatch.setattr("app.config.settings.inbox_dir", str(inbox))
+    trash = tmp_path / "trash"
+    origins = origins_for(trash)
+    trees = protected_for(lib, trash_dir=trash, origins_dir=origins)
+    assert protected_match(inbox, trees) is not None, "the inbox must be in the set"
+
+    album = next(iter(lib.albums()))
+    with lib.transaction():
+        trash_album_folder(lib, album, trash_dir=trash, origins_dir=origins, protected=trees)
+
+    assert list(lib.albums()) == []
+    assert inbox.is_dir(), "the store the guard protects must still be there"
+    assert not (inbox / "01 Track.mp3").exists()
+
+
+def test_an_album_folder_that_holds_a_store_is_still_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half: a tree HOLDING a store has no safe move, so it is a 503.
+
+    The control for the fall-through above — an ``is`` answer and a ``contains``
+    answer must not collapse into one branch.
+    """
+    from app.beets.trash import trash_album_folder
+    from tests.conftest import build_library
+
+    music = tmp_path / "music"
+    album_dir = music / "Artist" / "Album"
+    album_dir.mkdir(parents=True)
+    (album_dir / "inbox").mkdir()
+    beets_dir = beets_dir_for(tmp_path)
+    lib = build_library(str(beets_dir / "library.db"), str(music))
+    _add_album(lib, album_dir)
+    monkeypatch.setattr("app.config.settings.inbox_dir", str(album_dir / "inbox"))
+    trash = tmp_path / "trash"
+    origins = origins_for(trash)
+    trees = protected_for(lib, trash_dir=trash, origins_dir=origins)
+
+    album = next(iter(lib.albums()))
+    with pytest.raises(ProtectedTreeError, match="'Album' contains the inbox"):
+        with lib.transaction():
+            trash_album_folder(lib, album, trash_dir=trash, origins_dir=origins, protected=trees)
+    assert len(list(lib.albums())) == 1
+    assert (album_dir / "01 Track.mp3").exists()

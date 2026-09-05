@@ -21,7 +21,7 @@ import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final, Literal, NamedTuple
 
 from app.config import APP_STORES, EXPORT_STORE, Settings, app_cache_dirs, store_dir
 
@@ -177,6 +177,33 @@ def _note_walk_error(exc: OSError) -> None:
     logger.warning("the protected-tree guard could not read %r: %s", str(exc.filename), exc)
 
 
+class _Match(NamedTuple):
+    """Which of the guard's two answers this is, and how it reads."""
+
+    is_root: bool
+    clause: str
+
+
+def _match(root: str | Path, protected: ProtectedTrees, dir_fd: int | None) -> _Match | None:
+    """The walk both public forms run. ``None`` when nothing in the tree is ours."""
+    top = str(root)
+    st = _own_stat(top, dir_fd)
+    if st is None or not stat.S_ISDIR(st.st_mode):
+        return None
+    found = protected.ids.get((st.st_dev, st.st_ino))
+    if found is not None:
+        return _Match(True, f"is {found[0]} (same inode as {found[1]})")
+    for _dirpath, dirnames, _files, fd in os.fwalk(top, onerror=_note_walk_error, dir_fd=dir_fd):
+        for name in dirnames:
+            child = _own_stat(name, fd)
+            if child is None:
+                continue
+            found = protected.ids.get((child.st_dev, child.st_ino))
+            if found is not None:
+                return _Match(False, f"contains {found[0]} (same inode as {found[1]})")
+    return None
+
+
 def protected_match(
     root: str | Path, protected: ProtectedTrees, *, dir_fd: int | None = None
 ) -> str | None:
@@ -197,31 +224,38 @@ def protected_match(
     holding the Trash open asks about an entry of THAT directory rather than
     about a path something may have swapped.
     """
-    top = str(root)
-    st = _own_stat(top, dir_fd)
-    if st is None or not stat.S_ISDIR(st.st_mode):
-        return None
-    found = protected.ids.get((st.st_dev, st.st_ino))
-    if found is not None:
-        return f"is {found[0]} (same inode as {found[1]})"
-    for _dirpath, dirnames, _files, fd in os.fwalk(top, onerror=_note_walk_error, dir_fd=dir_fd):
-        for name in dirnames:
-            child = _own_stat(name, fd)
-            if child is None:
-                continue
-            found = protected.ids.get((child.st_dev, child.st_ino))
-            if found is not None:
-                return f"contains {found[0]} (same inode as {found[1]})"
-    return None
+    hit = _match(root, protected, dir_fd)
+    return None if hit is None else hit.clause
+
+
+def protected_tree_error(root: str | Path, clause: str, action: _Action) -> ProtectedTreeError:
+    """The refusal, from a clause a caller already has. One sentence, one owner."""
+    return ProtectedTreeError(
+        f"Refused: {os.path.basename(str(root))!r} {clause}. Nothing was {action}."
+    )
 
 
 def refuse_protected_tree(root: str | Path, protected: ProtectedTrees, *, action: _Action) -> None:
     """Raise if any directory at or under ``root`` is one of the app's own."""
-    clause = protected_match(root, protected)
-    if clause is not None:
-        raise ProtectedTreeError(
-            f"Refused: {os.path.basename(str(root))!r} {clause}. Nothing was {action}."
-        )
+    hit = _match(root, protected, None)
+    if hit is not None:
+        raise protected_tree_error(root, hit.clause, action)
+
+
+def refuse_a_held_store(root: str | Path, protected: ProtectedTrees, *, action: _Action) -> bool:
+    """Refuse a tree that HOLDS one of ours; answer ``True`` when it IS one.
+
+    Two different questions for a mover. A tree holding an app store must not be
+    relocated at all — there is no safe way to move it. A tree that IS one has a
+    per-item path: the album's FILES go, the directory stays. Split so the
+    delete route and ``delete_artist``'s pre-check refuse the same set.
+    """
+    hit = _match(root, protected, None)
+    if hit is None:
+        return False
+    if not hit.is_root:
+        raise protected_tree_error(root, hit.clause, action)
+    return True
 
 
 def open_checked_dir(path: Path, protected: ProtectedTrees) -> int:

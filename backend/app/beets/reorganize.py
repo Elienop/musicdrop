@@ -28,7 +28,7 @@ import beets
 from beets.util import FilesystemError, MoveOperation, prune_dirs, samefile, syspath
 
 from app.beets.library import LibraryHandle, _abs_path
-from app.beets.orphans import _under, find_orphan_folders
+from app.beets.orphans import _in_walk_spelling, _under, find_orphan_folders
 from app.beets.sidecars import move_sidecars
 from app.models.reorganize import (
     OrphanFolder,
@@ -685,8 +685,19 @@ def live_album_roots(lib: Any) -> frozenset[str]:
     roots: dict[str, Any] = {}
     for key, paths in item_paths.items():
         root = os.path.normpath(_commonpath_of_dirs(paths))
-        if _under(root, music_dir):
-            roots[root] = reps[key]
+        if not _under(root, music_dir):
+            # An in-place import keeps the spelling it was imported from, so a
+            # row under a symlinked ``directory:`` is not lexically under the
+            # walk root. Dropping it left the album unprotected: measured, its
+            # art folder was reported, previewed and moved to Trash while the
+            # rows still pointed at it. Respelled here rather than compared by
+            # identity downstream, because the template dirs every rule below
+            # renders come from ``lib.directory``.
+            respelled = _in_walk_spelling(root, music_dir)
+            if respelled is None or not _under(respelled, music_dir):
+                continue
+            root = respelled
+        roots[root] = reps[key]
     if not roots:
         return frozenset()
     # Before the container drop, which needs the same template reading to tell an
