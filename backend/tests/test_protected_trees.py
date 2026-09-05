@@ -747,6 +747,51 @@ def test_empty_one_removes_the_entry_it_guarded_and_not_the_name(
     assert "Nothing was removed" not in message, "art.jpg was"
 
 
+def test_an_entry_swapped_between_the_stat_and_the_open_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The window BEFORE the walk, which the two guard-seam tests cannot reach.
+
+    ``_remove_checked_entry`` takes the entry's ``lstat`` and then opens the
+    name; between those two syscalls the name can come to mean something else,
+    and the walk that would notice has not run yet. The ``fstat`` compare is the
+    only thing standing there, so the seam is the open itself.
+    """
+    import app.beets.trash_manage as manage
+
+    trash = tmp_path / "trash"
+    (trash / "Album").mkdir(parents=True)
+    (trash / "Album" / "art.jpg").write_bytes(b"x")
+    music = tmp_path / "music"
+    music.mkdir()
+    (music / "01.flac").write_bytes(b"x")
+    away = tmp_path / "away"
+    real = manage._open_dir
+    fired: list[bool] = []
+
+    def racing(name: str, dir_fd: int) -> int:
+        if not fired:
+            fired.append(True)
+            os.rename(trash / "Album", away)
+            os.rename(music, trash / "Album")
+        return real(name, dir_fd)
+
+    monkeypatch.setattr(manage, "_open_dir", racing)
+    trees = _trees_for(music, trash)
+    origins = origins_for(trash)
+    entry = str(trash / "Album")
+
+    with pytest.raises(
+        ProtectedTreeError, match="changed between the check and the removal"
+    ) as err:
+        empty_one(entry, origins_dir=origins, protected=trees)
+
+    assert fired == [True]
+    assert (trash / "Album" / "01.flac").exists(), "the music library, under the entry's name"
+    assert (away / "art.jpg").exists(), "the real entry, untouched"
+    assert "Nothing was removed" in str(err.value)
+
+
 def _plant_inside_the_entry_after_the_guard(
     monkeypatch: pytest.MonkeyPatch, *, planted: Path, impostor: Path
 ) -> list[bool]:
