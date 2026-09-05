@@ -1,6 +1,6 @@
 """Where MusicDrop's own stores may sit relative to the music library.
 
-``empty_all`` runs ``rmtree`` on every child of the Trash and
+``empty_all`` runs ``rmtree`` on every unprotected child of the Trash and
 ``clear_trash_origins`` unlinks every ``*.json`` in the origin store, so where
 those two resolve decides whether "Empty Trash" removes a hundred albums or the
 library.
@@ -17,10 +17,9 @@ loss it causes; its shape:
   inside ``M``; ``T``, ``O``, ``L`` under ``B``; ``M`` and ``B`` disjoint.
 
 Comparisons run on resolved paths and, where both exist, on ``(st_dev, st_ino)``
-— ``resolve()`` collapses symlinks and ``..``, not a bind mount. Residuals: an
-absent path has no inode, so an alias onto one is caught on the next check; a
-mount point as the INNER path is caught at the mover (``app.beets.protected``);
-a Trash inside a live album folder is not refused, at one DB query per request.
+— ``resolve()`` collapses symlinks and ``..``, not a bind mount, which is why
+``app.beets.protected`` asks again at the mover. What this rule does not catch is
+listed in one place, the BACKLOG entry for this slice.
 """
 
 from __future__ import annotations
@@ -36,14 +35,9 @@ import beets
 import confuse
 
 from app.beets.library import LibraryHandle, _music_dir
-from app.beets.protected import (
-    ProtectedTrees,
-    app_owned_dirs,
-    export_dir,
-    protected_trees,
-)
+from app.beets.protected import ProtectedTrees, protected_trees
 from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
-from app.config import Settings
+from app.config import Settings, app_owned_dirs, export_dir
 
 __all__ = [
     "BEETS_SETTING",
@@ -58,6 +52,7 @@ __all__ = [
     "effective_config_paths",
     "handle_music_and_library",
     "layout_check_for_config",
+    "lib_music_and_library",
 ]
 
 #: How each of the five inputs is spelled for the operator who has to change it.
@@ -115,7 +110,7 @@ _UNRESOLVABLE: Final = (OSError, RuntimeError, ValueError)
 
 #: The ``stat`` failures that mean "this path is not there yet", which the rule
 #: allows — none of the five has to exist. Every other errno leaves a path that
-#: IS there in a form this process cannot examine, and :func:`_same_path` then
+#: IS there in a form this process cannot examine, and :func:`_same_rung` then
 #: has no inode to compare and falls back to string equality. Measured on this
 #: tree: ``MUSICDROP_TRASH_DIR`` pointing at a symlink to the music library
 #: inside a mode-000 directory was ALLOWED by :func:`check_store_layout`, and the
@@ -124,19 +119,15 @@ _ABSENT_ERRNOS: Final = frozenset({errno.ENOENT, errno.ENOTDIR})
 
 
 def _unresolvable(setting: str, raw: str, exc: Exception) -> StoreLayoutError:
-    """The refusal for a path that will not resolve, in the same message shape.
+    """The refusal for a path that will not resolve.
 
-    A refusal rather than a traceback: before this, a symlink loop as
-    ``MUSICDROP_TRASH_DIR`` reached the lifespan uncaught, so the operator got a
-    stack trace and no "refusing to start" line — the one thing the boot gate
-    exists to print — and the same value through Validate/Save answered 500.
+    A refusal rather than a traceback: a symlink loop as ``MUSICDROP_TRASH_DIR``
+    reached the lifespan uncaught, so the operator got a stack trace and no
+    "refusing to start" line, and the same value answered 500 at Validate/Save.
     """
     return StoreLayoutError(
-        f"{setting} could not be resolved. It is set to {raw!r}, and resolving it"
-        f" raised {type(exc).__name__}: {exc}. A symbolic-link loop and an embedded"
-        " NUL byte are the two inputs measured to do this. Correct the value:"
-        " until it resolves there is nothing to compare it against, so MusicDrop"
-        " treats it the same way as a directory that sits on top of the library.",
+        f"{setting} could not be resolved: {raw!r} raised {type(exc).__name__}: {exc}."
+        " Fix the path.",
         config_key=_CONFIG_KEY_OF.get(setting),
         unusable_value=True,
         headline=f"{setting} could not be resolved",
@@ -144,18 +135,14 @@ def _unresolvable(setting: str, raw: str, exc: Exception) -> StoreLayoutError:
 
 
 def _unexaminable(setting: str, resolved: str, exc: OSError) -> StoreLayoutError:
-    """The refusal for a path the filesystem will not describe, same message shape.
+    """The refusal for a path the filesystem will not describe.
 
     Separate from :func:`_unresolvable` because the value DID resolve; what
     failed is the ``stat`` this module compares by.
     """
     return StoreLayoutError(
-        f"{setting} could not be examined. It resolves to {resolved!r}, and asking"
-        f" the filesystem about it raised {type(exc).__name__}: {exc}. Two"
-        " spellings of one directory are told apart by inode, so until MusicDrop"
-        " can stat it there is nothing to compare and it is treated the same way"
-        " as a directory that sits on top of the library. Correct the value, or"
-        " the permissions on the path it names.",
+        f"{setting} could not be examined: {exc.strerror} at {resolved!r}."
+        " Fix the path or its permissions.",
         config_key=_CONFIG_KEY_OF.get(setting),
         unusable_value=True,
         headline=f"{setting} could not be examined",
@@ -259,11 +246,6 @@ def _same_rung(a: _Rung, b: _Rung) -> bool:
     return a[0] is not None and a[0] == b[0]
 
 
-def _same_path(a: Path, b: Path) -> bool:
-    """:func:`_same_rung` for two paths no chain has been built for."""
-    return _same_rung((_stat_id(a), str(a)), (_stat_id(b), str(b)))
-
-
 def _relation_of(container: tuple[_Rung, ...], inner: tuple[_Rung, ...]) -> str | None:
     """``"is"``, ``"contains"`` or ``None``, from two chains.
 
@@ -312,13 +294,8 @@ def _refuse(
     )
 
 
-#: The remedy each refusal ends with. FIXED strings, one per setting the row
-#: tells the operator to move - no computed example spellings. Those were built
-#: by testing candidate paths against the rule and dropping the ones it would
-#: refuse, which is a second copy of the rule carrying its own guards: the
-#: reviewers found three rows it had never been taught about, and no test failed
-#: when the guards were removed. What is left is the PROPERTY the directory
-#: needs, which is the part an operator can act on either way.
+#: The remedy each refusal ends with: FIXED strings, one per setting a row tells
+#: the operator to move (owner ruling 2026-09-04).
 _FIX_TRASH: Final = "Set MUSICDROP_TRASH_DIR to its own folder."
 _FIX_ORIGINS: Final = "Set MUSICDROP_TRASH_ORIGINS_DIR to its own folder."
 _FIX_BEETS: Final = "Move MUSICDROP_BEETS_DIR out of the music library."
@@ -352,14 +329,7 @@ class _Row(NamedTuple):
 
 
 #: THE rule, in the order it is asked. Order decides only WHICH message a layout
-#: breaking several rows gets. ``B`` against ``M`` comes first because those two
-#: are the trees the other three are placed relative to, and ``L``'s rows come
-#: last because the four DIRECTORIES have to be sane before where the database
-#: file sits is the interesting question.
-#:
-#: Twelve ``raise`` blocks used to spell this out at ~14 lines each, and the
-#: reviewers found three of them missing from the remedy builders' idea of the
-#: same rule. One table cannot disagree with itself.
+#: breaking several rows gets: ``B`` against ``M`` first, ``L``'s rows last.
 _ROWS: Final[tuple[_Row, ...]] = (
     _Row(
         "beets",
@@ -452,7 +422,8 @@ _ROWS: Final[tuple[_Row, ...]] = (
 #: ``MUSICDROP_TRASH_DIR=<B>/plex`` (or ``playlists``, ``bank``, ``slskd``,
 #: ``inbox``) booted clean and Empty Trash wiped that store. Generated per store
 #: rather than a hand-written block each, so another store is one entry in
-#: ``config.APP_STORES`` and nothing here.
+#: ``config.APP_STORES`` and nothing here — the playlist exports and the two
+#: image caches take their own resolvers, since neither defaults under ``B``.
 #:
 #: The other direction — T or O sitting INSIDE a store — is deliberately not a
 #: row. It refused layouts the module allows (a store setting naming a directory
@@ -567,18 +538,20 @@ def check_store_layout(
         )
 
 
-def handle_music_and_library(handle: LibraryHandle) -> tuple[Path, Path]:
-    """``(M, L)`` as the opened library actually has them: music root, DB file.
+def lib_music_and_library(lib: Any) -> tuple[Path, Path]:
+    """``(M, L)`` off an open ``Library``: music root, DB file.
 
-    One function rather than a reach into ``handle.lib`` per caller, so the two
-    beets attributes this app reads off an open ``Library`` are named once and
-    stay inside the adapter boundary (CLAUDE.md rule 3).
-
-    ``Library.path`` is what ``dbcore.Database.__init__`` stored, which is
-    ``Path(os.fsdecode(path))`` on beets 2.13 — but ``os.fsdecode`` is applied
-    here too so a bytes path from an older beets still lands as a ``Path``.
+    One owner for the two beets attributes this app reads off a ``Library``, so
+    they are named once and stay inside the adapter boundary (CLAUDE.md rule 3).
+    ``os.fsdecode`` is applied here so a bytes path from an older beets still
+    lands as a ``Path``.
     """
-    return Path(_music_dir(handle.lib)), Path(os.fsdecode(handle.lib.path))
+    return Path(_music_dir(lib)), Path(os.fsdecode(lib.path))
+
+
+def handle_music_and_library(handle: LibraryHandle) -> tuple[Path, Path]:
+    """:func:`lib_music_and_library` for a handle."""
+    return lib_music_and_library(handle.lib)
 
 
 def checked_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path, Path]:
@@ -613,8 +586,9 @@ def checked_protected_trees(
     """The identities the movers and the remover refuse, for THIS request.
 
     Taken beside :func:`checked_store_dirs`, from the pair it returned, by the
-    three sites that destroy or relocate a tree. Separate from that call because
-    the other five callers do neither and would pay a dozen stats for nothing.
+    two request sites that destroy or relocate a tree (the sweep runner builds
+    its own). Separate from that call because the other four of its six callers
+    do neither and would pay a dozen stats for nothing.
     """
     music, library = handle_music_and_library(handle)
     return protected_trees(
@@ -647,19 +621,14 @@ def _resolve_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path
 class _CandidateConfig(beets.IncludeLazyConfig):
     """beets' own config class, over a document that is not on disk yet.
 
-    Two departures from ``beets.config``, both required and neither global:
+    Two departures from ``beets.config``: ``config_dir`` is pinned to the
+    handle's beets dir rather than read from ``BEETSDIR``, so a relative
+    ``directory:``, ``library:`` or ``include:`` resolves against the directory
+    THIS handle uses; and the user source is the SUBMITTED document.
 
-    * ``config_dir`` is pinned to the handle's beets dir instead of read from
-      ``BEETSDIR``, so a relative ``directory:``, ``library:`` or ``include:``
-      resolves against the directory beets will use for THIS handle;
-    * the user source is the SUBMITTED document rather than ``config.yaml`` as it
-      sits on disk, which is the whole point at Validate and Save time.
-
-    Constructing one touches no beets global. ``confuse.Configuration.__init__``
-    records the appname, the modname's package path and the env-var name and
-    calls ``RootView.__init__([])`` — every source it later holds is its own list
-    (``confuse/core.py:504-537``). ``beets.config``, confuse's caches and the
-    plugin registry are untouched.
+    Constructing one touches no beets global — ``Configuration.__init__`` records
+    three strings and calls ``RootView.__init__([])``, so every source it holds
+    is its own list (``confuse/core.py:504-537``).
     """
 
     def __init__(self, beets_dir: Path) -> None:
@@ -686,10 +655,7 @@ def _unreadable_include(detail: str) -> StoreLayoutError:
     the operator has to change.
     """
     return StoreLayoutError(
-        f"`include:` in config.yaml could not be read: {detail}. An included"
-        " file's `directory:` overrides the one in this document, so until this"
-        " resolves there is no saying where the music library would end up."
-        " Correct the include: list, or the file it names.",
+        f"`include:` in config.yaml could not be read: {detail}. Fix the include: list.",
         config_key="include",
         unusable_value=True,
         headline="`include:` in config.yaml could not be read",
@@ -714,13 +680,11 @@ def _include_bytes(fd: int) -> bytes | None:
 def _include_source(target: str) -> confuse.ConfigSource:
     """One ``include:`` entry, read through ONE descriptor.
 
-    ``os.stat`` then confuse's ``open`` asked the same NAME twice. Flipping a
-    symlink between the two put the FIFO hang back: measured, the read did not
-    return until a 3-second alarm interrupted it. One ``open`` answers every
-    question, and ``O_NONBLOCK`` is what makes a FIFO with no writer answer at
-    all. No ``O_NOFOLLOW`` — measured, a real beets start FOLLOWS a symlinked
-    include and merges its ``directory:``, so refusing one here would hide the
-    override this gate exists to read.
+    ``os.stat`` then confuse's ``open`` asked the same NAME twice, and flipping a
+    symlink between the two put the FIFO hang back — measured, the read ran until
+    a 3-second alarm. ``O_NONBLOCK`` is what makes a writer-less FIFO answer at
+    all. No ``O_NOFOLLOW``: measured, a real beets start FOLLOWS a symlinked
+    include and merges its ``directory:``.
 
     Raises ``ConfigReadError`` for the shapes beets prints-and-continues on, and
     :func:`_unreadable_include` for the three it does not survive: a FIFO, a
@@ -768,19 +732,16 @@ class EffectivePaths(NamedTuple):
 def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> EffectivePaths:
     """The ``directory:`` and ``library:`` beets would LOAD from ``document``.
 
-    Not ``document["directory"]``: beets merges every file listed under
-    ``include:`` at HIGHEST priority (``beets/__init__.py:29-38``, and
-    ``confuse/core.py:617`` documents ``set_file`` as "highest priority"), so an
-    included file's ``directory:`` overrides the top-level key the editor shows.
-    Measured in the review round: a document whose own ``directory:`` was safe,
-    with an include pointing the library at the Trash dir, passed all three gates
-    and left the process serving a layout the next boot refuses.
+    Not ``document["directory"]``: beets merges every ``include:`` file at
+    HIGHEST priority (``beets/__init__.py:29-38``, ``confuse/core.py:617``), so
+    an included ``directory:`` overrides the key the editor shows. Measured in
+    the review round: a safe document with an include pointing the library at the
+    Trash passed all three gates.
 
-    ``directory``/``library`` are ``None`` when the document does not resolve to
-    a filename at all — a ``directory:`` that is not a string, say. The caller
-    reports that through the schema, which owns the "wrong type" message.
-    ``skipped`` names the includes beets drops and this gate did not merge; they
-    are an advisory, not an error, because beets prints them and carries on.
+    ``directory``/``library`` are ``None`` when the document resolves to no
+    filename — a non-string ``directory:``, say — which the schema reports
+    instead. ``skipped`` names the includes beets drops and this gate did not
+    merge; an advisory, because beets prints them and carries on.
     """
     cfg = _CandidateConfig(beets_dir)
     # Defaults first, so the document sits ABOVE them: `library: library.db` and
@@ -804,33 +765,17 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
     except confuse.NotFoundError:
         pass  # no ``include:`` key at all
     except confuse.ConfigReadError as exc:
-        # An entry naming a file that will not open or parse. beets writes one
-        # stderr line and carries on (``beets/__init__.py:29-38``), so whatever
-        # merged before it stands and the entry becomes an advisory. The
-        # ``except`` sits OUTSIDE the loop in beets too, so the FIRST unreadable
-        # entry ends the merge and the ones after it are never read. That is not
-        # a rewrite worth "fixing": measured with the guard placed per-entry
-        # instead, this function reported an overlay's ``directory:`` that a real
-        # ``setup_beets`` over the same file never loaded.
+        # beets writes one stderr line and carries on, with the ``except`` OUTSIDE
+        # the loop (``beets/__init__.py:29-38``), so the first unreadable entry ends
+        # the merge. Measured with the guard placed per-entry instead, this function
+        # reported an overlay's ``directory:`` that a real ``setup_beets`` over the
+        # same file did not load.
         skipped.append(exc.name)
     except (confuse.ConfigError, TypeError, ValueError) as exc:
-        # Everything else. Measured on this tree, all three escaped the old
-        # ``except confuse.ConfigError`` or were swallowed by it, and Validate,
-        # Save and Apply answered a bare 500 or reported the document CLEAN.
-        # A FOURTH shape is not caught here and does not need to be:
-        # ``include: [ov.yaml, 5]`` makes this report the PARTIAL merge while
-        # beets raises ``ConfigTypeError`` and never loads, so no layout can hide
-        # behind it. The three that are:
-        # ``ConfigTypeError`` for an ``include:`` that is not a list of filenames
-        # (beets raises the same at startup, so Save was writing a config the
-        # next start refuses), ``TypeError`` for an include file whose top level
-        # is not a mapping, and ``ValueError`` for an entry holding a NUL.
-        #
-        # The NUL is a deliberate divergence: beets boots with it, because
-        # ``setup.py``'s ``exists()`` turns the ValueError into a NotFoundError
-        # and the entry is dropped. That tolerance is an accident of an
-        # ``exists()`` call rather than a decision, and an entry with a NUL in it
-        # cannot name a file — so this says so instead of reproducing it.
+        # The shapes a real start does not survive: a non-list ``include:``, an
+        # include whose top level is not a mapping, an entry holding a NUL.
+        # Measured, all three escaped the old ``except confuse.ConfigError`` and the
+        # three routes answered a bare 500 or reported the document CLEAN.
         raise _unreadable_include(str(exc)) from exc
     names = tuple(skipped)
     try:

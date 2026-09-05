@@ -105,21 +105,15 @@ def _boot_log() -> logging.Logger:
 def _leftovers_note(handle: LibraryHandle) -> str:
     """Where to look for what this start wrote before the layout gate refused it.
 
-    beets' startup runs first — the gate compares the paths beets LOADS, and on a
-    first run the starter config has to exist to be loaded — so this is the
-    earliest honest point. Two directories, not a file list, because only some of
-    what lands is new: a refused ``MUSICDROP_BEETS_DIR=<music>`` left 13 files in
-    the music library and a refused ``library: trash/library.db`` left 12 under
-    Trash, and ``list_trashed_albums`` returned ``[]`` with all 12 present.
+    beets' startup runs first — it is what supplies the ``directory:`` and
+    ``library:`` this check compares — so this is the earliest honest point. Two
+    directories, not a file list: a refused ``MUSICDROP_BEETS_DIR=<music>`` left
+    13 files in the music library, a refused ``library: trash/library.db`` left
+    12 under Trash. ``repr``, like every other path this module logs.
     """
     db_dir = Path(os.fsdecode(handle.lib.path)).parent
-    places = {str(handle.beets_dir), str(db_dir)}
-    return (
-        " beets' own startup ran first, because it is what supplies the"
-        " `directory:` and `library:` this check compares, and it creates the"
-        " beets data directory, config.yaml and the database as it goes:"
-        f" look in {', '.join(sorted(places))} for files this start left behind."
-    )
+    places = sorted({str(handle.beets_dir), str(db_dir)})
+    return f" Files this start created may be in {', '.join(repr(p) for p in places)}."
 
 
 def _build_artist_image_service(

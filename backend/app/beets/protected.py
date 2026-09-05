@@ -1,16 +1,16 @@
 """The app's own directories, by inode, refused at the point of destruction.
 
-``store_layout`` compares SPELLINGS. A bind mount whose mount point is the inner
-path passes every "contains" row, because a mount point's ancestors are its own
-and not the source's — measured in the review round with ``-v
+``store_layout`` walks the inner path's SPELLED ancestors, and a mount point's
+ancestors are its own rather than the source's, so a bind mount whose mount
+point is the inner path passes every "contains" row — measured with ``-v
 /srv/music/musicdrop:/data/beets``, which booted clean and let Empty Trash
-remove the beets dir. So the identity question is asked again where a tree is
-moved or removed, against the ``(st_dev, st_ino)`` of every directory in it.
+remove the beets dir. The identity question is asked again where a tree is moved
+or removed, against the ``(st_dev, st_ino)`` of every DIRECTORY in it: an album
+folder costs 1-3 stats, the Trash one per entry.
 
-Only DIRECTORIES are stat'd, so an album folder costs 1-3 stats and the Trash
-costs one per entry rather than one per file. A leaf module: it imports
-``Settings`` and nothing else of this app's, so the movers, the remover and
-``store_layout`` can all reach it.
+A leaf module — ``app.config`` and nothing else of this app's — so the movers,
+the remover and ``store_layout`` can all reach it. Residuals live in one place,
+the BACKLOG entry for this slice.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, NamedTuple
 
-from app.config import APP_STORES, EXPORT_STORE, Settings, app_cache_dirs, store_dir
+from app.config import Settings, app_owned_dirs, export_dir
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,8 @@ _Action = Literal["moved", "removed"]
 class ProtectedTreeError(Exception):
     """A tree about to be moved or removed holds one of the app's directories.
 
-    Answered 503 at the call sites — the tier that promises nothing happened.
+    Answered 503; ``empty_all`` raises it after removing the entries it could,
+    and says how many.
     """
 
 
@@ -60,34 +61,11 @@ class ProtectedTrees:
 _TRASH_NAME: Final = "the Trash directory"
 
 
-def app_owned_dirs(settings: Settings, beets_dir: Path) -> list[tuple[Path, str, str]]:
-    """``(path, what it is, setting)`` for every directory the app owns.
-
-    The five stores under the beets dir, the playlist exports under the music
-    library, and the two image caches. All of it off ``app.config``'s one table
-    and one formula, which the app's own resolvers call too — so the rule, the
-    guard and the app cannot name different directories.
-    """
-    return [
-        *(
-            (store_dir(settings, store, beets_dir), store.name, store.setting)
-            for store in APP_STORES
-        ),
-        *app_cache_dirs(settings),
-    ]
-
-
-def export_dir(settings: Settings, music_dir: Path) -> Path:
-    """Where the ``.m3u8`` exports live. Same owner as ``reexport.export_dir_for``."""
-    return store_dir(settings, EXPORT_STORE, music_dir)
-
-
 def _ident(path: str | Path) -> tuple[int, int] | None:
-    """``(st_dev, st_ino)``, or ``None`` for a path this process cannot stat.
+    """``(st_dev, st_ino)``, or ``None`` when the ``stat`` raises.
 
-    No "is it a directory" test: a file's inode cannot collide with a
-    directory's, so a setting that names a file contributes an id nothing can
-    match. Measured — adding the test back was an equivalent mutant.
+    No "is it a directory" test: only directories are looked up, so a setting
+    naming a file contributes an id nothing matches.
     """
     try:
         st = os.stat(path)
@@ -116,11 +94,10 @@ def protected_entries(
     """``(path, what it is, setting)`` for every directory this app owns.
 
     The five the layout rule is about — with ``library_path``'s DIRECTORY, since
-    the file itself is not a tree — plus the playlist exports, the five stores
-    and the two image caches. One list, read twice: :func:`protected_trees` turns
-    it into identities for the movers, and ``api/reorganize._ignore_dirs`` hands
-    the paths to the orphan sweep, which is why the sweep spares what the movers
-    refuse.
+    the file itself is not a tree — plus the exports, the stores and the caches.
+    Read twice: :func:`protected_trees` turns it into identities for the movers,
+    and ``api/reorganize._ignore_dirs`` hands the paths to the orphan sweep, so
+    the sweep spares what the movers refuse.
     """
     return [
         (music_dir, "the music library", "`directory:` in config.yaml"),
@@ -157,14 +134,18 @@ def protected_trees(
         library_path=library_path,
     )
     ids: dict[tuple[int, int], tuple[str, str]] = {}
+    trash: tuple[int, int] | None = None
     for path, name, setting in entries:
         ident = _ident(path)
+        if ident is None:
+            continue
+        if name == _TRASH_NAME:
+            trash = ident  # the same stat the loop already took
         # First writer wins, so the five the rule is about name themselves when a
         # store shares their directory (the default `library:` sits in the beets
         # dir, whose parent entry was added first).
-        if ident is not None:
-            ids.setdefault(ident, (name, setting))
-    return ProtectedTrees(ids=ids, trash=_ident(trash_dir))
+        ids.setdefault(ident, (name, setting))
+    return ProtectedTrees(ids=ids, trash=trash)
 
 
 def _note_walk_error(exc: OSError) -> None:
@@ -209,20 +190,18 @@ def protected_match(
 ) -> str | None:
     """``"is the music library (same inode as ...)"`` when ``root`` holds one of ours.
 
-    ``None`` when it does not. A ``root`` that is a symlink answers ``None``
-    without walking: the callers act on the link, not on what it points at.
+    ``None`` when it does not, and for a ``root`` that is a symlink: the callers
+    act on the link, not on what it points at.
 
-    Every directory is stat'd from its PARENT's descriptor rather than when the
-    walk reaches it, so one this process cannot LIST is still compared — ``stat``
-    needs the parent's ``x`` bit only. A mode-000 app store used to be invisible
-    here and the album delete moved it into Trash. ``os.fwalk`` also keeps every
-    open relative to a descriptor: a tree deeper than PATH_MAX is walked whole,
-    where ``os.walk`` joined paths and went blind at 4096 characters while the
-    ``rmtree`` behind it, being fd-relative, did not.
+    Every directory is stat'd from its PARENT's descriptor, so an unlistable one
+    is still compared — ``stat`` needs the parent's ``x`` bit only, and a mode-000
+    app store used to be invisible here while the album delete moved it into
+    Trash. ``os.fwalk`` keeps every open fd-relative too: a tree deeper than
+    PATH_MAX is walked whole, where ``os.walk`` went blind at 4096 characters and
+    the fd-relative ``rmtree`` behind it did not.
 
     ``dir_fd`` makes ``root`` a name resolved from that descriptor, so a caller
-    holding the Trash open asks about an entry of THAT directory rather than
-    about a path something may have swapped.
+    holding the Trash open asks about an entry of THAT directory.
     """
     hit = _match(root, protected, dir_fd)
     return None if hit is None else hit.clause
@@ -245,10 +224,9 @@ def refuse_protected_tree(root: str | Path, protected: ProtectedTrees, *, action
 def refuse_a_held_store(root: str | Path, protected: ProtectedTrees, *, action: _Action) -> bool:
     """Refuse a tree that HOLDS one of ours; answer ``True`` when it IS one.
 
-    Two different questions for a mover. A tree holding an app store must not be
-    relocated at all — there is no safe way to move it. A tree that IS one has a
-    per-item path: the album's FILES go, the directory stays. Split so the
-    delete route and ``delete_artist``'s pre-check refuse the same set.
+    A tree holding an app store has no safe relocation. A tree that IS one has a
+    per-item path: the album's FILES go, the directory stays. One function, so
+    the delete route and ``delete_artist``'s pre-check refuse the same set.
     """
     hit = _match(root, protected, None)
     if hit is None:
@@ -261,17 +239,13 @@ def refuse_a_held_store(root: str | Path, protected: ProtectedTrees, *, action: 
 def open_checked_dir(path: Path, protected: ProtectedTrees) -> int:
     """A descriptor on the Trash, refusing anything but the directory checked.
 
-    Three comparisons, all before a name is read:
-
-    * the path is not a symlink (``O_NOFOLLOW``) — one planted at the Trash path
-      used to be followed by ``iterdir()``;
-    * ``protected.trash`` is the identity :func:`protected_trees` stat'd, and
-      ``None`` (the Trash was not there to stat) REFUSES rather than skipping the
-      compare: a rename of the music dir onto that path in the window was
-      measured to empty the library;
-    * that identity is the Trash's own. When it names one of the app's other
-      directories a bind mount has aliased them, which every spelled row in
-      ``store_layout`` allows.
+    Three comparisons, all before a name is read: the path is not a symlink
+    (``O_NOFOLLOW`` — one planted there used to be followed by ``iterdir()``);
+    ``protected.trash``, the identity :func:`protected_trees` stat'd, is present
+    (``None`` REFUSES rather than skipping the compare — a rename of the music
+    dir onto that path in the window was measured to empty the library); and that
+    identity is the Trash's own rather than one of the app's other directories,
+    which is what a bind mount aliases and every spelled row allows.
 
     The caller enumerates AND removes through this descriptor, so a swap after
     the open changes nothing it acts on.

@@ -807,39 +807,25 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
 
     Sequence (spec § "Layer 3 - Backend: Apply flow"):
 
-    1. **Import gate** — refuse with 409 if an import is currently active.
-       Reset_beets_globals tears down the SQLite connection the import worker
-       holds; doing that mid-import would corrupt the in-flight ImportSession.
-       ``library_job_active`` calls ``get_registry()`` (not a module-import)
-       so it reads the LIVE registry binding — ``conftest.reset_import_registry``
-       swaps it between tests.
-    2. **Per-app lock** — serialise concurrent Apply requests. Two threads
-       racing through ``reset_beets_globals`` + ``setup_beets`` would leave
-       ``app.state.beets_library`` non-deterministic and could close the
-       library twice (``sqlite3.ProgrammingError``).
-    2b. **Containment gate** — 422 if the ``directory:`` ON DISK would put the
-       music library at or under Trash, or over the origin store
-       (:func:`on_disk_layout_error`). Deliberately BEFORE
-       ``_rebuild_beets_handle``: that function's own docstring records that a
-       failure after its teardown leaves the process degraded until restart, and
-       a config in this shape would not boot either — so refusing after the
-       teardown would strand the process with no working config to fall back to.
-       422 and not 409: the frontend renders every Apply 409 as the fixed
-       sentence "A library job is running…" (SettingsBeetsPage.tsx), and this
-       refusal has to carry its own reason. The body is the same
-       ``{message, recovery}`` shape the 500 uses, with the operator sentence in
-       ``recovery`` — that is the field the page prints after "Apply failed. ".
-    3. **Threadpool rebuild** — beets setup is blocking I/O (filesystem +
-       SQLite); ``run_in_threadpool`` hands it to FastAPI's worker pool so
-       the event loop stays responsive. Any exception from the rebuild
-       maps to 500 with a ``recovery`` hint — the user's saved config is
-       on disk, so a restart is always the safe recovery path.
-    4. **Atomic swap** — only after the rebuild succeeds, replace
-       ``app.state.beets_library``. On a 500 the old handle stays in place
-       and the process keeps serving with the previously-loaded config.
-    5. **Return snapshot** — ``apply_pending`` will be ``False`` because the
-       new handle's ``file_mtime_at_load`` captured the current on-disk
-       mtime during ``setup_beets``.
+    1. **Import gate** — 409 while an import is active; the rebuild tears down
+       the SQLite connection its worker holds.
+    2. **Per-app lock** — two Applies racing through ``reset_beets_globals`` +
+       ``setup_beets`` could close the library twice.
+    2b. **Containment gate** — 422 on a refused store layout in the config ON
+       DISK (:func:`on_disk_layout_error`, ``store_layout._ROWS``). Before the
+       rebuild, because a failure after its teardown strands the process with no
+       working config; 422 and not 409, because the page renders every Apply 409
+       as the library-job sentence.
+    3. **Threadpool rebuild** — blocking I/O; any exception maps to 500 with the
+       restart hint.
+    4. **Atomic swap** — ``app.state.beets_library`` is replaced only after the
+       rebuild succeeds. On a 500 the OLD handle is already torn down
+       (:func:`_rebuild_beets_handle`), so the process is degraded until restart.
+    4b. **Backstop** — the same layout question, asked of what beets actually
+       loaded. 422, with the new handle already swapped in and the refusal
+       recorded on the import registry.
+    5. **Return snapshot** — ``apply_pending`` is ``False``: the new handle's
+       ``file_mtime_at_load`` captured the on-disk mtime during ``setup_beets``.
     """
     app = request.app
 

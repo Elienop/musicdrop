@@ -247,7 +247,8 @@ def test_the_refusal_says_where_this_start_already_wrote(
     ``MUSICDROP_BEETS_DIR=<music>`` left 13 files inside the music library, and a
     refused ``library: <trash>/library.db`` left 12 under the Trash dir. Nothing
     removes them afterwards (``list_trashed_albums`` returned ``[]`` with all 12
-    present), so the line names the two directories to look in.
+    present), so the line names the two directories to look in — ``repr``'d, like
+    every other path this module logs, against one holding a newline.
     """
     music = tmp_path / "music"
     beets = music / "musicdrop"
@@ -263,8 +264,8 @@ def test_the_refusal_says_where_this_start_already_wrote(
             pass  # pragma: no cover - the lifespan raises before the body runs
 
     message = next(r.getMessage() for r in caplog.records if r.name == "uvicorn.error")
-    assert "left behind" in message, message
-    assert str(beets) in message, message
+    assert "Files this start created may be in" in message, message
+    assert repr(str(beets)) in message, message
     assert (beets / "library.db").exists()  # the files the sentence is about
 
 

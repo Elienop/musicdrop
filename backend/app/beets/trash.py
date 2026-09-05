@@ -895,9 +895,10 @@ def resolve_trash_dir(settings: Settings, handle: LibraryHandle) -> Path:
     Resolving is all this does; WHERE the result may sit is
     :mod:`app.beets.store_layout`'s question — at startup, on Save/Apply, and at
     every destructive use site, because ``trash_manage.empty_all`` runs ``rmtree``
-    on every child of whatever comes back. A Trash strictly inside the music library
-    is allowed (deletes become same-disk renames); overlapping the library, the
-    beets dir, the database, the origin store or another app store is refused.
+    on every unprotected child of whatever comes back. A Trash strictly inside the
+    music library is allowed (deletes become same-disk renames); one that IS or
+    CONTAINS the library, the beets dir, the database, the origin store or another
+    app store is refused.
     """
     if settings.trash_dir:
         return Path(settings.trash_dir).resolve()
@@ -915,7 +916,7 @@ def resolve_trash_origins_dir(settings: Settings, handle: LibraryHandle) -> Path
 
     :mod:`app.beets.store_layout` is what holds that to it. It refuses a store
     at, above or inside the music library, at or above the beets data dir, and
-    one that overlaps ``trash_dir`` in either direction. Where it is asked: at
+    one that is or contains ``trash_dir`` (or sits inside it). Where it is asked: at
     startup, on Validate/Save/Apply, and — because this function calls
     ``Path.resolve()`` on every call, so what the configured string points at can
     change under a running process — at each destructive use site, through

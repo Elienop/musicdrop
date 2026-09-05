@@ -467,7 +467,7 @@ async def fetch_album_lyrics_endpoint(
             # layout that would destroy data. Only the first can fire DURING the
             # move, so only it can leave part of the album under Trash.
             "description": (
-                "A setup fault refused the delete. The album is still in the library, and a"
+                "The album is still in the library: a setup fault refused the delete, and a"
                 " share that dropped mid-move can leave part of it under Trash — check"
                 " there before retrying."
             ),

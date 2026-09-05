@@ -107,9 +107,9 @@ def _under(path: str, root: str) -> bool:
     """True if ``path`` is strictly inside ``root``.
 
     ``commonpath`` and not ``startswith(root + os.sep)``: for ``root == '/'`` the
-    prefix becomes ``'//'`` and every path reads as OUTSIDE. Measured before this:
-    an exclude root of ``/`` was dropped with no WARNING at all, which is the one
-    line this module logs, while every other at-or-above root logged exactly one.
+    prefix becomes ``'//'`` and every path reads as OUTSIDE, which stops the
+    seeds climb under ``directory: /`` before it starts. The at-or-above WARNING
+    does not depend on this — ``_exclude_ids`` decides that by inode.
     """
     if path == root:
         return False
@@ -120,7 +120,7 @@ def _under(path: str, root: str) -> bool:
 
 
 #: ``(st_dev, st_ino)``, the pair this module decides sameness by — the same
-#: question ``app.beets.store_layout._same_path`` asks, for the same reason.
+#: question ``app.beets.store_layout._same_rung`` asks, for the same reason.
 PathId = tuple[int, int]
 
 
@@ -302,7 +302,6 @@ def _subtree(dirpath: str, excluded: _Exclusion) -> tuple[bool, bool]:
     takes and for the same measured reason: an unreadable album dir under the
     seed's ancestor made that ancestor read as a husk.
     """
-    audio = False
     has_files = False
     failed = False
 
@@ -321,7 +320,7 @@ def _subtree(dirpath: str, excluded: _Exclusion) -> tuple[bool, bool]:
                 return True, True
     if failed:
         return True, True
-    return audio, has_files
+    return False, has_files
 
 
 def _seed_orphan(seed: str, root: str, excluded: _Exclusion) -> str | None:
@@ -523,17 +522,16 @@ def find_orphan_folders(
 
     A returned path is not at, below or ABOVE ``trash_dir`` or any
     ``ignore_dirs`` entry (:func:`_drop_excluded_ancestors`), compared by
-    ``(st_dev, st_ino)`` where the root can be stat'd, so a symlink and a bind
-    mount both hold (:func:`_exclude_ids`); a root that cannot be stat'd is
-    compared by its normalised SPELLING, which one alias of it defeats.
+    ``(st_dev, st_ino)`` where the root has one, so a symlink and a bind mount
+    both hold (:func:`_exclude_ids`); a root with no identity — absent, or
+    unreadable — is compared by its normalised SPELLING, which an alias defeats.
     ``protected_dirs`` are LIVE album roots: nothing at, directly under, or above
     one is returned.
 
-    Two residuals, both err-toward-keeping and both pinned in
-    ``tests/test_orphans.py``: an exclude root at or above ``music_dir`` is
-    DROPPED with a WARNING (it used to match every candidate and return nothing),
-    and a husk beside an excluded root is kept. The BACKLOG entry for this slice
-    holds the rest.
+    Two behaviours err toward keeping, both pinned in ``tests/test_orphans.py``:
+    an exclude root at or above ``music_dir`` is DROPPED with a WARNING (it used
+    to match every candidate and return nothing), and a husk beside an excluded
+    root is kept. The residual list is the BACKLOG entry for this slice.
     """
     root = os.path.normpath(str(music_dir))
     exclude_ids, spelled = _exclude_ids(root, tuple(str(d) for d in (trash_dir, *ignore_dirs)))

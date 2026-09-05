@@ -54,11 +54,7 @@ def _resolve_or_row(p: Path) -> Path:
     try:
         return p.expanduser().resolve()
     except _UNRESOLVABLE as exc:
-        raise ValueError(
-            f"{p} could not be resolved: {type(exc).__name__}: {exc}. A symbolic-link"
-            " loop, an embedded NUL byte and a component this process cannot"
-            " traverse are the inputs measured to do this."
-        ) from exc
+        raise ValueError(f"{str(p)!r} could not be resolved: {type(exc).__name__}: {exc}.") from exc
 
 
 def _writable_path(p: Path) -> Path:
@@ -79,14 +75,16 @@ def _writable_path(p: Path) -> Path:
         parent_ok = parent.exists() and os.access(parent, os.W_OK)
         writable = os.access(resolved, os.W_OK)
     except _UNRESOLVABLE as exc:
-        raise ValueError(f"{resolved} could not be examined: {type(exc).__name__}: {exc}") from exc
+        raise ValueError(
+            f"{str(resolved)!r} could not be examined: {type(exc).__name__}: {exc}"
+        ) from exc
     if exists:
         if not is_dir:
-            raise ValueError(f"{resolved} is not a directory")
+            raise ValueError(f"{str(resolved)!r} is not a directory")
         if not writable:
-            raise ValueError(f"directory {resolved} is not writable")
+            raise ValueError(f"directory {str(resolved)!r} is not writable")
     elif not parent_ok:
-        raise ValueError(f"parent directory {parent} is not writable")
+        raise ValueError(f"parent directory {str(parent)!r} is not writable")
     return p
 
 
@@ -112,9 +110,13 @@ def _library_file(p: Path) -> Path:
     try:
         is_dir = resolved.is_dir()
     except _UNRESOLVABLE as exc:
-        raise ValueError(f"{resolved} could not be examined: {type(exc).__name__}: {exc}") from exc
+        raise ValueError(
+            f"{str(resolved)!r} could not be examined: {type(exc).__name__}: {exc}"
+        ) from exc
     if is_dir:
-        raise ValueError(f"{resolved} is a directory; library: names the beets database file")
+        raise ValueError(
+            f"{str(resolved)!r} is a directory; library: names the beets database file"
+        )
     return p
 
 

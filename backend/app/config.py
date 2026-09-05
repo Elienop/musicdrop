@@ -60,11 +60,12 @@ class Settings(BaseSettings):
     # cwd-relative gotcha. Set an absolute path to override. (env MUSICDROP_TRASH_DIR)
     #
     # A value INSIDE the music library is allowed and is the reason to set this at
-    # all: <music>/.trash makes a delete a same-disk rename. Overlapping the music
-    # library, the beets data dir, the database, the origin store or another
-    # app-owned store is refused, at startup AND at each destructive use site — a
-    # symlink dropped at this path after boot turned Empty Trash into an rmtree of
-    # the library. app/beets/store_layout.py holds the table and the sentence.
+    # all: <music>/.trash makes a delete a same-disk rename. A Trash that IS or
+    # CONTAINS the music library, the beets data dir, the database, the origin
+    # store or another app-owned store is refused, at startup AND at each
+    # destructive use site — a symlink dropped at this path after boot turned Empty
+    # Trash into an rmtree of the library. app/beets/store_layout.py holds the
+    # table and the sentence.
     trash_dir: str = ""
 
     # Where each trashed folder's origin record is kept — one JSON file per Trash
@@ -265,3 +266,24 @@ def app_cache_dirs(app_settings: Settings) -> list[tuple[Path, str, str]]:
             "MUSICDROP_COVER_THUMB_CACHE_DIR",
         ),
     ]
+
+
+def app_owned_dirs(app_settings: Settings, beets_dir: Path) -> list[tuple[Path, str, str]]:
+    """``(path, what it is, setting)`` for every store the app owns.
+
+    The five under the beets dir plus the two image caches, off the one table and
+    the one formula the app's own resolvers call — so the layout rule, the
+    identity guard and the app name the same directories.
+    """
+    return [
+        *(
+            (store_dir(app_settings, store, beets_dir), store.name, store.setting)
+            for store in APP_STORES
+        ),
+        *app_cache_dirs(app_settings),
+    ]
+
+
+def export_dir(app_settings: Settings, music_dir: Path) -> Path:
+    """Where the ``.m3u8`` exports live. Same owner as ``reexport.export_dir_for``."""
+    return store_dir(app_settings, EXPORT_STORE, music_dir)

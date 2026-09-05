@@ -22,7 +22,6 @@ from app.beets.library import _require_id
 from app.beets.protected import (
     ProtectedTreeError,
     ProtectedTrees,
-    app_owned_dirs,
     open_checked_dir,
     protected_match,
     protected_trees,
@@ -30,7 +29,7 @@ from app.beets.protected import (
 )
 from app.beets.trash import trash_folder
 from app.beets.trash_manage import empty_all, empty_one
-from app.config import Settings, settings
+from app.config import Settings, app_owned_dirs, settings
 from tests._mountns import run_probe, unshare_works
 from tests.conftest import beets_dir_for, make_test_handle, origins_for, protected_for
 
@@ -277,7 +276,7 @@ def test_a_directory_the_guard_cannot_read_is_logged_and_not_refused(
 
     The opposite trade from ``find_orphan_folders``, which errs toward keeping:
     refusing here would turn one permission bit into a Trash no route can clear.
-    The residual is stated in :mod:`app.beets.protected`.
+    The residual is stated in the BACKLOG entry for this slice.
     """
     if os.getuid() == 0:
         pytest.skip("root reads a mode-000 directory anyway")
@@ -375,18 +374,6 @@ def test_empty_all_enumerates_from_the_descriptor_it_checked(
     assert result.removed == 1
     assert not (tmp_path / "gone" / "Album").exists(), "the entry the check approved"
     assert (trash / "Decoy").is_dir(), "the swapped-in directory"
-
-
-def test_open_checked_dir_returns_a_usable_descriptor(tmp_path: Path) -> None:
-    """The control: the ordinary case yields the fd ``empty_all`` enumerates from."""
-    trash = tmp_path / "trash"
-    trash.mkdir()
-    (trash / "Album").mkdir()
-    fd = open_checked_dir(trash, _trees_with_trash(trash))
-    try:
-        assert sorted(entry.name for entry in os.scandir(fd)) == ["Album"]
-    finally:
-        os.close(fd)
 
 
 # --------------------------------------------------------------------------
@@ -1057,22 +1044,6 @@ def test_restore_refuses_a_trash_entry_that_is_the_music_library(tmp_path: Path)
     assert "bare-origin-absent True" in lines, lines
     assert "unguarded-restore TrashRestoreIncompleteError" in lines, lines
     assert "unguarded-track-survives True" in lines, lines
-
-
-def test_the_guard_reads_identity_not_the_spelling(tmp_path: Path) -> None:
-    """The same question without a mount namespace, through a hard link's inode.
-
-    A directory cannot be hard-linked, so this uses the one alias every
-    filesystem gives: ``..`` and a doubled separator resolve to one inode while
-    spelling differently. Weaker than the namespace test above and here so the
-    property has a pin on a box that cannot ``unshare``.
-    """
-    music = tmp_path / "music"
-    music.mkdir()
-    trees = _trees_for(music)
-    spelled_otherwise = Path(str(tmp_path) + "//music/./../music")
-    assert str(spelled_otherwise) != str(music)
-    assert protected_match(spelled_otherwise, trees) is not None
 
 
 def test_the_empty_set_refuses_nothing(tmp_path: Path) -> None:

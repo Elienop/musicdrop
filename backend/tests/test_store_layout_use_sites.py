@@ -429,10 +429,10 @@ def test_the_two_child_routes_check_the_layout_exactly_once(
     calls = 0
     real_store = trash_api._store
 
-    def counting_store(app: Any) -> Any:
+    def counting_store(app: Any, **kwargs: Any) -> Any:
         nonlocal calls
         calls += 1
-        return real_store(app)
+        return real_store(app, **kwargs)
 
     monkeypatch.setattr(trash_api, "_store", counting_store)
 

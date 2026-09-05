@@ -12,7 +12,7 @@ from collections.abc import Callable, Collection
 from pathlib import Path
 from typing import Any
 
-from app.beets.library import LibraryHandle, _music_dir, library_paths_context
+from app.beets.library import LibraryHandle, library_paths_context
 from app.beets.orphans import find_orphan_folders
 from app.beets.protected import ProtectedTreeError, protected_trees
 from app.beets.reorganize import (
@@ -21,7 +21,11 @@ from app.beets.reorganize import (
     reorganize_album,
     reorganize_singleton,
 )
-from app.beets.store_layout import StoreLayoutError, check_store_layout
+from app.beets.store_layout import (
+    StoreLayoutError,
+    check_store_layout,
+    lib_music_and_library,
+)
 from app.beets.trash import trash_folder
 from app.beets.trash_origins import TrashOriginsStoreUnusableError, require_usable_store
 from app.config import settings
@@ -218,8 +222,7 @@ def _sweep_orphans(
     # WARNING-and-skip as the store guard below, and for the same reason: the
     # move phase has already relocated real files, and failing the job here would
     # cost the run its .m3u8 re-export tail for a fault about the Trash.
-    music_root = Path(_music_dir(handle.lib))
-    library_path = Path(os.fsdecode(handle.lib.path))
+    music_root, library_path = lib_music_and_library(handle.lib)
     try:
         check_store_layout(
             music_dir=music_root,

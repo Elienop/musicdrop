@@ -37,12 +37,16 @@ from app.beets.import_mapping import (
     map_album_match,
     map_candidate_options,
 )
-from app.beets.library import _music_dir, _require_id, duplicate_albums_still_present
+from app.beets.library import _require_id, duplicate_albums_still_present
 from app.beets.merge_preview import build_merge_preview
 from app.beets.release_identity import release_identity
 from app.beets.relookup import relookup
 from app.beets.research import _read_items, lookup_items
-from app.beets.store_layout import StoreLayoutError, check_store_layout
+from app.beets.store_layout import (
+    StoreLayoutError,
+    check_store_layout,
+    lib_music_and_library,
+)
 from app.beets.trash import album_format_bitrate, trash_album
 from app.config import settings
 from app.models.album import ReleaseIdentity
@@ -1674,26 +1678,19 @@ def _trash_replaced_albums(session: WebImportSession) -> None:
         return
     lib = session.lib
     try:
+        music_dir, library_path = lib_music_and_library(lib)
+        # BEETSDIR, not ``settings.beets_dir``: the setting's default is the
+        # RELATIVE "data/beets", which ``_resolved`` would join to the CWD of a
+        # worker thread. ``setup_beets`` exports BEETSDIR as the resolved dir and
+        # re-exports it on every Apply rebuild (``config.config_dir()`` answers
+        # the same but CREATES the directory). The fallback covers a process
+        # where setup never ran, which cannot reach an import.
         check_store_layout(
-            music_dir=Path(_music_dir(lib)),
-            # BEETSDIR before ``settings.beets_dir``, which every other call site
-            # reaches through the resolved ``handle.beets_dir``. The setting's
-            # DEFAULT is the RELATIVE string "data/beets", and ``_resolved``
-            # joins a relative path to the process CWD at the moment of the
-            # call — here a worker thread, possibly hours after startup, so what
-            # the guard compares against would follow the CWD. ``setup_beets``
-            # exports BEETSDIR as the resolved directory before confuse's first
-            # resolve and re-exports it on every Apply rebuild, so it names the
-            # same directory the setting does and is the one beets resolved the
-            # ``directory:`` and ``library:`` below against. (beets' own
-            # ``config.config_dir()`` returns the same value but CREATES the
-            # directory on the way, which this pass has no business doing.) The
-            # fallback covers a process where setup never ran, which is not one
-            # that can reach an import.
+            music_dir=music_dir,
             beets_dir=Path(os.environ.get("BEETSDIR") or settings.beets_dir),
             trash_dir=trash_dir,
             origins_dir=origins_dir,
-            library_path=Path(os.fsdecode(lib.path)),
+            library_path=library_path,
             settings=settings,
         )
     except StoreLayoutError:

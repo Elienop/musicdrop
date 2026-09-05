@@ -12,7 +12,7 @@ either order) serialize instead of racing. Every folder argument flows through
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, NamedTuple
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
@@ -63,18 +63,13 @@ _TRASH_RESTORE_FAILED_RESPONSE: Final = {
 }
 #: Every route here resolves the Trash / origin-store pair per request and runs
 #: the containment check on what it resolved to, so every one of them can answer
-#: this. Its own entry rather than a shared one with the unmounted-share 503:
-#: the two causes read differently to an operator and only ``restore`` has both.
+#: this. One sentence for all three, because ``DELETE /api/trash/all`` removes
+#: every unprotected entry BEFORE it refuses: "nothing was removed" was false
+#: there, and the refusals name one setting, not two paths.
 _TRASH_LAYOUT_REFUSED_RESPONSE: Final = {
     "model": ErrorDetail,
-    "description": (
-        "The store layout is refused, so nothing was read or removed; the message"
-        " names the setting and both resolved paths."
-    ),
+    "description": "A store-layout refusal; the message says what was left in place.",
 }
-#: A move-back restore writes INTO the music library, so it answers an
-#: unavailable music share the way delete does — a 503 that says nothing was
-#: moved — rather than falling into the blanket 500 below it.
 _TRASH_EMPTY_PARTIAL_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": (
@@ -82,18 +77,24 @@ _TRASH_EMPTY_PARTIAL_RESPONSE: Final = {
         " which are still there."
     ),
 }
-#: Restore is the one route with BOTH 503 causes, and OpenAPI carries one
-#: description per status — so this one says both. It used to name only the
-#: unavailable share, which for a refused layout was not merely incomplete but
-#: wrong about what had happened.
+#: A move-back restore writes INTO the music library, so it answers an
+#: unavailable music share the way delete does rather than falling into the
+#: blanket 500. Restore has that cause; the two delete routes have the identity
+#: guard. OpenAPI carries one description per status, so this one says neither
+#: and points at the message.
 _TRASH_LIBRARY_UNAVAILABLE_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": (
-        # Two causes on one status, and OpenAPI carries one description per
-        # status: an unavailable music share, and a refused store layout.
         "The folder was not moved out of Trash; the message says which setup fault refused it."
     ),
 }
+
+
+def _required(protected: ProtectedTrees | None) -> ProtectedTrees:
+    """The set a ``_store(app, protected=True)`` built."""
+    if protected is None:  # pragma: no cover - a caller that forgot the keyword
+        raise RuntimeError("this route needs the protected set")
+    return protected
 
 
 def _gate(app: Any) -> None:
@@ -108,7 +109,21 @@ def _gate(app: Any) -> None:
     raise_if_library_busy(app)
 
 
-def _store(app: Any) -> tuple[LibraryHandle, Path, Path, ProtectedTrees]:
+class CheckedTrash(NamedTuple):
+    """What one Trash request checked, in the order the routes read it.
+
+    ``protected`` is ``None`` for the two routes that move or remove nothing:
+    building the set is a dozen stats, and ``checked_protected_trees``' own
+    docstring is what promises the read-only callers do not pay them.
+    """
+
+    handle: LibraryHandle
+    trash_dir: Path
+    origins_dir: Path
+    protected: ProtectedTrees | None
+
+
+def _store(app: Any, *, protected: bool = False) -> CheckedTrash:
     """The handle and the CHECKED Trash / origin-store pair, or a 503.
 
     Every route in this file resolves that pair, and ``resolve()`` follows
@@ -129,14 +144,16 @@ def _store(app: Any) -> tuple[LibraryHandle, Path, Path, ProtectedTrees]:
         trash_dir, origins_dir = checked_store_dirs(settings, handle)
     except StoreLayoutError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    protected = checked_protected_trees(
-        settings, handle, trash_dir=trash_dir, origins_dir=origins_dir
+    trees = (
+        checked_protected_trees(settings, handle, trash_dir=trash_dir, origins_dir=origins_dir)
+        if protected
+        else None
     )
-    return handle, trash_dir, origins_dir, protected
+    return CheckedTrash(handle, trash_dir, origins_dir, trees)
 
 
-def _child_or_404(app: Any, folder: str) -> tuple[LibraryHandle, Path, Path, Path, ProtectedTrees]:
-    """The handle, the resolved child, and the pair the child was resolved FROM.
+def _child_or_404(app: Any, folder: str) -> tuple[CheckedTrash, Path]:
+    """What the request checked, and the resolved child inside it.
 
     The pair is returned rather than re-taken by the caller because the child is
     what gets ``rmtree``'d or moved: deriving it from one check and acting under
@@ -144,9 +161,9 @@ def _child_or_404(app: Any, folder: str) -> tuple[LibraryHandle, Path, Path, Pat
     halves the work — a bare ``checked_store_dirs`` was measured at 130 stats
     over the rule's 36 rows, and both routes were paying it twice.
     """
-    handle, trash_dir, origins_dir, protected = _store(app)
+    checked = _store(app, protected=True)
     try:
-        return handle, resolve_trash_child(trash_dir, folder), trash_dir, origins_dir, protected
+        return checked, resolve_trash_child(checked.trash_dir, folder)
     except AmbiguousDisplayName:
         # Two trashed folders whose names are not valid UTF-8 can display
         # identically. Restoring or deleting the wrong one is irreversible, so
@@ -166,17 +183,17 @@ def _child_or_404(app: Any, folder: str) -> tuple[LibraryHandle, Path, Path, Pat
 async def list_trash(request: Request) -> TrashListing:
     """List the albums sitting in Trash (read off disk; no gate)."""
     app = request.app
-    handle, trash_dir, origins_dir, _protected = _store(app)
+    checked = _store(app)
     albums = await run_in_threadpool(
         list_trashed_albums,
-        trash_dir,
-        origins_dir=origins_dir,
-        music_dir=_music_dir(handle.lib),
+        checked.trash_dir,
+        origins_dir=checked.origins_dir,
+        music_dir=_music_dir(checked.handle.lib),
     )
     # The origins dir is deliberately NOT on the wire beside ``trash_path``: it
     # is an implementation detail of where the records live, and adding a field
     # here would be a contract change for something no UI shows.
-    return TrashListing(albums=albums, trash_path=str(trash_dir))
+    return TrashListing(albums=albums, trash_path=str(checked.trash_dir))
 
 
 @router.post(
@@ -193,15 +210,15 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
     app = request.app
     _gate(app)
     async with _swap_lock(app):
-        handle, dest, trash_dir, origins_dir, protected = _child_or_404(app, body.folder)
+        checked, dest = _child_or_404(app, body.folder)
         try:
             result = await run_in_threadpool(
                 restore_album,
-                handle.lib,
+                checked.handle.lib,
                 str(dest),
-                trash_dir=trash_dir,
-                origins_dir=origins_dir,
-                protected=protected,
+                trash_dir=checked.trash_dir,
+                origins_dir=checked.origins_dir,
+                protected=_required(checked.protected),
             )
             emit_library_changed(app)
             return result
@@ -237,10 +254,13 @@ async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> 
         # derived from the pair that check approved. It used to resolve the
         # child outside the lock from a first check and re-check inside, so the
         # pair that was validated and the path acted on came from two instants.
-        _handle, dest, _trash_dir, origins_dir, protected = _child_or_404(app, folder)
+        checked, dest = _child_or_404(app, folder)
         try:
             result = await run_in_threadpool(
-                empty_one, str(dest), origins_dir=origins_dir, protected=protected
+                empty_one,
+                str(dest),
+                origins_dir=checked.origins_dir,
+                protected=_required(checked.protected),
             )
         # 503, like the layout refusal it completes: the entry is still in Trash
         # and the fix is the operator's. Raised inline so the status stays a
@@ -275,10 +295,13 @@ async def empty_trash_all(request: Request) -> EmptyResult:
     async with _swap_lock(app):
         # Inside the lock, so a config Apply cannot swap the handle between the
         # check and the rmtree.
-        _handle, trash_dir, origins_dir, protected = _store(app)
+        checked = _store(app, protected=True)
         try:
             result = await run_in_threadpool(
-                empty_all, trash_dir, origins_dir=origins_dir, protected=protected
+                empty_all,
+                checked.trash_dir,
+                origins_dir=checked.origins_dir,
+                protected=_required(checked.protected),
             )
         # A partial sweep still CHANGED the library, so the event fires before
         # the error propagates — the page must not keep showing entries that are

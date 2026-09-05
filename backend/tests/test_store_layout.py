@@ -405,7 +405,7 @@ def test_the_default_database_beside_the_config_is_allowed(tmp_path: Path) -> No
 
 
 def test_two_names_for_one_file_are_one_path(tmp_path: Path) -> None:
-    """``_same_path`` asks the FILESYSTEM, not the two strings.
+    """``_same_rung`` asks the FILESYSTEM, not the two strings.
 
     A hard link is the one path alias this test can build without privileges:
     two names, one inode, neither a symlink, so ``resolve()`` leaves both
@@ -413,7 +413,10 @@ def test_two_names_for_one_file_are_one_path(tmp_path: Path) -> None:
     review round measured are the same defect and the same fix; they need a
     mount, which a unit test does not have.
     """
-    from app.beets.store_layout import _same_path
+    from app.beets.store_layout import _same_rung, _stat_id
+
+    def rung(path: Path) -> tuple[tuple[int, int] | None, str]:
+        return (_stat_id(path), str(path))
 
     one = tmp_path / "one.db"
     one.write_bytes(b"x")
@@ -422,8 +425,8 @@ def test_two_names_for_one_file_are_one_path(tmp_path: Path) -> None:
     other = tmp_path / "other.db"
     other.write_bytes(b"x")
 
-    assert _same_path(one, alias) is True
-    assert _same_path(one, other) is False  # same bytes, different inode
+    assert _same_rung(rung(one), rung(alias)) is True
+    assert _same_rung(rung(one), rung(other)) is False  # same bytes, different inode
 
 
 def test_an_aliased_trash_dir_is_refused_even_though_the_strings_differ(

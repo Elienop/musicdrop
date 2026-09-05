@@ -1096,37 +1096,29 @@ def empty_one(folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees) 
 
 
 def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) -> EmptyResult:
-    """Permanently remove everything under ``trash_dir``.
+    """Permanently remove every unprotected entry under ``trash_dir``.
 
     The root is opened once through
     :func:`~app.beets.protected.open_checked_dir`, and every name is enumerated,
     guarded, stat'd and removed THROUGH that descriptor. Acting on
-    ``trash_dir / name`` instead reopened the path per entry: a rename plus a
-    symlink landing anywhere in the loop — 0.40 ms at 10 entries, 16 ms at 500 —
+    ``trash_dir / name`` reopened the path per entry: a rename plus a symlink
+    landing anywhere in the loop — 0.40 ms at 10 entries, 16 ms at 500 —
     redirected the removals, measured deleting ``library.db`` and ``config.yaml``.
 
     An entry that is or holds one of the app's own directories by inode is left
     where it is and named in a :class:`~app.beets.protected.ProtectedTreeError`
-    (503), which outranks the partial below: the others are worth retrying and
-    this one needs the layout fixed first. That refusal carries the failed COUNT
-    too, so a retry does not hide an entry that could not be removed.
+    (503) carrying the failed count, raised AFTER the others are removed.
 
-    A symlinked entry is acted on as the LINK. ``is_dir()`` follows links and
-    ``rmtree`` refuses one, so such an entry used to raise ``OSError`` and wedge
-    the whole operation — nothing after it in ``iterdir`` order was removed, and
-    ``empty_one`` cannot clear it either (``resolve_trash_child`` refuses a link
-    first), so it was unremovable by any route. Nothing hostile is needed:
-    ``_album_root`` is ``dirname(item.path)``, and ``shutil.move`` preserves a
-    link. Following it would ``rm -rf`` a directory merely pointed at.
+    A symlinked entry is acted on as the LINK: following it would ``rm -rf`` a
+    directory merely pointed at, and ``rmtree`` refuses one, which used to wedge
+    every entry after it in ``iterdir`` order.
 
-    Each origin record is dropped INSIDE the loop, right after its entry, so a
-    fault part-way through leaves a consistent pair. The whole store is then
-    swept, but only when this call REMOVED something AND Trash is empty
-    afterwards: emptiness alone would destroy every origin when the share has
-    dropped, and "removed something" alone would strip the records a partial
-    failure's survivors still need. That sweep is what clears a record whose
-    entry left Trash without this app noticing — a residual ``trash_origins``
-    states rather than closes, since until then the name stays burnt.
+    Each origin record is dropped inside the loop, right after its entry. The
+    whole store is swept only when this call REMOVED something AND Trash is
+    empty afterwards: emptiness alone would destroy every record when the share
+    has dropped.
+
+    The residual list is the BACKLOG entry for this slice.
     """
     if not trash_dir.exists():
         return EmptyResult(removed=0)

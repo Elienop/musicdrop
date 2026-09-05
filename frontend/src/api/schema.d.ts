@@ -5967,7 +5967,7 @@ export interface operations {
                     "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
-            /** @description A setup fault refused the delete. The album is still in the library, and a share that dropped mid-move can leave part of it under Trash — check there before retrying. */
+            /** @description The album is still in the library: a setup fault refused the delete, and a share that dropped mid-move can leave part of it under Trash — check there before retrying. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -6637,7 +6637,7 @@ export interface operations {
                     "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
-            /** @description A setup fault refused the delete. None of the artist's albums has been dropped, and a share that dropped mid-move can leave part of one under Trash — check there before retrying. */
+            /** @description None of the artist's albums has been dropped: a setup fault refused the delete, and a share that dropped mid-move can leave part of one under Trash — check there before retrying. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -8945,7 +8945,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The config.yaml on disk breaks the store layout, so beets was NOT reloaded and the previously loaded library is still serving. */
+            /** @description The config.yaml on disk breaks the store layout; the recovery line says whether beets was reloaded. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -12688,7 +12688,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The store layout is refused, so nothing was read or removed; the message names the setting and both resolved paths. */
+            /** @description A store-layout refusal; the message says what was left in place. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -12773,7 +12773,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The store layout is refused, so nothing was read or removed; the message names the setting and both resolved paths. */
+            /** @description A store-layout refusal; the message says what was left in place. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -12952,7 +12952,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The store layout is refused, so nothing was read or removed; the message names the setting and both resolved paths. */
+            /** @description A store-layout refusal; the message says what was left in place. */
             503: {
                 headers: {
                     [name: string]: unknown;

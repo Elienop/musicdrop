@@ -103,20 +103,14 @@ def _ignore_dirs(app: object, trash_dir: Path, origins_dir: Path) -> tuple[Path,
     Trash. Measured in the review round and pinned by
     ``tests/test_orphans.py::test_the_ignore_list_names_every_protected_root``.
 
-    Two of the entries are dropped here. The music root is the walk root, and an
-    exclude root at or above it is what ``orphans._exclude_ids`` drops with its
-    one WARNING — passing it would log that line on every sweep. The Trash is
-    ``find_orphan_folders``' own argument.
+    Two entries are dropped: the music root (the walk root, which
+    ``orphans._exclude_ids`` would drop with a WARNING on every sweep) and the
+    Trash (``find_orphan_folders``' own argument). A path outside the music tree
+    costs one ``stat`` and matches nothing, so the rest are passed as they come.
 
-    A path outside the music tree costs one ``stat`` and matches nothing; the
-    beets dir and the database's folder are passed for that reason, since what
-    the rule refuses (B nesting with M) is checked per request and not here.
-    Dotdirs and NAS names are skipped by name inside the scanner.
-
-    The mover's guard is still the one that decides: it compares IDENTITY, so a
-    bind-mounted alias of a store, which no spelling here can name, is refused
-    at the move. When that happens the run logs one WARNING and reports the
-    folder as skipped rather than moved.
+    The mover's guard still decides: it compares IDENTITY, so a bind-mounted alias
+    no spelling here can name is refused at the move, and the run reports that
+    folder as skipped.
     """
     handle: LibraryHandle = app.state.beets_library  # type: ignore[attr-defined]  # app duck-typed (object)
     music, library_path = handle_music_and_library(handle)

@@ -1039,8 +1039,8 @@ def _start(
                 # Same three causes as the album route; the message says which.
                 # Once an album HAS been dropped the same fault is reported as the
                 # 500 above instead, which names how far the fan-out got.
-                "A setup fault refused the delete. None of the artist's albums has been"
-                " dropped, and a share that dropped mid-move can leave part of one under"
+                "None of the artist's albums has been dropped: a setup fault refused the"
+                " delete, and a share that dropped mid-move can leave part of one under"
                 " Trash — check there before retrying."
             ),
         },

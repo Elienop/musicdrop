@@ -1045,19 +1045,16 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - ~~**`MUSICDROP_TRASH_DIR` is an unvalidated `rmtree` root.**~~ — **FIXED on
   `fix/trash-root-containment`** (the PR number and squash sha go here after merge).
-  One table in `app/beets/store_layout.py` refuses every overlap among the music library,
-  the beets data dir, the Trash, the origin store, `library:` and the six app-owned stores,
-  at startup and again at every destructive use site (the string is fixed for the process
-  lifetime; what it resolves to is not). A Trash strictly INSIDE the music library is
-  allowed and is the point of the var (`decisions.md` 35).
+  One table in `app/beets/store_layout.py` refuses the Trash or the origin store being or
+  holding the music library, the beets dir, `library.db` or an app store, and the beets dir
+  nesting with the music library. Asked at startup and at each destructive use site.
 
 - ~~**The orphan sweep's ignore list does not protect an ignored dir's ANCESTORS.**~~ —
   **FIXED on `fix/trash-root-containment`** (the PR number and squash sha go here after
   merge), same series. `orphans._drop_excluded_ancestors` folds each excluded root's
-  ancestor chain into the drop, and `_exclude_roots_for_walk` drops (with one WARNING) an
-  exclude root at or above the walk root, which would otherwise silence the whole sweep.
-  Both sides compare realpath forms, so a symlinked library no longer misses every
-  exclusion.
+  ancestor chain into the drop, and `orphans._exclude_ids` drops (with one WARNING) an
+  exclude root at or above the walk root. Exclusion is decided by inode, so a symlinked or
+  bind-mounted library no longer misses it.
 
 - ~~**The layout predicate compares SPELLINGS, so an alias walks past it; and a refused
   Reorganize keeps the job slot.**~~ — **FIXED on `fix/trash-root-containment`** (PR number
@@ -1067,17 +1064,38 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `(st_dev, st_ino)` at the moment a tree is moved or removed; `reg.start` now runs after
   the store check, so a 503 no longer leaves `phase=running` until restart.
 
-  Residuals, accepted:
+  Residuals, accepted. This list is the one place they live; the modules point here.
   * A path that does not exist yet has no inode, so an alias onto a not-yet-created Trash is
     caught on the next check, not the first.
   * A mount point as the INNER path is caught at the mover, not by the predicate.
+  * The set holds the protected ROOTS' inodes, so a Trash entry that aliases a SUBFOLDER of
+    one is not recognised; the mount point itself survives `rmtree` with EBUSY.
+  * Identity is `(st_dev, st_ino)` from two `os.stat` calls. A filesystem that synthesises
+    inode numbers client-side (CIFS `noserverino`, some FUSE) could disagree between them —
+    not measured, no such mount here.
+  * A union filesystem (overlayfs, mergerfs) gives one directory two `st_dev`s, so a Trash
+    spelled through a layer is walked by the sweep. Spell it through `directory:`'s mount.
+  * A protected directory the guard could not LIST is logged, not refused: its own identity
+    was compared from its parent's descriptor, an alias hidden below it was not.
+  * beets' `prune_dirs` after a per-item move removes an EMPTY app store that is an ancestor
+    of the album; a bind-mounted store answers EBUSY and survives.
+  * The Trash and origin store reach the sweep RESOLVED, so the spelled-ancestor mechanism
+    has no input for them: an ancestor of the CONFIGURED spelling can be reported as a husk.
   * A Trash inside a live album folder is not refused — one album, visible on the Trash page,
     and the check would cost a DB query per request.
   * `library:` in an audio-free subfolder of the music library stays a husk: `dirname(L)` is
     excluded from the sweep rather than refused.
+  * A husk beside an excluded root is skipped when the ancestor's only audio sits INSIDE
+    that root.
+  * The seeds climb starts below a symlink where the library walk does not descend, so the
+    two modes disagree on a symlinked subtree. Kept: seeds mode is what sweeps such a tree.
   * The playlist export dir at or above the music root is dropped from the sweep with a
     WARNING rather than refused.
+  * The two image caches are participants; the static dir (`/app/static`) is not — it is
+    served code, not data.
   * The Apply backstop's degraded state has no API field of its own; it is the 422's message.
+  * Next touch of the destructive primitives: one `CheckedStore` (trash_dir, origins_dir,
+    protected) so they take one keyword rather than three.
 
 - ~~**A FLAT library layout defeats the delete path's presence check — it samples the music
   root against itself.**~~ (Found 2026-09-02, on `fix/undoable-deletes`, while re-reading the
