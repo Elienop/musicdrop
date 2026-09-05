@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -75,6 +76,66 @@ def test_list_trash_reports_the_move_back_a_real_record_offers(
     assert row["restore_mode"] == "move_back"
     assert row["restore_note"] is None  # nothing to warn about on an exact restore
     assert row["origin"] == str(origin)
+
+
+def test_a_trash_swapped_after_the_check_removes_nothing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The entry's identity was pinned and its PARENT's was not.
+
+    ``resolve_trash_child`` resolves the child from the Trash the request
+    checked, and the removal then opened that path again. With the Trash
+    renamed away and another directory put at its name in between, the removal
+    ran by name inside whatever took its place — measured, the impostor's
+    ``01.flac`` was gone. The parent is now opened through the same
+    ``open_checked_dir`` the sweep uses, so the identity has to still be the one
+    that was checked.
+    """
+    import app.api.trash as trash_mod
+    from app.beets.trash_manage import empty_one as real_empty_one
+
+    trash = _trash_dir(client)
+    (trash / "Album").mkdir(parents=True)
+    away = trash.parent / "away"
+    impostor = trash.parent / "impostor"
+    (impostor / "Album").mkdir(parents=True)
+    (impostor / "Album" / "01.flac").write_bytes(b"x")
+
+    def spy(path: str, *, origins_dir: Path, protected: ProtectedTrees) -> EmptyResult:
+        os.rename(trash, away)
+        os.rename(impostor, trash)
+        return real_empty_one(path, origins_dir=origins_dir, protected=protected)
+
+    monkeypatch.setattr(trash_mod, "empty_one", spy)
+    r = client.delete("/api/trash", params={"folder": "Album"})
+
+    assert r.status_code == 503
+    assert "Nothing was removed" in r.json()["detail"]
+    assert (trash / "Album" / "01.flac").exists(), "the directory that took the Trash's name"
+
+
+def test_a_mode_000_entry_answers_the_declared_500(client: TestClient) -> None:
+    """The single delete's twin of the sweep's failed-entry arm.
+
+    An entry the process cannot open is one it cannot remove, and the removal
+    raises. That used to reach the blanket 500 — the same status with no
+    declared body, so the generated client had no type for what it reads.
+    """
+    if os.getuid() == 0:
+        pytest.skip("root opens a mode-000 directory anyway")
+    trash = _trash_dir(client)
+    locked = trash / "Locked"
+    locked.mkdir(parents=True)
+    locked.chmod(0o000)
+
+    try:
+        r = client.delete("/api/trash", params={"folder": "Locked"})
+    finally:
+        locked.chmod(0o700)
+
+    assert r.status_code == 500
+    assert "Empty Trash" in r.json()["detail"]
+    assert locked.is_dir(), "still in Trash"
 
 
 def test_empty_one_removes_folder(client: TestClient) -> None:

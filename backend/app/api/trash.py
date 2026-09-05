@@ -69,6 +69,12 @@ _TRASH_LAYOUT_REFUSED_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": "A store-layout or identity refusal; the message names the cause.",
 }
+#: The single delete's twin of the sweep's failed-entry 500: the entry is still
+#: in Trash, and the fault is on disk rather than in the request.
+_TRASH_EMPTY_FAILED_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "The entry could not be removed; the message names the fault.",
+}
 _TRASH_EMPTY_PARTIAL_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": (
@@ -242,6 +248,7 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
     responses={
         409: _TRASH_CONFLICT_RESPONSE,
         404: _TRASH_NOT_FOUND_RESPONSE,
+        500: _TRASH_EMPTY_FAILED_RESPONSE,
         503: _TRASH_LAYOUT_REFUSED_RESPONSE,
     },
 )
@@ -267,6 +274,11 @@ async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> 
         # literal tests/test_route_status_declarations.py can see.
         except ProtectedTreeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # A mode-000 entry raises out of the removal. The sweep names such an
+        # entry and answers 500; this route used to let the OSError fall into
+        # the blanket 500, which is the same status with no declared body.
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Empty Trash: {exc}") from exc
         emit_library_changed(app)
     return result
 

@@ -302,7 +302,7 @@ def test_emptying_the_losing_row_keeps_the_other_entrys_record(tmp_path: Path) -
         empty_one(
             str(trash / short_name),
             origins_dir=origins,
-            protected=protected_for(origins_dir=origins),
+            protected=protected_for(trash_dir=trash, origins_dir=origins),
         ).removed
         == 1
     )
@@ -500,7 +500,9 @@ def test_a_record_the_json_parser_gives_up_on_does_not_escape_empty_one(
 
     assert (
         empty_one(
-            str(trash / "Deep"), origins_dir=origins, protected=protected_for(origins_dir=origins)
+            str(trash / "Deep"),
+            origins_dir=origins,
+            protected=protected_for(trash_dir=trash, origins_dir=origins),
         ).removed
         == 1
     )

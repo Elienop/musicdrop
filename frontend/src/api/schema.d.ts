@@ -12765,6 +12765,15 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
+            /** @description The entry could not be removed; the message names the fault. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description A store-layout or identity refusal; the message names the cause. */
             503: {
                 headers: {

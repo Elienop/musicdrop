@@ -9403,6 +9403,16 @@
               }
             }
           },
+          "500": {
+            "description": "The entry could not be removed; the message names the fault.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "503": {
             "description": "A store-layout or identity refusal; the message names the cause.",
             "content": {

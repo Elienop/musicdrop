@@ -392,7 +392,7 @@ def test_empty_one_and_all(tmp_path: Path) -> None:
         empty_one(
             str(trash / "A"),
             origins_dir=origins_for(trash),
-            protected=protected_for(origins_dir=origins_for(trash)),
+            protected=protected_for(trash_dir=trash, origins_dir=origins_for(trash)),
         ).removed
         == 1
     )
@@ -577,7 +577,7 @@ def test_empty_one_removes_a_loose_file(tmp_path: Path) -> None:
         empty_one(
             str(trash / "loose.flac"),
             origins_dir=origins_for(trash),
-            protected=protected_for(origins_dir=origins_for(trash)),
+            protected=protected_for(trash_dir=trash, origins_dir=origins_for(trash)),
         ).removed
         == 1
     )

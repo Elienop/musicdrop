@@ -1089,14 +1089,19 @@ def empty_one(folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees) 
     payload's own ``name`` first.
 
     Raises :class:`~app.beets.protected.ProtectedTreeError` (503) when the entry
-    is or holds one of the app's own directories by inode, and when the name
-    stopped naming what the guard was asked about — see
-    :func:`_remove_checked_entry`, which both delete paths share.
+    is or holds one of the app's own directories by inode, when the name stopped
+    naming what the guard was asked about (see :func:`_remove_checked_entry`,
+    which both delete paths share), and when the entry's parent is no longer the
+    Trash this request checked.
     """
     path = Path(folder_abs)
     # The resolved parent: ``folder_abs`` comes from ``resolve_trash_child``, so
-    # every component above the entry is already what it resolved to.
-    parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    # every component above the entry is already what it resolved to. Opened
+    # through the sweep's own check rather than a bare ``os.open``: the entry's
+    # identity was pinned and its PARENT's was not, so a Trash renamed away
+    # between the route's resolve and this open left the removal running by name
+    # in whatever directory took its place.
+    parent_fd = open_checked_dir(path.parent, protected)
     try:
         refusal = _remove_checked_entry(path.name, dir_fd=parent_fd, protected=protected)
     finally:

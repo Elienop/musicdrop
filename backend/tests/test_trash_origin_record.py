@@ -1894,7 +1894,7 @@ def test_empty_one_removes_the_origin_record(tmp_path: Path) -> None:
         empty_one(
             str(dest),
             origins_dir=_origins(tmp_path),
-            protected=protected_for(origins_dir=_origins(tmp_path)),
+            protected=protected_for(trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)),
         ).removed
         == 1
     )
@@ -1931,7 +1931,7 @@ def test_empty_one_keeps_the_record_when_the_removal_itself_fails(tmp_path: Path
     try:
         entry_path = str(dest)
         origins = _origins(tmp_path)
-        trees = protected_for(origins_dir=origins)
+        trees = protected_for(trash_dir=tmp_path / "trash", origins_dir=origins)
         with pytest.raises(OSError):
             empty_one(entry_path, origins_dir=origins, protected=trees)
     finally:

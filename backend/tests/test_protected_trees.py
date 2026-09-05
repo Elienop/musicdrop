@@ -215,8 +215,9 @@ def _add_album(lib: Any, folder: Path) -> None:
 def _trees_for(music: Path, trash: Path | None = None) -> ProtectedTrees:
     """A set holding exactly ``music``, so a test's assertion is about one id.
 
-    ``trash`` is passed whenever the test drives ``empty_all``, which refuses a
-    Trash identity it could not take.
+    ``trash`` is passed whenever the test drives either delete path: both open
+    the Trash through ``open_checked_dir``, which refuses an identity it could
+    not take rather than skipping the compare.
     """
     return protected_trees(
         settings=Settings(),
@@ -642,7 +643,7 @@ def test_empty_one_refuses_a_protected_entry(tmp_path: Path) -> None:
     (music / "01.flac").write_bytes(b"x")
     os.rename(music, trash / "Sneak")
     (trash / "Ordinary").mkdir()
-    trees = _trees_for(trash / "Sneak")
+    trees = _trees_for(trash / "Sneak", trash)
     origins = origins_for(trash)
     sneak = str(trash / "Sneak")
 
