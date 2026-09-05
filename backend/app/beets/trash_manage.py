@@ -25,6 +25,7 @@ import logging
 import os
 import shutil
 import stat
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
@@ -1097,18 +1098,48 @@ def empty_one(folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees) 
     # every component above the entry is already what it resolved to.
     parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        clause = _remove_checked_entry(path.name, dir_fd=parent_fd, protected=protected)
+        refusal = _remove_checked_entry(path.name, dir_fd=parent_fd, protected=protected)
     finally:
         os.close(parent_fd)
-    if clause is not None:
-        raise protected_tree_error(path, clause, "removed")
+    if refusal is not None:
+        raise _refusal_error(path, refusal)
     delete_trash_origin(origins_dir, path.name)
     return EmptyResult(removed=1)
+
+
+def _refusal_error(path: Path, refusal: _Refusal) -> ProtectedTreeError:
+    """The 503 for the one entry this delete path was asked about.
+
+    Two sentences, and which one is true depends on how far the removal got.
+    """
+    if not refusal.partial:
+        return protected_tree_error(path, refusal.clause, "removed")
+    return ProtectedTreeError(
+        f"Refused: {path.name!r} {refusal.clause}. The folder was left in place, and {_PARTIAL}."
+    )
 
 
 #: What a refused entry reads with when the guard's answer stopped being about
 #: it. The wording ``open_checked_dir`` uses for the same fault on the root.
 _RACED: Final = "changed between the check and the removal"
+
+#: What a refusal adds once the entry's contents have gone. Both delete paths
+#: say it, because both claim the opposite by default: ``empty_one`` raises
+#: "Nothing was removed." and the sweep's summary counts the entry under
+#: "Removed 0".
+_PARTIAL: Final = "some of its contents were removed"
+
+
+@dataclass(frozen=True)
+class _Refusal:
+    """Why one entry was not removed, and whether its contents went first.
+
+    The guard answers at more than one point, and only the ones before the
+    children loop are answers about a directory nothing has touched.
+    """
+
+    clause: str
+    partial: bool
 
 
 def _remove_entry(name: str, *, dir_fd: int) -> None:
@@ -1123,11 +1154,15 @@ def _ident(st: os.stat_result) -> tuple[int, int]:
     return (st.st_dev, st.st_ino)
 
 
-def _remove_checked_entry(name: str, *, dir_fd: int, protected: ProtectedTrees) -> str | None:
+def _remove_checked_entry(name: str, *, dir_fd: int, protected: ProtectedTrees) -> _Refusal | None:
     """Remove one entry so that what the guard checked is what is removed.
 
-    ``None`` when the entry is gone; otherwise the clause the refusal reads
-    with. ``dir_fd`` is the Trash — the descriptor ``open_checked_dir`` pinned,
+    ``None`` when the entry is gone; otherwise why it was refused, and whether
+    its contents went before the guard stopped it — the two arms below the
+    children loop are reached with the entry already emptied, and both used to
+    read "Nothing was removed."
+
+    ``dir_fd`` is the Trash — the descriptor ``open_checked_dir`` pinned,
     or the resolved parent for a single delete.
 
     A name resolves anew at every syscall, so guarding ``name`` and then
@@ -1159,23 +1194,27 @@ def _remove_checked_entry(name: str, *, dir_fd: int, protected: ProtectedTrees) 
         # its own sentence rather than reported as a failed removal.
         clause = protected_match(name, protected, dir_fd=dir_fd)
         if clause is not None:
-            return clause
+            return _Refusal(clause, partial=False)
         raise
+    children: list[str] = []
     try:
         if _ident(os.fstat(fd)) != _ident(st):
-            return _RACED
+            return _Refusal(_RACED, partial=False)
         # Asked of the descriptor, not of the name: "." is this directory
         # whatever the name now points at.
         clause = protected_match(".", protected, dir_fd=fd)
         if clause is not None:
-            return clause
-        for child in sorted(entry.name for entry in os.scandir(fd)):
+            return _Refusal(clause, partial=False)
+        children = sorted(entry.name for entry in os.scandir(fd))
+        for child in children:
             # ``rmtree``'s own per-level ``samestat`` covers everything below.
             _remove_entry(child, dir_fd=fd)
     finally:
         os.close(fd)
     if _ident(os.stat(name, dir_fd=dir_fd, follow_symlinks=False)) != _ident(st):
-        return _RACED
+        # Past the loop: the entry is empty, and an empty one is all that is
+        # left to claim.
+        return _Refusal(_RACED, partial=bool(children))
     os.rmdir(name, dir_fd=dir_fd)
     return None
 
@@ -1231,7 +1270,7 @@ def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) 
     try:
         for name in sorted(entry.name for entry in os.scandir(fd)):
             try:
-                clause = _remove_checked_entry(name, dir_fd=fd, protected=protected)
+                refusal = _remove_checked_entry(name, dir_fd=fd, protected=protected)
             except OSError as exc:
                 # Carry on. One entry the app cannot remove -- a root-owned file, a
                 # permission bit, a share that dropped half way -- used to abort the
@@ -1241,8 +1280,11 @@ def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) 
                 failed.append(display_path(name))
                 first = first or exc
                 continue
-            if clause is not None:
-                refused.append(f"{display_path(name)!r} {clause}")
+            if refusal is not None:
+                # The partial note rides on the clause: the summary below says
+                # "Removed 0" for an entry whose contents are already gone.
+                note = f" ({_PARTIAL})" if refusal.partial else ""
+                refused.append(f"{display_path(name)!r} {refusal.clause}{note}")
                 continue
             delete_trash_origin(origins_dir, name)
             removed += 1

@@ -704,11 +704,17 @@ def test_empty_all_removes_the_entry_it_guarded_and_not_the_name(
     )
 
     origins = origins_for(trash)
-    with pytest.raises(ProtectedTreeError, match="changed between the check and the removal"):
+    with pytest.raises(
+        ProtectedTreeError, match="changed between the check and the removal"
+    ) as err:
         empty_all(trash, origins_dir=origins, protected=trees)
 
     assert fired == [True]
     assert (trash / "Album" / "01.flac").exists(), "the music library, under the entry's name"
+    # The swap lands AFTER the children are gone, so the summary's "Removed 0"
+    # is about an entry that was emptied. Literal, not the constant: sharing it
+    # with the source would compare the wording to itself.
+    assert "some of its contents were removed" in str(err.value)
 
 
 def test_empty_one_removes_the_entry_it_guarded_and_not_the_name(
@@ -728,11 +734,16 @@ def test_empty_one_removes_the_entry_it_guarded_and_not_the_name(
 
     origins = origins_for(trash)
     entry = str(trash / "Album")
-    with pytest.raises(ProtectedTreeError, match="changed between the check and the removal"):
+    with pytest.raises(
+        ProtectedTreeError, match="changed between the check and the removal"
+    ) as err:
         empty_one(entry, origins_dir=origins, protected=trees)
 
     assert fired == [True]
     assert (trash / "Album" / "01.flac").exists(), "the music library, under the entry's name"
+    message = str(err.value)
+    assert "some of its contents were removed" in message
+    assert "Nothing was removed" not in message, "art.jpg was"
 
 
 def test_trash_folder_refuses_a_husk_that_holds_the_inbox(tmp_path: Path) -> None:
