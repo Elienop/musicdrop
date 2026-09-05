@@ -1380,3 +1380,47 @@ def test_an_exclude_root_with_no_identity_that_names_the_walk_root_is_dropped(
         )
     assert kept == []  # the husk really is excluded by the spelling that names it
     assert [r for r in caplog.records if "at or above" in r.getMessage()] == []
+
+
+def test_the_ignore_list_folds_two_spellings_of_one_directory(tmp_path: Path) -> None:
+    """``Path`` equality does not fold ``<M>/..`` into ``<M>``\'s parent.
+
+    ``MUSICDROP_PLAYLISTS_EXPORT_DIR`` is handed to the finder as the operator
+    wrote it, so the same directory can arrive twice under two spellings.
+    Measured with ``Path``-equality dedupe: the tuple held ``<M>/..`` beside
+    ``<parent>``, and the sweep logged its one at-or-above WARNING twice for one
+    directory.
+
+    Pinned as a count, which is what a duplicate breaks, plus the WARNING count
+    the finder then logs for the pair.
+    """
+    from types import SimpleNamespace
+
+    from app.api.reorganize import _ignore_dirs
+    from app.config import Settings
+    from tests.conftest import build_library, make_test_handle
+
+    root = tmp_path / "music"
+    root.mkdir()
+    _touch(root / "Live" / "Album" / "01.flac")
+    beets_dir = tmp_path / "data"
+    beets_dir.mkdir()
+
+    # ``library:`` OUTSIDE the beets dir, so the DB's folder is ``<parent>`` —
+    # the same directory ``<M>/..`` names, spelled the other way.
+    handle = make_test_handle(build_library(str(tmp_path / "library.db"), str(root)), beets_dir)
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(
+                trash_origins_dir=str(tmp_path / "records"),
+                playlists_export_dir=str(root / ".."),
+            ),
+        )
+    )
+
+    ignore = _ignore_dirs(app, tmp_path / "trash", tmp_path / "records")
+
+    normalised = [os.path.normpath(str(p)) for p in ignore]
+    assert normalised.count(str(tmp_path)) == 1, ignore
+    assert len(set(normalised)) == len(ignore), ignore
