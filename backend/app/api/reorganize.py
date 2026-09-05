@@ -98,7 +98,7 @@ def _ignore_dirs(app: object, trash_dir: Path, origins_dir: Path) -> tuple[Path,
     rule allows — the walk went into the live download inbox, the preview
     offered a still-arriving album's cover-art folder, and the run moved it to
     Trash. Measured in the review round and pinned by
-    ``tests/test_orphans.py::test_the_ignore_list_names_every_protected_root``.
+    ``tests/test_orphans.py::test_the_ignore_list_names_every_app_store_the_guard_protects``.
 
     Two entries are dropped: the music root (the walk root, which
     ``orphans._exclude_ids`` would drop with a WARNING on every sweep) and the

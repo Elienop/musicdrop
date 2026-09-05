@@ -157,8 +157,9 @@ def _child_or_404(app: Any, folder: str) -> tuple[CheckedTrash, Path]:
     The pair is returned rather than re-taken by the caller because the child is
     what gets ``rmtree``'d or moved: deriving it from one check and acting under
     a second is two instants where the route can only honestly claim one. It also
-    halves the work — a bare ``checked_store_dirs`` was measured at 130 stats
-    over the rule's 36 rows, and both routes were paying it twice.
+    halves the work — a bare ``checked_store_dirs`` walks the whole rule (one row
+    per refused relationship, plus two per app store), and both routes were
+    paying it twice.
     """
     checked = _store(app, protected=True)
     try:
@@ -205,7 +206,7 @@ async def list_trash(request: Request) -> TrashListing:
     },
 )
 async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult:
-    """Put a trashed folder back. 409 if busy, 404 if not in Trash, 503 if unmounted."""
+    """Put a trashed folder back. 409 if busy, 404 if not in Trash, 503 if it cannot be moved."""
     app = request.app
     _gate(app)
     async with _swap_lock(app):

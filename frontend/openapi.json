@@ -9462,7 +9462,7 @@
           "trash"
         ],
         "summary": "Restore Trash",
-        "description": "Put a trashed folder back. 409 if busy, 404 if not in Trash, 503 if unmounted.",
+        "description": "Put a trashed folder back. 409 if busy, 404 if not in Trash, 503 if it cannot be moved.",
         "operationId": "restore_trash_api_trash_restore_post",
         "requestBody": {
           "content": {

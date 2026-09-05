@@ -12,7 +12,7 @@ is correct here: we never round-trip through the schema, only validate.
 Unknown beets/plugin keys live on disk in the ruamel ``CommentedMap``.
 
 Currently exports: ``parse_yaml``, ``validate_known_keys``,
-``store_layout_errors``, ``atomic_write``, ``read_naming``, ``save``,
+``store_layout_report``, ``atomic_write``, ``read_naming``, ``save``,
 ``save_naming``, and ``apply`` (asyncio-locked threadpool rebuild that swaps
 ``app.state.beets_library``).
 
@@ -429,7 +429,7 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
     1. **Parse** with ruamel — bad YAML -> HTTP 422 with ``problem_mark`` line/col.
     2. **Schema validate** via ``KnownKeysSchema`` — known-key errors -> 422 with
        per-error ``ValidationErrorItem`` payloads. Then the same
-       :func:`store_layout_errors` row ``POST /api/config/validate`` paints
+       :func:`store_layout_report` row ``POST /api/config/validate`` paints
        in the gutter: a ``directory:`` that would put the music library at or
        under Trash (or over the origin store) is refused HERE, before the write,
        because the file this writes is also the file the process boots from — a
@@ -672,7 +672,7 @@ def save_naming(handle: LibraryHandle, req: SaveNamingRequest) -> BeetsConfigSna
     4. **Atomic write** + return the standard snapshot (``apply_pending`` True
        until Apply reloads beets).
 
-    No :func:`store_layout_errors` step, unlike :func:`save`: step 3 rewrites
+    No :func:`store_layout_report` step, unlike :func:`save`: step 3 rewrites
     exactly two nodes and neither is ``directory:``, so the music root this
     document resolves to is the same one before and after — a naming Save cannot
     move ``M`` into a refused relationship with Trash or the origin store.

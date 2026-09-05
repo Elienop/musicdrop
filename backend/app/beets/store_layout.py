@@ -81,7 +81,7 @@ class StoreLayoutError(Exception):
     ``config_key`` — the ``config.yaml`` key the editor paints, ``None`` between
     two env-derived paths. ``unusable_value`` — set on the two ONE-value
     refusals (would not resolve, cannot be stat'd), read by
-    ``store_layout_errors`` to drop a row the schema already painted: a
+    ``store_layout_report`` to drop a row the schema already painted: a
     ``directory:`` holding a NUL produced two rows saying the same thing.
     ``headline`` — the pair alone, which Apply's 422 is built from.
     """

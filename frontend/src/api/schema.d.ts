@@ -2028,7 +2028,7 @@ export interface paths {
         put?: never;
         /**
          * Restore Trash
-         * @description Put a trashed folder back. 409 if busy, 404 if not in Trash, 503 if unmounted.
+         * @description Put a trashed folder back. 409 if busy, 404 if not in Trash, 503 if it cannot be moved.
          */
         post: operations["restore_trash_api_trash_restore_post"];
         delete?: never;
