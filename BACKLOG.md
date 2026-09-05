@@ -1091,6 +1091,14 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   * The two image caches are participants; the static dir (`/app/static`) is not — it is
     served code, not data.
   * The Apply backstop's degraded state has no API field of its own; it is the 422's message.
+  * The three movers (`trash_folder`, `trash_album_folder`, `restore_album`) guard by PATH; a
+    swap after the guard lands in Trash, where the delete side refuses it by identity.
+  * `delete_artist` pre-checks every album with a full walk and the mover walks each one
+    again — the artist's subtree is stat-walked twice per delete.
+  * No read deadline on an `include:` file: a dead hard-mounted NFS include blocks the
+    worker in `os.read`, as it would block beets.
+  * The `include:` read is a path existence/type oracle for an authenticated session, and it
+    follows `~`. No content is disclosed; beets does not confine includes either.
   * Next touch of the destructive primitives: one `CheckedStore` (trash_dir, origins_dir,
     protected) so they take one keyword rather than three.
 
