@@ -13,6 +13,7 @@ function job(overrides: Partial<ImportJobState> = {}): ImportJobState {
     error: null,
     origin: "manual",
     set_aside: 0,
+    elapsed_seconds: 0,
     ...overrides,
   };
 }
@@ -29,6 +30,7 @@ function sweepState(overrides: Partial<ImportJobState> = {}): ImportJobState {
     error: null,
     origin: "sweep",
     set_aside: 0,
+    elapsed_seconds: 0,
     sweep: {
       processed: 0,
       auto_applied: 0,
