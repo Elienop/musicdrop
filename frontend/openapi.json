@@ -13214,6 +13214,11 @@
                 "type": "null"
               }
             ]
+          },
+          "elapsed_seconds": {
+            "type": "integer",
+            "title": "Elapsed Seconds",
+            "description": "Whole seconds this job has been running, frozen once the phase is done or failed."
           }
         },
         "type": "object",
@@ -13224,7 +13229,8 @@
           "albums",
           "summary",
           "error",
-          "set_aside"
+          "set_aside",
+          "elapsed_seconds"
         ],
         "title": "ImportJobState",
         "description": "Response of ``GET /api/import/{job}``: phase + progress + the live feed."

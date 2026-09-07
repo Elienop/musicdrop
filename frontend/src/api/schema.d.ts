@@ -3525,6 +3525,11 @@ export interface components {
             /** Set Aside */
             set_aside: number;
             sweep?: components["schemas"]["SweepStatus"] | null;
+            /**
+             * Elapsed Seconds
+             * @description Whole seconds this job has been running, frozen once the phase is done or failed.
+             */
+            elapsed_seconds: number;
         };
         /**
          * ImportOptions

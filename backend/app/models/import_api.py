@@ -14,7 +14,7 @@ a browsable multi-album queue. There is no apply-ready shape.
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, StringConstraints
+from pydantic import BaseModel, Field, StringConstraints
 
 from app.models.import_models import ImportOptions, ImportOrigin, Recommendation
 
@@ -190,6 +190,15 @@ class ImportJobState(BaseModel):
     # Sweep-origin jobs surface counters instead of the per-album feed (their
     # ``albums`` list stays empty by design). None for manual/inbox jobs.
     sweep: SweepStatus | None = None
+    # Server-computed (from the server's own monotonic clock) so the number
+    # survives a page reload and never depends on the browser's clock agreeing
+    # with the server's. Keeps counting while a job is parked awaiting a
+    # decision; frozen at the first terminal transition.
+    elapsed_seconds: int = Field(
+        description=(
+            "Whole seconds this job has been running, frozen once the phase is done or failed."
+        ),
+    )
 
 
 class ActiveImportStatus(BaseModel):

@@ -1,4 +1,5 @@
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -1303,3 +1304,82 @@ def test_start_refuses_while_the_attached_library_is_refused() -> None:
     # A clean attach clears it: the field is assigned on every call.
     reg.attach_library(object())
     assert reg.start("/x")
+
+
+# ----- elapsed_seconds: a slow import must be distinguishable from a hung one -----
+
+
+def test_elapsed_seconds_keeps_counting_while_a_job_is_parked() -> None:
+    """A job parked awaiting a decision is still "running" for the operator.
+
+    Measured 2026-09-07: a one-track import took ~5 minutes with nothing logged,
+    so this number is the only signal separating slow from hung. It must not
+    stall the moment the phase leaves ``scanning``.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="parked", bridge=ImportBridge(), phase=ImportPhase.reviewing)
+    job.started_monotonic = time.monotonic() - 125.0
+    reg._job = job
+
+    assert reg.state("parked").elapsed_seconds == 125
+    assert job.ended_monotonic is None  # a parked job's clock is still open
+
+
+def test_elapsed_seconds_is_frozen_once_the_clock_stopped() -> None:
+    """A finished job's number must not keep growing after the last poll."""
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="over", bridge=ImportBridge(), phase=ImportPhase.done)
+    # Started five minutes ago, stopped seven seconds in: a reader that ignored
+    # ``ended_monotonic`` and used the live clock would answer 300, not 7.
+    job.started_monotonic = time.monotonic() - 300.0
+    job.ended_monotonic = job.started_monotonic + 7.0
+    reg._job = job
+
+    assert reg.state("over").elapsed_seconds == 7
+
+
+def test_finished_job_stops_its_clock() -> None:
+    """``phase=done`` latches the clock, so elapsed measures the RUN, not the wait."""
+    reg = ImportJobRegistry(runner=FakeImportRunner(applied=[_applied_outcome(0)]))
+    job_id = reg.start("/music/incoming")
+    _poll(lambda: reg.state(job_id).phase, lambda p: p is ImportPhase.done)
+
+    job = reg.get(job_id)
+    assert job is not None
+    assert job.ended_monotonic is not None  # stop_clock ran on the done transition
+    # Backdate the START only: the frozen end must carry the whole difference.
+    job.started_monotonic = job.ended_monotonic - 42.0
+    assert reg.state(job_id).elapsed_seconds == 42
+
+
+def test_failed_job_stops_its_clock() -> None:
+    """The failure path latches too — a failed import's number must not run on."""
+    reg = ImportJobRegistry(runner=FakeImportRunner(fail_with="beets blew up"))
+    job_id = reg.start("/music/incoming")
+    _poll(lambda: reg.state(job_id).phase, lambda p: p is ImportPhase.failed)
+
+    job = reg.get(job_id)
+    assert job is not None
+    assert job.ended_monotonic is not None
+    job.started_monotonic = job.ended_monotonic - 13.0
+    assert reg.state(job_id).elapsed_seconds == 13
+
+
+def test_stop_clock_latches_on_the_first_terminal_transition() -> None:
+    """done-then-failed must not extend a number already shown to the client."""
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    job = ImportJob(id="latch", bridge=ImportBridge())
+    job.stop_clock()
+    first = job.ended_monotonic
+    time.sleep(0.01)
+    job.stop_clock()
+
+    assert job.ended_monotonic == first

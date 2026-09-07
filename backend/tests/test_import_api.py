@@ -2,6 +2,7 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.import_jobs.fakes import FakeImportRunner
 from app.import_jobs.registry import reset_registry
@@ -97,6 +98,7 @@ def test_job_state_round_trips() -> None:
         summary=None,
         error=None,
         set_aside=1,
+        elapsed_seconds=125,
     )
     dumped = state.model_dump(mode="json")
     assert dumped["phase"] == "reviewing"
@@ -113,6 +115,10 @@ def test_job_state_round_trips() -> None:
     assert dumped["error"] is None
     assert dumped["origin"] == "manual"  # defaulted
     assert dumped["set_aside"] == 1
+    # Required, never optional: the import page always has a number to show.
+    assert dumped["elapsed_seconds"] == 125
+    with pytest.raises(ValidationError):
+        ImportJobState.model_validate({k: v for k, v in dumped.items() if k != "elapsed_seconds"})
 
 
 def test_active_status_defaults_origin_manual() -> None:
@@ -192,6 +198,7 @@ def test_job_state_sweep_block_round_trips() -> None:
         error=None,
         origin="sweep",
         set_aside=0,
+        elapsed_seconds=0,
         sweep=SweepStatus(processed=3, auto_applied=2, banked=1, current_folder="/library/x"),
     )
     dumped = state.model_dump(mode="json")

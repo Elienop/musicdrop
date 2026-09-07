@@ -12,6 +12,7 @@ phase/summary via callbacks while API threads read state and push the choice.
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -117,6 +118,27 @@ class ImportJob:
     # forever and the row 404s, wedging the single import slot.
     pending_parked: dict[int, ParkedAlbum] = field(default_factory=dict)
     pending_duplicate: dict[int, DuplicatePrompt] = field(default_factory=dict)
+    # The elapsed clock behind ImportJobState.elapsed_seconds. MONOTONIC, not
+    # wall time: an NTP step on the server (or a DST change) must not make a
+    # running import's number jump or go backwards. ``ended`` latches at the
+    # first terminal transition so a finished job's number stops growing;
+    # None while the job is still running.
+    started_monotonic: float = field(default_factory=time.monotonic)
+    ended_monotonic: float | None = None
+
+    def stop_clock(self) -> None:
+        """Freeze the elapsed clock at the FIRST terminal transition.
+
+        Latched: done-then-failed (an on_error arriving after on_finish) must
+        not extend a number the client has already been shown.
+        """
+        if self.ended_monotonic is None:
+            self.ended_monotonic = time.monotonic()
+
+    def elapsed_seconds(self) -> int:
+        """Whole seconds since start — live while running, frozen once stopped."""
+        end = time.monotonic() if self.ended_monotonic is None else self.ended_monotonic
+        return int(end - self.started_monotonic)
 
 
 class LibraryRefusedError(RuntimeError):
@@ -311,6 +333,7 @@ class ImportJobRegistry:
                 and self._job.phase != ImportPhase.failed
             ):
                 self._drain_locked(self._job)
+                self._job.stop_clock()
                 self._job.phase = ImportPhase.done
                 self._job.summary = self._summarize(self._job)
                 finished = True
@@ -324,6 +347,7 @@ class ImportJobRegistry:
         matched = False
         with self._lock:
             if self._job is not None and self._job.id == job_id:
+                self._job.stop_clock()
                 self._job.phase = ImportPhase.failed
                 self._job.error = message
                 matched = True
@@ -766,6 +790,7 @@ class ImportJobRegistry:
                 origin=job.origin,
                 set_aside=set_aside,
                 sweep=job.sweep.model_copy() if job.sweep is not None else None,
+                elapsed_seconds=job.elapsed_seconds(),
             )
 
     def active_status(self) -> ActiveImportStatus:
