@@ -130,6 +130,14 @@ export function useStartImport() {
  * albums stream into the feed promptly; the loop stops at a terminal phase. */
 const IMPORT_POLL_MS = 1000;
 
+/** Poll cadence (ms) while the run is parked on the operator. beets runs under
+ * `config["threaded"] = False` (backend/app/beets/import_session.py), so its
+ * pipeline is serial and a parked album blocks that one worker thread on
+ * `reply.get()` — nothing but the server's elapsed clock can move until a
+ * decision is pushed. Both decision mutations invalidate this query, so a
+ * decision never waits for this interval. */
+const IMPORT_PARKED_POLL_MS = 10_000;
+
 /** Phases where the worker is still running — the feed is live and should poll.
  * `applying` is included defensively: beets exposes no signal to set it, so it
  * may never be observed, but if it is it's a transient working state, not
@@ -144,6 +152,21 @@ const ACTIVE_PHASES: ReadonlySet<ImportPhase> = new Set([
  * import run page to flag terminal states. */
 export function isTerminalPhase(phase: ImportPhase): boolean {
   return phase === "done" || phase === "failed";
+}
+
+/** Whether the run is parked on a human decision — the worker is blocked and
+ * nothing can change until the operator answers. Drives both the poll cadence
+ * and the run page's working line.
+ *
+ * Keyed on the FEED ROWS, not on `phase`: `phase` flips to "reviewing" at the
+ * first parked album and NEVER returns to "scanning"
+ * (`registry.drain`, backend/app/import_jobs/registry.py), so it still reads
+ * "reviewing" while the worker scans the rest of the folder. The same two
+ * statuses are what the Review page counts as decisions. */
+export function isAwaitingOperator(state: ImportJobState): boolean {
+  return state.albums.some(
+    (a) => a.status === "needs_review" || a.status === "needs_dup_resolution",
+  );
 }
 
 async function fetchJob(jobId: string): Promise<ImportJobState> {
@@ -164,8 +187,10 @@ async function fetchJob(jobId: string): Promise<ImportJobState> {
 /**
  * Poll an import job's state (`GET /api/import/{job_id}`). Disabled until a
  * `jobId` exists (no request, no error). `refetchInterval` is a function so the
- * loop runs only while the phase is active (scanning/reviewing/applying) and
- * returns `false` once terminal (done/failed) or when the job is not found
+ * loop runs only while the phase is active (scanning/reviewing/applying), backs
+ * off to {@link IMPORT_PARKED_POLL_MS} while the run is parked on the operator
+ * ({@link isAwaitingOperator}), and returns `false` once terminal (done/failed)
+ * or when the job is not found
  * (404 -> `ImportJobNotFoundError`). `retry: false` disables React Query's
  * per-request retry; a transient error still keeps the poll loop (it may
  * self-heal) behind the page's manual retry, whereas a 404 stops it for good.
@@ -187,11 +212,17 @@ export function useImportJob(jobId: string | undefined) {
       if (query.state.error instanceof ImportJobNotFoundError) {
         return false;
       }
-      const phase = query.state.data?.phase;
-      if (phase === undefined || ACTIVE_PHASES.has(phase)) {
+      const state = query.state.data;
+      if (state === undefined) {
         return IMPORT_POLL_MS;
       }
-      return false;
+      if (!ACTIVE_PHASES.has(state.phase)) {
+        return false;
+      }
+      // Back off while the operator owes a decision: the worker is blocked, so
+      // a 1s poll would only re-read the same payload (60 requests a minute for
+      // as long as the operator takes — the measured defect).
+      return isAwaitingOperator(state) ? IMPORT_PARKED_POLL_MS : IMPORT_POLL_MS;
     },
   });
 }

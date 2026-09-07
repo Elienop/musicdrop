@@ -1,7 +1,11 @@
 import { describe, expect, test } from "vitest";
 
 import type { ImportJobState } from "@/api/useImport";
-import { announceMessage } from "@/pages/import/importStatus";
+import {
+  ELAPSED_AFTER_S,
+  announceMessage,
+  elapsedLabel,
+} from "@/pages/import/importStatus";
 
 function job(overrides: Partial<ImportJobState> = {}): ImportJobState {
   return {
@@ -187,5 +191,27 @@ describe("announceMessage", () => {
     expect(
       announceMessage({ isPending: false, isError: false, notFound: false, data: paused }),
     ).toBe("Sweep paused. Processed 5, imported 3, banked 2.");
+  });
+});
+
+describe("elapsedLabel", () => {
+  // Below the threshold the working line must read exactly as it did before,
+  // so a fast import gains no extra text at all.
+  test.each([0, 1, ELAPSED_AFTER_S - 1])("is null at %i seconds", (seconds) => {
+    expect(elapsedLabel(seconds)).toBeNull();
+  });
+
+  // A number and a unit — the owner's "no long sentences unecessary".
+  test.each([
+    [ELAPSED_AFTER_S, "30s"],
+    [59, "59s"],
+    [60, "1m"],
+    [119, "1m"],
+    [600, "10m"],
+    [3599, "59m"],
+    [3600, "1h 0m"],
+    [7500, "2h 5m"],
+  ])("renders %i seconds as %s", (seconds, expected) => {
+    expect(elapsedLabel(seconds)).toBe(expected);
   });
 });

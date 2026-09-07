@@ -17,7 +17,11 @@ import {
   useStartImport,
   useSubmitChoice,
 } from "@/api/useImport";
-import type { Candidate, ImportJobState } from "@/api/useImport";
+import type {
+  Candidate,
+  ImportAlbumSummary,
+  ImportJobState,
+} from "@/api/useImport";
 import { server } from "@/test/msw-server";
 
 const IMPORT_URL = `${window.location.origin}/api/import`;
@@ -246,6 +250,102 @@ describe("useImportJob", () => {
     const callsAtError = calls;
     await act(() => new Promise((r) => setTimeout(r, 1500)));
     expect(calls).toBe(callsAtError);
+  });
+});
+
+/** One feed row in the given status; only `status` matters to the cadence. */
+function feedRow(status: ImportAlbumSummary["status"]): ImportAlbumSummary {
+  return {
+    index: 0,
+    folder: "/music/incoming/Kid A",
+    artist: "Radiohead",
+    album: "Kid A",
+    recommendation: "medium",
+    confidence: 76,
+    status,
+    album_id: null,
+    did_not_land: false,
+  };
+}
+
+/** The cadence the live cache is actually driving: call the query's own
+ * `refetchInterval` with the cached query, the way useLyricsBackfill's test
+ * pins its own. Reading the option directly is the only way to tell 1s from
+ * 10s without sitting through a wall-clock wait. */
+async function pollIntervalFor(job: ImportJobState): Promise<number | false> {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  server.use(http.get(JOB_URL, () => HttpResponse.json(job)));
+  const localWrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  );
+  const { result } = renderHook(() => useImportJob("job-1"), {
+    wrapper: localWrapper,
+  });
+  await waitFor(() => expect(result.current.isSuccess).toBe(true));
+  const query = queryClient
+    .getQueryCache()
+    .find({ queryKey: ["import", "job", "job-1"] });
+  const options = query?.options as unknown as {
+    refetchInterval: (q: unknown) => number | false;
+  };
+  expect(typeof options.refetchInterval).toBe("function");
+  return options.refetchInterval(query);
+}
+
+describe("useImportJob poll cadence", () => {
+  test("stays fast whenever the worker is the one working", async () => {
+    // Nothing scanned yet.
+    expect(
+      await pollIntervalFor(
+        makeJob({
+          phase: "scanning",
+          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+          albums: [],
+        }),
+      ),
+    ).toBe(1000);
+    // The regression the phase can't see: `phase` latches to "reviewing" at the
+    // first parked album and never returns to "scanning", so a run that is
+    // scanning album 2 after one decision still reads "reviewing". No row is
+    // parked, so the feed is live and the cadence must stay fast.
+    expect(
+      await pollIntervalFor(
+        makeJob({
+          phase: "reviewing",
+          progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0 },
+          albums: [feedRow("applied")],
+        }),
+      ),
+    ).toBe(1000);
+  });
+
+  // beets runs serially (`config["threaded"] = False`) and a parked album blocks
+  // that one worker thread, so nothing but the elapsed clock can change until
+  // the operator answers. The measured defect was 60 requests a minute for the
+  // three minutes one decision took.
+  test.each(["needs_review", "needs_dup_resolution"] as const)(
+    "backs off to 10s while an album is parked (%s)",
+    async (status) => {
+      expect(
+        await pollIntervalFor(
+          makeJob({
+            phase: "reviewing",
+            progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
+            albums: [feedRow(status)],
+          }),
+        ),
+      ).toBe(10000);
+    },
+  );
+
+  test("stops entirely once the phase is terminal", async () => {
+    expect(
+      await pollIntervalFor(
+        makeJob({ phase: "done", summary: "1 imported, 0 skipped" }),
+      ),
+    ).toBe(false);
   });
 });
 

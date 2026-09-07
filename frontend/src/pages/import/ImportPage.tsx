@@ -10,6 +10,7 @@ import {
   ImportJobNotFoundError,
   ImportStartRejectedError,
   RECOMMENDATION_LABEL,
+  isAwaitingOperator,
   isTerminalPhase,
   useImportJob,
   usePauseSweep,
@@ -40,7 +41,7 @@ import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useThrottledValue } from "@/lib/useThrottledValue";
 import { cn } from "@/lib/utils";
-import { announceMessage } from "@/pages/import/importStatus";
+import { announceMessage, elapsedLabel } from "@/pages/import/importStatus";
 
 /** Origin threaded onto every link that leaves the feed (decision screens,
  * applied-album links) so back links and post-submit navigation return to
@@ -377,8 +378,18 @@ function ImportShell({ children }: Readonly<{ children: React.ReactNode }>) {
 
 /** scanning/reviewing/applying: a working line + the growing feed. */
 function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: string }>) {
-  const working = state.phase === "scanning" || state.phase === "applying";
+  // One predicate for the spinner AND the poll cadence (useImport backs off on
+  // the same answer): a parked album blocks beets' single worker thread, so
+  // while the operator owes a decision nothing else is happening. `phase` can't
+  // answer this — it latches to "reviewing" at the first parked album and never
+  // returns to "scanning", so a run that is scanning album 2 of 10 after one
+  // decision would otherwise sit spinner-less and look wedged.
+  const working = !isTerminalPhase(state.phase) && !isAwaitingOperator(state);
   const scanningEmpty = working && state.albums.length === 0;
+  // How long the server says this job has been running — null under the
+  // threshold, so a fast import gains no extra text. Shown only while working:
+  // "is this wedged?" is not a question while the run is waiting on a human.
+  const elapsed = working ? elapsedLabel(state.elapsed_seconds) : null;
   // `progress` has no duplicate counter (backend), so derive the
   // duplicate-pending count from the feed rows for the cue line below.
   const needsDup = state.albums.filter(
@@ -390,27 +401,32 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
         {working && (
           <Spinner className="size-4 animate-spin" aria-hidden="true" />
         )}
-        {/* While scanning with nothing in the feed yet, the count line would
-            read "0 albums imported" — say what's actually happening instead. */}
-        {scanningEmpty ? (
-          <span>Scanning your folder&hellip;</span>
-        ) : (
-          <span>
-            {/* No known total (the feed grows as the worker reads) — count
-                what's applied + flag whether one album awaits a decision.
-                `needs_review` is at most 1 (review is sequential), but derive
-                the count so that invariant is self-evident. */}
-            {state.progress.applied}{" "}
-            {state.progress.applied === 1 ? "album" : "albums"} imported
-            {state.progress.skipped > 0 &&
-              ` · ${state.progress.skipped} skipped`}
-            {state.progress.needs_review > 0 &&
-              ` · ${state.progress.needs_review} album${state.progress.needs_review === 1 ? "" : "s"} needs review`}
-            {/* Import-time duplicates are named "already in library" so
-                "Duplicates" (the Manage page) names exactly one thing. */}
-            {needsDup > 0 && ` · ${needsDup} already in library`}
-          </span>
-        )}
+        <span>
+          {/* While scanning with nothing in the feed yet, the count line would
+              read "0 albums imported" — say what's actually happening instead. */}
+          {scanningEmpty ? (
+            <>Scanning your folder&hellip;</>
+          ) : (
+            <>
+              {/* No known total (the feed grows as the worker reads) — count
+                  what's applied + flag whether one album awaits a decision.
+                  `needs_review` is at most 1 (review is sequential), but derive
+                  the count so that invariant is self-evident. */}
+              {state.progress.applied}{" "}
+              {state.progress.applied === 1 ? "album" : "albums"} imported
+              {state.progress.skipped > 0 &&
+                ` · ${state.progress.skipped} skipped`}
+              {state.progress.needs_review > 0 &&
+                ` · ${state.progress.needs_review} album${state.progress.needs_review === 1 ? "" : "s"} needs review`}
+              {/* Import-time duplicates are named "already in library" so
+                  "Duplicates" (the Manage page) names exactly one thing. */}
+              {needsDup > 0 && ` · ${needsDup} already in library`}
+            </>
+          )}
+          {/* Same middot dialect as the counts, inside the one text flow so it
+              reads as part of the line rather than a second column. */}
+          {elapsed !== null && ` · ${elapsed}`}
+        </span>
       </p>
 
       {state.albums.length === 0 ? (

@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { ImportJobState } from "@/api/useImport";
 import { ImportPage } from "@/pages/import/ImportPage";
+import { ELAPSED_AFTER_S } from "@/pages/import/importStatus";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
 
@@ -572,6 +573,100 @@ describe("ImportPage — live feed", () => {
     renderAt("/import?job=job-1");
 
     expect(await screen.findByText(/scanning your folder/i)).toBeInTheDocument();
+  });
+
+  test("a short scan's cue carries no elapsed value at all", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "scanning",
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+            albums: [],
+            elapsed_seconds: ELAPSED_AFTER_S - 1,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    // Exactly today's line — a fast import must gain no extra text.
+    expect(
+      await screen.findByText("Scanning your folder…"),
+    ).toBeInTheDocument();
+  });
+
+  test("a long scan's cue carries the elapsed value", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "scanning",
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+            albums: [],
+            elapsed_seconds: 132,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    // The whole point: a ten-minute MusicBrainz lookup must not look wedged.
+    expect(
+      await screen.findByText("Scanning your folder… · 2m"),
+    ).toBeInTheDocument();
+  });
+
+  test("the cue keeps working after a decision, while the worker scans on", async () => {
+    // `phase` latches to "reviewing" at the first parked album and never
+    // returns to "scanning", so this run — album 1 decided, nothing parked,
+    // the worker looking up album 2 — used to sit with no spinner and a frozen
+    // count for as long as the lookup took.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "reviewing",
+            progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0 },
+            albums: [
+              {
+                index: 0,
+                folder: "/music/incoming/Radiohead - OK Computer",
+                artist: "Radiohead",
+                album: "OK Computer",
+                recommendation: "strong",
+                confidence: 99,
+                status: "applied",
+                album_id: 41,
+                did_not_land: false,
+              },
+            ],
+            elapsed_seconds: 300,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(
+      await screen.findByText("1 album imported · 5m"),
+    ).toBeInTheDocument();
+  });
+
+  test("a run parked on the operator shows no elapsed value", async () => {
+    // The clock answers "is this wedged?"; while the run waits on a human it is
+    // only counting the operator's own thinking time, so it stays off.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(makeJob({ elapsed_seconds: 600 })),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(
+      await screen.findByText("1 album imported · 1 album needs review"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/10m/)).not.toBeInTheDocument();
   });
 
   test("the live cue surfaces a skipped count when any album was skipped", async () => {

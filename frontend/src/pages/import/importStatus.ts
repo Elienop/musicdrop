@@ -60,3 +60,18 @@ function progressMessage(data: ImportJobState): string {
   }
   return m;
 }
+
+/** Seconds a run must pass before its working line carries the elapsed value.
+ * Below it the wait is not worth asking about, so a fast import gains no text. */
+export const ELAPSED_AFTER_S = 30;
+
+/** The working line's elapsed suffix — `45s`, `12m`, `2h 5m` — or null below
+ * {@link ELAPSED_AFTER_S}, where the line reads exactly as it did before.
+ * Truncates to whole units, like the server's own whole-second count. */
+export function elapsedLabel(seconds: number): string | null {
+  if (seconds < ELAPSED_AFTER_S) return null;
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
