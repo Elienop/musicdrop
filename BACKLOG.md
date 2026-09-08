@@ -1504,23 +1504,30 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   insert into `_memory` directly.
 
 - ~~**The candidate page overflows worst BETWEEN the breakpoints**~~ — **CLOSED 2026-09-08 with a
-  container query, and the four recorded bands were two continuous ones.** The panel now declares
-  `@container/panel` and stacks its cover above the fields below 27rem of panel content.
-  Side-by-side costs 208px (`w-48` cover + `gap-4`) plus 128px per `Field` (`w-12` label, `gap-2`,
-  the "changed" badge and its gap, 64+8), so the widest fixture value needed 420px of panel and
-  first got it at a 1216px viewport. Swept 320→1920 in steps of 32 (51 widths, the same
-  realistic fixture): **before**, at least one value was 0-width at 17 of the 51 widths — all six
-  at 320/640/768/800/832/864, the After panel's Album and Label at 11 more — and at least one was
-  clipped at 24 of them; document overflow was 57/17/41/92/59px at 320/360/640/768/834. 320 and 800/832/864
-  are inside the second band and were never named. **After**, no value is 0 at any width, document
-  overflow is 0 at every width, and the one remaining clip is the After panel's Album at a 768px
-  viewport (75/84px — the app's narrowest panel, 203px of content, because the `md` sidebar has
-  opened but `sm:grid-cols-2` has already halved it). 1280 gives the panel 459px of content, so
-  the desktop view stays side-by-side and is byte-identical to before. Only two widths in the whole
-  sweep were clean side-by-side before and stack now: 512 (430px of panel) and 1216 (427px), both
-  a handful of pixels under the threshold and both fully readable stacked. Container-query size is
-  the panel's CONTENT box, measured (`100cqw` = `clientWidth` − 32 at every width). `Field` was
-  left alone: stacked, its label and badge cost 128px out of ≥203px, which every value clears.
+  container query on the panel, and 2026-09-08 (second pass) with a second one on `Field`.**
+  The panel declares `@container/panel` and stacks its cover above the fields below 27rem of
+  panel content; below 14rem the `Field` label takes its own line as well.
+  **All widths below are the panel's CONTENT box with the scrollbar present, swept 320→1920 in
+  steps of 8 (201 widths, one realistic fixture).** The first pass recorded `clientWidth` taken
+  with scrollbars hidden and called it the content box, so every panel width it quotes reads
+  39–47px wide; they are corrected here. Container-query size IS the content box — verified
+  with a `100cqw` probe, equal to `clientWidth` − 32 at all 201 widths.
+  Side-by-side costs 208px (`w-48` cover + `gap-4`) plus 128px per `Field` (`w-12` label 48,
+  `gap-2` 8, the "changed" badge 64 and its gap 8 — measured), so a value clears 96px (about 13
+  characters) from 432px of panel up, and the panel first reaches 432px at a **1248px** viewport.
+  **Before the panel query**: a value was 0-width at 67 of the 201 widths and clipped at 69 more,
+  and the document overflowed at 47 widths (320→960, max 100px — 72/32/49/100/68px at
+  320/360/640/768/832). **After it**, no value was 0 at any width and document overflow was 0
+  everywhere, but **7 values were still clipped, at 5 widths (768/776/784/792/800) across two
+  fields** — the After panel's Album and Label. That was the `Field` row, not the cover: at the
+  app's narrowest panel (196px of content at a 768px viewport, because the `md` sidebar has opened
+  but `sm:grid-cols-2` has already halved it) the shared line left 67px for an 84px value.
+  **After the `Field` query, 0 values are clipped and 0 are 0-width at any of the 201 widths.**
+  It changed 72 of 1608 panel×field×width measurements; the other 1536 are byte-identical, and
+  every width that moved is 320 or 768–824. 1280 gives the panel 452px, so the desktop stays
+  side-by-side with 20px to spare and is byte-identical throughout. Five widths were clean
+  side-by-side before either query and stack now — 520, 528, 1224, 1232, 1240 (423/431/424/428/432px
+  of panel) — all at or just under the 432px threshold and all fully readable stacked.
 
 - ~~**`AlbumRow`'s subtitle truncates to zero width at 360px**~~ — **CLOSED 2026-09-08, same
   mechanism, and the stop condition held.** The row's text column declares `@container/rowtext`
@@ -1533,12 +1540,35 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   at 320.
   **After**, the subtitle is the full column width at every width, the middot no longer opens the
   line, and document overflow is 0. **136 of the 153 surface×width measurements are byte-identical
-  to before; the 17 that changed are all at viewports ≤480.** Two of them (feed/Review at 448 and
-  480) had a whole subtitle already and now stack — the price of one threshold sized for the wider
-  `/duplicates` meta. Adjacent, NOT fixed: the TITLE row has the same shape (`min-w-0 truncate`
-  title beside a `shrink-0` badge) and is cut at 320 — 7/38px in the feed, 2/87px on
-  `/duplicates`, whole from 414. Whether the title or the badge wins that space is the same
-  `AlbumRow` design call, and it is the owner's.
+  to before; the 17 that changed are all at viewports ≤480.** Four of them (the feed and Review
+  rows at 448 and 480) had a whole subtitle already and now stack — the price of one threshold
+  sized for the wider `/duplicates` meta. Adjacent, NOT fixed: the TITLE row has the same shape
+  (`min-w-0 truncate` title beside a `shrink-0` badge) and is cut at 320 — 7/38px in the feed,
+  2/87px on `/duplicates`, whole from 414. Whether the title or the badge wins that space is the
+  same `AlbumRow` design call, and it is the owner's.
+  **Scope of the three surfaces above: there are FIVE `<AlbumRow>` call sites, and the sweep
+  measured three.** `ReviewPage`'s inbox row passes a fixed `N tracks`, so the threshold holds
+  there by the same arithmetic. `BankSection`'s did not, and that is fixed separately below.
+
+- ~~**A failed bank row's error overran the row and starved its subtitle**~~ — **CLOSED
+  2026-09-08.** `BankSection` joined `row.error` into `AlbumRow`'s `meta`; that slot is
+  `shrink-0`, so its used width is max-content and it can neither shrink nor wrap, and the string
+  is `str(exc)` from `app/bank/apply_runner.py:281` — unbounded. Measured on `/review` with a
+  matched-but-failed row (76% · medium · a 115-character beets error), 320→1920 in steps of 8:
+  the meta went **845px** wide, the sibling `min-w-0 truncate` subtitle was `clientWidth` **0 at
+  98 of the 201 widths** (568→1368), the meta's ink spilled past its own column at **119** widths
+  (max **573px**) and painted across the row's trash and Open controls at **115** of them.
+  No cap fixes it in the slot: the widest legitimate meta across the other four callers is 185.1px
+  (`/duplicates`) and the 18rem threshold is sized for that, so keeping the budget leaves the error
+  about 9 characters. The percentage and recommendation stay in the slot; the error moved to its
+  own line below the row (`break-words`, `line-clamp-2`, whole string on `title`). **After**: the
+  subtitle is 0-width at no width, the meta is 88px, its ink spills past the column at one width
+  (8px, at 320, where the row's own controls leave the text column 43px — pre-existing and shared
+  by every bank row) and overlaps a control at none. Document overflow was 0 before and after. A
+  failed row is 32px taller at ≥1280.
+  Adjacent, NOT fixed: at 320–360 a bank row's text column is 43–83px because the checkbox and
+  three controls take the rest, so its title and subtitle both ellipse hard. That is the same
+  `AlbumRow` title-vs-badge density call recorded above, and it is the owner's.
 
 - **The `view` link in `CandidateReview`'s match header has no `focus-ring` class** and falls back
   to the UA outline, while `styles.css:191-208` calls `focus-ring` this app's one dialect. Belongs
