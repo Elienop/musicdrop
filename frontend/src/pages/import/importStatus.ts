@@ -167,8 +167,10 @@ export const ELAPSED_AFTER_S = 30;
  * the ordinary space before it is where the line is allowed to break — which
  * means a wrapped line CAN open with the middot (measured: 22 of 71 error
  * lengths at 360px, back when the failed panel glued the duration to the raw
- * exception with this constant). The failed panel builds it again for its
- * count line, but that line is the page's own short text, not an exception.
+ * exception with this constant). The failed panel builds it again for its count
+ * line — the page's own text, not an exception. Measured at 360px: one line at
+ * realistic counts, and at six figures it wraps and opens with the middot,
+ * exactly as JobDone's identical line already does.
  *
  * Import-page-local on purpose. `ReviewPage` and `CandidateReview` still build
  * the same confidence + recommendation string with a plain-space middot; those
