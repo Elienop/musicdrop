@@ -430,7 +430,7 @@ export function BankSection() {
  * Open/Ignore/Remove.
  * The status chip names the lifecycle for settled rows; needs_review rows
  * show the REASON instead (what kind of decision awaits). Failed rows carry
- * their error in the meta line. */
+ * their error on its own line below the row. */
 
 /** Chip tone per status: the decision awaiting stands out, the attention
  * states recede to an outline, and the settled/quiet ones recede furthest. */
@@ -461,8 +461,14 @@ function BankRow({
   const metaBits = [
     row.confidence != null ? `${Math.round(row.confidence)}%` : null,
     row.recommendation ?? null,
-    row.status === "failed" && row.error ? row.error : null,
   ].filter((b): b is string => Boolean(b));
+  // NOT in `meta`: that slot is `shrink-0`, so its used width is max-content and
+  // it can neither shrink nor wrap. This string is `str(exc)` from the apply
+  // runner — unbounded — and it measured 747px there, four times the widest
+  // legitimate meta (185px on /duplicates), which starved the sibling subtitle
+  // to 0-7px from 568px to 1280px of viewport and painted up to 475px past the
+  // column, across the row's own controls.
+  const failure = row.status === "failed" ? (row.error ?? "") : "";
   return (
     <li className="flex items-center gap-0">
       {row.status !== "applying" ? (
@@ -534,6 +540,24 @@ function BankRow({
             </div>
           }
         />
+        {failure !== "" && (
+          // Its own line, so the width it needs is the row's, not the meta
+          // slot's. `break-words` for the unbroken paths beets puts in these
+          // messages, `line-clamp-2` so an unbounded string cannot grow the row
+          // without limit, and `title` for the rest — the same hover recovery
+          // AlbumRow's own truncating spans use.
+          // The padding is on the wrapper, not the clamped <p>: line-clamp
+          // clips at the PADDING box, so a third line paints into any padding
+          // the clamped element carries itself (measured at 360px).
+          <div className="px-4 pb-3">
+            <p
+              className="text-muted-foreground line-clamp-2 text-sm break-words"
+              title={failure}
+            >
+              {failure}
+            </p>
+          </div>
+        )}
       </div>
     </li>
   );

@@ -444,6 +444,37 @@ describe("ReviewPage", () => {
     );
   });
 
+  // `error` is `str(exc)` from the apply runner, so it is unbounded. AlbumRow's
+  // `meta` slot is `shrink-0` — used width max-content, cannot shrink or wrap —
+  // and an unbounded string there starved the sibling subtitle to 0-7px from
+  // 568px to 1280px of viewport and painted 475px past the column, across the
+  // row's own controls. jsdom computes no layout, so what a test can hold is
+  // that the error is OUT of that slot: its own element, whole, with a `title`.
+  test("a failed row carries its error on its own line, not in the meta slot", async () => {
+    const failure =
+      "beets refused the import: /srv/music/incoming/Radiohead_-_Amnesiac/disc1 is not writable";
+    server.use(
+      http.get(BANK, () =>
+        HttpResponse.json({
+          items: [bankRow({ id: "b2", album: "Album Y", status: "failed", error: failure })],
+          total: 1,
+          total_all: 1,
+          offset: 0,
+          limit: 48,
+        }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+    const section = await screen.findByRole("region", { name: /waiting for review/i });
+    const line = await within(section).findByTitle(failure);
+    // Whole text, and NOTHING else in that element: joining it into the meta
+    // line would put the confidence and recommendation in here with it.
+    expect(line.textContent).toBe(failure);
+    // The meta bits survive the move — they are what the slot is sized for.
+    expect(within(section).getByText(/71%/)).toBeInTheDocument();
+    expect(line).not.toContainElement(within(section).getByText(/71%/));
+  });
+
   test("an all-resolved bank keeps the section and its history hint reachable", async () => {
     // The active view is empty (everything's resolved) but rows still exist —
     // the section, both filters, and a hint back to history must stay visible.
