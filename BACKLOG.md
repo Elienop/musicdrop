@@ -383,6 +383,16 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   reasons are written out in `frontend/eslint.config.js` under "DELIBERATELY OFF"; do not
   re-derive them, and do not enable either rule without porting the suppression first.
 
+  **Added 2026-09-08: `sonarjs/no-alphabetical-sort` (S2871), taking the gate to 27 rules.**
+  The family's whole life was one branch — `api/issues/search` reports 0 S2871 against
+  `musicdrop` ever, resolved or open — so lock-on-clear applies to a family that never reached
+  `main`. The twin is NOT `@typescript-eslint/require-array-sort-compare`, the obvious pick:
+  S2871's `implementation` is `original` with `eslintId` `no-alphabetical-sort`, so SonarJS ships
+  its own rule and that IS what the analyzer runs. The typescript-eslint rule is wrong in both
+  directions, measured on the offending line: at its default (`ignoreStringArrays: true`) it
+  reports NOTHING, and with that option off it has no equivalent of Sonar's
+  `isSortUsedForNormalizationComparison` exemption, so it would be stricter than the server.
+
   **The gate now lints its own config, which it could not before.**
   `frontend/eslint.config.js` used to resolve to ZERO enabled rules — every block needed the
   typed parser and no tsconfig included a `.js` file at the frontend root — so the one `.js`
@@ -1509,12 +1519,19 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   panel content; below 14rem the `Field` label takes its own line as well.
   **All widths below are the panel's CONTENT box with the scrollbar present, swept 320→1920 in
   steps of 8 (201 widths, one realistic fixture).** The first pass recorded `clientWidth` taken
-  with scrollbars hidden and called it the content box, so every panel width it quotes reads
-  39–47px wide; they are corrected here. Container-query size IS the content box — verified
+  with scrollbars hidden and called it the content box, so its three first-pass panel widths
+  (558/286/235 at 608/640/768) read **47/39/39px too wide**; they are 511/247/196 and are
+  corrected here. The spread is not a constant: 32px of it is the `p-4` padding, and the rest is
+  the scrollbar's effect on the LAYOUT, which differs by arm — at 608 the panels are stacked
+  full-width so 15px of scrollbar costs the panel all 15, while at 640 and 768 `sm:grid-cols-2`
+  has halved it so 15px of viewport costs ~7px of panel. The already-content-box figures moved by
+  that same ~7px (203→196, 459→452). Container-query size IS the content box — verified
   with a `100cqw` probe, equal to `clientWidth` − 32 at all 201 widths.
   Side-by-side costs 208px (`w-48` cover + `gap-4`) plus 128px per `Field` (`w-12` label 48,
   `gap-2` 8, the "changed" badge 64 and its gap 8 — measured), so a value clears 96px (about 13
-  characters) from 432px of panel up, and the panel first reaches 432px at a **1248px** viewport.
+  characters) from 432px of panel up. The panel content box moves at **0.5px per px of viewport**
+  across this whole range (that is `sm:grid-cols-2`), and the `@min-[27rem]` arm first engages at
+  a **1248px** viewport, where the panel is **436px** — it crosses 432 between 1240 and 1248.
   **Before the panel query**: a value was 0-width at 67 of the 201 widths and clipped at 69 more,
   and the document overflowed at 47 widths (320→960, max 100px — 72/32/49/100/68px at
   320/360/640/768/832). **After it**, no value was 0 at any width and document overflow was 0
@@ -1522,17 +1539,28 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   fields** — the After panel's Album and Label. That was the `Field` row, not the cover: at the
   app's narrowest panel (196px of content at a 768px viewport, because the `md` sidebar has opened
   but `sm:grid-cols-2` has already halved it) the shared line left 67px for an 84px value.
-  **After the `Field` query, 0 values are clipped and 0 are 0-width at any of the 201 widths.**
+  **After the `Field` query, 0 values are clipped and 0 are 0-width at any of the 201 widths** —
+  for THIS fixture. That is not a property `Field` guarantees: with a realistic long artist the
+  same sweep clips 532 of the 1608 measurements. The query removes the arithmetic squeeze, not
+  every possible overflow.
   It changed 72 of 1608 panel×field×width measurements; the other 1536 are byte-identical, and
   every width that moved is 320 or 768–824. 1280 gives the panel 452px, so the desktop stays
   side-by-side with 20px to spare and is byte-identical throughout. Five widths were clean
-  side-by-side before either query and stack now — 520, 528, 1224, 1232, 1240 (423/431/424/428/432px
-  of panel) — all at or just under the 432px threshold and all fully readable stacked.
+  side-by-side before either query and stack now — 520, 528, 1224, 1232, 1240
+  (423/431/**423.5/427.5/431.5**px of panel) — all just under the 432px threshold and all fully
+  readable stacked. The last three were first recorded as 424/428/432 from `clientWidth` − 32,
+  which rounds: 432 could not have been in a "stacks now" list, because at exactly 27rem the
+  side-by-side arm applies. The panel is 431.5px there.
+  Second pass, on the stacked arm only: the fields column carries `gap-2` below 14rem and keeps
+  `gap-0.5` above it. Stacked, a label sits 0px from its own value, so 2px to the next field read
+  as eight equal lines rather than four labelled pairs; measured at 768 the gap between fields is
+  now 8px against 0 inside one, and at 360 and 1280 it is still 2px.
 
 - ~~**`AlbumRow`'s subtitle truncates to zero width at 360px**~~ — **CLOSED 2026-09-08, same
   mechanism, and the stop condition held.** The row's text column declares `@container/rowtext`
   and the subtitle line stacks below 18rem of column, dropping the separator with it. The
-  threshold is one number for callers with different meta widths: the meta slot is max-content —
+  threshold is one number for callers with different meta widths: in the row arm the meta slot is
+  max-content —
   130.5px in the import feed, 185.1px on `/duplicates` — so one line needs 218px/272px for a 66px
   artist, and at 288px they get 136px/82px. Measured on all three surfaces at 320→1920 in steps of
   32: **before**, the subtitle was `clientWidth` 0 at 320 and 360 on all three surfaces and cut at
@@ -1552,23 +1580,66 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - ~~**A failed bank row's error overran the row and starved its subtitle**~~ — **CLOSED
   2026-09-08.** `BankSection` joined `row.error` into `AlbumRow`'s `meta`; that slot is
-  `shrink-0`, so its used width is max-content and it can neither shrink nor wrap, and the string
-  is `str(exc)` from `app/bank/apply_runner.py:281` — unbounded. Measured on `/review` with a
-  matched-but-failed row (76% · medium · a 115-character beets error), 320→1920 in steps of 8:
-  the meta went **845px** wide, the sibling `min-w-0 truncate` subtitle was `clientWidth` **0 at
-  98 of the 201 widths** (568→1368), the meta's ink spilled past its own column at **119** widths
-  (max **573px**) and painted across the row's trash and Open controls at **115** of them.
+  `shrink-0`, so in the ROW arm its used width is max-content and it can neither shrink nor wrap,
+  and the string is `str(exc)` from `app/bank/apply_runner.py` — unbounded. There are TWO such
+  sources: `:281` re-raises the runner's exception, and `:506` writes
+  `state.error or "import failed"`.
+  **Every width below is measured with a real 15px scrollbar present**, 320→1920 in steps of 8
+  (201 widths). The first pass hid it and its numbers are corrected here; the tell was an exact
+  15px delta on every viewport-derived figure.
+  Measured on `/review` with a matched-but-failed row (76% · medium · a 115-character beets
+  error): the meta cell went **845px** wide — a max-content width, so it depends on the string,
+  not on the scrollbar — and the sibling `min-w-0 truncate` subtitle was `clientWidth` **0 at 89
+  of the 201 widths, 584→1336**, with a gap at 768–808 where the `md` sidebar drops the column
+  under 18rem and the line stacks. (Any width COUNT here is a function of the error string's
+  width; re-deriving it with a different 115-character string moves it. The two endpoints
+  recorded before — 568→1280 in a code comment, 568→1368 here — were both wrong AND
+  under-determined.) The meta's ink spilled past its own column at those same 89 widths.
   No cap fixes it in the slot: the widest legitimate meta across the other four callers is 185.1px
   (`/duplicates`) and the 18rem threshold is sized for that, so keeping the budget leaves the error
-  about 9 characters. The percentage and recommendation stay in the slot; the error moved to its
-  own line below the row (`break-words`, `line-clamp-2`, whole string on `title`). **After**: the
-  subtitle is 0-width at no width, the meta is 88px, its ink spills past the column at one width
-  (8px, at 320, where the row's own controls leave the text column 43px — pre-existing and shared
-  by every bank row) and overlaps a control at none. Document overflow was 0 before and after. A
-  failed row is 32px taller at ≥1280.
-  Adjacent, NOT fixed: at 320–360 a bank row's text column is 43–83px because the checkbox and
-  three controls take the rest, so its title and subtitle both ellipse hard. That is the same
-  `AlbumRow` title-vs-badge density call recorded above, and it is the owner's.
+  about 9 characters. Like-for-like against that ceiling the error cell was **4.6×** it.
+  The percentage and recommendation stay in the slot; the error moved to its
+  own line below the row (`break-words`, `line-clamp-2`, whole string reachable through the row's
+  own Open link). **After**: the subtitle is 0-width at no width, the meta is 130.5px (the
+  humanized `Medium match`, up from 88px for the raw enum), its ink never leaves the column, and
+  document overflow was 0 before and after. A failed row is 32px taller with a one-line error and
+  52px with a two-line one, at 1280.
+  Second pass fixed two things this one shipped or left. (1) The error line went inside the `<li>`'s
+  `items-center` body, so the select checkbox centred on row+error and drifted **16px** below its
+  own row on a one-line error and **26px** on a two-line one, measured at 1280; the control and
+  the row now share their own `items-center` wrapper and the error is a sibling below, and the
+  drift is **0/0/0**. (2) The meta's ink still ran past the column at 320/328/336 (**22.81px** at
+  320, not the 7.81px at one width recorded here) and, on a `needs_review` row, painted INSIDE the
+  Ignore button's hit rectangle — hit-tested with `elementFromPoint`, a tap on that text fired
+  Ignore. `AlbumRow`'s subtitle/meta line now carries `overflow-hidden`: **0 control hits at all
+  201 widths**, against 8 widths (320→376) and 100 sampled ink columns with the class removed.
+  The text column itself is **28.19px at 320 and 68.19px at 360** (43/83 was the scrollbar-hidden
+  reading).
+  Adjacent, NOT fixed: at 320 a bank row's title renders at `clientWidth` **0** — it does not
+  ellipse, it vanishes, and no "…" fits. At 360 a row without the Ignore button gets 10px (the
+  ellipsis glyph, no character); a `needs_review` row, which carries that extra button, is still
+  0 at 414. Its text column is 0px there, so the subtitle and meta are clipped away with it. That
+  is the same `AlbumRow` title-vs-badge density call recorded above, and it is the owner's. The
+  badge is what takes the space: it is `shrink-0`, and at 320 its ink is the only text left in the
+  row — it extends 105.8px past the column and covers 25px of the 56.8px `Open` button, which is
+  inert (a tap there hits the badge, not the button) but does mask the primary action.
+
+- ~~**The same unbounded error pushed the WHOLE PAGE sideways on the bank detail screen**~~ —
+  **CLOSED 2026-09-08.** `FailedBanner` rendered `item.error` — the same `str(exc)` the row above
+  moved out of its meta slot — with no wrap, inside `StatusBanner`'s `min-w-0 flex-1` column,
+  beside a non-shrinking "Open Duplicates" action. Measured at 360 with a 131-character unbroken
+  path (scrollbar present): the ink ran **589px past its column** and **436px past the banner's
+  own right edge**, and `documentElement.scrollWidth` was **757 against a clientWidth of 345** —
+  412px of horizontal page scroll, not just a spilled column. At 768: 411px past the column,
+  987 against 753.
+  Fix is `break-words` on the `<p>` and nothing else. NOT a clamp: this page is the diagnosis
+  surface and has to show the whole string. `overflow-wrap` lowers no ancestor's min-content
+  floor, and the `<p>` is a block child of the `min-w-0` column rather than a flex item, so it
+  needs no second `min-w-0` (the row's version does — there the text IS a flex item). **After**:
+  the ink stays inside the column at both widths, `scrollWidth == clientWidth`, and the string
+  takes 11 lines at 360 and 4 at 768, entirely inside the banner box. The 360 column is 167px of
+  the banner's 321 because the action slot is `shrink-0`; that is StatusBanner's shape, unchanged.
+  Also guarded: a whitespace-only `str(exc)` now renders nothing instead of an empty line.
 
 - **The `view` link in `CandidateReview`'s match header has no `focus-ring` class** and falls back
   to the UA outline, while `styles.css:191-208` calls `focus-ring` this app's one dialect. Belongs
@@ -1886,15 +1957,19 @@ the condition it names has changed.
   recorded defect did not reproduce.** `SEGMENT_SEP` moved to `lib/format.ts` and both
   `ReviewPage`'s decision row and `CandidateReview`'s match header now use it, so the app has one
   dialect for the `%` · `match` line. But the reason recorded here was wrong: nothing wraps in
-  `AlbumRow`'s `meta` slot, because that slot is `flex-shrink: 0` and its used width is therefore
+  `AlbumRow`'s `meta` slot, because that slot is `flex-shrink: 0` and in the ROW arm its used
+  width is therefore
   max-content. Measured in Chromium at 360px with a 68-character artist: 130.5px wide, ONE client
   rect, one line — byte-identical to the import feed's row, which has always passed the constant
-  into the same slot. The slot clips (`overflow-hidden` on the list) rather than wrapping. The
+  into the same slot. The slot clips rather than wrapping — since 2026-09-08 at the
+  subtitle/meta line itself, not only at the list. The
   only place the glyph pair is load-bearing outside the status lines is the match header, which
   genuinely wraps (below). Adjacent, NOT fixed: at 360px that same row truncates the artist to
   zero width and leaves `AlbumRow`'s own separator middot leading the line ("· 76% · Medium
   match"), and the meta box overruns the text column by 4.8px — which of the artist and the
-  match wins that space is an `AlbumRow` design call with app-wide reach.
+  match wins that space is an `AlbumRow` design call with app-wide reach. Since 2026-09-08 the
+  overrunning INK is clipped to the column (see the bank-row entry above); the space question
+  is untouched.
 
 - ~~**The import status line is the same recipe three times**~~ — **CLOSED 2026-09-08: two of the
   three were one recipe; the third is a different one.** The feed's count line and the sweep's

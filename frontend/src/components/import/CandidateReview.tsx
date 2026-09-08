@@ -322,8 +322,12 @@ function AlbumPanel({
         </div>
         {/* `self-center` only in the side-by-side arm: in the stacked arm it
             would shrink the field column to fit-content and re-create the
-            squeeze it exists to avoid. */}
-        <div className="flex min-w-0 flex-col gap-0.5 @min-[27rem]/panel:flex-1 @min-[27rem]/panel:self-center">
+            squeeze it exists to avoid.
+            The gap tracks `Field`'s own 14rem threshold: once a field stacks,
+            its label and value sit 0px apart, so 2px to the NEXT field reads as
+            eight equal lines rather than four labelled pairs. Below 14rem the
+            gap between fields therefore has to beat the gap inside one. */}
+        <div className="flex min-w-0 flex-col gap-2 @min-[14rem]/panel:gap-0.5 @min-[27rem]/panel:flex-1 @min-[27rem]/panel:self-center">
           <Field label="Album" value={change.album} changed={changed.has("album")} />
           <Field label="Artist" value={change.artist} changed={changed.has("artist")} />
           <Field
@@ -352,10 +356,16 @@ function Field({
     // overhead of the shared line is 128px (w-12 label + gap-2 + badge + gap-2,
     // measured 48/8/64/8), so at 224px a value clears 96px and below it it does
     // not: at the app's narrowest panel — 196px of content box at a 768px
-    // viewport, scrollbar present — the shared line left 67px for an 84px
-    // value. Stacked, the value shares its line only with the badge and clears
-    // 124px there. gap-x only: a row gap would space the stacked lines apart,
-    // and is inert on one line.
+    // viewport, scrollbar present — the shared line left the value 67px for an
+    // 84px value, one pixel under the 68px the arithmetic gives; the residue is
+    // sub-pixel. Stacked, the value shares its line only with the badge and
+    // clears 124px there. gap-x only: a row gap would space the stacked lines
+    // apart, and is inert on one line.
+    // THE THRESHOLD IS IN PANEL UNITS, THE PREDICATE IS THE FIELDS COLUMN.
+    // Those agree only because `27rem − (w-48 + gap-4)` is exactly 14rem: at the
+    // panel's own 432px threshold the side-by-side fields column is 224px, so
+    // the two arms meet with no gap and no double-stack. Change `w-48` or
+    // `gap-4` and this number has to move with them, silently otherwise.
     <div className="flex flex-col gap-x-2 text-sm @min-[14rem]/panel:flex-row @min-[14rem]/panel:items-baseline">
       <span className="text-muted-foreground w-12 shrink-0">{label}</span>
       <span className="flex min-w-0 items-baseline gap-2">

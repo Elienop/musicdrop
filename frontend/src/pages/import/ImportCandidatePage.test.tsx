@@ -404,6 +404,7 @@ describe("ImportCandidatePage", () => {
     await screen.findByText("Paranoid Android");
     expect(containerQueryVariants(container)).toEqual([
       "@min-[14rem]/panel:flex-row",
+      "@min-[14rem]/panel:gap-0.5",
       "@min-[14rem]/panel:items-baseline",
       "@min-[27rem]/panel:flex-1",
       "@min-[27rem]/panel:flex-row",
