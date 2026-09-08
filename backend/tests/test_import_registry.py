@@ -1474,6 +1474,9 @@ def test_awaiting_decision_is_false_during_a_search_relookup() -> None:
     state = reg.state("relookup")
     assert state.albums[0].status is ImportAlbumStatus.needs_review  # NOT decided, by design
     assert state.phase is ImportPhase.reviewing  # still active: not the terminal gate answering
+    # Two things make this False and nothing here picks between them: ``answered``
+    # on a standing slot, or a woken worker that already released it. The gated pin
+    # is test_awaiting_decision_clears_when_a_choice_beats_its_park_onto_the_queue.
     assert state.awaiting_decision is False  # beets is working, not the operator
 
     # ...and the re-park puts the operator back in the loop.
@@ -1502,6 +1505,10 @@ def test_awaiting_decision_covers_a_parked_duplicate_prompt() -> None:
 
     state = reg.state("dup-parked")
     assert state.phase is ImportPhase.reviewing  # still active
+    # As in the search re-lookup above: ``answered`` or an already-released slot
+    # both give False, and this test does not separate them. The gated pin for
+    # this channel is
+    # test_awaiting_decision_clears_when_a_duplicate_decision_beats_its_prompt.
     assert state.awaiting_decision is False
 
 

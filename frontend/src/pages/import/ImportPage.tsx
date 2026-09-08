@@ -105,9 +105,13 @@ function elapsedSentence(seconds: number): React.ReactNode | undefined {
 }
 
 /** The import page's live status line: a spinner, then wrapping text. Two
- * callers — the feed's count line and the sweep's folder line — and the two
- * were byte-identical before this existed, `<p>` classes and `<svg>` classes
- * alike, which is why the alignment fix below needed a pass per copy.
+ * callers — the feed's count line and the sweep's folder line. Their `<p>`
+ * class strings were byte-identical before this existed, which is why the
+ * alignment fix below needed a pass per copy. The `<svg>` ones were NOT: the
+ * feed's was `cn("mt-0.5 size-4 shrink-0", working ? "animate-spin" :
+ * "invisible")` and the sweep's the literal `"mt-0.5 size-4 shrink-0
+ * animate-spin"`. They render the same only while the feed is working, which is
+ * what the `spinning` prop is for.
  *
  * `items-start`, not `items-center`: at 360px both callers' text takes two
  * lines (measured) and centring parked the spinner mid-paragraph, 10px below
@@ -418,10 +422,14 @@ function ImportRun({ jobId }: Readonly<{ jobId: string }>) {
   // instead of a one-render pulse — a pulse would hand the announcer back a
   // stale throttled message on the very next render.
   //
-  // No chatter: while paused and not yet terminal the message is
-  // `sweepMessage`'s "Stopping after this album." plus counters that move only
-  // as the last album finishes, and an elapsed clause with minute granularity.
-  // The 4s window was never what bounded either of those.
+  // Sticky means the throttle is OFF for the rest of the run, so what bounds
+  // the announcer after a pause is the message itself, not the window:
+  // `sweepMessage`'s paused branch drops the counters and `announceMessage`
+  // drops the elapsed clause, leaving "Stopping after this album." unchanged
+  // until a terminal phase. React writes the same string, the DOM does not
+  // change, and nothing is re-read. Carrying the counters here instead gave
+  // four announcements in ~5s, closest pair 974ms, because the last album's two
+  // outcome records keep the numbers moving after Pause is accepted.
   const pausedSweep = data?.sweep?.paused === true;
   const status = terminal || pausedSweep ? message : throttled;
   const announcer = (

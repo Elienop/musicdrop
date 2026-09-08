@@ -19,9 +19,12 @@
  * string reaches `AlbumRow`'s `meta` slot, a `flex-shrink: 0` item whose used
  * width is therefore max-content. Measured at 360px with a 68-character
  * artist: 130.5px wide, one client rect, `lines: 1` — identical to the import
- * feed's row, which has always passed this constant into the same slot. That
- * slot clips (`overflow-hidden` on the list) instead of wrapping, so no
- * separator can strand in it either way. */
+ * feed's row, which has always passed this constant into the same slot.
+ * Max-content is the whole reason no separator can strand there; the slot
+ * itself does NOT clip (measured `scrollWidth 131 == clientWidth 131`,
+ * `overflow-x: visible`). The list's `overflow-hidden` clips the slot's
+ * NEIGHBOUR, the `min-w-0 truncate` subtitle, which at 360px is squeezed to
+ * zero width — recorded in BACKLOG, not solved here. */
 export const SEGMENT_SEP = " ·\u00a0";
 
 /** Human-readable total duration for the library dashboard:

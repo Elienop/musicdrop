@@ -1503,6 +1503,33 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   and don't build the regression strand with `chmod` — those tests self-skip as root;
   insert into `_memory` directly.
 
+- **The candidate page overflows worst BETWEEN the breakpoints.** `CandidateReview.tsx:288`'s
+  `AlbumPanel` puts a `w-48 shrink-0` cover column beside a `min-w-0 flex-1` field column, and
+  each `Field` value is a `truncate` span. Document overflow measured in Chromium with the
+  realistic fixture: 1280 → 0, **834 → 59px**, **768 → 92px**, **640 → 41px**, 540 → 0, 480 → 0,
+  414 → 0, 360 → 17px.
+  **At 640, 768 and 834 every field value in BOTH panels renders at `clientWidth` 0** — Album,
+  Artist, Year and Label alike, so the panels show only their labels (scroll widths 76/66/4/4 and
+  84/66/31/72). It is not confined to the widest fields: at 360, 414 and 1024 the After panel's
+  `Album` and `Label` are 0 while the rest survive. Pre-existing; untouched by the match-header
+  fix, which took the same page from 218px to 17px at 360 and left every number above unchanged.
+  **Why the branch's own measurements missed it:** the content well is non-monotonic, because the
+  `md` sidebar takes 230px back, so a 360/1280 matrix is structurally blind to this shape. Measure
+  the intermediate widths for any fix.
+
+- **`AlbumRow`'s subtitle truncates to zero width at 360px**, for short artists too. Measured:
+  "Radiohead" (66px of text) renders at `clientWidth 0`, because a `min-w-0 truncate` subtitle sits
+  beside a `shrink-0` meta slot whose used width is max-content, 130.5px. At 414 it is still cut
+  (clientWidth 49). The visible symptom is a stranded bare middot opening the line — the very
+  defect `SEGMENT_SEP` exists to prevent, arriving by a route it does not cover, since the
+  separator here is `AlbumRow`'s own and not that constant. Affects the import feed, Review and
+  duplicate groups. Which of the artist and the match wins that space is an `AlbumRow` design call
+  with app-wide reach.
+
+- **The `view` link in `CandidateReview`'s match header has no `focus-ring` class** and falls back
+  to the UA outline, while `styles.css:191-208` calls `focus-ring` this app's one dialect. Belongs
+  with the pending global focus-ring decision, which is the owner's.
+
 ## Accepted residuals and deliberate decisions (not work)
 
 Nothing in this section is a task. Each item was decided, with its reasoning, and is kept
@@ -1827,8 +1854,10 @@ the condition it names has changed.
 
 - ~~**The import status line is the same recipe three times**~~ — **CLOSED 2026-09-08: two of the
   three were one recipe; the third is a different one.** The feed's count line and the sweep's
-  folder line were byte-identical — same `<p>` class string, same `<svg>` class string — and are
-  now one `StatusLine` with a single `spinning` prop. The resume banner is deliberately NOT a
+  folder line shared a byte-identical `<p>` class string and are now one `StatusLine`. Their
+  `<svg>` class EXPRESSIONS differed — `cn("mt-0.5 size-4 shrink-0", working ? "animate-spin" :
+  "invisible")` against the literal `"mt-0.5 size-4 shrink-0 animate-spin"` — and coincide only
+  while the feed is working, which is why the extraction needed a `spinning` prop. The resume banner is deliberately NOT a
   caller: measured in Chromium it is six properties apart, not one (gap 12px vs 8px, icon 20px vs
   16px, top correction 0 vs 2px because its icon matches the 20px line box exactly, `font-medium`
   vs inherited, the muted colour on the icon rather than on the line, no `min-h-5`), and it owns
