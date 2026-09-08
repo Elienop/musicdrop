@@ -83,7 +83,16 @@ export function AlbumRow({
           // where the subtitle measured `clientWidth` 0.
           // gap-x only: a row gap would space the stacked lines apart, and is
           // inert on one line.
-          <div className="text-muted-foreground @min-[18rem]/rowtext:flex-row @min-[18rem]/rowtext:items-center flex min-w-0 flex-col gap-x-2 text-sm">
+          // `overflow-hidden` confines this line's INK to the text column.
+          // The meta span is `shrink-0`, so at the narrowest widths its ink ran
+          // past the column and painted inside the action slot's buttons —
+          // hit-tested with `elementFromPoint`, a tap on that text landed on
+          // Ignore, a state-changing action. Clipping changes nothing about
+          // which content wins the space; it stops invisible-to-the-layout ink
+          // from taking a tap. It goes HERE and not on the column: the title
+          // row above can hold a focusable link, whose focus ring this would
+          // clip.
+          <div className="text-muted-foreground @min-[18rem]/rowtext:flex-row @min-[18rem]/rowtext:items-center flex min-w-0 flex-col gap-x-2 overflow-hidden text-sm">
             {subtitle !== undefined && (
               <span className="min-w-0 truncate" title={subtitle}>
                 {subtitle}

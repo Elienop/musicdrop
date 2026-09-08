@@ -233,6 +233,7 @@ const NO_HIT_FEEDBACK = "No release found. Showing your previous matches.";
  * rows banked before the flag existed are retryable. */
 function FailedBanner({ item }: Readonly<{ item: BankItem }>) {
   const retryable = item.error_retryable !== false;
+  const failure = (item.error ?? "").trim();
   return (
     <StatusBanner
       tone="destructive"
@@ -250,7 +251,17 @@ function FailedBanner({ item }: Readonly<{ item: BankItem }>) {
           ? "The apply failed. Decide again to retry."
           : "The apply failed."}
       </p>
-      {item.error && <p className="text-muted-foreground text-sm">{item.error}</p>}
+      {/* This is the diagnosis surface, so the string is NOT clamped — only
+          stopped from painting out of its column. `break-words` breaks the
+          unbroken paths beets puts in these messages; it lowers no ancestor's
+          min-content floor, which is why the `min-w-0 flex-1` column
+          StatusBanner puts this in is enough on its own (the row's version
+          needs an extra `min-w-0`, because there the text is a flex ITEM).
+          Trimmed only for the guard: a whitespace-only `str(exc)` must render
+          nothing rather than an empty line under the headline. */}
+      {failure !== "" && (
+        <p className="text-muted-foreground text-sm break-words">{item.error}</p>
+      )}
     </StatusBanner>
   );
 }
