@@ -31,10 +31,14 @@ export function announceMessage(args: {
   // A failure IS a finish: the clock stops at both terminal transitions, so the
   // clause is valid and past tense there too.
   const finished = done || data.phase === "failed";
+  // A paused, still-running sweep names its own wait — see {@link sweepMessage}
+  // — so it takes the same treatment as a named decision: no clause, and the
+  // announcement is one fixed string until the run reaches a terminal phase.
+  const pausedSweep = data.origin === "sweep" && data.sweep?.paused === true;
   const clause = elapsedClause(
     data.elapsed_seconds,
     finished,
-    data.awaiting_decision && namesAWait(data),
+    pausedSweep || (data.awaiting_decision && namesAWait(data)),
   );
   if (data.phase === "failed") return failedMessage(data) + clause;
   if (data.origin === "sweep" && data.sweep) {
@@ -59,10 +63,12 @@ export function announceMessage(args: {
 /** The spoken elapsed sentence appended to a data-bearing announcement — empty
  * under a minute, past tense once the run is over.
  *
- * Dropped only when the announcement already NAMES the wait. `role="status"` is
- * implicitly atomic, so each minute tick re-reads the WHOLE string, and while a
- * named decision is owed nothing else can change — a 20-minute decision became
- * 20 full re-reads carrying no new information, and asserting activity. With
+ * Dropped when the announcement already NAMES the wait. Two announcements do: a
+ * parked decision (below) and a paused sweep ("Stopping after this album.").
+ * `role="status"` is implicitly atomic, so each minute tick re-reads the WHOLE
+ * string, and while a named decision is owed nothing else can change — a
+ * 20-minute decision became 20 full re-reads carrying no new information, and
+ * asserting activity. With
  * the clause gone the string is static and the announcer's identical-string
  * de-dup suppresses the repeat. The visible line keeps its value; that number
  * counts the whole run and must not vanish.
@@ -97,17 +103,23 @@ function elapsedClause(
  * live region kept saying "Sweeping." there, asserting an activity the state
  * had left, and the Pause button self-disables on click so nothing else spoke.
  * Worded away from the visible line ("Pausing; finishing the current album…")
- * so the two never substring-collide. */
+ * so the two never substring-collide.
+ *
+ * The paused branch carries NO counters, and {@link announceMessage} drops the
+ * elapsed clause for it, so the string cannot change until the run ends. Both
+ * halves are needed: the counters keep moving after Pause is accepted (the last
+ * album emits two outcome records, the second carrying `album_id`), and
+ * `role="status"` is atomic, so each re-read the whole sentence with one number
+ * changed — measured four announcements in ~5s, closest pair 974ms. The tiles
+ * carry the numbers on screen and the terminal announcement repeats them. */
 function sweepMessage(sweep: SweepStatus, phase: ImportJobState["phase"]): string {
   if (phase !== "done") {
+    if (sweep.paused) return "Stopping after this album.";
     // The moving triple only. `role="status"` is atomic, so a live sweep
     // re-reads this whole string every poll for as long as it runs — the same
     // repetition the elapsed clause was gated to stop. `skipped_known` decides
     // nothing while the run is in flight, and the tile carries it on screen.
-    const counts = sweepCounts(sweep);
-    return sweep.paused
-      ? `Stopping after this album. ${counts}`
-      : `Sweeping. ${counts}`;
+    return `Sweeping. ${sweepCounts(sweep)}`;
   }
   // Spoken once, and a claim about the whole run — so every category it holds.
   const counts = sweepCounts(sweep) + knownClause(sweep);

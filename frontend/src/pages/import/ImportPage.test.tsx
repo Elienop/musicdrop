@@ -1795,9 +1795,15 @@ describe("ImportPage — sweep & bank", () => {
 
     // waitFor's default ceiling is 1000ms — a quarter of the throttle window,
     // so a pass here cannot be the window simply elapsing.
+    //
+    // Anchored, not substring-matched: the bypass is sticky, so this string is
+    // what the announcer holds for the rest of the run, and `role="status"` is
+    // atomic — anything appended to it is re-read in full every time a counter
+    // moves. The counters above are nonzero so a regression that puts them back
+    // has something to say.
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveTextContent(
-        "Stopping after this album. Processed 6, imported 4, banked 2.",
+        /^Stopping after this album\.$/,
       ),
     );
   });
