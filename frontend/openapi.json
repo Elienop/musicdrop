@@ -4137,7 +4137,7 @@
           "import"
         ],
         "summary": "Pause Import",
-        "description": "Ask the active sweep to stop at its next album boundary.\n\nThe session aborts via beets' native clean abort at its next decision\nhook: the current album finishes its decision point, the session unwinds,\nthe job ends ``phase=done`` with a summary noting the pause, and the\nimport slot frees. Resume = start a new sweep of the same root (beets'\nincremental history skips everything already done or banked). 404 for an\nunknown job; 409 when the job is not a sweep or is no longer active;\nrepeating a pause on a still-active sweep is idempotent (204).",
+        "description": "Ask the active sweep to stop at its next album boundary.\n\nThe session aborts via beets' native clean abort at its next decision\nhook: the current album finishes its decision point, the session unwinds,\nthe job ends ``phase=done`` with ``sweep.paused`` set, and the\nimport slot frees. Resume = start a new sweep of the same root (beets'\nincremental history skips everything already done or banked). 404 for an\nunknown job; 409 when the job is not a sweep or is no longer active;\nrepeating a pause on a still-active sweep is idempotent (204).",
         "operationId": "pause_import_api_import__job_id__pause_post",
         "parameters": [
           {
