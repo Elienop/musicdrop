@@ -68,10 +68,9 @@ export function announceMessage(args: {
  * `role="status"` is implicitly atomic, so each minute tick re-reads the WHOLE
  * string, and while a named decision is owed nothing else can change — a
  * 20-minute decision became 20 full re-reads carrying no new information, and
- * asserting activity. With
- * the clause gone the string is static and the announcer's identical-string
- * de-dup suppresses the repeat. The visible line keeps its value; that number
- * counts the whole run and must not vanish.
+ * asserting activity. With the clause gone the string is static and the
+ * announcer's identical-string de-dup suppresses the repeat. The visible line
+ * keeps its value; that number counts the whole run and must not vanish.
  *
  * Keying on `awaiting_decision` alone was wrong twice over. A park buffered
  * before its row exists sets the flag with nothing to name, so the whole
