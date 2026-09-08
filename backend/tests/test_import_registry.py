@@ -726,9 +726,11 @@ def test_sweep_summary_reports_counters_and_pause() -> None:
     reg._on_finish("sweep-job")
     state = reg.state("sweep-job")
     assert state.phase is ImportPhase.done
-    assert state.summary == (
-        "swept 2, auto-applied 1, banked 1, skipped 1 already imported - paused"
-    )
+    # Counters only. The pause rides the structured field, not a second copy
+    # inside the summary string.
+    assert state.summary == "swept 2, auto-applied 1, banked 1, skipped 1 already imported"
+    assert state.sweep is not None
+    assert state.sweep.paused is True
 
 
 def test_active_status_carries_sweep_block() -> None:

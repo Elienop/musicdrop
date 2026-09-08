@@ -180,7 +180,7 @@ function ImportEntry() {
               {resumeBannerText(origin, needsReview)}
               {origin === "inbox" && needsReview > 0 && (
                 <span className="text-muted-foreground font-normal">
-                  {" · "}
+                  {SEGMENT_SEP}
                   {needsReview} album{needsReview === 1 ? "" : "s"} set aside for
                   review.
                 </span>
@@ -452,7 +452,8 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
 /** The sweep's whole progress surface: counters (StatTile, the cardless
  * stats dialect), the current folder, Pause, and the Review hand-off. Rides
  * the existing 1s job poll. A paused sweep finishes its current album, then
- * the job goes done with a "- paused" summary and `sweep.paused` stays true. */
+ * the job goes done with a counters-only summary and `sweep.paused` stays true
+ * — that flag, not the summary text, is what titles the panel below. */
 /** Derive the sweep's live-status line from paused / current-folder state. */
 function sweepStatusLabel(
   paused: boolean,
@@ -649,7 +650,7 @@ function FeedRow({
           // `confidence` is already a 0–100 percentage from the backend
           // mapping (app/beets/import_mapping.py `_confidence`), so rounding
           // is correct — not a 0–1 fraction.
-          `${Math.round(album.confidence)}% · ${RECOMMENDATION_LABEL[album.recommendation]}`
+          `${Math.round(album.confidence)}%${SEGMENT_SEP}${RECOMMENDATION_LABEL[album.recommendation]}`
         }
         badge={<StatusBadge album={album} />}
         href={linked ? `/albums/${albumId}` : undefined}

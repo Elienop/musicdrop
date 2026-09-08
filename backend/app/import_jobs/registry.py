@@ -436,8 +436,10 @@ class ImportJobRegistry:
             )
             if sweep.skipped_known:
                 summary += f", skipped {sweep.skipped_known} already imported"
-            if sweep.paused:
-                summary += " - paused"
+            # The pause is NOT repeated here: it is already a field on the wire
+            # (`sweep.paused`), and it is what titles the run page's panel — so
+            # the clause rendered as "... - paused" under a "Sweep paused"
+            # heading, in a third punctuation dialect.
             return summary
         astracks = job.directive_astracks
         imported = sum(

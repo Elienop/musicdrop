@@ -1267,7 +1267,7 @@ describe("ImportPage — sweep & bank", () => {
         HttpResponse.json(
           sweepJob({
             phase: "done",
-            summary: "Swept 30 albums - paused",
+            summary: "swept 30, auto-applied 20, banked 10",
             elapsed_seconds: 840,
             sweep: {
               processed: 30,
@@ -1286,10 +1286,12 @@ describe("ImportPage — sweep & bank", () => {
     // Exact match: the sr-only announcer also says "Sweep paused. …" — the
     // default whole-text match singles out the visible EmptyState title.
     expect(await screen.findByText("Sweep paused")).toBeInTheDocument();
-    // The finished summary carries the run's duration too (the owner's ruling).
+    // The finished summary carries the run's duration too (the owner's ruling),
+    // and says the pause exactly once — in the title above, not again here.
     expect(
-      screen.getByText("Swept 30 albums - paused · 14m"),
+      screen.getByText("swept 30, auto-applied 20, banked 10 · 14m"),
     ).toBeInTheDocument();
+    expect(screen.queryByText(/- paused/)).not.toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: /review banked albums/i }),
     ).toHaveAttribute("href", "/review");
