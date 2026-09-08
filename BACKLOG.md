@@ -1810,6 +1810,21 @@ the condition it names has changed.
   concurrency-boundary change with its own design. Stated at
   `registry.ImportJob.parked_awaiting`.
 
+- **The plain-space middot survives outside the import page** (2026-09-08). `ReviewPage.tsx`
+  and `components/import/CandidateReview.tsx` build the same confidence + recommendation
+  string with a plain space on both sides, so those rows can still strand a dangling "·".
+  `SEGMENT_SEP` is import-page-local by design; its docstring says so.
+
+- **The import status line is the same recipe twice** (2026-09-08). `ImportPage.tsx` builds it
+  once for the live feed and once for the sweep, which is why the alignment fix needed a "twin
+  line" pass — and still missed the resume banner, a third copy of the same shape.
+
+- **`CandidateReview`'s metadata line collapses at 360px** (2026-09-08, measured). The row is
+  a nowrap flex whose anonymous "· Medium match" item is squeezed to three lines; `items-center`
+  then parks the %, the separator and the "view" link on the middle line. Not the alignment
+  defect fixed on the status lines — `items-start` alone would not fix it, so it needs a
+  wrap/shrink decision.
+
 - **Wire-safety net coverage caveats** (by design, recorded so nobody assumes otherwise):
   SSE `/api/events` bypasses the response class (scopes are tag-derived today, never paths);
   any future route-level `response_class=` or hand-built `JSONResponse` bypasses both halves
