@@ -354,21 +354,22 @@ describe("useImportJob poll cadence", () => {
   // in `reply.get()`, so nothing but the elapsed clock can change until the
   // operator answers. The measured defect was 60 requests a minute for the
   // three minutes one decision took.
-  test.each(["needs_review", "needs_dup_resolution"] as const)(
-    "backs off to 10s while the worker is blocked on a person (%s)",
-    async (status) => {
-      expect(
-        await pollIntervalFor(
-          makeJob({
-            phase: "reviewing",
-            progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
-            albums: [feedRow(status)],
-            awaiting_decision: true,
-          }),
-        ),
-      ).toBe(10000);
-    },
-  );
+  //
+  // The fixture is an EMPTY feed on purpose — a state only the flag can
+  // express, so this cannot pass under a revert to row-based inference. It is
+  // also real: `park()` buffers a park whose row does not exist yet.
+  test("backs off to 10s while the worker is blocked on a person", async () => {
+    expect(
+      await pollIntervalFor(
+        makeJob({
+          phase: "scanning",
+          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+          albums: [],
+          awaiting_decision: true,
+        }),
+      ),
+    ).toBe(10000);
+  });
 
   test("stops entirely once the phase is terminal", async () => {
     expect(
