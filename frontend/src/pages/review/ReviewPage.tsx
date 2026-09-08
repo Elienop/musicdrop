@@ -29,7 +29,7 @@ import { SectionLabel } from "@/components/system/SectionLabel";
 import { StatusBanner } from "@/components/system/StatusBanner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { plural } from "@/lib/format";
+import { SEGMENT_SEP, plural } from "@/lib/format";
 
 import { BankSection } from "./BankSection";
 import { lastSegment } from "./lastSegment";
@@ -205,7 +205,11 @@ function DecisionSection({
                 meta={
                   needsDup
                     ? undefined
-                    : `${Math.round(album.confidence)}% · ${RECOMMENDATION_LABEL[album.recommendation]}`
+                    : // Same string, same AlbumRow slot and now the same
+                      // separator as the import feed builds at ImportPage's
+                      // FeedRow — one dialect for the app's `%` · `match`
+                      // line. Measured inert in this slot (see SEGMENT_SEP).
+                      `${Math.round(album.confidence)}%${SEGMENT_SEP}${RECOMMENDATION_LABEL[album.recommendation]}`
                 }
                 badge={
                   <Badge variant="default">

@@ -1,5 +1,29 @@
 // frontend/src/lib/format.ts
 
+/** Separator between the segments of a status or metadata line. The space
+ * AFTER the middot is non-breaking, so a wrap cannot strand a dangling "·" at
+ * the end of a line; the ordinary space before it is where the line is allowed
+ * to break — which means a wrapped line CAN open with the middot (measured: 22
+ * of 71 error lengths at 360px, back when the failed panel glued the duration
+ * to the raw exception with this constant). The failed panel builds it again
+ * for its count line — the page's own text, not an exception. Measured at
+ * 360px: one line at realistic counts, and at six figures it wraps and opens
+ * with the middot, exactly as JobDone's identical line already does.
+ *
+ * It lived in `pages/import/importStatus.ts` while the import page was the
+ * only consumer. Two more arrived: `CandidateReview`'s match header, which
+ * wraps at 360px and is the reason this glyph pair matters there, and
+ * `ReviewPage`'s decision row.
+ *
+ * The Review row gains nothing measurable and is here for ONE dialect: its
+ * string reaches `AlbumRow`'s `meta` slot, a `flex-shrink: 0` item whose used
+ * width is therefore max-content. Measured at 360px with a 68-character
+ * artist: 130.5px wide, one client rect, `lines: 1` — identical to the import
+ * feed's row, which has always passed this constant into the same slot. That
+ * slot clips (`overflow-hidden` on the list) instead of wrapping, so no
+ * separator can strand in it either way. */
+export const SEGMENT_SEP = " ·\u00a0";
+
 /** Human-readable total duration for the library dashboard:
  * ">= 1 day" -> "6.3 days"; ">= 1 hour" -> "18h 42m"; else "5m". */
 export function formatTotalDuration(seconds: number): string {

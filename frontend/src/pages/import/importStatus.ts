@@ -223,25 +223,6 @@ function progressMessage(data: ImportJobState): string {
  * Below it the wait is not worth asking about, so a fast import gains no text. */
 export const ELAPSED_AFTER_S = 30;
 
-/** Separator between a status line's segments. The space AFTER the middot is
- * non-breaking, so a wrap cannot strand a dangling "·" at the end of a line;
- * the ordinary space before it is where the line is allowed to break — which
- * means a wrapped line CAN open with the middot (measured: 22 of 71 error
- * lengths at 360px, back when the failed panel glued the duration to the raw
- * exception with this constant). The failed panel builds it again for its count
- * line — the page's own text, not an exception. Measured at 360px: one line at
- * realistic counts, and at six figures it wraps and opens with the middot,
- * exactly as JobDone's identical line already does.
- *
- * Import-page-local on purpose, and the two rows outside it are not the same
- * defect. `ReviewPage.tsx:208` builds the confidence + recommendation string
- * with a plain-space middot, so a wrap can strand one there — a recorded
- * residual, not an oversight in this constant's reach.
- * `CandidateReview.tsx:142` puts its middot in a bare flex item whose container
- * has no `flex-wrap`, so no wrap can strand it; that row's recorded defect is
- * the 360px squeeze instead. */
-export const SEGMENT_SEP = " ·\u00a0";
-
 /** `head` plus a second unit, dropping it when zero — "1h", not "1h 0m". The
  * inner space is non-breaking so the two halves never wrap apart. */
 function pair(head: string, rest: number, unit: string): string {

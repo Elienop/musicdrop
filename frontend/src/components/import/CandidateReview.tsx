@@ -19,6 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { SEGMENT_SEP } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /**
@@ -135,23 +136,42 @@ function MatchHeader({
           {after.artist ?? "Unknown artist"} - {after.album ?? "Unknown album"}
         </h1>
       </div>
-      <p className="text-muted-foreground flex items-center gap-2 text-sm">
+      {/* One text flow, not a flex row. As `flex items-center gap-2` this line
+          put every segment on one flex line, and at 360px the browser had to
+          squeeze the widest of them: measured 3 line boxes, with `items-center`
+          then parking the %, the separator and the `view` link on the middle
+          one. Normal inline layout wraps between words instead, and every
+          separator is {@link SEGMENT_SEP}, so a wrapped line opens with the
+          middot rather than stranding one. The source list loses its `truncate`
+          with the flex row — on the screen where the release is being judged,
+          wrapping the label and country beats ellipsing them. */}
+      <p className="text-muted-foreground text-sm">
         <span className="text-foreground font-medium">
           {Math.round(candidate.confidence)}%
         </span>
-        {showRecommendation && <>· {RECOMMENDATION_LABEL[candidate.recommendation]}</>}
-        {sourceBits.length > 0 && <span aria-hidden="true">·</span>}
-        <span className="truncate">{sourceBits.join(" · ")}</span>
+        {showRecommendation &&
+          `${SEGMENT_SEP}${RECOMMENDATION_LABEL[candidate.recommendation]}`}
+        {sourceBits.length > 0 && (
+          <>
+            {/* Hidden here and spoken above, as before this row was rewritten:
+                the two middots were never announced the same way. */}
+            <span aria-hidden="true">{SEGMENT_SEP}</span>
+            {sourceBits.join(SEGMENT_SEP)}
+          </>
+        )}
         {candidate.data_url && (
-          <a
-            href={candidate.data_url}
-            target="_blank"
-            rel="noreferrer"
-            className="text-foreground inline-flex items-center gap-1 underline underline-offset-4"
-          >
-            view <span className="sr-only">(opens the release page in a new tab)</span>
-            <External className="size-3" aria-hidden="true" />
-          </a>
+          <>
+            {" "}
+            <a
+              href={candidate.data_url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-foreground inline-flex items-center gap-1 underline underline-offset-4"
+            >
+              view <span className="sr-only">(opens the release page in a new tab)</span>
+              <External className="size-3" aria-hidden="true" />
+            </a>
+          </>
         )}
       </p>
     </div>
