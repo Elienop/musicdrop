@@ -132,6 +132,46 @@ describe("ReviewPage", () => {
     expect(resolve).toHaveAttribute("href", "/import/albums/1/duplicate?job=j1");
   });
 
+  test("the decision row's confidence line uses the app's segment separator", async () => {
+    server.use(
+      http.get(ACTIVE, () =>
+        HttpResponse.json({ active: true, job_id: "j1", origin: "inbox", needs_review_count: 1 }),
+      ),
+      http.get(JOB, () =>
+        HttpResponse.json({
+          job_id: "j1",
+          phase: "reviewing",
+          progress: { applied: 0, needs_review: 1, skipped: 0 },
+          albums: [
+            album({
+              index: 0,
+              album: "Echoes",
+              status: "needs_review",
+              confidence: 76,
+              recommendation: "medium",
+            }),
+          ],
+          summary: null,
+          error: null,
+          origin: "inbox",
+          set_aside: 0,
+        }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+    await screen.findByRole("link", { name: /^review$/i });
+
+    // Located on its shape (the SPAN whose text ends in the label), then
+    // compared as a literal string. `getByText` cannot do the second half: the
+    // default RTL normalizer collapses U+00A0 to a plain space, so a text query
+    // reads " \u00b7\u00a0" and " \u00b7 " as the same thing. The NBSP is
+    // written as an escape because a literal one is invisible in review.
+    const meta = screen.getByText(
+      (_, el) => el?.tagName === "SPAN" && (el.textContent ?? "").endsWith("Medium match"),
+    );
+    expect(meta.textContent).toBe("76% \u00b7\u00a0Medium match");
+  });
+
   test("inbox rows render name, set-aside tag, and track count", async () => {
     server.use(
       http.get(ITEMS, () =>

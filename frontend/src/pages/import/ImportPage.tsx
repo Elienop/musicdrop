@@ -44,11 +44,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SEGMENT_SEP } from "@/lib/format";
 import { useThrottledValue } from "@/lib/useThrottledValue";
 import { cn } from "@/lib/utils";
 import {
   ELAPSED_AFTER_S,
-  SEGMENT_SEP,
   announceMessage,
   elapsedLabel,
   spokenElapsed,
