@@ -4,7 +4,10 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { describe, expect, it } from "vitest";
 
 import { AlbumRow } from "@/components/system/AlbumRow";
-import { unwiredContainerQueries } from "@/test/containerQuery";
+import {
+  containerQueryVariants,
+  unwiredContainerQueries,
+} from "@/test/containerQuery";
 import { renderWithProviders } from "@/test/render";
 
 describe("AlbumRow", () => {
@@ -96,6 +99,8 @@ describe("AlbumRow", () => {
   // so the widths are browser-measured and recorded in the component; what a
   // test CAN hold is that the variants are wired to a declared container —
   // rename one side and CSS reports nothing, the row silently keeps one arm.
+  // The PRESENCE list is half the pin: an empty unwired list also means "no
+  // variants here", so on its own it survives deleting the whole layer.
   it("wires every container-query variant to a declared container", () => {
     const { container } = render(
       <AlbumRow
@@ -105,6 +110,11 @@ describe("AlbumRow", () => {
         meta="76% · Medium match"
       />,
     );
+    expect(containerQueryVariants(container)).toEqual([
+      "@min-[18rem]/rowtext:block",
+      "@min-[18rem]/rowtext:flex-row",
+      "@min-[18rem]/rowtext:items-center",
+    ]);
     expect(unwiredContainerQueries(container)).toEqual([]);
   });
 });
