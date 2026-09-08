@@ -294,6 +294,34 @@ describe("announceMessage", () => {
     ).toBe("Sweeping. Processed 12, imported 8, banked 4.");
   });
 
+  // Pause is accepted long before the sweep stops (it finishes the current
+  // album first), and the announcer used to keep saying "Sweeping." for the
+  // whole gap — an activity the state had left. The Pause button self-disables
+  // on click, so nothing else spoke.
+  test("a pausing sweep is not announced as sweeping", () => {
+    const data = sweepState({
+      phase: "scanning",
+      sweep: {
+        processed: 12,
+        auto_applied: 8,
+        banked: 4,
+        skipped_known: 0,
+        current_folder: "/in/x",
+        paused: true,
+      },
+    });
+    const spoken = announceMessage({
+      isPending: false,
+      isError: false,
+      notFound: false,
+      data,
+    });
+    expect(spoken).toBe("Stopping after this album. Processed 12, imported 8, banked 4.");
+    // Distinct from the visible line, which is the file's own rule for the one
+    // live region.
+    expect(spoken).not.toContain("Pausing; finishing the current album");
+  });
+
   test("a finished sweep announces complete vs paused", () => {
     const done = sweepState({
       phase: "done",

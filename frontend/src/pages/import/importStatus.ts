@@ -74,13 +74,22 @@ function elapsedClause(
   return finished ? ` Took ${spoken}.` : ` Running for ${spoken}.`;
 }
 
-/** Sweep-origin jobs announce their monotone counters rather than the feed. */
+/** Sweep-origin jobs announce their monotone counters rather than the feed.
+ *
+ * `paused` flips the moment Pause is accepted, and the sweep then runs on until
+ * the current album is done — a live phase. Without the branch below the one
+ * live region kept saying "Sweeping." there, asserting an activity the state
+ * had left, and the Pause button self-disables on click so nothing else spoke.
+ * Worded away from the visible line ("Pausing; finishing the current album…")
+ * so the two never substring-collide. */
 function sweepMessage(sweep: SweepStatus, phase: ImportJobState["phase"]): string {
   const counts = `Processed ${sweep.processed}, imported ${sweep.auto_applied}, banked ${sweep.banked}.`;
-  if (phase === "done") {
-    return sweep.paused ? `Sweep paused. ${counts}` : `Sweep complete. ${counts}`;
+  if (phase !== "done") {
+    return sweep.paused
+      ? `Stopping after this album. ${counts}`
+      : `Sweeping. ${counts}`;
   }
-  return `Sweeping. ${counts}`;
+  return sweep.paused ? `Sweep paused. ${counts}` : `Sweep complete. ${counts}`;
 }
 
 /** Pending duplicates, derived from the feed rows: the backend `progress` has
