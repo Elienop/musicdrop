@@ -213,8 +213,8 @@ describe("announceMessage", () => {
   });
 
   // The other three corners of the suppression. Keying it on `awaiting_decision`
-  // alone silenced a run that named nothing, and `registry.parked_awaiting` can
-  // stick for the rest of a run, so that silence was permanent.
+  // alone silenced a run that named nothing, and the flag could then stick for
+  // the rest of a run, so that silence was permanent.
   test("only a NAMED wait drops the clause", () => {
     const speak = (data: ImportJobState) =>
       announceMessage({ isPending: false, isError: false, notFound: false, data });

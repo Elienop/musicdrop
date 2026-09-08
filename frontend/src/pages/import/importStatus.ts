@@ -70,9 +70,10 @@ export function announceMessage(args: {
  * Keying on `awaiting_decision` alone was wrong twice over. A park buffered
  * before its row exists sets the flag with nothing to name, so the whole
  * announcement collapsed to `"Imported 0."` — the "working or wedged?"
- * ambiguity this clause exists to remove. And the flag can stick for the rest
- * of a run (see `registry.ImportJob.parked_awaiting`), which made that silence
- * permanent. The flag is still an AND term: a `search` re-lookup keeps its row
+ * ambiguity this clause exists to remove. And the flag could then stick for the
+ * rest of a run, which made that silence permanent — closed since, by asking the
+ * bridge directly (`ImportBridge.has_unanswered_park`) instead of mirroring it
+ * consumer-side. The flag is still an AND term: a `search` re-lookup keeps its row
  * `needs_review` while beets queries MusicBrainz, and there the clock is the
  * only thing that changes. */
 function elapsedClause(
