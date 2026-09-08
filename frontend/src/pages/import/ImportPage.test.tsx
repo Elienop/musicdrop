@@ -6,6 +6,8 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { ImportJobState } from "@/api/useImport";
+import type { AppIcon } from "@/components/icons";
+import { Pause, Success } from "@/components/icons";
 import { ImportPage } from "@/pages/import/ImportPage";
 import { ELAPSED_AFTER_S } from "@/pages/import/importStatus";
 import { renderWithProviders } from "@/test/render";
@@ -111,6 +113,16 @@ function lineOf(fragment: HTMLElement): HTMLElement {
   const line = fragment.closest("p");
   if (!line) throw new Error("the fragment is not inside a status line");
   return line;
+}
+
+/** The `d` of an icon concept's glyph. Phosphor renders no name attribute, so
+ * the only way to assert WHICH icon a panel wears is to compare its path
+ * against the concept module's own render. */
+function pathOf(Icon: AppIcon): string {
+  const { container, unmount } = render(<Icon aria-hidden="true" />);
+  const d = container.querySelector("path")?.getAttribute("d") ?? "";
+  unmount();
+  return d;
 }
 
 /** Renders the AlbumOrigin router state an outgoing feed link arrives with. */
@@ -648,9 +660,10 @@ describe("ImportPage — live feed", () => {
     expect(segment.textContent).toContain("·\u00a0");
     expect(segment.textContent).toContain("2m\u00a012s");
     // A screen reader reads "2m" as a letter, so the visible half is hidden and
-    // a spoken twin carries the words.
+    // a spoken twin carries the words — opening with the full stop that stands
+    // in for the unspoken middot.
     expect(segment).toHaveAttribute("aria-hidden", "true");
-    expect(screen.getByText("2 minutes.")).toHaveClass("sr-only");
+    expect(screen.getByText(". 2 minutes.")).toHaveClass("sr-only");
   });
 
   // ELAPSED_AFTER_S is 30, not 60, precisely so this band renders at all. Both
@@ -669,7 +682,7 @@ describe("ImportPage — live feed", () => {
     const segment = await screen.findByText("· 45s");
     expect(segment).toHaveAttribute("aria-hidden", "true");
     expect(lineOf(segment)).toHaveTextContent("1 album imported");
-    expect(screen.getByText("45 seconds.")).toHaveClass("sr-only");
+    expect(screen.getByText(". 45 seconds.")).toHaveClass("sr-only");
   });
 
   test("the cue keeps working after a decision, while the worker scans on", async () => {
@@ -726,7 +739,7 @@ describe("ImportPage — live feed", () => {
     const line = lineOf(segment);
     expect(line).toHaveTextContent("1 album imported · 1 album needs review");
     // Words for the screen reader, since "10m" is read as a letter.
-    expect(screen.getByText("10 minutes.")).toHaveClass("sr-only");
+    expect(screen.getByText(". 10 minutes.")).toHaveClass("sr-only");
     // Nobody is working, so no spinner — but its box stays, or the whole line
     // would jump sideways on every park and unpark.
     expect(spinnerOf(line)).toHaveClass("invisible");
@@ -889,7 +902,7 @@ describe("ImportPage — terminal states", () => {
     expect(segment.closest("p")).toHaveTextContent(
       "2 albums imported · 1 skipped",
     );
-    expect(screen.getByText("14 minutes.")).toHaveClass("sr-only");
+    expect(screen.getByText(". 14 minutes.")).toHaveClass("sr-only");
   });
 
   test("a short run's finished summary gains no extra text", async () => {
@@ -992,8 +1005,16 @@ describe("ImportPage — terminal states", () => {
 
     // The row badge names the failure (its own element, exact text).
     expect(await screen.findByText("Didn't land")).toBeInTheDocument();
-    // The finished body appends the count.
-    expect(screen.getByText(/1 didn't land/)).toBeInTheDocument();
+    // The finished body appends the count...
+    expect(
+      screen.getByText("0 albums imported · 0 skipped · 1 didn't land"),
+    ).toBeInTheDocument();
+    // ...and so does the one live region, which used to drop it — `not_landed`
+    // is computed for BOTH terminal phases, and only the failed announcement
+    // said it.
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Import complete. Imported 0, skipped 0. 1 didn't land.",
+    );
   });
 
   test("a decided row that landed shows the Imported badge, not Decided", async () => {
@@ -1120,7 +1141,6 @@ describe("ImportPage — terminal states", () => {
     const duration = screen.getByText("Ran for 40m 12s.");
     expect(duration).toHaveAttribute("aria-hidden", "true");
     expect(duration.closest("span.block")).not.toBeNull();
-    expect(duration.textContent).not.toContain("·");
     // "40m 12s" is read as a letter; the spoken twin carries the words.
     expect(screen.getByText("Ran for 40 minutes.")).toHaveClass("sr-only");
   });
@@ -1163,6 +1183,23 @@ describe("ImportPage — terminal states", () => {
             error: "lookup exploded",
             elapsed_seconds: 2412,
             progress: { applied: 200, needs_review: 1, skipped: 3, not_landed: 2 },
+            // makeJob's rows are applied + needs_review only, so the Resolve
+            // assertion below never reached its branch — it passed with
+            // `readOnly` deleted. A parked duplicate is what renders that link.
+            albums: [
+              ...makeJob().albums,
+              {
+                index: 2,
+                folder: "/music/incoming/Amnesiac",
+                artist: "Radiohead",
+                album: "Amnesiac",
+                recommendation: "medium",
+                confidence: 80,
+                status: "needs_dup_resolution",
+                album_id: null,
+                did_not_land: false,
+              },
+            ],
           }),
         ),
       ),
@@ -1178,7 +1215,6 @@ describe("ImportPage — terminal states", () => {
       "200 albums imported · 3 skipped · 2 didn't land",
     );
     expect(counts).toHaveClass("block");
-    expect(counts.textContent).not.toContain("lookup exploded");
     expect(screen.getByText("Ran for 40m 12s.")).toBeInTheDocument();
     // The feed rows survive the failure too — but read-only: the worker is
     // gone, so a Review button here would open a decision nothing consumes.
@@ -1191,6 +1227,80 @@ describe("ImportPage — terminal states", () => {
     expect(
       screen.getByRole("link", { name: /import another folder/i }),
     ).toHaveAttribute("href", "/import");
+  });
+
+  // The owner's unattended inbox path. `progress` does NOT partition the run: a
+  // needs_review row is refused by the server's _is_imported AND its _is_skipped
+  // and never landed, so it is in none of the three counters — and on a failed
+  // job its Review button is gone. The panel rendered five rows badged "Needs
+  // review" with no action and no explanation, and said "The import failed."
+  test("a failure that set albums aside owns them, in the panel and the announcement", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "failed",
+            error: "the session died",
+            origin: "inbox",
+            set_aside: 5,
+            progress: { applied: 2, needs_review: 5, skipped: 0, not_landed: 0 },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Import failed")).toBeInTheDocument();
+    expect(
+      screen.getByText("5 albums set aside, not imported."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "The import failed. Imported 2, skipped 0. 5 albums set aside.",
+    );
+  });
+
+  test("a run that set nothing aside gains no set-aside line", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "failed",
+            error: "the session died",
+            progress: { applied: 2, needs_review: 0, skipped: 1, not_landed: 0 },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Import failed")).toBeInTheDocument();
+    expect(screen.queryByText(/set aside/)).not.toBeInTheDocument();
+  });
+
+  // The gate was `applied + skipped + not_landed > 0`, so this run printed the
+  // two zeros the early-crash branch exists to avoid.
+  test("a failure that only lost albums opens on the loss, not on two zeros", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "failed",
+            error: "the session died",
+            albums: [],
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 5 },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Import failed")).toBeInTheDocument();
+    expect(screen.getByText("5 didn't land")).toBeInTheDocument();
+    expect(screen.queryByText(/albums imported/)).not.toBeInTheDocument();
+    // The announcer owed the same correction, in its own dialect.
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "The import failed. 5 didn't land.",
+    );
   });
 
   test("a run that died during the scan gains no count line", async () => {
@@ -1212,6 +1322,58 @@ describe("ImportPage — terminal states", () => {
     // It landed, skipped and lost nothing — "0 albums imported · 0 skipped"
     // would be noise, so the early-crash panel reads exactly as it did before.
     expect(screen.queryByText(/albums imported/)).not.toBeInTheDocument();
+  });
+
+  // The feed pins a pending row to the top so its Review button stays in view.
+  // `readOnly` deletes that button, so on a failed job the pin only reorders the
+  // record of the run — it reads newest-first, like the done screen.
+  test("a read-only feed does not pin the pending row to the top", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "failed",
+            error: "the session died",
+            progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
+            // The PENDING row is the OLDER one here, so the pin and newest-first
+            // disagree — with both the same way round the test proves nothing.
+            albums: [
+              {
+                index: 0,
+                folder: "/music/incoming/Kid A",
+                artist: "Radiohead",
+                album: "Kid A",
+                recommendation: "medium",
+                confidence: 76,
+                status: "needs_review",
+                album_id: null,
+                did_not_land: false,
+              },
+              {
+                index: 1,
+                folder: "/music/incoming/Radiohead - OK Computer",
+                artist: "Radiohead",
+                album: "OK Computer",
+                recommendation: "strong",
+                confidence: 99,
+                status: "applied",
+                album_id: 41,
+                did_not_land: false,
+              },
+            ],
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    await screen.findByText("Import failed");
+    const titles = [...document.querySelectorAll("li")].map(
+      (li) => li.textContent ?? "",
+    );
+    expect(titles).toHaveLength(2);
+    expect(titles[0]).toContain("OK Computer");
+    expect(titles[1]).toContain("Kid A");
   });
 
   test("a failed sweep is still a sweep: its tiles, and the Review hand-off", async () => {
@@ -1455,7 +1617,7 @@ describe("ImportPage — sweep & bank", () => {
 
     const segment = await screen.findByText("· 1h 1m");
     expect(segment.closest("p")).toHaveTextContent("Sweeping 21…");
-    expect(screen.getByText("1 hour 1 minute.")).toHaveClass("sr-only");
+    expect(screen.getByText(". 1 hour 1 minute.")).toHaveClass("sr-only");
   });
 
   test("a short sweep's status line reads exactly as it did before", async () => {
@@ -1512,27 +1674,47 @@ describe("ImportPage — sweep & bank", () => {
     );
     // "14m" is read as a letter; the spoken twin carries the words.
     expect(screen.getByText("Ran for 14 minutes.")).toHaveClass("sr-only");
-    // The pause is said exactly once, in the title above — not again here.
-    expect(screen.getByText("Ran for 14m.").closest("p")).toHaveTextContent(
-      /^Ran for 14m\./,
-    );
+    // ...and how to pick a paused sweep back up. That sentence lives on the
+    // RUNNING panel, gated on `!done` — so it vanished at the one moment it
+    // applies, leaving a paused-and-finished sweep with no resume instruction.
+    expect(
+      screen.getByText("Resume later by sweeping the same folder again."),
+    ).toBeInTheDocument();
+    // The pause itself is still said exactly once, in the title above.
+    const body = screen.getByText("Ran for 14m.").closest("p");
+    expect(body?.textContent).not.toContain("aused");
+    // A user-interrupted sweep is not a completion, so it must not wear the
+    // success check.
+    const glyph = screen
+      .getByText("Sweep paused")
+      .closest("[data-slot='empty-state']")
+      ?.querySelector("svg path");
+    expect(glyph?.getAttribute("d")).toBe(pathOf(Pause));
+    expect(glyph?.getAttribute("d")).not.toBe(pathOf(Success));
     expect(
       screen.getByRole("link", { name: /review banked albums/i }),
     ).toHaveAttribute("href", "/review");
   });
 
-  test("a sub-30s finished sweep renders no body line at all", async () => {
-    // The whole body is now the duration sentence, and below ELAPSED_AFTER_S
-    // there is none — so EmptyState must receive `undefined`, not an empty
-    // node, or it paints an empty <p> and its gap under the title. A sweep of
-    // an empty folder finishes well under the threshold.
+  test("a fast finished sweep with real counts renders no body line at all", async () => {
+    // Below ELAPSED_AFTER_S there is no duration sentence, and a sweep that did
+    // something needs no note — so EmptyState must receive `undefined`, not an
+    // empty node, or it paints an empty <p> and its gap under the title.
     server.use(
       http.get(SWEEP_JOB_URL, () =>
         HttpResponse.json(
           sweepJob({
             phase: "done",
-            summary: "swept 0, auto-applied 0, banked 0",
+            summary: "swept 3, auto-applied 3, banked 0",
             elapsed_seconds: ELAPSED_AFTER_S - 1,
+            sweep: {
+              processed: 3,
+              auto_applied: 3,
+              banked: 0,
+              skipped_known: 0,
+              current_folder: null,
+              paused: false,
+            },
           }),
         ),
       ),
@@ -1546,6 +1728,28 @@ describe("ImportPage — sweep & bank", () => {
     // The title paragraph, and nothing else — no empty body, no lone middot.
     expect(panel?.querySelectorAll("p")).toHaveLength(1);
     expect(panel?.textContent).not.toContain("·");
+  });
+
+  test("a sweep that found nothing says so instead of showing a bare title", async () => {
+    // Four zero tiles report that nothing happened without saying why, and the
+    // body was empty here because the run finished well under the threshold.
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({
+            phase: "done",
+            summary: "swept 0, auto-applied 0, banked 0",
+            elapsed_seconds: ELAPSED_AFTER_S - 1,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    expect(await screen.findByText("Sweep finished")).toBeInTheDocument();
+    expect(
+      screen.getByText("No albums found in that folder."),
+    ).toBeInTheDocument();
   });
 
   test.each([

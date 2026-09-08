@@ -311,6 +311,25 @@ describe("announceMessage", () => {
     ).toBe("Import complete. Imported 3, skipped 0. Took 14 minutes.");
   });
 
+  // `not_landed` is computed for BOTH terminal phases and the done PANEL has
+  // always shown it; only this channel dropped it on the done side.
+  test("a finished run announces what never landed", () => {
+    expect(
+      announceMessage({
+        isPending: false,
+        isError: false,
+        notFound: false,
+        data: job({
+          phase: "done",
+          progress: { applied: 3, needs_review: 0, skipped: 1, not_landed: 2 },
+          elapsed_seconds: 840,
+        }),
+      }),
+    ).toBe(
+      "Import complete. Imported 3, skipped 1. 2 didn't land. Took 14 minutes.",
+    );
+  });
+
   // A crash mid-apply is exactly when albums land or fail to land, and the
   // panel now reports what the run earned — so the one live region must too, or
   // a screen-reader user hears a bare failure for a run that imported 200.
@@ -347,7 +366,30 @@ describe("announceMessage", () => {
           },
         }),
       ),
-    ).toBe("The sweep failed. Processed 200, imported 150, banked 40. Took 14 minutes.");
+    ).toBe(
+      "The sweep failed. Processed 200, imported 150, banked 40. 10 already known. Took 14 minutes.",
+    );
+    // A re-run over an already-imported folder: `skipped_known` was the only
+    // nonzero counter, and it was the one the gate summed over but never said —
+    // so this announced a bare "The sweep failed." while a tile read 20. The
+    // three zeros in front of it are gated out for the same reason.
+    expect(
+      speak(
+        sweepState({
+          phase: "failed",
+          error: "disk full",
+          elapsed_seconds: 840,
+          sweep: {
+            processed: 0,
+            auto_applied: 0,
+            banked: 0,
+            skipped_known: 20,
+            current_folder: null,
+            paused: false,
+          },
+        }),
+      ),
+    ).toBe("The sweep failed. 20 already known. Took 14 minutes.");
     // Nothing landed: the crash-during-scan case says only that it failed,
     // either side of the origin split. "Imported 0, skipped 0." is noise.
     expect(
@@ -356,6 +398,34 @@ describe("announceMessage", () => {
     expect(
       speak(job({ phase: "failed", error: "the session died", elapsed_seconds: 840 })),
     ).toBe("The import failed. Took 14 minutes.");
+    // The imported/skipped pair is gated on ITSELF: a run whose only news is
+    // that five albums never landed must not open on two zeros.
+    expect(
+      speak(
+        job({
+          phase: "failed",
+          error: "the session died",
+          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 5 },
+          elapsed_seconds: 840,
+        }),
+      ),
+    ).toBe("The import failed. 5 didn't land. Took 14 minutes.");
+    // And a set-aside album is in NONE of the three buckets, so without its own
+    // clause a crashed unattended run drops a whole category it still holds.
+    expect(
+      speak(
+        job({
+          phase: "failed",
+          error: "the session died",
+          origin: "inbox",
+          set_aside: 5,
+          progress: { applied: 2, needs_review: 5, skipped: 0, not_landed: 0 },
+          elapsed_seconds: 840,
+        }),
+      ),
+    ).toBe(
+      "The import failed. Imported 2, skipped 0. 5 albums set aside. Took 14 minutes.",
+    );
   });
 
   test("sweep jobs announce counters, not the feed", () => {
@@ -397,10 +467,10 @@ describe("announceMessage", () => {
       notFound: false,
       data,
     });
+    // Distinct from the visible line ("Pausing; finishing the current album…"),
+    // which is the file's own rule for the one live region — the exact text
+    // below is what enforces it.
     expect(spoken).toBe("Stopping after this album. Processed 12, imported 8, banked 4.");
-    // Distinct from the visible line, which is the file's own rule for the one
-    // live region.
-    expect(spoken).not.toContain("Pausing; finishing the current album");
   });
 
   test("a finished sweep announces complete vs paused", () => {
@@ -505,7 +575,10 @@ describe("spokenElapsed", () => {
   });
 
   // The twin exists exactly where the visible label does — otherwise a segment
-  // renders on screen with nothing spoken behind it.
+  // renders on screen with nothing spoken behind it. This pins the two FUNCTIONS
+  // agreeing; it supplies the floor itself, so it says nothing about the
+  // component passing it. That is pinned by the rendered 30-59s fixtures in
+  // ImportPage.test.tsx, which is what kills the drop-the-argument mutant.
   test.each([ELAPSED_AFTER_S, 45, 132, 3700])(
     "has a twin wherever elapsedLabel does (%i)",
     (seconds) => {

@@ -73,7 +73,11 @@ function ElapsedSegment({ seconds }: Readonly<{ seconds: number }>) {
   return (
     <>
       <span aria-hidden="true">{`${SEGMENT_SEP}${label}`}</span>
-      <span className="sr-only">{` ${spoken}.`}</span>
+      {/* The middot is hidden and is not spoken, so a bare space ran the two
+          clauses together — measured AT text: "1 album imported · 1 album needs
+          review 2 minutes." A full stop stands in for the glyph, the same
+          substitution the resume banner makes. */}
+      <span className="sr-only">{`. ${spoken}.`}</span>
     </>
   );
 }
@@ -552,6 +556,39 @@ function SweepTiles({ sweep }: Readonly<{ sweep: SweepStatus }>) {
   );
 }
 
+/** The one short line a finished sweep owes beyond its four tiles, or null.
+ *
+ * Both cases are things the tiles cannot say. A paused sweep is resumable and
+ * the running panel is the only place that ever said how — the sentence was
+ * gated on `!done`, so it vanished at the exact moment it applies. And four zero
+ * tiles report that nothing happened without saying why. */
+function sweepDoneNote(sweep: SweepStatus): string | null {
+  if (sweep.paused) return "Resume later by sweeping the same folder again.";
+  const touched =
+    sweep.processed + sweep.auto_applied + sweep.banked + sweep.skipped_known;
+  return touched === 0 ? "No albums found in that folder." : null;
+}
+
+/** The finished sweep panel's body: the note above, the duration, or neither.
+ *
+ * Returns `undefined` when there is nothing to say — `EmptyState.body` paints an
+ * empty `<p>` and its `gap-1` for any node that is not `undefined`, and a fast
+ * sweep with real counts has no note and no duration. */
+function sweepDoneBody(
+  sweep: SweepStatus,
+  seconds: number,
+): React.ReactNode | undefined {
+  const ranFor = elapsedSentence(seconds);
+  const note = sweepDoneNote(sweep);
+  if (note === null) return ranFor;
+  return (
+    <>
+      {note}
+      {ranFor !== undefined && <span className="mt-1 block">{ranFor}</span>}
+    </>
+  );
+}
+
 function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: string }>) {
   const pause = usePauseSweep(jobId);
   const sweep = state.sweep;
@@ -565,15 +602,18 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
       {done ? (
         <EmptyState
           bordered
-          icon={Success}
+          // A user-interrupted sweep is not a completion, so it does not wear
+          // the success check; the Pause glyph names what actually happened.
+          icon={sweep.paused ? Pause : Success}
           title={sweep.paused ? "Sweep paused" : "Sweep finished"}
           // The tiles below ARE the counts, and they are the app's own labels.
           // This body used to restate all four ~24px above them in the
           // backend's `state.summary` dialect ("swept 30, auto-applied 20, …"),
           // so the panel said every number twice. What the tiles cannot say is
-          // how long it took; that is all this line is now. The pause is still
-          // in the title and on `sweep.paused`, so it is not repeated either.
-          body={elapsedSentence(state.elapsed_seconds)}
+          // how long it took and what to do next; that is all this body is now.
+          // The pause is still in the title and on `sweep.paused`, so the word
+          // is not repeated either.
+          body={sweepDoneBody(sweep, state.elapsed_seconds)}
           action={
             // Gated on `banked`, like the failed panel's: a sweep that banked
             // nothing has nothing to review, and with the counts moved to the
@@ -659,11 +699,15 @@ function FeedList({
   // pending, so the whole feed reads newest-first.
   const pending = (s: ImportAlbumSummary["status"]) =>
     s === "needs_review" || s === "needs_dup_resolution";
-  const ordered = [...albums].sort(
-    (a, b) =>
-      Number(pending(b.status)) - Number(pending(a.status)) ||
-      b.index - a.index,
-  );
+  // ...but only while there is a button to keep in view. `readOnly` strips those
+  // buttons, so on a failed job the pin reorders the record of the run for no
+  // reason; there it reads newest-first like the done screen.
+  const ordered = [...albums].sort((a, b) => {
+    const pin = readOnly
+      ? 0
+      : Number(pending(b.status)) - Number(pending(a.status));
+    return pin || b.index - a.index;
+  });
   return (
     <ul className="border-border divide-border divide-y overflow-hidden rounded-xl border">
       {ordered.map((album) => (
@@ -836,6 +880,19 @@ function countsLine(progress: ImportProgress): string {
   );
 }
 
+/** The failed panel's count line, or null when the run has nothing to own up to.
+ *
+ * The imported/skipped pair is gated on ITSELF, not on the three-way sum: a run
+ * that landed and skipped nothing but lost five albums opened on
+ * "0 albums imported · 0 skipped", exactly the noise the early-crash branch
+ * exists to avoid. {@link JobDone} keeps the unconditional pair — a finished run
+ * has landed/skipped counts worth stating even at zero. */
+function failedCountsLine(progress: ImportProgress): string | null {
+  const { applied, skipped, not_landed } = progress;
+  if (applied + skipped > 0) return countsLine(progress);
+  return not_landed > 0 ? `${not_landed} didn't land` : null;
+}
+
 /** done: a legible outcome — imported/skipped counts (counting auto-applied
  * albums) + the feed list, whose applied rows now link straight to their
  * library pages (replaces the old blanket "View in library", spec §1). */
@@ -872,6 +929,13 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
  * empty by design); every other origin counts on `state.progress` and carries
  * the feed rows.
  *
+ * `progress` does not partition the run. A set-aside row (`needs_review` /
+ * `needs_dup_resolution`) is refused by the server's `_is_imported` AND its
+ * `_is_skipped`, and never landed, so it falls out of all three counters — and
+ * on a failed job its Review button is gone. `state.set_aside` is the count, and
+ * it gets its own sentence: a failed run must not silently drop a category of
+ * album it is still holding.
+ *
  * An outcome notice on the EmptyState recipe (the recovery is a navigation, so
  * ErrorState's mandatory Retry would mislead — there is nothing to re-run). */
 function JobFailed({
@@ -879,14 +943,15 @@ function JobFailed({
   jobId,
 }: Readonly<{ state: ImportJobState; jobId: string }>) {
   const sweep = state.origin === "sweep" ? (state.sweep ?? null) : null;
-  const { applied, skipped, not_landed } = state.progress;
-  // A run that died during the scan landed, skipped and lost nothing, so it has
-  // no counts to report and gains no line — the terse early-crash panel is
-  // unchanged. A sweep's counts are its tiles, never a second sentence.
-  const counts =
-    sweep === null && applied + skipped + not_landed > 0
-      ? countsLine(state.progress)
-      : null;
+  // A run that died holding nothing has no counts to report and gains no line —
+  // the terse early-crash panel is unchanged. A sweep's counts are its tiles,
+  // never a second sentence.
+  const counts = sweep === null ? failedCountsLine(state.progress) : null;
+  // Set-aside albums are in none of the imported/skipped/lost buckets, so the
+  // counts line above cannot own them and the rows below lose their buttons on
+  // a failed job. Its own sentence, not a middot segment: it is a fact about
+  // what is left in the source, not another entry in the count ledger.
+  const setAside = sweep === null ? state.set_aside : 0;
   // A failure is a finish and the clock stops at both terminal transitions:
   // forty seconds versus forty minutes is a bad path versus a late crash.
   // (Under ELAPSED_AFTER_S no duration renders at all, so a 3s failure is
@@ -906,6 +971,12 @@ function JobFailed({
           <>
             {state.error ?? "The import stopped unexpectedly."}
             {counts !== null && <span className="mt-1 block">{counts}</span>}
+            {setAside > 0 && (
+              <span className="mt-1 block">
+                {setAside} album{setAside === 1 ? "" : "s"} set aside, not
+                imported.
+              </span>
+            )}
             {ranFor !== undefined && <span className="mt-1 block">{ranFor}</span>}
           </>
         }

@@ -41,8 +41,14 @@ export function announceMessage(args: {
     return sweepMessage(data.sweep, data.phase) + clause;
   }
   if (done) {
-    const { applied, skipped } = data.progress;
-    return `Import complete. Imported ${applied}, skipped ${skipped}.` + clause;
+    const { applied, skipped, not_landed } = data.progress;
+    // The done PANEL has always shown the lost count and the failed
+    // announcement gained it; this channel was the one place it went missing.
+    return (
+      `Import complete. Imported ${applied}, skipped ${skipped}.` +
+      notLandedClause(not_landed) +
+      clause
+    );
   }
   if (data.phase === "scanning" && data.albums.length === 0) {
     return "Scanning the folder for albums." + clause;
@@ -101,27 +107,73 @@ function sweepMessage(sweep: SweepStatus, phase: ImportJobState["phase"]): strin
   return sweep.paused ? `Sweep paused. ${counts}` : `Sweep complete. ${counts}`;
 }
 
-/** The sweep's spoken counters. `skipped_known` is left out, as it always has
- * been in this channel — the visible tiles carry the fourth number. */
+/** The sweep's spoken counters. `skipped_known` joins only when it is nonzero:
+ * the visible tiles are still where the fourth number normally lives, but the
+ * failure branch GATES on it, and a channel must not gate on a number it never
+ * says — a re-run sweep that skipped twenty known folders and then crashed
+ * announced a bare "The sweep failed." while a tile read 20. */
 function sweepCounts(sweep: SweepStatus): string {
-  return `Processed ${sweep.processed}, imported ${sweep.auto_applied}, banked ${sweep.banked}.`;
+  const counts = `Processed ${sweep.processed}, imported ${sweep.auto_applied}, banked ${sweep.banked}.`;
+  return sweep.skipped_known > 0
+    ? `${counts} ${sweep.skipped_known} already known.`
+    : counts;
+}
+
+/** A failed sweep's counters, empty when it did nothing at all.
+ *
+ * Each half is gated on itself, so the gate and the sentence are one
+ * computation rather than a sum that can disagree with what gets said. A live
+ * sweep keeps the unconditional triple: zeros there mean "not yet", but on a
+ * terminal panel they are a claim about the whole run. */
+function failedSweepCounts(sweep: SweepStatus): string {
+  const known =
+    sweep.skipped_known > 0 ? `${sweep.skipped_known} already known.` : "";
+  if (sweep.processed + sweep.auto_applied + sweep.banked === 0) return known;
+  return sweepCounts(sweep);
+}
+
+/** The lost-album clause both terminal announcements owe. `not_landed` is only
+ * ever nonzero on a terminal job, so it drops out of a clean run. */
+function notLandedClause(notLanded: number): string {
+  return notLanded > 0 ? ` ${notLanded} didn't land.` : "";
 }
 
 /** A crashed run still earned its counters, and the panel now reports them — so
  * the one live region must too, or a screen-reader user hears a bare failure
  * for a run that imported two hundred albums. Sweeps count on `sweep`, every
- * other origin on `progress`; a run that died before anything landed says only
- * that it failed. */
+ * other origin on `progress`; a run that died holding nothing says only that it
+ * failed.
+ *
+ * Each clause is gated on ITSELF, not on a sum of all three. Gating the
+ * imported/skipped pair on `applied + skipped + not_landed` announced
+ * "Imported 0, skipped 0." for a run whose only news was that five albums never
+ * landed — the noise the bare-failure branch exists to avoid.
+ *
+ * A sweep's counters get the same treatment through
+ * {@link failedSweepCounts}: gating on `processed + auto_applied + banked` and
+ * ignoring `skipped_known` said only "The sweep failed." for a re-run that
+ * skipped twenty known folders, while a tile read 20.
+ *
+ * `set_aside` gets a clause because it is in NONE of the three buckets: the
+ * server's `_is_imported` and `_is_skipped` both refuse a `needs_review` /
+ * `needs_dup_resolution` row, and it never landed either. Without it a crashed
+ * unattended run drops a whole category of album it is still holding. The done
+ * announcement does not need it — that panel keeps the rows' live Review
+ * buttons, so the albums are not stranded there. */
 function failedMessage(data: ImportJobState): string {
   const sweep = data.origin === "sweep" ? data.sweep : null;
   if (sweep) {
-    const swept = sweep.processed + sweep.auto_applied + sweep.banked;
-    return swept === 0 ? "The sweep failed." : `The sweep failed. ${sweepCounts(sweep)}`;
+    const counts = failedSweepCounts(sweep);
+    return counts === "" ? "The sweep failed." : `The sweep failed. ${counts}`;
   }
   const { applied, skipped, not_landed } = data.progress;
-  if (applied + skipped + not_landed === 0) return "The import failed.";
-  const landed = `The import failed. Imported ${applied}, skipped ${skipped}.`;
-  return not_landed > 0 ? `${landed} ${not_landed} didn't land.` : landed;
+  let m = "The import failed.";
+  if (applied + skipped > 0) m += ` Imported ${applied}, skipped ${skipped}.`;
+  m += notLandedClause(not_landed);
+  if (data.set_aside > 0) {
+    m += ` ${data.set_aside} album${data.set_aside === 1 ? "" : "s"} set aside.`;
+  }
+  return m;
 }
 
 /** Pending duplicates, derived from the feed rows: the backend `progress` has
