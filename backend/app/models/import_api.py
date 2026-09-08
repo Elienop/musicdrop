@@ -199,6 +199,14 @@ class ImportJobState(BaseModel):
             "Whole seconds this job has been running, frozen once the phase is done or failed."
         ),
     )
+    # Server-side truth, NOT inferable from row statuses: a set-aside row can mean
+    # "the worker is blocked in park()" OR "the worker moved on". An unattended
+    # duplicate emits needs_dup_resolution and SKIPs WITHOUT parking, and a
+    # `search` re-lookup deliberately keeps its row needs_review while beets
+    # works. Only the registry knows which, so it says so here.
+    awaiting_decision: bool = Field(
+        description="True while the worker is blocked on a parked album awaiting a decision.",
+    )
 
 
 class ActiveImportStatus(BaseModel):

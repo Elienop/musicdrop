@@ -1,6 +1,7 @@
 import threading
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -23,6 +24,9 @@ from app.models.import_models import (
     ParkedAlbum,
     Recommendation,
 )
+
+if TYPE_CHECKING:  # annotation only — every runtime use is a local import, as elsewhere here
+    from app.beets.import_session import ImportBridge
 
 
 def _candidate(rec: Recommendation, *, confidence: float = 75.5) -> Candidate:
@@ -1383,3 +1387,169 @@ def test_stop_clock_latches_on_the_first_terminal_transition() -> None:
     job.stop_clock()
 
     assert job.ended_monotonic == first
+
+
+# ----- awaiting_decision: "blocked on a person" is not the same as a set-aside row -----
+
+
+def _park_on_a_worker_thread(bridge: "ImportBridge", parked: ParkedAlbum) -> None:
+    """Park ``parked`` from a worker thread, which then BLOCKS in ``park()``.
+
+    Models the real worker without beets: the thread stays inside ``reply.get()``
+    until a choice is pushed, so a test can observe the blocked state instead of
+    racing a fake runner that finishes the job microseconds later.
+    """
+    threading.Thread(target=lambda: bridge.park(parked), daemon=True).start()
+
+
+def test_awaiting_decision_is_true_while_an_album_is_parked() -> None:
+    """The positive case: an attended park really is blocked on a person."""
+    fake = FakeImportRunner(parked=[_parked(0, Recommendation.medium)])
+    reg = ImportJobRegistry(runner=fake)
+    job_id = reg.start("/music/incoming")
+
+    _poll(lambda: reg.state(job_id).awaiting_decision, lambda v: v is True)
+    assert reg.state(job_id).albums[0].status is ImportAlbumStatus.needs_review
+
+    reg.record_choice(job_id, 0, ImportChoice(action=ImportAction.apply))
+    _poll(lambda: reg.state(job_id).phase, lambda p: p is ImportPhase.done)
+    assert reg.state(job_id).awaiting_decision is False
+
+
+def test_awaiting_decision_is_false_for_an_unattended_duplicate() -> None:
+    """An unattended duplicate leaves a needs_dup_resolution row and NOBODY waiting.
+
+    ``resolve_duplicate`` emits the outcome and SKIPs WITHOUT parking, so the
+    worker keeps scanning the rest of the folder. Inferring "blocked" from the row
+    status (what the page did before this field existed) wedges the whole run:
+    spinner gone, poll backed off, for a decision nobody will ever be asked for.
+    Phase is asserted ACTIVE so the answer cannot be coming from the terminal gate.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="dup-unattended", bridge=ImportBridge(), phase=ImportPhase.reviewing)
+    reg._job = job  # white-box: install the job in the single slot for state()
+    job.bridge.note_outcome(_applied_outcome(0))
+    job.bridge.note_outcome(
+        AlbumOutcome(
+            album_index=0,
+            folder="/music/incoming/album0",
+            artist="Radiohead",
+            album="OK Computer",
+            recommendation=Recommendation.strong,
+            confidence=0.0,
+            status=AlbumOutcomeStatus.needs_dup_resolution,
+        )
+    )
+
+    state = reg.state("dup-unattended")
+    assert state.albums[0].status is ImportAlbumStatus.needs_dup_resolution  # the misleading row
+    assert state.phase is ImportPhase.reviewing  # still running: not the terminal gate answering
+    assert state.awaiting_decision is False  # ...and nothing is blocked
+    assert job.bridge.pending_count() == 0  # the worker never entered park_duplicate
+
+
+def test_awaiting_decision_is_false_during_a_search_relookup() -> None:
+    """A ``search`` keeps its row at needs_review while beets re-looks it up.
+
+    ``record_choice`` deliberately does NOT mark a search decided (marking it would
+    transiently miscount it as skipped), so the row status still reads "parked"
+    during a multi-minute MusicBrainz lookup. The flag must flip the moment the
+    worker is unblocked, and flip back when beets re-parks the album.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="relookup", bridge=ImportBridge(), phase=ImportPhase.reviewing)
+    reg._job = job
+    job.bridge.note_outcome(_needs_review_outcome(0))
+    _park_on_a_worker_thread(job.bridge, _parked(0, Recommendation.medium))
+    _poll(lambda: reg.state("relookup").awaiting_decision, lambda v: v is True)
+
+    reg.record_choice(
+        "relookup",
+        0,
+        ImportChoice(action=ImportAction.search, search=ImportSearch(release_id="rel-1")),
+    )
+
+    state = reg.state("relookup")
+    assert state.albums[0].status is ImportAlbumStatus.needs_review  # NOT decided, by design
+    assert state.phase is ImportPhase.reviewing  # still active: not the terminal gate answering
+    assert state.awaiting_decision is False  # beets is working, not the operator
+
+    # ...and the re-park puts the operator back in the loop.
+    _park_on_a_worker_thread(job.bridge, _parked(0, Recommendation.medium))
+    _poll(lambda: reg.state("relookup").awaiting_decision, lambda v: v is True)
+    reg.record_choice("relookup", 0, ImportChoice(action=ImportAction.skip))  # release the thread
+
+
+def test_awaiting_decision_covers_a_parked_duplicate_prompt() -> None:
+    """An ATTENDED duplicate does park — the flag must not be candidate-only."""
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+    from app.models.import_models import DuplicateAction, DuplicateDecision
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="dup-parked", bridge=ImportBridge(), phase=ImportPhase.reviewing)
+    reg._job = job
+    job.bridge.note_outcome(_applied_outcome(0))
+    prompt = _dup_prompt(0)
+    threading.Thread(target=lambda: job.bridge.park_duplicate(prompt), daemon=True).start()
+    _poll(lambda: reg.state("dup-parked").awaiting_decision, lambda v: v is True)
+
+    reg.record_duplicate_decision(
+        "dup-parked", 0, DuplicateDecision(action=DuplicateAction.keep_both)
+    )
+
+    state = reg.state("dup-parked")
+    assert state.phase is ImportPhase.reviewing  # still active
+    assert state.awaiting_decision is False
+
+
+def test_awaiting_decision_survives_a_park_buffered_before_its_row() -> None:
+    """A park popped before its feed row exists still blocks the worker.
+
+    The buffer branch has no row to hang the payload on, so a row-derived answer
+    would report "not waiting" while the worker sits in ``park()`` forever.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    bridge = ImportBridge()
+    reg = ImportJobRegistry()
+    job = ImportJob(id="buffered", bridge=bridge, phase=ImportPhase.reviewing)
+    reg._job = job
+
+    bridge._out.put(_parked(0, Recommendation.medium))  # reaches the channel with no outcome yet
+    state = reg.state("buffered")
+
+    assert job.albums == {}  # no row exists
+    assert 0 in job.pending_parked  # buffered, not discarded
+    assert state.awaiting_decision is True
+
+
+def test_awaiting_decision_is_false_on_a_job_that_died_while_parked() -> None:
+    """A failed run has no worker left to be blocked.
+
+    ``_on_error`` sets ``failed`` without touching row status, so a crash during a
+    park leaves a parked row behind. Nobody is waiting for the operator then.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    bridge = ImportBridge()
+    reg = ImportJobRegistry()
+    job = ImportJob(id="died", bridge=bridge, phase=ImportPhase.reviewing)
+    reg._job = job
+    bridge.note_outcome(_needs_review_outcome(0))
+    bridge._out.put(_parked(0, Recommendation.medium))
+    assert reg.state("died").awaiting_decision is True  # control: True while it ran
+
+    job.phase = ImportPhase.failed
+    job.error = "beets blew up"
+
+    assert job.parked_awaiting == {0}  # the row is still parked...
+    assert reg.state("died").awaiting_decision is False  # ...but the worker is gone

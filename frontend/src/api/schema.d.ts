@@ -3530,6 +3530,11 @@ export interface components {
              * @description Whole seconds this job has been running, frozen once the phase is done or failed.
              */
             elapsed_seconds: number;
+            /**
+             * Awaiting Decision
+             * @description True while the worker is blocked on a parked album awaiting a decision.
+             */
+            awaiting_decision: boolean;
         };
         /**
          * ImportOptions

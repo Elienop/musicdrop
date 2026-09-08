@@ -99,6 +99,7 @@ def test_job_state_round_trips() -> None:
         error=None,
         set_aside=1,
         elapsed_seconds=125,
+        awaiting_decision=True,
     )
     dumped = state.model_dump(mode="json")
     assert dumped["phase"] == "reviewing"
@@ -119,6 +120,12 @@ def test_job_state_round_trips() -> None:
     assert dumped["elapsed_seconds"] == 125
     with pytest.raises(ValidationError):
         ImportJobState.model_validate({k: v for k, v in dumped.items() if k != "elapsed_seconds"})
+    # Required too: "is a person being waited on" has no safe default — a
+    # defaulted False would silently report every job as unblocked.
+    assert dumped["awaiting_decision"] is True
+    without_flag = {k: v for k, v in dumped.items() if k != "awaiting_decision"}
+    with pytest.raises(ValidationError):
+        ImportJobState.model_validate(without_flag)
 
 
 def test_active_status_defaults_origin_manual() -> None:
@@ -199,6 +206,7 @@ def test_job_state_sweep_block_round_trips() -> None:
         origin="sweep",
         set_aside=0,
         elapsed_seconds=0,
+        awaiting_decision=False,
         sweep=SweepStatus(processed=3, auto_applied=2, banked=1, current_folder="/library/x"),
     )
     dumped = state.model_dump(mode="json")

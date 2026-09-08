@@ -13219,6 +13219,11 @@
             "type": "integer",
             "title": "Elapsed Seconds",
             "description": "Whole seconds this job has been running, frozen once the phase is done or failed."
+          },
+          "awaiting_decision": {
+            "type": "boolean",
+            "title": "Awaiting Decision",
+            "description": "True while the worker is blocked on a parked album awaiting a decision."
           }
         },
         "type": "object",
@@ -13230,7 +13235,8 @@
           "summary",
           "error",
           "set_aside",
-          "elapsed_seconds"
+          "elapsed_seconds",
+          "awaiting_decision"
         ],
         "title": "ImportJobState",
         "description": "Response of ``GET /api/import/{job}``: phase + progress + the live feed."

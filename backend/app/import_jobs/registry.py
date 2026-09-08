@@ -118,6 +118,14 @@ class ImportJob:
     # forever and the row 404s, wedging the single import slot.
     pending_parked: dict[int, ParkedAlbum] = field(default_factory=dict)
     pending_duplicate: dict[int, DuplicatePrompt] = field(default_factory=dict)
+    # Album indices the worker is BLOCKED on, behind ImportJobState.awaiting_decision.
+    # Maintained consumer-side (added when a drain pops a park off the bridge,
+    # discarded when the choice/decision is pushed) rather than read from the
+    # bridge's ``pending_count``: that counter is decremented by the WORKER after
+    # ``reply.get()`` returns, so a poll fired straight after a choice can still
+    # see the old value and read a working import as blocked. Both edges here run
+    # under ``self._lock`` on the API thread.
+    parked_awaiting: set[int] = field(default_factory=set)
     # The elapsed clock behind ImportJobState.elapsed_seconds. MONOTONIC, not
     # wall time: an NTP step on the server (or a DST change) must not make a
     # running import's number jump or go backwards. ``ended`` latches at the
@@ -551,6 +559,9 @@ class ImportJobRegistry:
             parked = job.bridge.get_parked(timeout=0)
             if parked is None:
                 break
+            # Popping it off the bridge IS the proof the worker is blocked on it —
+            # true in both branches below (a buffered park blocks just as hard).
+            job.parked_awaiting.add(parked.album_index)
             row = job.albums.get(parked.album_index)
             if row is not None:
                 row.parked = parked
@@ -573,6 +584,7 @@ class ImportJobRegistry:
             prompt = job.bridge.get_parked_duplicate(timeout=0)
             if prompt is None:
                 break
+            job.parked_awaiting.add(prompt.album_index)  # same proof as the candidate loop
             row = job.albums.get(prompt.album_index)
             if row is not None:
                 row.duplicate = prompt
@@ -688,6 +700,13 @@ class ImportJobRegistry:
         job = self._require(job_id)
         with self._lock:
             job.bridge.push_choice(index, choice)  # non-blocking; KeyError/RuntimeError bubble
+            # The worker is unblocked from HERE, whatever the action was. A
+            # `search` re-lookup keeps its row needs_review while beets works
+            # (below), so this discard is the only thing that stops the page
+            # reading a working re-lookup as parked; the re-park re-adds the
+            # index on the next drain. After the push, so a rejected choice
+            # (KeyError/RuntimeError) leaves the index in place.
+            job.parked_awaiting.discard(index)
             row = job.albums.get(index)
             # A `search` is a re-lookup request, not a decision: the worker
             # re-parks the album in place, so leave the row needs_review. Marking
@@ -720,6 +739,7 @@ class ImportJobRegistry:
         job = self._require(job_id)
         with self._lock:
             job.bridge.push_duplicate_decision(index, decision)
+            job.parked_awaiting.discard(index)  # unblocked; mirrors record_choice
             row = job.albums.get(index)
             if row is not None:
                 row.status = ImportAlbumStatus.decided
@@ -791,6 +811,10 @@ class ImportJobRegistry:
                 set_aside=set_aside,
                 sweep=job.sweep.model_copy() if job.sweep is not None else None,
                 elapsed_seconds=job.elapsed_seconds(),
+                # A terminal job has no live worker to be blocked: _on_error sets
+                # `failed` without touching row status, so a run that dies while
+                # an album is parked leaves the set populated and nobody waiting.
+                awaiting_decision=job.phase in _ACTIVE_PHASES and bool(job.parked_awaiting),
             )
 
     def active_status(self) -> ActiveImportStatus:
