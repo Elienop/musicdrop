@@ -628,7 +628,11 @@ def test_sweep_start_pause_and_summary_flow() -> None:
     release = client.post(f"/api/import/{job_id}/albums/0/choice", json={"action": "skip"})
     assert release.status_code == 204
     state = _poll(client, job_id, lambda s: s["phase"] == "done")
-    assert "paused" in (state["summary"] or "")
+    # The pause survives the finish on the structured field. The summary is
+    # counters only — it used to repeat the flag, which the UI then rendered
+    # under a heading that already said it.
+    assert state["sweep"]["paused"] is True
+    assert "paused" not in (state["summary"] or "")
 
 
 def test_active_status_last_sweep_defaults_none() -> None:
