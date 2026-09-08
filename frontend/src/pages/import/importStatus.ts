@@ -21,13 +21,16 @@ export function announceMessage(args: {
   if (notFound) return "That import is gone. It may have expired.";
   if (isError) return "The import could not be loaded.";
   if (isPending || !data) return "Loading the import.";
-  if (data.phase === "failed") return "The import failed.";
   const done = data.phase === "done";
+  // A failure IS a finish: the clock stops at both terminal transitions, so the
+  // clause is valid and past tense there too.
+  const finished = done || data.phase === "failed";
   const clause = elapsedClause(
     data.elapsed_seconds,
-    done,
+    finished,
     data.awaiting_decision,
   );
+  if (data.phase === "failed") return "The import failed." + clause;
   if (data.origin === "sweep" && data.sweep) {
     return sweepMessage(data.sweep, data.phase) + clause;
   }
@@ -54,13 +57,13 @@ export function announceMessage(args: {
  * owed. */
 function elapsedClause(
   seconds: number,
-  done: boolean,
+  finished: boolean,
   blocked: boolean,
 ): string {
-  if (blocked && !done) return "";
-  const spoken = spokenElapsed(seconds);
+  if (blocked && !finished) return "";
+  const spoken = spokenElapsed(seconds, finished);
   if (spoken === null) return "";
-  return done ? ` Took ${spoken}.` : ` Running for ${spoken}.`;
+  return finished ? ` Took ${spoken}.` : ` Running for ${spoken}.`;
 }
 
 /** Sweep-origin jobs announce their monotone counters rather than the feed. */
@@ -134,14 +137,24 @@ export function elapsedLabel(seconds: number): string | null {
   return pair(`${Math.floor(minutes / 60)}h`, minutes % 60, "m");
 }
 
-/** The SPOKEN elapsed value — "12 minutes", "1 hour 5 minutes" — or null under
- * a minute. Words, not `12m`, which a screen reader reads as a letter; and
- * minute granularity, so the announcer's identical-string de-dup caps this at
- * one announcement a minute rather than one a second. */
-export function spokenElapsed(seconds: number): string | null {
-  if (!Number.isFinite(seconds) || seconds < 60) return null;
-  const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
-  const minutes = Math.floor(seconds / 60);
+const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
+
+/** The SPOKEN elapsed value — "45 seconds", "12 minutes", "1 hour 5 minutes" —
+ * or null below the floor. Words, not `12m`, which a screen reader reads as a
+ * letter.
+ *
+ * While the run is live the floor is a minute: minute granularity is what lets
+ * the announcer's identical-string de-dup cap this at one announcement a minute
+ * rather than one a second. Once `finished`, the announcement fires exactly
+ * once (it bypasses the throttle), so seconds cost no repetition — and the
+ * floor drops to {@link ELAPSED_AFTER_S}, matching the visible line, which
+ * showed `· 45s` while the announcer said nothing. */
+export function spokenElapsed(seconds: number, finished = false): string | null {
+  if (!Number.isFinite(seconds)) return null;
+  if (seconds < (finished ? ELAPSED_AFTER_S : 60)) return null;
+  const whole = Math.floor(seconds);
+  if (whole < 60) return plural(whole, "second");
+  const minutes = Math.floor(whole / 60);
   if (minutes < 60) return plural(minutes, "minute");
   const hours = plural(Math.floor(minutes / 60), "hour");
   const rest = minutes % 60;

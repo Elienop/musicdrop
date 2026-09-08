@@ -1054,6 +1054,28 @@ describe("ImportPage — terminal states", () => {
     expect(another).toHaveAttribute("href", "/import");
   });
 
+  test("a failure carries how long the run lasted", async () => {
+    // The clock stops at both terminal transitions: three seconds versus forty
+    // minutes is a bad path versus a late crash.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "failed",
+            error: "lookup exploded",
+            albums: [],
+            elapsed_seconds: 2412,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    const body = await screen.findByText("lookup exploded · 40m 12s");
+    // RTL's normalizer collapses the NBSP, so the dialect check reads raw.
+    expect(body.textContent).toContain("· ");
+  });
+
   test("a transient job-fetch error shows a retry", async () => {
     server.use(http.get(JOB_URL, () => new HttpResponse(null, { status: 500 })));
     renderAt("/import?job=job-1");

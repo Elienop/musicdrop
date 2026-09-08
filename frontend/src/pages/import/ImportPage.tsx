@@ -329,7 +329,7 @@ function ImportRun({ jobId }: Readonly<{ jobId: string }>) {
     return (
       <ImportShell>
         {announcer}
-        <JobFailed error={data.error} />
+        <JobFailed error={data.error} elapsedSeconds={data.elapsed_seconds} />
       </ImportShell>
     );
   }
@@ -744,13 +744,22 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
 /** failed: the worker's error + a way to start over. An outcome notice on the
  * EmptyState recipe (the recovery is a navigation, so ErrorState's mandatory
  * Retry would mislead — there is nothing to re-run). */
-function JobFailed({ error }: Readonly<{ error: string | null }>) {
+function JobFailed({
+  error,
+  elapsedSeconds,
+}: Readonly<{ error: string | null; elapsedSeconds: number }>) {
+  // A failure is a finish and the clock stops at both terminal transitions:
+  // three seconds versus forty minutes is a bad path versus a late crash.
+  const elapsed = elapsedLabel(elapsedSeconds);
   return (
     <EmptyState
       bordered
       icon={ErrorIcon}
       title="Import failed"
-      body={error ?? "The import stopped unexpectedly."}
+      body={
+        (error ?? "The import stopped unexpectedly.") +
+        (elapsed === null ? "" : `${SEGMENT_SEP}${elapsed}`)
+      }
       action={
         // The shell chrome already renders a ghost "Start over" -> /import;
         // this panel CTA uses a distinct label so the two aren't identical.

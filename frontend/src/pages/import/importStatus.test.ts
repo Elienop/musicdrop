@@ -195,6 +195,22 @@ describe("announceMessage", () => {
         }),
       ),
     ).toBe("Import complete. Imported 3, skipped 1. Took 14 minutes.");
+    // A failure is a finish too: three seconds versus forty minutes is a bad
+    // path versus a late crash.
+    expect(
+      speak(job({ phase: "failed", error: "x", elapsed_seconds: 840 })),
+    ).toBe("The import failed. Took 14 minutes.");
+    // A terminal announcement fires exactly once, so seconds cost nothing —
+    // and the visible line already showed `· 45s` here.
+    expect(
+      speak(
+        job({
+          phase: "done",
+          progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0 },
+          elapsed_seconds: 45,
+        }),
+      ),
+    ).toBe("Import complete. Imported 1, skipped 0. Took 45 seconds.");
   });
 
   test("sweep jobs announce counters, not the feed", () => {
@@ -302,5 +318,16 @@ describe("spokenElapsed", () => {
     [7500, "2 hours 5 minutes"],
   ])("speaks %i seconds as %s", (seconds, expected) => {
     expect(spokenElapsed(seconds)).toBe(expected);
+  });
+
+  // Finished: the floor drops to the visible line's own threshold and seconds
+  // are allowed, because the terminal announcement fires exactly once.
+  test.each([
+    [ELAPSED_AFTER_S - 1, null],
+    [ELAPSED_AFTER_S, "30 seconds"],
+    [45, "45 seconds"],
+    [60, "1 minute"],
+  ])("finished, speaks %i seconds as %s", (seconds, expected) => {
+    expect(spokenElapsed(seconds, true)).toBe(expected);
   });
 });
