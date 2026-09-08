@@ -1769,6 +1769,66 @@ describe("ImportPage — sweep & bank", () => {
     expect(screen.getByText(". 1 hour 1 minute.")).toHaveClass("sr-only");
   });
 
+  test("a paused sweep is announced without waiting out the throttle", async () => {
+    // The announcer is throttled to 4s so a 1s poll cannot spam it, and at
+    // mount that window holds it on the "Loading the import." placeholder. A
+    // pause is user-initiated — the person just pressed a button and is owed an
+    // answer — so it bypasses the window, as the terminal states already do.
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({
+            phase: "applying",
+            sweep: {
+              processed: 6,
+              auto_applied: 4,
+              banked: 2,
+              skipped_known: 0,
+              current_folder: "/library/Adele/21",
+              paused: true,
+            },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    // waitFor's default ceiling is 1000ms — a quarter of the throttle window,
+    // so a pass here cannot be the window simply elapsing.
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Stopping after this album. Processed 6, imported 4, banked 2.",
+      ),
+    );
+  });
+
+  test("the announcer's throttle is still in force for a sweep nobody paused", async () => {
+    // The control the test above needs. Without it, a throttle that held
+    // nothing back at all would produce the same pass; here the visible line
+    // has already rendered while the spoken one is still the placeholder.
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({
+            phase: "applying",
+            sweep: {
+              processed: 6,
+              auto_applied: 4,
+              banked: 2,
+              skipped_known: 0,
+              current_folder: "/library/Adele/21",
+              paused: false,
+            },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    expect(await screen.findByText("Sweeping 21…")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Loading the import.");
+  });
+
   test("a short sweep's status line reads exactly as it did before", async () => {
     server.use(
       http.get(SWEEP_JOB_URL, () =>

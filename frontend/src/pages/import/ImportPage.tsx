@@ -406,7 +406,24 @@ function ImportRun({ jobId }: Readonly<{ jobId: string }>) {
   const throttled = useThrottledValue(message, 4000);
   const terminal =
     notFound || isError || (data !== undefined && isTerminalPhase(data.phase));
-  const status = terminal ? message : throttled;
+  // A pause bypasses the throttle too. Pressing Pause changed the visible line
+  // within a poll but left the announcer up to ~5s behind it (a 1s poll plus
+  // the 4s window), and the button self-disables on click, so the one thing
+  // that acknowledged the press was silent the longest. It is a user-initiated
+  // change, and the person who just pressed a button is owed an answer.
+  //
+  // Read off the job rather than the mutation, so it needs no state from
+  // SweepRun: `paused` is set once, by `registry.pause_sweep`, and nothing
+  // clears it for the life of the job. That also makes the bypass STICKY
+  // instead of a one-render pulse — a pulse would hand the announcer back a
+  // stale throttled message on the very next render.
+  //
+  // No chatter: while paused and not yet terminal the message is
+  // `sweepMessage`'s "Stopping after this album." plus counters that move only
+  // as the last album finishes, and an elapsed clause with minute granularity.
+  // The 4s window was never what bounded either of those.
+  const pausedSweep = data?.sweep?.paused === true;
+  const status = terminal || pausedSweep ? message : throttled;
   const announcer = (
     <p className="sr-only" role="status" aria-live="polite">
       {status}
