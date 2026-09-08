@@ -638,8 +638,9 @@ describe("ImportPage — live feed", () => {
     renderAt("/import?job=job-1");
 
     // The whole point: a ten-minute MusicBrainz lookup must not look wedged.
-    // Two units, so the line visibly moves every second rather than once a
-    // minute — a frozen line is the very thing being ruled out.
+    // Two units, so the line moves on every poll rather than once a minute — a
+    // frozen line is the very thing being ruled out. (Per poll, not per second:
+    // a run blocked on a person backs off to a 10 s poll.)
     const segment = await screen.findByText("· 2m 12s");
     expect(lineOf(segment)).toHaveTextContent("Scanning your folder…");
     // The middot's trailing space is non-breaking, so a wrap can never strand

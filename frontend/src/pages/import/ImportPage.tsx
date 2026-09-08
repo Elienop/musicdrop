@@ -59,9 +59,13 @@ import {
  * letter, so the visible half is hidden and {@link spokenElapsed} carries the
  * words. Same sr-only/aria-hidden pair as NamingPanel's preview arrow.
  *
- * One helper, not four copies: this renders at every site that shows the number
- * (live feed, sweep, done, failed). Both halves use the visible label's own
- * floor, so a rendered segment always has something behind it. */
+ * One helper, not three copies: this renders at every site that shows the
+ * number as a middot segment (the live feed's status line, the sweep's, and the
+ * done panel's body). The two terminal panels that need a whole sentence use
+ * {@link elapsedSentence} instead. Both halves use the visible label's own
+ * floor, so a rendered segment always has something behind it — pass
+ * `ELAPSED_AFTER_S`, or the 60s default silently deletes the visible number
+ * too, for every run in the 30-59s band. */
 function ElapsedSegment({ seconds }: Readonly<{ seconds: number }>) {
   const label = elapsedLabel(seconds);
   const spoken = spokenElapsed(seconds, ELAPSED_AFTER_S);

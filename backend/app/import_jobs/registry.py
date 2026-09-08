@@ -131,11 +131,18 @@ class ImportJob:
     # worker that is already running. ``awaiting_decision`` then reads true
     # while beets works. The window is a few preemptible instructions —
     # ``park()`` releases the lock, then queues — and it needs a double submit
-    # inside it. It does NOT self-clear: both discards are index-scoped and
-    # that index is already answered, so nothing removes it before the terminal
-    # transition (``get_parked`` is a bare pop with no liveness check). The rest
-    # of the run then polls at 10 s, with no spinner and no spoken elapsed
-    # clause. Recorded in BACKLOG.md.
+    # inside it. Both discards are index-scoped and that index is already
+    # answered, so the ordinary paths clear nothing (``get_parked`` is a bare pop
+    # with no liveness check). One path does clear it: if the same index parks
+    # again and is answered again, ``push_choice`` finds the new reply queue and
+    # the discard below empties the set — reachable only after a ``search``, which
+    # is the one action that re-parks in place. Otherwise it holds to the terminal
+    # transition, and the rest of the run polls at 10 s with no spinner. The
+    # spoken elapsed clause survives: a non-``search`` choice sets the row
+    # ``decided``, ``needs_review`` counts only that literal status, so the
+    # announcer's named-wait test is false and the clause is still spoken (it
+    # drops only while the row is still ``needs_review`` — a ``search`` retry).
+    # Recorded in BACKLOG.md.
     parked_awaiting: set[int] = field(default_factory=set)
     # The elapsed clock behind ImportJobState.elapsed_seconds. MONOTONIC, not
     # wall time: an NTP step on the server (or a DST change) must not make a

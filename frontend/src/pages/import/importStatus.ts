@@ -172,9 +172,13 @@ export const ELAPSED_AFTER_S = 30;
  * realistic counts, and at six figures it wraps and opens with the middot,
  * exactly as JobDone's identical line already does.
  *
- * Import-page-local on purpose. `ReviewPage` and `CandidateReview` still build
- * the same confidence + recommendation string with a plain-space middot; those
- * rows are a recorded residual, not an oversight in this constant's reach. */
+ * Import-page-local on purpose, and the two rows outside it are not the same
+ * defect. `ReviewPage.tsx:208` builds the confidence + recommendation string
+ * with a plain-space middot, so a wrap can strand one there — a recorded
+ * residual, not an oversight in this constant's reach.
+ * `CandidateReview.tsx:142` puts its middot in a bare flex item whose container
+ * has no `flex-wrap`, so no wrap can strand it; that row's recorded defect is
+ * the 360px squeeze instead. */
 export const SEGMENT_SEP = " ·\u00a0";
 
 /** `head` plus a second unit, dropping it when zero — "1h", not "1h 0m". The
@@ -188,13 +192,16 @@ function pair(head: string, rest: number, unit: string): string {
  * Truncates to whole units, like the server's own whole-second count.
  *
  * Two units below the hour on purpose: a bare `5m` changes once a minute, so
- * for 59 of every 60 seconds the line is frozen — indistinguishable from the
- * wedged page this number exists to rule out. Two units also read as a
- * duration rather than as one more of the line's `2 albums`-shaped counts.
+ * for 59 of every 60 polls the line is frozen — indistinguishable from the
+ * wedged page this number exists to rule out. With seconds it changes on EVERY
+ * poll, which is what the reader actually sees; the poll is 1 s while the worker
+ * works and 10 s once it is blocked on a person, so "every poll" is the honest
+ * claim, not "every second". Two units also read as a duration rather than as
+ * one more of the line's `2 albums`-shaped counts.
  *
- * Above the hour the second unit is minutes, so the label freezes for 59 of
- * every 60 seconds again. Accepted, not solved: `1h 2m 30s` reads as a clock,
- * and the run that gets there is the unattended sweep.
+ * Above the hour the second unit is minutes, so the label freezes for a whole
+ * minute again. Accepted, not solved: `1h 2m 30s` reads as a clock, and the run
+ * that gets there is the unattended sweep.
  *
  * Guarded on `Number.isFinite`: unreachable through the typed contract, but
  * `elapsedLabel(undefined)` rendered "NaNh NaNm", and untyped fixtures that
