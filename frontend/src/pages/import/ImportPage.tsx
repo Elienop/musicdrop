@@ -589,25 +589,32 @@ function sweepDoneBody(
   );
 }
 
-/** The finished sweep's single action, chosen by what the run produced. */
-function SweepDoneCta({ sweep }: Readonly<{ sweep: SweepStatus }>) {
-  if (sweep.banked > 0) {
-    return (
-      <Button size="sm" asChild>
-        <Link to="/review">Review banked albums</Link>
-      </Button>
-    );
-  }
-  if (sweep.auto_applied > 0) {
-    return (
-      <Button size="sm" asChild>
-        <Link to="/browse?sort=added">See them in the library</Link>
-      </Button>
-    );
-  }
+/** A terminal sweep's single action, chosen by what the run produced — banked
+ * albums to decide, else imported ones to look at, else a fresh run.
+ *
+ * Shared by the finished and failed panels: a crash does not change where the
+ * albums went, and the failed panel already reports the counts, so withholding
+ * the link only costs the user the navigation. `variant` is what differs — the
+ * failed panel stays `outline`, since a solid CTA there reads as success. */
+function SweepDoneCta({
+  sweep,
+  variant,
+}: Readonly<{ sweep: SweepStatus; variant?: "outline" }>) {
+  const to =
+    sweep.banked > 0
+      ? "/review"
+      : sweep.auto_applied > 0
+        ? "/browse?sort=added"
+        : "/import";
+  const label =
+    sweep.banked > 0
+      ? "Review banked albums"
+      : sweep.auto_applied > 0
+        ? "See them in the library"
+        : "Import another folder";
   return (
-    <Button size="sm" asChild>
-      <Link to="/import">Import another folder</Link>
+    <Button variant={variant} size="sm" asChild>
+      <Link to={to}>{label}</Link>
     </Button>
   );
 }
@@ -1004,20 +1011,19 @@ function JobFailed({
           </>
         }
         action={
-          // A sweep that banked has somewhere to send the user; otherwise the
-          // recovery is a fresh run, and the label differs from the shell
-          // chrome's ghost "Start over" so the two aren't identical. Outline
-          // either way: a solid CTA would read as a success panel. Unlike
-          // {@link SweepDoneCta} this does not offer the library on an
-          // auto-applied run: a crashed sweep's counts are what it is owning up
-          // to, not a result to go and admire.
-          <Button variant="outline" size="sm" asChild>
-            {(sweep?.banked ?? 0) > 0 ? (
-              <Link to="/review">Review banked albums</Link>
-            ) : (
+          // Same destinations as a finished sweep ({@link SweepDoneCta}): the
+          // crash did not move the albums, and this panel already names the
+          // counts. Outline, not solid — a solid CTA would read as a success
+          // panel. A non-sweep failure has no feed to send anyone to, and its
+          // label differs from the shell chrome's ghost "Start over" so the two
+          // aren't identical.
+          sweep !== null ? (
+            <SweepDoneCta sweep={sweep} variant="outline" />
+          ) : (
+            <Button variant="outline" size="sm" asChild>
               <Link to="/import">Import another folder</Link>
-            )}
-          </Button>
+            </Button>
+          )
         }
       />
       {sweep !== null && <SweepTiles sweep={sweep} />}

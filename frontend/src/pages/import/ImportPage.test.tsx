@@ -1868,6 +1868,35 @@ describe("ImportPage — sweep & bank", () => {
     },
   );
 
+  test("a failed sweep that only auto-imported still points at the library", async () => {
+    // The crash did not move the albums, and the panel above this CTA already
+    // says 150 were imported — so "Import another folder" was a dead end.
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({
+            phase: "failed",
+            error: "disk full",
+            sweep: {
+              processed: 200,
+              auto_applied: 150,
+              banked: 0,
+              skipped_known: 0,
+              current_folder: null,
+              paused: false,
+            },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    const link = await screen.findByRole("link", {
+      name: "See them in the library",
+    });
+    expect(link).toHaveAttribute("href", "/browse?sort=added");
+  });
+
   test("the resume banner names a running sweep", async () => {
     server.use(
       http.get(ACTIVE_URL, () =>
