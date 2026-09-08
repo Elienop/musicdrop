@@ -348,10 +348,14 @@ describe("announceMessage", () => {
         }),
       ),
     ).toBe("The sweep failed. Processed 200, imported 150, banked 40. Took 14 minutes.");
-    // Nothing landed: the crash-during-scan case says only that it failed.
+    // Nothing landed: the crash-during-scan case says only that it failed,
+    // either side of the origin split. "Imported 0, skipped 0." is noise.
     expect(
       speak(sweepState({ phase: "failed", error: "disk full", elapsed_seconds: 840 })),
     ).toBe("The sweep failed. Took 14 minutes.");
+    expect(
+      speak(job({ phase: "failed", error: "the session died", elapsed_seconds: 840 })),
+    ).toBe("The import failed. Took 14 minutes.");
   });
 
   test("sweep jobs announce counters, not the feed", () => {
