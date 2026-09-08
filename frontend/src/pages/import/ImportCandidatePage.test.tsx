@@ -225,6 +225,39 @@ describe("ImportCandidatePage", () => {
     expect(screen.getByText("bonus.mp3")).toBeInTheDocument();
   });
 
+  test("the match header is one wrapping text flow, glued at every separator", async () => {
+    server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
+    renderAt();
+    await screen.findByRole("heading", { name: /Radiohead - OK Computer/i });
+
+    // The whole line in one assertion — the joins are the thing under test, and
+    // fragments cannot pin a join. Every separator is `SEGMENT_SEP`: a plain
+    // space, the middot, then U+00A0, so a wrap breaks BEFORE the middot and
+    // never strands one at the end of a line. Written as escapes because a
+    // literal NBSP is invisible in review, and read off `textContent` because
+    // the default RTL normalizer collapses U+00A0 to a plain space — a text
+    // query cannot tell the two separators apart.
+    const line = screen.getByText(
+      (_, el) => el?.tagName === "P" && (el.textContent ?? "").startsWith("76%"),
+    );
+    expect(line.textContent).toBe(
+      "76% \u00b7\u00a0Medium match \u00b7\u00a0MusicBrainz \u00b7\u00a01997 " +
+        "\u00b7\u00a0CD \u00b7\u00a0GB \u00b7\u00a0Parlophone " +
+        "view (opens the release page in a new tab)",
+    );
+    // The layout half: as `flex items-center gap-2` this line put every segment
+    // on one flex line and the browser squeezed the widest of them to three
+    // line boxes at 360px. Normal inline layout wraps between words instead.
+    // jsdom cannot measure that, so what is pinned here is the class the
+    // squeeze needed; the wrap itself is a browser measurement.
+    const tokens = line.className.split(/\s+/);
+    expect(tokens).not.toContain("flex");
+    // Control: a line that lost its classes entirely would also pass the line
+    // above, so pin what must still be there.
+    expect(tokens).toContain("text-sm");
+    expect(tokens).toContain("text-muted-foreground");
+  });
+
   test("shows the current file's format in the Format column", async () => {
     server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
     renderAt();
