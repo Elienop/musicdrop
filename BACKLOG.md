@@ -1796,22 +1796,20 @@ the condition it names has changed.
   data; it is stated in `trash_manage._restore_to_origin`'s docstring, which also says why
   widening `origin_occupied` to name the broken link is a contract change.
 
-- **`awaiting_decision` can read true while beets works, and then STICKS**
-  (2026-09-08, import-feedback slice; blast radius corrected 2026-09-08). `park()` registers
-  its reply queue before queueing the park, so a choice accepted for a park that is registered
-  but not yet drained discards nothing and the next drain adds the index anyway. The window is
-  a few preemptible instructions (the lock is released, then the park is queued), not a
-  bounded sub-microsecond one, and it needs a double submit inside it. Both discards
-  (`record_choice`, `record_duplicate_decision`) are index-scoped and that index is already
-  answered, so the ordinary paths clear nothing — `get_parked` is a bare pop with no liveness
-  check, and a rejected retry discards nothing because `record_choice` discards after
-  `push_choice`. One path does clear it: a `search` re-parks the same index, and answering that
-  park succeeds and empties the set. Otherwise the flag holds to the terminal transition, and
-  the run polls at 10 s instead of 1 s with no spinner. The spoken elapsed clause is NOT lost —
-  a non-`search` choice sets the row `decided` and `needs_review` counts only that literal
-  status, so nothing names the wait and the clause is still spoken. Closing it means a blocked
-  flag on the bridge — a concurrency-boundary change with its own design. Stated at
-  `registry.ImportJob.parked_awaiting`.
+- ~~**`awaiting_decision` can read true while beets works, and then STICKS**~~ — **FIXED on
+  `fix/import-feedback-residuals`** (2026-09-08; PR + squash sha cited at merge). The flag no
+  longer comes from a consumer-side set of indices: `ImportBridge.has_unanswered_park` answers
+  it from the park itself — a registered reply slot with no answer delivered into it — and
+  `ImportJob.parked_awaiting` is gone with its two adds and both discards. The push marks the
+  slot in the same critical section as the put, so the reading falls with the answer rather
+  than with the drain that follows it, and one expression covers both channels. The trigger was
+  WIDER than recorded above: the worker emits its needs_review / needs_dup_resolution outcome
+  BEFORE it parks, so the row a client answers already exists, and any choice landing between
+  the slot's registration and the park's queueing was accepted against a live slot — the
+  duplicate channel needs one submit, not two. Reproduced deterministically by gating the park
+  channel between those two steps —
+  `test_awaiting_decision_clears_when_a_choice_beats_its_park_onto_the_queue` and its duplicate
+  twin, both of which fail on the parent commit.
 
 - **The plain-space middot survives outside the import page** (2026-09-08). `ReviewPage.tsx:208`
   builds the confidence + recommendation string as one plain-space `%` · `label`, so a wrap can

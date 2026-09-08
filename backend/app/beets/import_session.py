@@ -15,8 +15,9 @@ import logging
 import os
 import queue
 import threading
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 from beets import config
 from beets.autotag.match import Recommendation as BeetsRec
@@ -127,6 +128,43 @@ def is_in_library_source(library_dir: bytes, source: str) -> bool:
     return False
 
 
+_ReplyT = TypeVar("_ReplyT")
+
+
+@dataclass
+class _ReplySlot(Generic[_ReplyT]):
+    """One park's rendezvous: the worker's reply queue plus whether it was answered.
+
+    ``answered`` is set by the CONSUMER, in the same critical section as the put,
+    and read by ``has_unanswered_park``. Reading the queue itself instead would
+    misreport the gap between ``reply.get()`` returning and the worker deleting
+    the slot: the queue is empty again there, yet the answer has landed and
+    nobody is waiting on a person. A slot is released by identity when its park
+    returns, so a re-park at the same index starts out unanswered again.
+    """
+
+    reply: queue.Queue[_ReplyT]
+    answered: bool = False
+
+
+def _answer(slot: _ReplySlot[_ReplyT], answer: _ReplyT, taken: str) -> None:
+    """Deliver ``answer`` into ``slot`` and mark it answered (caller holds the lock).
+
+    One helper for both channels because the two steps belong together: the mark
+    shares the put's critical section, so a drain that pops this park afterwards
+    cannot read the woken worker as still blocked. ``put_nowait`` on a maxsize-1
+    queue does not block, and the queue's own mutex sits below the bridge lock,
+    so holding that lock across the put adds no ordering. ``taken`` is the
+    RuntimeError message for a slot that already holds an unconsumed answer
+    (already ``answered``; the API maps it to 409).
+    """
+    try:
+        slot.reply.put_nowait(answer)
+    except queue.Full:
+        raise RuntimeError(taken) from None
+    slot.answered = True
+
+
 class ImportBridge:
     """Thread-safe bridge between the import worker and an async consumer.
 
@@ -138,7 +176,7 @@ class ImportBridge:
     def __init__(self) -> None:
         self._out: queue.Queue[ParkedAlbum] = queue.Queue()
         self._outcomes: queue.Queue[AlbumOutcome] = queue.Queue()
-        self._replies: dict[int, queue.Queue[ImportChoice]] = {}
+        self._replies: dict[int, _ReplySlot[ImportChoice]] = {}
         # NOT popped on unblock (unlike _replies): it serves GET /cover during the
         # parked review window. Growth is bounded - single-slot registry, one
         # active job, a fresh ImportBridge per import is GC'd with the old job.
@@ -147,7 +185,7 @@ class ImportBridge:
         # rendezvous as the candidate channel, kept separate so the two payload
         # types (ParkedAlbum vs DuplicatePrompt) stay typed.
         self._dup_out: queue.Queue[DuplicatePrompt] = queue.Queue()
-        self._dup_replies: dict[int, queue.Queue[DuplicateDecision]] = {}
+        self._dup_replies: dict[int, _ReplySlot[DuplicateDecision]] = {}
         self._lock = threading.Lock()
         self._pending = 0
         # Sweep pause flag: set by the registry's request_pause (consumer
@@ -163,22 +201,24 @@ class ImportBridge:
 
     def park(self, parked: ParkedAlbum, art_source: str | None = None) -> ImportChoice:
         """Push a parked album and block until a choice arrives for it."""
-        reply: queue.Queue[ImportChoice] = queue.Queue(maxsize=1)
+        slot: _ReplySlot[ImportChoice] = _ReplySlot(queue.Queue(maxsize=1))
         with self._lock:
-            self._replies[parked.album_index] = reply
+            self._replies[parked.album_index] = slot
             if art_source is not None:
                 self._art_source[parked.album_index] = art_source
             self._pending += 1
         self._out.put(parked)
-        choice = reply.get()  # blocks the worker thread
+        choice = slot.reply.get()  # blocks the worker thread
         with self._lock:
-            # Release this slot by IDENTITY, not by key. A `search` re-parks the
-            # SAME index, and the re-park registers its own slot before queueing
-            # it - which it can do in the window between this worker waking and
-            # reaching this line. A pop by key alone deletes the re-park's live
-            # slot, so its push_choice raises KeyError and its worker never
-            # unblocks. Reproduced by the gated tests in test_import_session.
-            if self._replies.get(parked.album_index) is reply:
+            # Release this slot by IDENTITY, not by key: the slot standing at
+            # this index may not be ours. A re-park registers its own slot
+            # before queueing it, so a pop by key alone can delete a LIVE slot -
+            # its push_choice then raises KeyError, its worker never unblocks,
+            # and ``has_unanswered_park`` reads the blocked worker as nobody
+            # waiting. Reaching that takes two threads parking one index, which
+            # today's single worker cannot do on its own (it re-parks only after
+            # this line); the gated tests in test_import_session construct it.
+            if self._replies.get(parked.album_index) is slot:
                 del self._replies[parked.album_index]
             self._pending -= 1
         return choice
@@ -187,17 +227,17 @@ class ImportBridge:
         self, prompt: DuplicatePrompt, art_source: str | None = None
     ) -> DuplicateDecision:
         """Push a duplicate prompt and block until a decision arrives for it."""
-        reply: queue.Queue[DuplicateDecision] = queue.Queue(maxsize=1)
+        slot: _ReplySlot[DuplicateDecision] = _ReplySlot(queue.Queue(maxsize=1))
         with self._lock:
-            self._dup_replies[prompt.album_index] = reply
+            self._dup_replies[prompt.album_index] = slot
             if art_source is not None:
                 self._art_source[prompt.album_index] = art_source
             self._pending += 1
         self._dup_out.put(prompt)
-        decision = reply.get()  # blocks the worker thread
+        decision = slot.reply.get()  # blocks the worker thread
         with self._lock:
             # By identity, for the reason spelled out in park().
-            if self._dup_replies.get(prompt.album_index) is reply:
+            if self._dup_replies.get(prompt.album_index) is slot:
                 del self._dup_replies[prompt.album_index]
             self._pending -= 1
         return decision
@@ -244,24 +284,40 @@ class ImportBridge:
     def push_choice(self, album_index: int, choice: ImportChoice) -> None:
         """Deliver a decision to the worker blocked on ``album_index``."""
         with self._lock:
-            reply = self._replies.get(album_index)
-        if reply is None:
-            raise KeyError(f"no album parked at index {album_index}")
-        try:
-            reply.put_nowait(choice)
-        except queue.Full:
-            raise RuntimeError(f"album {album_index} already has a pending choice") from None
+            slot = self._replies.get(album_index)
+            if slot is None:
+                raise KeyError(f"no album parked at index {album_index}")
+            _answer(slot, choice, f"album {album_index} already has a pending choice")
 
     def push_duplicate_decision(self, album_index: int, decision: DuplicateDecision) -> None:
         """Deliver a duplicate decision to the worker blocked on ``album_index``."""
         with self._lock:
-            reply = self._dup_replies.get(album_index)
-        if reply is None:
-            raise KeyError(f"no duplicate parked at index {album_index}")
-        try:
-            reply.put_nowait(decision)
-        except queue.Full:
-            raise RuntimeError(f"duplicate {album_index} already has a pending decision") from None
+            slot = self._dup_replies.get(album_index)
+            if slot is None:
+                raise KeyError(f"no duplicate parked at index {album_index}")
+            _answer(slot, decision, f"duplicate {album_index} already has a pending decision")
+
+    def has_unanswered_park(self) -> bool:
+        """True while a park is registered and no answer has been delivered into it.
+
+        The signal behind ``ImportJobState.awaiting_decision``: a worker sitting
+        in ``park``/``park_duplicate`` with nothing on its way. Both channels
+        count — an attended duplicate blocks the worker exactly as an uncertain
+        match does. Two things this deliberately does NOT read:
+
+        * ``pending_count``, which the WORKER decrements after ``reply.get()``
+          returns, so a poll fired straight after a choice can still see a
+          working import as blocked. ``answered`` flips on the consumer's push
+          instead, so the falling edge lands with the answer.
+        * the park queues, which the consumer pops one-shot. Popping a park is
+          not proof its worker is still waiting: a choice pushed between the
+          registration and the queueing above is delivered to a live slot, and
+          the pop that follows then describes a worker that has already run on.
+        """
+        with self._lock:
+            return any(not slot.answered for slot in self._replies.values()) or any(
+                not slot.answered for slot in self._dup_replies.values()
+            )
 
     def pending_count(self) -> int:
         with self._lock:

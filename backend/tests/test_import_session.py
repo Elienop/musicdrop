@@ -1292,6 +1292,76 @@ def test_releasing_a_duplicate_park_keeps_a_reprompts_reply_slot() -> None:
     assert bridge.pending_count() == 0
 
 
+def test_a_park_reads_unanswered_only_until_its_choice_is_delivered() -> None:
+    """``has_unanswered_park`` follows the ANSWER, not the slot and not the queue.
+
+    The push marks the slot in the same critical section as the put, so the
+    reading falls the moment a choice is accepted — while the worker is still
+    winding down and its slot still stands. Reading the reply queue instead
+    would go the other way in the gap after ``reply.get()`` empties it.
+    """
+    bridge = ImportBridge()
+    gate = _GateOnRelease()
+    bridge._lock = gate  # type: ignore[assignment]  # gate the release window; see _GateOnRelease
+
+    assert bridge.has_unanswered_park() is False  # nothing parked
+    worker = threading.Thread(target=lambda: bridge.park(_parked_album(0)), daemon=True)
+    worker.start()
+    assert bridge.get_parked(timeout=2.0) is not None
+    assert bridge.has_unanswered_park() is True  # registered, nothing delivered
+
+    gate.hold = worker  # hold it before it releases its slot
+    bridge.push_choice(0, ImportChoice(action=ImportAction.skip))
+    assert gate.at_gate.wait(2.0)
+    assert bridge.has_unanswered_park() is False  # answered, though the slot still stands
+
+    gate.go.set()
+    worker.join(timeout=2.0)
+    assert bridge.has_unanswered_park() is False  # ...and released
+
+
+def test_a_duplicate_prompt_reads_unanswered_only_until_its_decision_lands() -> None:
+    """The duplicate channel's twin: an attended duplicate blocks the worker too."""
+    from app.models.import_models import (
+        DuplicateAction,
+        DuplicateDecision,
+        DuplicatePrompt,
+        IncomingAlbum,
+    )
+
+    prompt = DuplicatePrompt(
+        album_index=0,
+        incoming=IncomingAlbum(
+            album_artist="Radiohead",
+            album="In Rainbows",
+            year=2007,
+            track_count=10,
+            format="FLAC",
+            bitrate_kbps=900,
+            folder="/incoming",
+            has_current_art=False,
+        ),
+        existing=[],
+    )
+    bridge = ImportBridge()
+    gate = _GateOnRelease()
+    bridge._lock = gate  # type: ignore[assignment]  # gate the release window; see _GateOnRelease
+
+    worker = threading.Thread(target=lambda: bridge.park_duplicate(prompt), daemon=True)
+    worker.start()
+    assert bridge.get_parked_duplicate(timeout=2.0) is not None
+    assert bridge.has_unanswered_park() is True
+
+    gate.hold = worker
+    bridge.push_duplicate_decision(0, DuplicateDecision(action=DuplicateAction.keep_both))
+    assert gate.at_gate.wait(2.0)
+    assert bridge.has_unanswered_park() is False  # answered, though the slot still stands
+
+    gate.go.set()
+    worker.join(timeout=2.0)
+    assert bridge.has_unanswered_park() is False
+
+
 def test_run_import_worker_forces_duplicate_action_ask() -> None:
     """The worker must force import.duplicate_action=ask so the hook always fires."""
     from app.beets.import_session import run_import_worker
