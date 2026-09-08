@@ -53,6 +53,11 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
     origin: "manual",
     set_aside: 0,
     elapsed_seconds: 0,
+    // Default: the worker is NOT blocked — the row above is set aside, which
+    // is not the same thing (an unattended duplicate and a `search` re-lookup
+    // both wear one while beets works). A test that means "parked on a person"
+    // says `awaiting_decision: true`.
+    awaiting_decision: false,
     ...overrides,
   };
 }
@@ -70,6 +75,8 @@ function sweepJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
     origin: "sweep",
     set_aside: 0,
     elapsed_seconds: 0,
+    // A sweep is unattended by definition — it never blocks on a person.
+    awaiting_decision: false,
     sweep: {
       processed: 0,
       auto_applied: 0,
@@ -85,6 +92,15 @@ function sweepJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
 /** Render at a given URL so `useSearchParams` (the `?job=` seam) resolves. */
 function renderAt(route: string) {
   return renderWithProviders(<ImportPage />, { route, path: "/import" });
+}
+
+/** The spinner belonging to a status line. It is ALWAYS mounted — its box is
+ * reserved so the line can't jump sideways on every park — so tests read its
+ * classes (`animate-spin` vs `invisible`), never its presence. */
+function spinnerOf(line: HTMLElement): Element {
+  const spinner = line.closest("p")?.querySelector("svg");
+  if (!spinner) throw new Error("the status line has no spinner box");
+  return spinner;
 }
 
 /** Renders the AlbumOrigin router state an outgoing feed link arrives with. */
@@ -612,9 +628,13 @@ describe("ImportPage — live feed", () => {
     renderAt("/import?job=job-1");
 
     // The whole point: a ten-minute MusicBrainz lookup must not look wedged.
-    expect(
-      await screen.findByText("Scanning your folder… · 2m"),
-    ).toBeInTheDocument();
+    // Two units, so the line visibly moves every second rather than once a
+    // minute — a frozen line is the very thing being ruled out.
+    const line = await screen.findByText("Scanning your folder… · 2m 12s");
+    // The middot's trailing space is non-breaking, so a wrap can never strand
+    // it at the end of a line. (RTL normalizes it away, hence the raw read.)
+    expect(line.textContent).toContain("·\u00a0");
+    expect(line.textContent).toContain("2m\u00a012s");
   });
 
   test("the cue keeps working after a decision, while the worker scans on", async () => {
@@ -648,26 +668,71 @@ describe("ImportPage — live feed", () => {
     );
     renderAt("/import?job=job-1");
 
-    expect(
-      await screen.findByText("1 album imported · 5m"),
-    ).toBeInTheDocument();
+    const line = await screen.findByText("1 album imported · 5m");
+    expect(spinnerOf(line)).toHaveClass("animate-spin");
   });
 
-  test("a run parked on the operator shows no elapsed value", async () => {
-    // The clock answers "is this wedged?"; while the run waits on a human it is
-    // only counting the operator's own thinking time, so it stays off.
+  test("a run parked on the operator keeps its elapsed value", async () => {
+    // The number counts the WHOLE run, from the start — it is not a "time since
+    // last progress" gauge, so hiding it here would make it vanish and come
+    // back later carrying the operator's own thinking time (the owner's ruling).
     server.use(
       http.get(JOB_URL, () =>
-        HttpResponse.json(makeJob({ elapsed_seconds: 600 })),
+        HttpResponse.json(
+          makeJob({ elapsed_seconds: 600, awaiting_decision: true }),
+        ),
       ),
     );
     renderAt("/import?job=job-1");
 
-    expect(
-      await screen.findByText("1 album imported · 1 album needs review"),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/10m/)).not.toBeInTheDocument();
+    const line = await screen.findByText(
+      "1 album imported · 1 album needs review · 10m",
+    );
+    // Nobody is working, so no spinner — but its box stays, or the whole line
+    // would jump sideways on every park and unpark.
+    expect(spinnerOf(line)).toHaveClass("invisible");
+    expect(spinnerOf(line)).not.toHaveClass("animate-spin");
   });
+
+  // B1/B2 on the visible side of the cadence tests: the two set-aside rows that
+  // do NOT block the worker. This is the owner's own slskd inbox path, and it
+  // used to sit spinner-less and elapsed-less for the rest of the run.
+  test.each(["needs_review", "needs_dup_resolution"] as const)(
+    "an unattended run with a set-aside row (%s) still looks alive",
+    async (status) => {
+      server.use(
+        http.get(JOB_URL, () =>
+          HttpResponse.json(
+            makeJob({
+              phase: "reviewing",
+              origin: "inbox",
+              progress: { applied: 1, needs_review: 0, skipped: 1, not_landed: 0 },
+              albums: [
+                {
+                  index: 0,
+                  folder: "/music/incoming/Kid A",
+                  artist: "Radiohead",
+                  album: "Kid A",
+                  recommendation: "medium",
+                  confidence: 76,
+                  status,
+                  album_id: null,
+                  did_not_land: false,
+                },
+              ],
+              elapsed_seconds: 132,
+              awaiting_decision: false,
+            }),
+          ),
+        ),
+      );
+      renderAt("/import?job=job-1");
+
+      const line = await screen.findByText(/1 album imported/);
+      expect(spinnerOf(line)).toHaveClass("animate-spin");
+      expect(line.textContent).toContain("2m\u00a012s");
+    },
+  );
 
   test("the live cue surfaces a skipped count when any album was skipped", async () => {
     server.use(
@@ -741,6 +806,49 @@ describe("ImportPage — live feed", () => {
 });
 
 describe("ImportPage — terminal states", () => {
+  // The number counts the whole run and is shown throughout, the finish line
+  // included (the owner's ruling) — a ten-minute import that ends by dropping
+  // its own duration answers nothing.
+  test("the finished summary keeps the run's elapsed value", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "done",
+            progress: { applied: 2, needs_review: 0, skipped: 1, not_landed: 0 },
+            albums: [],
+            elapsed_seconds: 840,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(
+      await screen.findByText("2 albums imported · 1 skipped · 14m"),
+    ).toBeInTheDocument();
+  });
+
+  test("a short run's finished summary gains no extra text", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "done",
+            progress: { applied: 2, needs_review: 0, skipped: 1, not_landed: 0 },
+            albums: [],
+            elapsed_seconds: ELAPSED_AFTER_S - 1,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(
+      await screen.findByText("2 albums imported · 1 skipped"),
+    ).toBeInTheDocument();
+  });
+
   test("done links each applied album to its library page — no blanket view-in-library", async () => {
     server.use(
       http.get(JOB_URL, () =>
@@ -1073,6 +1181,42 @@ describe("ImportPage — sweep & bank", () => {
     await waitFor(() => expect(paused).toBe(true));
   });
 
+  // A sweep returns before LiveFeed ever renders, so it carried the elapsed
+  // value and showed it nowhere — on the longest-running import there is.
+  test("a long sweep's status line carries the elapsed value", async () => {
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({
+            elapsed_seconds: 3700,
+            sweep: {
+              processed: 12,
+              auto_applied: 8,
+              banked: 4,
+              skipped_known: 2,
+              current_folder: "/library/Adele/21",
+              paused: false,
+            },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    expect(await screen.findByText("Sweeping 21… · 1h 1m")).toBeInTheDocument();
+  });
+
+  test("a short sweep's status line reads exactly as it did before", async () => {
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(sweepJob({ elapsed_seconds: ELAPSED_AFTER_S - 1 })),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    expect(await screen.findByText("Sweeping your folder…")).toBeInTheDocument();
+  });
+
   test("a finished sweep summarizes and links to Review; paused names the pause", async () => {
     server.use(
       http.get(SWEEP_JOB_URL, () =>
@@ -1080,6 +1224,7 @@ describe("ImportPage — sweep & bank", () => {
           sweepJob({
             phase: "done",
             summary: "Swept 30 albums - paused",
+            elapsed_seconds: 840,
             sweep: {
               processed: 30,
               auto_applied: 20,
@@ -1097,6 +1242,10 @@ describe("ImportPage — sweep & bank", () => {
     // Exact match: the sr-only announcer also says "Sweep paused. …" — the
     // default whole-text match singles out the visible EmptyState title.
     expect(await screen.findByText("Sweep paused")).toBeInTheDocument();
+    // The finished summary carries the run's duration too (the owner's ruling).
+    expect(
+      screen.getByText("Swept 30 albums - paused · 14m"),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: /review banked albums/i }),
     ).toHaveAttribute("href", "/review");

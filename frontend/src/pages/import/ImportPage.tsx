@@ -10,8 +10,8 @@ import {
   ImportJobNotFoundError,
   ImportStartRejectedError,
   RECOMMENDATION_LABEL,
-  isAwaitingOperator,
   isTerminalPhase,
+  isWorking,
   useImportJob,
   usePauseSweep,
   useStartImport,
@@ -41,7 +41,11 @@ import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useThrottledValue } from "@/lib/useThrottledValue";
 import { cn } from "@/lib/utils";
-import { announceMessage, elapsedLabel } from "@/pages/import/importStatus";
+import {
+  SEGMENT_SEP,
+  announceMessage,
+  elapsedLabel,
+} from "@/pages/import/importStatus";
 
 /** Origin threaded onto every link that leaves the feed (decision screens,
  * applied-album links) so back links and post-submit navigation return to
@@ -378,18 +382,16 @@ function ImportShell({ children }: Readonly<{ children: React.ReactNode }>) {
 
 /** scanning/reviewing/applying: a working line + the growing feed. */
 function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: string }>) {
-  // One predicate for the spinner AND the poll cadence (useImport backs off on
-  // the same answer): a parked album blocks beets' single worker thread, so
-  // while the operator owes a decision nothing else is happening. `phase` can't
-  // answer this — it latches to "reviewing" at the first parked album and never
-  // returns to "scanning", so a run that is scanning album 2 of 10 after one
-  // decision would otherwise sit spinner-less and look wedged.
-  const working = !isTerminalPhase(state.phase) && !isAwaitingOperator(state);
+  // THE shared predicate — the same call the poll cadence makes (useImport), so
+  // the spinner and the request rate can never disagree about who is working.
+  const working = isWorking(state);
   const scanningEmpty = working && state.albums.length === 0;
-  // How long the server says this job has been running — null under the
-  // threshold, so a fast import gains no extra text. Shown only while working:
-  // "is this wedged?" is not a question while the run is waiting on a human.
-  const elapsed = working ? elapsedLabel(state.elapsed_seconds) : null;
+  // How long the server says this run has been going — null under the
+  // threshold, so a fast import gains no extra text. Shown throughout, parked
+  // included: it is the whole run's duration, not a "since last progress" gauge,
+  // so hiding it while a decision is owed would make it vanish and come back
+  // carrying the operator's own thinking time.
+  const elapsed = elapsedLabel(state.elapsed_seconds);
   // `progress` has no duplicate counter (backend), so derive the
   // duplicate-pending count from the feed rows for the cue line below.
   const needsDup = state.albums.filter(
@@ -398,9 +400,14 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
   return (
     <div className="flex flex-col gap-4">
       <p className="text-muted-foreground flex min-h-5 items-center gap-2 text-sm">
-        {working && (
-          <Spinner className="size-4 animate-spin" aria-hidden="true" />
-        )}
+        {/* Always mounted, only hidden: mounting/unmounting it on every park
+            and unpark shifted the whole line ~24px sideways (size-4 + gap-2)
+            each time. `invisible` keeps the box, and a hidden element must not
+            animate. */}
+        <Spinner
+          className={cn("size-4 shrink-0", working ? "animate-spin" : "invisible")}
+          aria-hidden="true"
+        />
         <span>
           {/* While scanning with nothing in the feed yet, the count line would
               read "0 albums imported" — say what's actually happening instead. */}
@@ -415,17 +422,17 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
               {state.progress.applied}{" "}
               {state.progress.applied === 1 ? "album" : "albums"} imported
               {state.progress.skipped > 0 &&
-                ` · ${state.progress.skipped} skipped`}
+                `${SEGMENT_SEP}${state.progress.skipped} skipped`}
               {state.progress.needs_review > 0 &&
-                ` · ${state.progress.needs_review} album${state.progress.needs_review === 1 ? "" : "s"} needs review`}
+                `${SEGMENT_SEP}${state.progress.needs_review} album${state.progress.needs_review === 1 ? "" : "s"} needs review`}
               {/* Import-time duplicates are named "already in library" so
                   "Duplicates" (the Manage page) names exactly one thing. */}
-              {needsDup > 0 && ` · ${needsDup} already in library`}
+              {needsDup > 0 && `${SEGMENT_SEP}${needsDup} already in library`}
             </>
           )}
           {/* Same middot dialect as the counts, inside the one text flow so it
               reads as part of the line rather than a second column. */}
-          {elapsed !== null && ` · ${elapsed}`}
+          {elapsed !== null && `${SEGMENT_SEP}${elapsed}`}
         </span>
       </p>
 
@@ -460,6 +467,11 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
     return <LiveFeed state={state} jobId={jobId} />;
   }
   const done = state.phase === "done";
+  // A sweep is the longest-running import there is, and it returns before
+  // LiveFeed ever renders — so it carries the elapsed value and used to show it
+  // nowhere. Same threshold, same middot dialect, running and finished alike.
+  const elapsed = elapsedLabel(state.elapsed_seconds);
+  const elapsedSegment = elapsed === null ? "" : `${SEGMENT_SEP}${elapsed}`;
   return (
     <div className="flex flex-col gap-6">
       {done ? (
@@ -468,8 +480,9 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
           icon={Success}
           title={sweep.paused ? "Sweep paused" : "Sweep finished"}
           body={
-            state.summary ??
-            `${sweep.processed} processed · ${sweep.auto_applied} imported · ${sweep.banked} banked`
+            (state.summary ??
+              `${sweep.processed} processed${SEGMENT_SEP}${sweep.auto_applied} imported${SEGMENT_SEP}${sweep.banked} banked`) +
+            elapsedSegment
           }
           action={
             <Button size="sm" asChild>
@@ -479,9 +492,10 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
         />
       ) : (
         <p className="text-muted-foreground flex min-h-5 items-center gap-2 text-sm">
-          <Spinner className="size-4 animate-spin" aria-hidden="true" />
+          <Spinner className="size-4 shrink-0 animate-spin" aria-hidden="true" />
           <span>
             {sweepStatusLabel(sweep.paused, sweep.current_folder)}
+            {elapsedSegment}
           </span>
         </p>
       )}
@@ -706,9 +720,13 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
   // Own up to albums that were decided/applied but never landed in the library
   // (the session died before beets ran task.add) — only ever nonzero here on a
   // terminal job, so the clause simply drops out of a clean run.
+  // The finished summary carries the run's duration too (the owner's ruling):
+  // the number counts the whole run, so it must not vanish at the finish line.
+  const elapsed = elapsedLabel(state.elapsed_seconds);
   const body =
-    `${applied} ${applied === 1 ? "album" : "albums"} imported · ${skipped} skipped` +
-    (not_landed > 0 ? ` · ${not_landed} didn't land` : "");
+    `${applied} ${applied === 1 ? "album" : "albums"} imported${SEGMENT_SEP}${skipped} skipped` +
+    (not_landed > 0 ? `${SEGMENT_SEP}${not_landed} didn't land` : "") +
+    (elapsed === null ? "" : `${SEGMENT_SEP}${elapsed}`);
   return (
     <div className="flex flex-col gap-4">
       <EmptyState bordered icon={Success} title="Import finished" body={body} />

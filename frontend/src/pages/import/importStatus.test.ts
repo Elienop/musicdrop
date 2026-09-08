@@ -5,6 +5,7 @@ import {
   ELAPSED_AFTER_S,
   announceMessage,
   elapsedLabel,
+  spokenElapsed,
 } from "@/pages/import/importStatus";
 
 function job(overrides: Partial<ImportJobState> = {}): ImportJobState {
@@ -18,6 +19,7 @@ function job(overrides: Partial<ImportJobState> = {}): ImportJobState {
     origin: "manual",
     set_aside: 0,
     elapsed_seconds: 0,
+    awaiting_decision: false,
     ...overrides,
   };
 }
@@ -35,6 +37,8 @@ function sweepState(overrides: Partial<ImportJobState> = {}): ImportJobState {
     origin: "sweep",
     set_aside: 0,
     elapsed_seconds: 0,
+    // A sweep is unattended by definition — it never blocks on a person.
+    awaiting_decision: false,
     sweep: {
       processed: 0,
       auto_applied: 0,
@@ -145,6 +149,50 @@ describe("announceMessage", () => {
     ).toMatch(/import complete.*imported 3.*skipped 1/i);
   });
 
+  // B3: the visible elapsed value is not in a live region, so without this the
+  // announced string is byte-identical on every poll and a screen-reader user
+  // is told nothing for the whole ten minutes.
+  test("a long run announces how long it has been going", () => {
+    const speak = (data: ImportJobState) =>
+      announceMessage({ isPending: false, isError: false, notFound: false, data });
+    // Under a minute: nothing added — the string is exactly what it was.
+    expect(speak(job({ phase: "scanning", albums: [], elapsed_seconds: 59 }))).toBe(
+      "Scanning the folder for albums.",
+    );
+    expect(speak(job({ phase: "scanning", albums: [], elapsed_seconds: 132 }))).toBe(
+      "Scanning the folder for albums. Running for 2 minutes.",
+    );
+    // Minute granularity is what makes the announcer's identical-string de-dup
+    // cap this at one announcement a minute: a second's worth of poll does not
+    // change the string, a minute's does.
+    expect(speak(job({ elapsed_seconds: 132 }))).toBe(
+      speak(job({ elapsed_seconds: 145 })),
+    );
+    expect(speak(job({ elapsed_seconds: 132 }))).not.toBe(
+      speak(job({ elapsed_seconds: 195 })),
+    );
+    // Waiting on a person counts too: it is the whole run's duration.
+    expect(
+      speak(
+        job({
+          progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
+          elapsed_seconds: 600,
+          awaiting_decision: true,
+        }),
+      ),
+    ).toBe("Imported 1. 1 album awaiting review. Running for 10 minutes.");
+    // And the finished summary, in the past tense.
+    expect(
+      speak(
+        job({
+          phase: "done",
+          progress: { applied: 3, needs_review: 0, skipped: 1, not_landed: 0 },
+          elapsed_seconds: 840,
+        }),
+      ),
+    ).toBe("Import complete. Imported 3, skipped 1. Took 14 minutes.");
+  });
+
   test("sweep jobs announce counters, not the feed", () => {
     const data = sweepState({
       phase: "scanning",
@@ -195,23 +243,60 @@ describe("announceMessage", () => {
 });
 
 describe("elapsedLabel", () => {
-  // Below the threshold the working line must read exactly as it did before,
+  // Below the threshold the status line must read exactly as it did before,
   // so a fast import gains no extra text at all.
   test.each([0, 1, ELAPSED_AFTER_S - 1])("is null at %i seconds", (seconds) => {
     expect(elapsedLabel(seconds)).toBeNull();
   });
 
-  // A number and a unit — the owner's "no long sentences unecessary".
+  // Numbers and units, no sentence — the owner's "no long sentences unecessary".
+  // The inner space is a non-breaking one, so the two halves never wrap apart.
   test.each([
     [ELAPSED_AFTER_S, "30s"],
     [59, "59s"],
     [60, "1m"],
-    [119, "1m"],
+    [119, "1m\u00a059s"],
     [600, "10m"],
-    [3599, "59m"],
-    [3600, "1h 0m"],
-    [7500, "2h 5m"],
+    [612, "10m\u00a012s"],
+    [3599, "59m\u00a059s"],
+    [3600, "1h"],
+    [3700, "1h\u00a01m"],
+    [7500, "2h\u00a05m"],
   ])("renders %i seconds as %s", (seconds, expected) => {
     expect(elapsedLabel(seconds)).toBe(expected);
+  });
+
+  // Below the hour it must VISIBLY move, or a frozen line is indistinguishable
+  // from the wedged page the number exists to rule out.
+  test("changes every second below the hour", () => {
+    expect(elapsedLabel(612)).not.toBe(elapsedLabel(613));
+  });
+
+  // Unreachable through the typed contract, but untyped fixtures omit the field
+  // and this used to render "NaNh NaNm" on screen.
+  test.each([undefined, Number.NaN, Number.POSITIVE_INFINITY])(
+    "is null for the non-finite %s rather than NaN text",
+    (seconds) => {
+      expect(elapsedLabel(seconds as unknown as number)).toBeNull();
+    },
+  );
+});
+
+describe("spokenElapsed", () => {
+  // Minute granularity: the announcer de-dups identical strings, so this caps
+  // the spoken update at one a minute instead of one a second.
+  test.each([0, 59])("says nothing under a minute (%i)", (seconds) => {
+    expect(spokenElapsed(seconds)).toBeNull();
+  });
+
+  // Words, not "12m" — a screen reader reads that as a letter.
+  test.each([
+    [60, "1 minute"],
+    [125, "2 minutes"],
+    [3600, "1 hour"],
+    [3660, "1 hour 1 minute"],
+    [7500, "2 hours 5 minutes"],
+  ])("speaks %i seconds as %s", (seconds, expected) => {
+    expect(spokenElapsed(seconds)).toBe(expected);
   });
 });

@@ -130,12 +130,12 @@ export function useStartImport() {
  * albums stream into the feed promptly; the loop stops at a terminal phase. */
 const IMPORT_POLL_MS = 1000;
 
-/** Poll cadence (ms) while the run is parked on the operator. beets runs under
- * `config["threaded"] = False` (backend/app/beets/import_session.py), so its
- * pipeline is serial and a parked album blocks that one worker thread on
- * `reply.get()` — nothing but the server's elapsed clock can move until a
- * decision is pushed. Both decision mutations invalidate this query, so a
- * decision never waits for this interval. */
+/** Poll cadence (ms) while the worker is blocked on a person
+ * (`awaiting_decision`). beets runs under `config["threaded"] = False`
+ * (backend/app/beets/import_session.py), so its pipeline is serial and the one
+ * worker thread sits in `reply.get()` — nothing but the server's elapsed clock
+ * can move until a decision is pushed. Both decision mutations invalidate this
+ * query, so a decision never waits for this interval. */
 const IMPORT_PARKED_POLL_MS = 10_000;
 
 /** Phases where the worker is still running — the feed is live and should poll.
@@ -154,19 +154,22 @@ export function isTerminalPhase(phase: ImportPhase): boolean {
   return phase === "done" || phase === "failed";
 }
 
-/** Whether the run is parked on a human decision — the worker is blocked and
- * nothing can change until the operator answers. Drives both the poll cadence
- * and the run page's working line.
+/** Whether beets is working right now: the run is active AND nobody is being
+ * waited on. THE one predicate behind both the run page's spinner and this
+ * hook's poll cadence — they must never disagree about who is working.
  *
- * Keyed on the FEED ROWS, not on `phase`: `phase` flips to "reviewing" at the
- * first parked album and NEVER returns to "scanning"
- * (`registry.drain`, backend/app/import_jobs/registry.py), so it still reads
- * "reviewing" while the worker scans the rest of the folder. The same two
- * statuses are what the Review page counts as decisions. */
-export function isAwaitingOperator(state: ImportJobState): boolean {
-  return state.albums.some(
-    (a) => a.status === "needs_review" || a.status === "needs_dup_resolution",
-  );
+ * Neither half is inferable from the feed. `phase` latches to "reviewing" at
+ * the first parked album and never returns to "scanning", so it still reads
+ * "reviewing" while the worker scans the rest of the folder. And a set-aside
+ * row status means two different things: an UNATTENDED duplicate emits
+ * `needs_dup_resolution` and skips on without parking, and a `search`
+ * re-lookup deliberately keeps its row `needs_review` while beets works — both
+ * used to read as "blocked", which dropped the spinner and backed the poll off
+ * for a decision nobody would ever be asked for. `awaiting_decision` is the
+ * registry's own answer (it tracks the indices it is blocked in `reply.get()`
+ * on, backend/app/import_jobs/registry.py). */
+export function isWorking(state: ImportJobState): boolean {
+  return ACTIVE_PHASES.has(state.phase) && !state.awaiting_decision;
 }
 
 async function fetchJob(jobId: string): Promise<ImportJobState> {
@@ -188,8 +191,8 @@ async function fetchJob(jobId: string): Promise<ImportJobState> {
  * Poll an import job's state (`GET /api/import/{job_id}`). Disabled until a
  * `jobId` exists (no request, no error). `refetchInterval` is a function so the
  * loop runs only while the phase is active (scanning/reviewing/applying), backs
- * off to {@link IMPORT_PARKED_POLL_MS} while the run is parked on the operator
- * ({@link isAwaitingOperator}), and returns `false` once terminal (done/failed)
+ * off to {@link IMPORT_PARKED_POLL_MS} while the worker is blocked on a person
+ * ({@link isWorking}), and returns `false` once terminal (done/failed)
  * or when the job is not found
  * (404 -> `ImportJobNotFoundError`). `retry: false` disables React Query's
  * per-request retry; a transient error still keeps the poll loop (it may
@@ -216,13 +219,17 @@ export function useImportJob(jobId: string | undefined) {
       if (state === undefined) {
         return IMPORT_POLL_MS;
       }
+      // Terminal FIRST. Order is load-bearing: a run that dies while an album
+      // is parked would otherwise poll at 10s forever, since the backoff branch
+      // below returns an interval rather than falling through.
       if (!ACTIVE_PHASES.has(state.phase)) {
         return false;
       }
-      // Back off while the operator owes a decision: the worker is blocked, so
-      // a 1s poll would only re-read the same payload (60 requests a minute for
-      // as long as the operator takes — the measured defect).
-      return isAwaitingOperator(state) ? IMPORT_PARKED_POLL_MS : IMPORT_POLL_MS;
+      // Back off only while the worker is genuinely blocked on a person: it
+      // can then re-read nothing but the elapsed clock, and a 1s poll cost 60
+      // requests a minute for as long as the operator took (the measured
+      // defect). While beets is working the feed is live — stay fast.
+      return isWorking(state) ? IMPORT_POLL_MS : IMPORT_PARKED_POLL_MS;
     },
   });
 }

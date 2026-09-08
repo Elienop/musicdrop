@@ -169,6 +169,11 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
     origin: "manual",
     set_aside: 0,
     elapsed_seconds: 0,
+    // Default: the worker is NOT blocked. Only the registry knows, so a test
+    // that means "parked on a person" says so here rather than by adding a
+    // set-aside feed row — a row status cannot answer this (an unattended
+    // duplicate and a `search` re-lookup both wear one while beets works).
+    awaiting_decision: false,
     ...overrides,
   };
 }
@@ -308,8 +313,8 @@ describe("useImportJob poll cadence", () => {
     ).toBe(1000);
     // The regression the phase can't see: `phase` latches to "reviewing" at the
     // first parked album and never returns to "scanning", so a run that is
-    // scanning album 2 after one decision still reads "reviewing". No row is
-    // parked, so the feed is live and the cadence must stay fast.
+    // scanning album 2 after one decision still reads "reviewing". Nobody is
+    // being waited on, so the feed is live and the cadence must stay fast.
     expect(
       await pollIntervalFor(
         makeJob({
@@ -321,12 +326,16 @@ describe("useImportJob poll cadence", () => {
     ).toBe(1000);
   });
 
-  // beets runs serially (`config["threaded"] = False`) and a parked album blocks
-  // that one worker thread, so nothing but the elapsed clock can change until
-  // the operator answers. The measured defect was 60 requests a minute for the
-  // three minutes one decision took.
+  // The two states a row status gets WRONG, and the reason the cadence reads
+  // the registry's own `awaiting_decision` instead of the feed. Both are real
+  // and both are the owner's own path: an UNATTENDED run (the slskd inbox)
+  // emits `needs_dup_resolution` and skips on without parking, and a `search`
+  // re-lookup keeps its row `needs_review` while beets queries MusicBrainz —
+  // the multi-minute operation this whole slice exists to surface. Reading the
+  // row would drop the page to a 10s poll for a decision nobody is ever asked
+  // for.
   test.each(["needs_review", "needs_dup_resolution"] as const)(
-    "backs off to 10s while an album is parked (%s)",
+    "stays fast when a set-aside row (%s) is NOT blocking the worker",
     async (status) => {
       expect(
         await pollIntervalFor(
@@ -334,6 +343,27 @@ describe("useImportJob poll cadence", () => {
             phase: "reviewing",
             progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
             albums: [feedRow(status)],
+            awaiting_decision: false,
+          }),
+        ),
+      ).toBe(1000);
+    },
+  );
+
+  // beets runs serially (`config["threaded"] = False`) and a blocking park sits
+  // in `reply.get()`, so nothing but the elapsed clock can change until the
+  // operator answers. The measured defect was 60 requests a minute for the
+  // three minutes one decision took.
+  test.each(["needs_review", "needs_dup_resolution"] as const)(
+    "backs off to 10s while the worker is blocked on a person (%s)",
+    async (status) => {
+      expect(
+        await pollIntervalFor(
+          makeJob({
+            phase: "reviewing",
+            progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
+            albums: [feedRow(status)],
+            awaiting_decision: true,
           }),
         ),
       ).toBe(10000);
@@ -344,6 +374,25 @@ describe("useImportJob poll cadence", () => {
     expect(
       await pollIntervalFor(
         makeJob({ phase: "done", summary: "1 imported, 0 skipped" }),
+      ),
+    ).toBe(false);
+  });
+
+  // Guard ORDER, not just the guards: the terminal check must come FIRST. A run
+  // that dies while an album is parked is terminal with a decision outstanding
+  // (`_on_error` sets `failed` without touching the parked set), and if the
+  // backoff branch ran first it would return 10s and poll a dead job forever.
+  // Belt AND braces: today's server also zeroes the flag off an active phase,
+  // but the client must not depend on the other side's guard for the stop.
+  test("stops on a terminal job even with a decision outstanding", async () => {
+    expect(
+      await pollIntervalFor(
+        makeJob({
+          phase: "failed",
+          error: "the session died",
+          albums: [feedRow("needs_review")],
+          awaiting_decision: true,
+        }),
       ),
     ).toBe(false);
   });
