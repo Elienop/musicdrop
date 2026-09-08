@@ -600,18 +600,17 @@ function SweepDoneCta({
   sweep,
   variant,
 }: Readonly<{ sweep: SweepStatus; variant?: "outline" }>) {
-  const to =
-    sweep.banked > 0
-      ? "/review"
-      : sweep.auto_applied > 0
-        ? "/browse?sort=added"
-        : "/import";
-  const label =
-    sweep.banked > 0
-      ? "Review banked albums"
-      : sweep.auto_applied > 0
-        ? "See them in the library"
-        : "Import another folder";
+  // One pair per outcome, picked in priority order: a decision owed outranks a
+  // result to look at, which outranks starting over.
+  let to = "/import";
+  let label = "Import another folder";
+  if (sweep.banked > 0) {
+    to = "/review";
+    label = "Review banked albums";
+  } else if (sweep.auto_applied > 0) {
+    to = "/browse?sort=added";
+    label = "See them in the library";
+  }
   return (
     <Button variant={variant} size="sm" asChild>
       <Link to={to}>{label}</Link>
