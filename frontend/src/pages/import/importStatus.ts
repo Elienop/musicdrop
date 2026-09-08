@@ -69,7 +69,10 @@ function elapsedClause(
   namedWait: boolean,
 ): string {
   if (namedWait && !finished) return "";
-  const spoken = spokenElapsed(seconds, finished);
+  const spoken = spokenElapsed(
+    seconds,
+    finished ? ELAPSED_AFTER_S : SPOKEN_LIVE_FLOOR_S,
+  );
   if (spoken === null) return "";
   return finished ? ` Took ${spoken}.` : ` Running for ${spoken}.`;
 }
@@ -168,19 +171,26 @@ export function elapsedLabel(seconds: number): string | null {
 
 const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
 
+/** The floor for the LIVE announcer's clause. Minute granularity is what lets
+ * the announcer's identical-string de-dup cap the clause at one announcement a
+ * minute rather than one a second. */
+export const SPOKEN_LIVE_FLOOR_S = 60;
+
 /** The SPOKEN elapsed value — "45 seconds", "12 minutes", "1 hour 5 minutes" —
- * or null below the floor. Words, not `12m`, which a screen reader reads as a
- * letter.
+ * or null below `floorSeconds`. Words, not `12m`, which a screen reader reads
+ * as a letter.
  *
- * While the run is live the floor is a minute: minute granularity is what lets
- * the announcer's identical-string de-dup cap this at one announcement a minute
- * rather than one a second. Once `finished`, the announcement fires exactly
- * once (it bypasses the throttle), so seconds cost no repetition — and the
- * floor drops to {@link ELAPSED_AFTER_S}, matching the visible line, which
- * showed `· 45s` while the announcer said nothing. */
-export function spokenElapsed(seconds: number, finished = false): string | null {
+ * Two floors, because there are two consumers. The live announcer passes
+ * {@link SPOKEN_LIVE_FLOOR_S}. A terminal announcement fires exactly once (it
+ * bypasses the throttle) and the sr-only twin of a visible label is not
+ * repeated at all, so both pass {@link ELAPSED_AFTER_S} — the visible line's
+ * own threshold, which showed `· 45s` while the announcer said nothing. */
+export function spokenElapsed(
+  seconds: number,
+  floorSeconds: number = SPOKEN_LIVE_FLOOR_S,
+): string | null {
   if (!Number.isFinite(seconds)) return null;
-  if (seconds < (finished ? ELAPSED_AFTER_S : 60)) return null;
+  if (seconds < floorSeconds) return null;
   const whole = Math.floor(seconds);
   if (whole < 60) return plural(whole, "second");
   const minutes = Math.floor(whole / 60);

@@ -103,6 +103,16 @@ function spinnerOf(line: HTMLElement): Element {
   return spinner;
 }
 
+/** The `<p>` a status-line fragment sits in. The elapsed value is TWO nodes —
+ * an aria-hidden `· 2m 12s` and its `sr-only` spoken twin, because a screen
+ * reader reads "12m" as a letter — so no single element holds the whole line's
+ * text any more. */
+function lineOf(fragment: HTMLElement): HTMLElement {
+  const line = fragment.closest("p");
+  if (!line) throw new Error("the fragment is not inside a status line");
+  return line;
+}
+
 /** Renders the AlbumOrigin router state an outgoing feed link arrives with. */
 function OriginProbe() {
   const state = useLocation().state as
@@ -630,11 +640,16 @@ describe("ImportPage — live feed", () => {
     // The whole point: a ten-minute MusicBrainz lookup must not look wedged.
     // Two units, so the line visibly moves every second rather than once a
     // minute — a frozen line is the very thing being ruled out.
-    const line = await screen.findByText("Scanning your folder… · 2m 12s");
+    const segment = await screen.findByText("· 2m 12s");
+    expect(lineOf(segment)).toHaveTextContent("Scanning your folder…");
     // The middot's trailing space is non-breaking, so a wrap can never strand
     // it at the end of a line. (RTL normalizes it away, hence the raw read.)
-    expect(line.textContent).toContain("·\u00a0");
-    expect(line.textContent).toContain("2m\u00a012s");
+    expect(segment.textContent).toContain("·\u00a0");
+    expect(segment.textContent).toContain("2m\u00a012s");
+    // A screen reader reads "2m" as a letter, so the visible half is hidden and
+    // a spoken twin carries the words.
+    expect(segment).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByText("2 minutes.")).toHaveClass("sr-only");
   });
 
   test("the cue keeps working after a decision, while the worker scans on", async () => {
@@ -668,7 +683,9 @@ describe("ImportPage — live feed", () => {
     );
     renderAt("/import?job=job-1");
 
-    const line = await screen.findByText("1 album imported · 5m");
+    const segment = await screen.findByText("· 5m");
+    const line = lineOf(segment);
+    expect(line).toHaveTextContent("1 album imported");
     expect(spinnerOf(line)).toHaveClass("animate-spin");
   });
 
@@ -685,9 +702,11 @@ describe("ImportPage — live feed", () => {
     );
     renderAt("/import?job=job-1");
 
-    const line = await screen.findByText(
-      "1 album imported · 1 album needs review · 10m",
-    );
+    const segment = await screen.findByText("· 10m");
+    const line = lineOf(segment);
+    expect(line).toHaveTextContent("1 album imported · 1 album needs review");
+    // Words for the screen reader, since "10m" is read as a letter.
+    expect(screen.getByText("10 minutes.")).toHaveClass("sr-only");
     // Nobody is working, so no spinner — but its box stays, or the whole line
     // would jump sideways on every park and unpark.
     expect(spinnerOf(line)).toHaveClass("invisible");
@@ -846,9 +865,11 @@ describe("ImportPage — terminal states", () => {
     );
     renderAt("/import?job=job-1");
 
-    expect(
-      await screen.findByText("2 albums imported · 1 skipped · 14m"),
-    ).toBeInTheDocument();
+    const segment = await screen.findByText("· 14m");
+    expect(segment.closest("p")).toHaveTextContent(
+      "2 albums imported · 1 skipped",
+    );
+    expect(screen.getByText("14 minutes.")).toHaveClass("sr-only");
   });
 
   test("a short run's finished summary gains no extra text", async () => {
@@ -1054,9 +1075,10 @@ describe("ImportPage — terminal states", () => {
     expect(another).toHaveAttribute("href", "/import");
   });
 
-  test("a failure carries how long the run lasted", async () => {
-    // The clock stops at both terminal transitions: three seconds versus forty
-    // minutes is a bad path versus a late crash.
+  test("a failure carries how long the run lasted, on its own line", async () => {
+    // The clock stops at both terminal transitions: forty seconds versus forty
+    // minutes is a bad path versus a late crash. (Below ELAPSED_AFTER_S no
+    // duration renders at all, so a 3s failure is the untimed case.)
     server.use(
       http.get(JOB_URL, () =>
         HttpResponse.json(
@@ -1071,9 +1093,16 @@ describe("ImportPage — terminal states", () => {
     );
     renderAt("/import?job=job-1");
 
-    const body = await screen.findByText("lookup exploded · 40m 12s");
-    // RTL's normalizer collapses the NBSP, so the dialect check reads raw.
-    expect(body.textContent).toContain("· ");
+    // `error` is the worker's raw `str(exc)`. The duration must NOT read as
+    // part of that sentence, and must not be able to open a wrapped line on a
+    // bare middot — so it is its own sentence on its own line, not a segment.
+    expect(await screen.findByText(/lookup exploded/)).toBeInTheDocument();
+    const duration = screen.getByText("Ran for 40m 12s.");
+    expect(duration).toHaveAttribute("aria-hidden", "true");
+    expect(duration.closest("span.block")).not.toBeNull();
+    expect(duration.textContent).not.toContain("·");
+    // "40m 12s" is read as a letter; the spoken twin carries the words.
+    expect(screen.getByText("Ran for 40 minutes.")).toHaveClass("sr-only");
   });
 
   test("a transient job-fetch error shows a retry", async () => {
@@ -1247,7 +1276,9 @@ describe("ImportPage — sweep & bank", () => {
     );
     renderAt("/import?job=s1");
 
-    expect(await screen.findByText("Sweeping 21… · 1h 1m")).toBeInTheDocument();
+    const segment = await screen.findByText("· 1h 1m");
+    expect(segment.closest("p")).toHaveTextContent("Sweeping 21…");
+    expect(screen.getByText("1 hour 1 minute.")).toHaveClass("sr-only");
   });
 
   test("a short sweep's status line reads exactly as it did before", async () => {
@@ -1288,10 +1319,13 @@ describe("ImportPage — sweep & bank", () => {
     expect(await screen.findByText("Sweep paused")).toBeInTheDocument();
     // The finished summary carries the run's duration too (the owner's ruling),
     // and says the pause exactly once — in the title above, not again here.
-    expect(
-      screen.getByText("swept 30, auto-applied 20, banked 10 · 14m"),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/- paused/)).not.toBeInTheDocument();
+    expect(screen.getByText("· 14m").closest("p")).toHaveTextContent(
+      "swept 30, auto-applied 20, banked 10",
+    );
+    // Whether the summary STRING names the pause is the backend's pin
+    // (test_import_registry.test_sweep_summary_reports_counters_and_pause):
+    // the frontend renders that string verbatim, so no mutation here could
+    // move it. The visible title above is what this page owes.
     expect(
       screen.getByRole("link", { name: /review banked albums/i }),
     ).toHaveAttribute("href", "/review");

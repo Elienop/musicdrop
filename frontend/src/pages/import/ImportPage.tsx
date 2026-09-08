@@ -42,10 +42,32 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useThrottledValue } from "@/lib/useThrottledValue";
 import { cn } from "@/lib/utils";
 import {
+  ELAPSED_AFTER_S,
   SEGMENT_SEP,
   announceMessage,
   elapsedLabel,
+  spokenElapsed,
 } from "@/pages/import/importStatus";
+
+/** The status line's elapsed segment: the visible `· 12m` plus its spoken twin.
+ * `elapsedLabel` is deliberately terse and a screen reader reads `12m` as a
+ * letter, so the visible half is hidden and {@link spokenElapsed} carries the
+ * words. Same sr-only/aria-hidden pair as NamingPanel's preview arrow.
+ *
+ * One helper, not four copies: this renders at every site that shows the number
+ * (live feed, sweep, done, failed). Both halves use the visible label's own
+ * floor, so a rendered segment always has something behind it. */
+function ElapsedSegment({ seconds }: Readonly<{ seconds: number }>) {
+  const label = elapsedLabel(seconds);
+  const spoken = spokenElapsed(seconds, ELAPSED_AFTER_S);
+  if (label === null || spoken === null) return null;
+  return (
+    <>
+      <span aria-hidden="true">{`${SEGMENT_SEP}${label}`}</span>
+      <span className="sr-only">{` ${spoken}.`}</span>
+    </>
+  );
+}
 
 /** Origin threaded onto every link that leaves the feed (decision screens,
  * applied-album links) so back links and post-submit navigation return to
@@ -179,8 +201,14 @@ function ImportEntry() {
             <span>
               {resumeBannerText(origin, needsReview)}
               {origin === "inbox" && needsReview > 0 && (
+                // This paragraph IS the Start button's aria-describedby, and a
+                // middot is not spoken — the description ran the two clauses
+                // together ("…is running 3 albums set aside…"). The glyph is
+                // hidden and a full stop stands in for it. Not verified with a
+                // real screen reader.
                 <span className="text-muted-foreground font-normal">
-                  {SEGMENT_SEP}
+                  <span aria-hidden="true">{SEGMENT_SEP}</span>
+                  <span className="sr-only">{". "}</span>
                   {needsReview} album{needsReview === 1 ? "" : "s"} set aside for
                   review.
                 </span>
@@ -390,12 +418,6 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
   // there — which rendered the "0 albums imported" the branch below exists to
   // prevent. LiveFeed is only reached on an active phase.
   const scanningEmpty = state.albums.length === 0;
-  // How long the server says this run has been going — null under the
-  // threshold, so a fast import gains no extra text. Shown throughout, parked
-  // included: it is the whole run's duration, not a "since last progress" gauge,
-  // so hiding it while a decision is owed would make it vanish and come back
-  // carrying the operator's own thinking time.
-  const elapsed = elapsedLabel(state.elapsed_seconds);
   // `progress` has no duplicate counter (backend), so derive the
   // duplicate-pending count from the feed rows for the cue line below.
   const needsDup = state.albums.filter(
@@ -442,8 +464,12 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
             </>
           )}
           {/* Same middot dialect as the counts, inside the one text flow so it
-              reads as part of the line rather than a second column. */}
-          {elapsed !== null && `${SEGMENT_SEP}${elapsed}`}
+              reads as part of the line rather than a second column. Shown
+              throughout, parked included: it is the whole run's duration, not a
+              "since last progress" gauge, so hiding it while a decision is owed
+              would make it vanish and come back carrying the operator's own
+              thinking time. */}
+          <ElapsedSegment seconds={state.elapsed_seconds} />
         </span>
       </p>
 
@@ -482,8 +508,7 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
   // A sweep is the longest-running import there is, and it returns before
   // LiveFeed ever renders — so it carries the elapsed value and used to show it
   // nowhere. Same threshold, same middot dialect, running and finished alike.
-  const elapsed = elapsedLabel(state.elapsed_seconds);
-  const elapsedSegment = elapsed === null ? "" : `${SEGMENT_SEP}${elapsed}`;
+  const elapsedSegment = <ElapsedSegment seconds={state.elapsed_seconds} />;
   return (
     <div className="flex flex-col gap-6">
       {done ? (
@@ -492,9 +517,11 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
           icon={Success}
           title={sweep.paused ? "Sweep paused" : "Sweep finished"}
           body={
-            (state.summary ??
-              `${sweep.processed} processed${SEGMENT_SEP}${sweep.auto_applied} imported${SEGMENT_SEP}${sweep.banked} banked`) +
-            elapsedSegment
+            <>
+              {state.summary ??
+                `${sweep.processed} processed${SEGMENT_SEP}${sweep.auto_applied} imported${SEGMENT_SEP}${sweep.banked} banked`}
+              {elapsedSegment}
+            </>
           }
           action={
             <Button size="sm" asChild>
@@ -739,14 +766,22 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
   // terminal job, so the clause simply drops out of a clean run.
   // The finished summary carries the run's duration too (the owner's ruling):
   // the number counts the whole run, so it must not vanish at the finish line.
-  const elapsed = elapsedLabel(state.elapsed_seconds);
-  const body =
+  const counts =
     `${applied} ${applied === 1 ? "album" : "albums"} imported${SEGMENT_SEP}${skipped} skipped` +
-    (not_landed > 0 ? `${SEGMENT_SEP}${not_landed} didn't land` : "") +
-    (elapsed === null ? "" : `${SEGMENT_SEP}${elapsed}`);
+    (not_landed > 0 ? `${SEGMENT_SEP}${not_landed} didn't land` : "");
   return (
     <div className="flex flex-col gap-4">
-      <EmptyState bordered icon={Success} title="Import finished" body={body} />
+      <EmptyState
+        bordered
+        icon={Success}
+        title="Import finished"
+        body={
+          <>
+            {counts}
+            <ElapsedSegment seconds={state.elapsed_seconds} />
+          </>
+        }
+      />
       {state.albums.length > 0 && (
         <FeedList albums={state.albums} jobId={jobId} />
       )}
@@ -762,16 +797,30 @@ function JobFailed({
   elapsedSeconds,
 }: Readonly<{ error: string | null; elapsedSeconds: number }>) {
   // A failure is a finish and the clock stops at both terminal transitions:
-  // three seconds versus forty minutes is a bad path versus a late crash.
+  // forty seconds versus forty minutes is a bad path versus a late crash.
+  // (Under ELAPSED_AFTER_S no duration renders at all, so a 3s failure is
+  // simply the untimed case.)
   const elapsed = elapsedLabel(elapsedSeconds);
+  const spoken = spokenElapsed(elapsedSeconds, ELAPSED_AFTER_S);
   return (
     <EmptyState
       bordered
       icon={ErrorIcon}
       title="Import failed"
       body={
-        (error ?? "The import stopped unexpectedly.") +
-        (elapsed === null ? "" : `${SEGMENT_SEP}${elapsed}`)
+        // `error` is the worker's `str(exc)` — a raw sentence with its own
+        // punctuation. The middot dialect glued the duration onto the end of
+        // it, which read as part of the message and could wrap a line open on
+        // a bare "·". Its own line, its own sentence.
+        <>
+          {error ?? "The import stopped unexpectedly."}
+          {elapsed !== null && spoken !== null && (
+            <span className="mt-1 block">
+              <span aria-hidden="true">{`Ran for ${elapsed}.`}</span>
+              <span className="sr-only">{`Ran for ${spoken}.`}</span>
+            </span>
+          )}
+        </>
       }
       action={
         // The shell chrome already renders a ghost "Start over" -> /import;

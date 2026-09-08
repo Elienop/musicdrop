@@ -412,14 +412,24 @@ describe("spokenElapsed", () => {
     expect(spokenElapsed(seconds)).toBe(expected);
   });
 
-  // Finished: the floor drops to the visible line's own threshold and seconds
-  // are allowed, because the terminal announcement fires exactly once.
+  // At the visible line's own floor, seconds are allowed: nothing repeats a
+  // terminal announcement or an sr-only twin.
   test.each([
     [ELAPSED_AFTER_S - 1, null],
     [ELAPSED_AFTER_S, "30 seconds"],
     [45, "45 seconds"],
     [60, "1 minute"],
-  ])("finished, speaks %i seconds as %s", (seconds, expected) => {
-    expect(spokenElapsed(seconds, true)).toBe(expected);
+  ])("at the label's floor, speaks %i seconds as %s", (seconds, expected) => {
+    expect(spokenElapsed(seconds, ELAPSED_AFTER_S)).toBe(expected);
   });
+
+  // The twin exists exactly where the visible label does — otherwise a segment
+  // renders on screen with nothing spoken behind it.
+  test.each([ELAPSED_AFTER_S, 45, 132, 3700])(
+    "has a twin wherever elapsedLabel does (%i)",
+    (seconds) => {
+      expect(elapsedLabel(seconds)).not.toBeNull();
+      expect(spokenElapsed(seconds, ELAPSED_AFTER_S)).not.toBeNull();
+    },
+  );
 });

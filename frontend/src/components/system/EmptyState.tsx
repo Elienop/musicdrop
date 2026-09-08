@@ -14,6 +14,11 @@ import { cn } from "@/lib/utils";
  *
  * Intentionally no live-region role: an empty state is static page content.
  * Pages that need to announce it own the announcement.
+ *
+ * `body` takes a node, not just a string: it renders inside one `<p>`, so a
+ * caller can pair a visible glyph with its `sr-only` spoken twin, or break a
+ * value onto its own line. Pass phrasing content only (`<span>`, text) — a
+ * `<div>` or `<p>` child is invalid inside the paragraph.
  */
 export function EmptyState({
   icon: Icon,
@@ -24,7 +29,7 @@ export function EmptyState({
 }: Readonly<{
   icon: AppIcon;
   title: string;
-  body?: string;
+  body?: ReactNode;
   action?: ReactNode;
   bordered?: boolean;
 }> ) {
