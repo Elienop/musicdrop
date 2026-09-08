@@ -1796,6 +1796,14 @@ the condition it names has changed.
   data; it is stated in `trash_manage._restore_to_origin`'s docstring, which also says why
   widening `origin_occupied` to name the broken link is a contract change.
 
+- **`awaiting_decision` can read true for a sub-microsecond window while beets works**
+  (2026-09-08, import-feedback slice). `park()` registers its reply queue before queueing the
+  park, so a choice accepted for a park that is registered but not yet drained discards
+  nothing and the next drain adds the index anyway. It needs a double submit inside that
+  window and clears at the next decision or terminal transition; the visible cost is one poll
+  at 10 s instead of 1 s. Closing it means a blocked flag on the bridge — a concurrency-
+  boundary change with its own design. Stated at `registry.ImportJob.parked_awaiting`.
+
 - **Wire-safety net coverage caveats** (by design, recorded so nobody assumes otherwise):
   SSE `/api/events` bypasses the response class (scopes are tag-derived today, never paths);
   any future route-level `response_class=` or hand-built `JSONResponse` bypasses both halves

@@ -125,6 +125,10 @@ function pair(head: string, rest: number, unit: string): string {
  * wedged page this number exists to rule out. Two units also read as a
  * duration rather than as one more of the line's `2 albums`-shaped counts.
  *
+ * Above the hour the second unit is minutes, so the label freezes for 59 of
+ * every 60 seconds again. Accepted, not solved: `1h 2m 30s` reads as a clock,
+ * and the run that gets there is the unattended sweep.
+ *
  * Guarded on `Number.isFinite`: unreachable through the typed contract, but
  * `elapsedLabel(undefined)` rendered "NaNh NaNm", and untyped fixtures that
  * omit the field can reach it. */

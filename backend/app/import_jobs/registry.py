@@ -124,7 +124,13 @@ class ImportJob:
     # bridge's ``pending_count``: that counter is decremented by the WORKER after
     # ``reply.get()`` returns, so a poll fired straight after a choice can still
     # see the old value and read a working import as blocked. Both edges here run
-    # under ``self._lock`` on the API thread.
+    # under ``self._lock`` on the API thread — but NOT ordered against the
+    # worker: ``park()`` registers its reply queue before putting the park on
+    # the queue, so a choice accepted for a park that is registered but not yet
+    # drained discards nothing, and the next drain then adds the index for a
+    # worker that is already running. ``awaiting_decision`` reads true while
+    # beets works. It needs a double submit inside that window, and clears at
+    # the next decision or terminal transition. Recorded in BACKLOG.md.
     parked_awaiting: set[int] = field(default_factory=set)
     # The elapsed clock behind ImportJobState.elapsed_seconds. MONOTONIC, not
     # wall time: an NTP step on the server (or a DST change) must not make a
