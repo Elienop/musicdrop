@@ -193,7 +193,13 @@ function ImportEntry() {
             </Button>
           }
         >
-          <p id="resume-import-hint" className="flex items-center gap-3 font-medium">
+          {/* `items-start`, not `items-center`: at 360px the text column is
+              167px and both banner strings wrap, which centred the spinner
+              mid-paragraph (measured 20px below the first line's centre, three
+              lines). No top margin here, unlike the status lines: this spinner
+              is size-5 (20px) and the line-height is 20px, so the correction
+              is zero — measured, not copied. */}
+          <p id="resume-import-hint" className="flex items-start gap-3 font-medium">
             <Spinner
               className="text-muted-foreground size-5 shrink-0 animate-spin"
               aria-hidden="true"
