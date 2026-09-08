@@ -1,5 +1,16 @@
 import type { ImportJobState, SweepStatus } from "@/api/useImport";
 
+/** A sweep that has accepted Pause and is still finishing its current album.
+ *
+ * One predicate for one concept: the announcer drops its elapsed clause on this,
+ * and the page turns its announcement throttle off on it, and those two must not
+ * be able to disagree. The origin check is redundant against today's backend —
+ * `sweep` is only ever populated for a sweep origin — but the contract permits
+ * the pair, and the message branch below reads the same two fields. */
+export function isPausedSweep(data: ImportJobState | undefined): boolean {
+  return data?.origin === "sweep" && data.sweep?.paused === true;
+}
+
 /** The single spoken status for the whole run — it is the one `aria-live`
  * source. Verb-first, and worded away from the visible cue/panels so a test can
  * single one out by its whole text.
@@ -34,7 +45,7 @@ export function announceMessage(args: {
   // A paused, still-running sweep names its own wait — see {@link sweepMessage}
   // — so it takes the same treatment as a named decision: no clause, and the
   // announcement is one fixed string until the run reaches a terminal phase.
-  const pausedSweep = data.origin === "sweep" && data.sweep?.paused === true;
+  const pausedSweep = isPausedSweep(data);
   const clause = elapsedClause(
     data.elapsed_seconds,
     finished,

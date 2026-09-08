@@ -51,6 +51,7 @@ import {
   ELAPSED_AFTER_S,
   announceMessage,
   elapsedLabel,
+  isPausedSweep,
   spokenElapsed,
 } from "@/pages/import/importStatus";
 
@@ -430,7 +431,7 @@ function ImportRun({ jobId }: Readonly<{ jobId: string }>) {
   // change, and nothing is re-read. Carrying the counters here instead gave
   // four announcements in ~5s, closest pair 974ms, because the last album's two
   // outcome records keep the numbers moving after Pause is accepted.
-  const pausedSweep = data?.sweep?.paused === true;
+  const pausedSweep = isPausedSweep(data);
   const status = terminal || pausedSweep ? message : throttled;
   const announcer = (
     <p className="sr-only" role="status" aria-live="polite">
