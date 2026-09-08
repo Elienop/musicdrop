@@ -7,7 +7,10 @@ import { beforeEach, describe, expect, test } from "vitest";
 
 import type { Candidate } from "@/api/useImport";
 import { ImportCandidatePage } from "@/pages/import/ImportCandidatePage";
-import { unwiredContainerQueries } from "@/test/containerQuery";
+import {
+  containerQueryVariants,
+  unwiredContainerQueries,
+} from "@/test/containerQuery";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
 
@@ -388,15 +391,25 @@ describe("ImportCandidatePage", () => {
   });
 
   // The before/after panels lay themselves out from their own width, not the
-  // viewport's. jsdom computes no layout, so the widths that chose 27rem are
-  // browser-measured and recorded in the component; what a test CAN hold is
-  // that the variants are wired to a declared container — rename one side and
-  // CSS reports nothing, the panel silently keeps one arm.
+  // viewport's. jsdom computes no layout, so the widths that chose 27rem and
+  // 14rem are browser-measured and recorded in the component; what a test CAN
+  // hold is that the variants are wired to a declared container — rename one
+  // side and CSS reports nothing, the panel silently keeps one arm.
+  // The PRESENCE list is half the pin: an empty unwired list also means "no
+  // variants here", so on its own it survives deleting the whole layer.
   test("wires every container-query variant to a declared container", async () => {
     server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
     const { container } = renderAt();
 
     await screen.findByText("Paranoid Android");
+    expect(containerQueryVariants(container)).toEqual([
+      "@min-[14rem]/panel:flex-row",
+      "@min-[14rem]/panel:items-baseline",
+      "@min-[27rem]/panel:flex-1",
+      "@min-[27rem]/panel:flex-row",
+      "@min-[27rem]/panel:gap-4",
+      "@min-[27rem]/panel:self-center",
+    ]);
     expect(unwiredContainerQueries(container)).toEqual([]);
   });
 

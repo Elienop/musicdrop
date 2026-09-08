@@ -296,8 +296,9 @@ function AlbumPanel({
   return (
     // Container query, not a breakpoint: the panel's width is not a function
     // of the viewport's. The `md` sidebar takes ~230px back and `sm:grid-cols-2`
-    // halves the panel, so the well SHRINKS as the viewport grows — measured
-    // content box 558px at a 608px viewport, 286px at 640px, 235px at 768px.
+    // halves the panel, so the well SHRINKS as the viewport grows — content
+    // box, scrollbar present: 511px at a 608px viewport, 247px at 640px, 196px
+    // at 768px, which is the narrowest panel in the whole 320-1920 range.
     // `@container` also drops the panel's min-content contribution to the grid
     // track, which is what the document overflow came from.
     <div className="@container/panel border-border flex flex-col gap-3 rounded-xl border p-4">
@@ -306,11 +307,12 @@ function AlbumPanel({
       </p>
       {/* 27rem = 432px is the panel content box below which the cover column
           stops leaving the fields a readable well. Measured with the review
-          fixture: side-by-side costs 208px (w-48 cover + gap-4) plus 128px per
-          Field (w-12 label + gap-2 + the "changed" badge and its gap, 64+8),
-          so the widest value ("OK Computer", 84px) needs 420px and is whole
-          from 432px up. 1280px gives the panel 459px, so the desktop view
-          stays side-by-side with 27px to spare. */}
+          fixture (content box, scrollbar present): side-by-side costs 208px
+          (w-48 cover + gap-4) plus 128px per Field (w-12 label + gap-2 + the
+          "changed" badge and its gap, 64+8), so a value clears 96px — about 13
+          characters — from 432px up. 1280px gives the panel 452px, so the
+          desktop view stays side-by-side with 20px to spare, and the panel
+          first reaches 432px at a 1248px viewport. */}
       <div className="flex flex-col gap-3 @min-[27rem]/panel:flex-row @min-[27rem]/panel:gap-4">
         <div className="flex w-48 max-w-full shrink-0 flex-col gap-1.5">
           <CoverArt src={coverUrl} className="w-full rounded-lg" />
@@ -346,16 +348,32 @@ function Field({
   changed: boolean;
 }> ) {
   return (
-    <div className="flex items-baseline gap-2 text-sm">
+    // Below 14rem = 224px of panel the label takes its own line. The fixed
+    // overhead of the shared line is 128px (w-12 label + gap-2 + badge + gap-2,
+    // measured 48/8/64/8), so at 224px a value clears 96px and below it it does
+    // not: at the app's narrowest panel — 196px of content box at a 768px
+    // viewport, scrollbar present — the shared line left 67px for an 84px
+    // value. Stacked, the value shares its line only with the badge and clears
+    // 124px there. gap-x only: a row gap would space the stacked lines apart,
+    // and is inert on one line.
+    <div className="flex flex-col gap-x-2 text-sm @min-[14rem]/panel:flex-row @min-[14rem]/panel:items-baseline">
       <span className="text-muted-foreground w-12 shrink-0">{label}</span>
-      <span className={cn("truncate", changed && "text-foreground font-medium")}>
-        {value ?? "-"}
+      <span className="flex min-w-0 items-baseline gap-2">
+        <span
+          className={cn(
+            "min-w-0 truncate",
+            changed && "text-foreground font-medium",
+          )}
+          title={value ?? undefined}
+        >
+          {value ?? "-"}
+        </span>
+        {changed && (
+          <Badge variant="secondary" className="shrink-0">
+            changed
+          </Badge>
+        )}
       </span>
-      {changed && (
-        <Badge variant="secondary" className="shrink-0">
-          changed
-        </Badge>
-      )}
     </div>
   );
 }
