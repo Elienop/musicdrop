@@ -19,6 +19,14 @@ import { cn } from "@/lib/utils";
  * caller can pair a visible glyph with its `sr-only` spoken twin, or break a
  * value onto its own line. Pass phrasing content only (`<span>`, text) — a
  * `<div>` or `<p>` child is invalid inside the paragraph.
+ *
+ * `tone="destructive"` swaps the neutral chrome for the app's existing error
+ * recipe — ErrorState's `border-destructive/40 bg-destructive/5` box (solid,
+ * not dashed) and a `text-destructive` icon. It exists so an outcome panel
+ * whose recovery is a navigation can read as a failure without ErrorState's
+ * mandatory Retry. The tone colours the icon always and the box only when
+ * `bordered`. Still no live-region role: a caller that needs the failure
+ * announced owns the announcement.
  */
 export function EmptyState({
   icon: Icon,
@@ -26,24 +34,36 @@ export function EmptyState({
   body,
   action,
   bordered = false,
+  tone = "neutral",
 }: Readonly<{
   icon: AppIcon;
   title: string;
   body?: ReactNode;
   action?: ReactNode;
   bordered?: boolean;
+  tone?: "neutral" | "destructive";
 }> ) {
+  const destructive = tone === "destructive";
   return (
     <div
       data-slot="empty-state"
+      data-tone={tone}
       className={cn(
         "flex flex-col items-center gap-3 text-center",
-        bordered
-          ? "border-border rounded-xl border border-dashed py-16"
-          : "py-24",
+        bordered ? "rounded-xl border py-16" : "py-24",
+        bordered &&
+          (destructive
+            ? "border-destructive/40 bg-destructive/5"
+            : "border-border border-dashed"),
       )}
     >
-      <Icon className="text-muted-foreground size-10" aria-hidden="true" />
+      <Icon
+        className={cn(
+          "size-10",
+          destructive ? "text-destructive" : "text-muted-foreground",
+        )}
+        aria-hidden="true"
+      />
       <div className="flex flex-col gap-1">
         <p className="font-medium">{title}</p>
         {body !== undefined && (

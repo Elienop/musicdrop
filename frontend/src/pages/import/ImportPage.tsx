@@ -589,6 +589,29 @@ function sweepDoneBody(
   );
 }
 
+/** The finished sweep's single action, chosen by what the run produced. */
+function SweepDoneCta({ sweep }: Readonly<{ sweep: SweepStatus }>) {
+  if (sweep.banked > 0) {
+    return (
+      <Button size="sm" asChild>
+        <Link to="/review">Review banked albums</Link>
+      </Button>
+    );
+  }
+  if (sweep.auto_applied > 0) {
+    return (
+      <Button size="sm" asChild>
+        <Link to="/browse?sort=added">See them in the library</Link>
+      </Button>
+    );
+  }
+  return (
+    <Button size="sm" asChild>
+      <Link to="/import">Import another folder</Link>
+    </Button>
+  );
+}
+
 function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: string }>) {
   const pause = usePauseSweep(jobId);
   const sweep = state.sweep;
@@ -614,18 +637,14 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
           // still in the title and on `sweep.paused`, so the word is not
           // repeated either.
           body={sweepDoneBody(sweep, state.elapsed_seconds)}
-          action={
-            // Gated on `banked`, like the failed panel's: a sweep that banked
-            // nothing has nothing to review, and with the counts moved to the
-            // tiles this CTA is the only thing under the title.
-            <Button size="sm" asChild>
-              {sweep.banked > 0 ? (
-                <Link to="/review">Review banked albums</Link>
-              ) : (
-                <Link to="/import">Import another folder</Link>
-              )}
-            </Button>
-          }
+          // The CTA points at what the run actually produced. Banked albums
+          // are decisions waiting, so they win. A sweep that only auto-applied
+          // has no feed of its own and nothing to review, and sending it to
+          // /import just repeated the shell chrome's own "Start over" — so it
+          // goes to the library instead, newest first (`sort=added` is
+          // descending by date added). Nothing produced falls through to a
+          // fresh run.
+          action={<SweepDoneCta sweep={sweep} />}
         />
       ) : (
         // Same alignment as the feed's status line: this one carries a folder
@@ -937,7 +956,10 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
  * album it is still holding.
  *
  * An outcome notice on the EmptyState recipe (the recovery is a navigation, so
- * ErrorState's mandatory Retry would mislead — there is nothing to re-run). */
+ * ErrorState's mandatory Retry would mislead — there is nothing to re-run), in
+ * its `destructive` tone: on the neutral one this box was byte-identical to the
+ * finished panel's, so "failed" in the title was the only thing carrying the
+ * outcome — and this branch put earned counts beside it. */
 function JobFailed({
   state,
   jobId,
@@ -961,6 +983,7 @@ function JobFailed({
     <div className={cn("flex flex-col", sweep !== null ? "gap-6" : "gap-4")}>
       <EmptyState
         bordered
+        tone="destructive"
         icon={ErrorIcon}
         title={sweep !== null ? "Sweep failed" : "Import failed"}
         body={
@@ -984,7 +1007,10 @@ function JobFailed({
           // A sweep that banked has somewhere to send the user; otherwise the
           // recovery is a fresh run, and the label differs from the shell
           // chrome's ghost "Start over" so the two aren't identical. Outline
-          // either way: a solid CTA would read as a success panel.
+          // either way: a solid CTA would read as a success panel. Unlike
+          // {@link SweepDoneCta} this does not offer the library on an
+          // auto-applied run: a crashed sweep's counts are what it is owning up
+          // to, not a result to go and admire.
           <Button variant="outline" size="sm" asChild>
             {(sweep?.banked ?? 0) > 0 ? (
               <Link to="/review">Review banked albums</Link>

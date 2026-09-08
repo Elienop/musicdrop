@@ -1113,6 +1113,64 @@ describe("ImportPage — terminal states", () => {
     expect(another).toHaveAttribute("href", "/import");
   });
 
+  test.each([
+    {
+      what: "a failed import",
+      title: "Import failed",
+      url: JOB_URL,
+      route: "/import?job=job-1",
+      body: () => makeJob({ phase: "failed", error: "lookup exploded", albums: [] }),
+    },
+    {
+      what: "a failed sweep",
+      title: "Sweep failed",
+      url: SWEEP_JOB_URL,
+      route: "/import?job=s1",
+      body: () => sweepJob({ phase: "failed", error: "disk full" }),
+    },
+  ])("$what wears the destructive chrome, not the finished panel's", async ({
+    title,
+    url,
+    route,
+    body,
+  }) => {
+    // The failed box used to be byte-identical to the finished one — same
+    // dashed neutral border, same muted icon — so the word "failed" in the
+    // title was the only thing carrying the outcome, next to earned counts.
+    server.use(http.get(url, () => HttpResponse.json(body())));
+    renderAt(route);
+
+    const panel = (await screen.findByText(title)).closest(
+      "[data-slot='empty-state']",
+    );
+    expect(panel).toHaveAttribute("data-tone", "destructive");
+    expect(panel).toHaveClass("border-destructive/40", "bg-destructive/5");
+    expect(panel).not.toHaveClass("border-dashed");
+    expect(panel?.querySelector("svg")).toHaveClass("text-destructive");
+    // The recovery is still a navigation, never ErrorState's mandatory Retry:
+    // a dead worker has nothing to re-run.
+    expect(
+      screen.queryByRole("button", { name: /retry/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("the finished panel keeps the neutral chrome the failed one gave up", async () => {
+    // The other half of the pair: if this ever went destructive too, the two
+    // outcomes would be one box again and the test above would still pass.
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(makeJob({ phase: "done" }))),
+    );
+    renderAt("/import?job=job-1");
+
+    const panel = (await screen.findByText("Import finished")).closest(
+      "[data-slot='empty-state']",
+    );
+    expect(panel).toHaveAttribute("data-tone", "neutral");
+    expect(panel).toHaveClass("border-dashed");
+    expect(panel).not.toHaveClass("bg-destructive/5");
+    expect(panel?.querySelector("svg")).toHaveClass("text-muted-foreground");
+  });
+
   test("a failure carries how long the run lasted, on its own line", async () => {
     // The clock stops at both terminal transitions: forty seconds versus forty
     // minutes is a bad path versus a late crash. (Below ELAPSED_AFTER_S no
@@ -1743,24 +1801,48 @@ describe("ImportPage — sweep & bank", () => {
   });
 
   test.each([
-    { banked: 2, cta: "Review banked albums", href: "/review" },
-    { banked: 0, cta: "Import another folder", href: "/import" },
+    {
+      what: "banked 2 for review",
+      auto_applied: 3,
+      banked: 2,
+      skipped_known: 0,
+      cta: "Review banked albums",
+      href: "/review",
+    },
+    {
+      what: "imported 5 and banked none",
+      auto_applied: 5,
+      banked: 0,
+      skipped_known: 0,
+      cta: "See them in the library",
+      href: "/browse?sort=added",
+    },
+    {
+      what: "only re-skipped what it already had",
+      auto_applied: 0,
+      banked: 0,
+      skipped_known: 5,
+      cta: "Import another folder",
+      href: "/import",
+    },
   ])(
-    "a finished sweep that banked $banked offers $cta",
-    async ({ banked, cta, href }) => {
+    "a finished sweep that $what offers $cta",
+    async ({ auto_applied, banked, skipped_known, cta, href }) => {
       // With the counts moved to the tiles, this CTA is the only thing under
-      // the title — so a sweep that banked nothing must not send the user to an
-      // empty Review page. Same gate the failed panel uses.
+      // the title, so it has to point at what the run actually produced: banked
+      // albums are decisions waiting; an auto-applied run has no feed of its
+      // own and nothing to review, so /import just repeated the shell chrome's
+      // "Start over" and left 150 fresh albums with no route to them.
       server.use(
         http.get(SWEEP_JOB_URL, () =>
           HttpResponse.json(
             sweepJob({
               phase: "done",
               sweep: {
-                processed: 5,
-                auto_applied: 5 - banked,
+                processed: auto_applied + banked + skipped_known,
+                auto_applied,
                 banked,
-                skipped_known: 0,
+                skipped_known,
                 current_folder: null,
                 paused: false,
               },
@@ -1772,6 +1854,17 @@ describe("ImportPage — sweep & bank", () => {
 
       const link = await screen.findByRole("link", { name: cta });
       expect(link).toHaveAttribute("href", href);
+      // Exactly one action under the title — the other two branches must not
+      // also render.
+      for (const other of [
+        "Review banked albums",
+        "See them in the library",
+        "Import another folder",
+      ].filter((label) => label !== cta)) {
+        expect(
+          screen.queryByRole("link", { name: other }),
+        ).not.toBeInTheDocument();
+      }
     },
   );
 
