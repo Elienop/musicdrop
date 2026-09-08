@@ -50,7 +50,6 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
         did_not_land: false,
       },
     ],
-    summary: null,
     error: null,
     origin: "manual",
     set_aside: 0,
@@ -72,7 +71,6 @@ function sweepJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
     phase: "scanning",
     progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
     albums: [],
-    summary: null,
     error: null,
     origin: "sweep",
     set_aside: 0,
@@ -883,7 +881,7 @@ describe("ImportPage — terminal states", () => {
   // The number counts the whole run and is shown throughout, the finish line
   // included (the owner's ruling) — a ten-minute import that ends by dropping
   // its own duration answers nothing.
-  test("the finished summary keeps the run's elapsed value", async () => {
+  test("the finished panel keeps the run's elapsed value", async () => {
     server.use(
       http.get(JOB_URL, () =>
         HttpResponse.json(
@@ -905,7 +903,7 @@ describe("ImportPage — terminal states", () => {
     expect(screen.getByText(". 14 minutes.")).toHaveClass("sr-only");
   });
 
-  test("a short run's finished summary gains no extra text", async () => {
+  test("a short run's finished panel gains no extra text", async () => {
     server.use(
       http.get(JOB_URL, () =>
         HttpResponse.json(
@@ -931,7 +929,6 @@ describe("ImportPage — terminal states", () => {
         HttpResponse.json(
           makeJob({
             phase: "done",
-            summary: "1 imported, 1 skipped",
             progress: { applied: 1, needs_review: 0, skipped: 1, not_landed: 0 },
             albums: [
               {
@@ -977,7 +974,7 @@ describe("ImportPage — terminal states", () => {
   test("a row that never landed shows a Didn't-land badge and the done body counts it", async () => {
     // A decided/applied row whose library album id never arrived on a terminal
     // job carries did_not_land; progress.not_landed mirrors the count. The row
-    // must flag the failure and the summary must own up to it.
+    // must flag the failure and the done body must own up to it.
     server.use(
       http.get(JOB_URL, () =>
         HttpResponse.json(
@@ -1637,11 +1634,6 @@ describe("ImportPage — sweep & bank", () => {
         HttpResponse.json(
           sweepJob({
             phase: "done",
-            // Still composed by the backend and still on the wire; the panel
-            // no longer restates it above the tiles that say the same four
-            // numbers in the app's own labels.
-            summary:
-              "swept 30, auto-applied 20, banked 10, skipped 1 already imported",
             elapsed_seconds: 840,
             sweep: {
               processed: 30,
@@ -1705,7 +1697,6 @@ describe("ImportPage — sweep & bank", () => {
         HttpResponse.json(
           sweepJob({
             phase: "done",
-            summary: "swept 3, auto-applied 3, banked 0",
             elapsed_seconds: ELAPSED_AFTER_S - 1,
             sweep: {
               processed: 3,
@@ -1738,7 +1729,6 @@ describe("ImportPage — sweep & bank", () => {
         HttpResponse.json(
           sweepJob({
             phase: "done",
-            summary: "swept 0, auto-applied 0, banked 0",
             elapsed_seconds: ELAPSED_AFTER_S - 1,
           }),
         ),

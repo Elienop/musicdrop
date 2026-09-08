@@ -149,7 +149,6 @@ def test_record_choice_marks_decided_and_unblocks_worker() -> None:
     state = registry.state(job_id)
     assert state.phase is ImportPhase.done
     assert state.albums[0].status is ImportAlbumStatus.decided
-    assert state.summary is not None
 
 
 def test_search_choice_does_not_mark_row_decided() -> None:
@@ -268,7 +267,7 @@ def test_decided_action_buckets_imported_vs_skipped(
     assert state.progress.not_landed == not_landed
 
 
-def test_summary_counts_applied_and_decided_truthfully() -> None:
+def test_mixed_run_counts_the_landed_album_and_owns_the_lost_one() -> None:
     # Mixed truthful outcome: index 0 auto-applies and its landing id arrives
     # (imported); index 1 is decided apply but no landing id ever comes (the
     # session died before task.add) -> it did not land, not imported.
@@ -281,11 +280,10 @@ def test_summary_counts_applied_and_decided_truthfully() -> None:
     _poll(lambda: registry.state(job_id).albums, lambda rows: len(rows) == 2)
     registry.record_choice(job_id, 1, ImportChoice(action=ImportAction.apply))
     _poll(lambda: registry.state(job_id).phase, lambda p: p is ImportPhase.done)
-    summary = registry.state(job_id).summary
-    assert summary is not None
-    assert "1 imported" in summary
-    assert "0 skipped" in summary
-    assert "1 did not land" in summary
+    progress = registry.state(job_id).progress
+    assert progress.applied == 1
+    assert progress.skipped == 0
+    assert progress.not_landed == 1
 
 
 def test_stale_on_finish_is_ignored() -> None:
@@ -299,26 +297,14 @@ def test_stale_on_finish_is_ignored() -> None:
     registry._on_finish("some-other-stale-id")
     state = registry.state(job_id)
     assert state.phase is not ImportPhase.done
-    assert state.summary is None
+    # Not merely un-done: the run is still the registry's live job, so the
+    # stale callback finished nothing.
+    assert registry.active_status().active is True
 
 
-def test_summary_counts_skipped_truthfully() -> None:
-    fake = FakeImportRunner(parked=[_parked(0, Recommendation.medium)])
-    registry = ImportJobRegistry(runner=fake)
-    job_id = registry.start("/music/incoming")
-    _poll(lambda: registry.state(job_id).albums, lambda rows: len(rows) == 1)
-    registry.record_choice(job_id, 0, ImportChoice(action=ImportAction.skip))
-    _poll(lambda: registry.state(job_id).phase, lambda p: p is ImportPhase.done)
-    summary = registry.state(job_id).summary
-    assert summary is not None
-    assert "0 imported" in summary
-    assert "1 skipped" in summary
-
-
-def test_progress_skipped_mirrors_summary_skipped() -> None:
-    # progress.skipped is the LIVE mirror of the done-summary's skipped count:
-    # a parked album the user resolved with skip counts toward both, and never
-    # toward progress.applied.
+def test_a_resolved_skip_counts_skipped_and_never_applied() -> None:
+    # A parked album the user resolved with skip counts toward progress.skipped
+    # and never toward progress.applied.
     fake = FakeImportRunner(parked=[_parked(0, Recommendation.medium)])
     registry = ImportJobRegistry(runner=fake)
     job_id = registry.start("/music/incoming")
@@ -328,11 +314,9 @@ def test_progress_skipped_mirrors_summary_skipped() -> None:
     state = registry.state(job_id)
     assert state.progress.skipped == 1
     assert state.progress.applied == 0
-    assert state.summary is not None
-    assert "1 skipped" in state.summary
 
 
-def test_progress_applied_matches_summary_imported() -> None:
+def test_a_decided_skip_does_not_inflate_the_applied_count() -> None:
     # A decided-skip must not inflate progress.applied (it is not imported).
     # Index 0 auto-applies with its landing id (imported); index 1 is skipped.
     fake = FakeImportRunner(
@@ -346,9 +330,7 @@ def test_progress_applied_matches_summary_imported() -> None:
     _poll(lambda: registry.state(job_id).phase, lambda p: p is ImportPhase.done)
     state = registry.state(job_id)
     assert state.progress.applied == 1  # only the auto-applied album
-    assert state.summary is not None
-    assert "1 imported" in state.summary
-    assert "1 skipped" in state.summary
+    assert state.progress.skipped == 1
 
 
 def test_start_forwards_options_to_runner() -> None:
@@ -636,7 +618,7 @@ def test_sweep_options_set_origin_and_sweep_block() -> None:
     state = reg.state(job_id)
     assert state.origin == "sweep"
     assert state.sweep is not None
-    assert state.summary == "swept 0, auto-applied 0, banked 0"
+    assert (state.sweep.processed, state.sweep.auto_applied, state.sweep.banked) == (0, 0, 0)
 
 
 def test_manual_job_has_no_sweep_block() -> None:
@@ -715,7 +697,7 @@ def test_request_pause_finished_sweep_raises_runtimeerror() -> None:
         reg.request_pause("sweep-job")
 
 
-def test_sweep_summary_reports_counters_and_pause() -> None:
+def test_sweep_block_reports_counters_and_pause() -> None:
     reg = ImportJobRegistry()
     job = _install_sweep_job(reg)
     job.bridge.note_outcome(_sweep_outcome(0, AlbumOutcomeStatus.applied))
@@ -726,10 +708,12 @@ def test_sweep_summary_reports_counters_and_pause() -> None:
     reg._on_finish("sweep-job")
     state = reg.state("sweep-job")
     assert state.phase is ImportPhase.done
-    # Counters only. The pause rides the structured field, not a second copy
-    # inside the summary string.
-    assert state.summary == "swept 2, auto-applied 1, banked 1, skipped 1 already imported"
     assert state.sweep is not None
+    # Every counter the sweep earned, plus the pause on its own structured field.
+    assert state.sweep.processed == 2
+    assert state.sweep.auto_applied == 1
+    assert state.sweep.banked == 1
+    assert state.sweep.skipped_known == 1
     assert state.sweep.paused is True
 
 
@@ -852,10 +836,10 @@ def _dup_row(action: "object", *, album_id: int | None = None) -> "object":
 
 
 def test_decided_apply_without_landing_id_does_not_count_imported() -> None:
-    # End-to-end through the public drain/state/summarize path: a parked album
-    # the user resolved apply but for which NO follow-up album_id ever arrived
-    # (the session died before beets ran task.add) must NOT be counted imported
-    # on a terminal job — it is flagged did_not_land and surfaced in the summary.
+    # End-to-end through the public drain/state path: a parked album the user
+    # resolved apply but for which NO follow-up album_id ever arrived (the
+    # session died before beets ran task.add) must NOT be counted imported on a
+    # terminal job — it is flagged did_not_land and counted in not_landed.
     fake = FakeImportRunner(parked=[_parked(0, Recommendation.medium)])
     reg = ImportJobRegistry(runner=fake)
     job_id = reg.start("/music/incoming")
@@ -866,13 +850,11 @@ def test_decided_apply_without_landing_id_does_not_count_imported() -> None:
     assert state.progress.applied == 0
     assert state.progress.not_landed == 1
     assert state.albums[0].did_not_land is True
-    assert state.summary is not None
-    assert state.summary.endswith(", 1 did not land")
 
 
 def test_applied_with_landing_id_counts_imported_and_not_flagged() -> None:
     # The truthful positive: an auto-applied album whose follow-up album_id
-    # arrived DID land — counted imported, never flagged, no "did not land" text.
+    # arrived DID land — counted imported, and never flagged.
     fake = FakeImportRunner(applied=[_applied_outcome(0), _applied_follow_up(0, 7)])
     reg = ImportJobRegistry(runner=fake)
     job_id = reg.start("/music/incoming")
@@ -881,8 +863,6 @@ def test_applied_with_landing_id_counts_imported_and_not_flagged() -> None:
     assert state.progress.applied == 1
     assert state.progress.not_landed == 0
     assert state.albums[0].did_not_land is False
-    assert state.summary is not None
-    assert "did not land" not in state.summary
 
 
 def test_astracks_without_landing_id_still_counts_imported() -> None:
@@ -933,7 +913,7 @@ def test_did_not_land_helper_matrix() -> None:
 def test_did_not_land_is_terminal_gated_mid_run() -> None:
     # Mid-run a decided-apply row's follow-up id can simply trail by one drain,
     # so the "did not land" verdict must NEVER surface on a non-terminal job:
-    # the summary flag and the not_landed counter both stay quiet until done.
+    # the row flag and the not_landed counter both stay quiet until done.
     from app.beets.import_session import ImportBridge
     from app.import_jobs.registry import ImportJob
 
@@ -988,8 +968,8 @@ def test_bank_astracks_apply_applied_row_not_flagged_did_not_land() -> None:
     state = reg.state(job_id)
     assert state.albums[0].did_not_land is False
     assert state.progress.applied == 1
+    assert state.progress.skipped == 0
     assert state.progress.not_landed == 0
-    assert state.summary == "1 imported, 0 skipped"
 
 
 def test_start_sets_directive_astracks_flag_from_astracks_directive() -> None:
@@ -1179,7 +1159,7 @@ def test_album_id_attach_keeps_decided_status() -> None:
     Scenario: a row the user already decided (record_choice marked it
     decided) receives the follow-up applied outcome carrying beets' album
     id. The attach branch must attach the id WITHOUT regressing
-    row.status to applied — the decision the feed/summary already reflects
+    row.status to applied — the decision the feed already reflects
     stays the truth.
     Kills: the attach branch also setting
     ``row.status = ImportAlbumStatus.applied``.

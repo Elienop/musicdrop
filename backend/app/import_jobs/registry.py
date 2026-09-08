@@ -6,7 +6,7 @@ so the registry drains chunk-1's ImportBridge — every per-album outcome
 (non-blocking ``drain_outcomes``) plus the at-most-one parked album
 (``get_parked(timeout=0)``) — into a live feed, and delivers the user's choice
 for the parked album to the worker. Thread-safe: the worker thread mutates
-phase/summary via callbacks while API threads read state and push the choice.
+phase via callbacks while API threads read state and push the choice.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ _SET_ASIDE_STATUSES = {
     ImportAlbumStatus.needs_review,
     ImportAlbumStatus.needs_dup_resolution,
 }
-# Decisions that count as "imported" in the truthful summary.
+# Decisions that count as "imported" in the truthful counts.
 _APPLY_ACTIONS = {ImportAction.apply, ImportAction.asis, ImportAction.astracks}
 # Duplicate decisions that count as "imported" (skip_new is the only skip).
 _DUP_IMPORTED_ACTIONS = {
@@ -96,7 +96,6 @@ class ImportJob:
     bridge: ImportBridge
     phase: ImportPhase = ImportPhase.scanning
     albums: dict[int, _FeedAlbum] = field(default_factory=dict)
-    summary: str | None = None
     error: str | None = None
     # Where this import came from: "manual" (the web Start flow) or "inbox" (the
     # unattended acquisition seam). Surfaced on the job state + the active probe.
@@ -361,7 +360,6 @@ class ImportJobRegistry:
                 self._drain_locked(self._job)
                 self._job.stop_clock()
                 self._job.phase = ImportPhase.done
-                self._job.summary = self._summarize(self._job)
                 finished = True
         # Emit OUTSIDE the lock: a finished import (manual / inbox / bank-apply
         # all route through here) tells every open tab to refetch. publish is
@@ -421,8 +419,9 @@ class ImportJobRegistry:
         (``terminal=False``) an apply-like row not yet carrying its id is the
         NORMAL move-stage state, so count it optimistically as applied and skip
         the premature veto — otherwise the applied bucket transiently reads 0.
-        The default (``terminal=True``) preserves _summarize's post-finish
-        behavior, where asserting did-not-land is correct."""
+        The default (``terminal=True``) is state()'s post-finish reading, taken
+        once _drain_locked has flushed every follow-up id — the point at which
+        asserting did-not-land is correct."""
         if row.duplicate_action is not None:
             decided = row.duplicate_action in _DUP_IMPORTED_ACTIONS
         else:
@@ -444,40 +443,6 @@ class ImportJobRegistry:
         return row.status is ImportAlbumStatus.skipped or (
             row.status is ImportAlbumStatus.decided and row.decided_action not in _APPLY_ACTIONS
         )
-
-    @staticmethod
-    def _summarize(job: ImportJob) -> str:
-        if job.sweep is not None:
-            sweep = job.sweep
-            summary = (
-                f"swept {sweep.processed}, auto-applied {sweep.auto_applied}, banked {sweep.banked}"
-            )
-            if sweep.skipped_known:
-                summary += f", skipped {sweep.skipped_known} already imported"
-            # The pause is NOT repeated here: it is already a field on the wire
-            # (`sweep.paused`), and it is what titles the run page's panel — so
-            # the clause rendered as "... - paused" under a "Sweep paused"
-            # heading, in a third punctuation dialect.
-            return summary
-        astracks = job.directive_astracks
-        imported = sum(
-            1
-            for a in job.albums.values()
-            if ImportJobRegistry._is_imported(a, astracks_directive=astracks)
-        )
-        skipped = sum(1 for a in job.albums.values() if ImportJobRegistry._is_skipped(a))
-        # Safe to assert here: _summarize runs only from _on_finish, AFTER
-        # _drain_locked flushed every follow-up id, so a landing-less row is
-        # genuinely one the session never task.add'd (not an id trailing a poll).
-        not_landed = sum(
-            1
-            for a in job.albums.values()
-            if ImportJobRegistry._did_not_land(a, astracks_directive=astracks)
-        )
-        summary = f"{imported} imported, {skipped} skipped"
-        if not_landed > 0:
-            summary += f", {not_landed} did not land"
-        return summary
 
     # ----- access -----
 
@@ -825,7 +790,6 @@ class ImportJobRegistry:
                     not_landed=not_landed,
                 ),
                 albums=self._summaries(job),
-                summary=job.summary,
                 error=job.error,
                 origin=job.origin,
                 set_aside=set_aside,

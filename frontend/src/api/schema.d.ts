@@ -3512,8 +3512,6 @@ export interface components {
             progress: components["schemas"]["ImportProgress"];
             /** Albums */
             albums: components["schemas"]["ImportAlbumSummary"][];
-            /** Summary */
-            summary: string | null;
             /** Error */
             error: string | null;
             /**

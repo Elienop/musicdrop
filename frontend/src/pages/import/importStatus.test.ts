@@ -14,7 +14,6 @@ function job(overrides: Partial<ImportJobState> = {}): ImportJobState {
     phase: "reviewing",
     progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
     albums: [],
-    summary: null,
     error: null,
     origin: "manual",
     set_aside: 0,
@@ -32,7 +31,6 @@ function sweepState(overrides: Partial<ImportJobState> = {}): ImportJobState {
     phase: "scanning",
     progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
     albums: [],
-    summary: null,
     error: null,
     origin: "sweep",
     set_aside: 0,
@@ -186,7 +184,7 @@ describe("announceMessage", () => {
       );
     expect(parked(600)).toBe("Imported 1. 1 album awaiting review.");
     expect(parked(1200)).toBe(parked(600));
-    // And the finished summary, in the past tense.
+    // And the finished announcement, in the past tense.
     expect(
       speak(
         job({

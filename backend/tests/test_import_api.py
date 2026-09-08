@@ -95,7 +95,6 @@ def test_job_state_round_trips() -> None:
                 status=ImportAlbumStatus.needs_review,
             ),
         ],
-        summary=None,
         error=None,
         set_aside=1,
         elapsed_seconds=125,
@@ -112,7 +111,6 @@ def test_job_state_round_trips() -> None:
     assert dumped["albums"][0]["did_not_land"] is False  # defaulted
     assert dumped["albums"][0]["status"] == "applied"
     assert dumped["albums"][1]["status"] == "needs_review"
-    assert dumped["summary"] is None
     assert dumped["error"] is None
     assert dumped["origin"] == "manual"  # defaulted
     assert dumped["set_aside"] == 1
@@ -202,7 +200,6 @@ def test_job_state_sweep_block_round_trips() -> None:
         phase=ImportPhase.done,
         progress=ImportProgress(applied=0, needs_review=0, skipped=0),
         albums=[],
-        summary=None,
         error=None,
         origin="sweep",
         set_aside=0,
@@ -484,7 +481,7 @@ def test_get_album_unknown_index_is_404() -> None:
     assert client.get(f"/api/import/{job_id}/albums/99").status_code == 404
 
 
-def test_choice_apply_drives_job_to_done_with_truthful_summary() -> None:
+def test_choice_apply_drives_job_to_done_with_truthful_counts() -> None:
     # Index 0 auto-applies and lands (its follow-up id arrives -> imported);
     # index 1 is decided apply but no landing id ever comes (the fake models a
     # decision beets never task.add'd) -> it did not land.
@@ -507,9 +504,9 @@ def test_choice_apply_drives_job_to_done_with_truthful_summary() -> None:
     assert by_index[0]["did_not_land"] is False
     assert by_index[1]["status"] == "decided"
     assert by_index[1]["did_not_land"] is True
-    assert "1 imported" in state["summary"]
-    assert "0 skipped" in state["summary"]
-    assert "1 did not land" in state["summary"]
+    assert state["progress"]["applied"] == 1
+    assert state["progress"]["skipped"] == 0
+    assert state["progress"]["not_landed"] == 1
 
 
 def test_choice_unknown_index_is_404() -> None:
@@ -594,7 +591,7 @@ def test_pause_finished_sweep_is_409() -> None:
     assert client.post(f"/api/import/{job_id}/pause").status_code == 409
 
 
-def test_sweep_start_pause_and_summary_flow() -> None:
+def test_sweep_start_pause_and_finish_flow() -> None:
     # The fake parks its album, which keeps the worker blocked - a stable
     # window to observe the active sweep, pause it, then release the worker
     # through the existing choice endpoint (sweep jobs have no feed rows, but
@@ -628,11 +625,11 @@ def test_sweep_start_pause_and_summary_flow() -> None:
     release = client.post(f"/api/import/{job_id}/albums/0/choice", json={"action": "skip"})
     assert release.status_code == 204
     state = _poll(client, job_id, lambda s: s["phase"] == "done")
-    # The pause survives the finish on the structured field. The summary is
-    # counters only — it used to repeat the flag, which the UI then rendered
-    # under a heading that already said it.
+    # The pause survives the finish, and the structured field is the only place
+    # it is carried: the wire once repeated it in a summary string, which the UI
+    # then rendered under a heading that already said it.
     assert state["sweep"]["paused"] is True
-    assert "paused" not in (state["summary"] or "")
+    assert "summary" not in state
 
 
 def test_active_status_last_sweep_defaults_none() -> None:

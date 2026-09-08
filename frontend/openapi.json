@@ -13168,17 +13168,6 @@
             "type": "array",
             "title": "Albums"
           },
-          "summary": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Summary"
-          },
           "error": {
             "anyOf": [
               {
@@ -13232,7 +13221,6 @@
           "phase",
           "progress",
           "albums",
-          "summary",
           "error",
           "set_aside",
           "elapsed_seconds",

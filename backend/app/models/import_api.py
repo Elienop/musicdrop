@@ -90,7 +90,7 @@ class ImportProgress(BaseModel):
     needs_review: int
     # Albums that landed nothing: an auto-skip (no candidates) or a parked album
     # the user resolved with a non-apply action. The live mirror of the done
-    # summary's skipped count (registry._is_skipped backs both).
+    # terminal skipped count (registry._is_skipped backs both).
     skipped: int
     # Albums resolved as an album-landing action (auto-apply / decided apply|asis
     # / dup keep_both|replace) for which no library album id ever arrived — the
@@ -176,8 +176,6 @@ class ImportJobState(BaseModel):
     phase: ImportPhase
     progress: ImportProgress
     albums: list[ImportAlbumSummary]
-    # A short human summary once done (e.g. "2 imported, 1 skipped"); None until then.
-    summary: str | None
     # The worker's failure message when phase == failed; None otherwise.
     error: str | None
     # Where the import came from: "manual" (the web Start flow) or "inbox" (the

@@ -164,7 +164,6 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
     phase: "reviewing",
     progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
     albums: [],
-    summary: null,
     error: null,
     origin: "manual",
     set_aside: 0,
@@ -205,7 +204,7 @@ describe("useImportJob", () => {
         phase: "scanning",
         progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
       }),
-      makeJob({ phase: "done", summary: "1 imported, 0 skipped" }),
+      makeJob({ phase: "done" }),
     ];
     let calls = 0;
     server.use(
@@ -392,7 +391,7 @@ describe("useImportJob poll cadence", () => {
   test("stops entirely once the phase is terminal", async () => {
     expect(
       await pollIntervalFor(
-        makeJob({ phase: "done", summary: "1 imported, 0 skipped" }),
+        makeJob({ phase: "done" }),
       ),
     ).toBe(false);
   });

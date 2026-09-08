@@ -529,8 +529,8 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
 /** The sweep's whole progress surface: counters (StatTile, the cardless
  * stats dialect), the current folder, Pause, and the Review hand-off. Rides
  * the existing 1s job poll. A paused sweep finishes its current album, then
- * the job goes done with a counters-only summary and `sweep.paused` stays true
- * — that flag, not the summary text, is what titles the panel below. */
+ * the job goes done with `sweep.paused` still true — that flag is what titles
+ * the panel below. */
 /** Derive the sweep's live-status line from paused / current-folder state. */
 function sweepStatusLabel(
   paused: boolean,
@@ -607,12 +607,12 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
           icon={sweep.paused ? Pause : Success}
           title={sweep.paused ? "Sweep paused" : "Sweep finished"}
           // The tiles below ARE the counts, and they are the app's own labels.
-          // This body used to restate all four ~24px above them in the
-          // backend's `state.summary` dialect ("swept 30, auto-applied 20, …"),
-          // so the panel said every number twice. What the tiles cannot say is
-          // how long it took and what to do next; that is all this body is now.
-          // The pause is still in the title and on `sweep.paused`, so the word
-          // is not repeated either.
+          // This body used to restate all four ~24px above them in a server-
+          // built string ("swept 30, auto-applied 20, …"), so the panel said
+          // every number twice. What the tiles cannot say is how long it took
+          // and what to do next; that is all this body is now. The pause is
+          // still in the title and on `sweep.paused`, so the word is not
+          // repeated either.
           body={sweepDoneBody(sweep, state.elapsed_seconds)}
           action={
             // Gated on `banked`, like the failed panel's: a sweep that banked
