@@ -296,7 +296,9 @@ describe("announceMessage", () => {
           awaiting_decision: true,
         }),
       ),
-    ).toBe("The import failed. Took 14 minutes.");
+      // The counts come from the failure's own counters (this fixture landed
+      // one album before it died); the clause is what this test is about.
+    ).toBe("The import failed. Imported 1, skipped 0. Took 14 minutes.");
     expect(
       speak(
         job({
@@ -307,6 +309,49 @@ describe("announceMessage", () => {
         }),
       ),
     ).toBe("Import complete. Imported 3, skipped 0. Took 14 minutes.");
+  });
+
+  // A crash mid-apply is exactly when albums land or fail to land, and the
+  // panel now reports what the run earned — so the one live region must too, or
+  // a screen-reader user hears a bare failure for a run that imported 200.
+  test("a failure announces the counters it earned before it died", () => {
+    const speak = (data: ImportJobState) =>
+      announceMessage({ isPending: false, isError: false, notFound: false, data });
+    expect(
+      speak(
+        job({
+          phase: "failed",
+          error: "the session died",
+          progress: { applied: 200, needs_review: 0, skipped: 3, not_landed: 2 },
+          elapsed_seconds: 840,
+        }),
+      ),
+    ).toBe(
+      "The import failed. Imported 200, skipped 3. 2 didn't land. Took 14 minutes.",
+    );
+    // A sweep counts on `sweep`, never on `progress` (its `albums` stays empty
+    // by design, so `progress` is all zeros however much it swept).
+    expect(
+      speak(
+        sweepState({
+          phase: "failed",
+          error: "disk full",
+          elapsed_seconds: 840,
+          sweep: {
+            processed: 200,
+            auto_applied: 150,
+            banked: 40,
+            skipped_known: 10,
+            current_folder: null,
+            paused: false,
+          },
+        }),
+      ),
+    ).toBe("The sweep failed. Processed 200, imported 150, banked 40. Took 14 minutes.");
+    // Nothing landed: the crash-during-scan case says only that it failed.
+    expect(
+      speak(sweepState({ phase: "failed", error: "disk full", elapsed_seconds: 840 })),
+    ).toBe("The sweep failed. Took 14 minutes.");
   });
 
   test("sweep jobs announce counters, not the feed", () => {

@@ -4,7 +4,12 @@ import { Link, useSearchParams } from "react-router";
 
 import { useActiveImport } from "@/api/useActiveImport";
 import { invalidateLibraryContent } from "@/api/useEventStream";
-import type { ImportAlbumSummary, ImportJobState } from "@/api/useImport";
+import type {
+  ImportAlbumSummary,
+  ImportJobState,
+  ImportProgress,
+  SweepStatus,
+} from "@/api/useImport";
 import {
   ImportConflictError,
   ImportJobNotFoundError,
@@ -385,7 +390,10 @@ function ImportRun({ jobId }: Readonly<{ jobId: string }>) {
     return (
       <ImportShell>
         {announcer}
-        <JobFailed error={data.error} elapsedSeconds={data.elapsed_seconds} />
+        {/* Tested BEFORE the sweep branch below: a failed job is never shown
+            as a running one, whatever its origin — JobFailed branches on the
+            origin itself so a dead sweep still reads as a sweep. */}
+        <JobFailed state={data} jobId={jobId} />
       </ImportShell>
     );
   }
@@ -525,6 +533,21 @@ function sweepStatusLabel(
   return "Sweeping your folder…";
 }
 
+/** The sweep's four counters, in the cardless stats dialect. A sweep counts
+ * instead of accumulating feed rows (`state.albums` stays empty by design), so
+ * these tiles are the whole record of the run — on the running panel, the
+ * finished one, and the failed one alike. */
+function SweepTiles({ sweep }: Readonly<{ sweep: SweepStatus }>) {
+  return (
+    <div className="grid grid-cols-2 gap-6 sm:grid-cols-4">
+      <StatTile icon={Albums} label="Processed" value={String(sweep.processed)} />
+      <StatTile icon={Success} label="Imported" value={String(sweep.auto_applied)} />
+      <StatTile icon={ReviewIcon} label="Banked" value={String(sweep.banked)} />
+      <StatTile icon={Resolved} label="Already known" value={String(sweep.skipped_known)} />
+    </div>
+  );
+}
+
 function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: string }>) {
   const pause = usePauseSweep(jobId);
   const sweep = state.sweep;
@@ -572,12 +595,7 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
         </p>
       )}
 
-      <div className="grid grid-cols-2 gap-6 sm:grid-cols-4">
-        <StatTile icon={Albums} label="Processed" value={String(sweep.processed)} />
-        <StatTile icon={Success} label="Imported" value={String(sweep.auto_applied)} />
-        <StatTile icon={ReviewIcon} label="Banked" value={String(sweep.banked)} />
-        <StatTile icon={Resolved} label="Already known" value={String(sweep.skipped_known)} />
-      </div>
+      <SweepTiles sweep={sweep} />
 
       {!done && (
         <div className="flex flex-col gap-1.5">
@@ -609,14 +627,17 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
   );
 }
 
-/** The feed listing — shared by the live run and the done summary. Carries the
- * `jobId` so each row's links can thread the run origin. */
+/** The feed listing — shared by the live run and the terminal panels. Carries
+ * the `jobId` so each row's links can thread the run origin. `readOnly` drops
+ * the per-row decision buttons: on a failed job nothing consumes a choice. */
 function FeedList({
   albums,
   jobId,
+  readOnly = false,
 }: Readonly<{
   albums: ImportAlbumSummary[];
   jobId: string;
+  readOnly?: boolean;
 }> ) {
   // Pin the album awaiting action to the top — in sequential review it's the one
   // thing to act on (and always the latest), so its Review/Resolve button stays
@@ -636,7 +657,7 @@ function FeedList({
     <ul className="border-border divide-border divide-y overflow-hidden rounded-xl border">
       {ordered.map((album) => (
         <li key={album.index}>
-          <FeedRow album={album} jobId={jobId} />
+          <FeedRow album={album} jobId={jobId} readOnly={readOnly} />
         </li>
       ))}
     </ul>
@@ -685,9 +706,11 @@ function feedRowAction(
 function FeedRow({
   album,
   jobId,
+  readOnly = false,
 }: Readonly<{
   album: ImportAlbumSummary;
   jobId: string;
+  readOnly?: boolean;
 }> ) {
   const needsReview = album.status === "needs_review";
   const needsDup = album.status === "needs_dup_resolution";
@@ -722,7 +745,11 @@ function FeedRow({
         badge={<StatusBadge album={album} />}
         href={linked ? `/albums/${albumId}` : undefined}
         hrefState={linked ? origin : undefined}
-        action={feedRowAction(album.status, album.index, jobId, origin)}
+        action={
+          readOnly
+            ? undefined
+            : feedRowAction(album.status, album.index, jobId, origin)
+        }
       />
     </div>
   );
@@ -784,19 +811,24 @@ function folderName(folder: string): string {
   return parts.at(-1) ?? folder;
 }
 
+/** A feed-counting run's outcome line, in the page's middot dialect — shared by
+ * the done panel and the failed one, which owe the same numbers.
+ *
+ * Owns up to albums that were decided/applied but never landed in the library
+ * (the session died before beets ran task.add). `not_landed` is only ever
+ * nonzero on a terminal job, so the clause drops out of a clean run. */
+function countsLine(progress: ImportProgress): string {
+  const { applied, skipped, not_landed } = progress;
+  return (
+    `${applied} ${applied === 1 ? "album" : "albums"} imported${SEGMENT_SEP}${skipped} skipped` +
+    (not_landed > 0 ? `${SEGMENT_SEP}${not_landed} didn't land` : "")
+  );
+}
+
 /** done: a legible outcome — imported/skipped counts (counting auto-applied
  * albums) + the feed list, whose applied rows now link straight to their
  * library pages (replaces the old blanket "View in library", spec §1). */
 function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: string }>) {
-  const { applied, skipped, not_landed } = state.progress;
-  // Own up to albums that were decided/applied but never landed in the library
-  // (the session died before beets ran task.add) — only ever nonzero here on a
-  // terminal job, so the clause simply drops out of a clean run.
-  // The finished summary carries the run's duration too (the owner's ruling):
-  // the number counts the whole run, so it must not vanish at the finish line.
-  const counts =
-    `${applied} ${applied === 1 ? "album" : "albums"} imported${SEGMENT_SEP}${skipped} skipped` +
-    (not_landed > 0 ? `${SEGMENT_SEP}${not_landed} didn't land` : "");
   return (
     <div className="flex flex-col gap-4">
       <EmptyState
@@ -805,7 +837,10 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
         title="Import finished"
         body={
           <>
-            {counts}
+            {/* The finished summary carries the run's duration too (the owner's
+                ruling): the number counts the whole run, so it must not vanish
+                at the finish line. */}
+            {countsLine(state.progress)}
             <ElapsedSegment seconds={state.elapsed_seconds} />
           </>
         }
@@ -817,43 +852,75 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
   );
 }
 
-/** failed: the worker's error + a way to start over. An outcome notice on the
- * EmptyState recipe (the recovery is a navigation, so ErrorState's mandatory
- * Retry would mislead — there is nothing to re-run). */
+/** failed: the worker's error, and what the run still earned before it died.
+ *
+ * A crash mid-apply is exactly when albums land or fail to land, so the server
+ * keeps reporting this job's counters and computes `not_landed` BECAUSE the job
+ * is terminal — a sweep that banked 200 albums and then died must not read as
+ * though nothing happened. Sweeps count on `state.sweep` (their `albums` stays
+ * empty by design); every other origin counts on `state.progress` and carries
+ * the feed rows.
+ *
+ * An outcome notice on the EmptyState recipe (the recovery is a navigation, so
+ * ErrorState's mandatory Retry would mislead — there is nothing to re-run). */
 function JobFailed({
-  error,
-  elapsedSeconds,
-}: Readonly<{ error: string | null; elapsedSeconds: number }>) {
+  state,
+  jobId,
+}: Readonly<{ state: ImportJobState; jobId: string }>) {
+  const sweep = state.origin === "sweep" ? (state.sweep ?? null) : null;
+  const { applied, skipped, not_landed } = state.progress;
+  // A run that died during the scan landed, skipped and lost nothing, so it has
+  // no counts to report and gains no line — the terse early-crash panel is
+  // unchanged. A sweep's counts are its tiles, never a second sentence.
+  const counts =
+    sweep === null && applied + skipped + not_landed > 0
+      ? countsLine(state.progress)
+      : null;
   // A failure is a finish and the clock stops at both terminal transitions:
   // forty seconds versus forty minutes is a bad path versus a late crash.
   // (Under ELAPSED_AFTER_S no duration renders at all, so a 3s failure is
   // simply the untimed case.)
-  const ranFor = elapsedSentence(elapsedSeconds);
+  const ranFor = elapsedSentence(state.elapsed_seconds);
   return (
-    <EmptyState
-      bordered
-      icon={ErrorIcon}
-      title="Import failed"
-      body={
-        // `error` is the worker's `str(exc)` — a raw sentence with its own
-        // punctuation. The middot dialect glued the duration onto the end of
-        // it, which read as part of the message and could wrap a line open on
-        // a bare "·". Its own line, its own sentence.
-        <>
-          {error ?? "The import stopped unexpectedly."}
-          {ranFor !== undefined && (
-            <span className="mt-1 block">{ranFor}</span>
-          )}
-        </>
-      }
-      action={
-        // The shell chrome already renders a ghost "Start over" -> /import;
-        // this panel CTA uses a distinct label so the two aren't identical.
-        <Button variant="outline" size="sm" asChild>
-          <Link to="/import">Import another folder</Link>
-        </Button>
-      }
-    />
+    <div className={cn("flex flex-col", sweep !== null ? "gap-6" : "gap-4")}>
+      <EmptyState
+        bordered
+        icon={ErrorIcon}
+        title={sweep !== null ? "Sweep failed" : "Import failed"}
+        body={
+          // `error` is the worker's `str(exc)` — a raw sentence with its own
+          // punctuation. The middot dialect glued the duration onto the end of
+          // it, which read as part of the message and could wrap a line open on
+          // a bare "·". Each clause gets its own line, its own sentence.
+          <>
+            {state.error ?? "The import stopped unexpectedly."}
+            {counts !== null && <span className="mt-1 block">{counts}</span>}
+            {ranFor !== undefined && <span className="mt-1 block">{ranFor}</span>}
+          </>
+        }
+        action={
+          // A sweep that banked has somewhere to send the user; otherwise the
+          // recovery is a fresh run, and the label differs from the shell
+          // chrome's ghost "Start over" so the two aren't identical. Outline
+          // either way: a solid CTA would read as a success panel.
+          <Button variant="outline" size="sm" asChild>
+            {(sweep?.banked ?? 0) > 0 ? (
+              <Link to="/review">Review banked albums</Link>
+            ) : (
+              <Link to="/import">Import another folder</Link>
+            )}
+          </Button>
+        }
+      />
+      {sweep !== null && <SweepTiles sweep={sweep} />}
+      {/* Read-only. The rows are the record of what landed and — only ever on a
+          terminal job — what didn't, but the worker is gone: a Review/Resolve
+          button here would open a decision whose POST no worker will consume
+          (`record_choice` has no terminal guard). */}
+      {sweep === null && state.albums.length > 0 && (
+        <FeedList albums={state.albums} jobId={jobId} readOnly />
+      )}
+    </div>
   );
 }
 

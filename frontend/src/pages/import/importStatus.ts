@@ -36,7 +36,7 @@ export function announceMessage(args: {
     finished,
     data.awaiting_decision && namesAWait(data),
   );
-  if (data.phase === "failed") return "The import failed." + clause;
+  if (data.phase === "failed") return failedMessage(data) + clause;
   if (data.origin === "sweep" && data.sweep) {
     return sweepMessage(data.sweep, data.phase) + clause;
   }
@@ -92,13 +92,36 @@ function elapsedClause(
  * Worded away from the visible line ("Pausing; finishing the current album…")
  * so the two never substring-collide. */
 function sweepMessage(sweep: SweepStatus, phase: ImportJobState["phase"]): string {
-  const counts = `Processed ${sweep.processed}, imported ${sweep.auto_applied}, banked ${sweep.banked}.`;
+  const counts = sweepCounts(sweep);
   if (phase !== "done") {
     return sweep.paused
       ? `Stopping after this album. ${counts}`
       : `Sweeping. ${counts}`;
   }
   return sweep.paused ? `Sweep paused. ${counts}` : `Sweep complete. ${counts}`;
+}
+
+/** The sweep's spoken counters. `skipped_known` is left out, as it always has
+ * been in this channel — the visible tiles carry the fourth number. */
+function sweepCounts(sweep: SweepStatus): string {
+  return `Processed ${sweep.processed}, imported ${sweep.auto_applied}, banked ${sweep.banked}.`;
+}
+
+/** A crashed run still earned its counters, and the panel now reports them — so
+ * the one live region must too, or a screen-reader user hears a bare failure
+ * for a run that imported two hundred albums. Sweeps count on `sweep`, every
+ * other origin on `progress`; a run that died before anything landed says only
+ * that it failed. */
+function failedMessage(data: ImportJobState): string {
+  const sweep = data.origin === "sweep" ? data.sweep : null;
+  if (sweep) {
+    const swept = sweep.processed + sweep.auto_applied + sweep.banked;
+    return swept === 0 ? "The sweep failed." : `The sweep failed. ${sweepCounts(sweep)}`;
+  }
+  const { applied, skipped, not_landed } = data.progress;
+  if (applied + skipped + not_landed === 0) return "The import failed.";
+  const landed = `The import failed. Imported ${applied}, skipped ${skipped}.`;
+  return not_landed > 0 ? `${landed} ${not_landed} didn't land.` : landed;
 }
 
 /** Pending duplicates, derived from the feed rows: the backend `progress` has
@@ -143,7 +166,9 @@ export const ELAPSED_AFTER_S = 30;
  * non-breaking, so a wrap cannot strand a dangling "·" at the end of a line;
  * the ordinary space before it is where the line is allowed to break — which
  * means a wrapped line CAN open with the middot (measured: 22 of 71 error
- * lengths at 360px, in the failed panel this constant no longer builds).
+ * lengths at 360px, back when the failed panel glued the duration to the raw
+ * exception with this constant). The failed panel builds it again for its
+ * count line, but that line is the page's own short text, not an exception.
  *
  * Import-page-local on purpose. `ReviewPage` and `CandidateReview` still build
  * the same confidence + recommendation string with a plain-space middot; those

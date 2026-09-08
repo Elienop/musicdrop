@@ -1105,6 +1105,138 @@ describe("ImportPage — terminal states", () => {
     expect(screen.getByText("Ran for 40 minutes.")).toHaveClass("sr-only");
   });
 
+  test("a failed run reports the counts it earned, and its feed, read-only", async () => {
+    // A crash mid-apply is exactly when albums land or fail to land, so the
+    // server keeps reporting this job's counters and computes `not_landed`
+    // BECAUSE the job is terminal. The panel must not present a run that
+    // imported albums as though nothing happened.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "failed",
+            error: "lookup exploded",
+            elapsed_seconds: 2412,
+            progress: { applied: 200, needs_review: 1, skipped: 3, not_landed: 2 },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    // Still unmistakably a failure...
+    expect(await screen.findByText("Import failed")).toBeInTheDocument();
+    expect(screen.getByText("lookup exploded")).toBeInTheDocument();
+    // ...that owns up to what it did, on its own line — not glued to the raw
+    // exception by the middot dialect.
+    const counts = screen.getByText(
+      "200 albums imported · 3 skipped · 2 didn't land",
+    );
+    expect(counts).toHaveClass("block");
+    expect(counts.textContent).not.toContain("lookup exploded");
+    expect(screen.getByText("Ran for 40m 12s.")).toBeInTheDocument();
+    // The feed rows survive the failure too — but read-only: the worker is
+    // gone, so a Review button here would open a decision nothing consumes.
+    // makeJob's second row is `needs_review`, which is exactly that button.
+    expect(screen.getByText("OK Computer")).toBeInTheDocument();
+    expect(screen.getByText("Kid A")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Review" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Resolve" })).not.toBeInTheDocument();
+    // Nothing was banked, so the CTA is still a fresh run.
+    expect(
+      screen.getByRole("link", { name: /import another folder/i }),
+    ).toHaveAttribute("href", "/import");
+  });
+
+  test("a run that died during the scan gains no count line", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "failed",
+            error: "lookup exploded",
+            albums: [],
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Import failed")).toBeInTheDocument();
+    // It landed, skipped and lost nothing — "0 albums imported · 0 skipped"
+    // would be noise, so the early-crash panel reads exactly as it did before.
+    expect(screen.queryByText(/albums imported/)).not.toBeInTheDocument();
+  });
+
+  test("a failed sweep is still a sweep: its tiles, and the Review hand-off", async () => {
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({
+            phase: "failed",
+            error: "disk full",
+            elapsed_seconds: 2412,
+            sweep: {
+              processed: 200,
+              auto_applied: 150,
+              banked: 40,
+              skipped_known: 10,
+              current_folder: null,
+              paused: false,
+            },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    // Recognisable as a sweep, not as a generic "Import failed".
+    expect(await screen.findByText("Sweep failed")).toBeInTheDocument();
+    expect(screen.getByText("disk full")).toBeInTheDocument();
+    expect(screen.getByText("Ran for 40m 12s.")).toBeInTheDocument();
+    // Its counts are its tiles — the same four the finished panel shows, said
+    // once. A sweep's `progress` is all zeros, so a count SENTENCE would read
+    // "0 albums imported".
+    for (const [label, value] of [
+      ["Processed", "200"],
+      ["Imported", "150"],
+      ["Banked", "40"],
+      ["Already known", "10"],
+    ]) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+      expect(screen.getByText(value)).toBeInTheDocument();
+    }
+    expect(screen.queryByText(/albums imported/)).not.toBeInTheDocument();
+    // It banked 40 albums before it died — the hand-off to Review survives.
+    expect(
+      screen.getByRole("link", { name: /review banked albums/i }),
+    ).toHaveAttribute("href", "/review");
+    // And no Pause: there is nothing left to pause.
+    expect(
+      screen.queryByRole("button", { name: /pause sweep/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("a failed sweep that banked nothing offers a fresh run", async () => {
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({ phase: "failed", error: "disk full", elapsed_seconds: 2412 }),
+        ),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    expect(await screen.findByText("Sweep failed")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /import another folder/i }),
+    ).toHaveAttribute("href", "/import");
+    expect(
+      screen.queryByRole("link", { name: /review banked albums/i }),
+    ).not.toBeInTheDocument();
+  });
+
   test("a transient job-fetch error shows a retry", async () => {
     server.use(http.get(JOB_URL, () => new HttpResponse(null, { status: 500 })));
     renderAt("/import?job=job-1");
