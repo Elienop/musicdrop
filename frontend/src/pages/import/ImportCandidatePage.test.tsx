@@ -289,6 +289,29 @@ describe("ImportCandidatePage", () => {
     expect(tokens).toContain("text-muted-foreground");
   });
 
+  test("the header h1 carries BOTH classes an unbreakable title needs", async () => {
+    server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
+    renderAt();
+    const h1 = await screen.findByRole("heading", { name: /Radiohead - OK Computer/i });
+
+    // Two classes, and neither works alone here. This h1 is a flex ITEM of a
+    // row, so its default `min-width: auto` floors it at the longest
+    // unbreakable token; `overflow-wrap` picks where lines break but does not
+    // lower that floor (SettingsTrashPage.tsx:209-211 writes the rule out).
+    // Measured at 360px with a 30-character artist and a 45-character album:
+    // 371px of document scroll with neither, 371px with `break-words` alone,
+    // and 0 with both. AlbumDetailPage's h1 needs only `break-words` because it
+    // is in normal flow — the class list is not transferable, the reason is.
+    const tokens = h1.className.split(/\s+/);
+    expect(tokens).toContain("min-w-0");
+    expect(tokens).toContain("break-words");
+    // Control: pin the parent shape the two classes are answering, so a future
+    // move out of the flex row makes this test say so rather than pass on.
+    expect(h1.parentElement?.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["flex", "flex-wrap"]),
+    );
+  });
+
   test("shows the current file's format in the Format column", async () => {
     server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
     renderAt();

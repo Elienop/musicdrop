@@ -132,7 +132,21 @@ function MatchHeader({
   return (
     <div className="flex flex-col gap-1">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <h1 tabIndex={-1} className="font-display text-display font-semibold tracking-tight">
+        {/* Both classes, and neither is enough alone — this heading is a flex
+            ITEM of the row above, unlike AlbumDetailPage's h1, which does the
+            job with `break-words` in normal flow. `min-w-0` is the rule
+            SettingsTrashPage.tsx:209-211 writes out: the item's default
+            `min-width: auto` floors it at the longest unbreakable token, and
+            `overflow-wrap` chooses where lines break without lowering that
+            floor. Measured at 360px with a 30-character artist and a
+            45-character album, as document scroll: 371px with neither, 371px
+            with `break-words` alone (the h1 box just grows past the viewport),
+            371px with `min-w-0` alone (the box is capped and the text spills
+            out of it instead — the element reports 395px), 0 with both. */}
+        <h1
+          tabIndex={-1}
+          className="font-display text-display font-semibold tracking-tight min-w-0 break-words"
+        >
           {after.artist ?? "Unknown artist"} - {after.album ?? "Unknown album"}
         </h1>
       </div>
