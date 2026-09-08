@@ -171,10 +171,11 @@ describe("announceMessage", () => {
     expect(speak(job({ elapsed_seconds: 132 }))).not.toBe(
       speak(job({ elapsed_seconds: 195 })),
     );
-    // But NOT while the run waits on a person. `role="status"` is atomic, so
-    // each minute tick re-reads the whole string, and nothing else can change
-    // — a 20-minute decision became 20 full re-reads asserting activity. The
-    // string goes static instead, and the announcer's de-dup swallows the poll.
+    // But NOT while the announcement NAMES what the run waits on.
+    // `role="status"` is atomic, so each minute tick re-reads the whole string,
+    // and nothing else can change — a 20-minute decision became 20 full
+    // re-reads asserting activity. The string goes static instead, and the
+    // announcer's de-dup swallows the poll.
     const parked = (seconds: number) =>
       speak(
         job({
@@ -211,6 +212,69 @@ describe("announceMessage", () => {
         }),
       ),
     ).toBe("Import complete. Imported 1, skipped 0. Took 45 seconds.");
+  });
+
+  // The other three corners of the suppression. Keying it on `awaiting_decision`
+  // alone silenced a run that named nothing, and `registry.parked_awaiting` can
+  // stick for the rest of a run, so that silence was permanent.
+  test("only a NAMED wait drops the clause", () => {
+    const speak = (data: ImportJobState) =>
+      announceMessage({ isPending: false, isError: false, notFound: false, data });
+    // Blocked with nothing to name — a park buffered before its row exists.
+    // Without the clause this is the bare "Imported 0." that says neither what
+    // is happening nor for how long.
+    expect(
+      speak(
+        job({
+          phase: "scanning",
+          albums: [],
+          elapsed_seconds: 600,
+          awaiting_decision: true,
+        }),
+      ),
+    ).toBe("Scanning the folder for albums. Running for 10 minutes.");
+    expect(
+      speak(
+        job({
+          progress: { applied: 2, needs_review: 0, skipped: 0, not_landed: 0 },
+          elapsed_seconds: 600,
+          awaiting_decision: true,
+        }),
+      ),
+    ).toBe("Imported 2. Running for 10 minutes.");
+    // Named but NOT blocked: a `search` re-lookup keeps its row needs_review
+    // while beets queries MusicBrainz. Nothing else changes there either, so
+    // the clock is the only signal the page is alive.
+    expect(
+      speak(
+        job({
+          progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
+          elapsed_seconds: 600,
+          awaiting_decision: false,
+        }),
+      ),
+    ).toBe("Imported 1. 1 album awaiting review. Running for 10 minutes.");
+    // A blocked duplicate names its wait through the feed row, not `progress`.
+    expect(
+      speak(
+        job({
+          albums: [
+            {
+              index: 0,
+              folder: "/in/a",
+              album: "A",
+              artist: "B",
+              confidence: 90,
+              recommendation: "strong",
+              status: "needs_dup_resolution",
+              did_not_land: false,
+            },
+          ],
+          elapsed_seconds: 600,
+          awaiting_decision: true,
+        }),
+      ),
+    ).toBe("Imported 0. 1 duplicate awaiting resolution.");
   });
 
   test("sweep jobs announce counters, not the feed", () => {

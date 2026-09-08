@@ -28,7 +28,7 @@ export function announceMessage(args: {
   const clause = elapsedClause(
     data.elapsed_seconds,
     finished,
-    data.awaiting_decision,
+    data.awaiting_decision && namesAWait(data),
   );
   if (data.phase === "failed") return "The import failed." + clause;
   if (data.origin === "sweep" && data.sweep) {
@@ -47,20 +47,28 @@ export function announceMessage(args: {
 /** The spoken elapsed sentence appended to a data-bearing announcement — empty
  * under a minute, past tense once the run is over.
  *
- * Dropped entirely while the run waits on the operator. `role="status"` is
+ * Dropped only when the announcement already NAMES the wait. `role="status"` is
  * implicitly atomic, so each minute tick re-reads the WHOLE string, and while a
- * decision is owed nothing else can change — a 20-minute decision became 20
- * full re-reads carrying no new information, and asserting activity. With the
- * clause gone the string is static and the announcer's identical-string de-dup
- * suppresses the repeat. The visible line keeps its value; that number counts
- * the whole run and must not vanish. `progressMessage` still says a decision is
- * owed. */
+ * named decision is owed nothing else can change — a 20-minute decision became
+ * 20 full re-reads carrying no new information, and asserting activity. With
+ * the clause gone the string is static and the announcer's identical-string
+ * de-dup suppresses the repeat. The visible line keeps its value; that number
+ * counts the whole run and must not vanish.
+ *
+ * Keying on `awaiting_decision` alone was wrong twice over. A park buffered
+ * before its row exists sets the flag with nothing to name, so the whole
+ * announcement collapsed to `"Imported 0."` — the "working or wedged?"
+ * ambiguity this clause exists to remove. And the flag can stick for the rest
+ * of a run (see `registry.ImportJob.parked_awaiting`), which made that silence
+ * permanent. The flag is still an AND term: a `search` re-lookup keeps its row
+ * `needs_review` while beets queries MusicBrainz, and there the clock is the
+ * only thing that changes. */
 function elapsedClause(
   seconds: number,
   finished: boolean,
-  blocked: boolean,
+  namedWait: boolean,
 ): string {
-  if (blocked && !finished) return "";
+  if (namedWait && !finished) return "";
   const spoken = spokenElapsed(seconds, finished);
   if (spoken === null) return "";
   return finished ? ` Took ${spoken}.` : ` Running for ${spoken}.`;
@@ -75,21 +83,29 @@ function sweepMessage(sweep: SweepStatus, phase: ImportJobState["phase"]): strin
   return `Sweeping. ${counts}`;
 }
 
+/** Pending duplicates, derived from the feed rows: the backend `progress` has
+ * no duplicate counter. The row says a decision is OFFERED, not that the worker
+ * is blocked on it (an unattended duplicate sets this status and skips on) —
+ * either way the user has something to clear, so a screen-reader user must hear
+ * it. Whether the worker is blocked is `awaiting_decision`; the spinner and the
+ * poll cadence read that instead. */
+function pendingDuplicates(data: ImportJobState): number {
+  return data.albums.filter((a) => a.status === "needs_dup_resolution").length;
+}
+
+/** Whether the announcement names something the run is waiting for. The one
+ * condition {@link progressMessage} uses to name a wait, so the elapsed clause
+ * can only be suppressed where the announcement says why. */
+function namesAWait(data: ImportJobState): boolean {
+  return data.progress.needs_review > 0 || pendingDuplicates(data) > 0;
+}
+
 /** Active (non-terminal) non-sweep runs: count what's applied + flag pending
  * decisions (review, duplicate) so a screen-reader user hears the import is
  * waiting on them. */
 function progressMessage(data: ImportJobState): string {
   const { applied, skipped, needs_review } = data.progress;
-  // The backend `progress` has no duplicate counter, so derive the
-  // duplicate-pending count from the feed rows. The row says a decision is
-  // OFFERED, not that the worker is blocked on it (an unattended duplicate sets
-  // this status and skips on) — either way the user has something to clear, so
-  // a screen-reader user must hear it. Whether the worker is blocked is
-  // `awaiting_decision`; the spinner, the cadence and the elapsed clause
-  // (which drops out while blocked) read that instead.
-  const needs_dup = data.albums.filter(
-    (a) => a.status === "needs_dup_resolution",
-  ).length;
+  const needs_dup = pendingDuplicates(data);
   let m = `Imported ${applied}.`;
   if (skipped > 0) m += ` Skipped ${skipped}.`;
   if (needs_review > 0) {
