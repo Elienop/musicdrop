@@ -685,11 +685,25 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
               type="button"
               variant="outline"
               size="sm"
-              disabled={pause.isPending || sweep.paused}
-              onClick={() => pause.mutate()}
+              // `aria-disabled`, never `disabled` — the Pagination rule: this
+              // button holds focus when it is clicked, and disabling it on the
+              // click's own commit strands keyboard focus on <body> (measured:
+              // the next Tab restarts at "Skip to content"). The Review page's
+              // Pause, the same mutation on the same state, already reads this
+              // way; the click is swallowed instead, and pause is an idempotent
+              // 204 server-side so a slipped repeat is harmless.
+              aria-disabled={pause.isPending || sweep.paused}
+              className="aria-disabled:opacity-50"
+              onClick={() => {
+                if (pause.isPending || sweep.paused) return;
+                pause.mutate();
+              }}
             >
               <Pause aria-hidden="true" />
-              {sweep.paused ? "Pausing…" : "Pause sweep"}
+              {/* Same expression as the state above: keyed on `sweep.paused`
+                  alone the button read "Pause sweep" while already inert for
+                  the whole in-flight window. */}
+              {pause.isPending || sweep.paused ? "Pausing…" : "Pause sweep"}
             </Button>
           </div>
           <p className="text-muted-foreground text-xs">

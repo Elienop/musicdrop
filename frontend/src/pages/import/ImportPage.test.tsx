@@ -1648,6 +1648,54 @@ describe("ImportPage — sweep & bank", () => {
     await waitFor(() => expect(paused).toBe(true));
   });
 
+  // The Pagination rule: a trigger that holds focus must not become `disabled`
+  // on its own click — the browser drops focus to <body> and the next Tab
+  // restarts at the top of the document. The Review page's Pause (the same
+  // mutation, the same state) already reads this way.
+  test("Pause keeps focus and swallows the re-click instead of disabling", async () => {
+    let paused = false;
+    let posts = 0;
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({
+            sweep: {
+              processed: 12,
+              auto_applied: 8,
+              banked: 4,
+              skipped_known: 2,
+              current_folder: "/library/Adele/21",
+              paused,
+            },
+          }),
+        ),
+      ),
+      http.post(SWEEP_PAUSE_URL, () => {
+        posts += 1;
+        paused = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt("/import?job=s1");
+
+    const button = await screen.findByRole("button", { name: /pause sweep/i });
+    await user.click(button);
+
+    // The label carries the state, and it is keyed on the SAME expression as
+    // the aria state — keyed on `sweep.paused` alone it still read "Pause
+    // sweep" for the whole in-flight window.
+    await waitFor(() => expect(button).toHaveTextContent("Pausing…"));
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    // The load-bearing pair: still focusable, still focused.
+    expect(button).not.toBeDisabled();
+    expect(document.activeElement).toBe(button);
+
+    // ...and inert all the same.
+    await user.click(button);
+    expect(posts).toBe(1);
+  });
+
   // A sweep returns before LiveFeed ever renders, so it carried the elapsed
   // value and showed it nowhere — on the longest-running import there is.
   test("a long sweep's status line carries the elapsed value", async () => {
