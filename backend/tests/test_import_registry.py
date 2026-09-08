@@ -1,5 +1,7 @@
 import threading
+import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -22,6 +24,9 @@ from app.models.import_models import (
     ParkedAlbum,
     Recommendation,
 )
+
+if TYPE_CHECKING:  # annotation only — every runtime use is a local import, as elsewhere here
+    from app.beets.import_session import ImportBridge
 
 
 def _candidate(rec: Recommendation, *, confidence: float = 75.5) -> Candidate:
@@ -144,7 +149,6 @@ def test_record_choice_marks_decided_and_unblocks_worker() -> None:
     state = registry.state(job_id)
     assert state.phase is ImportPhase.done
     assert state.albums[0].status is ImportAlbumStatus.decided
-    assert state.summary is not None
 
 
 def test_search_choice_does_not_mark_row_decided() -> None:
@@ -263,7 +267,7 @@ def test_decided_action_buckets_imported_vs_skipped(
     assert state.progress.not_landed == not_landed
 
 
-def test_summary_counts_applied_and_decided_truthfully() -> None:
+def test_mixed_run_counts_the_landed_album_and_owns_the_lost_one() -> None:
     # Mixed truthful outcome: index 0 auto-applies and its landing id arrives
     # (imported); index 1 is decided apply but no landing id ever comes (the
     # session died before task.add) -> it did not land, not imported.
@@ -276,11 +280,10 @@ def test_summary_counts_applied_and_decided_truthfully() -> None:
     _poll(lambda: registry.state(job_id).albums, lambda rows: len(rows) == 2)
     registry.record_choice(job_id, 1, ImportChoice(action=ImportAction.apply))
     _poll(lambda: registry.state(job_id).phase, lambda p: p is ImportPhase.done)
-    summary = registry.state(job_id).summary
-    assert summary is not None
-    assert "1 imported" in summary
-    assert "0 skipped" in summary
-    assert "1 did not land" in summary
+    progress = registry.state(job_id).progress
+    assert progress.applied == 1
+    assert progress.skipped == 0
+    assert progress.not_landed == 1
 
 
 def test_stale_on_finish_is_ignored() -> None:
@@ -294,26 +297,14 @@ def test_stale_on_finish_is_ignored() -> None:
     registry._on_finish("some-other-stale-id")
     state = registry.state(job_id)
     assert state.phase is not ImportPhase.done
-    assert state.summary is None
+    # Not merely un-done: the run is still the registry's live job, so the
+    # stale callback finished nothing.
+    assert registry.active_status().active is True
 
 
-def test_summary_counts_skipped_truthfully() -> None:
-    fake = FakeImportRunner(parked=[_parked(0, Recommendation.medium)])
-    registry = ImportJobRegistry(runner=fake)
-    job_id = registry.start("/music/incoming")
-    _poll(lambda: registry.state(job_id).albums, lambda rows: len(rows) == 1)
-    registry.record_choice(job_id, 0, ImportChoice(action=ImportAction.skip))
-    _poll(lambda: registry.state(job_id).phase, lambda p: p is ImportPhase.done)
-    summary = registry.state(job_id).summary
-    assert summary is not None
-    assert "0 imported" in summary
-    assert "1 skipped" in summary
-
-
-def test_progress_skipped_mirrors_summary_skipped() -> None:
-    # progress.skipped is the LIVE mirror of the done-summary's skipped count:
-    # a parked album the user resolved with skip counts toward both, and never
-    # toward progress.applied.
+def test_a_resolved_skip_counts_skipped_and_never_applied() -> None:
+    # A parked album the user resolved with skip counts toward progress.skipped
+    # and never toward progress.applied.
     fake = FakeImportRunner(parked=[_parked(0, Recommendation.medium)])
     registry = ImportJobRegistry(runner=fake)
     job_id = registry.start("/music/incoming")
@@ -323,11 +314,9 @@ def test_progress_skipped_mirrors_summary_skipped() -> None:
     state = registry.state(job_id)
     assert state.progress.skipped == 1
     assert state.progress.applied == 0
-    assert state.summary is not None
-    assert "1 skipped" in state.summary
 
 
-def test_progress_applied_matches_summary_imported() -> None:
+def test_a_decided_skip_does_not_inflate_the_applied_count() -> None:
     # A decided-skip must not inflate progress.applied (it is not imported).
     # Index 0 auto-applies with its landing id (imported); index 1 is skipped.
     fake = FakeImportRunner(
@@ -341,9 +330,7 @@ def test_progress_applied_matches_summary_imported() -> None:
     _poll(lambda: registry.state(job_id).phase, lambda p: p is ImportPhase.done)
     state = registry.state(job_id)
     assert state.progress.applied == 1  # only the auto-applied album
-    assert state.summary is not None
-    assert "1 imported" in state.summary
-    assert "1 skipped" in state.summary
+    assert state.progress.skipped == 1
 
 
 def test_start_forwards_options_to_runner() -> None:
@@ -631,7 +618,7 @@ def test_sweep_options_set_origin_and_sweep_block() -> None:
     state = reg.state(job_id)
     assert state.origin == "sweep"
     assert state.sweep is not None
-    assert state.summary == "swept 0, auto-applied 0, banked 0"
+    assert (state.sweep.processed, state.sweep.auto_applied, state.sweep.banked) == (0, 0, 0)
 
 
 def test_manual_job_has_no_sweep_block() -> None:
@@ -710,7 +697,7 @@ def test_request_pause_finished_sweep_raises_runtimeerror() -> None:
         reg.request_pause("sweep-job")
 
 
-def test_sweep_summary_reports_counters_and_pause() -> None:
+def test_sweep_block_reports_counters_and_pause() -> None:
     reg = ImportJobRegistry()
     job = _install_sweep_job(reg)
     job.bridge.note_outcome(_sweep_outcome(0, AlbumOutcomeStatus.applied))
@@ -721,9 +708,13 @@ def test_sweep_summary_reports_counters_and_pause() -> None:
     reg._on_finish("sweep-job")
     state = reg.state("sweep-job")
     assert state.phase is ImportPhase.done
-    assert state.summary == (
-        "swept 2, auto-applied 1, banked 1, skipped 1 already imported - paused"
-    )
+    assert state.sweep is not None
+    # Every counter the sweep earned, plus the pause on its own structured field.
+    assert state.sweep.processed == 2
+    assert state.sweep.auto_applied == 1
+    assert state.sweep.banked == 1
+    assert state.sweep.skipped_known == 1
+    assert state.sweep.paused is True
 
 
 def test_active_status_carries_sweep_block() -> None:
@@ -845,10 +836,10 @@ def _dup_row(action: "object", *, album_id: int | None = None) -> "object":
 
 
 def test_decided_apply_without_landing_id_does_not_count_imported() -> None:
-    # End-to-end through the public drain/state/summarize path: a parked album
-    # the user resolved apply but for which NO follow-up album_id ever arrived
-    # (the session died before beets ran task.add) must NOT be counted imported
-    # on a terminal job — it is flagged did_not_land and surfaced in the summary.
+    # End-to-end through the public drain/state path: a parked album the user
+    # resolved apply but for which NO follow-up album_id ever arrived (the
+    # session died before beets ran task.add) must NOT be counted imported on a
+    # terminal job — it is flagged did_not_land and counted in not_landed.
     fake = FakeImportRunner(parked=[_parked(0, Recommendation.medium)])
     reg = ImportJobRegistry(runner=fake)
     job_id = reg.start("/music/incoming")
@@ -859,13 +850,11 @@ def test_decided_apply_without_landing_id_does_not_count_imported() -> None:
     assert state.progress.applied == 0
     assert state.progress.not_landed == 1
     assert state.albums[0].did_not_land is True
-    assert state.summary is not None
-    assert state.summary.endswith(", 1 did not land")
 
 
 def test_applied_with_landing_id_counts_imported_and_not_flagged() -> None:
     # The truthful positive: an auto-applied album whose follow-up album_id
-    # arrived DID land — counted imported, never flagged, no "did not land" text.
+    # arrived DID land — counted imported, and never flagged.
     fake = FakeImportRunner(applied=[_applied_outcome(0), _applied_follow_up(0, 7)])
     reg = ImportJobRegistry(runner=fake)
     job_id = reg.start("/music/incoming")
@@ -874,8 +863,6 @@ def test_applied_with_landing_id_counts_imported_and_not_flagged() -> None:
     assert state.progress.applied == 1
     assert state.progress.not_landed == 0
     assert state.albums[0].did_not_land is False
-    assert state.summary is not None
-    assert "did not land" not in state.summary
 
 
 def test_astracks_without_landing_id_still_counts_imported() -> None:
@@ -926,7 +913,7 @@ def test_did_not_land_helper_matrix() -> None:
 def test_did_not_land_is_terminal_gated_mid_run() -> None:
     # Mid-run a decided-apply row's follow-up id can simply trail by one drain,
     # so the "did not land" verdict must NEVER surface on a non-terminal job:
-    # the summary flag and the not_landed counter both stay quiet until done.
+    # the row flag and the not_landed counter both stay quiet until done.
     from app.beets.import_session import ImportBridge
     from app.import_jobs.registry import ImportJob
 
@@ -981,8 +968,8 @@ def test_bank_astracks_apply_applied_row_not_flagged_did_not_land() -> None:
     state = reg.state(job_id)
     assert state.albums[0].did_not_land is False
     assert state.progress.applied == 1
+    assert state.progress.skipped == 0
     assert state.progress.not_landed == 0
-    assert state.summary == "1 imported, 0 skipped"
 
 
 def test_start_sets_directive_astracks_flag_from_astracks_directive() -> None:
@@ -1172,7 +1159,7 @@ def test_album_id_attach_keeps_decided_status() -> None:
     Scenario: a row the user already decided (record_choice marked it
     decided) receives the follow-up applied outcome carrying beets' album
     id. The attach branch must attach the id WITHOUT regressing
-    row.status to applied — the decision the feed/summary already reflects
+    row.status to applied — the decision the feed already reflects
     stays the truth.
     Kills: the attach branch also setting
     ``row.status = ImportAlbumStatus.applied``.
@@ -1303,3 +1290,248 @@ def test_start_refuses_while_the_attached_library_is_refused() -> None:
     # A clean attach clears it: the field is assigned on every call.
     reg.attach_library(object())
     assert reg.start("/x")
+
+
+# ----- elapsed_seconds: a slow import must be distinguishable from a hung one -----
+
+
+def test_elapsed_seconds_keeps_counting_while_a_job_is_parked() -> None:
+    """A job parked awaiting a decision is still "running" for the operator.
+
+    Measured 2026-09-07: a one-track import took ~5 minutes with nothing logged,
+    so this number is the only signal separating slow from hung. It must not
+    stall the moment the phase leaves ``scanning``.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="parked", bridge=ImportBridge(), phase=ImportPhase.reviewing)
+    job.started_monotonic = time.monotonic() - 125.0
+    reg._job = job
+
+    assert reg.state("parked").elapsed_seconds == 125
+    assert job.ended_monotonic is None  # a parked job's clock is still open
+
+
+def test_elapsed_seconds_is_frozen_once_the_clock_stopped() -> None:
+    """A finished job's number must not keep growing after the last poll."""
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="over", bridge=ImportBridge(), phase=ImportPhase.done)
+    # Started five minutes ago, stopped seven seconds in: a reader that ignored
+    # ``ended_monotonic`` and used the live clock would answer 300, not 7.
+    job.started_monotonic = time.monotonic() - 300.0
+    job.ended_monotonic = job.started_monotonic + 7.0
+    reg._job = job
+
+    assert reg.state("over").elapsed_seconds == 7
+
+
+def test_finished_job_stops_its_clock() -> None:
+    """``phase=done`` latches the clock, so elapsed measures the RUN, not the wait."""
+    reg = ImportJobRegistry(runner=FakeImportRunner(applied=[_applied_outcome(0)]))
+    job_id = reg.start("/music/incoming")
+    _poll(lambda: reg.state(job_id).phase, lambda p: p is ImportPhase.done)
+
+    job = reg.get(job_id)
+    assert job is not None
+    assert job.ended_monotonic is not None  # stop_clock ran on the done transition
+    # Backdate the START only: the frozen end must carry the whole difference.
+    job.started_monotonic = job.ended_monotonic - 42.0
+    assert reg.state(job_id).elapsed_seconds == 42
+
+
+def test_failed_job_stops_its_clock() -> None:
+    """The failure path latches too — a failed import's number must not run on."""
+    reg = ImportJobRegistry(runner=FakeImportRunner(fail_with="beets blew up"))
+    job_id = reg.start("/music/incoming")
+    _poll(lambda: reg.state(job_id).phase, lambda p: p is ImportPhase.failed)
+
+    job = reg.get(job_id)
+    assert job is not None
+    assert job.ended_monotonic is not None
+    job.started_monotonic = job.ended_monotonic - 13.0
+    assert reg.state(job_id).elapsed_seconds == 13
+
+
+def test_stop_clock_latches_on_the_first_terminal_transition() -> None:
+    """done-then-failed must not extend a number already shown to the client."""
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    job = ImportJob(id="latch", bridge=ImportBridge())
+    job.stop_clock()
+    first = job.ended_monotonic
+    time.sleep(0.01)
+    job.stop_clock()
+
+    assert job.ended_monotonic == first
+
+
+# ----- awaiting_decision: "blocked on a person" is not the same as a set-aside row -----
+
+
+def _park_on_a_worker_thread(bridge: "ImportBridge", parked: ParkedAlbum) -> None:
+    """Park ``parked`` from a worker thread, which then BLOCKS in ``park()``.
+
+    Models the real worker without beets: the thread stays inside ``reply.get()``
+    until a choice is pushed, so a test can observe the blocked state instead of
+    racing a fake runner that finishes the job microseconds later.
+    """
+    threading.Thread(target=lambda: bridge.park(parked), daemon=True).start()
+
+
+def test_awaiting_decision_is_true_while_an_album_is_parked() -> None:
+    """The positive case: an attended park really is blocked on a person."""
+    fake = FakeImportRunner(parked=[_parked(0, Recommendation.medium)])
+    reg = ImportJobRegistry(runner=fake)
+    job_id = reg.start("/music/incoming")
+
+    _poll(lambda: reg.state(job_id).awaiting_decision, lambda v: v is True)
+    assert reg.state(job_id).albums[0].status is ImportAlbumStatus.needs_review
+
+    reg.record_choice(job_id, 0, ImportChoice(action=ImportAction.apply))
+    _poll(lambda: reg.state(job_id).phase, lambda p: p is ImportPhase.done)
+    assert reg.state(job_id).awaiting_decision is False
+
+
+def test_awaiting_decision_is_false_for_an_unattended_duplicate() -> None:
+    """An unattended duplicate leaves a needs_dup_resolution row and NOBODY waiting.
+
+    ``resolve_duplicate`` emits the outcome and SKIPs WITHOUT parking, so the
+    worker keeps scanning the rest of the folder. Inferring "blocked" from the row
+    status (what the page did before this field existed) wedges the whole run:
+    spinner gone, poll backed off, for a decision nobody will ever be asked for.
+    Phase is asserted ACTIVE so the answer cannot be coming from the terminal gate.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="dup-unattended", bridge=ImportBridge(), phase=ImportPhase.reviewing)
+    reg._job = job  # white-box: install the job in the single slot for state()
+    job.bridge.note_outcome(_applied_outcome(0))
+    job.bridge.note_outcome(
+        AlbumOutcome(
+            album_index=0,
+            folder="/music/incoming/album0",
+            artist="Radiohead",
+            album="OK Computer",
+            recommendation=Recommendation.strong,
+            confidence=0.0,
+            status=AlbumOutcomeStatus.needs_dup_resolution,
+        )
+    )
+
+    state = reg.state("dup-unattended")
+    assert state.albums[0].status is ImportAlbumStatus.needs_dup_resolution  # the misleading row
+    assert state.phase is ImportPhase.reviewing  # still running: not the terminal gate answering
+    assert state.awaiting_decision is False  # ...and nothing is blocked
+    assert job.bridge.pending_count() == 0  # the worker never entered park_duplicate
+
+
+def test_awaiting_decision_is_false_during_a_search_relookup() -> None:
+    """A ``search`` keeps its row at needs_review while beets re-looks it up.
+
+    ``record_choice`` deliberately does NOT mark a search decided (marking it would
+    transiently miscount it as skipped), so the row status still reads "parked"
+    during a multi-minute MusicBrainz lookup. The flag must flip the moment the
+    worker is unblocked, and flip back when beets re-parks the album.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="relookup", bridge=ImportBridge(), phase=ImportPhase.reviewing)
+    reg._job = job
+    job.bridge.note_outcome(_needs_review_outcome(0))
+    _park_on_a_worker_thread(job.bridge, _parked(0, Recommendation.medium))
+    _poll(lambda: reg.state("relookup").awaiting_decision, lambda v: v is True)
+
+    reg.record_choice(
+        "relookup",
+        0,
+        ImportChoice(action=ImportAction.search, search=ImportSearch(release_id="rel-1")),
+    )
+
+    state = reg.state("relookup")
+    assert state.albums[0].status is ImportAlbumStatus.needs_review  # NOT decided, by design
+    assert state.phase is ImportPhase.reviewing  # still active: not the terminal gate answering
+    assert state.awaiting_decision is False  # beets is working, not the operator
+
+    # ...and the re-park puts the operator back in the loop.
+    _park_on_a_worker_thread(job.bridge, _parked(0, Recommendation.medium))
+    _poll(lambda: reg.state("relookup").awaiting_decision, lambda v: v is True)
+    reg.record_choice("relookup", 0, ImportChoice(action=ImportAction.skip))  # release the thread
+
+
+def test_awaiting_decision_covers_a_parked_duplicate_prompt() -> None:
+    """An ATTENDED duplicate does park — the flag must not be candidate-only."""
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+    from app.models.import_models import DuplicateAction, DuplicateDecision
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="dup-parked", bridge=ImportBridge(), phase=ImportPhase.reviewing)
+    reg._job = job
+    job.bridge.note_outcome(_applied_outcome(0))
+    prompt = _dup_prompt(0)
+    threading.Thread(target=lambda: job.bridge.park_duplicate(prompt), daemon=True).start()
+    _poll(lambda: reg.state("dup-parked").awaiting_decision, lambda v: v is True)
+
+    reg.record_duplicate_decision(
+        "dup-parked", 0, DuplicateDecision(action=DuplicateAction.keep_both)
+    )
+
+    state = reg.state("dup-parked")
+    assert state.phase is ImportPhase.reviewing  # still active
+    assert state.awaiting_decision is False
+
+
+def test_awaiting_decision_survives_a_park_buffered_before_its_row() -> None:
+    """A park popped before its feed row exists still blocks the worker.
+
+    The buffer branch has no row to hang the payload on, so a row-derived answer
+    would report "not waiting" while the worker sits in ``park()`` forever.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    bridge = ImportBridge()
+    reg = ImportJobRegistry()
+    job = ImportJob(id="buffered", bridge=bridge, phase=ImportPhase.reviewing)
+    reg._job = job
+
+    bridge._out.put(_parked(0, Recommendation.medium))  # reaches the channel with no outcome yet
+    state = reg.state("buffered")
+
+    assert job.albums == {}  # no row exists
+    assert 0 in job.pending_parked  # buffered, not discarded
+    assert state.awaiting_decision is True
+
+
+def test_awaiting_decision_is_false_on_a_job_that_died_while_parked() -> None:
+    """A failed run has no worker left to be blocked.
+
+    ``_on_error`` sets ``failed`` without touching row status, so a crash during a
+    park leaves a parked row behind. Nobody is waiting for the operator then.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    bridge = ImportBridge()
+    reg = ImportJobRegistry()
+    job = ImportJob(id="died", bridge=bridge, phase=ImportPhase.reviewing)
+    reg._job = job
+    bridge.note_outcome(_needs_review_outcome(0))
+    bridge._out.put(_parked(0, Recommendation.medium))
+    assert reg.state("died").awaiting_decision is True  # control: True while it ran
+
+    job.phase = ImportPhase.failed
+    job.error = "beets blew up"
+
+    assert job.parked_awaiting == {0}  # the row is still parked...
+    assert reg.state("died").awaiting_decision is False  # ...but the worker is gone

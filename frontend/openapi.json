@@ -4137,7 +4137,7 @@
           "import"
         ],
         "summary": "Pause Import",
-        "description": "Ask the active sweep to stop at its next album boundary.\n\nThe session aborts via beets' native clean abort at its next decision\nhook: the current album finishes its decision point, the session unwinds,\nthe job ends ``phase=done`` with a summary noting the pause, and the\nimport slot frees. Resume = start a new sweep of the same root (beets'\nincremental history skips everything already done or banked). 404 for an\nunknown job; 409 when the job is not a sweep or is no longer active;\nrepeating a pause on a still-active sweep is idempotent (204).",
+        "description": "Ask the active sweep to stop at its next album boundary.\n\nThe session aborts via beets' native clean abort at its next decision\nhook: the current album finishes its decision point, the session unwinds,\nthe job ends ``phase=done`` with ``sweep.paused`` set, and the\nimport slot frees. Resume = start a new sweep of the same root (beets'\nincremental history skips everything already done or banked). 404 for an\nunknown job; 409 when the job is not a sweep or is no longer active;\nrepeating a pause on a still-active sweep is idempotent (204).",
         "operationId": "pause_import_api_import__job_id__pause_post",
         "parameters": [
           {
@@ -13168,17 +13168,6 @@
             "type": "array",
             "title": "Albums"
           },
-          "summary": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Summary"
-          },
           "error": {
             "anyOf": [
               {
@@ -13214,6 +13203,16 @@
                 "type": "null"
               }
             ]
+          },
+          "elapsed_seconds": {
+            "type": "integer",
+            "title": "Elapsed Seconds",
+            "description": "Whole seconds this job has been running, frozen once the phase is done or failed."
+          },
+          "awaiting_decision": {
+            "type": "boolean",
+            "title": "Awaiting Decision",
+            "description": "True while the worker is blocked on a parked album awaiting a decision."
           }
         },
         "type": "object",
@@ -13222,9 +13221,10 @@
           "phase",
           "progress",
           "albums",
-          "summary",
           "error",
-          "set_aside"
+          "set_aside",
+          "elapsed_seconds",
+          "awaiting_decision"
         ],
         "title": "ImportJobState",
         "description": "Response of ``GET /api/import/{job}``: phase + progress + the live feed."

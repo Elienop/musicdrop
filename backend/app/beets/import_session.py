@@ -172,7 +172,14 @@ class ImportBridge:
         self._out.put(parked)
         choice = reply.get()  # blocks the worker thread
         with self._lock:
-            self._replies.pop(parked.album_index, None)
+            # Release this slot by IDENTITY, not by key. A `search` re-parks the
+            # SAME index, and the re-park registers its own slot before queueing
+            # it - which it can do in the window between this worker waking and
+            # reaching this line. A pop by key alone deletes the re-park's live
+            # slot, so its push_choice raises KeyError and its worker never
+            # unblocks. Reproduced by the gated tests in test_import_session.
+            if self._replies.get(parked.album_index) is reply:
+                del self._replies[parked.album_index]
             self._pending -= 1
         return choice
 
@@ -189,7 +196,9 @@ class ImportBridge:
         self._dup_out.put(prompt)
         decision = reply.get()  # blocks the worker thread
         with self._lock:
-            self._dup_replies.pop(prompt.album_index, None)
+            # By identity, for the reason spelled out in park().
+            if self._dup_replies.get(prompt.album_index) is reply:
+                del self._dup_replies[prompt.album_index]
             self._pending -= 1
         return decision
 

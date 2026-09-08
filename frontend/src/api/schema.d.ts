@@ -910,7 +910,7 @@ export interface paths {
          *
          *     The session aborts via beets' native clean abort at its next decision
          *     hook: the current album finishes its decision point, the session unwinds,
-         *     the job ends ``phase=done`` with a summary noting the pause, and the
+         *     the job ends ``phase=done`` with ``sweep.paused`` set, and the
          *     import slot frees. Resume = start a new sweep of the same root (beets'
          *     incremental history skips everything already done or banked). 404 for an
          *     unknown job; 409 when the job is not a sweep or is no longer active;
@@ -3512,8 +3512,6 @@ export interface components {
             progress: components["schemas"]["ImportProgress"];
             /** Albums */
             albums: components["schemas"]["ImportAlbumSummary"][];
-            /** Summary */
-            summary: string | null;
             /** Error */
             error: string | null;
             /**
@@ -3525,6 +3523,16 @@ export interface components {
             /** Set Aside */
             set_aside: number;
             sweep?: components["schemas"]["SweepStatus"] | null;
+            /**
+             * Elapsed Seconds
+             * @description Whole seconds this job has been running, frozen once the phase is done or failed.
+             */
+            elapsed_seconds: number;
+            /**
+             * Awaiting Decision
+             * @description True while the worker is blocked on a parked album awaiting a decision.
+             */
+            awaiting_decision: boolean;
         };
         /**
          * ImportOptions

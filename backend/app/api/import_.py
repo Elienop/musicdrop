@@ -391,7 +391,7 @@ async def pause_import(
 
     The session aborts via beets' native clean abort at its next decision
     hook: the current album finishes its decision point, the session unwinds,
-    the job ends ``phase=done`` with a summary noting the pause, and the
+    the job ends ``phase=done`` with ``sweep.paused`` set, and the
     import slot frees. Resume = start a new sweep of the same root (beets'
     incremental history skips everything already done or banked). 404 for an
     unknown job; 409 when the job is not a sweep or is no longer active;

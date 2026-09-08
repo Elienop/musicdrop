@@ -1796,6 +1796,40 @@ the condition it names has changed.
   data; it is stated in `trash_manage._restore_to_origin`'s docstring, which also says why
   widening `origin_occupied` to name the broken link is a contract change.
 
+- **`awaiting_decision` can read true while beets works, and then STICKS**
+  (2026-09-08, import-feedback slice; blast radius corrected 2026-09-08). `park()` registers
+  its reply queue before queueing the park, so a choice accepted for a park that is registered
+  but not yet drained discards nothing and the next drain adds the index anyway. The window is
+  a few preemptible instructions (the lock is released, then the park is queued), not a
+  bounded sub-microsecond one, and it needs a double submit inside it. Both discards
+  (`record_choice`, `record_duplicate_decision`) are index-scoped and that index is already
+  answered, so the ordinary paths clear nothing — `get_parked` is a bare pop with no liveness
+  check, and a rejected retry discards nothing because `record_choice` discards after
+  `push_choice`. One path does clear it: a `search` re-parks the same index, and answering that
+  park succeeds and empties the set. Otherwise the flag holds to the terminal transition, and
+  the run polls at 10 s instead of 1 s with no spinner. The spoken elapsed clause is NOT lost —
+  a non-`search` choice sets the row `decided` and `needs_review` counts only that literal
+  status, so nothing names the wait and the clause is still spoken. Closing it means a blocked
+  flag on the bridge — a concurrency-boundary change with its own design. Stated at
+  `registry.ImportJob.parked_awaiting`.
+
+- **The plain-space middot survives outside the import page** (2026-09-08). `ReviewPage.tsx:208`
+  builds the confidence + recommendation string as one plain-space `%` · `label`, so a wrap can
+  strand a dangling "·" there. `CandidateReview.tsx:142` is a different shape: a bare flex item
+  in a container with no `flex-wrap`, so no wrap can strand it — its defect is the 360px squeeze
+  recorded below. `SEGMENT_SEP` is import-page-local by design; its docstring says so.
+
+- **The import status line is the same recipe three times** (2026-09-08). `ImportPage.tsx`
+  builds a spinner + wrapping text line for the live feed, for the sweep and for the resume
+  banner, which is why the alignment fix needed a pass per copy. All three carry `items-start`
+  today; the shape is simply not extracted.
+
+- **`CandidateReview`'s metadata line collapses at 360px** (2026-09-08, measured). The row is
+  a nowrap flex whose anonymous "· Medium match" item is squeezed to three lines; `items-center`
+  then parks the %, the separator and the "view" link on the middle line. Not the alignment
+  defect fixed on the status lines — `items-start` alone would not fix it, so it needs a
+  wrap/shrink decision.
+
 - **Wire-safety net coverage caveats** (by design, recorded so nobody assumes otherwise):
   SSE `/api/events` bypasses the response class (scopes are tag-derived today, never paths);
   any future route-level `response_class=` or hand-built `JSONResponse` bypasses both halves

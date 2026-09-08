@@ -6,12 +6,13 @@ so the registry drains chunk-1's ImportBridge — every per-album outcome
 (non-blocking ``drain_outcomes``) plus the at-most-one parked album
 (``get_parked(timeout=0)``) — into a live feed, and delivers the user's choice
 for the parked album to the worker. Thread-safe: the worker thread mutates
-phase/summary via callbacks while API threads read state and push the choice.
+phase via callbacks while API threads read state and push the choice.
 """
 
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,7 +54,7 @@ _SET_ASIDE_STATUSES = {
     ImportAlbumStatus.needs_review,
     ImportAlbumStatus.needs_dup_resolution,
 }
-# Decisions that count as "imported" in the truthful summary.
+# Decisions that count as "imported" in the truthful counts.
 _APPLY_ACTIONS = {ImportAction.apply, ImportAction.asis, ImportAction.astracks}
 # Duplicate decisions that count as "imported" (skip_new is the only skip).
 _DUP_IMPORTED_ACTIONS = {
@@ -95,7 +96,6 @@ class ImportJob:
     bridge: ImportBridge
     phase: ImportPhase = ImportPhase.scanning
     albums: dict[int, _FeedAlbum] = field(default_factory=dict)
-    summary: str | None = None
     error: str | None = None
     # Where this import came from: "manual" (the web Start flow) or "inbox" (the
     # unattended acquisition seam). Surfaced on the job state + the active probe.
@@ -117,6 +117,53 @@ class ImportJob:
     # forever and the row 404s, wedging the single import slot.
     pending_parked: dict[int, ParkedAlbum] = field(default_factory=dict)
     pending_duplicate: dict[int, DuplicatePrompt] = field(default_factory=dict)
+    # Album indices the worker is BLOCKED on, behind ImportJobState.awaiting_decision.
+    # Maintained consumer-side (added when a drain pops a park off the bridge,
+    # discarded when the choice/decision is pushed) rather than read from the
+    # bridge's ``pending_count``: that counter is decremented by the WORKER after
+    # ``reply.get()`` returns, so a poll fired straight after a choice can still
+    # see the old value and read a working import as blocked. Both edges here run
+    # under ``self._lock`` on the API thread — but NOT ordered against the
+    # worker: ``park()`` registers its reply queue before putting the park on
+    # the queue, so a choice accepted for a park that is registered but not yet
+    # drained discards nothing, and the next drain then adds the index for a
+    # worker that is already running. ``awaiting_decision`` then reads true
+    # while beets works. The window is a few preemptible instructions —
+    # ``park()`` releases the lock, then queues — and it needs a double submit
+    # inside it. Both discards are index-scoped and that index is already
+    # answered, so the ordinary paths clear nothing (``get_parked`` is a bare pop
+    # with no liveness check). One path does clear it: if the same index parks
+    # again and is answered again, ``push_choice`` finds the new reply queue and
+    # the discard below empties the set — reachable only after a ``search``, which
+    # is the one action that re-parks in place. Otherwise it holds to the terminal
+    # transition, and the rest of the run polls at 10 s with no spinner. The
+    # spoken elapsed clause survives: a non-``search`` choice sets the row
+    # ``decided``, ``needs_review`` counts only that literal status, so the
+    # announcer's named-wait test is false and the clause is still spoken (it
+    # drops only while the row is still ``needs_review`` — a ``search`` retry).
+    # Recorded in BACKLOG.md.
+    parked_awaiting: set[int] = field(default_factory=set)
+    # The elapsed clock behind ImportJobState.elapsed_seconds. MONOTONIC, not
+    # wall time: an NTP step on the server (or a DST change) must not make a
+    # running import's number jump or go backwards. ``ended`` latches at the
+    # first terminal transition so a finished job's number stops growing;
+    # None while the job is still running.
+    started_monotonic: float = field(default_factory=time.monotonic)
+    ended_monotonic: float | None = None
+
+    def stop_clock(self) -> None:
+        """Freeze the elapsed clock at the FIRST terminal transition.
+
+        Latched: done-then-failed (an on_error arriving after on_finish) must
+        not extend a number the client has already been shown.
+        """
+        if self.ended_monotonic is None:
+            self.ended_monotonic = time.monotonic()
+
+    def elapsed_seconds(self) -> int:
+        """Whole seconds since start — live while running, frozen once stopped."""
+        end = time.monotonic() if self.ended_monotonic is None else self.ended_monotonic
+        return int(end - self.started_monotonic)
 
 
 class LibraryRefusedError(RuntimeError):
@@ -311,8 +358,8 @@ class ImportJobRegistry:
                 and self._job.phase != ImportPhase.failed
             ):
                 self._drain_locked(self._job)
+                self._job.stop_clock()
                 self._job.phase = ImportPhase.done
-                self._job.summary = self._summarize(self._job)
                 finished = True
         # Emit OUTSIDE the lock: a finished import (manual / inbox / bank-apply
         # all route through here) tells every open tab to refetch. publish is
@@ -324,6 +371,7 @@ class ImportJobRegistry:
         matched = False
         with self._lock:
             if self._job is not None and self._job.id == job_id:
+                self._job.stop_clock()
                 self._job.phase = ImportPhase.failed
                 self._job.error = message
                 matched = True
@@ -371,8 +419,9 @@ class ImportJobRegistry:
         (``terminal=False``) an apply-like row not yet carrying its id is the
         NORMAL move-stage state, so count it optimistically as applied and skip
         the premature veto — otherwise the applied bucket transiently reads 0.
-        The default (``terminal=True``) preserves _summarize's post-finish
-        behavior, where asserting did-not-land is correct."""
+        The default (``terminal=True``) is state()'s post-finish reading, taken
+        once _drain_locked has flushed every follow-up id — the point at which
+        asserting did-not-land is correct."""
         if row.duplicate_action is not None:
             decided = row.duplicate_action in _DUP_IMPORTED_ACTIONS
         else:
@@ -394,38 +443,6 @@ class ImportJobRegistry:
         return row.status is ImportAlbumStatus.skipped or (
             row.status is ImportAlbumStatus.decided and row.decided_action not in _APPLY_ACTIONS
         )
-
-    @staticmethod
-    def _summarize(job: ImportJob) -> str:
-        if job.sweep is not None:
-            sweep = job.sweep
-            summary = (
-                f"swept {sweep.processed}, auto-applied {sweep.auto_applied}, banked {sweep.banked}"
-            )
-            if sweep.skipped_known:
-                summary += f", skipped {sweep.skipped_known} already imported"
-            if sweep.paused:
-                summary += " - paused"
-            return summary
-        astracks = job.directive_astracks
-        imported = sum(
-            1
-            for a in job.albums.values()
-            if ImportJobRegistry._is_imported(a, astracks_directive=astracks)
-        )
-        skipped = sum(1 for a in job.albums.values() if ImportJobRegistry._is_skipped(a))
-        # Safe to assert here: _summarize runs only from _on_finish, AFTER
-        # _drain_locked flushed every follow-up id, so a landing-less row is
-        # genuinely one the session never task.add'd (not an id trailing a poll).
-        not_landed = sum(
-            1
-            for a in job.albums.values()
-            if ImportJobRegistry._did_not_land(a, astracks_directive=astracks)
-        )
-        summary = f"{imported} imported, {skipped} skipped"
-        if not_landed > 0:
-            summary += f", {not_landed} did not land"
-        return summary
 
     # ----- access -----
 
@@ -527,6 +544,9 @@ class ImportJobRegistry:
             parked = job.bridge.get_parked(timeout=0)
             if parked is None:
                 break
+            # Popping it off the bridge IS the proof the worker is blocked on it —
+            # true in both branches below (a buffered park blocks just as hard).
+            job.parked_awaiting.add(parked.album_index)
             row = job.albums.get(parked.album_index)
             if row is not None:
                 row.parked = parked
@@ -549,6 +569,7 @@ class ImportJobRegistry:
             prompt = job.bridge.get_parked_duplicate(timeout=0)
             if prompt is None:
                 break
+            job.parked_awaiting.add(prompt.album_index)  # same proof as the candidate loop
             row = job.albums.get(prompt.album_index)
             if row is not None:
                 row.duplicate = prompt
@@ -664,6 +685,13 @@ class ImportJobRegistry:
         job = self._require(job_id)
         with self._lock:
             job.bridge.push_choice(index, choice)  # non-blocking; KeyError/RuntimeError bubble
+            # The worker is unblocked from HERE, whatever the action was. A
+            # `search` re-lookup keeps its row needs_review while beets works
+            # (below), so this discard is the only thing that stops the page
+            # reading a working re-lookup as parked; the re-park re-adds the
+            # index on the next drain. After the push, so a rejected choice
+            # (KeyError/RuntimeError) leaves the index in place.
+            job.parked_awaiting.discard(index)
             row = job.albums.get(index)
             # A `search` is a re-lookup request, not a decision: the worker
             # re-parks the album in place, so leave the row needs_review. Marking
@@ -696,6 +724,7 @@ class ImportJobRegistry:
         job = self._require(job_id)
         with self._lock:
             job.bridge.push_duplicate_decision(index, decision)
+            job.parked_awaiting.discard(index)  # unblocked; mirrors record_choice
             row = job.albums.get(index)
             if row is not None:
                 row.status = ImportAlbumStatus.decided
@@ -761,11 +790,15 @@ class ImportJobRegistry:
                     not_landed=not_landed,
                 ),
                 albums=self._summaries(job),
-                summary=job.summary,
                 error=job.error,
                 origin=job.origin,
                 set_aside=set_aside,
                 sweep=job.sweep.model_copy() if job.sweep is not None else None,
+                elapsed_seconds=job.elapsed_seconds(),
+                # A terminal job has no live worker to be blocked: _on_error sets
+                # `failed` without touching row status, so a run that dies while
+                # an album is parked leaves the set populated and nobody waiting.
+                awaiting_decision=job.phase in _ACTIVE_PHASES and bool(job.parked_awaiting),
             )
 
     def active_status(self) -> ActiveImportStatus:

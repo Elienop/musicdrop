@@ -6,7 +6,10 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { ImportJobState } from "@/api/useImport";
+import type { AppIcon } from "@/components/icons";
+import { Pause, Success } from "@/components/icons";
 import { ImportPage } from "@/pages/import/ImportPage";
+import { ELAPSED_AFTER_S } from "@/pages/import/importStatus";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
 
@@ -47,10 +50,15 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
         did_not_land: false,
       },
     ],
-    summary: null,
     error: null,
     origin: "manual",
     set_aside: 0,
+    elapsed_seconds: 0,
+    // Default: the worker is NOT blocked — the row above is set aside, which
+    // is not the same thing (an unattended duplicate and a `search` re-lookup
+    // both wear one while beets works). A test that means "parked on a person"
+    // says `awaiting_decision: true`.
+    awaiting_decision: false,
     ...overrides,
   };
 }
@@ -63,10 +71,12 @@ function sweepJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
     phase: "scanning",
     progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
     albums: [],
-    summary: null,
     error: null,
     origin: "sweep",
     set_aside: 0,
+    elapsed_seconds: 0,
+    // A sweep is unattended by definition — it never blocks on a person.
+    awaiting_decision: false,
     sweep: {
       processed: 0,
       auto_applied: 0,
@@ -82,6 +92,35 @@ function sweepJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
 /** Render at a given URL so `useSearchParams` (the `?job=` seam) resolves. */
 function renderAt(route: string) {
   return renderWithProviders(<ImportPage />, { route, path: "/import" });
+}
+
+/** The spinner belonging to a status line. It is ALWAYS mounted — its box is
+ * reserved so the line can't jump sideways on every park — so tests read its
+ * classes (`animate-spin` vs `invisible`), never its presence. */
+function spinnerOf(line: HTMLElement): Element {
+  const spinner = line.closest("p")?.querySelector("svg");
+  if (!spinner) throw new Error("the status line has no spinner box");
+  return spinner;
+}
+
+/** The `<p>` a status-line fragment sits in. The elapsed value is TWO nodes —
+ * an aria-hidden `· 2m 12s` and its `sr-only` spoken twin, because a screen
+ * reader reads "12m" as a letter — so no single element holds the whole line's
+ * text any more. */
+function lineOf(fragment: HTMLElement): HTMLElement {
+  const line = fragment.closest("p");
+  if (!line) throw new Error("the fragment is not inside a status line");
+  return line;
+}
+
+/** The `d` of an icon concept's glyph. Phosphor renders no name attribute, so
+ * the only way to assert WHICH icon a panel wears is to compare its path
+ * against the concept module's own render. */
+function pathOf(Icon: AppIcon): string {
+  const { container, unmount } = render(<Icon aria-hidden="true" />);
+  const d = container.querySelector("path")?.getAttribute("d") ?? "";
+  unmount();
+  return d;
 }
 
 /** Renders the AlbumOrigin router state an outgoing feed link arrives with. */
@@ -572,6 +611,201 @@ describe("ImportPage — live feed", () => {
     expect(await screen.findByText(/scanning your folder/i)).toBeInTheDocument();
   });
 
+  test("a short scan's cue carries no elapsed value at all", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "scanning",
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+            albums: [],
+            elapsed_seconds: ELAPSED_AFTER_S - 1,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    // Exactly today's line — a fast import must gain no extra text.
+    expect(
+      await screen.findByText("Scanning your folder…"),
+    ).toBeInTheDocument();
+  });
+
+  test("a long scan's cue carries the elapsed value", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "scanning",
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+            albums: [],
+            elapsed_seconds: 132,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    // The whole point: a ten-minute MusicBrainz lookup must not look wedged.
+    // Two units, so the line moves on every poll rather than once a minute — a
+    // frozen line is the very thing being ruled out. (Per poll, not per second:
+    // a run blocked on a person backs off to a 10 s poll.)
+    const segment = await screen.findByText("· 2m 12s");
+    expect(lineOf(segment)).toHaveTextContent("Scanning your folder…");
+    // The middot's trailing space is non-breaking, so a wrap can never strand
+    // it at the end of a line. (RTL normalizes it away, hence the raw read.)
+    expect(segment.textContent).toContain("·\u00a0");
+    expect(segment.textContent).toContain("2m\u00a012s");
+    // A screen reader reads "2m" as a letter, so the visible half is hidden and
+    // a spoken twin carries the words — opening with the full stop that stands
+    // in for the unspoken middot.
+    expect(segment).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByText(". 2 minutes.")).toHaveClass("sr-only");
+  });
+
+  // ELAPSED_AFTER_S is 30, not 60, precisely so this band renders at all. Both
+  // halves of the segment read the VISIBLE label's floor, and the component
+  // returns null when either half is null — so a spoken twin left on
+  // `spokenElapsed`'s 60s default deletes the visible number too, for every run
+  // between 30 and 59 seconds. Nothing else in the suite renders inside it.
+  test("a run in the 30-59s band renders both halves of the segment", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(makeJob({ elapsed_seconds: 45 })),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    const segment = await screen.findByText("· 45s");
+    expect(segment).toHaveAttribute("aria-hidden", "true");
+    expect(lineOf(segment)).toHaveTextContent("1 album imported");
+    expect(screen.getByText(". 45 seconds.")).toHaveClass("sr-only");
+  });
+
+  test("the cue keeps working after a decision, while the worker scans on", async () => {
+    // `phase` latches to "reviewing" at the first parked album and never
+    // returns to "scanning", so this run — album 1 decided, nothing parked,
+    // the worker looking up album 2 — used to sit with no spinner and a frozen
+    // count for as long as the lookup took.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "reviewing",
+            progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0 },
+            albums: [
+              {
+                index: 0,
+                folder: "/music/incoming/Radiohead - OK Computer",
+                artist: "Radiohead",
+                album: "OK Computer",
+                recommendation: "strong",
+                confidence: 99,
+                status: "applied",
+                album_id: 41,
+                did_not_land: false,
+              },
+            ],
+            elapsed_seconds: 300,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    const segment = await screen.findByText("· 5m");
+    const line = lineOf(segment);
+    expect(line).toHaveTextContent("1 album imported");
+    expect(spinnerOf(line)).toHaveClass("animate-spin");
+  });
+
+  test("a run parked on the operator keeps its elapsed value", async () => {
+    // The number counts the WHOLE run, from the start — it is not a "time since
+    // last progress" gauge, so hiding it here would make it vanish and come
+    // back later carrying the operator's own thinking time (the owner's ruling).
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({ elapsed_seconds: 600, awaiting_decision: true }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    const segment = await screen.findByText("· 10m");
+    const line = lineOf(segment);
+    expect(line).toHaveTextContent("1 album imported · 1 album needs review");
+    // Words for the screen reader, since "10m" is read as a letter.
+    expect(screen.getByText(". 10 minutes.")).toHaveClass("sr-only");
+    // Nobody is working, so no spinner — but its box stays, or the whole line
+    // would jump sideways on every park and unpark.
+    expect(spinnerOf(line)).toHaveClass("invisible");
+    expect(spinnerOf(line)).not.toHaveClass("animate-spin");
+  });
+
+  test("an empty feed never renders a count, blocked or not", async () => {
+    // `park()` buffers a park whose row doesn't exist yet, so the live state is
+    // phase=scanning, albums=[], awaiting_decision=true — nobody is "working",
+    // and gating this branch on that rendered "0 albums imported".
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "scanning",
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+            albums: [],
+            awaiting_decision: true,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Scanning your folder…")).toBeInTheDocument();
+    expect(screen.queryByText(/albums imported/)).not.toBeInTheDocument();
+  });
+
+  // B1/B2 on the visible side of the cadence tests: the two set-aside rows that
+  // do NOT block the worker. This is the owner's own slskd inbox path, and it
+  // used to sit spinner-less and elapsed-less for the rest of the run.
+  test.each(["needs_review", "needs_dup_resolution"] as const)(
+    "an unattended run with a set-aside row (%s) still looks alive",
+    async (status) => {
+      server.use(
+        http.get(JOB_URL, () =>
+          HttpResponse.json(
+            makeJob({
+              phase: "reviewing",
+              origin: "inbox",
+              progress: { applied: 1, needs_review: 0, skipped: 1, not_landed: 0 },
+              albums: [
+                {
+                  index: 0,
+                  folder: "/music/incoming/Kid A",
+                  artist: "Radiohead",
+                  album: "Kid A",
+                  recommendation: "medium",
+                  confidence: 76,
+                  status,
+                  album_id: null,
+                  did_not_land: false,
+                },
+              ],
+              elapsed_seconds: 132,
+              awaiting_decision: false,
+            }),
+          ),
+        ),
+      );
+      renderAt("/import?job=job-1");
+
+      const line = await screen.findByText(/1 album imported/);
+      expect(spinnerOf(line)).toHaveClass("animate-spin");
+      expect(line.textContent).toContain("2m\u00a012s");
+    },
+  );
+
   test("the live cue surfaces a skipped count when any album was skipped", async () => {
     server.use(
       http.get(JOB_URL, () =>
@@ -644,13 +878,57 @@ describe("ImportPage — live feed", () => {
 });
 
 describe("ImportPage — terminal states", () => {
+  // The number counts the whole run and is shown throughout, the finish line
+  // included (the owner's ruling) — a ten-minute import that ends by dropping
+  // its own duration answers nothing.
+  test("the finished panel keeps the run's elapsed value", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "done",
+            progress: { applied: 2, needs_review: 0, skipped: 1, not_landed: 0 },
+            albums: [],
+            elapsed_seconds: 840,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    const segment = await screen.findByText("· 14m");
+    expect(segment.closest("p")).toHaveTextContent(
+      "2 albums imported · 1 skipped",
+    );
+    expect(screen.getByText(". 14 minutes.")).toHaveClass("sr-only");
+  });
+
+  test("a short run's finished panel gains no extra text", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "done",
+            progress: { applied: 2, needs_review: 0, skipped: 1, not_landed: 0 },
+            albums: [],
+            elapsed_seconds: ELAPSED_AFTER_S - 1,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(
+      await screen.findByText("2 albums imported · 1 skipped"),
+    ).toBeInTheDocument();
+  });
+
   test("done links each applied album to its library page — no blanket view-in-library", async () => {
     server.use(
       http.get(JOB_URL, () =>
         HttpResponse.json(
           makeJob({
             phase: "done",
-            summary: "1 imported, 1 skipped",
             progress: { applied: 1, needs_review: 0, skipped: 1, not_landed: 0 },
             albums: [
               {
@@ -696,7 +974,7 @@ describe("ImportPage — terminal states", () => {
   test("a row that never landed shows a Didn't-land badge and the done body counts it", async () => {
     // A decided/applied row whose library album id never arrived on a terminal
     // job carries did_not_land; progress.not_landed mirrors the count. The row
-    // must flag the failure and the summary must own up to it.
+    // must flag the failure and the done body must own up to it.
     server.use(
       http.get(JOB_URL, () =>
         HttpResponse.json(
@@ -724,8 +1002,16 @@ describe("ImportPage — terminal states", () => {
 
     // The row badge names the failure (its own element, exact text).
     expect(await screen.findByText("Didn't land")).toBeInTheDocument();
-    // The finished body appends the count.
-    expect(screen.getByText(/1 didn't land/)).toBeInTheDocument();
+    // The finished body appends the count...
+    expect(
+      screen.getByText("0 albums imported · 0 skipped · 1 didn't land"),
+    ).toBeInTheDocument();
+    // ...and so does the one live region, which used to drop it — `not_landed`
+    // is computed for BOTH terminal phases, and only the failed announcement
+    // said it.
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Import complete. Imported 0, skipped 0. 1 didn't land.",
+    );
   });
 
   test("a decided row that landed shows the Imported badge, not Decided", async () => {
@@ -825,6 +1111,392 @@ describe("ImportPage — terminal states", () => {
     expect(startOver).toHaveAttribute("href", "/import");
     const another = screen.getByRole("link", { name: /import another folder/i });
     expect(another).toHaveAttribute("href", "/import");
+  });
+
+  test.each([
+    {
+      what: "a failed import",
+      title: "Import failed",
+      url: JOB_URL,
+      route: "/import?job=job-1",
+      body: () => makeJob({ phase: "failed", error: "lookup exploded", albums: [] }),
+    },
+    {
+      what: "a failed sweep",
+      title: "Sweep failed",
+      url: SWEEP_JOB_URL,
+      route: "/import?job=s1",
+      body: () => sweepJob({ phase: "failed", error: "disk full" }),
+    },
+  ])("$what wears the destructive chrome, not the finished panel's", async ({
+    title,
+    url,
+    route,
+    body,
+  }) => {
+    // The failed box used to be byte-identical to the finished one — same
+    // dashed neutral border, same muted icon — so the word "failed" in the
+    // title was the only thing carrying the outcome, next to earned counts.
+    server.use(http.get(url, () => HttpResponse.json(body())));
+    renderAt(route);
+
+    const panel = (await screen.findByText(title)).closest(
+      "[data-slot='empty-state']",
+    );
+    expect(panel).toHaveAttribute("data-tone", "destructive");
+    expect(panel).toHaveClass("border-destructive/40", "bg-destructive/5");
+    expect(panel).not.toHaveClass("border-dashed");
+    expect(panel?.querySelector("svg")).toHaveClass("text-destructive");
+    // The recovery is still a navigation, never ErrorState's mandatory Retry:
+    // a dead worker has nothing to re-run.
+    expect(
+      screen.queryByRole("button", { name: /retry/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("the finished panel keeps the neutral chrome the failed one gave up", async () => {
+    // The other half of the pair: if this ever went destructive too, the two
+    // outcomes would be one box again and the test above would still pass.
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(makeJob({ phase: "done" }))),
+    );
+    renderAt("/import?job=job-1");
+
+    const panel = (await screen.findByText("Import finished")).closest(
+      "[data-slot='empty-state']",
+    );
+    expect(panel).toHaveAttribute("data-tone", "neutral");
+    expect(panel).toHaveClass("border-dashed");
+    expect(panel).not.toHaveClass("bg-destructive/5");
+    expect(panel?.querySelector("svg")).toHaveClass("text-muted-foreground");
+  });
+
+  test("a failure carries how long the run lasted, on its own line", async () => {
+    // The clock stops at both terminal transitions: forty seconds versus forty
+    // minutes is a bad path versus a late crash. (Below ELAPSED_AFTER_S no
+    // duration renders at all, so a 3s failure is the untimed case.)
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "failed",
+            error: "lookup exploded",
+            albums: [],
+            elapsed_seconds: 2412,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    // `error` is the worker's raw `str(exc)`. The duration must NOT read as
+    // part of that sentence, and must not be able to open a wrapped line on a
+    // bare middot — so it is its own sentence on its own line, not a segment.
+    expect(await screen.findByText(/lookup exploded/)).toBeInTheDocument();
+    const duration = screen.getByText("Ran for 40m 12s.");
+    expect(duration).toHaveAttribute("aria-hidden", "true");
+    expect(duration.closest("span.block")).not.toBeNull();
+    // "40m 12s" is read as a letter; the spoken twin carries the words.
+    expect(screen.getByText("Ran for 40 minutes.")).toHaveClass("sr-only");
+  });
+
+  // The same band at the other helper. `elapsedSentence` pairs the two halves on
+  // the same floor and returns undefined when either is missing, so a twin left
+  // on the 60s default takes the whole visible line with it. ELAPSED_AFTER_S
+  // itself, so the floor is pinned at its own boundary (the sibling test above
+  // holds ELAPSED_AFTER_S - 1 down).
+  test("a failure in the 30-59s band keeps both halves of its duration line", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "failed",
+            error: "lookup exploded",
+            albums: [],
+            elapsed_seconds: ELAPSED_AFTER_S,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    const duration = await screen.findByText("Ran for 30s.");
+    expect(duration).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByText("Ran for 30 seconds.")).toHaveClass("sr-only");
+  });
+
+  test("a failed run reports the counts it earned, and its feed, read-only", async () => {
+    // A crash mid-apply is exactly when albums land or fail to land, so the
+    // server keeps reporting this job's counters and computes `not_landed`
+    // BECAUSE the job is terminal. The panel must not present a run that
+    // imported albums as though nothing happened.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "failed",
+            error: "lookup exploded",
+            elapsed_seconds: 2412,
+            progress: { applied: 200, needs_review: 1, skipped: 3, not_landed: 2 },
+            // makeJob's rows are applied + needs_review only, so the Resolve
+            // assertion below never reached its branch — it passed with
+            // `readOnly` deleted. A parked duplicate is what renders that link.
+            albums: [
+              ...makeJob().albums,
+              {
+                index: 2,
+                folder: "/music/incoming/Amnesiac",
+                artist: "Radiohead",
+                album: "Amnesiac",
+                recommendation: "medium",
+                confidence: 80,
+                status: "needs_dup_resolution",
+                album_id: null,
+                did_not_land: false,
+              },
+            ],
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    // Still unmistakably a failure...
+    expect(await screen.findByText("Import failed")).toBeInTheDocument();
+    expect(screen.getByText("lookup exploded")).toBeInTheDocument();
+    // ...that owns up to what it did, on its own line — not glued to the raw
+    // exception by the middot dialect.
+    const counts = screen.getByText(
+      "200 albums imported · 3 skipped · 2 didn't land",
+    );
+    expect(counts).toHaveClass("block");
+    expect(screen.getByText("Ran for 40m 12s.")).toBeInTheDocument();
+    // The feed rows survive the failure too — but read-only: the worker is
+    // gone, so a Review button here would open a decision nothing consumes.
+    // makeJob's second row is `needs_review`, which is exactly that button.
+    expect(screen.getByText("OK Computer")).toBeInTheDocument();
+    expect(screen.getByText("Kid A")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Review" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Resolve" })).not.toBeInTheDocument();
+    // Nothing was banked, so the CTA is still a fresh run.
+    expect(
+      screen.getByRole("link", { name: /import another folder/i }),
+    ).toHaveAttribute("href", "/import");
+  });
+
+  // The owner's unattended inbox path. `progress` does NOT partition the run: a
+  // needs_review row is refused by the server's _is_imported AND its _is_skipped
+  // and never landed, so it is in none of the three counters — and on a failed
+  // job its Review button is gone. The panel rendered five rows badged "Needs
+  // review" with no action and no explanation, and said "The import failed."
+  test("a failure that set albums aside owns them, in the panel and the announcement", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "failed",
+            error: "the session died",
+            origin: "inbox",
+            set_aside: 5,
+            progress: { applied: 2, needs_review: 5, skipped: 0, not_landed: 0 },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Import failed")).toBeInTheDocument();
+    expect(
+      screen.getByText("5 albums set aside, not imported."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "The import failed. Imported 2, skipped 0. 5 albums set aside.",
+    );
+  });
+
+  test("a run that set nothing aside gains no set-aside line", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "failed",
+            error: "the session died",
+            progress: { applied: 2, needs_review: 0, skipped: 1, not_landed: 0 },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Import failed")).toBeInTheDocument();
+    expect(screen.queryByText(/set aside/)).not.toBeInTheDocument();
+  });
+
+  // The gate was `applied + skipped + not_landed > 0`, so this run printed the
+  // two zeros the early-crash branch exists to avoid.
+  test("a failure that only lost albums opens on the loss, not on two zeros", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "failed",
+            error: "the session died",
+            albums: [],
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 5 },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Import failed")).toBeInTheDocument();
+    expect(screen.getByText("5 didn't land")).toBeInTheDocument();
+    expect(screen.queryByText(/albums imported/)).not.toBeInTheDocument();
+    // The announcer owed the same correction, in its own dialect.
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "The import failed. 5 didn't land.",
+    );
+  });
+
+  test("a run that died during the scan gains no count line", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "failed",
+            error: "lookup exploded",
+            albums: [],
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Import failed")).toBeInTheDocument();
+    // It landed, skipped and lost nothing — "0 albums imported · 0 skipped"
+    // would be noise, so the early-crash panel reads exactly as it did before.
+    expect(screen.queryByText(/albums imported/)).not.toBeInTheDocument();
+  });
+
+  // The feed pins a pending row to the top so its Review button stays in view.
+  // `readOnly` deletes that button, so on a failed job the pin only reorders the
+  // record of the run — it reads newest-first, like the done screen.
+  test("a read-only feed does not pin the pending row to the top", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "failed",
+            error: "the session died",
+            progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
+            // The PENDING row is the OLDER one here, so the pin and newest-first
+            // disagree — with both the same way round the test proves nothing.
+            albums: [
+              {
+                index: 0,
+                folder: "/music/incoming/Kid A",
+                artist: "Radiohead",
+                album: "Kid A",
+                recommendation: "medium",
+                confidence: 76,
+                status: "needs_review",
+                album_id: null,
+                did_not_land: false,
+              },
+              {
+                index: 1,
+                folder: "/music/incoming/Radiohead - OK Computer",
+                artist: "Radiohead",
+                album: "OK Computer",
+                recommendation: "strong",
+                confidence: 99,
+                status: "applied",
+                album_id: 41,
+                did_not_land: false,
+              },
+            ],
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    await screen.findByText("Import failed");
+    const titles = [...document.querySelectorAll("li")].map(
+      (li) => li.textContent ?? "",
+    );
+    expect(titles).toHaveLength(2);
+    expect(titles[0]).toContain("OK Computer");
+    expect(titles[1]).toContain("Kid A");
+  });
+
+  test("a failed sweep is still a sweep: its tiles, and the Review hand-off", async () => {
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({
+            phase: "failed",
+            error: "disk full",
+            elapsed_seconds: 2412,
+            sweep: {
+              processed: 200,
+              auto_applied: 150,
+              banked: 40,
+              skipped_known: 10,
+              current_folder: null,
+              paused: false,
+            },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    // Recognisable as a sweep, not as a generic "Import failed".
+    expect(await screen.findByText("Sweep failed")).toBeInTheDocument();
+    expect(screen.getByText("disk full")).toBeInTheDocument();
+    expect(screen.getByText("Ran for 40m 12s.")).toBeInTheDocument();
+    // Its counts are its tiles — the same four the finished panel shows, said
+    // once. A sweep's `progress` is all zeros, so a count SENTENCE would read
+    // "0 albums imported".
+    for (const [label, value] of [
+      ["Processed", "200"],
+      ["Imported", "150"],
+      ["Banked", "40"],
+      ["Already known", "10"],
+    ]) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+      expect(screen.getByText(value)).toBeInTheDocument();
+    }
+    expect(screen.queryByText(/albums imported/)).not.toBeInTheDocument();
+    // It banked 40 albums before it died — the hand-off to Review survives.
+    expect(
+      screen.getByRole("link", { name: /review banked albums/i }),
+    ).toHaveAttribute("href", "/review");
+    // And no Pause: there is nothing left to pause.
+    expect(
+      screen.queryByRole("button", { name: /pause sweep/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("a failed sweep that banked nothing offers a fresh run", async () => {
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({ phase: "failed", error: "disk full", elapsed_seconds: 2412 }),
+        ),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    expect(await screen.findByText("Sweep failed")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /import another folder/i }),
+    ).toHaveAttribute("href", "/import");
+    expect(
+      screen.queryByRole("link", { name: /review banked albums/i }),
+    ).not.toBeInTheDocument();
   });
 
   test("a transient job-fetch error shows a retry", async () => {
@@ -976,18 +1648,108 @@ describe("ImportPage — sweep & bank", () => {
     await waitFor(() => expect(paused).toBe(true));
   });
 
-  test("a finished sweep summarizes and links to Review; paused names the pause", async () => {
+  // The Pagination rule: a trigger that holds focus must not become `disabled`
+  // on its own click — the browser drops focus to <body> and the next Tab
+  // restarts at the top of the document. The Review page's Pause (the same
+  // mutation, the same state) already reads this way.
+  test("Pause keeps focus and swallows the re-click instead of disabling", async () => {
+    let paused = false;
+    let posts = 0;
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({
+            sweep: {
+              processed: 12,
+              auto_applied: 8,
+              banked: 4,
+              skipped_known: 2,
+              current_folder: "/library/Adele/21",
+              paused,
+            },
+          }),
+        ),
+      ),
+      http.post(SWEEP_PAUSE_URL, () => {
+        posts += 1;
+        paused = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt("/import?job=s1");
+
+    const button = await screen.findByRole("button", { name: /pause sweep/i });
+    await user.click(button);
+
+    // The label carries the state, and it is keyed on the SAME expression as
+    // the aria state — keyed on `sweep.paused` alone it still read "Pause
+    // sweep" for the whole in-flight window.
+    await waitFor(() => expect(button).toHaveTextContent("Pausing…"));
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    // THE oracle. Mutation-checked: restoring `disabled` alongside the aria
+    // attribute fails on this line and nothing else.
+    expect(button).not.toBeDisabled();
+    // Intent, not a second oracle — jsdom does not blur a focused element when
+    // it becomes disabled, so this assertion passes either way here. The focus
+    // itself was measured in Chromium (it dropped to <body> within 50ms).
+    expect(document.activeElement).toBe(button);
+
+    // ...and inert all the same.
+    await user.click(button);
+    expect(posts).toBe(1);
+  });
+
+  // A sweep returns before LiveFeed ever renders, so it carried the elapsed
+  // value and showed it nowhere — on the longest-running import there is.
+  test("a long sweep's status line carries the elapsed value", async () => {
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({
+            elapsed_seconds: 3700,
+            sweep: {
+              processed: 12,
+              auto_applied: 8,
+              banked: 4,
+              skipped_known: 2,
+              current_folder: "/library/Adele/21",
+              paused: false,
+            },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    const segment = await screen.findByText("· 1h 1m");
+    expect(segment.closest("p")).toHaveTextContent("Sweeping 21…");
+    expect(screen.getByText(". 1 hour 1 minute.")).toHaveClass("sr-only");
+  });
+
+  test("a short sweep's status line reads exactly as it did before", async () => {
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(sweepJob({ elapsed_seconds: ELAPSED_AFTER_S - 1 })),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    expect(await screen.findByText("Sweeping your folder…")).toBeInTheDocument();
+  });
+
+  test("a finished sweep states each count once — on the tiles, not twice", async () => {
     server.use(
       http.get(SWEEP_JOB_URL, () =>
         HttpResponse.json(
           sweepJob({
             phase: "done",
-            summary: "Swept 30 albums - paused",
+            elapsed_seconds: 840,
             sweep: {
               processed: 30,
               auto_applied: 20,
               banked: 10,
-              skipped_known: 0,
+              skipped_known: 1,
               current_folder: null,
               paused: true,
             },
@@ -1000,9 +1762,191 @@ describe("ImportPage — sweep & bank", () => {
     // Exact match: the sr-only announcer also says "Sweep paused. …" — the
     // default whole-text match singles out the visible EmptyState title.
     expect(await screen.findByText("Sweep paused")).toBeInTheDocument();
+    // The backend's sentence is gone from the panel...
+    expect(screen.queryByText(/swept 30/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/auto-applied/)).not.toBeInTheDocument();
+    // ...and every number it carried renders exactly once, on its tile.
+    for (const value of ["30", "20", "10", "1"]) {
+      expect(screen.getAllByText(value)).toHaveLength(1);
+    }
+    // What the tiles cannot say survives (the owner's ruling): how long it ran.
+    expect(screen.getByText("Ran for 14m.")).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
+    // "14m" is read as a letter; the spoken twin carries the words.
+    expect(screen.getByText("Ran for 14 minutes.")).toHaveClass("sr-only");
+    // ...and how to pick a paused sweep back up. That sentence lives on the
+    // RUNNING panel, gated on `!done` — so it vanished at the one moment it
+    // applies, leaving a paused-and-finished sweep with no resume instruction.
+    expect(
+      screen.getByText("Resume later by sweeping the same folder again."),
+    ).toBeInTheDocument();
+    // The pause itself is still said exactly once, in the title above.
+    const body = screen.getByText("Ran for 14m.").closest("p");
+    expect(body?.textContent).not.toContain("aused");
+    // A user-interrupted sweep is not a completion, so it must not wear the
+    // success check.
+    const glyph = screen
+      .getByText("Sweep paused")
+      .closest("[data-slot='empty-state']")
+      ?.querySelector("svg path");
+    expect(glyph?.getAttribute("d")).toBe(pathOf(Pause));
+    expect(glyph?.getAttribute("d")).not.toBe(pathOf(Success));
     expect(
       screen.getByRole("link", { name: /review banked albums/i }),
     ).toHaveAttribute("href", "/review");
+  });
+
+  test("a fast finished sweep with real counts renders no body line at all", async () => {
+    // Below ELAPSED_AFTER_S there is no duration sentence, and a sweep that did
+    // something needs no note — so EmptyState must receive `undefined`, not an
+    // empty node, or it paints an empty <p> and its gap under the title.
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({
+            phase: "done",
+            elapsed_seconds: ELAPSED_AFTER_S - 1,
+            sweep: {
+              processed: 3,
+              auto_applied: 3,
+              banked: 0,
+              skipped_known: 0,
+              current_folder: null,
+              paused: false,
+            },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    const panel = (await screen.findByText("Sweep finished")).closest(
+      "[data-slot='empty-state']",
+    );
+    expect(panel).not.toBeNull();
+    // The title paragraph, and nothing else — no empty body, no lone middot.
+    expect(panel?.querySelectorAll("p")).toHaveLength(1);
+    expect(panel?.textContent).not.toContain("·");
+  });
+
+  test("a sweep that found nothing says so instead of showing a bare title", async () => {
+    // Four zero tiles report that nothing happened without saying why, and the
+    // body was empty here because the run finished well under the threshold.
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({
+            phase: "done",
+            elapsed_seconds: ELAPSED_AFTER_S - 1,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    expect(await screen.findByText("Sweep finished")).toBeInTheDocument();
+    expect(
+      screen.getByText("No albums found in that folder."),
+    ).toBeInTheDocument();
+  });
+
+  test.each([
+    {
+      what: "banked 2 for review",
+      auto_applied: 3,
+      banked: 2,
+      skipped_known: 0,
+      cta: "Review banked albums",
+      href: "/review",
+    },
+    {
+      what: "imported 5 and banked none",
+      auto_applied: 5,
+      banked: 0,
+      skipped_known: 0,
+      cta: "See them in the library",
+      href: "/browse?sort=added",
+    },
+    {
+      what: "only re-skipped what it already had",
+      auto_applied: 0,
+      banked: 0,
+      skipped_known: 5,
+      cta: "Import another folder",
+      href: "/import",
+    },
+  ])(
+    "a finished sweep that $what offers $cta",
+    async ({ auto_applied, banked, skipped_known, cta, href }) => {
+      // With the counts moved to the tiles, this CTA is the only thing under
+      // the title, so it has to point at what the run actually produced: banked
+      // albums are decisions waiting; an auto-applied run has no feed of its
+      // own and nothing to review, so /import just repeated the shell chrome's
+      // "Start over" and left 150 fresh albums with no route to them.
+      server.use(
+        http.get(SWEEP_JOB_URL, () =>
+          HttpResponse.json(
+            sweepJob({
+              phase: "done",
+              sweep: {
+                processed: auto_applied + banked + skipped_known,
+                auto_applied,
+                banked,
+                skipped_known,
+                current_folder: null,
+                paused: false,
+              },
+            }),
+          ),
+        ),
+      );
+      renderAt("/import?job=s1");
+
+      const link = await screen.findByRole("link", { name: cta });
+      expect(link).toHaveAttribute("href", href);
+      // Exactly one action under the title — the other two branches must not
+      // also render.
+      for (const other of [
+        "Review banked albums",
+        "See them in the library",
+        "Import another folder",
+      ].filter((label) => label !== cta)) {
+        expect(
+          screen.queryByRole("link", { name: other }),
+        ).not.toBeInTheDocument();
+      }
+    },
+  );
+
+  test("a failed sweep that only auto-imported still points at the library", async () => {
+    // The crash did not move the albums, and the panel above this CTA already
+    // says 150 were imported — so "Import another folder" was a dead end.
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({
+            phase: "failed",
+            error: "disk full",
+            sweep: {
+              processed: 200,
+              auto_applied: 150,
+              banked: 0,
+              skipped_known: 0,
+              current_folder: null,
+              paused: false,
+            },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    const link = await screen.findByRole("link", {
+      name: "See them in the library",
+    });
+    expect(link).toHaveAttribute("href", "/browse?sort=added");
   });
 
   test("the resume banner names a running sweep", async () => {

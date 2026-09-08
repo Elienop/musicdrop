@@ -130,6 +130,14 @@ export function useStartImport() {
  * albums stream into the feed promptly; the loop stops at a terminal phase. */
 const IMPORT_POLL_MS = 1000;
 
+/** Poll cadence (ms) while the worker is blocked on a person
+ * (`awaiting_decision`). beets runs under `config["threaded"] = False`
+ * (backend/app/beets/import_session.py), so its pipeline is serial and the one
+ * worker thread sits in `reply.get()` — nothing but the server's elapsed clock
+ * can move until a decision is pushed. Both decision mutations invalidate this
+ * query, so a decision never waits for this interval. */
+const IMPORT_PARKED_POLL_MS = 10_000;
+
 /** Phases where the worker is still running — the feed is live and should poll.
  * `applying` is included defensively: beets exposes no signal to set it, so it
  * may never be observed, but if it is it's a transient working state, not
@@ -144,6 +152,24 @@ const ACTIVE_PHASES: ReadonlySet<ImportPhase> = new Set([
  * import run page to flag terminal states. */
 export function isTerminalPhase(phase: ImportPhase): boolean {
   return phase === "done" || phase === "failed";
+}
+
+/** Whether beets is working right now: the run is active AND nobody is being
+ * waited on. THE one predicate behind both the run page's spinner and this
+ * hook's poll cadence — they must never disagree about who is working.
+ *
+ * Neither half is inferable from the feed. `phase` latches to "reviewing" at
+ * the first parked album and never returns to "scanning", so it still reads
+ * "reviewing" while the worker scans the rest of the folder. And a set-aside
+ * row status means two different things: an UNATTENDED duplicate emits
+ * `needs_dup_resolution` and skips on without parking, and a `search`
+ * re-lookup deliberately keeps its row `needs_review` while beets works — both
+ * used to read as "blocked", which dropped the spinner and backed the poll off
+ * for a decision nobody would ever be asked for. `awaiting_decision` is the
+ * registry's own answer (it tracks the indices it is blocked in `reply.get()`
+ * on, backend/app/import_jobs/registry.py). */
+export function isWorking(state: ImportJobState): boolean {
+  return ACTIVE_PHASES.has(state.phase) && !state.awaiting_decision;
 }
 
 async function fetchJob(jobId: string): Promise<ImportJobState> {
@@ -164,8 +190,10 @@ async function fetchJob(jobId: string): Promise<ImportJobState> {
 /**
  * Poll an import job's state (`GET /api/import/{job_id}`). Disabled until a
  * `jobId` exists (no request, no error). `refetchInterval` is a function so the
- * loop runs only while the phase is active (scanning/reviewing/applying) and
- * returns `false` once terminal (done/failed) or when the job is not found
+ * loop runs only while the phase is active (scanning/reviewing/applying), backs
+ * off to {@link IMPORT_PARKED_POLL_MS} while the worker is blocked on a person
+ * ({@link isWorking}), and returns `false` once terminal (done/failed)
+ * or when the job is not found
  * (404 -> `ImportJobNotFoundError`). `retry: false` disables React Query's
  * per-request retry; a transient error still keeps the poll loop (it may
  * self-heal) behind the page's manual retry, whereas a 404 stops it for good.
@@ -187,11 +215,29 @@ export function useImportJob(jobId: string | undefined) {
       if (query.state.error instanceof ImportJobNotFoundError) {
         return false;
       }
-      const phase = query.state.data?.phase;
-      if (phase === undefined || ACTIVE_PHASES.has(phase)) {
+      const state = query.state.data;
+      if (state === undefined) {
         return IMPORT_POLL_MS;
       }
-      return false;
+      // Terminal FIRST. Order is load-bearing: a run that dies while an album
+      // is parked would otherwise poll at 10s forever, since the backoff branch
+      // below returns an interval rather than falling through.
+      if (!ACTIVE_PHASES.has(state.phase)) {
+        return false;
+      }
+      // Back off only while the worker is genuinely blocked on a person: it
+      // can then re-read nothing but the elapsed clock, and a 1s poll cost 60
+      // requests a minute for as long as the operator took (the measured
+      // defect). While beets is working the feed is live — stay fast.
+      //
+      // An EMPTY feed is exempt. A park buffered before its row exists leaves
+      // the state blocked with nothing on screen to act on, and the outcome
+      // that creates the row is already queued — so exactly one poll stands
+      // between the user and the decision panel, and the backoff makes it 10s.
+      // This is the unattended inbox path.
+      return isWorking(state) || state.albums.length === 0
+        ? IMPORT_POLL_MS
+        : IMPORT_PARKED_POLL_MS;
     },
   });
 }

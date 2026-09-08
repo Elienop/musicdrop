@@ -14,7 +14,7 @@ a browsable multi-album queue. There is no apply-ready shape.
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, StringConstraints
+from pydantic import BaseModel, Field, StringConstraints
 
 from app.models.import_models import ImportOptions, ImportOrigin, Recommendation
 
@@ -90,7 +90,7 @@ class ImportProgress(BaseModel):
     needs_review: int
     # Albums that landed nothing: an auto-skip (no candidates) or a parked album
     # the user resolved with a non-apply action. The live mirror of the done
-    # summary's skipped count (registry._is_skipped backs both).
+    # terminal skipped count (registry._is_skipped backs both).
     skipped: int
     # Albums resolved as an album-landing action (auto-apply / decided apply|asis
     # / dup keep_both|replace) for which no library album id ever arrived — the
@@ -176,8 +176,6 @@ class ImportJobState(BaseModel):
     phase: ImportPhase
     progress: ImportProgress
     albums: list[ImportAlbumSummary]
-    # A short human summary once done (e.g. "2 imported, 1 skipped"); None until then.
-    summary: str | None
     # The worker's failure message when phase == failed; None otherwise.
     error: str | None
     # Where the import came from: "manual" (the web Start flow) or "inbox" (the
@@ -190,6 +188,23 @@ class ImportJobState(BaseModel):
     # Sweep-origin jobs surface counters instead of the per-album feed (their
     # ``albums`` list stays empty by design). None for manual/inbox jobs.
     sweep: SweepStatus | None = None
+    # Server-computed (from the server's own monotonic clock) so the number
+    # survives a page reload and never depends on the browser's clock agreeing
+    # with the server's. Keeps counting while a job is parked awaiting a
+    # decision; frozen at the first terminal transition.
+    elapsed_seconds: int = Field(
+        description=(
+            "Whole seconds this job has been running, frozen once the phase is done or failed."
+        ),
+    )
+    # Server-side truth, NOT inferable from row statuses: a set-aside row can mean
+    # "the worker is blocked in park()" OR "the worker moved on". An unattended
+    # duplicate emits needs_dup_resolution and SKIPs WITHOUT parking, and a
+    # `search` re-lookup deliberately keeps its row needs_review while beets
+    # works. Only the registry knows which, so it says so here.
+    awaiting_decision: bool = Field(
+        description="True while the worker is blocked on a parked album awaiting a decision.",
+    )
 
 
 class ActiveImportStatus(BaseModel):

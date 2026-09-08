@@ -219,7 +219,7 @@ class AlbumOutcome(BaseModel):
 
     Pushed onto the import bridge's non-blocking outcome channel so the API can
     render the live feed (auto-applied + skipped + the current parked album) and
-    a truthful summary. The full Candidate (for the review screen) travels
+    truthful counts. The full Candidate (for the review screen) travels
     separately on the parked album; this stays small on purpose.
     """
 

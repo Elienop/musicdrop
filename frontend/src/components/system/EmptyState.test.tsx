@@ -58,3 +58,53 @@ test("renders the action slot", () => {
     screen.getByRole("link", { name: "Add from folder" }),
   ).toBeInTheDocument();
 });
+
+test("the destructive tone wears the app's error recipe, not the neutral box", () => {
+  const { container } = render(
+    <EmptyState icon={Search} title="Import failed" bordered tone="destructive" />,
+  );
+  const root = container.querySelector(
+    '[data-slot="empty-state"]',
+  ) as HTMLElement;
+  expect(root).toHaveAttribute("data-tone", "destructive");
+  // ErrorState's own tokens, reused — not a colour hand-written at the call
+  // site. All three exist in the @theme block of src/styles.css.
+  expect(root).toHaveClass(
+    "border-destructive/40",
+    "bg-destructive/5",
+    "border",
+    "rounded-xl",
+  );
+  // The dashed neutral box is the "nothing here" idiom; a failure is not one.
+  expect(root).not.toHaveClass("border-dashed");
+  expect(root).not.toHaveClass("border-border");
+  const svg = root.querySelector("svg");
+  expect(svg).toHaveClass("size-10", "text-destructive");
+  expect(svg).not.toHaveClass("text-muted-foreground");
+});
+
+test("the tone defaults to neutral, leaving every existing caller alone", () => {
+  const { container } = render(
+    <EmptyState icon={Search} title="No artists yet" bordered />,
+  );
+  const root = container.querySelector(
+    '[data-slot="empty-state"]',
+  ) as HTMLElement;
+  expect(root).toHaveAttribute("data-tone", "neutral");
+  expect(root).toHaveClass("border-border", "border-dashed");
+  expect(root).not.toHaveClass("bg-destructive/5");
+  expect(root.querySelector("svg")).toHaveClass("text-muted-foreground");
+});
+
+test("an unbordered destructive state colours the icon and paints no box", () => {
+  const { container } = render(
+    <EmptyState icon={Search} title="Import failed" tone="destructive" />,
+  );
+  const root = container.querySelector(
+    '[data-slot="empty-state"]',
+  ) as HTMLElement;
+  expect(root.querySelector("svg")).toHaveClass("text-destructive");
+  expect(root).toHaveClass("py-24");
+  expect(root).not.toHaveClass("border");
+  expect(root).not.toHaveClass("bg-destructive/5");
+});
