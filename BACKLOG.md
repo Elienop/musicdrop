@@ -1503,28 +1503,42 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   and don't build the regression strand with `chmod` — those tests self-skip as root;
   insert into `_memory` directly.
 
-- **The candidate page overflows worst BETWEEN the breakpoints.** `CandidateReview.tsx:288`'s
-  `AlbumPanel` puts a `w-48 shrink-0` cover column beside a `min-w-0 flex-1` field column, and
-  each `Field` value is a `truncate` span. Document overflow measured in Chromium with the
-  realistic fixture: 1280 → 0, **834 → 59px**, **768 → 92px**, **640 → 41px**, 540 → 0, 480 → 0,
-  414 → 0, 360 → 17px.
-  **At 640, 768 and 834 every field value in BOTH panels renders at `clientWidth` 0** — Album,
-  Artist, Year and Label alike, so the panels show only their labels (scroll widths 76/66/4/4 and
-  84/66/31/72). It is not confined to the widest fields: at 360, 414 and 1024 the After panel's
-  `Album` and `Label` are 0 while the rest survive. Pre-existing; untouched by the match-header
-  fix, which took the same page from 218px to 17px at 360 and left every number above unchanged.
-  **Why the branch's own measurements missed it:** the content well is non-monotonic, because the
-  `md` sidebar takes 230px back, so a 360/1280 matrix is structurally blind to this shape. Measure
-  the intermediate widths for any fix.
+- ~~**The candidate page overflows worst BETWEEN the breakpoints**~~ — **CLOSED 2026-09-08 with a
+  container query, and the four recorded bands were two continuous ones.** The panel now declares
+  `@container/panel` and stacks its cover above the fields below 27rem of panel content.
+  Side-by-side costs 208px (`w-48` cover + `gap-4`) plus 128px per `Field` (`w-12` label, `gap-2`,
+  the "changed" badge and its gap, 64+8), so the widest fixture value needed 420px of panel and
+  first got it at a 1216px viewport. Swept 320→1920 in steps of 32 (51 widths, the same
+  realistic fixture): **before**, at least one value was 0-width at 17 of the 51 widths — all six
+  at 320/640/768/800/832/864, the After panel's Album and Label at 11 more — and at least one was
+  clipped at 24 of them; document overflow was 57/17/41/92/59px at 320/360/640/768/834. 320 and 800/832/864
+  are inside the second band and were never named. **After**, no value is 0 at any width, document
+  overflow is 0 at every width, and the one remaining clip is the After panel's Album at a 768px
+  viewport (75/84px — the app's narrowest panel, 203px of content, because the `md` sidebar has
+  opened but `sm:grid-cols-2` has already halved it). 1280 gives the panel 459px of content, so
+  the desktop view stays side-by-side and is byte-identical to before. Only two widths in the whole
+  sweep were clean side-by-side before and stack now: 512 (430px of panel) and 1216 (427px), both
+  a handful of pixels under the threshold and both fully readable stacked. Container-query size is
+  the panel's CONTENT box, measured (`100cqw` = `clientWidth` − 32 at every width). `Field` was
+  left alone: stacked, its label and badge cost 128px out of ≥203px, which every value clears.
 
-- **`AlbumRow`'s subtitle truncates to zero width at 360px**, for short artists too. Measured:
-  "Radiohead" (66px of text) renders at `clientWidth 0`, because a `min-w-0 truncate` subtitle sits
-  beside a `shrink-0` meta slot whose used width is max-content, 130.5px. At 414 it is still cut
-  (clientWidth 49). The visible symptom is a stranded bare middot opening the line — the very
-  defect `SEGMENT_SEP` exists to prevent, arriving by a route it does not cover, since the
-  separator here is `AlbumRow`'s own and not that constant. Affects the import feed, Review and
-  duplicate groups. Which of the artist and the match wins that space is an `AlbumRow` design call
-  with app-wide reach.
+- ~~**`AlbumRow`'s subtitle truncates to zero width at 360px**~~ — **CLOSED 2026-09-08, same
+  mechanism, and the stop condition held.** The row's text column declares `@container/rowtext`
+  and the subtitle line stacks below 18rem of column, dropping the separator with it. The
+  threshold is one number for callers with different meta widths: the meta slot is max-content —
+  130.5px in the import feed, 185.1px on `/duplicates` — so one line needs 218px/272px for a 66px
+  artist, and at 288px they get 136px/82px. Measured on all three surfaces at 320→1920 in steps of
+  32: **before**, the subtitle was `clientWidth` 0 at 320 and 360 on all three surfaces and cut at
+  414 (49/66px feed and Review, 18/66px duplicates); document overflow was 19px on `/duplicates`
+  at 320.
+  **After**, the subtitle is the full column width at every width, the middot no longer opens the
+  line, and document overflow is 0. **136 of the 153 surface×width measurements are byte-identical
+  to before; the 17 that changed are all at viewports ≤480.** Two of them (feed/Review at 448 and
+  480) had a whole subtitle already and now stack — the price of one threshold sized for the wider
+  `/duplicates` meta. Adjacent, NOT fixed: the TITLE row has the same shape (`min-w-0 truncate`
+  title beside a `shrink-0` badge) and is cut at 320 — 7/38px in the feed, 2/87px on
+  `/duplicates`, whole from 414. Whether the title or the badge wins that space is the same
+  `AlbumRow` design call, and it is the owner's.
 
 - **The `view` link in `CandidateReview`'s match header has no `focus-ring` class** and falls back
   to the UA outline, while `styles.css:191-208` calls `focus-ring` this app's one dialect. Belongs
