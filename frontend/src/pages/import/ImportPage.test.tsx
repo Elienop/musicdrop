@@ -1503,6 +1503,39 @@ describe("ImportPage — sweep & bank", () => {
     expect(panel?.textContent).not.toContain("·");
   });
 
+  test.each([
+    { banked: 2, cta: "Review banked albums", href: "/review" },
+    { banked: 0, cta: "Import another folder", href: "/import" },
+  ])(
+    "a finished sweep that banked $banked offers $cta",
+    async ({ banked, cta, href }) => {
+      // With the counts moved to the tiles, this CTA is the only thing under
+      // the title — so a sweep that banked nothing must not send the user to an
+      // empty Review page. Same gate the failed panel uses.
+      server.use(
+        http.get(SWEEP_JOB_URL, () =>
+          HttpResponse.json(
+            sweepJob({
+              phase: "done",
+              sweep: {
+                processed: 5,
+                auto_applied: 5 - banked,
+                banked,
+                skipped_known: 0,
+                current_folder: null,
+                paused: false,
+              },
+            }),
+          ),
+        ),
+      );
+      renderAt("/import?job=s1");
+
+      const link = await screen.findByRole("link", { name: cta });
+      expect(link).toHaveAttribute("href", href);
+    },
+  );
+
   test("the resume banner names a running sweep", async () => {
     server.use(
       http.get(ACTIVE_URL, () =>

@@ -571,8 +571,15 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
           // in the title and on `sweep.paused`, so it is not repeated either.
           body={elapsedSentence(state.elapsed_seconds)}
           action={
+            // Gated on `banked`, like the failed panel's: a sweep that banked
+            // nothing has nothing to review, and with the counts moved to the
+            // tiles this CTA is the only thing under the title.
             <Button size="sm" asChild>
-              <Link to="/review">Review banked albums</Link>
+              {sweep.banked > 0 ? (
+                <Link to="/review">Review banked albums</Link>
+              ) : (
+                <Link to="/import">Import another folder</Link>
+              )}
             </Button>
           }
         />
