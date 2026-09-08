@@ -128,9 +128,14 @@ class ImportJob:
     # worker: ``park()`` registers its reply queue before putting the park on
     # the queue, so a choice accepted for a park that is registered but not yet
     # drained discards nothing, and the next drain then adds the index for a
-    # worker that is already running. ``awaiting_decision`` reads true while
-    # beets works. It needs a double submit inside that window, and clears at
-    # the next decision or terminal transition. Recorded in BACKLOG.md.
+    # worker that is already running. ``awaiting_decision`` then reads true
+    # while beets works. The window is a few preemptible instructions —
+    # ``park()`` releases the lock, then queues — and it needs a double submit
+    # inside it. It does NOT self-clear: both discards are index-scoped and
+    # that index is already answered, so nothing removes it before the terminal
+    # transition (``get_parked`` is a bare pop with no liveness check). The rest
+    # of the run then polls at 10 s, with no spinner and no spoken elapsed
+    # clause. Recorded in BACKLOG.md.
     parked_awaiting: set[int] = field(default_factory=set)
     # The elapsed clock behind ImportJobState.elapsed_seconds. MONOTONIC, not
     # wall time: an NTP step on the server (or a DST change) must not make a

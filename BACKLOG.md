@@ -1796,13 +1796,19 @@ the condition it names has changed.
   data; it is stated in `trash_manage._restore_to_origin`'s docstring, which also says why
   widening `origin_occupied` to name the broken link is a contract change.
 
-- **`awaiting_decision` can read true for a sub-microsecond window while beets works**
-  (2026-09-08, import-feedback slice). `park()` registers its reply queue before queueing the
-  park, so a choice accepted for a park that is registered but not yet drained discards
-  nothing and the next drain adds the index anyway. It needs a double submit inside that
-  window and clears at the next decision or terminal transition; the visible cost is one poll
-  at 10 s instead of 1 s. Closing it means a blocked flag on the bridge — a concurrency-
-  boundary change with its own design. Stated at `registry.ImportJob.parked_awaiting`.
+- **`awaiting_decision` can read true while beets works, and then STICKS**
+  (2026-09-08, import-feedback slice; blast radius corrected 2026-09-08). `park()` registers
+  its reply queue before queueing the park, so a choice accepted for a park that is registered
+  but not yet drained discards nothing and the next drain adds the index anyway. The window is
+  a few preemptible instructions (the lock is released, then the park is queued), not a
+  bounded sub-microsecond one, and it needs a double submit inside it. Both discards
+  (`record_choice`, `record_duplicate_decision`) are index-scoped and that index is already
+  answered, so nothing clears the flag before the terminal transition — `get_parked` is a bare
+  pop with no liveness check, and a rejected retry discards nothing because `record_choice`
+  discards after `push_choice`. Cost for the rest of the run: a 10 s poll instead of 1 s, no
+  spinner, and no spoken elapsed clause. Closing it means a blocked flag on the bridge — a
+  concurrency-boundary change with its own design. Stated at
+  `registry.ImportJob.parked_awaiting`.
 
 - **Wire-safety net coverage caveats** (by design, recorded so nobody assumes otherwise):
   SSE `/api/events` bypasses the response class (scopes are tag-derived today, never paths);
