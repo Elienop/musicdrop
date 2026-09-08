@@ -30,11 +30,14 @@ from app.beets.import_session import (
 )
 from app.beets.library import _require_id
 from app.models.import_models import (
+    AlbumChange,
     AlbumOutcome,
     AlbumOutcomeStatus,
+    Candidate,
     ImportAction,
     ImportChoice,
     ImportSearch,
+    ParkedAlbum,
     Recommendation,
 )
 
@@ -1138,6 +1141,155 @@ def test_push_duplicate_decision_unknown_index_raises_keyerror() -> None:
     decision = DuplicateDecision(action=DuplicateAction.skip_new)
     with pytest.raises(KeyError):
         bridge.push_duplicate_decision(99, decision)
+
+
+class _GateOnRelease:
+    """Bridge-lock stand-in that holds ONE named thread just before it acquires.
+
+    ``park`` releases its reply slot after ``reply.get()`` returns and before it
+    takes the lock. That gap is an ordinary preemption point, so which of the
+    releasing worker and a re-parking one gets there first is the scheduler's
+    choice. Gating it makes the interleaving reproducible: the two tests below
+    would otherwise pass on a machine that happens to schedule the release
+    first (measured: 25/25 locally, and the same order failed on CI).
+    """
+
+    def __init__(self) -> None:
+        self._real = threading.Lock()
+        self.hold: threading.Thread | None = None
+        self.at_gate = threading.Event()
+        self.go = threading.Event()
+
+    def __enter__(self) -> bool:
+        if self.hold is not None and threading.current_thread() is self.hold:
+            self.hold = None  # one-shot: gate the release, not the registration
+            self.at_gate.set()
+            assert self.go.wait(5.0), "gate never released"
+        return self._real.acquire()
+
+    def __exit__(self, *exc: object) -> None:
+        self._real.release()
+
+
+def _parked_album(index: int) -> ParkedAlbum:
+    album = AlbumChange(
+        artist="Radiohead", album="OK Computer", year=1997, label=None, country=None, media=None
+    )
+    return ParkedAlbum(
+        album_index=index,
+        folder=f"/music/incoming/album{index}",
+        candidate=Candidate(
+            confidence=75.5,
+            recommendation=Recommendation.medium,
+            data_source="MusicBrainz",
+            data_url="https://mb/a1",
+            cover_after_url=None,
+            has_current_art=False,
+            changed_fields=["album"],
+            album_before=album,
+            album_after=album,
+            tracks=[],
+            missing=[],
+            unmatched=[],
+            options=[],
+        ),
+    )
+
+
+def test_releasing_a_park_keeps_a_reparks_reply_slot() -> None:
+    """A ``search`` re-parks the SAME index while the answered worker is still
+    winding down. Releasing the first park must not delete the re-park's slot.
+
+    Popping by key alone did: the re-park's ``push_choice`` then raised
+    ``KeyError: no album parked at index 0`` and its worker blocked forever.
+    """
+    bridge = ImportBridge()
+    gate = _GateOnRelease()
+    bridge._lock = gate  # type: ignore[assignment]  # gate the release window; see _GateOnRelease
+
+    first = threading.Thread(target=lambda: bridge.park(_parked_album(0)), daemon=True)
+    first.start()
+    assert bridge.get_parked(timeout=2.0) is not None
+
+    gate.hold = first  # blocked in reply.get(), past its own registration
+    bridge.push_choice(
+        0, ImportChoice(action=ImportAction.search, search=ImportSearch(release_id="rel-1"))
+    )
+    assert gate.at_gate.wait(2.0)  # woken, its release not yet taken
+
+    released = threading.Event()
+
+    def repark() -> None:
+        bridge.park(_parked_album(0))
+        released.set()
+
+    second = threading.Thread(target=repark, daemon=True)
+    second.start()
+    assert bridge.get_parked(timeout=2.0) is not None  # the re-park is registered + queued
+
+    gate.go.set()
+    first.join(timeout=2.0)
+
+    bridge.push_choice(0, ImportChoice(action=ImportAction.skip))
+    assert released.wait(timeout=2.0), "the re-parked worker never unblocked"
+    second.join(timeout=2.0)
+    assert bridge.pending_count() == 0  # both workers left park(); no slot leaked
+
+
+def test_releasing_a_duplicate_park_keeps_a_reprompts_reply_slot() -> None:
+    """The duplicate channel's twin of the candidate case above."""
+    from app.models.import_models import (
+        DuplicateAction,
+        DuplicateDecision,
+        DuplicatePrompt,
+        IncomingAlbum,
+    )
+
+    def prompt() -> DuplicatePrompt:
+        return DuplicatePrompt(
+            album_index=0,
+            incoming=IncomingAlbum(
+                album_artist="Radiohead",
+                album="In Rainbows",
+                year=2007,
+                track_count=10,
+                format="FLAC",
+                bitrate_kbps=900,
+                folder="/incoming",
+                has_current_art=False,
+            ),
+            existing=[],
+        )
+
+    bridge = ImportBridge()
+    gate = _GateOnRelease()
+    bridge._lock = gate  # type: ignore[assignment]  # gate the release window; see _GateOnRelease
+
+    first = threading.Thread(target=lambda: bridge.park_duplicate(prompt()), daemon=True)
+    first.start()
+    assert bridge.get_parked_duplicate(timeout=2.0) is not None
+
+    gate.hold = first
+    bridge.push_duplicate_decision(0, DuplicateDecision(action=DuplicateAction.keep_both))
+    assert gate.at_gate.wait(2.0)
+
+    released = threading.Event()
+
+    def reprompt() -> None:
+        bridge.park_duplicate(prompt())
+        released.set()
+
+    second = threading.Thread(target=reprompt, daemon=True)
+    second.start()
+    assert bridge.get_parked_duplicate(timeout=2.0) is not None
+
+    gate.go.set()
+    first.join(timeout=2.0)
+
+    bridge.push_duplicate_decision(0, DuplicateDecision(action=DuplicateAction.skip_new))
+    assert released.wait(timeout=2.0), "the re-prompted worker never unblocked"
+    second.join(timeout=2.0)
+    assert bridge.pending_count() == 0
 
 
 def test_run_import_worker_forces_duplicate_action_ask() -> None:
