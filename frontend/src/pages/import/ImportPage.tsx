@@ -69,6 +69,28 @@ function ElapsedSegment({ seconds }: Readonly<{ seconds: number }>) {
   );
 }
 
+/** The run's duration as its OWN sentence, for the terminal panels — visible
+ * glyph plus the spoken twin {@link ElapsedSegment} explains.
+ *
+ * Not the middot segment: these bodies open with a raw error sentence or carry
+ * nothing else at all, and a leading `·` is a dangling separator.
+ *
+ * Returns `undefined`, not null, below {@link ELAPSED_AFTER_S}: a panel whose
+ * whole body is this sentence passes the result straight to `EmptyState.body`,
+ * which renders an empty `<p>` (and its `gap-1`) for any node that is not
+ * `undefined`. A sweep of an empty folder finishes well under the threshold. */
+function elapsedSentence(seconds: number): React.ReactNode | undefined {
+  const label = elapsedLabel(seconds);
+  const spoken = spokenElapsed(seconds, ELAPSED_AFTER_S);
+  if (label === null || spoken === null) return undefined;
+  return (
+    <>
+      <span aria-hidden="true">{`Ran for ${label}.`}</span>
+      <span className="sr-only">{`Ran for ${spoken}.`}</span>
+    </>
+  );
+}
+
 /** Origin threaded onto every link that leaves the feed (decision screens,
  * applied-album links) so back links and post-submit navigation return to
  * THIS run (spec §1). */
@@ -511,10 +533,6 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
     return <LiveFeed state={state} jobId={jobId} />;
   }
   const done = state.phase === "done";
-  // A sweep is the longest-running import there is, and it returns before
-  // LiveFeed ever renders — so it carries the elapsed value and used to show it
-  // nowhere. Same threshold, same middot dialect, running and finished alike.
-  const elapsedSegment = <ElapsedSegment seconds={state.elapsed_seconds} />;
   return (
     <div className="flex flex-col gap-6">
       {done ? (
@@ -522,13 +540,13 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
           bordered
           icon={Success}
           title={sweep.paused ? "Sweep paused" : "Sweep finished"}
-          body={
-            <>
-              {state.summary ??
-                `${sweep.processed} processed${SEGMENT_SEP}${sweep.auto_applied} imported${SEGMENT_SEP}${sweep.banked} banked`}
-              {elapsedSegment}
-            </>
-          }
+          // The tiles below ARE the counts, and they are the app's own labels.
+          // This body used to restate all four ~24px above them in the
+          // backend's `state.summary` dialect ("swept 30, auto-applied 20, …"),
+          // so the panel said every number twice. What the tiles cannot say is
+          // how long it took; that is all this line is now. The pause is still
+          // in the title and on `sweep.paused`, so it is not repeated either.
+          body={elapsedSentence(state.elapsed_seconds)}
           action={
             <Button size="sm" asChild>
               <Link to="/review">Review banked albums</Link>
@@ -545,7 +563,11 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
           />
           <span>
             {sweepStatusLabel(sweep.paused, sweep.current_folder)}
-            {elapsedSegment}
+            {/* A sweep is the longest-running import there is and it returns
+                before LiveFeed ever renders, so this is the only place its
+                duration shows while it runs. Same threshold and middot dialect
+                as the feed's status line. */}
+            <ElapsedSegment seconds={state.elapsed_seconds} />
           </span>
         </p>
       )}
@@ -806,8 +828,7 @@ function JobFailed({
   // forty seconds versus forty minutes is a bad path versus a late crash.
   // (Under ELAPSED_AFTER_S no duration renders at all, so a 3s failure is
   // simply the untimed case.)
-  const elapsed = elapsedLabel(elapsedSeconds);
-  const spoken = spokenElapsed(elapsedSeconds, ELAPSED_AFTER_S);
+  const ranFor = elapsedSentence(elapsedSeconds);
   return (
     <EmptyState
       bordered
@@ -820,11 +841,8 @@ function JobFailed({
         // a bare "·". Its own line, its own sentence.
         <>
           {error ?? "The import stopped unexpectedly."}
-          {elapsed !== null && spoken !== null && (
-            <span className="mt-1 block">
-              <span aria-hidden="true">{`Ran for ${elapsed}.`}</span>
-              <span className="sr-only">{`Ran for ${spoken}.`}</span>
-            </span>
+          {ranFor !== undefined && (
+            <span className="mt-1 block">{ranFor}</span>
           )}
         </>
       }

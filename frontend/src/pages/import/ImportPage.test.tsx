@@ -1292,19 +1292,23 @@ describe("ImportPage — sweep & bank", () => {
     expect(await screen.findByText("Sweeping your folder…")).toBeInTheDocument();
   });
 
-  test("a finished sweep summarizes and links to Review; paused names the pause", async () => {
+  test("a finished sweep states each count once — on the tiles, not twice", async () => {
     server.use(
       http.get(SWEEP_JOB_URL, () =>
         HttpResponse.json(
           sweepJob({
             phase: "done",
-            summary: "swept 30, auto-applied 20, banked 10",
+            // Still composed by the backend and still on the wire; the panel
+            // no longer restates it above the tiles that say the same four
+            // numbers in the app's own labels.
+            summary:
+              "swept 30, auto-applied 20, banked 10, skipped 1 already imported",
             elapsed_seconds: 840,
             sweep: {
               processed: 30,
               auto_applied: 20,
               banked: 10,
-              skipped_known: 0,
+              skipped_known: 1,
               current_folder: null,
               paused: true,
             },
@@ -1317,18 +1321,54 @@ describe("ImportPage — sweep & bank", () => {
     // Exact match: the sr-only announcer also says "Sweep paused. …" — the
     // default whole-text match singles out the visible EmptyState title.
     expect(await screen.findByText("Sweep paused")).toBeInTheDocument();
-    // The finished summary carries the run's duration too (the owner's ruling),
-    // and says the pause exactly once — in the title above, not again here.
-    expect(screen.getByText("· 14m").closest("p")).toHaveTextContent(
-      "swept 30, auto-applied 20, banked 10",
+    // The backend's sentence is gone from the panel...
+    expect(screen.queryByText(/swept 30/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/auto-applied/)).not.toBeInTheDocument();
+    // ...and every number it carried renders exactly once, on its tile.
+    for (const value of ["30", "20", "10", "1"]) {
+      expect(screen.getAllByText(value)).toHaveLength(1);
+    }
+    // What the tiles cannot say survives (the owner's ruling): how long it ran.
+    expect(screen.getByText("Ran for 14m.")).toHaveAttribute(
+      "aria-hidden",
+      "true",
     );
-    // Whether the summary STRING names the pause is the backend's pin
-    // (test_import_registry.test_sweep_summary_reports_counters_and_pause):
-    // the frontend renders that string verbatim, so no mutation here could
-    // move it. The visible title above is what this page owes.
+    // "14m" is read as a letter; the spoken twin carries the words.
+    expect(screen.getByText("Ran for 14 minutes.")).toHaveClass("sr-only");
+    // The pause is said exactly once, in the title above — not again here.
+    expect(screen.getByText("Ran for 14m.").closest("p")).toHaveTextContent(
+      /^Ran for 14m\./,
+    );
     expect(
       screen.getByRole("link", { name: /review banked albums/i }),
     ).toHaveAttribute("href", "/review");
+  });
+
+  test("a sub-30s finished sweep renders no body line at all", async () => {
+    // The whole body is now the duration sentence, and below ELAPSED_AFTER_S
+    // there is none — so EmptyState must receive `undefined`, not an empty
+    // node, or it paints an empty <p> and its gap under the title. A sweep of
+    // an empty folder finishes well under the threshold.
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({
+            phase: "done",
+            summary: "swept 0, auto-applied 0, banked 0",
+            elapsed_seconds: ELAPSED_AFTER_S - 1,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    const panel = (await screen.findByText("Sweep finished")).closest(
+      "[data-slot='empty-state']",
+    );
+    expect(panel).not.toBeNull();
+    // The title paragraph, and nothing else — no empty body, no lone middot.
+    expect(panel?.querySelectorAll("p")).toHaveLength(1);
+    expect(panel?.textContent).not.toContain("·");
   });
 
   test("the resume banner names a running sweep", async () => {
