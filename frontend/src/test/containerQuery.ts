@@ -35,7 +35,19 @@ export function containerQueryVariants(root: HTMLElement): string[] {
       if (VARIANT.test(cls)) found.add(cls);
     }
   }
-  return [...found].sort();
+  return [...found].sort(byCodeUnit);
+}
+
+/** Code-unit order — the default `sort()` order, spelled out.
+ *
+ * A bare `sort()` is `typescript:S2871`. The rule's own suggestion for a string
+ * array is `localeCompare`, which is the right default for text a person reads;
+ * these are CLASS NAMES, so the ordering that keeps a failing assertion legible
+ * is the one the reader can reproduce by eye — and `localeCompare` is
+ * locale- and ICU-dependent, which a test oracle should not be. */
+function byCodeUnit(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
 }
 
 /** Variant classes in `root`'s subtree with no matching ancestor container. */

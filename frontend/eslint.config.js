@@ -648,6 +648,22 @@ export default defineConfig(
       "sonarjs/prefer-regexp-exec": "error", // S6594 — 1 issue
       "sonarjs/reduce-initial-value": "error", // S6959 — 1 issue
       "sonarjs/no-identical-functions": "error", // S4144 — 1 issue
+      // S2871 — 1 issue, and the only family here whose whole life was one
+      // branch: `api/issues/search` reports 0 S2871 against `musicdrop` ever,
+      // resolved or open, because the bare `[...found].sort()` that raised it
+      // was introduced and fixed before either could reach `main`. Lock-on-clear
+      // still applies — the family is at zero and this keeps it there.
+      //
+      // NOT `@typescript-eslint/require-array-sort-compare`, the obvious twin.
+      // S2871's `implementation` is `original` with `eslintId`
+      // `no-alphabetical-sort`, so SonarJS ships its own rule and this IS what
+      // the analyzer runs. The typescript-eslint rule is wrong in both
+      // directions: its default is `ignoreStringArrays: true`, so it stays
+      // SILENT on the string-array line Sonar actually reported (an inert guard
+      // that reads as covered), and forcing that option off makes it STRICTER
+      // than the server, since it has no equivalent of Sonar's
+      // `isSortUsedForNormalizationComparison` exemption.
+      "sonarjs/no-alphabetical-sort": "error", // S2871 — 1 issue
 
       // --- accessibility twins ----------------------------------------------
       // `eslint-plugin-jsx-a11y@6.10.2` declares peer `eslint` only up to ^9 and

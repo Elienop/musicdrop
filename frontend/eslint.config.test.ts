@@ -173,6 +173,15 @@ const MUST_TRIP: ReadonlyArray<readonly [rule: string, filePath: string, code: s
     `export const t = (a: number[]) => a.reduce((x, y) => x + y);\n`,
   ],
   [
+    // A STRING array on purpose: that is the shape the family was raised on, and it is
+    // the shape `@typescript-eslint/require-array-sort-compare` — the twin this gate
+    // deliberately does not use — ignores by default. If this case ever goes green while
+    // the rule is still listed, the wrong rule has been substituted.
+    "sonarjs/no-alphabetical-sort",
+    MAIN_FILE,
+    `export const s = (a: string[]) => [...a].sort();\n`,
+  ],
+  [
     // Needs bodies of at least DEFAULT_MIN_LINES (3) lines, so these cannot be collapsed.
     "sonarjs/no-identical-functions",
     MAIN_FILE,
