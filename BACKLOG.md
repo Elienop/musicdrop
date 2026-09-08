@@ -1813,22 +1813,43 @@ the condition it names has changed.
   flag on the bridge — a concurrency-boundary change with its own design. Stated at
   `registry.ImportJob.parked_awaiting`.
 
-- **The plain-space middot survives outside the import page** (2026-09-08). `ReviewPage.tsx:208`
-  builds the confidence + recommendation string as one plain-space `%` · `label`, so a wrap can
-  strand a dangling "·" there. `CandidateReview.tsx:142` is a different shape: a bare flex item
-  in a container with no `flex-wrap`, so no wrap can strand it — its defect is the 360px squeeze
-  recorded below. `SEGMENT_SEP` is import-page-local by design; its docstring says so.
+- ~~**The plain-space middot survives outside the import page**~~ — **CLOSED 2026-09-08, and the
+  recorded defect did not reproduce.** `SEGMENT_SEP` moved to `lib/format.ts` and both
+  `ReviewPage`'s decision row and `CandidateReview`'s match header now use it, so the app has one
+  dialect for the `%` · `match` line. But the reason recorded here was wrong: nothing wraps in
+  `AlbumRow`'s `meta` slot, because that slot is `flex-shrink: 0` and its used width is therefore
+  max-content. Measured in Chromium at 360px with a 68-character artist: 130.5px wide, ONE client
+  rect, one line — byte-identical to the import feed's row, which has always passed the constant
+  into the same slot. The slot clips (`overflow-hidden` on the list) rather than wrapping. The
+  only place the glyph pair is load-bearing outside the status lines is the match header, which
+  genuinely wraps (below). Adjacent, NOT fixed: at 360px that same row truncates the artist to
+  zero width and leaves `AlbumRow`'s own separator middot leading the line ("· 76% · Medium
+  match"), and the meta box overruns the text column by 4.8px — which of the artist and the
+  match wins that space is an `AlbumRow` design call with app-wide reach.
 
-- **The import status line is the same recipe three times** (2026-09-08). `ImportPage.tsx`
-  builds a spinner + wrapping text line for the live feed, for the sweep and for the resume
-  banner, which is why the alignment fix needed a pass per copy. All three carry `items-start`
-  today; the shape is simply not extracted.
+- ~~**The import status line is the same recipe three times**~~ — **CLOSED 2026-09-08: two of the
+  three were one recipe; the third is a different one.** The feed's count line and the sweep's
+  folder line were byte-identical — same `<p>` class string, same `<svg>` class string — and are
+  now one `StatusLine` with a single `spinning` prop. The resume banner is deliberately NOT a
+  caller: measured in Chromium it is six properties apart, not one (gap 12px vs 8px, icon 20px vs
+  16px, top correction 0 vs 2px because its icon matches the 20px line box exactly, `font-medium`
+  vs inherited, the muted colour on the icon rather than on the line, no `min-h-5`), and it owns
+  the `id` the Start button's `aria-describedby` points at. Covering it takes a variant used once.
+  All three satisfy the invariant that mattered — the spinner's box centre sits 0px from the first
+  line box's centre, measured at 1280 and 360 — and the two sites now name each other in
+  comments, so the third cannot be missed silently again.
 
-- **`CandidateReview`'s metadata line collapses at 360px** (2026-09-08, measured). The row is
-  a nowrap flex whose anonymous "· Medium match" item is squeezed to three lines; `items-center`
-  then parks the %, the separator and the "view" link on the middle line. Not the alignment
-  defect fixed on the status lines — `items-start` alone would not fix it, so it needs a
-  wrap/shrink decision.
+- ~~**`CandidateReview`'s metadata line collapses at 360px**~~ — **CLOSED 2026-09-08.** The
+  wrap/shrink decision was neither: the row is a sentence, so it stopped being a flex row. As
+  `flex items-center gap-2` the browser had to fit every segment on one flex line and squeezed the
+  widest — measured in Chromium at 360px: 3 line boxes, the "·" alone on the first, "Medium" and
+  "match" split across the next two, and the %, the second separator and the `view` link parked on
+  the middle one, with the source list ellipsed to "C…". It is now one text flow: 2 line boxes,
+  every segment intact, the full source list visible, and the second line OPENS with a middot
+  because every separator is `SEGMENT_SEP`. The source list also loses `truncate` with the flex
+  row — on the screen where the release is being judged, wrapping the label and country beats
+  ellipsing them. Adjacent, NOT fixed and pre-existing (present in the before shot): the candidate
+  page overflows horizontally by 17px at 360px, clipping the AFTER-IMPORT panel's "changed" badge.
 
 - **Wire-safety net coverage caveats** (by design, recorded so nobody assumes otherwise):
   SSE `/api/events` bypasses the response class (scopes are tag-derived today, never paths);
