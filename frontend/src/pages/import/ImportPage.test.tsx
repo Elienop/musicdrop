@@ -694,6 +694,28 @@ describe("ImportPage — live feed", () => {
     expect(spinnerOf(line)).not.toHaveClass("animate-spin");
   });
 
+  test("an empty feed never renders a count, blocked or not", async () => {
+    // `park()` buffers a park whose row doesn't exist yet, so the live state is
+    // phase=scanning, albums=[], awaiting_decision=true — nobody is "working",
+    // and gating this branch on that rendered "0 albums imported".
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "scanning",
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+            albums: [],
+            awaiting_decision: true,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Scanning your folder…")).toBeInTheDocument();
+    expect(screen.queryByText(/albums imported/)).not.toBeInTheDocument();
+  });
+
   // B1/B2 on the visible side of the cadence tests: the two set-aside rows that
   // do NOT block the worker. This is the owner's own slskd inbox path, and it
   // used to sit spinner-less and elapsed-less for the rest of the run.

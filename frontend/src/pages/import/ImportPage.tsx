@@ -385,7 +385,11 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
   // THE shared predicate — the same call the poll cadence makes (useImport), so
   // the spinner and the request rate can never disagree about who is working.
   const working = isWorking(state);
-  const scanningEmpty = working && state.albums.length === 0;
+  // Gated on the feed alone, NOT on `working`: a park buffered before its row
+  // exists leaves the state blocked with an empty feed, and `working` is false
+  // there — which rendered the "0 albums imported" the branch below exists to
+  // prevent. LiveFeed is only reached on an active phase.
+  const scanningEmpty = state.albums.length === 0;
   // How long the server says this run has been going — null under the
   // threshold, so a fast import gains no extra text. Shown throughout, parked
   // included: it is the whole run's duration, not a "since last progress" gauge,
@@ -409,8 +413,8 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
           aria-hidden="true"
         />
         <span>
-          {/* While scanning with nothing in the feed yet, the count line would
-              read "0 albums imported" — say what's actually happening instead. */}
+          {/* With nothing in the feed yet, the count line would read
+              "0 albums imported" — say what's actually happening instead. */}
           {scanningEmpty ? (
             <>Scanning your folder&hellip;</>
           ) : (
