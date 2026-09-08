@@ -544,10 +544,19 @@ function sweepStatusLabel(
 /** The sweep's four counters, in the cardless stats dialect. A sweep counts
  * instead of accumulating feed rows (`state.albums` stays empty by design), so
  * these tiles are the whole record of the run — on the running panel, the
- * finished one, and the failed one alike. */
+ * finished one, and the failed one alike.
+ *
+ * Counts of 1/2/4 — never 3, which would orphan the fourth tile beside three
+ * empty columns. A StatTile spends 4.25rem of its column before the label
+ * starts (size-14 icon + gap-3), and "Already known" is 92px at `text-sm`, so
+ * a tile under ~10.25rem truncates it. The `grid-cols-2 sm:grid-cols-4` this
+ * replaces clipped that label by 15px at 360, 29px at 640 and 54px at 768 —
+ * the well is not monotonic in the viewport, since the sidebar opens at `md`
+ * and takes 162px back. Thinnest headroom now is 8px, at 1024. Same base/sm/lg
+ * shape as the dashboard's own TILE_GRID. */
 function SweepTiles({ sweep }: Readonly<{ sweep: SweepStatus }>) {
   return (
-    <div className="grid grid-cols-2 gap-6 sm:grid-cols-4">
+    <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
       <StatTile icon={Albums} label="Processed" value={String(sweep.processed)} />
       <StatTile icon={Success} label="Imported" value={String(sweep.auto_applied)} />
       <StatTile icon={ReviewIcon} label="Banked" value={String(sweep.banked)} />

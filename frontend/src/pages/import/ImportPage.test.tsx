@@ -1687,8 +1687,12 @@ describe("ImportPage — sweep & bank", () => {
     // sweep" for the whole in-flight window.
     await waitFor(() => expect(button).toHaveTextContent("Pausing…"));
     expect(button).toHaveAttribute("aria-disabled", "true");
-    // The load-bearing pair: still focusable, still focused.
+    // THE oracle. Mutation-checked: restoring `disabled` alongside the aria
+    // attribute fails on this line and nothing else.
     expect(button).not.toBeDisabled();
+    // Intent, not a second oracle — jsdom does not blur a focused element when
+    // it becomes disabled, so this assertion passes either way here. The focus
+    // itself was measured in Chromium (it dropped to <body> within 50ms).
     expect(document.activeElement).toBe(button);
 
     // ...and inert all the same.
