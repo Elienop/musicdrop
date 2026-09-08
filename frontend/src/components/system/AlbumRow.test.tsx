@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { describe, expect, it } from "vitest";
 
 import { AlbumRow } from "@/components/system/AlbumRow";
+import { unwiredContainerQueries } from "@/test/containerQuery";
 import { renderWithProviders } from "@/test/render";
 
 describe("AlbumRow", () => {
@@ -89,5 +90,21 @@ describe("AlbumRow", () => {
     );
     await userEvent.click(screen.getByRole("link", { name: "OK Computer" }));
     expect(screen.getByText("state: Import")).toBeInTheDocument();
+  });
+
+  // The subtitle line stacks below 18rem of column. jsdom computes no layout,
+  // so the widths are browser-measured and recorded in the component; what a
+  // test CAN hold is that the variants are wired to a declared container —
+  // rename one side and CSS reports nothing, the row silently keeps one arm.
+  it("wires every container-query variant to a declared container", () => {
+    const { container } = render(
+      <AlbumRow
+        cover={null}
+        title="OK Computer"
+        subtitle="Radiohead"
+        meta="76% · Medium match"
+      />,
+    );
+    expect(unwiredContainerQueries(container)).toEqual([]);
   });
 });

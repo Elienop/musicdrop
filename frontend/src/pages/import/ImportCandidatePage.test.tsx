@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, test } from "vitest";
 
 import type { Candidate } from "@/api/useImport";
 import { ImportCandidatePage } from "@/pages/import/ImportCandidatePage";
+import { unwiredContainerQueries } from "@/test/containerQuery";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
 
@@ -384,6 +385,19 @@ describe("ImportCandidatePage", () => {
     const afterTable = screen.getByRole("table", { name: "After import" });
     expect(within(nowTable).getByText("1")).toBeInTheDocument();
     expect(within(afterTable).getByText("19")).toBeInTheDocument();
+  });
+
+  // The before/after panels lay themselves out from their own width, not the
+  // viewport's. jsdom computes no layout, so the widths that chose 27rem are
+  // browser-measured and recorded in the component; what a test CAN hold is
+  // that the variants are wired to a declared container — rename one side and
+  // CSS reports nothing, the panel silently keeps one arm.
+  test("wires every container-query variant to a declared container", async () => {
+    server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
+    const { container } = renderAt();
+
+    await screen.findByText("Paranoid Android");
+    expect(unwiredContainerQueries(container)).toEqual([]);
   });
 
   test("a title-only change still shows the number as a plain position in each panel", async () => {

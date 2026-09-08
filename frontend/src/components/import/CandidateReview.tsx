@@ -294,18 +294,34 @@ function AlbumPanel({
 }> ) {
   const changed = new Set(changedFields);
   return (
-    <div className="border-border flex flex-col gap-3 rounded-xl border p-4">
+    // Container query, not a breakpoint: the panel's width is not a function
+    // of the viewport's. The `md` sidebar takes ~230px back and `sm:grid-cols-2`
+    // halves the panel, so the well SHRINKS as the viewport grows — measured
+    // content box 558px at a 608px viewport, 286px at 640px, 235px at 768px.
+    // `@container` also drops the panel's min-content contribution to the grid
+    // track, which is what the document overflow came from.
+    <div className="@container/panel border-border flex flex-col gap-3 rounded-xl border p-4">
       <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
         {heading}
       </p>
-      <div className="flex gap-4">
-        <div className="flex w-48 shrink-0 flex-col gap-1.5">
+      {/* 27rem = 432px is the panel content box below which the cover column
+          stops leaving the fields a readable well. Measured with the review
+          fixture: side-by-side costs 208px (w-48 cover + gap-4) plus 128px per
+          Field (w-12 label + gap-2 + the "changed" badge and its gap, 64+8),
+          so the widest value ("OK Computer", 84px) needs 420px and is whole
+          from 432px up. 1280px gives the panel 459px, so the desktop view
+          stays side-by-side with 27px to spare. */}
+      <div className="flex flex-col gap-3 @min-[27rem]/panel:flex-row @min-[27rem]/panel:gap-4">
+        <div className="flex w-48 max-w-full shrink-0 flex-col gap-1.5">
           <CoverArt src={coverUrl} className="w-full rounded-lg" />
           {coverCaption && (
             <p className="text-muted-foreground text-xs">{coverCaption}</p>
           )}
         </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5 self-center">
+        {/* `self-center` only in the side-by-side arm: in the stacked arm it
+            would shrink the field column to fit-content and re-create the
+            squeeze it exists to avoid. */}
+        <div className="flex min-w-0 flex-col gap-0.5 @min-[27rem]/panel:flex-1 @min-[27rem]/panel:self-center">
           <Field label="Album" value={change.album} changed={changed.has("album")} />
           <Field label="Artist" value={change.artist} changed={changed.has("artist")} />
           <Field

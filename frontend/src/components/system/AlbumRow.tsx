@@ -47,7 +47,13 @@ export function AlbumRow({
         assetKey={coverAssetKey}
         className="size-10 shrink-0 rounded-md"
       />
-      <div className="flex min-w-0 flex-1 flex-col">
+      {/* Container query, not a breakpoint: this column's width depends on the
+          cover, the action slot and whatever the caller wraps the row in, so
+          the viewport cannot answer "does the subtitle line fit". Measured at
+          a 768px viewport it is 323px wide in the import feed and 347px on
+          /duplicates — narrower than at 640px, because the `md` sidebar opens
+          in between. */}
+      <div className="@container/rowtext flex min-w-0 flex-1 flex-col">
         <div className="flex min-w-0 items-center gap-2">
           <span className="min-w-0 truncate font-medium" title={title}>
             {href !== undefined ? (
@@ -69,14 +75,26 @@ export function AlbumRow({
           )}
         </div>
         {(subtitle !== undefined || meta !== undefined) && (
-          <div className="text-muted-foreground flex min-w-0 items-center gap-2 text-sm">
+          // Below 18rem of column, subtitle and meta take a line each. The
+          // meta slot is max-content: 130.5px in the import feed, 185.1px on
+          // /duplicates, so one line needs 218px / 272px for a 66px artist. At
+          // 288px they get 136px / 82px. Columns measured 105px (320 viewport)
+          // to 859px; 320/360/414 fall under 288, and those are the widths
+          // where the subtitle measured `clientWidth` 0.
+          // gap-x only: a row gap would space the stacked lines apart, and is
+          // inert on one line.
+          <div className="text-muted-foreground @min-[18rem]/rowtext:flex-row @min-[18rem]/rowtext:items-center flex min-w-0 flex-col gap-x-2 text-sm">
             {subtitle !== undefined && (
               <span className="min-w-0 truncate" title={subtitle}>
                 {subtitle}
               </span>
             )}
             {subtitle !== undefined && meta !== undefined && (
-              <span aria-hidden="true">·</span>
+              // Stacked, the line break already separates the two, and a
+              // trailing middot would strand on the subtitle's line.
+              <span aria-hidden="true" className="@min-[18rem]/rowtext:block hidden">
+                ·
+              </span>
             )}
             {meta !== undefined && (
               <span className="flex shrink-0 items-center">{meta}</span>
