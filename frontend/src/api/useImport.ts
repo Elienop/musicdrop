@@ -229,7 +229,15 @@ export function useImportJob(jobId: string | undefined) {
       // can then re-read nothing but the elapsed clock, and a 1s poll cost 60
       // requests a minute for as long as the operator took (the measured
       // defect). While beets is working the feed is live — stay fast.
-      return isWorking(state) ? IMPORT_POLL_MS : IMPORT_PARKED_POLL_MS;
+      //
+      // An EMPTY feed is exempt. A park buffered before its row exists leaves
+      // the state blocked with nothing on screen to act on, and the outcome
+      // that creates the row is already queued — so exactly one poll stands
+      // between the user and the decision panel, and the backoff makes it 10s.
+      // This is the unattended inbox path.
+      return isWorking(state) || state.albums.length === 0
+        ? IMPORT_POLL_MS
+        : IMPORT_PARKED_POLL_MS;
     },
   });
 }

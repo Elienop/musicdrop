@@ -1,13 +1,19 @@
 import type { ImportJobState, SweepStatus } from "@/api/useImport";
 
-/** The single spoken status for the whole run. Verb-first and intentionally
- * worded differently from the visible cue/panels so it never substring-collides
- * with them in the DOM — it is the one `aria-live` source.
+/** The single spoken status for the whole run — it is the one `aria-live`
+ * source. Verb-first, and worded away from the visible cue/panels so a test can
+ * single one out by its whole text.
+ *
+ * That is a goal, not a guarantee: `sweepMessage` returns "Sweep paused. …"
+ * under a panel titled "Sweep paused", and the sweep test works around it with
+ * an exact-text query. Check a new phrasing against the panels it shares a page
+ * with rather than assuming the separation holds.
  *
  * Data-bearing phrasings carry the elapsed clause: the visible number sits
  * outside any live region, so without this a screen-reader user hears the same
  * string on every poll and is told nothing for the whole ten minutes. The one
- * exception is a run waiting on the operator — see {@link elapsedClause}. */
+ * exception is a run whose announcement already names what it waits for — see
+ * {@link elapsedClause}. */
 export function announceMessage(args: {
   isPending: boolean;
   isError: boolean;
@@ -17,7 +23,7 @@ export function announceMessage(args: {
   const { isPending, isError, notFound, data } = args;
   // Terminal phrasings are deliberately distinct from the visible panels'
   // headings ("This import is no longer available" / "Couldn't load the
-  // import") so the sr-only announcer never substring-collides with them.
+  // import"), so a query for either heading finds one node.
   if (notFound) return "That import is gone. It may have expired.";
   if (isError) return "The import could not be loaded.";
   if (isPending || !data) return "Loading the import.";
@@ -134,8 +140,14 @@ function progressMessage(data: ImportJobState): string {
 export const ELAPSED_AFTER_S = 30;
 
 /** Separator between a status line's segments. The space AFTER the middot is
- * non-breaking, so a wrap can never strand a dangling "·" at the end of a line;
- * the ordinary space before it is where the line is allowed to break. */
+ * non-breaking, so a wrap cannot strand a dangling "·" at the end of a line;
+ * the ordinary space before it is where the line is allowed to break — which
+ * means a wrapped line CAN open with the middot (measured: 22 of 71 error
+ * lengths at 360px, in the failed panel this constant no longer builds).
+ *
+ * Import-page-local on purpose. `ReviewPage` and `CandidateReview` still build
+ * the same confidence + recommendation string with a plain-space middot; those
+ * rows are a recorded residual, not an oversight in this constant's reach. */
 export const SEGMENT_SEP = " ·\u00a0";
 
 /** `head` plus a second unit, dropping it when zero — "1h", not "1h 0m". The

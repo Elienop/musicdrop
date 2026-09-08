@@ -277,6 +277,38 @@ describe("announceMessage", () => {
     ).toBe("Imported 0. 1 duplicate awaiting resolution.");
   });
 
+  // Belt AND braces, the same shape useImport.test.tsx pins on the poll
+  // cadence: today's server zeroes `awaiting_decision` off an active phase, so
+  // a terminal-and-blocked state never reaches the client — but the announcer
+  // must not depend on the other side's guard for the past-tense clause.
+  // Without `!finished`, a stale flag would swallow the one announcement a
+  // finished run gets.
+  test("a terminal job still says how long it took, flag or not", () => {
+    const speak = (data: ImportJobState) =>
+      announceMessage({ isPending: false, isError: false, notFound: false, data });
+    expect(
+      speak(
+        job({
+          phase: "failed",
+          error: "the session died",
+          progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
+          elapsed_seconds: 840,
+          awaiting_decision: true,
+        }),
+      ),
+    ).toBe("The import failed. Took 14 minutes.");
+    expect(
+      speak(
+        job({
+          phase: "done",
+          progress: { applied: 3, needs_review: 1, skipped: 0, not_landed: 0 },
+          elapsed_seconds: 840,
+          awaiting_decision: true,
+        }),
+      ),
+    ).toBe("Import complete. Imported 3, skipped 0. Took 14 minutes.");
+  });
+
   test("sweep jobs announce counters, not the feed", () => {
     const data = sweepState({
       phase: "scanning",

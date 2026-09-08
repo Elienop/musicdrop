@@ -355,10 +355,28 @@ describe("useImportJob poll cadence", () => {
   // operator answers. The measured defect was 60 requests a minute for the
   // three minutes one decision took.
   //
-  // The fixture is an EMPTY feed on purpose — a state only the flag can
-  // express, so this cannot pass under a revert to row-based inference. It is
-  // also real: `park()` buffers a park whose row does not exist yet.
+  // The feed row is `applied`, so row-based inference would call this WORKING
+  // and stay at 1s — the flag is the only thing that can express this state,
+  // and a revert to reading rows cannot pass.
   test("backs off to 10s while the worker is blocked on a person", async () => {
+    expect(
+      await pollIntervalFor(
+        makeJob({
+          phase: "scanning",
+          progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0 },
+          albums: [feedRow("applied")],
+          awaiting_decision: true,
+        }),
+      ),
+    ).toBe(10000);
+  });
+
+  // ...but an EMPTY feed is exempt. `park()` buffers a park whose row does not
+  // exist yet, so the page is blocked with nothing on screen to act on and the
+  // row-creating outcome is already queued: exactly one poll separates the user
+  // from the decision panel, and the backoff would make it 10s. The owner's own
+  // unattended inbox path.
+  test("stays fast when the feed is still empty, blocked or not", async () => {
     expect(
       await pollIntervalFor(
         makeJob({
@@ -368,7 +386,7 @@ describe("useImportJob poll cadence", () => {
           awaiting_decision: true,
         }),
       ),
-    ).toBe(10000);
+    ).toBe(1000);
   });
 
   test("stops entirely once the phase is terminal", async () => {
