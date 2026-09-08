@@ -2149,6 +2149,12 @@ the condition it names has changed.
   42 px). Fold the `AlphabetIndex` missing `shadow-xs` (already recorded below) into the
   same touch. Load-bearing on mobile: the segments are the image-source picker at
   `ArtistImageEditPanel.tsx:278`.
+  **`Checkbox` is the one that does NOT pass** (measured 2026-09-08, on `/review`'s bank rows):
+  the shadcn primitive is `size-4`, so its hit rectangle is **16×16**, under SC 2.5.8's 24px
+  Level AA minimum. That is the primitive's floor and it is app-wide, not a bank-row property —
+  every `Checkbox` call site inherits it. Same class of decision as the three above and the
+  owner's to make; a fix belongs in `components/ui/checkbox.tsx` (a pseudo-element hit area, so
+  the visual box does not grow), not at a call site.
 - Artist-image panel minors, all shipped deliberately: Fetch is `secondary` while the pasted-link
   Set is the only filled control (ranking reads backwards); the URL input's `aria-label`
   shadows its visible label — a genuine SC 2.5.3 Label-in-Name failure (Level A: name
