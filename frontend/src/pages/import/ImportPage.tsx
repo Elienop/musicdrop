@@ -403,13 +403,20 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
   ).length;
   return (
     <div className="flex flex-col gap-4">
-      <p className="text-muted-foreground flex min-h-5 items-center gap-2 text-sm">
+      {/* `items-start`, not `items-center`: this line wraps to two lines at
+          360px, and centring parked the spinner mid-paragraph (measured 10px
+          below the first line's centre). */}
+      <p className="text-muted-foreground flex min-h-5 items-start gap-2 text-sm">
         {/* Always mounted, only hidden: mounting/unmounting it on every park
             and unpark shifted the whole line ~24px sideways (size-4 + gap-2)
             each time. `invisible` keeps the box, and a hidden element must not
-            animate. */}
+            animate. `mt-0.5` is (line-height 20px - size-4) / 2, which puts the
+            icon on the FIRST line box however many the text takes. */}
         <Spinner
-          className={cn("size-4 shrink-0", working ? "animate-spin" : "invisible")}
+          className={cn(
+            "mt-0.5 size-4 shrink-0",
+            working ? "animate-spin" : "invisible",
+          )}
           aria-hidden="true"
         />
         <span>
@@ -496,8 +503,13 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
           }
         />
       ) : (
-        <p className="text-muted-foreground flex min-h-5 items-center gap-2 text-sm">
-          <Spinner className="size-4 shrink-0 animate-spin" aria-hidden="true" />
+        // Same alignment as the feed's status line: this one carries a folder
+        // name, so it wraps sooner.
+        <p className="text-muted-foreground flex min-h-5 items-start gap-2 text-sm">
+          <Spinner
+            className="mt-0.5 size-4 shrink-0 animate-spin"
+            aria-hidden="true"
+          />
           <span>
             {sweepStatusLabel(sweep.paused, sweep.current_folder)}
             {elapsedSegment}
