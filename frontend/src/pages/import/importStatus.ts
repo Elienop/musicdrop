@@ -4,9 +4,10 @@ import type { ImportJobState, SweepStatus } from "@/api/useImport";
  * worded differently from the visible cue/panels so it never substring-collides
  * with them in the DOM — it is the one `aria-live` source.
  *
- * Every data-bearing phrasing carries the elapsed clause: the visible number
- * sits outside any live region, so without this a screen-reader user hears the
- * same string on every poll and is told nothing for the whole ten minutes. */
+ * Data-bearing phrasings carry the elapsed clause: the visible number sits
+ * outside any live region, so without this a screen-reader user hears the same
+ * string on every poll and is told nothing for the whole ten minutes. The one
+ * exception is a run waiting on the operator — see {@link elapsedClause}. */
 export function announceMessage(args: {
   isPending: boolean;
   isError: boolean;
@@ -22,7 +23,11 @@ export function announceMessage(args: {
   if (isPending || !data) return "Loading the import.";
   if (data.phase === "failed") return "The import failed.";
   const done = data.phase === "done";
-  const clause = elapsedClause(data.elapsed_seconds, done);
+  const clause = elapsedClause(
+    data.elapsed_seconds,
+    done,
+    data.awaiting_decision,
+  );
   if (data.origin === "sweep" && data.sweep) {
     return sweepMessage(data.sweep, data.phase) + clause;
   }
@@ -36,9 +41,23 @@ export function announceMessage(args: {
   return progressMessage(data) + clause;
 }
 
-/** The spoken elapsed sentence appended to every data-bearing announcement —
- * empty under a minute, past tense once the run is over. */
-function elapsedClause(seconds: number, done: boolean): string {
+/** The spoken elapsed sentence appended to a data-bearing announcement — empty
+ * under a minute, past tense once the run is over.
+ *
+ * Dropped entirely while the run waits on the operator. `role="status"` is
+ * implicitly atomic, so each minute tick re-reads the WHOLE string, and while a
+ * decision is owed nothing else can change — a 20-minute decision became 20
+ * full re-reads carrying no new information, and asserting activity. With the
+ * clause gone the string is static and the announcer's identical-string de-dup
+ * suppresses the repeat. The visible line keeps its value; that number counts
+ * the whole run and must not vanish. `progressMessage` still says a decision is
+ * owed. */
+function elapsedClause(
+  seconds: number,
+  done: boolean,
+  blocked: boolean,
+): string {
+  if (blocked && !done) return "";
   const spoken = spokenElapsed(seconds);
   if (spoken === null) return "";
   return done ? ` Took ${spoken}.` : ` Running for ${spoken}.`;
@@ -63,7 +82,8 @@ function progressMessage(data: ImportJobState): string {
   // OFFERED, not that the worker is blocked on it (an unattended duplicate sets
   // this status and skips on) — either way the user has something to clear, so
   // a screen-reader user must hear it. Whether the worker is blocked is
-  // `awaiting_decision`, and only the spinner/cadence care.
+  // `awaiting_decision`; the spinner, the cadence and the elapsed clause
+  // (which drops out while blocked) read that instead.
   const needs_dup = data.albums.filter(
     (a) => a.status === "needs_dup_resolution",
   ).length;

@@ -171,16 +171,20 @@ describe("announceMessage", () => {
     expect(speak(job({ elapsed_seconds: 132 }))).not.toBe(
       speak(job({ elapsed_seconds: 195 })),
     );
-    // Waiting on a person counts too: it is the whole run's duration.
-    expect(
+    // But NOT while the run waits on a person. `role="status"` is atomic, so
+    // each minute tick re-reads the whole string, and nothing else can change
+    // — a 20-minute decision became 20 full re-reads asserting activity. The
+    // string goes static instead, and the announcer's de-dup swallows the poll.
+    const parked = (seconds: number) =>
       speak(
         job({
           progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
-          elapsed_seconds: 600,
+          elapsed_seconds: seconds,
           awaiting_decision: true,
         }),
-      ),
-    ).toBe("Imported 1. 1 album awaiting review. Running for 10 minutes.");
+      );
+    expect(parked(600)).toBe("Imported 1. 1 album awaiting review.");
+    expect(parked(1200)).toBe(parked(600));
     // And the finished summary, in the past tense.
     expect(
       speak(
