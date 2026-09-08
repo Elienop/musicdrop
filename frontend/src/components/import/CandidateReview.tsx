@@ -140,28 +140,31 @@ function MatchHeader({
           put every segment on one flex line, and at 360px the browser had to
           squeeze the widest of them: measured 3 line boxes, with `items-center`
           then parking the %, the separator and the `view` link on the middle
-          one. Normal inline layout wraps between words instead, and every
-          separator is {@link SEGMENT_SEP}, so a wrapped line opens with the
-          middot rather than stranding one. The source list loses its `truncate`
-          with the flex row — on the screen where the release is being judged,
-          wrapping the label and country beats ellipsing them. */}
-      <p className="text-muted-foreground text-sm">
+          one. Normal inline layout wraps between words instead.
+          {@link SEGMENT_SEP} is every boundary on the line, the `view` link's
+          included, so one dialect reads the whole sentence and a wrapped line
+          opens with the middot rather than stranding one. None of them is
+          `aria-hidden`: the hidden middot here carried the only whitespace
+          between "Medium match" and the source list, and Chrome's AX tree
+          showed the two StaticText nodes adjacent.
+
+          `break-words` holds the overflow cap the dropped `truncate` was also
+          holding — wrapping the label and country beats ellipsing them on the
+          screen where the release is being judged, but an unbreakable token
+          then has nothing to stop it. The same remedy AlbumDetailPage's h1
+          carries. Measured at 360px with a 60-character label: 242px of
+          element overflow and 218px of document scroll without it. */}
+      <p className="text-muted-foreground text-sm break-words">
         <span className="text-foreground font-medium">
           {Math.round(candidate.confidence)}%
         </span>
         {showRecommendation &&
           `${SEGMENT_SEP}${RECOMMENDATION_LABEL[candidate.recommendation]}`}
-        {sourceBits.length > 0 && (
-          <>
-            {/* Hidden here and spoken above, as before this row was rewritten:
-                the two middots were never announced the same way. */}
-            <span aria-hidden="true">{SEGMENT_SEP}</span>
-            {sourceBits.join(SEGMENT_SEP)}
-          </>
-        )}
+        {sourceBits.length > 0 &&
+          `${SEGMENT_SEP}${sourceBits.join(SEGMENT_SEP)}`}
         {candidate.data_url && (
           <>
-            {" "}
+            {SEGMENT_SEP}
             <a
               href={candidate.data_url}
               target="_blank"

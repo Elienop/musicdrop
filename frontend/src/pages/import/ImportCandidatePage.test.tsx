@@ -243,8 +243,33 @@ describe("ImportCandidatePage", () => {
     expect(line.textContent).toBe(
       "76% \u00b7\u00a0Medium match \u00b7\u00a0MusicBrainz \u00b7\u00a01997 " +
         "\u00b7\u00a0CD \u00b7\u00a0GB \u00b7\u00a0Parlophone " +
-        "view (opens the release page in a new tab)",
+        "\u00b7\u00a0view (opens the release page in a new tab)",
     );
+    // `textContent` INCLUDES `aria-hidden` nodes, so the assertion above cannot
+    // see a separator that renders but is not spoken \u2014 and one here was not.
+    // The middot before the source list was hidden, and since `SEGMENT_SEP`
+    // carries this line's only whitespace, Chrome's AX tree read "\u2026Medium
+    // match" and "MusicBrainz\u2026" as adjacent StaticText nodes. Every separator
+    // is plain text now, so dropping the hidden nodes must not change the
+    // string. The `<svg>` is the control: it is the one `aria-hidden` node
+    // left, and it contributes nothing to `textContent` either way.
+    const withoutHidden = (node: Node): string => {
+      if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+      if (node.nodeType !== Node.ELEMENT_NODE) return "";
+      if ((node as Element).getAttribute("aria-hidden") === "true") return "";
+      return [...node.childNodes].map(withoutHidden).join("");
+    };
+    // The helper's own control: it must actually drop a hidden subtree, or the
+    // assertion below passes by doing nothing.
+    const probe = document.createElement("p");
+    probe.innerHTML = 'a<span aria-hidden="true">HIDDEN</span>b';
+    expect(probe.textContent).toBe("aHIDDENb");
+    expect(withoutHidden(probe)).toBe("ab");
+
+    expect(withoutHidden(line)).toBe(line.textContent);
+    const hidden = line.querySelectorAll('[aria-hidden="true"]');
+    expect(hidden).toHaveLength(1);
+    expect(hidden[0].tagName).toBe("svg"); // decorative, and carries no text
     // The layout half: as `flex items-center gap-2` this line put every segment
     // on one flex line and the browser squeezed the widest of them to three
     // line boxes at 360px. Normal inline layout wraps between words instead.
@@ -252,6 +277,12 @@ describe("ImportCandidatePage", () => {
     // squeeze needed; the wrap itself is a browser measurement.
     const tokens = line.className.split(/\s+/);
     expect(tokens).not.toContain("flex");
+    // Dropping the flex row also dropped the `truncate` that was capping this
+    // line's contribution to the page's scroll width. `break-words` is what
+    // holds that cap now — measured at 360px with a 60-character unbreakable
+    // label, 242px of element overflow and 218px of document scroll without it,
+    // 0 and 17 with it (the 17 is AlbumPanel's, recorded separately).
+    expect(tokens).toContain("break-words");
     // Control: a line that lost its classes entirely would also pass the line
     // above, so pin what must still be there.
     expect(tokens).toContain("text-sm");
