@@ -118,8 +118,9 @@ def test_job_state_round_trips() -> None:
     assert dumped["set_aside"] == 1
     # Required, never optional: the import page always has a number to show.
     assert dumped["elapsed_seconds"] == 125
+    without_elapsed = {k: v for k, v in dumped.items() if k != "elapsed_seconds"}
     with pytest.raises(ValidationError):
-        ImportJobState.model_validate({k: v for k, v in dumped.items() if k != "elapsed_seconds"})
+        ImportJobState.model_validate(without_elapsed)
     # Required too: "is a person being waited on" has no safe default — a
     # defaulted False would silently report every job as unblocked.
     assert dumped["awaiting_decision"] is True
