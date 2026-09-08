@@ -652,6 +652,25 @@ describe("ImportPage — live feed", () => {
     expect(screen.getByText("2 minutes.")).toHaveClass("sr-only");
   });
 
+  // ELAPSED_AFTER_S is 30, not 60, precisely so this band renders at all. Both
+  // halves of the segment read the VISIBLE label's floor, and the component
+  // returns null when either half is null — so a spoken twin left on
+  // `spokenElapsed`'s 60s default deletes the visible number too, for every run
+  // between 30 and 59 seconds. Nothing else in the suite renders inside it.
+  test("a run in the 30-59s band renders both halves of the segment", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(makeJob({ elapsed_seconds: 45 })),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    const segment = await screen.findByText("· 45s");
+    expect(segment).toHaveAttribute("aria-hidden", "true");
+    expect(lineOf(segment)).toHaveTextContent("1 album imported");
+    expect(screen.getByText("45 seconds.")).toHaveClass("sr-only");
+  });
+
   test("the cue keeps working after a decision, while the worker scans on", async () => {
     // `phase` latches to "reviewing" at the first parked album and never
     // returns to "scanning", so this run — album 1 decided, nothing parked,
@@ -1103,6 +1122,31 @@ describe("ImportPage — terminal states", () => {
     expect(duration.textContent).not.toContain("·");
     // "40m 12s" is read as a letter; the spoken twin carries the words.
     expect(screen.getByText("Ran for 40 minutes.")).toHaveClass("sr-only");
+  });
+
+  // The same band at the other helper. `elapsedSentence` pairs the two halves on
+  // the same floor and returns undefined when either is missing, so a twin left
+  // on the 60s default takes the whole visible line with it. ELAPSED_AFTER_S
+  // itself, so the floor is pinned at its own boundary (the sibling test above
+  // holds ELAPSED_AFTER_S - 1 down).
+  test("a failure in the 30-59s band keeps both halves of its duration line", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "failed",
+            error: "lookup exploded",
+            albums: [],
+            elapsed_seconds: ELAPSED_AFTER_S,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    const duration = await screen.findByText("Ran for 30s.");
+    expect(duration).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByText("Ran for 30 seconds.")).toHaveClass("sr-only");
   });
 
   test("a failed run reports the counts it earned, and its feed, read-only", async () => {
