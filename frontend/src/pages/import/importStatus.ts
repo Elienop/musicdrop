@@ -98,12 +98,18 @@ function elapsedClause(
  * Worded away from the visible line ("Pausing; finishing the current album…")
  * so the two never substring-collide. */
 function sweepMessage(sweep: SweepStatus, phase: ImportJobState["phase"]): string {
-  const counts = sweepCounts(sweep);
   if (phase !== "done") {
+    // The moving triple only. `role="status"` is atomic, so a live sweep
+    // re-reads this whole string every poll for as long as it runs — the same
+    // repetition the elapsed clause was gated to stop. `skipped_known` decides
+    // nothing while the run is in flight, and the tile carries it on screen.
+    const counts = sweepCounts(sweep);
     return sweep.paused
       ? `Stopping after this album. ${counts}`
       : `Sweeping. ${counts}`;
   }
+  // Spoken once, and a claim about the whole run — so every category it holds.
+  const counts = sweepCounts(sweep) + knownClause(sweep);
   return sweep.paused ? `Sweep paused. ${counts}` : `Sweep complete. ${counts}`;
 }
 
@@ -113,10 +119,14 @@ function sweepMessage(sweep: SweepStatus, phase: ImportJobState["phase"]): strin
  * says — a re-run sweep that skipped twenty known folders and then crashed
  * announced a bare "The sweep failed." while a tile read 20. */
 function sweepCounts(sweep: SweepStatus): string {
-  const counts = `Processed ${sweep.processed}, imported ${sweep.auto_applied}, banked ${sweep.banked}.`;
-  return sweep.skipped_known > 0
-    ? `${counts} ${sweep.skipped_known} already known.`
-    : counts;
+  return `Processed ${sweep.processed}, imported ${sweep.auto_applied}, banked ${sweep.banked}.`;
+}
+
+/** The fourth tile's number, for the announcements spoken once. Folders skipped
+ * before tagging never reach `processed`, so a re-run that skipped twenty and
+ * then crashed reported nothing while a tile read 20. */
+function knownClause(sweep: SweepStatus): string {
+  return sweep.skipped_known > 0 ? ` ${sweep.skipped_known} already known.` : "";
 }
 
 /** A failed sweep's counters, empty when it did nothing at all.
@@ -126,10 +136,9 @@ function sweepCounts(sweep: SweepStatus): string {
  * sweep keeps the unconditional triple: zeros there mean "not yet", but on a
  * terminal panel they are a claim about the whole run. */
 function failedSweepCounts(sweep: SweepStatus): string {
-  const known =
-    sweep.skipped_known > 0 ? `${sweep.skipped_known} already known.` : "";
+  const known = knownClause(sweep).trimStart();
   if (sweep.processed + sweep.auto_applied + sweep.banked === 0) return known;
-  return sweepCounts(sweep);
+  return sweepCounts(sweep) + knownClause(sweep);
 }
 
 /** The lost-album clause both terminal announcements owe. `not_landed` is only

@@ -390,6 +390,26 @@ describe("announceMessage", () => {
         }),
       ),
     ).toBe("The sweep failed. 20 already known. Took 14 minutes.");
+    // Terminal-only clause. A live sweep re-reads its whole announcement every
+    // poll (`role="status"` is atomic — the repetition the elapsed clause was
+    // gated to stop), and `skipped_known` decides nothing mid-run, so the
+    // running sweep keeps the moving triple and the finished one is complete.
+    const running = {
+      processed: 30,
+      auto_applied: 20,
+      banked: 10,
+      skipped_known: 5,
+      current_folder: null,
+      paused: false,
+    };
+    expect(
+      speak(sweepState({ phase: "scanning", elapsed_seconds: 840, sweep: running })),
+    ).toBe("Sweeping. Processed 30, imported 20, banked 10. Running for 14 minutes.");
+    expect(
+      speak(sweepState({ phase: "done", elapsed_seconds: 840, sweep: running })),
+    ).toBe(
+      "Sweep complete. Processed 30, imported 20, banked 10. 5 already known. Took 14 minutes.",
+    );
     // Nothing landed: the crash-during-scan case says only that it failed,
     // either side of the origin split. "Imported 0, skipped 0." is noise.
     expect(
