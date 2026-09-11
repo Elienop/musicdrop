@@ -10,6 +10,10 @@ import type { AppIcon } from "@/components/icons";
 import { Pause, Success } from "@/components/icons";
 import { ImportPage } from "@/pages/import/ImportPage";
 import { ELAPSED_AFTER_S } from "@/pages/import/importStatus";
+import {
+  containerQueryVariants,
+  unwiredContainerQueries,
+} from "@/test/containerQuery";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
 
@@ -549,6 +553,68 @@ describe("ImportPage — live feed", () => {
       "href",
       "/import/albums/0/duplicate?job=job-1",
     );
+  });
+
+  // decisions 39, extended to this feed by the owner (2026-09-11). Under 20rem
+  // of ROW the Review/Resolve button drops to its own line under the row: with
+  // it inline the title measured 0px wide at viewport 320→344 on a parked
+  // duplicate and 320→328 on a needs_review row. jsdom computes no layout, so
+  // what a test can hold is the structure — the button is a grid item of the
+  // row WRAPPER (from inside AlbumRow's `action` slot it could not take a line
+  // without growing AlbumRow's box) and both arms are named, so dropping
+  // either one fails. The widths, the threshold's derivation and the
+  // untouched live announcer are in the branch's browser pass.
+  test("a parked row's action is a grid item of the row, with both arms named", async () => {
+    server.use(http.get(JOB_URL, () => HttpResponse.json(makeJob())));
+    renderAt("/import?job=job-1");
+
+    const review = await screen.findByRole("link", { name: /review/i });
+    const group = review.parentElement;
+    const wrapper = group?.parentElement;
+    expect(wrapper).not.toBeNull();
+    expect(wrapper?.className.split(/\s+/)).toContain("grid");
+    // The threshold is measured against the ROW, not the viewport: at 768px
+    // the sidebar opens and the row is NARROWER than at 520px.
+    expect(wrapper?.className.split(/\s+/)).toContain("@container/feedrow");
+    for (const token of [
+      "col-start-1",
+      "row-start-2",
+      "@min-[20rem]/feedrow:col-start-2",
+      "@min-[20rem]/feedrow:row-start-1",
+    ]) {
+      expect(group?.className.split(/\s+/)).toContain(token);
+    }
+    // Every container query on the row, and every one of them wired to a
+    // container an ancestor declares — a renamed container applies nothing at
+    // all, silently.
+    expect(containerQueryVariants(wrapper as HTMLElement)).toEqual([
+      "@min-[18rem]/rowtext:block",
+      "@min-[18rem]/rowtext:flex-row",
+      "@min-[18rem]/rowtext:items-center",
+      "@min-[20rem]/feedrow:-ml-1",
+      "@min-[20rem]/feedrow:col-start-2",
+      "@min-[20rem]/feedrow:mb-0",
+      "@min-[20rem]/feedrow:mr-4",
+      "@min-[20rem]/feedrow:row-start-1",
+    ]);
+    expect(unwiredContainerQueries(wrapper as HTMLElement)).toEqual([]);
+  });
+
+  test("a feed row with no button keeps the plain box it always had", async () => {
+    server.use(http.get(JOB_URL, () => HttpResponse.json(makeJob())));
+    renderAt("/import?job=job-1");
+
+    // index 0 is `applied`: a title link, no action. Only a row that carries a
+    // button can gain the dropped line, so every other feed row is untouched.
+    const applied = await screen.findByRole("link", { name: "OK Computer" });
+    const wrapper = applied.closest("li")?.firstElementChild;
+    expect(wrapper?.className.split(/\s+/)).not.toContain("grid");
+    expect(wrapper?.className.split(/\s+/)).not.toContain("@container/feedrow");
+    expect(containerQueryVariants(wrapper as HTMLElement)).toEqual([
+      "@min-[18rem]/rowtext:block",
+      "@min-[18rem]/rowtext:flex-row",
+      "@min-[18rem]/rowtext:items-center",
+    ]);
   });
 
   test("the live cue surfaces a parked duplicate to resolve", async () => {
