@@ -27,7 +27,12 @@ async def test_default_fetch_one_skips_background_fetch_when_present(
 
     name = str(next(iter(edit_lib.albums())).albumartist)
     write_artist_art(
-        edit_lib, name, poster=None, background=(b"\xff\xd8\xff\x00", "image/jpeg"), force=True
+        edit_lib,
+        name,
+        poster=None,
+        background=(b"\xff\xd8\xff\x00", "image/jpeg"),
+        force=True,
+        trash=None,  # nothing exists yet, so nothing is replaced
     )
     monkeypatch.setattr(runner, "get_artist_mbid", lambda lib, n: "mbid-123")  # reach the bg branch
 
@@ -45,11 +50,11 @@ async def test_default_fetch_one_skips_background_fetch_when_present(
 
     service: Any = _Service()  # duck-typed stub for ArtistImageService
     bg_source: Any = _BgSource()
-    await runner._default_fetch_one(service, bg_source, edit_lib, name, force=False)
+    await runner._default_fetch_one(service, bg_source, edit_lib, name, force=False, trash=None)
     assert calls["bg"] == 0  # skipped the fanart download (background already on disk)
 
     calls["bg"] = 0
-    await runner._default_fetch_one(service, bg_source, edit_lib, name, force=True)
+    await runner._default_fetch_one(service, bg_source, edit_lib, name, force=True, trash=None)
     assert calls["bg"] == 1  # force re-fetches
 
 

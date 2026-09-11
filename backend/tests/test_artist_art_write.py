@@ -1,9 +1,12 @@
 import os
 from pathlib import Path
 
+import pytest
 from beets.library import Library
 
-from app.beets.artist_art import get_artist_dirs, write_artist_art
+from app.beets.artist_art import ArtTrashStore, get_artist_dirs, write_artist_art
+from app.beets.trash_manage import list_trashed_albums
+from app.beets.trash_origins import read_trash_origin
 
 PNG = (b"\x89PNG\r\n\x1a\n" + b"\x00" * 40, "image/png")
 JPG = (b"\xff\xd8\xff" + b"\x00" * 40, "image/jpeg")
@@ -11,6 +14,12 @@ JPG = (b"\xff\xd8\xff" + b"\x00" * 40, "image/jpeg")
 
 def _artist_of(lib: Library) -> str:
     return str(next(iter(lib.albums())).albumartist)
+
+
+@pytest.fixture
+def art_trash(tmp_path: Path) -> ArtTrashStore:
+    """The Trash store a forced write moves the files it replaces into."""
+    return ArtTrashStore(trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins")
 
 
 def test_get_artist_dirs_returns_album_parent(edit_lib: Library) -> None:
@@ -21,11 +30,13 @@ def test_get_artist_dirs_returns_album_parent(edit_lib: Library) -> None:
     assert Path(os.fsdecode(album.item_dir())).parent in dirs
 
 
-def test_write_creates_poster_and_background(edit_lib: Library) -> None:
+def test_write_creates_poster_and_background(edit_lib: Library, art_trash: ArtTrashStore) -> None:
     name = _artist_of(edit_lib)
     old_umask = os.umask(0o022)
     try:
-        out = write_artist_art(edit_lib, name, poster=PNG, background=JPG, force=True)
+        out = write_artist_art(
+            edit_lib, name, poster=PNG, background=JPG, force=True, trash=art_trash
+        )
     finally:
         os.umask(old_umask)
     assert out.status == "written"
@@ -51,10 +62,10 @@ def test_atomic_write_bytes_preserves_mode_on_rewrite(tmp_path: Path) -> None:
     assert dst.read_bytes() == JPG[0]  # and the content was replaced
 
 
-def test_skip_existing_unless_force(edit_lib: Library) -> None:
+def test_skip_existing_unless_force(edit_lib: Library, art_trash: ArtTrashStore) -> None:
     name = _artist_of(edit_lib)
-    write_artist_art(edit_lib, name, poster=PNG, background=None, force=True)
-    out = write_artist_art(edit_lib, name, poster=JPG, background=None, force=False)
+    write_artist_art(edit_lib, name, poster=PNG, background=None, force=True, trash=art_trash)
+    out = write_artist_art(edit_lib, name, poster=JPG, background=None, force=False, trash=None)
     assert out.status == "skipped"
     # the original .png survives (skip-existing), no .jpg added
     for d in get_artist_dirs(edit_lib, name):
@@ -62,32 +73,161 @@ def test_skip_existing_unless_force(edit_lib: Library) -> None:
         assert not (d / "artist-poster.jpg").exists()
 
 
-def test_force_overwrites_and_unlinks_old_ext(edit_lib: Library) -> None:
+def test_force_moves_the_replaced_file_to_trash(
+    edit_lib: Library, art_trash: ArtTrashStore
+) -> None:
+    """A forced write REPLACES, and what it replaces is a file somebody may have
+    put there by hand (Plex reads these names), so it goes to Trash with an
+    origin record instead of being unlinked."""
     name = _artist_of(edit_lib)
-    write_artist_art(edit_lib, name, poster=PNG, background=None, force=True)
-    write_artist_art(edit_lib, name, poster=JPG, background=None, force=True)
+    write_artist_art(edit_lib, name, poster=PNG, background=None, force=True, trash=art_trash)
+    out = write_artist_art(edit_lib, name, poster=JPG, background=None, force=True, trash=art_trash)
+
+    assert out.status == "written"
+    dirs = get_artist_dirs(edit_lib, name)
+    for d in dirs:
+        assert (d / "artist-poster.jpg").read_bytes() == JPG[0]
+        assert not (d / "artist-poster.png").exists()  # gone from the artist folder
+
+    entries = sorted(p for p in art_trash.trash_dir.iterdir())
+    assert [p.name for p in entries] == [f"{d.name} - artist art" for d in dirs]
+    for entry, d in zip(entries, dirs, strict=True):
+        assert (entry / "artist-poster.png").read_bytes() == PNG[0]  # the old file itself
+        record = read_trash_origin(art_trash.origins_dir, entry.name)
+        assert record is not None
+        assert record.origin == str(d)  # the artist folder it came out of
+        assert record.moved == "items"  # no move-back: the entry is not that folder
+
+    listed = list_trashed_albums(
+        art_trash.trash_dir,
+        origins_dir=art_trash.origins_dir,
+        music_dir=os.fsdecode(edit_lib.directory),
+    )
+    assert [row.folder for row in listed] == [p.name for p in entries]
+    assert [row.restore_mode for row in listed] == ["import"] * len(entries)
+
+
+def test_force_refuses_the_write_when_the_replaced_file_cannot_be_trashed(
+    edit_lib: Library,
+) -> None:
+    """No usable Trash store means the curated file stays and the folder fails —
+    the one thing a forced write must never do is destroy it anyway."""
+    name = _artist_of(edit_lib)
+    # A store under / that this process cannot create: require_usable_store's
+    # mkdir probe raises EACCES for a non-root user.
+    store = ArtTrashStore(trash_dir=Path("/x-musicdrop"), origins_dir=Path("/x-musicdrop"))
+    dirs = get_artist_dirs(edit_lib, name)
+    for d in dirs:  # the curated file, seeded by hand
+        (d / "artist-poster.png").write_bytes(PNG[0])
+    out = write_artist_art(edit_lib, name, poster=JPG, background=None, force=True, trash=store)
+
+    assert (out.status, out.written) == ("failed", 0)
+    for d in dirs:
+        assert (d / "artist-poster.png").read_bytes() == PNG[0]  # untouched
+        assert not (d / "artist-poster.jpg").exists()
+
+
+def test_force_puts_both_kinds_of_one_folder_in_one_trash_entry(
+    edit_lib: Library, art_trash: ArtTrashStore
+) -> None:
+    name = _artist_of(edit_lib)
+    write_artist_art(edit_lib, name, poster=PNG, background=PNG, force=True, trash=art_trash)
+    write_artist_art(edit_lib, name, poster=JPG, background=JPG, force=True, trash=art_trash)
+
+    entries = sorted(art_trash.trash_dir.iterdir())
+    assert len(entries) == len(get_artist_dirs(edit_lib, name))  # one per folder, not per file
+    for entry in entries:
+        assert sorted(p.name for p in entry.iterdir()) == [
+            "artist-background.png",
+            "artist-poster.png",
+        ]
+
+
+def test_force_refuses_a_folder_whose_art_name_is_a_directory(
+    edit_lib: Library, art_trash: ArtTrashStore
+) -> None:
+    """A directory matching the glob is not a file to move aside, and this mover
+    relocates no tree: the folder fails and the directory stays."""
+    name = _artist_of(edit_lib)
     for d in get_artist_dirs(edit_lib, name):
-        assert (d / "artist-poster.jpg").exists()
-        assert not (d / "artist-poster.png").exists()  # old ext unlinked
+        (d / "artist-poster.png").mkdir()
+    out = write_artist_art(edit_lib, name, poster=JPG, background=None, force=True, trash=art_trash)
+
+    assert (out.status, out.written) == ("failed", 0)
+    for d in get_artist_dirs(edit_lib, name):
+        assert (d / "artist-poster.png").is_dir()
+        assert not (d / "artist-poster.jpg").exists()
+    assert not art_trash.trash_dir.exists()  # no container left behind
 
 
 def test_no_art_when_both_none(edit_lib: Library) -> None:
-    out = write_artist_art(edit_lib, _artist_of(edit_lib), poster=None, background=None, force=True)
+    out = write_artist_art(
+        edit_lib, _artist_of(edit_lib), poster=None, background=None, force=True, trash=None
+    )
     assert out.status == "no_art"
 
 
 def test_no_folder_for_unknown_artist(edit_lib: Library) -> None:
-    out = write_artist_art(edit_lib, "No Such Artist 99", poster=PNG, background=None, force=True)
+    out = write_artist_art(
+        edit_lib, "No Such Artist 99", poster=PNG, background=None, force=True, trash=None
+    )
     assert out.status == "no_folder"
 
 
-def test_has_background_true_only_when_every_folder_has_it(edit_lib: Library) -> None:
+def test_has_background_true_only_when_every_folder_has_it(
+    edit_lib: Library, art_trash: ArtTrashStore
+) -> None:
     from app.beets.artist_art import has_background
 
     name = _artist_of(edit_lib)
     assert has_background(edit_lib, name) is False  # nothing written yet
-    write_artist_art(edit_lib, name, poster=None, background=JPG, force=True)
+    write_artist_art(edit_lib, name, poster=None, background=JPG, force=True, trash=art_trash)
     assert has_background(edit_lib, name) is True  # every folder now has one
     dirs = get_artist_dirs(edit_lib, name)
     next(iter(dirs[0].glob("artist-background.*"))).unlink()  # drop it from one folder
     assert has_background(edit_lib, name) is False  # fetch is needed again
+
+
+def test_a_trashed_art_container_can_be_emptied(
+    edit_lib: Library, art_trash: ArtTrashStore
+) -> None:
+    """The Trash page's per-row Empty removes the container and its record —
+    nothing about this entry needs a new delete path."""
+    from app.beets.trash_manage import empty_one
+    from tests.conftest import protected_for
+
+    name = _artist_of(edit_lib)
+    write_artist_art(edit_lib, name, poster=PNG, background=None, force=True, trash=art_trash)
+    write_artist_art(edit_lib, name, poster=JPG, background=None, force=True, trash=art_trash)
+    entry = next(iter(art_trash.trash_dir.iterdir()))
+
+    result = empty_one(
+        str(entry),
+        origins_dir=art_trash.origins_dir,
+        protected=protected_for(
+            edit_lib, trash_dir=art_trash.trash_dir, origins_dir=art_trash.origins_dir
+        ),
+    )
+
+    assert result.removed == 1
+    assert not entry.exists()
+    assert read_trash_origin(art_trash.origins_dir, entry.name) is None
+
+
+def test_force_refuses_the_write_when_no_trash_store_was_given(edit_lib: Library) -> None:
+    """No store to name is the same answer as an unusable one: do not write.
+
+    Seeded with the extension the new file WOULD take, because that is the shape
+    with no second chance — ``os.replace`` would destroy the curated file in
+    place and leave nothing behind to notice.
+    """
+    name = _artist_of(edit_lib)
+    dirs = get_artist_dirs(edit_lib, name)
+    for d in dirs:
+        (d / "artist-poster.jpg").write_bytes(PNG[0])
+
+    out = write_artist_art(edit_lib, name, poster=JPG, background=None, force=True, trash=None)
+
+    assert (out.status, out.written) == ("failed", 0)
+    for d in dirs:
+        assert (d / "artist-poster.jpg").read_bytes() == PNG[0]

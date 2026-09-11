@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -22,14 +23,20 @@ from app.artwork.factory import build_fanart_background_source, build_source_cha
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
 from app.artwork.source import TransientSourceError
-from app.beets.artist_art import has_background, write_artist_art
+from app.beets.artist_art import ArtTrashStore, has_background, write_artist_art
 from app.beets.library import get_artist_mbid, list_artists
 from app.config import Settings
 from app.models.artist_art import ArtistArtOutcome
 
 
 async def _default_fetch_one(
-    service: ArtistImageService, bg_source: Any, lib: Any, name: str, *, force: bool
+    service: ArtistImageService,
+    bg_source: Any,
+    lib: Any,
+    name: str,
+    *,
+    force: bool,
+    trash: ArtTrashStore | None,
 ) -> ArtistArtOutcome:
     mbid = await asyncio.to_thread(get_artist_mbid, lib, name)
     poster = await service.get_artist_image(name, get_mbid=lambda: mbid)
@@ -49,7 +56,15 @@ async def _default_fetch_one(
         if bg is not None:
             background = (bg.data, bg.content_type)
     return await asyncio.to_thread(
-        write_artist_art, lib, name, poster=poster, background=background, force=force
+        partial(
+            write_artist_art,
+            lib,
+            name,
+            poster=poster,
+            background=background,
+            force=force,
+            trash=trash,
+        )
     )
 
 
@@ -61,6 +76,7 @@ async def sweep_async(
     settings: Settings,
     delay: float,
     force: bool,
+    trash: ArtTrashStore | None = None,
     artist: str | None = None,
     names: list[str] | None = None,
     fetch_one: Callable[[str], Awaitable[ArtistArtOutcome]] | None = None,
@@ -70,6 +86,11 @@ async def sweep_async(
 
     ``on_complete`` fires once on termination (done/stopped/fail) so open tabs
     repaint the just-written artist art — same contract as reorganize's sweep.
+
+    ``trash`` is where a file a FORCED run replaces goes. Only the forced run
+    needs one, and a run given none reports every folder whose art it would have
+    replaced as failed, leaving those files in place
+    (:func:`app.beets.artist_art.write_artist_art`).
     """
     try:
         if names is None:
@@ -102,7 +123,9 @@ async def sweep_async(
             bg_source = build_fanart_background_source(client, settings)
 
             async def real(name: str) -> ArtistArtOutcome:
-                return await _default_fetch_one(service, bg_source, lib, name, force=force)
+                return await _default_fetch_one(
+                    service, bg_source, lib, name, force=force, trash=trash
+                )
 
             await _run_loop(reg, names, real, delay)
     except Exception as exc:  # any crash becomes a failed job, never a lost thread
@@ -139,13 +162,16 @@ def start_backfill(
     settings: Settings,
     delay: float,
     force: bool,
+    trash: ArtTrashStore | None = None,
     artist: str | None = None,
     on_complete: Callable[[], None] | None = None,
 ) -> None:
     """Spawn the sweep on a daemon thread that owns its event loop.
 
     Via ``reg.spawn_worker`` so a refused ``Thread.start()`` frees the slot
-    instead of wedging every library mutation (see SingleSlotRegistry)."""
+    instead of wedging every library mutation (see SingleSlotRegistry).
+    ``trash`` — see :func:`sweep_async`; the caller resolves it (``api/artists.
+    _art_trash_store``) because this thread has no ``Settings``/handle pair."""
     reg.spawn_worker(
         lambda: asyncio.run(
             sweep_async(
@@ -155,6 +181,7 @@ def start_backfill(
                 settings=settings,
                 delay=delay,
                 force=force,
+                trash=trash,
                 artist=artist,
                 on_complete=on_complete,
             )

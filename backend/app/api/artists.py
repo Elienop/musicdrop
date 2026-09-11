@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from typing import Annotated, Final, Literal, cast
 
@@ -39,10 +40,12 @@ from app.artwork.service import ArtistImageService
 from app.artwork.source import TransientSourceError
 from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
 from app.beets import library as beets_library
+from app.beets.artist_art import ArtTrashStore
 from app.beets.delete import delete_artist_op
 from app.beets.library import LibraryHandle, list_artists
 from app.beets.rename import apply_artist_rename_op, preview_artist_rename_op
-from app.config import resolve_artist_image_cache_dir
+from app.beets.store_layout import StoreLayoutError, checked_store_dirs
+from app.config import Settings, resolve_artist_image_cache_dir
 from app.config import settings as _module_settings
 from app.etag import size_scoped_etag
 from app.events.emit import emit_art_changed, emit_library_changed
@@ -63,6 +66,8 @@ from app.models.errors import ErrorDetail, StructuredErrorDetail, validation_or_
 from app.models.rename import ArtistRenamePreview, ArtistRenameRequest, ArtistRenameResult
 from app.playlists.reexport import reexport_playlists_containing
 from app.playlists.store import get_playlists_dir
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["artists"])
 
@@ -265,12 +270,17 @@ async def rename_artist_endpoint(
     moved_ids = set(outcome.moved_item_ids)
     art_job: Literal["started", "skipped_busy", "not_needed"] = "not_needed"
     if moved_ids and toggle.is_enabled():
+        # force=False: the new folders have no art and get it, folders that
+        # already hold a poster/background keep it. A rename that merges two
+        # artists arrives at a target folder somebody may have curated, and
+        # nobody asked for that to be replaced (owner ruling, 2026-09-11).
+        # Replacing is what the per-artist Apply button is for.
         try:
-            reg.start(force=True, artist=payload.new_name, scope_label=payload.new_name)
+            reg.start(force=False, artist=payload.new_name, scope_label=payload.new_name)
         except RuntimeError:
             art_job = "skipped_busy"
         else:
-            _start(app_obj, reg, handle.lib, force=True, artist=payload.new_name)
+            _start(app_obj, reg, handle.lib, force=False, artist=payload.new_name)
             art_job = "started"
 
     reexported = await reexport_playlists_containing(moved_ids, handle, playlists_dir)
@@ -974,6 +984,31 @@ async def stop_artist_art_backfill(
     return reg.state()
 
 
+def _art_trash_store(app: object, settings: Settings) -> ArtTrashStore | None:
+    """Where a REPLACED poster/background goes, or ``None`` if it cannot be named.
+
+    Only the forced write needs it, so only the forced write pays for the layout
+    walk. ``None`` is the honest answer to a refused or unresolvable store, and
+    it is not a 503 here: this route's job is to START a job, the run reports the
+    outcome per artist, and declaring a new status on the route would change the
+    contract. Each folder holding art the run would replace is then reported
+    ``failed`` with its files still in place (``artist_art.write_artist_art``).
+    """
+    handle: LibraryHandle | None = getattr(app.state, "beets_library", None)  # type: ignore[attr-defined]  # app is duck-typed (object) so tests can pass a stub
+    if handle is None:
+        return None
+    try:
+        trash_dir, origins_dir = checked_store_dirs(settings, handle)
+    except StoreLayoutError:
+        _log.warning(
+            "artist art: the Trash store is refused, so a forced write will not replace"
+            " any existing file",
+            exc_info=True,
+        )
+        return None
+    return ArtTrashStore(trash_dir=trash_dir, origins_dir=origins_dir)
+
+
 def _start(
     app: object,
     reg: ArtistArtBackfillRegistry,
@@ -982,7 +1017,7 @@ def _start(
     force: bool,
     artist: str | None,
 ) -> None:
-    app_settings = getattr(app.state, "settings", None) or _module_settings  # type: ignore[attr-defined]  # app is duck-typed (object) so tests can pass a stub
+    app_settings: Settings = getattr(app.state, "settings", None) or _module_settings  # type: ignore[attr-defined]  # app is duck-typed (object) so tests can pass a stub
     delay = float(getattr(app_settings, "lyrics_backfill_delay_seconds", 0.2))
     start_art_backfill(
         reg,
@@ -993,6 +1028,9 @@ def _start(
         settings=app_settings,
         delay=delay,
         force=force,
+        # Resolved only for a forced run — the skip-existing sweep replaces
+        # nothing, so it has no file to move aside.
+        trash=_art_trash_store(app, app_settings) if force else None,
         artist=artist,
         # Repaint open tabs when the run finishes (fired from the daemon thread;
         # the broker hops onto the main loop via call_soon_threadsafe). UNSCOPED:

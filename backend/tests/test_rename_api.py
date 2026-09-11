@@ -185,11 +185,11 @@ def test_apply_kicks_the_art_job_when_files_moved_and_toggle_on(
     reg = _RegistryRecorder()
     app.dependency_overrides[get_artist_art_write_toggle] = lambda: _ToggleOn()
     app.dependency_overrides[get_artist_art_backfill] = lambda: reg
-    started: list[str] = []
+    started: list[tuple[str, bool]] = []
     monkeypatch.setattr(
         artists_mod,
         "_start",
-        lambda _app, _reg, _lib, *, force, artist: started.append(str(artist)),
+        lambda _app, _reg, _lib, *, force, artist: started.append((str(artist), force)),
     )
     client, _, _ = rename_client
     r = client.post("/api/artists/rename", json={"name": "Fayrouz", "new_name": "Fairuz"})
@@ -198,7 +198,11 @@ def test_apply_kicks_the_art_job_when_files_moved_and_toggle_on(
     assert reg.calls
     assert reg.calls[0]["artist"] == "Fairuz"
     assert reg.calls[0]["scope_label"] == "Fairuz"
-    assert started == ["Fairuz"]
+    # force=False on BOTH the slot claim and the job: a rename fills art where it
+    # is MISSING. A merge into an artist who already has a hand-placed poster
+    # must not replace it — only the per-artist Apply button does that.
+    assert reg.calls[0]["force"] is False
+    assert started == [("Fairuz", False)]
 
 
 def test_all_drifted_batch_does_not_rekey_the_portrait(
