@@ -2060,6 +2060,14 @@ the condition it names has changed.
   pre-check's own window plus the acquire can outlive the flag it read. Revisit only if the
   reset gains a progress surface that can honestly show a wait.
 
+- **The background portrait filler writes the auto slot with no gate, so a reset's auto clear
+  can be undone by a filler write that starts after the inner gate read** (2026-09-12,
+  `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`). The inner re-check covers the
+  sweep, not the filler's single-flight kick. The loser is one automatic image that the next
+  lookup replaces; never a user upload, which the reset moves to Trash and the clear no longer
+  touches. Recorded, not fixed: gating the filler would serialise a background fetch behind a
+  user action for nothing a user can see.
+
 - **The reset's move-failure WARNING names the Trash dir in both arms, and its 503 carries two
   audiences** (2026-09-12, same branch). Two notes on the same 503 path, both deliberate.
   (a) The log line interpolates `store.trash_dir` even when the fault is the origins store —
