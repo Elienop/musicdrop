@@ -2643,6 +2643,15 @@ Added by the 2026-08-28 sweeps:
 
 ## Recently shipped
 
+- **The lint gate reads the newest analyzer bundle — PR #222, squash `1de4a0e` = v0.51.3 (2026-09-11).**
+  The bundle-on-disk check in `frontend/eslint.config.test.ts` now picks the newest
+  `sonar-javascript-plugin.jar` in the scanner cache by mtime; it used to take the first of the
+  hash-named directories in `readdirSync` order, which became a coin toss the day the
+  SonarQube 26.9 upgrade left two. The deliberately unpinned `@typescript-eslint/eslint-plugin`
+  version the config comment quotes (8.67.0 in analyzer 13.8) now has a reader that compares it
+  to the bundle only, never to node_modules. Records #221. A `test` squash still cut a patch
+  release, because the release keys on changed paths and `frontend/` moved.
+
 - **Phone-width rows and hit areas — PR #221, squash `a053ffc` = v0.51.2 (2026-09-11).**
   Decisions 39–42, each browser-measured with a real scrollbar, 201–237 widths per surface. A row's actions
   drop below it under 28rem of row width on the bank, decision and parked feed rows (a grid with
