@@ -898,8 +898,9 @@ def _undo_failure(
     """
     # ``%r``, not ``%s``, and the same in the message this logs the traceback of.
     # A Trash folder's name comes from the album's own tags, and
-    # ``_trash_container_name`` neutralises only path separators — so a newline
-    # or an ANSI escape in an ``albumartist`` survives into the folder name, and
+    # ``_trash_container_name`` neutralises separators, NUL and U+FFFD but no
+    # control character — so a newline or an ANSI escape in an ``albumartist``
+    # survives into the folder name, and
     # ``display_path`` replaces only UNDECODABLE bytes, never control characters.
     # Interpolated raw, that forges log lines. ``repr`` escapes them and leaves
     # ordinary text (including the U+FFFD placeholder) readable.

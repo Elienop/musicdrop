@@ -33,6 +33,7 @@ from app.beets.trash import (
     _album_root,
     _delete_whereabouts,
     _folder_is_shared,
+    _trash_container_name,
     album_folder,
     album_format_bitrate,
     safe_container_name,
@@ -40,7 +41,7 @@ from app.beets.trash import (
     trash_album_folder,
 )
 from app.beets.trash_origins import TrashOriginsStoreUnusableError
-from app.wire import display_path
+from app.wire import PLACEHOLDER, display_path
 from tests.conftest import (
     beets_dir_for,
     build_library,
@@ -87,6 +88,45 @@ def test_safe_container_name_keeps_a_display_name_to_one_listable_level() -> Non
     # The ordinary name is untouched — a sanitizer that rewrote every name would
     # rename every container and nothing above would notice.
     assert safe_container_name("ABBA", " - artist image") == "ABBA - artist image"
+
+
+def test_a_tag_built_container_name_is_neutralised_like_a_display_name(
+    tmp_path: Path,
+) -> None:
+    """The album-delete name comes from TAGS, which can spell the same four.
+
+    ``albumartist``/``album`` are library text, and a literal U+FFFD in one used
+    to reach the Trash dir: that entry displays identically to a damaged
+    sibling's name and ``wire._match_display_child`` then answers 409 on BOTH
+    rows, so neither can be restored or emptied. A NUL reached ``dest.mkdir()``
+    as a ``ValueError`` no ``except OSError`` catches. One replace set now, so a
+    tag cannot spell what a display name is protected from.
+    """
+    for artist, title in ((f"AB{PLACEHOLDER}BA", "Gold"), ("a\x00b", "x")):
+        name = _trash_container_name(SimpleNamespace(albumartist=artist, album=title))
+
+        assert os.sep not in name
+        assert "/" not in name
+        assert "\x00" not in name
+        assert PLACEHOLDER not in name
+        # Path-spellable, one level, and the listing (which reads top-level
+        # entries only) can see it.
+        (tmp_path / name).mkdir()
+        assert [e.name for e in tmp_path.iterdir()] == [name]
+        assert os.fsdecode(os.fsencode(name)) == name
+        (tmp_path / name).rmdir()
+
+    # A leading dot too: ``trash_manage._audio_free_entries`` skips a
+    # dot-leading entry that ``empty_all`` still removes.
+    assert _trash_container_name(SimpleNamespace(albumartist=".hack", album="Gold")) == (
+        "hack - Gold"
+    )
+    # Untouched for a tag that spells none of them - every existing entry name
+    # has to keep its spelling, or the origin records stop matching.
+    assert _trash_container_name(SimpleNamespace(albumartist="ABBA", album="Gold")) == (
+        "ABBA - Gold"
+    )
+    assert _trash_container_name(SimpleNamespace(albumartist=None, album=None)) == "album"
 
 
 def test_album_format_bitrate_reads_first_item(duplicates_lib: Library) -> None:

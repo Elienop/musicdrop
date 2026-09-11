@@ -102,44 +102,56 @@ def album_folder(lib: Library, items: list[Any]) -> str:
     return os.path.dirname(_abs_path(lib, items[0].path))
 
 
+#: What a container is called when the text it is named from neutralises to
+#: nothing. Any word does; this one reads in the Trash page's single column.
+_UNNAMED_CONTAINER = "artist"
+
+
+def _one_trash_level(text: str) -> str:
+    """``text`` reduced to a single listable Trash container level; may be EMPTY.
+
+    The one replace set both container-name builders share, so a tag cannot
+    reach ``mkdir`` with something a display name is protected from.
+    ``os.sep``, ``/`` and NUL go so "AC/DC" lands directly under the Trash dir
+    instead of nesting and a NUL cannot reach the ``mkdir`` as a ``ValueError``
+    no ``except OSError`` catches. :data:`app.wire.PLACEHOLDER` goes for a
+    reason the other three do not share: a client string and an ID3 tag can
+    both spell U+FFFD, which is what ``wire_safe`` puts in place of an
+    UNDECODABLE byte, so such a container would display identically to a
+    damaged sibling's name and ``wire._match_display_child`` answers 409 on
+    both rows. Leading dots go because ``trash_manage._audio_free_entries``
+    skips a dot-leading entry that ``empty_all`` still removes. Length is the
+    allocator's job (``_unique_trash_dest``); the empty answer is the caller's,
+    because the fallback word differs per caller.
+    """
+    for bad in {os.sep, "/", "\x00", PLACEHOLDER}:
+        text = text.replace(bad, "_")
+    return text.lstrip(".")
+
+
 def _trash_container_name(album: Any) -> str:
     """A readable, filesystem-safe ``"<albumartist> - <album>"`` container name.
 
-    Path separators (``os.sep`` and a literal ``/`` on any OS) are neutralised so
-    the name is a single dir level; both fields empty falls back to ``"album"``
-    (``_unique_trash_dest`` handles that too, but keep the intent explicit here).
+    Neutralised through :func:`_one_trash_level`, the same set
+    :func:`safe_container_name` uses: a tag can carry a separator, a NUL or a
+    U+FFFD just as a display name can. Both fields empty falls back to
+    ``"album"`` (``_unique_trash_dest`` handles that too, but keep the intent
+    explicit here).
     """
     artist = _coerce_optional_str(getattr(album, "albumartist", None)) or ""
     title = _coerce_optional_str(getattr(album, "album", None)) or ""
     name = f"{artist} - {title}".strip(" -") if (artist or title) else ""
-    for bad in {os.sep, "/"}:
-        name = name.replace(bad, "_")
-    return name or "album"
-
-
-#: What a container is called when the text it is named from neutralises to
-#: nothing. Any word does; this one reads in the Trash page's single column.
-_UNNAMED_CONTAINER = "artist"
+    return _one_trash_level(name) or "album"
 
 
 def safe_container_name(text: str, suffix: str) -> str:
     """``"<text><suffix>"``, as a single listable Trash container level.
 
     For the movers named from a display string rather than from a folder, where
-    ``text`` is an artist NAME: ``os.sep``, ``/`` and NUL are replaced, so
-    "AC/DC" lands directly under the Trash dir instead of nesting and a NUL
-    cannot reach the ``mkdir`` as a ``ValueError`` no ``except OSError`` catches.
-    :data:`app.wire.PLACEHOLDER` goes for a reason the other three do not share:
-    a client string can spell U+FFFD, which is what ``wire_safe`` puts in place
-    of an UNDECODABLE byte, so such a container would display identically to a
-    damaged sibling's name and ``wire._match_display_child`` answers 409 on both
-    rows. Leading dots go because ``trash_manage._audio_free_entries`` skips a
-    dot-leading entry that ``empty_all`` still removes; nothing left falls back
-    to a word. Length is the allocator's job (``_unique_trash_dest``).
+    ``text`` is an artist NAME. Neutralising is :func:`_one_trash_level`'s job;
+    nothing left falls back to a word.
     """
-    for bad in {os.sep, "/", "\x00", PLACEHOLDER}:
-        text = text.replace(bad, "_")
-    return f"{text.lstrip('.') or _UNNAMED_CONTAINER}{suffix}"
+    return f"{_one_trash_level(text) or _UNNAMED_CONTAINER}{suffix}"
 
 
 def _moved_under(lib: Library, items: list[Any], container: Path) -> list[Any]:
