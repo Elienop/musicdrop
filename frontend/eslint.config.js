@@ -170,12 +170,13 @@ import testingLibrary from "eslint-plugin-testing-library";
 // narrower. A caret admits exactly that kind of change silently.
 //
 // `typescript-eslint` is the fifth plugin behind a mirrored rule and is deliberately NOT
-// pinned this way: the repo floats `^8.68.0` while the bundle declares 8.65.0, backing both
+// pinned this way: the repo floats `^8.68.0` while the bundle declares 8.67.0 (analyzer
+// 13.8, SonarQube 26.9, 2026-09-11; it declared 8.65.0 before that upgrade), backing both
 // `sonar-mirror/no-empty-function` and the raw `@typescript-eslint/prefer-optional-chain`.
-// Checked at the time of writing — `dist/rules/no-empty-function.js` and
-// `dist/rules/prefer-optional-chain.js` are byte-identical between the two versions apart
-// from a trailing sourceMappingURL — so the divergence is real but currently inert. It is
-// named here because an unnamed divergence is the one nobody re-checks.
+// Re-checked at each of those bundle versions — `dist/rules/no-empty-function.js` and
+// `dist/rules/prefer-optional-chain.js` are byte-identical to the installed 8.68.0 apart
+// from a trailing sourceMappingURL — so the divergence is real but inert. It is named here
+// because an unnamed divergence is the one nobody re-checks.
 //
 // One asymmetry the gate cannot express: S7780, S7776 and S7760 all register
 // `skipOnGeneratedSource: true`, and the analyzer skips them on any file the scanner tags
