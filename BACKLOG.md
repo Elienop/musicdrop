@@ -2068,6 +2068,14 @@ the condition it names has changed.
   touches. Recorded, not fixed: gating the filler would serialise a background fetch behind a
   user action for nothing a user can see.
 
+- **An upload that lands while the reset is moving the override is not serialised against it,
+  and the bound is "never lost"** (2026-09-12, `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`).
+  The swap lock covers Trash writers; the override upload routes take the art-sweep gate only.
+  The reset moves the exact paths `override_files` returned and then clears only the auto slot,
+  so a new upload published mid-move ends either in the Trash entry (moved with the old pair) or
+  in the cache dir without its mime sidecar (served under the generic type until the next upload
+  overwrites it). No arm unlinks it. Two tabs or a scripted client to reach; recorded, not fixed.
+
 - **The reset's move-failure WARNING names the Trash dir in both arms, and its 503 carries two
   audiences** (2026-09-12, same branch). Two notes on the same 503 path, both deliberate.
   (a) The log line interpolates `store.trash_dir` even when the fault is the origins store —
@@ -2700,8 +2708,8 @@ the condition it names has changed.
   its integration test only exercises the hash-fallback branch.
 - Thumb edge-case paths (animated/palette/CMYK/tiny source images) were verified by reviewer
   probes but are unpinned by tests; the alpha test only checks image mode.
-- `.thumb.src`/`.thumb.bin` pair is not atomic as a unit (a `clear_override` tag-revisit
-  corner); served-tag vs. served-bytes TOCTOU is inherited from the cover cache class (fix:
+- `.thumb.src`/`.thumb.bin` pair is not atomic as a unit (a tag-revisit corner when the
+  override slot changes under a served thumb); served-tag vs. served-bytes TOCTOU is inherited from the cover cache class (fix:
   `get_thumb` should return its src_tag, which also drops a stat); the 304-path + off-loop
   constraints are unpinned by tests.
 - `get_artist_image_cache`'s sibling has no lazy fallback (same latent isolated-run fragility
