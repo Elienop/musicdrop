@@ -343,9 +343,27 @@ export function BrowsePage() {
             below the viewport. useRailMaxHeight measures the real top and
             tightens max-height pre-pin; the class stays as the no-JS /
             first-paint fallback. */}
+        {/* TAP TARGET: `overflow-y-auto` makes overflow-x compute to `auto`
+            too, so this box clips its own content — and with no left padding
+            its content box started at exactly the facet checkbox's left edge,
+            cutting the 4px its 24px target reaches past the drawn box
+            (decisions 40: the primitive gives every caller the target; a call
+            site must not take it back). Measured 20.5×24.5 with 2 of 4
+            corners; setting overflow to `visible` live restored 24.5×24.5,
+            which is what named the cause.
+            The fix is to move the CLIP 4px left while leaving the content
+            where it is: `pl-1` puts the padding box 4px left of the content,
+            `-ml-1` gives that 4px back to the layout, and `md:w-61` (15.25rem
+            = w-60 + those 4px) keeps the CONTENT box 224px wide where the
+            fixed width would otherwise have paid for the padding. Measured
+            cost at every width from 320 to 1280: none — facet labels 190px
+            and the album grid at x=518 (both unchanged), no horizontal
+            scrollbar on the page or the rail, and the rail still scrolls
+            vertically. `-ml-1 pl-1` alone — the remedy BACKLOG recorded — is
+            what costs: labels 190→186 and the grid 518→514. */}
         <aside
           ref={railRef}
-          className="thin-scrollbar max-h-72 shrink-0 overflow-y-auto pr-4 md:sticky md:top-24 md:max-h-[calc(100vh-7.5rem)] md:w-60 md:self-start"
+          className="thin-scrollbar max-h-72 -ml-1 shrink-0 overflow-y-auto pr-4 pl-1 md:sticky md:top-24 md:max-h-[calc(100vh-7.5rem)] md:w-61 md:self-start"
           aria-label="Filters"
         >
           {renderFacetRail()}
