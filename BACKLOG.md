@@ -98,8 +98,16 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   **285.37px** (px-4 16 + cover 40 + gap-3 12 + "Already in library" 107.98 + gap-2 8 + gap-3 12
   + Resolve 73.39 + px-4 16), so the floor is **296.70** (+ the 11.33px ellipsis glyph) and the
   ceiling is the **473px** narrowest desktop row, at the 768px sidebar step — the decision row's
-  numbers to the pixel, which is why the derivation lands on the same **20rem**. The row gets
-  34.63px of title at the switch. `FeedRow` is `ImportPage.tsx:860` on the branch (`:856`
+  numbers to the pixel. The switch is **28rem**, the owner's number (2026-09-11), now the same
+  on all three rows: the floor stays true AS a floor, but it is not what sets the threshold.
+  At the 20rem this round first shipped, the real phone band went inline and the title
+  collapsed — measured on the widest parked row, viewport 392/400/414/430 gave
+  **42/50/66/74px** of title (6/7/10/10 characters of 46); at 28rem the same widths give
+  **127/135/151/159px** (18/19/22/23 characters), because the action is on its own line there.
+  Measured switch: the action is dropped up to viewport **512** (row 447) and inline from
+  **513** (row 448 = 28rem exactly), on the feed row and on both decision rows; the bank row
+  switches at the same 512/513, unchanged. The 473px ceiling clears 448, so no desktop row
+  ever drops. `FeedRow` is `ImportPage.tsx:860` on the branch (`:856`
   below was its line when this was found).
   Re-swept 320→1920 in steps of 8 with a real 15px scrollbar, six feed rows covering every
   status: the title is **never 0** (38px minimum, against 0 at six (width, row) samples before).
@@ -1780,15 +1788,22 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     and is untouched;
   * **`/import`'s feed row** DOES reproduce it, and is now FIXED under its own struck entry
     (the owner extended decisions 39 to it on 2026-09-11);
-  * **`/duplicates`' suggested-keeper member row reproduces it and is NOT fixed.** It has no
-    action slot, but it has a `shrink-0` badge — "most complete", **118.61px** — and that is
-    what starves the title. Measured at 320→600 in steps of 8 with a real 15px scrollbar, on
-    both builds identically: the title is `clientWidth` **0 at viewport 320 and 328** (row 223
-    and 231), **3.39 at 336**, and first clears the 11.33px ellipsis glyph at **row 247**
-    (viewport 344). The sibling member row, which carries no badge, is fine at every width
-    (114px at 320). Fixing it is a **badge-vs-title call on the page whose purpose is telling
-    two copies apart** — the same density decision as the entries above, and the owner's, not
-    this branch's.
+  * ~~**`/duplicates`' suggested-keeper member row reproduces it**~~ — **CLOSED 2026-09-11**,
+    the owner's ruling on the same branch: *"Move the badge to the meta line"*. It has no
+    action slot; the `shrink-0` "most complete" badge on the TITLE line was what starved the
+    title — `clientWidth` **0 at viewport 320 and 328** (row 223/231), **3.39 at 336**, first
+    clearing the 11.33px glyph at row 247 (viewport 344), while the badge-less sibling showed
+    114px at 320. With the badge on the meta line, re-swept 320→1920 in steps of 8 with a real
+    15px scrollbar: the keeper's title is **114px at 320** and equals the sibling's **to the
+    pixel at all 205 widths** (max difference 0), and **no title is at or below the glyph at
+    any width** (four were before). The badge is never cut — 0 of 205 widths, counting both an
+    ancestor clip and Badge's own `overflow-hidden` — because below 28rem of the text column it
+    stacks under the meta text instead of beside it, and at viewport 320, where the column is
+    114px against a 114.61px badge, `whitespace-normal` lets the label wrap (badge 114×38
+    there, 114.61×22 at the other 204). Row widths are identical to before at every width, the
+    radios' accessible names are unchanged, no control is clipped and no text ink answers
+    `elementFromPoint` with a control. The badge also lost 4px (118.61 → 114.61): the icon's
+    `mr-1` restated a `gap-1` Badge already applies.
   `AlbumRow` itself is unchanged.
   **What decisions 39 did NOT settle, recorded as the owner's call:** below the threshold the
   BADGE still owns the title's line. At viewport 320 a bank row's text column is **139px**
@@ -1796,8 +1811,12 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   its 12px gap) and the badge takes **107.98** of it plus an 8px gap, so the title renders
   **23.02px** — `Lift…`. Enormously better than the 0 it replaced, and on `/import`'s feed
   row, which has no checkbox slot, it is 55px. But if the title is to be READABLE on a phone,
-  the lever is the badge, not the action: moving it to the meta line under the same threshold
-  returns ~110px. That is a second design call, outside decisions 39, and it is the owner's.
+  the lever is the badge, not the action: moving it to the meta line returns ~110px.
+  **The owner took that lever on `/duplicates` on 2026-09-11** (*"Move the badge to the meta
+  line"*) — measured in the closure above: the keeper's title goes 0 → 114px at viewport 320
+  and matches a badge-less sibling at every width. It is NOT taken on the bank row or the feed
+  row, whose STATUS badges still own the title line below the threshold; that is still a design
+  call and still the owner's.
 
 - ~~**A bank row's `Open` button is SLICED by the list's own `overflow-hidden`**~~ — **CLOSED
   2026-09-11** (on `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at merge; vault
