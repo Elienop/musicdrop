@@ -159,6 +159,17 @@ function restoreResultMessage(result: RestoreResult): string {
   return "Couldn’t restore";
 }
 
+/** Run-in label per inexact mode. A `Record` over the wire type, not a
+ * ternary: a sixth mode has to be labelled here before this compiles. */
+const OUTLOOK_LABEL: Record<
+  Exclude<TrashedAlbum["restore_mode"], "move_back">,
+  string
+> = {
+  import: "Approximate restore.",
+  refused: "Can’t be restored.",
+  by_hand: "Files moved aside.",
+};
+
 /** What Restore will DO to this row, said before the user commits to it.
  *
  * `move_back` is a promise about WHERE (its own folder, named); `import` hands
@@ -166,17 +177,18 @@ function restoreResultMessage(result: RestoreResult): string {
  * distinct ones (`_NO_RECORD_NOTE` / `_SHARED_FOLDER_NOTE` /
  * `_OUTSIDE_LIBRARY_NOTE`), so this must render whatever arrives rather than
  * branch on which. Those three are not the whole count: `trash_manage`
- * `_restore_fields` has FOUR ways a row loses its move-back, and the fourth is
- * the `refused` arm below — the only one that is not an import. The warning
- * icon is the glance-level tell and the run-in label the readable one; neither
- * carries the meaning alone.
+ * `_restore_fields` has FIVE ways a row loses its move-back, and two of them
+ * are not imports — `refused` and `by_hand`. The warning icon is the
+ * glance-level tell and the run-in label the readable one; neither carries the
+ * meaning alone.
  *
- * `refused` shares that layout and swaps only the run-in label. It must NOT
- * keep saying "Approximate restore." — the row it labels has no Restore left
- * to be approximate about, and a heading that promises one beside a disabled
- * button is the row contradicting itself. The sentence under it is the
- * backend's (`_SYMLINKED_ENTRY_NOTE`), which already says both controls refuse
- * this entry and what does clear it, so the label stays short. */
+ * The other arms share that layout and swap only the run-in label. Neither may
+ * keep saying "Approximate restore." — the rows they label have no Restore left
+ * to be approximate about (`refused` disabled, `by_hand` not rendered), and a
+ * heading that promises one beside a missing button is the row contradicting
+ * itself. The sentence under it is the backend's (`_SYMLINKED_ENTRY_NOTE`,
+ * `_MOVED_ASIDE_NOTE`), which already says what the entry is and what to do
+ * with it, so the labels stay short. */
 function RestoreOutlook({
   album,
   id,
@@ -214,9 +226,7 @@ function RestoreOutlook({
        * 633 vs clientWidth 305, and 305 with this class. */}
       <span className="min-w-0">
         <span className="text-warning font-medium">
-          {album.restore_mode === "refused"
-            ? "Can’t be restored."
-            : "Approximate restore."}
+          {OUTLOOK_LABEL[album.restore_mode]}
         </span>{" "}
         {album.restore_note}
         {album.origin && (
@@ -279,7 +289,23 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
   // false for the row with tags), but the row does not: the meta line above
   // renders whatever tags arrived, so that entry reads "1 track · FLAC" where
   // the 0-track one falls back to its folder name.
-  const noTracks = album.track_count === 0 && !refused;
+  // The second mode that takes a control away, and it takes ONE: the entry
+  // holds loose files MusicDrop moved aside (a replaced artist-poster, a reset
+  // portrait), which `restore_album` declines to import — so no Restore is
+  // rendered, while Empty reaches the entry and works. The hedge goes with the
+  // button it hedges about.
+  const byHand = album.restore_mode === "by_hand";
+  const noTracks = album.track_count === 0 && !refused && !byHand;
+  // Both null = nothing was read from tags, so the folder IS the row's name. An
+  // "Unknown artist - " prefix in front of "ABBA - artist image" invented an
+  // artist the entry never had; the husk and symlink rows read the same way.
+  // The subtitle then falls back to the meta alone — with the folder in the
+  // title, `meta || folder` printed it twice.
+  const titledByFolder = album.album_artist === null && album.album === null;
+  const title = titledByFolder
+    ? album.folder
+    : `${album.album_artist ?? "Unknown artist"} - ${album.album ?? album.folder}`;
+  const subtitle = meta || (titledByFolder ? null : album.folder);
   const reasonId = useId();
   const outlookId = useId();
 
@@ -293,13 +319,12 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
   return (
     <li className="flex flex-wrap items-center gap-3 px-4 py-3">
       <div className="flex min-w-0 grow basis-64 flex-col">
-        <span className="truncate text-sm font-medium">
-          {album.album_artist ?? "Unknown artist"} -{" "}
-          {album.album ?? album.folder}
-        </span>
-        <span className="text-muted-foreground truncate text-xs">
-          {meta || album.folder}
-        </span>
+        <span className="truncate text-sm font-medium">{title}</span>
+        {subtitle && (
+          <span className="text-muted-foreground truncate text-xs">
+            {subtitle}
+          </span>
+        )}
         <div className="mt-1 flex flex-col gap-1">
           <RestoreOutlook album={album} id={outlookId} />
           {noTracks && (
@@ -347,33 +372,44 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
         * disabled:pointer-events-none`), so no class is added here. The reason
         * travels with it the same way the import note does — `aria-describedby`
         * pointing at the outlook line, which is where `restore_note` renders. */}
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={refused || restore.isPending}
-        aria-describedby={noTracks ? `${outlookId} ${reasonId}` : outlookId}
-        // `setResult(null)` first: the previous outcome is about the previous
-        // attempt. Without it a row that was refused, then retried into a 503,
-        // shows the amber refusal and the red error at once — two answers to
-        // one click, the older one looking current.
-        onClick={() => {
-          setResult(null);
-          restore.mutate(album.folder, { onSuccess: setResult });
-        }}
-      >
-        {restore.isPending ? (
-          <>
-            <Spinner className="animate-spin" aria-hidden="true" /> Restoring…
-          </>
-        ) : (
-          "Restore"
-        )}
-      </Button>
+      {/* Not rendered at all on a `by_hand` row, where the other two arms are
+        * disabled instead: this entry is loose files, not an album, so
+        * `restore_album` returns `could_not_restore` having done nothing.
+        * A disabled Restore says "this row has one, but not now"; there is no
+        * import to run here at any point, and the note beside it names what
+        * does put a file back (copy it out). */}
+      {!byHand && (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={refused || restore.isPending}
+          aria-describedby={noTracks ? `${outlookId} ${reasonId}` : outlookId}
+          // `setResult(null)` first: the previous outcome is about the previous
+          // attempt. Without it a row that was refused, then retried into a 503,
+          // shows the amber refusal and the red error at once — two answers to
+          // one click, the older one looking current.
+          onClick={() => {
+            setResult(null);
+            restore.mutate(album.folder, { onSuccess: setResult });
+          }}
+        >
+          {restore.isPending ? (
+            <>
+              <Spinner className="animate-spin" aria-hidden="true" /> Restoring…
+            </>
+          ) : (
+            "Restore"
+          )}
+        </Button>
+      )}
       <ConfirmAction
         trigger={
-          // Described only on the refused row: elsewhere the outlook line is
-          // about Restore, and pointing Empty at "Goes back to /music/…" would
-          // describe this button with another button's promise. Disabled here
+          // Described on the refused and moved-aside rows: elsewhere the
+          // outlook line is about Restore, and pointing Empty at "Goes back to
+          // /music/…" would describe this button with another button's promise.
+          // On those two the line is about the ENTRY — on a moved-aside row it
+          // is the only control left, so the note would otherwise reach nobody
+          // through the accessibility tree. Disabled here
           // means the confirm dialog cannot open at all, which is the point —
           // the route behind it answers 404. A disabled trigger cannot show its
           // tooltip (pointer events are off and it leaves the tab order), so
@@ -381,13 +417,19 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
           <IconAction
             label={`Empty ${album.album ?? album.folder}`}
             disabled={refused}
-            aria-describedby={refused ? outlookId : undefined}
+            aria-describedby={refused || byHand ? outlookId : undefined}
           >
             <Remove weight="thin" className="size-10" aria-hidden="true" />
           </IconAction>
         }
         title="Delete permanently?"
-        body="Permanently deletes this album’s files from Trash. This can’t be undone."
+        // "these files", not "this album’s files", for an entry that is not an
+        // album: the row above it says so, and the confirm has to agree.
+        body={
+          byHand
+            ? "Permanently deletes these files from Trash. This can’t be undone."
+            : "Permanently deletes this album’s files from Trash. This can’t be undone."
+        }
         confirmLabel="Delete"
         pending={empty.isPending}
         error={empty.isError ? empty.error.message : null}

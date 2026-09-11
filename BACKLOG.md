@@ -1125,31 +1125,36 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `models/edit.py` and `models/duplicates.py` all say "a failed write still counts" — the
   export swallows every exception. The honest shape is written vs attempted.
 
-- **"Reset to auto" in the artist-image panel deletes a hand-uploaded portrait with no
-  confirm, and nothing refetches it.** (Found 2026-09-11 by the final code seat on
-  `fix/art-apply-keeps-hand-placed-art`.) The panel opens from the same rail as Save art
-  (`ArtistAlbumsPage.tsx`, `aria-controls="artist-image-panel"`); its Reset POST reaches
-  `ArtistImageCache.clear_override` (`backend/app/artwork/cache.py`), which unlinks the
-  `*.override` bytes and mime sidecar — no dialog, no Trash. README's Trash section says of
-  exactly those files "which nothing refetches". Same family as the Save-art entry this branch
-  closed, one panel over. Fix shape: a confirm on Reset when an override exists, and the
-  override moved aside (`trash_replaced_files` fits: two regular files, one container) — the
-  design call is whether an app-cache file should ever feed the Trash listing, since an
-  override is not library data.
+- ~~**"Reset to auto" in the artist-image panel deletes a hand-uploaded portrait with no
+  confirm, and nothing refetches it.**~~ — **CLOSED 2026-09-11** (on
+  `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`; PR + squash sha cited at merge).
+  Reset is behind an AlertDialog in the Save-art shape — "Reset to auto?", and a description
+  that warns an uploaded or linked image moves to Trash — and the POST is sent from the
+  dialog's action alone, held open until it settles. The endpoint moves the `*.override` pair
+  to `Trash/<artist> - artist image` via `trash_replaced_files` before clearing any slot, and
+  answers 503 with the store's own sentence (nothing reset, override untouched) when that
+  store is refused or unwritable. The design call landed on "yes, an app-cache file may feed
+  the Trash listing", with its own row kind rather than the album words — the entry below.
+  Pinned by `tests/test_artist_image_reset_to_trash.py` (7) and six confirm tests in
+  `ArtistImageEditPanel.test.tsx`. (Original finding, 2026-09-11 by the final code seat on
+  `fix/art-apply-keeps-hand-placed-art`: Reset reached `ArtistImageCache.clear_override`,
+  which unlinked the override bytes and mime sidecar with no dialog and no Trash, while
+  README said of exactly those files "which nothing refetches".)
 
-- **The Trash row for an art container reads as an album.** (Found 2026-09-11,
-  browser-measured on `fix/art-apply-keeps-hand-placed-art`.) A forced Save art moves the
-  replaced `artist-poster.*`/`artist-background.*` into `Trash/<folder> - artist art/` with
-  an origin record `moved="items"`. `SettingsTrashPage.tsx` renders that container with the
-  album row's words: title "Unknown artist - Verify Artist - artist art" (no tags to read),
-  the shared-folder note "Approximate restore. This album's files were moved out of a folder
-  it shared with other music … Restoring re-imports the album under your current naming
-  rules.", and a Restore button that ends in `could_not_restore` (`_restore_by_import` over a
-  folder with no audio; `move_back_target` is None for any record that is not
-  `moved="folder"`). README says to copy the files back by hand. Fix shape: the listing row
-  needs to know the entry holds moved-aside files, not an album — a field on `TrashedAlbum`
-  (contract change, so the wire shape is the design question) — then a row with no Restore,
-  a "copy them back from <origin>" hint, and a title without the "Unknown artist - " prefix.
+- ~~**The Trash row for an art container reads as an album.**~~ — **CLOSED 2026-09-11** (on
+  `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`; PR + squash sha cited at merge).
+  The wire says it now: `trash_replaced_files` records `moved="files"`, `_restore_fields` maps
+  that to a fifth `restore_mode` — `by_hand`, with `_MOVED_ASIDE_NOTE` and the origin — and
+  `restore_album` short-circuits such an entry to `could_not_restore` without running an
+  import. The row reads "Files moved aside.", the backend's note, "Was at <origin>", with no
+  Restore button at all and an Empty whose confirm says "these files" instead of "this
+  album's files". A row with no artist and no album is titled by its folder alone, rendered
+  once (the subtitle no longer repeats it), which also drops the invented "Unknown artist - "
+  from the husk and symlinked-entry rows. Pinned by four new `SettingsTrashPage.test.tsx`
+  tests plus the listing/restore pins in `test_trash_manage.py`. (Original finding,
+  2026-09-11, browser-measured: the container listed with the album row's words — an
+  "Unknown artist - " title, the shared-folder "Approximate restore." note, and a Restore
+  button whose only outcome was `could_not_restore`.)
 
 - **A write killed mid-flight leaves a `.<pid>.<16 hex>.<ext>.tmp` dotfile nothing clears.**
   (Found 2026-09-11 on `fix/art-apply-keeps-hand-placed-art`.) The derived `.<name>.tmp` was

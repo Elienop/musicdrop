@@ -8,6 +8,12 @@ const resetMutate = vi.fn();
 const setFromUrlMutate = vi.fn();
 const fetchMutate = vi.fn();
 const fetchReset = vi.fn();
+const resetReset = vi.fn();
+/** Mutable for the same reason `fetchState` is: the reset now reports from
+ * inside its confirm, so a test has to put the mutation in flight or in error
+ * while the dialog is open. `resetReset` really clears it, so "no stale error
+ * on reopen" is a claim about the component and not about the spy. */
+const resetState = { isPending: false, isError: false, error: null as Error | null };
 /** Mutable so a test can put the fetch mutation in its error state — and so
  * `reset()` can actually clear it, the way the real hook does. A `reset` spy
  * that changed nothing would let "the alert is gone" pass on a component that
@@ -71,9 +77,10 @@ vi.mock("@/api/useArtistImage", () => ({
   }),
   useResetArtistImage: () => ({
     mutate: resetMutate,
-    isPending: false,
-    isError: false,
-    error: null,
+    isPending: resetState.isPending,
+    isError: resetState.isError,
+    error: resetState.error,
+    reset: resetReset,
   }),
   useSetArtistImageFromUrl: () => ({
     mutate: setFromUrlMutate,
@@ -114,10 +121,17 @@ beforeEach(() => {
   fetchState.isPending = false;
   fetchState.isError = false;
   fetchState.error = null;
+  resetState.isPending = false;
+  resetState.isError = false;
+  resetState.error = null;
   // Re-armed every test: afterEach uses resetAllMocks, which drops it.
   fetchReset.mockImplementation(() => {
     fetchState.isError = false;
     fetchState.error = null;
+  });
+  resetReset.mockImplementation(() => {
+    resetState.isError = false;
+    resetState.error = null;
   });
   // Unique per mint, so "the FIRST preview's URL was released" is a real claim
   // rather than one satisfied by any revoke at all.
@@ -146,6 +160,15 @@ function fetchReturnsPortrait(blob: Blob, source: string | null = "Deezer") {
     (_source: string, opts: { onSuccess: (r: unknown) => void }) =>
       opts.onSuccess({ found: true, blob, source }),
   );
+}
+
+/** Every reset goes through the confirm now. Returns the open dialog so a test
+ * can scope its own assertions to it. */
+async function confirmReset() {
+  fireEvent.click(screen.getByRole("button", { name: /reset to auto/i }));
+  const dialog = await screen.findByRole("alertdialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: /^reset$/i }));
+  return dialog;
 }
 
 describe("ArtistImageEditPanel", () => {
@@ -188,10 +211,121 @@ describe("ArtistImageEditPanel", () => {
     expect(uploadMutate).toHaveBeenCalledWith(file, expect.anything());
   });
 
-  it("resets to auto", () => {
+  it("resets to auto once the confirm is accepted", async () => {
+    render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
+    await confirmReset();
+    expect(resetMutate).toHaveBeenCalledTimes(1);
+    expect(resetMutate.mock.calls[0]?.[0]).toBeUndefined();
+  });
+
+  it("opens a confirm on Reset and sends nothing yet", async () => {
+    // The reset moves an uploaded portrait to Trash and forgets the cached
+    // automatic one; no endpoint says which of those applies beforehand, so the
+    // dialog is shown on every click and the copy covers both cases.
     render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /reset to auto/i }));
-    expect(resetMutate).toHaveBeenCalled();
+
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText("Reset to auto?")).toBeInTheDocument();
+    // Verbatim (the apostrophe is U+2019): the second sentence is the only
+    // warning that an uploaded image is about to move, so a paraphrase that
+    // drops it is the failure this pins.
+    expect(
+      within(dialog).getByText(
+        "Forgets this artist\u2019s portrait so it is looked up again. An image you" +
+          " uploaded or linked moves to Trash first.",
+      ),
+    ).toBeInTheDocument();
+    expect(resetMutate).not.toHaveBeenCalled();
+  });
+
+  it("keeps the confirm open, and Cancel locked, while the reset is in flight", async () => {
+    // The route answers 503 when the Trash store cannot be used — nothing is
+    // reset — so the dialog has to survive until the request settles. Cancel is
+    // disabled, which is why Escape must be swallowed as well: a dialog Escape
+    // could close leaves that sentence nowhere to report.
+    resetMutate.mockImplementation(() => {
+      resetState.isPending = true;
+    });
+    const panel = () => (
+      <ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />
+    );
+    const view = render(panel());
+    await confirmReset();
+    view.rerender(panel());
+
+    const dialog = screen.getByRole("alertdialog");
+    expect(within(dialog).getByRole("button", { name: /^cancel$/i })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Resetting…" })).toBeDisabled();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+  });
+
+  it("closes the confirm on Escape when nothing is in flight", async () => {
+    // Positive control for the assertion above: without it "still open while
+    // pending" also passes on a dialog Escape never reaches in jsdom.
+    render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: /reset to auto/i }));
+    await screen.findByRole("alertdialog");
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(resetMutate).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed reset inside the confirm and re-enables Cancel", async () => {
+    resetMutate.mockImplementation(() => {
+      resetState.isError = true;
+      resetState.error = new Error(
+        "The uploaded image could not be moved to Trash, so nothing was reset",
+      );
+    });
+    const panel = () => (
+      <ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />
+    );
+    const view = render(panel());
+    await confirmReset();
+    view.rerender(panel());
+
+    const dialog = screen.getByRole("alertdialog");
+    const alert = within(dialog).getByRole("alert");
+    expect(alert).toHaveTextContent(/nothing was reset/i);
+    expect(within(dialog).getByRole("button", { name: /^cancel$/i })).toBeEnabled();
+  });
+
+  it("reopens the confirm without the last failure on it", async () => {
+    // The mutation outlives the dialog, so its error state is still set at the
+    // next open — the Save-art and delete confirms clear it the same way.
+    resetMutate.mockImplementation(() => {
+      resetState.isError = true;
+      resetState.error = new Error("Trash is unusable");
+    });
+    const panel = () => (
+      <ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />
+    );
+    const view = render(panel());
+    await confirmReset();
+    view.rerender(panel());
+    expect(within(screen.getByRole("alertdialog")).getByRole("alert")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+    view.rerender(panel());
+    fireEvent.click(screen.getByRole("button", { name: /reset to auto/i }));
+    expect(resetReset).toHaveBeenCalled();
+    view.rerender(panel());
+    const reopened = await screen.findByRole("alertdialog");
+    expect(within(reopened).queryByRole("alert")).toBeNull();
+  });
+
+  it("closes the confirm when the reset succeeds", async () => {
+    resetMutate.mockImplementation(
+      (_v: undefined, opts: { onSuccess: (r: unknown) => void }) =>
+        opts.onSuccess({ ok: true, cleared_override: true, cleared_auto: false }),
+    );
+    render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
+    await confirmReset();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent(/looked up again/i);
   });
 
   it("sets the image from a pasted URL", () => {
@@ -362,21 +496,21 @@ describe("ArtistImageEditPanel", () => {
     expect(revoked).toContain("blob:1");
   });
 
-  it("reports what the reset actually cleared", () => {
+  it("reports what the reset actually cleared", async () => {
     resetMutate.mockImplementation(
       (_v: undefined, opts: { onSuccess: (r: unknown) => void }) =>
         opts.onSuccess({ ok: true, cleared_override: true, cleared_auto: true }),
     );
     const onSaved = vi.fn();
     render(<ArtistImageEditPanel name="ABBA" onSaved={onSaved} onClose={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: /reset to auto/i }));
+    await confirmReset();
     expect(onSaved).toHaveBeenCalled();
     expect(screen.getByRole("status")).toHaveTextContent(/looked up again/i);
     // Nothing is left to abandon, so the closing button stops saying "Cancel".
     expect(screen.getByRole("button", { name: /^done$/i })).toBeInTheDocument();
   });
 
-  it("clears a failed fetch's alert when another action starts", () => {
+  it("clears a failed fetch's alert when another action starts", async () => {
     // A red "Spotify did not answer" sat beside the reset's success line,
     // because clearNotices() cleared the panel's own notices but not the
     // mutation's error state. Two entry points, because each one used to
@@ -397,7 +531,7 @@ describe("ArtistImageEditPanel", () => {
     failed();
     const first = render(panel());
     expect(screen.getByRole("alert")).toHaveTextContent(/did not answer/i);
-    fireEvent.click(screen.getByRole("button", { name: /reset to auto/i }));
+    await confirmReset();
     expect(fetchReset).toHaveBeenCalled();
     first.rerender(panel());
     expect(screen.queryByRole("alert")).toBeNull();
@@ -416,13 +550,13 @@ describe("ArtistImageEditPanel", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("clears a stale outcome when another action starts", () => {
+  it("clears a stale outcome when another action starts", async () => {
     resetMutate.mockImplementation(
       (_v: undefined, opts: { onSuccess: (r: unknown) => void }) =>
         opts.onSuccess({ ok: true, cleared_override: true, cleared_auto: true }),
     );
     render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: /reset to auto/i }));
+    await confirmReset();
     expect(screen.getByRole("status")).toHaveTextContent(/looked up again/i);
     // Submitting the pasted link must not leave the reset's outcome standing
     // over it as if it described what just happened.
@@ -433,7 +567,7 @@ describe("ArtistImageEditPanel", () => {
     expect(screen.getByRole("status")).toHaveTextContent("");
   });
 
-  it("a both-false reset promises the lookup WITHOUT claiming anything was cleared", () => {
+  it("a both-false reset promises the lookup WITHOUT claiming anything was cleared", async () => {
     // An unwritable cache dir swallows the unlink while the in-memory entry is
     // dropped, so `false, false` can still mean what is served changed — the
     // copy may not read as "already clear". The overclaim production can
@@ -446,7 +580,7 @@ describe("ArtistImageEditPanel", () => {
         opts.onSuccess({ ok: true, cleared_override: false, cleared_auto: false }),
     );
     render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: /reset to auto/i }));
+    await confirmReset();
     const note = screen.getByRole("status");
     expect(note.textContent).toBe("This artist’s portrait will be looked up again.");
     expect(note.textContent).not.toMatch(/^Cleared\./);
