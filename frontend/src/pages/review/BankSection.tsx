@@ -429,10 +429,12 @@ export function BankSection() {
 }
 
 /** One backlog row: [checkbox (every row except applying)] AlbumRow +
- * Open/Ignore/Remove.
+ * Open/Ignore/Remove. Under 28rem of row the action group drops to its own
+ * line under the row (decisions 39).
  * The status chip names the lifecycle for settled rows; needs_review rows
  * show the REASON instead (what kind of decision awaits). Failed rows carry
- * their error on its own line below the row. */
+ * their error on its own line below the row — below the action line, keeping
+ * the reading order the one-line arm has. */
 
 /** The row's recommendation tier, humanized. The bank contract types this
  * field as a bare `string` rather than the `Recommendation` enum the import
@@ -487,80 +489,95 @@ function BankRow({
   // takes no keyboard focus and touch has no hover.
   const failure = row.status === "failed" ? (row.error ?? "").trim() : "";
   return (
-    // The checkbox centres on the ROW, never on row+error: the error is a
-    // sibling of this wrapper, outside its `items-center` context.
-    <li className="flex flex-col">
-      <div className="flex items-center">
-        {row.status !== "applying" ? (
-          <Checkbox
-            className="ml-4"
-            checked={selected}
-            onCheckedChange={(checked) => onSelect(checked === true)}
-            aria-label={`Select ${title}`}
-          />
-        ) : (
-          <span className="ml-4 w-4 shrink-0" aria-hidden="true" />
+    // A GRID, not stacked flex wrappers: `items-center` centres each item in
+    // its own row TRACK, so neither the dropped action line nor the error line
+    // can re-centre the select checkbox against a taller box — the 16/26px
+    // drift #220 fixed, which a second sibling line would have re-opened.
+    // `/duplicates`' MemberRow takes the same shape for the same reason.
+    // Column 3 is `auto`: in the dropped arm nothing is placed in it and it
+    // collapses to 0, so one template serves both arms.
+    <li className="@container/bankrow grid grid-cols-[auto_minmax(0,1fr)_auto] items-center">
+      {row.status !== "applying" ? (
+        <Checkbox
+          className="ml-4"
+          checked={selected}
+          onCheckedChange={(checked) => onSelect(checked === true)}
+          aria-label={`Select ${title}`}
+        />
+      ) : (
+        <span className="ml-4 w-4" aria-hidden="true" />
+      )}
+      <AlbumRow
+        cover={null}
+        title={title}
+        subtitle={row.artist ?? "Unknown artist"}
+        meta={metaBits.join(SEGMENT_SEP) || undefined}
+        badge={
+          <Badge variant={bankBadgeVariant(row.status)}>
+            {row.status === "needs_review" ? BANK_REASON_LABEL[row.reason] : BANK_STATUS_LABEL[row.status]}
+          </Badge>
+        }
+      />
+      {/* Not AlbumRow's `action` slot: from there the group cannot leave the
+          row without growing AlbumRow's own box. Below 28rem of ROW (not of
+          viewport — at 768px the sidebar opens and the row is NARROWER than at
+          520px) it takes its own line under the row, inset to the cover's edge
+          like the error line. The threshold is bounded on both sides: a
+          needs_review row's fixed content is 412.76px (checkbox slot 32 +
+          px-4 16 + cover 40 + gap 12 + badge 107.98 + gap 8 + gap 12 + actions
+          168.78 + px-4 16), so under 424.09 (+ the 11.33px ellipsis glyph) the
+          title cannot even ellipse — measured 0px up to a 409px row; and the
+          NARROWEST row a desktop ever shows is 473px, at the 768px sidebar
+          step, so anything above that would drop the actions on a desktop.
+          28rem = 448px sits between: the title gets 35.23px there instead of 0.
+          `-ml-1` gives back the 4px by which AlbumRow's px-4 exceeds its own
+          gap-3, so the inline arm keeps today's 12px gap and 16px inset. */}
+      <div
+        className="col-start-2 row-start-2 mb-3 ml-4 flex items-center gap-1.5 @min-[28rem]/bankrow:col-start-3 @min-[28rem]/bankrow:row-start-1 @min-[28rem]/bankrow:mb-0 @min-[28rem]/bankrow:-ml-1 @min-[28rem]/bankrow:mr-4"
+      >
+        {row.status === "needs_review" && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={busy}
+            aria-label={`Ignore ${title}`}
+            onClick={onIgnore}
+          >
+            Ignore
+          </Button>
         )}
-        <div className="min-w-0 flex-1">
-          <AlbumRow
-            cover={null}
-            title={title}
-            subtitle={row.artist ?? "Unknown artist"}
-            meta={metaBits.join(SEGMENT_SEP) || undefined}
-            badge={
-              <Badge variant={bankBadgeVariant(row.status)}>
-                {row.status === "needs_review" ? BANK_REASON_LABEL[row.reason] : BANK_STATUS_LABEL[row.status]}
-              </Badge>
-            }
-            action={
-              <div className="flex items-center gap-1.5">
-                {row.status === "needs_review" && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    disabled={busy}
-                    aria-label={`Ignore ${title}`}
-                    onClick={onIgnore}
-                  >
-                    Ignore
-                  </Button>
-                )}
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      disabled={busy}
-                      aria-label={`Remove ${title}`}
-                    >
-                      <Remove aria-hidden="true" />
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Remove this row?</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        The files stay on disk, but the banked candidates are
-                        forfeited; a re-sweep will NOT pick this folder up again.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction onClick={onRemove}>Remove</AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-                <Button size="sm" asChild>
-                  <Link to={`/review/bank/${row.id}`} aria-label={`Open ${title}`}>
-                    Open
-                  </Link>
-                </Button>
-              </div>
-            }
-          />
-        </div>
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={busy}
+              aria-label={`Remove ${title}`}
+            >
+              <Remove aria-hidden="true" />
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Remove this row?</AlertDialogTitle>
+              <AlertDialogDescription>
+                The files stay on disk, but the banked candidates are
+                forfeited; a re-sweep will NOT pick this folder up again.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={onRemove}>Remove</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+        <Button size="sm" asChild>
+          <Link to={`/review/bank/${row.id}`} aria-label={`Open ${title}`}>
+            Open
+          </Link>
+        </Button>
       </div>
       {failure !== "" && (
         // Its own line, so the width it needs is the row's, not the meta slot's,
@@ -575,7 +592,7 @@ function BankRow({
         // The icon carries the error register: the body stays muted so a long
         // reason does not shout, but a failure reason must not read as the
         // artist subtitle directly above it.
-        <div className="pr-4 pb-3 pl-12">
+        <div className="col-span-3 row-start-3 pr-4 pb-3 pl-12 @min-[28rem]/bankrow:row-start-2">
           <p
             className="text-muted-foreground flex items-start gap-1.5 text-sm"
             title={failure}

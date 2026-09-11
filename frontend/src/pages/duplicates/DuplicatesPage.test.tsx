@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 
 import type { components } from "@/api/schema";
 import { DuplicatesPage } from "@/pages/duplicates/DuplicatesPage";
+import { unwiredContainerQueries } from "@/test/containerQuery";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
 
@@ -13,6 +14,20 @@ type DuplicateAlbum = components["schemas"]["DuplicateAlbum"];
 
 const DUP_URL = `${window.location.origin}/api/duplicates`;
 const RESOLVE_URL = `${window.location.origin}/api/duplicates/resolve`;
+
+/** The `p-N` token on an element. THROWS when there is none: a lookup that
+ * answers 0 or undefined turns the size assertion that uses it into a
+ * tautology, which is how a vacuous class pin gets written. */
+function paddingToken(el: Element | null | undefined): string {
+  const found = /(?:^|\s)p-([\d.]+)(?:\s|$)/.exec(el?.className ?? "");
+  if (found === null) throw new Error(`no p-* class on: ${el?.className ?? "null"}`);
+  return found[1];
+}
+
+/** …in CSS px. Tailwind's spacing step is 0.25rem = 4px. */
+function padding(el: Element | null | undefined): number {
+  return Number(paddingToken(el)) * 4;
+}
 
 function album(overrides: Partial<DuplicateAlbum> = {}): DuplicateAlbum {
   return {
@@ -228,7 +243,7 @@ describe("DuplicatesPage", () => {
     await screen.findAllByText(/Matched on/i);
 
     // Override group 2's keeper: pick the 12-track Daft Punk copy (id 4).
-    await user.click(screen.getByRole("radio", { name: /Keep Discovery \(12 tracks\)/i }));
+    await user.click(screen.getByRole("radio", { name: /Keep Discovery \(12 tracks, MP3 · 320k\)/i }));
     await user.click(screen.getByRole("button", { name: /resolve all · 2 copies/i }));
     const dialog = await screen.findByRole("alertdialog");
     await user.click(within(dialog).getByRole("button", { name: /move all to trash/i }));
@@ -416,12 +431,167 @@ describe("DuplicatesPage", () => {
     // centred on the row it selects instead of on row+path — measured 17px of
     // drift when they shared one `items-center` box. jsdom computes no layout,
     // so the two classes are what a test can hold.
-    const row = screen.getByRole("radio", { name: /Keep In Rainbows \(10 tracks\)/i })
-      .parentElement;
+    const radio = screen.getByRole("radio", { name: /Keep In Rainbows \(10 tracks, FLAC · 900k\)/i });
+    // `closest("li")`, not `parentElement`: the radio's parent is the <label>
+    // that carries its tap target (below).
+    const row = radio.closest("li");
     expect(row).toHaveClass("grid");
     expect(screen.getByTitle("/music/Radiohead/In Rainbows")).toHaveClass(
       "col-start-2",
     );
+  });
+
+  test("the suggested keeper's badge is on the meta line, not the title line", async () => {
+    server.use(http.get(DUP_URL, () => HttpResponse.json(reportWithOneGroup())));
+    renderPage();
+    await screen.findByText(/Matched on/i);
+
+    // Owner's ruling 2026-09-11. On the title line the badge is `shrink-0` at
+    // 118.61px and the keeper's title measured 0px wide at viewport 320/328.
+    const badge = screen.getByText("most complete").closest("[data-slot=badge]");
+    expect(badge).not.toBeNull();
+    const meta = screen.getByText(/2007 · 10 tracks · FLAC · 900k/);
+    const title = screen.getAllByText("In Rainbows")[0];
+    expect(meta).toContainElement(badge as HTMLElement);
+    expect(title.parentElement).not.toContainElement(badge as HTMLElement);
+    // Stacked below 28rem of the text column, inline above it — both arms, and
+    // both wired to the container AlbumRow declares (a renamed container
+    // applies nothing at all, silently).
+    for (const token of [
+      "flex-col",
+      "@min-[28rem]/rowtext:flex-row",
+      "@min-[28rem]/rowtext:items-center",
+    ]) {
+      expect(meta.className.split(/\s+/)).toContain(token);
+    }
+    const row = (await within(screen.getByRole("list")).findAllByRole("listitem"))[0];
+    expect(unwiredContainerQueries(row)).toEqual([]);
+    // The one Badge default overridden, and the measurement that earns it: at
+    // viewport 320 the text column is 114px against a 114.61px label, and
+    // Badge's own `overflow-hidden whitespace-nowrap` cut 0.61px off it.
+    // Wrapping is allowed here; losing letters is not.
+    expect((badge as HTMLElement).className.split(/\s+/)).toContain("whitespace-normal");
+  });
+
+  test("the keeper radio's tap target is a wrapping label of at least 24px", async () => {
+    server.use(http.get(DUP_URL, () => HttpResponse.json(reportWithOneGroup())));
+    renderPage();
+    await screen.findByText(/Matched on/i);
+
+    const radio = screen.getByRole("radio", { name: /Keep In Rainbows \(10 tracks, FLAC · 900k\)/i });
+    const label = radio.parentElement;
+    expect(label?.tagName).toBe("LABEL");
+    // DERIVED, not a string match: the padding is what makes the target, and
+    // the negative margin of the SAME size is what keeps the grid column where
+    // it was. A native radio is 13px in Chromium and 16px is the widest UA box
+    // we know of, so the floor is checked against 16.
+    const pad = padding(label);
+    expect(16 + 2 * pad).toBeGreaterThanOrEqual(24);
+    // Token equality, not a substring: `className.toContain("-m-3")` is also
+    // satisfied by `-m-3.5`, so the pull-back could stop matching the padding
+    // and this would still pass.
+    expect(label?.className.split(/\s+/)).toContain(`-m-${paddingToken(label)}`);
+    // `relative`: without it AlbumRow, the later in-flow sibling, paints over
+    // the part of the target that reaches past the margin box.
+    expect(label).toHaveClass("relative");
+  });
+
+  test("the keeper radios of one group have DIFFERENT accessible names", async () => {
+    // The realistic group: members of a duplicate group are copies of one
+    // album, so the title and usually the track count are the same on every
+    // option. Named "Keep <title> (<n> tracks)" they were indistinguishable to
+    // a screen reader — two identical options, one destructive outcome.
+    server.use(
+      http.get(DUP_URL, () =>
+        HttpResponse.json({
+          mode: "strict",
+          group_count: 1,
+          album_count: 2,
+          groups: [
+            {
+              match_reason: "MusicBrainz album id",
+              suggested_keeper_id: 1,
+              members: [
+                album({ id: 1, track_count: 10, format: "FLAC", bitrate_kbps: 900 }),
+                album({
+                  id: 2,
+                  track_count: 10,
+                  format: "MP3",
+                  bitrate_kbps: 320,
+                  folder: "/music/Radiohead/In Rainbows (1)",
+                  is_suggested_keeper: false,
+                }),
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    renderPage();
+    await screen.findByText(/Matched on/i);
+
+    const names = screen
+      .getAllByRole("radio")
+      .map((r) => r.getAttribute("aria-label") ?? "");
+    expect(names).toHaveLength(2);
+    expect(new Set(names).size).toBe(2);
+    // What makes them different is the quality the row already shows — the
+    // same string, not a second spelling of it.
+    expect(names[0]).toContain("FLAC · 900k");
+    expect(names[1]).toContain("MP3 · 320k");
+    // And the suggested keeper's name ends in its badge text — the badge is a
+    // sibling text node, so without this a screen reader arrowing the group
+    // never hears which member the app recommends.
+    expect(names[0]).toMatch(/, most complete$/);
+    expect(names[1]).not.toContain("most complete");
+  });
+
+  test("a keeper radio's name has no quality clause rather than a placeholder", async () => {
+    // The contract types both `format` and `bitrate_kbps` nullable. With both
+    // null the name read "Keep In Rainbows (10 tracks, -)" and with only the
+    // bitrate "(10 tracks, - · 320k)" — a placeholder voiced as "dash", read
+    // out of Chromium's AX tree. The VISIBLE meta keeps its `-`.
+    server.use(
+      http.get(DUP_URL, () =>
+        HttpResponse.json({
+          mode: "strict",
+          group_count: 1,
+          album_count: 2,
+          groups: [
+            {
+              match_reason: "MusicBrainz album id",
+              suggested_keeper_id: 1,
+              members: [
+                album({ id: 1, format: null, bitrate_kbps: null }),
+                album({
+                  id: 2,
+                  format: null,
+                  bitrate_kbps: 320,
+                  folder: "/music/Radiohead/In Rainbows (1)",
+                  is_suggested_keeper: false,
+                }),
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    renderPage();
+    await screen.findByText(/Matched on/i);
+
+    const names = screen
+      .getAllByRole("radio")
+      .map((r) => r.getAttribute("aria-label") ?? "");
+    // Nothing to say → the clause is absent. Bitrate only → the bitrate, with
+    // no leading separator.
+    expect(names).toEqual([
+      "Keep In Rainbows (10 tracks), most complete",
+      "Keep In Rainbows (10 tracks, 320k)",
+    ]);
+    // The rows' own meta lines are unchanged: `-` is a visual convention, and
+    // the quality that exists is spelled once, the same way in both places.
+    expect(screen.getByText("2007 · 10 tracks · -")).toBeInTheDocument();
+    expect(screen.getByText("2007 · 10 tracks · - · 320k")).toBeInTheDocument();
   });
 
   test("a failed scan renders the shared inline ErrorState", async () => {

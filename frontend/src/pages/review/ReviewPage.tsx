@@ -197,7 +197,26 @@ function DecisionSection({
             ? `/import/albums/${album.index}/duplicate?job=${jobId}`
             : `/import/albums/${album.index}?job=${jobId}`;
           return (
-            <li key={album.index} className="bg-primary/5">
+            // The same drop as the bank row (decisions 39): the defect
+            // reproduces here, narrower — the title measures 0px at 320→344
+            // and at 320→328 the "Already in library" badge's ink sits inside
+            // Resolve's hit rectangle, so a tap there fired Resolve. A grid so
+            // `items-center` centres each item in its OWN row track. This
+            // row's fixed content is 285.37px (px-4 16 + cover 40 + gap 12 +
+            // badge 107.98 + gap 8 + gap 12 + Resolve 73.39 + px-4 16), so
+            // under 296.7 (+ the 11.33px ellipsis glyph) the title cannot
+            // ellipse; the narrowest row a desktop shows is 473px, at the
+            // 768px sidebar step. The switch is at 28rem — the owner's number
+            // (2026-09-11), the same on all three rows. The floor is true AS a
+            // floor, but at 20rem the phone band went inline and the title
+            // collapsed: viewport 392/400/414/430 measured 42/50/66/74px,
+            // 6/7/10/10 characters of a 46-character album, against
+            // 127/135/151/159px at 28rem. 448 still clears the 473 ceiling,
+            // so no desktop row drops; measured switch at viewport 513.
+            <li
+              key={album.index}
+              className="@container/decisionrow bg-primary/5 grid grid-cols-[minmax(0,1fr)_auto] items-center"
+            >
               <AlbumRow
                 cover={null}
                 title={title}
@@ -216,14 +235,16 @@ function DecisionSection({
                     {needsDup ? "Already in library" : "Needs review"}
                   </Badge>
                 }
-                action={
-                  <Button size="sm" asChild>
-                    <Link to={to} state={REVIEW_ORIGIN}>
-                      {needsDup ? "Resolve" : "Review"}
-                    </Link>
-                  </Button>
-                }
               />
+              {/* `-ml-1` gives back the 4px by which AlbumRow's px-4 exceeds
+                  its own gap-3, so the inline arm keeps today's 12px gap. */}
+              <div className="col-start-1 row-start-2 mb-3 ml-4 flex items-center @min-[28rem]/decisionrow:col-start-2 @min-[28rem]/decisionrow:row-start-1 @min-[28rem]/decisionrow:mb-0 @min-[28rem]/decisionrow:-ml-1 @min-[28rem]/decisionrow:mr-4">
+                <Button size="sm" asChild>
+                  <Link to={to} state={REVIEW_ORIGIN}>
+                    {needsDup ? "Resolve" : "Review"}
+                  </Link>
+                </Button>
+              </div>
             </li>
           );
         })}

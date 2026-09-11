@@ -25,6 +25,18 @@ function album(id: number, title: string) {
   };
 }
 
+/** A Tailwind spacing utility's value on an element, in spacing STEPS (the
+ * `--spacing` multiple, 4px each). THROWS when the token is absent: a lookup
+ * that answers 0 or undefined turns the comparisons below into tautologies,
+ * which is how a vacuous class pin gets written. */
+function steps(el: Element, pattern: RegExp): number {
+  for (const cls of el.className.split(/\s+/)) {
+    const found = pattern.exec(cls);
+    if (found !== null) return Number(found[1]);
+  }
+  throw new Error(`no ${pattern.source} class on: ${el.className}`);
+}
+
 const FACETS_BODY = {
   genres: [
     { value: "Rock", count: 2 },
@@ -78,15 +90,51 @@ describe("BrowsePage", () => {
     // the rail must be an internal scroller (overflow-y-auto) pinned BELOW the
     // 4.5rem sticky topbar (top-24 = 6rem = topbar + main py-6) and sized to
     // always fit the viewport (100vh - 6rem top - 1.5rem bottom gap).
-    expect(rail.className).toContain("overflow-y-auto");
-    expect(rail.className).toContain("md:sticky");
-    expect(rail.className).toContain("md:top-24");
-    expect(rail.className).toContain("md:max-h-[calc(100vh-7.5rem)]");
-    // A real right gutter — content, then empty space, then a slim themed
-    // bar — so the scrollbar never crowds the facet counts.
-    expect(rail.className).toContain("pr-4");
-    expect(rail.className).toContain("thin-scrollbar");
-    expect(rail.className).toContain("md:w-60");
+    // Token equality, not `className.toContain`: a substring match on the
+    // whole string is also satisfied by `md:w-600` or `pr-40`.
+    const tokens = rail.className.split(/\s+/);
+    for (const token of [
+      "overflow-y-auto",
+      "md:sticky",
+      "md:top-24",
+      "md:max-h-[calc(100vh-7.5rem)]",
+      // A real right gutter — content, then empty space, then a slim themed
+      // bar — so the scrollbar never crowds the facet counts.
+      "pr-4",
+      "thin-scrollbar",
+    ]) {
+      expect(tokens).toContain(token);
+    }
+  });
+
+  test("the rail's own clip leaves room for a facet checkbox's tap target", async () => {
+    renderWithProviders(<BrowsePage />, { route: "/browse" });
+    const box = await screen.findByRole("checkbox", { name: /rock/i });
+    const rail = screen.getByRole("complementary", { name: /filters/i });
+    // `overflow-y-auto` makes overflow-x compute to `auto` as well, so this
+    // box clips its own content — and it holds checkboxes whose ≥24px tap
+    // target (decisions 40) is a pseudo-element reaching past the drawn box on
+    // every side. With no left padding the content box started at the drawn
+    // box's left edge and the clip took that reach: measured 20.5×24.5 in
+    // Chromium, 2 of 4 corners of a centred 24×24 square.
+    //
+    // DERIVED from the primitive's own tokens at this call site, so a target
+    // that grows past the room made for it fails here rather than being
+    // silently clipped again.
+    const reach = (steps(box, /^before:size-([\d.]+)$/) - steps(box, /^size-([\d.]+)$/)) / 2;
+    expect(reach).toBeGreaterThan(0);
+    const pad = steps(rail, /^pl-([\d.]+)$/);
+    expect(pad).toBeGreaterThanOrEqual(reach);
+    // The padding moves the CLIP, and these two keep everything else where it
+    // was: the negative margin gives the width back to the layout (so no later
+    // sibling moves) and the fixed width pays for the padding (so the content
+    // box, and every facet label in it, keeps its width). Measured cost at 201
+    // widths from 320 to 1920: none. `-ml-1 pl-1` WITHOUT the width — the
+    // remedy first recorded — costs 4px of label and shifts the album grid.
+    expect(steps(rail, /^-ml-([\d.]+)$/)).toBe(pad);
+    expect(steps(rail, /^md:w-([\d.]+)$/), "the rail's content width is 60 spacing steps (15rem); the fixed width must carry the left padding on top of it").toBe(
+      60 + pad,
+    );
   });
 
   test("toggling a genre puts it in the query and refetches", async () => {

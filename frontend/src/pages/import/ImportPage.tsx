@@ -878,9 +878,42 @@ function FeedRow({
   const albumId = album.album_id ?? null;
   const linked = albumId !== null;
   const origin = importOrigin(jobId);
+  const action = readOnly
+    ? undefined
+    : feedRowAction(album.status, album.index, jobId, origin);
   return (
     // Highlight stays with the caller (AlbumRow contract).
-    <div className={cn((needsReview || needsDup) && "bg-primary/5")}>
+    //
+    // Under 28rem of ROW the action drops to its own line under it
+    // (decisions 39, extended to this feed by the owner 2026-09-11). The
+    // defect is the decision row's, measured here: the title is 0px wide at
+    // viewport 320→344 on a parked-duplicate row and at 320→328 on a
+    // needs_review one. The grid arrives ONLY on a row that carries a button,
+    // so every other feed row keeps the plain block box it has today.
+    //
+    // 28rem is the owner's number (2026-09-11), one threshold for all three
+    // rows. The floor is still 296.70 — fixed content 285.37px (px-4 16 +
+    // cover 40 + gap-3 12 + "Already in library" 107.98 + gap-2 8 + gap-3 12
+    // + Resolve 73.39 + px-4 16) plus an 11.33px ellipsis glyph — and it is
+    // true AS a floor, but it is not what sets the switch. At 20rem the real
+    // phone band went inline and the title collapsed: viewport
+    // 392/400/414/430 measured 42/50/66/74px of title, 6/7/10/10 characters
+    // of a 46-character album. At 28rem the same widths give
+    // 127/135/151/159px, 18/19/22/23 characters. The ceiling is the 473px
+    // narrowest desktop row, at the 768px sidebar step, which 448 clears — so
+    // no desktop row ever drops. The switch measures at viewport 513 (row
+    // 448); 512 (row 447) is the last dropped width.
+    //
+    // A grid, like both /review rows: `items-center` then centres each item
+    // in its OWN row track, so the dropped line cannot re-centre anything
+    // above it.
+    <div
+      className={cn(
+        (needsReview || needsDup) && "bg-primary/5",
+        action !== undefined &&
+          "@container/feedrow grid grid-cols-[minmax(0,1fr)_auto] items-center",
+      )}
+    >
       {/* ?size=thumb: AlbumRow renders the cover at size-10 (40 CSS px) and
           this feed shows dozens of rows at once — the densest cover consumer
           in the app. CoverArt never appends a query of its own, so a literal
@@ -899,12 +932,16 @@ function FeedRow({
         badge={<StatusBadge album={album} />}
         href={linked ? `/albums/${albumId}` : undefined}
         hrefState={linked ? origin : undefined}
-        action={
-          readOnly
-            ? undefined
-            : feedRowAction(album.status, album.index, jobId, origin)
-        }
       />
+      {action !== undefined && (
+        // Not AlbumRow's `action` slot: from inside it the button cannot take
+        // a line of its own without growing AlbumRow's box. `-ml-1` gives back
+        // the 4px by which AlbumRow's px-4 exceeds its own gap-3, so the
+        // inline arm keeps today's 12px gap and 16px inset.
+        <div className="col-start-1 row-start-2 mb-3 ml-4 flex items-center @min-[28rem]/feedrow:col-start-2 @min-[28rem]/feedrow:row-start-1 @min-[28rem]/feedrow:mb-0 @min-[28rem]/feedrow:-ml-1 @min-[28rem]/feedrow:mr-4">
+          {action}
+        </div>
+      )}
     </div>
   );
 }

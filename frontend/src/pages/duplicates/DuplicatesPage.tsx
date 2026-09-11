@@ -458,6 +458,10 @@ function GroupCard({
  * the distinguishing aunique `[NN]` suffix at the END of the path stays
  * reachable (an end-ellipsis would hide it; `title` still carries the whole
  * path for hover). */
+/** The suggested keeper's badge text — one spelling, on the badge and in the
+ * radio's accessible name. */
+const MOST_COMPLETE = "most complete";
+
 function MemberRow({
   album,
   name,
@@ -469,8 +473,23 @@ function MemberRow({
   checked: boolean;
   onChoose: () => void;
 }> ) {
-  const bitrateNote = ` · ${album.bitrate_kbps}k`;
-  const quality = `${album.format ?? "-"}${album.bitrate_kbps ? bitrateNote : ""}`;
+  // The contract types both `format` and `bitrate_kbps` nullable. The VISIBLE
+  // meta keeps `-` for a missing format (this page's placeholder convention);
+  // an accessible NAME must not carry it — a placeholder read aloud as "dash"
+  // names nothing, and with both fields null every member read
+  // "Keep X (10 tracks, -)", identical again. One join for both strings, so a
+  // quality that exists has a single spelling: nothing to say → the clause is
+  // absent; bitrate alone → the bitrate, with no leading `·`.
+  const bitrate = album.bitrate_kbps ? `${album.bitrate_kbps}k` : null;
+  const parts = (format: string | null, rate: string | null): string =>
+    [format, rate].filter((part) => part !== null).join(" · ");
+  const quality = parts(album.format ?? "-", bitrate);
+  const metaLine = `${album.year ?? "-"} · ${album.track_count} tracks · ${quality}`;
+  const nameQuality = parts(album.format, bitrate);
+  const nameSuffix = nameQuality === "" ? "" : `, ${nameQuality}`;
+  // The badge is a sibling text node, so a screen reader arrowing the group
+  // never hears which member the app recommends unless the name says so.
+  const nameTag = album.is_suggested_keeper ? `, ${MOST_COMPLETE}` : "";
   return (
     // The radio centres on the ROW it selects, never on row+path. An
     // `items-center` flex <li> holding both centred the control on the whole
@@ -489,14 +508,38 @@ function MemberRow({
         checked && "bg-primary/5",
       )}
     >
-      <input
-        type="radio"
-        className="ml-2 shrink-0"
-        name={name}
-        checked={checked}
-        onChange={onChoose}
-        aria-label={`Keep ${album.title} (${album.track_count} tracks)`}
-      />
+      {/* The ≥24px tap target (decisions 40) is a wrapping <label>, not a
+          pseudo-element on the input: Chromium does render `::before` on an
+          `<input>` and Firefox does not, while a label's whole box activates
+          the control it wraps in every engine. `-m-3 p-3` leaves the label's
+          MARGIN box equal to the input's own, so the grid column — and the
+          path line that derives its inset from it — do not move; measured
+          45×37 of target around a 13×13 drawn radio (the UA's box, which is
+          why the target is a padding and not an inset of it).
+          `relative` is load-bearing: without it the 12px that reach past the
+          margin box are painted over by AlbumRow, the LATER in-flow sibling,
+          and the right half of the target is 10.5px instead of 12. What it
+          reaches into is AlbumRow's own `px-4`, 8px short of the cover. */}
+      <label className="relative -m-3 flex p-3">
+        <input
+          type="radio"
+          className="ml-2 shrink-0"
+          name={name}
+          checked={checked}
+          onChange={onChoose}
+          // The quality is IN the name, not only in the meta line beside it:
+          // members of a group are duplicates of one album, so title and track
+          // count are the same on every option and the name alone ("Keep In
+          // Rainbows (10 tracks)") named all of them identically. `quality` is
+          // the same string the row renders — one spelling, not a second.
+          // The suggested keeper's name also ends in its badge text, so it is
+          // distinct from every sibling. Two NON-suggested members that share
+          // a format AND a bitrate, or have neither to show, still read the
+          // same; the only always-distinct field is the folder path, and that
+          // is a design call parked in BACKLOG, not this fix.
+          aria-label={`Keep ${album.title} (${album.track_count} tracks${nameSuffix})${nameTag}`}
+        />
+      </label>
       {/* ?size=thumb: AlbumRow renders the cover at size-10 (40 CSS px), so
           the 320px derivation already covers 2x DPI. CoverArt never appends
           a query of its own, so a literal append is safe. */}
@@ -505,14 +548,39 @@ function MemberRow({
         coverAssetKey={`album:${album.id}`}
         title={album.title}
         subtitle={album.album_artist}
-        meta={`${album.year ?? "-"} · ${album.track_count} tracks · ${quality}`}
-        badge={
+        // The "most complete" badge sits on the META line, not the title line
+        // (owner's ruling 2026-09-11). On the title line it is `shrink-0` at
+        // 118.61px and the keeper's title measured `clientWidth` 0 at viewport
+        // 320 and 328 and 3.39px at 336, where a badge-less sibling showed
+        // 114px — on the screen whose button moves albums to Trash.
+        //
+        // Stacked below 28rem of the text COLUMN, inline above it, because
+        // AlbumRow's meta slot is `shrink-0`: its used width is max-content,
+        // and a column flex contributes its WIDEST child (the text) where a
+        // row would contribute text + gap + badge. The meta line clips
+        // (`overflow-hidden`) and Badge is itself `overflow-hidden
+        // whitespace-nowrap`, so in any column narrower than that sum the
+        // badge would lose letters rather than move. Widths in BACKLOG.
+        meta={
           album.is_suggested_keeper ? (
-            <Badge variant="secondary" className="shrink-0">
-              <Resolved className="mr-1 size-3" aria-hidden="true" />
-              most complete
-            </Badge>
-          ) : undefined
+            <span className="flex flex-col items-start gap-1 @min-[28rem]/rowtext:flex-row @min-[28rem]/rowtext:items-center @min-[28rem]/rowtext:gap-2">
+              {metaLine}
+              {/* Badge already supplies `shrink-0`, `gap-1` and
+                  `[&>svg]:size-3` — nothing to restate here. The one default
+                  overridden is `whitespace-nowrap`, and for a measured reason:
+                  at viewport 320 the text column is 114px and this badge's
+                  max-content is 114.61, so Badge's own `overflow-hidden` cut
+                  0.61px off the label. Wrapping is allowed here, losing
+                  letters is not. `w-fit` then shrinks it to the column instead
+                  of overflowing it. */}
+              <Badge variant="secondary" className="whitespace-normal">
+                <Resolved aria-hidden="true" />
+                {MOST_COMPLETE}
+              </Badge>
+            </span>
+          ) : (
+            metaLine
+          )
         }
       />
       <div
