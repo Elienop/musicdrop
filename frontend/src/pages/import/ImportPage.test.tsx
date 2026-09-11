@@ -576,6 +576,10 @@ describe("ImportPage — live feed", () => {
     // The threshold is measured against the ROW, not the viewport: at 768px
     // the sidebar opens and the row is NARROWER than at 520px.
     expect(wrapper?.className.split(/\s+/)).toContain("@container/feedrow");
+    // The template too: without it the `col-start` pins still resolve into
+    // implicit columns, and the text track loses `minmax(0,1fr)` — it
+    // auto-sizes and the title stops truncating, which is the defect.
+    expect(wrapper?.className.split(/\s+/)).toContain("grid-cols-[minmax(0,1fr)_auto]");
     for (const token of [
       "col-start-1",
       "row-start-2",
@@ -608,6 +612,9 @@ describe("ImportPage — live feed", () => {
     // button can gain the dropped line, so every other feed row is untouched.
     const applied = await screen.findByRole("link", { name: "OK Computer" });
     const wrapper = applied.closest("li")?.firstElementChild;
+    // Guarded, so a structural change fails as an assertion rather than a
+    // TypeError inside the helper below.
+    expect(wrapper).not.toBeNull();
     expect(wrapper?.className.split(/\s+/)).not.toContain("grid");
     expect(wrapper?.className.split(/\s+/)).not.toContain("@container/feedrow");
     expect(containerQueryVariants(wrapper as HTMLElement)).toEqual([

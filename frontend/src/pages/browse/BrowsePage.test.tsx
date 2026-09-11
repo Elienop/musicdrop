@@ -132,7 +132,9 @@ describe("BrowsePage", () => {
     // widths from 320 to 1920: none. `-ml-1 pl-1` WITHOUT the width — the
     // remedy first recorded — costs 4px of label and shifts the album grid.
     expect(steps(rail, /^-ml-([\d.]+)$/)).toBe(pad);
-    expect(steps(rail, /^md:w-([\d.]+)$/)).toBe(60 + pad);
+    expect(steps(rail, /^md:w-([\d.]+)$/), "the rail's content width is 60 spacing steps (15rem); the fixed width must carry the left padding on top of it").toBe(
+      60 + pad,
+    );
   });
 
   test("toggling a genre puts it in the query and refetches", async () => {

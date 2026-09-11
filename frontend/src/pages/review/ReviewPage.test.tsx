@@ -145,6 +145,10 @@ describe("ReviewPage", () => {
     const row = resolve.closest("li");
     expect(row).toHaveClass("grid");
     expect(row?.className.split(/\s+/)).toContain("@container/decisionrow");
+    // The template too: without it the `col-start` pins still resolve into
+    // implicit columns, and the text track loses `minmax(0,1fr)` — it
+    // auto-sizes and the title stops truncating.
+    expect(row?.className.split(/\s+/)).toContain("grid-cols-[minmax(0,1fr)_auto]");
     const group = resolve.parentElement;
     expect(group?.parentElement).toBe(row);
     // Both halves of both arms: with the column half dropped the action is
@@ -563,8 +567,14 @@ describe("ReviewPage", () => {
     expect(row).toHaveClass("items-center");
     // The container the threshold is measured against is the row itself — a
     // viewport breakpoint would be wrong: at 768px the sidebar opens and the
-    // row is NARROWER than at 520px.
-    expect(row.className).toMatch(/@container\/bankrow/);
+    // row is NARROWER than at 520px. A token, not a substring: a row declaring
+    // `@container/bankrowX` satisfies the regex and wires nothing.
+    expect(row.className.split(/\s+/)).toContain("@container/bankrow");
+    // The template too, not only the `col-start` pins: drop it and every pin
+    // below still resolves (a grid makes implicit columns for them), while the
+    // AlbumRow's track loses `minmax(0,1fr)`, becomes auto-sized, and the
+    // title stops truncating — the defect this row was fixed for.
+    expect(row.className.split(/\s+/)).toContain("grid-cols-[auto_minmax(0,1fr)_auto]");
     const group = within(section).getByRole("button", { name: /ignore album z/i }).parentElement;
     // Its own line below the row by default; back on the row's line above the
     // threshold. BOTH halves of BOTH arms: a grid places definite-position
