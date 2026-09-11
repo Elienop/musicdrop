@@ -30,7 +30,18 @@
 // aria-query maps no tag to it; and (c) `http://evil.example.com` as a cleartext fixture,
 // exempt under the rule's own DOCUMENTATION_HOSTS. All three read as passing.
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import os from "node:os";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 
@@ -60,37 +71,54 @@ const ANALYZER_PLUGIN_VERSIONS: Record<string, string> = {
   "eslint-plugin-testing-library": "7.16.2",
 };
 
+const SCANNER_CACHE = "/mnt/data/sonarqube/scanner-cache";
+
+/**
+ * The newest `sonar-javascript-plugin.jar` under `root` by mtime, or null when there is
+ * none. The scanner cache keeps one entry per analyzer version it has ever downloaded, so
+ * after a SonarQube upgrade it holds several (two since the 2026-09-11 move to 26.9). The
+ * entry names are hashes and `readdirSync` orders by NAME, so "first jar found" is a coin
+ * toss between the old bundle and the new one — and reading the old one is a silent pass
+ * in exactly the direction the bundle test below exists to make loud.
+ */
+function newestAnalyzerJar(root: string): string | null {
+  if (!existsSync(root)) return null;
+  let newest: { jar: string; mtimeMs: number } | null = null;
+  for (const entry of readdirSync(root)) {
+    const jar = path.join(root, entry, "sonar-javascript-plugin.jar");
+    if (!existsSync(jar)) continue;
+    const { mtimeMs } = statSync(jar);
+    if (newest === null || mtimeMs > newest.mtimeMs) newest = { jar, mtimeMs };
+  }
+  return newest?.jar ?? null;
+}
+
 /**
  * Re-derive the versions from the analyzer bundle actually on this machine, or return null
  * where it cannot be reached (CI runners, a fresh clone, a box with no scanner cache).
  * Null means UNKNOWN and the caller skips; it must never read as agreement.
  */
 function analyzerBundleVersions(): Record<string, string> | null {
-  const root = "/mnt/data/sonarqube/scanner-cache";
-  if (!existsSync(root)) return null;
-  for (const entry of readdirSync(root)) {
-    const jar = path.join(root, entry, "sonar-javascript-plugin.jar");
-    if (!existsSync(jar)) continue;
-    try {
-      // The jar embeds the analyzer tarball; the tarball's package.json is the manifest.
-      const tgz = execFileSync("unzip", ["-p", jar, "sonarjs-*.tgz"], {
-        maxBuffer: 256 * 1024 * 1024,
-      });
-      const manifest = execFileSync("tar", ["xzO", "package/package.json"], {
-        input: tgz,
-        maxBuffer: 64 * 1024 * 1024,
-        encoding: "utf8",
-      });
-      const parsed = JSON.parse(manifest) as {
-        dependencies?: Record<string, string>;
-        devDependencies?: Record<string, string>;
-      };
-      return { ...parsed.dependencies, ...parsed.devDependencies };
-    } catch {
-      return null; // no unzip/tar, or an unreadable jar — unknown, not clean
-    }
+  const jar = newestAnalyzerJar(SCANNER_CACHE);
+  if (jar === null) return null;
+  try {
+    // The jar embeds the analyzer tarball; the tarball's package.json is the manifest.
+    const tgz = execFileSync("unzip", ["-p", jar, "sonarjs-*.tgz"], {
+      maxBuffer: 256 * 1024 * 1024,
+    });
+    const manifest = execFileSync("tar", ["xzO", "package/package.json"], {
+      input: tgz,
+      maxBuffer: 64 * 1024 * 1024,
+      encoding: "utf8",
+    });
+    const parsed = JSON.parse(manifest) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    return { ...parsed.dependencies, ...parsed.devDependencies };
+  } catch {
+    return null; // no unzip/tar, or an unreadable jar — unknown, not clean
   }
-  return null;
 }
 
 // Real, existing files: `lintText` supplies the CONTENT, but typescript-eslint's project
@@ -714,6 +742,34 @@ describe("eslint.config.js", () => {
     }
   });
 
+  test("the bundle read is the NEWEST jar in the scanner cache, not the first by name", () => {
+    // Entry names are hashes, so name order is a coin toss between the old bundle and the
+    // new one; only the newest describes the analyzer the server runs now. Built in a temp
+    // dir so the real cache is never touched.
+    const root = mkdtempSync(path.join(os.tmpdir(), "scanner-cache-"));
+    try {
+      const older = path.join(root, "a-sorts-first", "sonar-javascript-plugin.jar");
+      const newer = path.join(root, "z-sorts-last", "sonar-javascript-plugin.jar");
+      for (const jar of [older, newer]) {
+        mkdirSync(path.dirname(jar));
+        writeFileSync(jar, "");
+      }
+      const now = Date.now() / 1000;
+      utimesSync(older, now - 3600, now - 3600);
+      utimesSync(newer, now, now);
+      expect(newestAnalyzerJar(root)).toBe(newer);
+      // The other way round too, so this is mtime and not "last by name" in disguise.
+      utimesSync(older, now + 60, now + 60);
+      expect(newestAnalyzerJar(root)).toBe(older);
+      // An entry with no jar is skipped; a missing cache is unknown, not clean.
+      mkdirSync(path.join(root, "m-no-jar"));
+      expect(newestAnalyzerJar(root)).toBe(older);
+      expect(newestAnalyzerJar(path.join(root, "missing"))).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("the recorded analyzer versions still match the analyzer bundle on disk", () => {
     // The OTHER direction of drift, and the one nothing else can see. The test above only
     // proves `node_modules` agrees with the constants above; it says nothing about whether
@@ -728,7 +784,7 @@ describe("eslint.config.js", () => {
     // check fires where the change actually lands.
     //
     // Re-derive by hand with:
-    //   unzip -p /mnt/data/sonarqube/scanner-cache/*/sonar-javascript-plugin.jar 'sonarjs-*.tgz' \
+    //   unzip -p "$(ls -t /mnt/data/sonarqube/scanner-cache/*/sonar-javascript-plugin.jar | head -1)" 'sonarjs-*.tgz' \
     //     | tar xzO package/package.json | python3 -m json.tool
     //
     // When this fails, do NOT just update the constants. The versions moving means the rules
