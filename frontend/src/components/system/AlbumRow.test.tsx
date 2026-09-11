@@ -116,5 +116,13 @@ describe("AlbumRow", () => {
       "@min-[18rem]/rowtext:items-center",
     ]);
     expect(unwiredContainerQueries(container)).toEqual([]);
+    // Same element, second property: `overflow-hidden` is what keeps this
+    // line's ink out of the action slot's buttons, where `elementFromPoint`
+    // measured a tap on it firing Ignore. jsdom computes no layout, so the
+    // class is the only thing a test can hold — and without this a tidy-up of
+    // the string drops it with 1491 tests still green.
+    expect(screen.getByText("Radiohead").parentElement).toHaveClass(
+      "overflow-hidden",
+    );
   });
 });
