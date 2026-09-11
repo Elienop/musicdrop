@@ -1804,6 +1804,12 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     radios' accessible names are unchanged, no control is clipped and no text ink answers
     `elementFromPoint` with a control. The badge also lost 4px (118.61 → 114.61): the icon's
     `mr-1` restated a `gap-1` Badge already applies.
+    **The cost is vertical, and it is the keeper row only:** that row grows **26px** at most
+    widths (the badge's own line), **42px at 320** where the label wraps to two lines, and
+    **2px from 1280 up**, where the badge is inline and its 22px box is taller than the 20px
+    meta line. The sibling row and the card's primary button move down by the same amount —
+    row-relative nothing else changes, and there is no horizontal overflow at any width
+    (document `scrollWidth` equals `clientWidth`, 320 through 1920).
   `AlbumRow` itself is unchanged.
   **What decisions 39 did NOT settle, recorded as the owner's call:** below the threshold the
   BADGE still owns the title's line. At viewport 320 a bank row's text column is **139px**
