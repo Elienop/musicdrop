@@ -34,7 +34,7 @@ def test_the_moved_aside_mode_is_on_the_wire() -> None:
         track_count=0,
         format=None,
         restore_mode="by_hand",
-        restore_note="MusicDrop moved these files aside when it replaced them",
+        restore_note="MusicDrop replaced these files; they are not an album.",
         origin="/data/cache/artist-images",
     )
     assert a.restore_mode == "by_hand"

@@ -580,9 +580,11 @@ class ArtistImageCache:
 
         Keyed on the BYTES, like :meth:`_clear_slots`' answer: an orphaned mime
         sidecar (``write_override`` publishes the mime first, so a crash between
-        the two leaves one) is nothing a person uploaded, and it stays with the
-        clear that sweeps it today. Only regular files (or links to one) are
-        listed — that is what ``trash.trash_replaced_files`` accepts.
+        the two leaves one) is nothing a person uploaded, so there is nothing for
+        Trash to keep and the reset leaves it — :meth:`clear_override` sweeps it,
+        and the next ``write_override`` overwrites it. Only regular files (or
+        links to one) are listed — that is what ``trash.trash_replaced_files``
+        accepts.
         """
         key = self._key(name)
         image = self._dir / f"{key}{_OVERRIDE_SUFFIX}"

@@ -596,7 +596,7 @@ export interface paths {
          *     they just rejected, because a present ``.bin`` means the resolve path never
          *     runs again.
          *
-         *     An image the user uploaded or linked is MOVED to the app's Trash before the
+         *     An image the user uploaded or pasted is MOVED to the app's Trash before the
          *     slots are cleared - it is not the app's file to unlink - so a refused or
          *     unusable Trash store answers 503 and no slot is cleared. A store refused
          *     before the first move leaves the override exactly where it was; a move that
@@ -604,9 +604,11 @@ export interface paths {
          *     why the 503 says the reset stopped rather than that nothing moved. Putting
          *     it back is a copy out of that Trash entry (README).
          *
-         *     The whole move-and-clear runs under the beets swap lock, the one the three
-         *     Trash routes in ``app/api/trash.py`` hold: an Empty Trash or a config Apply
-         *     landing mid-move is what that serialises.
+         *     The move-and-clear runs under the beets swap lock, the one the three Trash
+         *     routes in ``app/api/trash.py`` hold: an Empty Trash or a config Apply
+         *     landing mid-move is what that serialises. A held lock is a 409 here, never
+         *     a wait. Only the files the move took leave the override slot, so an upload
+         *     that lands beside the reset is still served afterwards.
          *
          *     The result reports each slot separately: neither may have existed, and on an
          *     unwritable cache dir a removal can be refused. The caller shows what
@@ -619,9 +621,10 @@ export interface paths {
          *     dependency a foreign page could reset portraits (the DELETE this replaced
          *     was preflight-protected by its method alone).
          *
-         *     409 while the artist-art sweep runs: clearing the automatic slot under a
-         *     sweep that is mid-resolve for the same artist is undone by the sweep's own
-         *     store, so the user would press Reset and watch nothing change.
+         *     409 while the artist-art sweep runs - asked before the lock and again with
+         *     it held: clearing the automatic slot under a sweep that is mid-resolve for
+         *     the same artist is undone by the sweep's own store, so the user would press
+         *     Reset and watch nothing change.
          */
         post: operations["reset_artist_image_endpoint_api_artists_image_reset_post"];
         delete?: never;
@@ -7355,7 +7358,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description An artist-art job is running, so image changes are refused until it finishes. */
+            /** @description An artist-art job is running or the beets swap lock is held, so the reset is refused until it finishes. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -7373,7 +7376,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description An uploaded or linked image is stored for this artist and could not be moved to Trash, so the reset stopped. Part of it may already be in Trash. */
+            /** @description An uploaded or pasted image is stored for this artist and could not be fully moved to Trash, so the reset stopped. Part of it may already be in Trash. */
             503: {
                 headers: {
                     [name: string]: unknown;

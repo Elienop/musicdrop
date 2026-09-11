@@ -280,7 +280,7 @@ describe("ArtistImageEditPanel", () => {
     resetMutate.mockImplementation(() => {
       resetState.isError = true;
       resetState.error = new Error(
-        "The uploaded image could not be moved to Trash, so the reset stopped;" +
+        "The uploaded image could not be fully moved to Trash, so the reset stopped;" +
           " check Trash before retrying.",
       );
     });

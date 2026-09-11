@@ -1,6 +1,6 @@
 """Reset to auto moves an uploaded portrait to Trash; it never unlinks it.
 
-The bytes are a file the user uploaded or linked by hand, so every state this
+The bytes are a file the user uploaded or pasted by hand, so every state this
 route may leave behind has them "inside one Trash entry with an origin record"
 or "still served, nothing reset at all" - a move that fails part-way is the
 first of those with the slots left alone. Every test here goes through
@@ -11,6 +11,7 @@ library handle rather than the stub
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import os
 import shutil
@@ -45,9 +46,23 @@ RESET = "/api/artists/image/reset"
 #: to be made twice and cannot pass unnoticed. ``ArtistImageEditPanel.test.tsx``
 #: keeps a third copy for the panel's error branch.
 MOVE_FAILED = (
-    "The uploaded image could not be moved to Trash, so the reset stopped;"
+    "The uploaded image could not be fully moved to Trash, so the reset stopped;"
     " check Trash before retrying."
 )
+
+
+class _Locked(asyncio.Lock):
+    """A REAL ``asyncio.Lock`` that reports itself held.
+
+    ``tests/test_trash_api.py`` can use a bare stub because its routes never get
+    past the gate; this route's own ``async with _swap_lock(...)`` asserts the
+    object is an ``asyncio.Lock``, so a stub would kill the mutant on that
+    assert instead of on the status. Acquiring still works, which is the point:
+    drop the pre-check and the reset proceeds to 200 rather than hanging.
+    """
+
+    def locked(self) -> bool:
+        return True
 
 
 class _OffService:
@@ -360,20 +375,125 @@ def test_the_move_and_the_clear_run_under_the_beets_swap_lock(
         return lock is not None and bool(lock.locked())
 
     real_trash = artists_mod._trash_override_files
-    real_slots = artists_mod._reset_slots
+    real_slots = artists_mod._clear_auto_slot
 
     def move_spy(files: list[Path], name: str, store: ArtTrashStore) -> None:
         seen["move"] = held()
         real_trash(files, name, store)
 
-    def slots_spy(cache_: ArtistImageCache, name: str) -> tuple[bool, bool]:
+    def slots_spy(cache_: ArtistImageCache, name: str) -> bool:
         seen["clear"] = held()
         return real_slots(cache_, name)
 
     monkeypatch.setattr(artists_mod, "_trash_override_files", move_spy)
-    monkeypatch.setattr(artists_mod, "_reset_slots", slots_spy)
+    monkeypatch.setattr(artists_mod, "_clear_auto_slot", slots_spy)
     cache.write_override("ABBA", PNG, "image/png")
 
     assert client.post(RESET, params={"name": "ABBA"}).status_code == 200
 
     assert seen == {"move": True, "clear": True}
+
+
+def test_a_held_swap_lock_refuses_the_reset_instead_of_queueing_behind_it(
+    client: TestClient, cache: ArtistImageCache, store: tuple[Path, Path]
+) -> None:
+    """409 with the Trash routes' own sentence, rather than waiting on the lock.
+
+    No holder is bounded - a restore re-imports, a duplicates merge runs a whole
+    batch - and ``apiFetch`` sets no timeout, so waiting pins the confirm dialog
+    with Cancel disabled for as long as the holder runs. The LOCK half only: an
+    import never holds the lock, so the full library-busy union would refuse a
+    portrait reset for the length of one.
+    """
+    from app.main import app
+
+    trash_dir, _origins = store
+    cache.write_override("ABBA", PNG, "image/png")
+    app.state.beets_swap_lock = _Locked()
+    try:
+        resp = client.post(RESET, params={"name": "ABBA"})
+    finally:
+        del app.state.beets_swap_lock
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "A library operation is in progress; try again when it finishes"
+    assert not trash_dir.exists()  # nothing moved
+    served = cache.get("ABBA")
+    assert isinstance(served, CachedImage)
+    assert served.data == PNG  # the upload is still what the artist serves
+
+
+def test_the_art_sweep_gate_is_asked_again_with_the_lock_held(
+    client: TestClient,
+    cache: ArtistImageCache,
+    cache_dir: Path,
+    store: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sweep that starts between the first gate and the lock must still win.
+
+    The pre-lock gate reads a flag, and its own 409 window plus the acquire can
+    outlive that read; a sweep starting in there re-stores the slot the clear is
+    about to empty, so the user presses Reset and watches nothing change. The
+    flag is flipped on the gate's SECOND read, which is the only call the inner
+    check makes - drop that check and this answers 200.
+    """
+    trash_dir, _origins = store
+    reads: list[int] = []
+
+    def sweep_starts_on_the_second_read() -> bool:
+        reads.append(1)
+        return len(reads) >= 2
+
+    monkeypatch.setattr(artists_mod, "artist_art_backfill_active", sweep_starts_on_the_second_read)
+    cache.write_override("ABBA", PNG, "image/png")
+
+    resp = client.post(RESET, params={"name": "ABBA"})
+
+    assert resp.status_code == 409
+    assert len(reads) == 2  # asked before the lock AND with it held
+    assert not trash_dir.exists()
+    key = cache._key("ABBA")
+    assert (cache_dir / f"{key}.override").read_bytes() == PNG  # nothing cleared
+
+
+def test_an_upload_that_lands_after_the_move_survives_the_reset(
+    client: TestClient,
+    cache: ArtistImageCache,
+    cache_dir: Path,
+    store: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reset removes exactly the files it moved, never "whatever is there".
+
+    The override upload route takes no swap lock, so a pair can land in the
+    cache dir between the move and the clear. A slot-scoped ``clear_override``
+    would unlink THAT pair - bytes that never reached Trash and are gone for
+    good. Simulated by writing the fresh pair from inside the mover, which is
+    the window itself.
+    """
+    trash_dir, _origins = store
+    fresh = b"a second upload, still wanted"
+    cache.write_override("ABBA", PNG, "image/png")
+    real_move = artists_mod._trash_override_files
+
+    def move_then_upload(files: list[Path], name: str, art_store: ArtTrashStore) -> None:
+        real_move(files, name, art_store)
+        cache.write_override("ABBA", fresh, "image/jpeg")
+
+    monkeypatch.setattr(artists_mod, "_trash_override_files", move_then_upload)
+
+    body = client.post(RESET, params={"name": "ABBA"}).json()
+
+    # Honest either way: a pair WAS moved, which is what cleared_override means.
+    assert body == {"ok": True, "cleared_override": True, "cleared_auto": False}
+    key = cache._key("ABBA")
+    assert (cache_dir / f"{key}.override").read_bytes() == fresh
+    assert (cache_dir / f"{key}.override.mime").read_text() == "image/jpeg"
+    served = cache.get("ABBA")
+    assert isinstance(served, CachedImage)
+    assert served.data == fresh
+    assert served.content_type == "image/jpeg"
+    # The OLD pair is the one in Trash, alone.
+    (image,) = list((trash_dir / "ABBA - artist image").glob("*.override"))
+    assert image.read_bytes() == PNG

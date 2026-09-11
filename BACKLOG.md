@@ -1129,11 +1129,11 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   confirm, and nothing refetches it.**~~ — **CLOSED 2026-09-11** (on
   `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`; PR + squash sha cited at merge).
   Reset is behind an AlertDialog in the Save-art shape — "Reset to auto?", and a description
-  that warns an uploaded or linked image moves to Trash — and the POST is sent from the
+  that warns an uploaded or pasted image moves to Trash — and the POST is sent from the
   dialog's action alone, held open until it settles. The endpoint moves the `*.override` pair
   to `Trash/<artist> - artist image` via `trash_replaced_files` before clearing any slot, and
-  answers 503 with the store's own sentence (nothing reset, override untouched) when that
-  store is refused or unwritable. The design call landed on "yes, an app-cache file may feed
+  answers 503 when that store is refused or unwritable — the reset stops, and a store refused
+  before the first move leaves the override untouched. The design call landed on "yes, an app-cache file may feed
   the Trash listing", with its own row kind rather than the album words — the entry below.
   Pinned by `tests/test_artist_image_reset_to_trash.py` (7) and six confirm tests in
   `ArtistImageEditPanel.test.tsx`. (Original finding, 2026-09-11 by the final code seat on
@@ -2047,6 +2047,29 @@ Nothing in this section is a task. Each item was decided, with its reasoning, an
 because a recorded decision is what stops the question being reopened from scratch. Do not
 scan here for something to pick up — scan *Open bugs / hardening*. Revisit an item only if
 the condition it names has changed.
+
+- **The artist-image reset answers 409 while the beets swap lock is held, rather than waiting
+  for it** (2026-09-12, `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`). The reset is
+  a Trash mutator, so it takes the same lock the three routes in `api/trash.py` take — and
+  refuses the same way, with their sentence, via the LOCK half of the gate only (an import
+  reads the lock and never holds it, so the job union would refuse a portrait reset for the
+  length of one). Waiting was the alternative and was rejected: no holder is bounded (a
+  restore re-imports, a duplicates merge runs a whole batch) and `apiFetch` sets no timeout,
+  so the confirm dialog would sit pinned with Cancel disabled on an unbounded wait, with
+  nothing on screen saying why. The gate is asked again with the lock held, because the
+  pre-check's own window plus the acquire can outlive the flag it read. Revisit only if the
+  reset gains a progress surface that can honestly show a wait.
+
+- **The reset's move-failure WARNING names the Trash dir in both arms, and its 503 carries two
+  audiences** (2026-09-12, same branch). Two notes on the same 503 path, both deliberate.
+  (a) The log line interpolates `store.trash_dir` even when the fault is the origins store —
+  the less specific of the two paths, but nothing is missing: `trash_origins._store_unusable`
+  logs its own path at WARNING in the same `%r`+`display_path` shape, so the operator has
+  both lines. (b) The status is either a path-free user sentence (`_MOVE_FAILED` plus the
+  `OSError`'s `strerror`) or the layout error's operator sentence, which names absolute paths
+  on purpose — the house posture, identical at `api/trash.py` and `api/reorganize.py`. Noted
+  because a reader who greps only `_MOVE_FAILED` would conclude the route never puts a path on
+  the wire.
 
 - **A `by_hand` Trash row puts the app's artist-image cache dir on the wire as its `origin`**
   (2026-09-12, `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`). `origin` previously

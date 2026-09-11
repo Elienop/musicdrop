@@ -210,7 +210,7 @@ def test_reset_offloads_the_cache_work_to_the_threadpool(
     monkeypatch.setattr(artists_mod, "run_in_threadpool", spy, raising=False)
     resp = client.post("/api/artists/image/reset", params={"name": "ABBA"})
     assert resp.status_code == 200
-    assert artists_mod._reset_slots in [call.args[0] for call in spy.call_args_list]
+    assert artists_mod._clear_auto_slot in [call.args[0] for call in spy.call_args_list]
 
 
 def test_cross_origin_reset_is_rejected(client: TestClient) -> None:
