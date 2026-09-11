@@ -356,7 +356,7 @@ export function BrowsePage() {
             `-ml-1` gives that 4px back to the layout, and `md:w-61` (15.25rem
             = w-60 + those 4px) keeps the CONTENT box 224px wide where the
             fixed width would otherwise have paid for the padding. Measured
-            cost at every width from 320 to 1280: none — facet labels 190px
+            cost at 201 widths, 320 to 1920: none — facet labels 190px
             and the album grid at x=518 (both unchanged), no horizontal
             scrollbar on the page or the rail, and the rail still scrolls
             vertically. `-ml-1 pl-1` alone — the remedy BACKLOG recorded — is
