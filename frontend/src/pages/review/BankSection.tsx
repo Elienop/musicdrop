@@ -529,7 +529,7 @@ function BankRow({
           title cannot even ellipse — measured 0px up to a 409px row; and the
           NARROWEST row a desktop ever shows is 473px, at the 768px sidebar
           step, so anything above that would drop the actions on a desktop.
-          28rem = 448px sits between: the title gets 34.23px there instead of 0.
+          28rem = 448px sits between: the title gets 35.23px there instead of 0.
           `-ml-1` gives back the 4px by which AlbumRow's px-4 exceeds its own
           gap-3, so the inline arm keeps today's 12px gap and 16px inset. */}
       <div
