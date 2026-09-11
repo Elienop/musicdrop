@@ -242,7 +242,7 @@ describe("DuplicatesPage", () => {
     await screen.findAllByText(/Matched on/i);
 
     // Override group 2's keeper: pick the 12-track Daft Punk copy (id 4).
-    await user.click(screen.getByRole("radio", { name: /Keep Discovery \(12 tracks\)/i }));
+    await user.click(screen.getByRole("radio", { name: /Keep Discovery \(12 tracks, MP3 · 320k\)/i }));
     await user.click(screen.getByRole("button", { name: /resolve all · 2 copies/i }));
     const dialog = await screen.findByRole("alertdialog");
     await user.click(within(dialog).getByRole("button", { name: /move all to trash/i }));
@@ -430,7 +430,7 @@ describe("DuplicatesPage", () => {
     // centred on the row it selects instead of on row+path — measured 17px of
     // drift when they shared one `items-center` box. jsdom computes no layout,
     // so the two classes are what a test can hold.
-    const radio = screen.getByRole("radio", { name: /Keep In Rainbows \(10 tracks\)/i });
+    const radio = screen.getByRole("radio", { name: /Keep In Rainbows \(10 tracks, FLAC · 900k\)/i });
     // `closest("li")`, not `parentElement`: the radio's parent is the <label>
     // that carries its tap target (below).
     const row = radio.closest("li");
@@ -445,7 +445,7 @@ describe("DuplicatesPage", () => {
     renderPage();
     await screen.findByText(/Matched on/i);
 
-    const radio = screen.getByRole("radio", { name: /Keep In Rainbows \(10 tracks\)/i });
+    const radio = screen.getByRole("radio", { name: /Keep In Rainbows \(10 tracks, FLAC · 900k\)/i });
     const label = radio.parentElement;
     expect(label?.tagName).toBe("LABEL");
     // DERIVED, not a string match: the padding is what makes the target, and
@@ -454,10 +454,58 @@ describe("DuplicatesPage", () => {
     // we know of, so the floor is checked against 16.
     const pad = padding(label);
     expect(16 + 2 * pad).toBeGreaterThanOrEqual(24);
-    expect(label?.className).toContain(`-m-${paddingToken(label)}`);
+    // Token equality, not a substring: `className.toContain("-m-3")` is also
+    // satisfied by `-m-3.5`, so the pull-back could stop matching the padding
+    // and this would still pass.
+    expect(label?.className.split(/\s+/)).toContain(`-m-${paddingToken(label)}`);
     // `relative`: without it AlbumRow, the later in-flow sibling, paints over
     // the part of the target that reaches past the margin box.
     expect(label).toHaveClass("relative");
+  });
+
+  test("the keeper radios of one group have DIFFERENT accessible names", async () => {
+    // The realistic group: members of a duplicate group are copies of one
+    // album, so the title and usually the track count are the same on every
+    // option. Named "Keep <title> (<n> tracks)" they were indistinguishable to
+    // a screen reader — two identical options, one destructive outcome.
+    server.use(
+      http.get(DUP_URL, () =>
+        HttpResponse.json({
+          mode: "strict",
+          group_count: 1,
+          album_count: 2,
+          groups: [
+            {
+              match_reason: "MusicBrainz album id",
+              suggested_keeper_id: 1,
+              members: [
+                album({ id: 1, track_count: 10, format: "FLAC", bitrate_kbps: 900 }),
+                album({
+                  id: 2,
+                  track_count: 10,
+                  format: "MP3",
+                  bitrate_kbps: 320,
+                  folder: "/music/Radiohead/In Rainbows (1)",
+                  is_suggested_keeper: false,
+                }),
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    renderPage();
+    await screen.findByText(/Matched on/i);
+
+    const names = screen
+      .getAllByRole("radio")
+      .map((r) => r.getAttribute("aria-label") ?? "");
+    expect(names).toHaveLength(2);
+    expect(new Set(names).size).toBe(2);
+    // What makes them different is the quality the row already shows — the
+    // same string, not a second spelling of it.
+    expect(names[0]).toContain("FLAC · 900k");
+    expect(names[1]).toContain("MP3 · 320k");
   });
 
   test("a failed scan renders the shared inline ErrorState", async () => {

@@ -508,7 +508,15 @@ function MemberRow({
           name={name}
           checked={checked}
           onChange={onChoose}
-          aria-label={`Keep ${album.title} (${album.track_count} tracks)`}
+          // The quality is IN the name, not only in the meta line beside it:
+          // members of a group are duplicates of one album, so title and track
+          // count are the same on every option and the name alone ("Keep In
+          // Rainbows (10 tracks)") named all of them identically. `quality` is
+          // the same string the row renders — one spelling, not a second.
+          // It does not make the name unique when two members share a format
+          // AND a bitrate; the only always-distinct field is the folder path,
+          // and that is a design call, not this fix.
+          aria-label={`Keep ${album.title} (${album.track_count} tracks, ${quality})`}
         />
       </label>
       {/* ?size=thumb: AlbumRow renders the cover at size-10 (40 CSS px), so
