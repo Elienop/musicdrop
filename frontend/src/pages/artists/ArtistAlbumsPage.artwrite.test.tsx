@@ -117,8 +117,8 @@ describe("ArtistAlbumsPage artist-art apply", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Save art" }));
     await waitFor(() => expect(applyMutate).toHaveBeenCalledTimes(1));
-    // preventDefault keeps Radix from closing on the click, so onSuccess is the
-    // only way this dialog ever closes.
+    // preventDefault keeps Radix from closing on the click, so once Save art is
+    // pressed onSuccess is the only close.
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
   });
 

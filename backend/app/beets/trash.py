@@ -935,8 +935,8 @@ def trash_replaced_files(
     trash_dir.mkdir(parents=True, exist_ok=True)
     dest = _unique_trash_dest(trash_dir, origins_dir, container_name)
     # No ``exist_ok``: the allocator found the name free, this is the claim on
-    # it. A directory that arrived in between raises here, before any move, so
-    # the ``rmtree`` below never removes an entry this call did not create.
+    # it. A directory that arrived in between raises here, before any move; one
+    # renamed in after the claim is the window the ``rmtree`` comment names.
     dest.mkdir()
     moved = 0
     try:

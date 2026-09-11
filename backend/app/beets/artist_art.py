@@ -143,8 +143,9 @@ def _atomic_write_bytes(dst: Path, data: bytes) -> None:
     finally:
         # Whatever is at the temp path: ours, unless something guessed the name
         # this call picked and got there first — in which case the create above
-        # already failed and this unlinks the squatter (a dangling symlink
-        # excepted: ``exists()`` follows it and reads absent). See ``lyrics``
+        # already failed and this unlinks the squatter (excepted: a dangling
+        # symlink, which ``exists()`` reads as absent, and a directory, which
+        # ``unlink`` refuses). See ``lyrics``
         # for the one residual (a process killed mid-write leaves the dotfile).
         if tmp.exists():
             with suppress(OSError):

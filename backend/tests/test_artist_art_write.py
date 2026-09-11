@@ -391,6 +391,8 @@ def test_a_refused_write_after_the_move_leaves_the_art_only_in_trash(
     write_artist_art(edit_lib, name, poster=PNG, background=None, force=True, trash=art_trash)
 
     def refused(dst: Path, data: bytes) -> None:
+        # the move-aside has already committed when the write is attempted
+        assert list(dst.parent.glob("artist-poster.*")) == []
         raise OSError(13, "Permission denied", str(dst))
 
     monkeypatch.setattr(artist_art, "_atomic_write_bytes", refused)

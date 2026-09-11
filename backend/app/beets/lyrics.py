@@ -140,7 +140,8 @@ def active_source_names(plugin: Any) -> list[str]:
 #: on one anyway (measured), so it earns its keep only if ``O_EXCL`` is dropped.
 #: Both guard a path nothing in the music share can aim at WITHOUT GUESSING the
 #: name :func:`_tmp_path` picked; a squatter that did land on it fails the create
-#: and the ``finally`` below clears it (a dangling symlink excepted). The
+#: and the ``finally`` below clears it (a dangling symlink or a directory
+#: excepted). The
 #: read-side twin is
 #: :func:`_is_marker_sidecar`'s stat guard.
 _TMP_CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
@@ -204,8 +205,9 @@ def _atomic_write_text(dst: Path, text: str) -> None:
     finally:
         # Whatever is at the temp path: ours, unless something guessed the name
         # this call picked and got there first — in which case the create above
-        # already failed and this unlinks the squatter (a dangling symlink
-        # excepted: ``exists()`` follows it and reads absent). That condition is
+        # already failed and this unlinks the squatter (excepted: a dangling
+        # symlink, which ``exists()`` reads as absent, and a directory, which
+        # ``unlink`` refuses). That condition is
         # what keeps the line off paths somebody else put in the music folder.
         # Its price is that a process KILLED mid-write leaves one dotfile no
         # later call clears — the residual ``playlists.atomic`` already carries.
