@@ -178,8 +178,8 @@ def test_the_longest_sidecar_name_the_derived_tmp_allowed_still_writes(
     wrote. A temp name that embeds ``dst.name`` plus a pid and 16 hex costs 30,
     so names of 226-250 bytes fail ENAMETOOLONG instead — which
     ``write_lyric_sidecar`` logs and reports as None, skipping that track on
-    every later run too. The name is fixed-length now, so only the destination's
-    own ``NAME_MAX`` bounds it."""
+    every later run too. The name no longer grows with the destination's (27-33
+    bytes here), so only the destination's own ``NAME_MAX`` bounds it."""
     from app.beets.lyrics import write_lyric_sidecar
 
     name_max = os.pathconf(str(tmp_path), "PC_NAME_MAX")

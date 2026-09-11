@@ -332,7 +332,7 @@ export function ArtistAlbumsPage() {
  * `beets/artist_art.write_artist_art`). Just the icon —
  * progress + the failed state show in the topbar activity popover.
  *
- * Behind a confirm, like every other action here that touches files on disk:
+ * Behind a confirm, like the other rail actions that mutate the library:
  * this write REPLACES the folder's artist-poster/artist-background, and the
  * files it replaces are moved to Trash (`beets/artist_art.write_artist_art`).
  * The dialog is shown on every click — there is no endpoint that says whether

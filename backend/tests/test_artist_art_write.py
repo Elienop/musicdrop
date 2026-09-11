@@ -379,6 +379,29 @@ def test_a_move_that_dies_mid_copy_leaves_no_container_behind(
     assert read_trash_origin(art_trash.origins_dir, "Artist - artist art") is None
 
 
+def test_a_refused_write_after_the_move_leaves_the_art_only_in_trash(
+    edit_lib: Library, art_trash: ArtTrashStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The move-aside commits before the write, so a folder whose only write is
+    refused reports ``failed`` with nothing on disk: its art is in Trash alone.
+    """
+    import app.beets.artist_art as artist_art
+
+    name = _artist_of(edit_lib)
+    write_artist_art(edit_lib, name, poster=PNG, background=None, force=True, trash=art_trash)
+
+    def refused(dst: Path, data: bytes) -> None:
+        raise OSError(13, "Permission denied", str(dst))
+
+    monkeypatch.setattr(artist_art, "_atomic_write_bytes", refused)
+    out = write_artist_art(edit_lib, name, poster=JPG, background=None, force=True, trash=art_trash)
+
+    assert (out.status, out.written) == ("failed", 0)
+    for d in get_artist_dirs(edit_lib, name):
+        assert list(d.glob("artist-poster.*")) == []  # nothing landed
+        assert (art_trash.trash_dir / f"{d.name} - artist art" / "artist-poster.png").is_file()
+
+
 def test_a_container_that_appears_before_the_claim_is_refused_not_emptied(
     tmp_path: Path, art_trash: ArtTrashStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

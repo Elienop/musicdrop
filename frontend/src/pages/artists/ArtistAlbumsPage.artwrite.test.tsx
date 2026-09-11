@@ -117,6 +117,9 @@ describe("ArtistAlbumsPage artist-art apply", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Save art" }));
     await waitFor(() => expect(applyMutate).toHaveBeenCalledTimes(1));
+    // preventDefault keeps Radix from closing on the click, so onSuccess is the
+    // only way this dialog ever closes.
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
   });
 
   it("swallows Escape while the start is in flight", async () => {
@@ -129,6 +132,8 @@ describe("ArtistAlbumsPage artist-art apply", () => {
     // either: the dialog is where a failed start reports.
     await screen.findByRole("button", { name: "Saving\u2026" });
     expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    // and the confirm itself, or a second click starts a second job
+    expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
 
     await userEvent.keyboard("{Escape}");
     expect(screen.getByRole("alertdialog")).toBeInTheDocument();

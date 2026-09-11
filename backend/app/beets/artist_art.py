@@ -13,9 +13,9 @@ failed, the files that did not move are still there, and any that did are in
 the folder's recorded Trash entry.
 
 The move-aside commits before the write, so a folder reported ``failed`` may
-have moved its old art and then failed to write the new file (measured with
-EACCES): its art is then only in that Trash entry. A failed folder is a reason
-to look in Trash before emptying it.
+have moved its old art and then failed to write the new file: its art is then
+only in that Trash entry (pinned). A failed folder is a reason to look in Trash
+before emptying it.
 """
 
 from __future__ import annotations
