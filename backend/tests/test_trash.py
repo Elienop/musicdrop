@@ -121,8 +121,9 @@ def test_a_tag_built_container_name_is_neutralised_like_a_display_name(
     assert _trash_container_name(SimpleNamespace(albumartist=".hack", album="Gold")) == (
         "hack - Gold"
     )
-    # Untouched for a tag that spells none of them - every existing entry name
-    # has to keep its spelling, or the origin records stop matching.
+    # Untouched for a tag that spells none of them and leads with no dot - every
+    # existing entry name has to keep its spelling, or the origin records stop
+    # matching.
     assert _trash_container_name(SimpleNamespace(albumartist="ABBA", album="Gold")) == (
         "ABBA - Gold"
     )

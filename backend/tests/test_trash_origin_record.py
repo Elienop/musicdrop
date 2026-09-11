@@ -1552,10 +1552,10 @@ def test_a_failed_return_to_trash_cannot_forge_a_log_line(
 ) -> None:
     """``%r``, not ``%s`` — and the same in the message whose traceback this logs.
 
-    ``_trash_container_name`` neutralises path separators and nothing else, so a
-    newline or an ANSI escape in an ``albumartist`` survives into the folder
-    name; ``display_path`` replaces only UNDECODABLE bytes, never control
-    characters. Interpolated raw, that lets a crafted album name write whatever
+    ``_trash_container_name`` neutralises separators, NUL and U+FFFD but no
+    control character, so a newline or an ANSI escape in an ``albumartist``
+    survives into the folder name; ``display_path`` replaces only UNDECODABLE
+    bytes, never control characters. Interpolated raw, that lets a crafted album name write whatever
     it likes into the server log, on the one code path an operator reads when a
     restore has already gone wrong.
 
@@ -2353,9 +2353,9 @@ def test_an_unusable_record_cannot_forge_a_log_line_through_its_own_filename(
     """``%r`` on the record path, and it got MORE load-bearing with the move.
 
     The key is the Trash entry's NAME, which comes from the album's own tags —
-    ``_trash_container_name`` neutralises path separators and nothing else — so a
-    newline or an ANSI escape in an ``albumartist`` now reaches this log line
-    inside the record's own FILENAME. Interpolated with ``%s`` that lets a
+    ``_trash_container_name`` neutralises separators, NUL and U+FFFD but no
+    control character — so a newline or an ANSI escape in an ``albumartist`` now
+    reaches this log line inside the record's own FILENAME. Interpolated with ``%s`` that lets a
     crafted album name write whatever it likes into the server log, on the one
     line an operator reads when a record has gone bad. The sidecar's fixed
     filename could not carry any of this.

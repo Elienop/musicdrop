@@ -72,7 +72,7 @@ def art_client(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[tuple[TestClient, _RecordingBroker, ArtistImageCache]]:
     cache = ArtistImageCache(tmp_path / "cache")
-    # Reset moves a stored override to Trash before it clears the slot, and the
+    # Reset moves a stored override to Trash and clears the automatic slot, and
     # stub handle below cannot satisfy the real resolver (it needs a beets
     # library). What lands in this store is pinned in
     # tests/test_artist_image_reset_to_trash.py; here it only has to work.

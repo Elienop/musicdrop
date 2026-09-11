@@ -54,7 +54,7 @@ def cache(tmp_path: Path) -> ArtistImageCache:
 
 @pytest.fixture
 def art_trash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ArtTrashStore:
-    """Where the reset route puts an override it clears.
+    """Where the reset route moves a stored override.
 
     The resolver is replaced rather than fed: ``_StubHandle`` cannot satisfy
     ``checked_store_dirs``, which needs a real beets library and a beets dir.

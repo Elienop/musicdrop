@@ -874,10 +874,10 @@ def _delete_undo_failure(
     where it came from" about files that are in neither place they would look.
 
     ``%r`` on the paths and on what this logs. A Trash folder's name comes from
-    the album's own tags, ``_trash_container_name`` neutralises path separators
-    and nothing else, and ``display_path`` replaces only UNDECODABLE bytes — so
-    a newline or an ANSI escape in an ``albumartist`` survives to here and,
-    interpolated raw, forges log lines.
+    the album's own tags, ``_trash_container_name`` neutralises separators, NUL
+    and U+FFFD but no control character, and ``display_path`` replaces only
+    UNDECODABLE bytes — so a newline or an ANSI escape in an ``albumartist``
+    survives to here and, interpolated raw, forges log lines.
     """
     logger.exception(
         "could not move %r back out of Trash after removing its library rows failed",

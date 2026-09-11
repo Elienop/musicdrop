@@ -317,12 +317,21 @@ def test_a_move_that_fails_part_way_says_the_reset_stopped_not_that_nothing_move
     assert record.origin == str(cache_dir)
     assert record.moved == "files"
     # The reset itself stopped: the automatic slot and the orphan sidecar are
-    # exactly as they were, so a retry sweeps the sidecar and clears the slots.
+    # exactly as they were.
     assert sorted(p.name.split(".", 1)[1] for p in cache_dir.iterdir()) == [
         "bin",
         "mime",
         "override.mime",
     ]
+    # A retry clears the AUTOMATIC slot and answers ``cleared_override: False``:
+    # ``override_files`` is keyed on the bytes, which are in Trash already. The
+    # orphan sidecar is swept by nothing - no reset removes it, and it stays
+    # until the next upload's ``write_override`` overwrites it.
+    monkeypatch.setattr(shutil, "move", real_move)
+    retry = client.post(RESET, params={"name": "ABBA"})
+    assert retry.status_code == 200
+    assert retry.json() == {"ok": True, "cleared_override": False, "cleared_auto": True}
+    assert [p.name.split(".", 1)[1] for p in cache_dir.iterdir()] == ["override.mime"]
 
 
 def test_the_503_carries_the_oserrors_strerror_and_no_server_path(
@@ -437,12 +446,21 @@ def test_the_art_sweep_gate_is_asked_again_with_the_lock_held(
     about to empty, so the user presses Reset and watches nothing change. The
     flag is flipped on the gate's SECOND read, which is the only call the inner
     check makes - drop that check and this answers 200.
+
+    The LOCK STATE at each read, not a count of them: two reads before the
+    ``async with`` answer 409 with the same ``len(reads) == 2``, so a count
+    cannot tell the fix from that mutant. Measured the way
+    ``test_the_move_and_the_clear_run_under_the_beets_swap_lock`` measures it.
     """
     trash_dir, _origins = store
-    reads: list[int] = []
+    reads: list[bool] = []
+
+    def held() -> bool:
+        lock = getattr(app.state, "beets_swap_lock", None)
+        return lock is not None and bool(lock.locked())
 
     def sweep_starts_on_the_second_read() -> bool:
-        reads.append(1)
+        reads.append(held())
         return len(reads) >= 2
 
     monkeypatch.setattr(artists_mod, "artist_art_backfill_active", sweep_starts_on_the_second_read)
@@ -451,7 +469,7 @@ def test_the_art_sweep_gate_is_asked_again_with_the_lock_held(
     resp = client.post(RESET, params={"name": "ABBA"})
 
     assert resp.status_code == 409
-    assert len(reads) == 2  # asked before the lock AND with it held
+    assert reads == [False, True]  # asked before the lock AND with it held
     assert not trash_dir.exists()
     key = cache._key("ABBA")
     assert (cache_dir / f"{key}.override").read_bytes() == PNG  # nothing cleared
@@ -467,10 +485,10 @@ def test_an_upload_that_lands_after_the_move_survives_the_reset(
     """The reset removes exactly the files it moved, never "whatever is there".
 
     The override upload route takes no swap lock, so a pair can land in the
-    cache dir between the move and the clear. A slot-scoped ``clear_override``
-    would unlink THAT pair - bytes that never reached Trash and are gone for
-    good. Simulated by writing the fresh pair from inside the mover, which is
-    the window itself.
+    cache dir between the move and the clear. A slot-scoped unlink of the
+    override pair would remove THAT pair - bytes that never reached Trash and
+    are gone for good. Simulated by writing the fresh pair from inside the
+    mover, which is the window itself.
     """
     trash_dir, _origins = store
     fresh = b"a second upload, still wanted"

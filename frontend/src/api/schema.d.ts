@@ -590,11 +590,11 @@ export interface paths {
          * Reset Artist Image Endpoint
          * @description Forget every stored portrait for ``name`` so it is looked up again.
          *
-         *     Clears the manual override AND the cached automatic image (plus its
-         *     negative marker and derived thumb). Clearing only the override - which is
-         *     all this used to do - drops the user straight back onto the automatic image
-         *     they just rejected, because a present ``.bin`` means the resolve path never
-         *     runs again.
+         *     An uploaded or pasted override MOVES to Trash, and the cached automatic
+         *     image (plus its negative marker and derived thumb) is cleared. Clearing only
+         *     the override - which is all this used to do - drops the user straight back
+         *     onto the automatic image they just rejected, because a present ``.bin``
+         *     means the resolve path never runs again.
          *
          *     An image the user uploaded or pasted is MOVED to the app's Trash before the
          *     slots are cleared - it is not the app's file to unlink - so a refused or
