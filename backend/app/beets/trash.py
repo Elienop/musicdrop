@@ -875,9 +875,9 @@ def _delete_undo_failure(
 
     ``%r`` on the paths and on what this logs. A Trash folder's name comes from
     the album's own tags, ``_trash_container_name`` neutralises separators, NUL
-    and U+FFFD but no control character, and ``display_path`` replaces only
-    UNDECODABLE bytes — so a newline or an ANSI escape in an ``albumartist``
-    survives to here and, interpolated raw, forges log lines.
+    and U+FFFD but no other control character, and ``display_path`` replaces
+    only UNDECODABLE bytes — so a newline or an ANSI escape in an
+    ``albumartist`` survives to here and, interpolated raw, forges log lines.
     """
     logger.exception(
         "could not move %r back out of Trash after removing its library rows failed",

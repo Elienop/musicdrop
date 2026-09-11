@@ -324,9 +324,9 @@ def test_a_move_that_fails_part_way_says_the_reset_stopped_not_that_nothing_move
         "override.mime",
     ]
     # A retry clears the AUTOMATIC slot and answers ``cleared_override: False``:
-    # ``override_files`` is keyed on the bytes, which are in Trash already. The
-    # orphan sidecar is swept by nothing - no reset removes it, and it stays
-    # until the next upload's ``write_override`` overwrites it.
+    # ``override_files`` is keyed on the bytes, which are in Trash already. No
+    # reset removes the orphan sidecar; it stays until the next upload's
+    # ``write_override`` overwrites it or a rename purges the key.
     monkeypatch.setattr(shutil, "move", real_move)
     retry = client.post(RESET, params={"name": "ABBA"})
     assert retry.status_code == 200

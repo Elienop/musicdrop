@@ -569,8 +569,8 @@ def test_clearing_a_store_that_was_never_created_is_silent(
 #: A Trash entry name that writes a fake log line if it is interpolated raw. It
 #: needs nothing hostile to exist: ``_trash_container_name`` builds the name from
 #: the album's own ``albumartist``/``album`` tags and neutralises separators, NUL
-#: and U+FFFD but no control character, so an ANSI escape or a newline in a tag
-#: arrives here intact.
+#: and U+FFFD but no other control character, so an ANSI escape or a newline in
+#: a tag arrives here intact.
 _FORGED_ENTRY_NAME = "Dummy\x1b[31m\nCRITICAL:app:all clear"
 
 
@@ -956,10 +956,10 @@ def test_a_failed_write_cannot_forge_a_log_line_through_the_entry_name(
     failed-undo line; this one had no test, so ``%r`` -> ``%s`` survived here
     while being killed at both of them. A Trash entry's name comes from the
     album's own tags and ``_trash_container_name`` neutralises separators, NUL
-    and U+FFFD but no control character, so a newline or an ANSI escape in an
-    ``albumartist`` reaches this line — the line an operator reads when a delete
-    has just lost its origin. Interpolated raw, a crafted album name writes whatever it likes
-    into the server log at exactly that moment.
+    and U+FFFD but no other control character, so a newline or an ANSI escape
+    in an ``albumartist`` reaches this line — the line an operator reads when a
+    delete has just lost its origin. Interpolated raw, a crafted album name
+    writes whatever it likes into the server log at exactly that moment.
 
     The write is failed structurally: a regular FILE where the store's directory
     belongs, so ``write_atomic_bytes``'s ``mkdir(parents=True, exist_ok=True)``

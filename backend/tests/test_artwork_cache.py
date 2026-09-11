@@ -194,8 +194,8 @@ def test_override_files_ignores_an_orphaned_mime_sidecar(
 
     ``write_override`` publishes the mime first, so a crash between the two
     leaves a sidecar with no image. Nobody uploaded that, so there is nothing
-    for Trash to keep and the reset leaves it. Nothing sweeps it either — it
-    survives every reset and goes only when the next upload overwrites it.
+    for Trash to keep and the reset leaves it. No reset removes it; it goes
+    when the next upload overwrites it or a rename purges the key.
     """
     cache.write_override("ABBA", b"manual", "image/jpeg")
     key = cache._key("ABBA")

@@ -581,9 +581,9 @@ class ArtistImageCache:
         Keyed on the BYTES, like :meth:`_clear_slots`' answer: an orphaned mime
         sidecar (``write_override`` publishes the mime first, so a crash between
         the two leaves one) is nothing a person uploaded, so there is nothing for
-        Trash to keep and the reset leaves it. Nothing sweeps it afterwards
-        either — it stays until the next ``write_override`` overwrites it, which
-        is why a reset on such a key answers ``cleared_override: False``.
+        Trash to keep and the reset leaves it — a reset on such a key answers
+        ``cleared_override: False``. It stays until the next ``write_override``
+        overwrites it or an artist rename purges the old key.
         Unlinking a mime-without-bytes instead would race that mime-first
         publish. Only regular files (or links to one) are listed — that is what
         ``trash.trash_replaced_files`` accepts.
@@ -627,10 +627,10 @@ class ArtistImageCache:
         The image path is a separate parameter rather than the first of a list
         so the answer cannot drift onto a sidecar: the sidecar results are
         discarded at the language level, not by convention. That matters because
-        the divergence is reachable — ``store_positive`` and ``write_override``
-        both publish the mime BEFORE the bytes, so a crash between the two
-        leaves an orphaned sidecar, and a clear that answered "something went
-        away" would report a reset that never happened.
+        the divergence is reachable — ``store_positive`` publishes the mime
+        BEFORE the bytes, so a crash between the two leaves an orphaned sidecar,
+        and a clear that answered "something went away" would report a reset
+        that never happened.
 
         Image before sidecars, so a concurrent ``get()`` never pairs image bytes
         with a vanished mime.

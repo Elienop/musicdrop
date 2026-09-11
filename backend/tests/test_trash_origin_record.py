@@ -1553,11 +1553,11 @@ def test_a_failed_return_to_trash_cannot_forge_a_log_line(
     """``%r``, not ``%s`` — and the same in the message whose traceback this logs.
 
     ``_trash_container_name`` neutralises separators, NUL and U+FFFD but no
-    control character, so a newline or an ANSI escape in an ``albumartist``
-    survives into the folder name; ``display_path`` replaces only UNDECODABLE
-    bytes, never control characters. Interpolated raw, that lets a crafted album name write whatever
-    it likes into the server log, on the one code path an operator reads when a
-    restore has already gone wrong.
+    other control character, so a newline or an ANSI escape in an
+    ``albumartist`` survives into the folder name; ``display_path`` replaces
+    only UNDECODABLE bytes, never control characters. Interpolated raw, that
+    lets a crafted album name write whatever it likes into the server log, on
+    the one code path an operator reads when a restore has already gone wrong.
 
     The HTTP surface was never affected (JSON escapes it), which is exactly why
     this needs its own test: nothing else would have caught it.
@@ -2354,11 +2354,11 @@ def test_an_unusable_record_cannot_forge_a_log_line_through_its_own_filename(
 
     The key is the Trash entry's NAME, which comes from the album's own tags —
     ``_trash_container_name`` neutralises separators, NUL and U+FFFD but no
-    control character — so a newline or an ANSI escape in an ``albumartist`` now
-    reaches this log line inside the record's own FILENAME. Interpolated with ``%s`` that lets a
-    crafted album name write whatever it likes into the server log, on the one
-    line an operator reads when a record has gone bad. The sidecar's fixed
-    filename could not carry any of this.
+    other control character — so a newline or an ANSI escape in an
+    ``albumartist`` now reaches this log line inside the record's own FILENAME.
+    Interpolated with ``%s`` that lets a crafted album name write whatever it
+    likes into the server log, on the one line an operator reads when a record
+    has gone bad. The sidecar's fixed filename could not carry any of this.
     """
     forged = "Dummy\x1b[31m\nCRITICAL:app:all clear"
     origins = tmp_path / "trash-origins"

@@ -588,43 +588,8 @@ export interface paths {
         put?: never;
         /**
          * Reset Artist Image Endpoint
-         * @description Forget every stored portrait for ``name`` so it is looked up again.
-         *
-         *     An uploaded or pasted override MOVES to Trash, and the cached automatic
-         *     image (plus its negative marker and derived thumb) is cleared. Clearing only
-         *     the override - which is all this used to do - drops the user straight back
-         *     onto the automatic image they just rejected, because a present ``.bin``
-         *     means the resolve path never runs again.
-         *
-         *     An image the user uploaded or pasted is MOVED to the app's Trash before the
-         *     slots are cleared - it is not the app's file to unlink - so a refused or
-         *     unusable Trash store answers 503 and no slot is cleared. A store refused
-         *     before the first move leaves the override exactly where it was; a move that
-         *     failed part-way leaves what landed in Trash with its origin record, which is
-         *     why the 503 says the reset stopped rather than that nothing moved. Putting
-         *     it back is a copy out of that Trash entry (README).
-         *
-         *     The move-and-clear runs under the beets swap lock, the one the three Trash
-         *     routes in ``app/api/trash.py`` hold: an Empty Trash or a config Apply
-         *     landing mid-move is what that serialises. A held lock is a 409 here, never
-         *     a wait. Only the files the move took leave the override slot, so an upload
-         *     that lands beside the reset is still served afterwards.
-         *
-         *     The result reports each slot separately: neither may have existed, and on an
-         *     unwritable cache dir a removal can be refused. The caller shows what
-         *     actually happened instead of implying a re-fetch that did not occur.
-         *
-         *     A background refill is then kicked off (see the body) so the artist does not
-         *     sit on a monogram until something asks for the image again.
-         *
-         *     Origin-guarded: a body-less POST is a CORS-simple request, so without this
-         *     dependency a foreign page could reset portraits (the DELETE this replaced
-         *     was preflight-protected by its method alone).
-         *
-         *     409 while the artist-art sweep runs - asked before the lock and again with
-         *     it held: clearing the automatic slot under a sweep that is mid-resolve for
-         *     the same artist is undone by the sweep's own store, so the user would press
-         *     Reset and watch nothing change.
+         * @description Forget this artist's portrait so it is looked up again; an uploaded or
+         *     pasted image moves to Trash first.
          */
         post: operations["reset_artist_image_endpoint_api_artists_image_reset_post"];
         delete?: never;
