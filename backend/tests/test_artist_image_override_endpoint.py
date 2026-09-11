@@ -242,7 +242,7 @@ def test_the_reset_declares_the_403_409_and_503_its_own_guards_return() -> None:
     The 503 is a raise in a same-module helper (`_move_override_to_trash`),
     which `tests/test_route_status_declarations.py` follows — and the reason it
     must be declared is that the panel branches on it: it is the one answer
-    where nothing was reset.
+    where the reset did not happen.
     `tests/test_artist_image_reset_to_trash.py` proves both of its causes.
     """
     from app.main import app

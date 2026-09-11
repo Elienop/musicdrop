@@ -594,9 +594,9 @@ def test_listing_marks_a_moved_aside_container_as_a_hand_copy(tmp_path: Path) ->
     assert row.restore_mode == "by_hand"
     assert row.origin == str(origin)
     assert row.restore_note is not None
-    assert "moved these files aside" in row.restore_note
+    assert "MusicDrop replaced these files" in row.restore_note
     assert "nothing to restore" in row.restore_note
-    assert "copy it out of this Trash entry" in row.restore_note
+    assert "copy it out of this entry" in row.restore_note
     assert row.track_count == 0
 
 

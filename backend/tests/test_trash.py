@@ -67,17 +67,23 @@ def test_trash_album_moves_files_and_drops_db(duplicates_lib: Library, tmp_path:
 
 
 def test_safe_container_name_keeps_a_display_name_to_one_listable_level() -> None:
-    """The name comes from a display string, so three characters have to go.
+    """The name comes from a display string, so four characters have to go.
 
     A separator would nest the container out of the Trash listing (only
     top-level entries are listed) and off its own origin record's key; a leading
     dot is skipped by the listing while Empty-all still removes it; a NUL raises
-    ValueError at the mkdir, which no ``except OSError`` catches.
+    ValueError at the mkdir, which no ``except OSError`` catches; U+FFFD is the
+    display form of a byte no path can spell, so it collides with a damaged
+    sibling.
     """
     assert safe_container_name("AC/DC", " - artist image") == "AC_DC - artist image"
     assert safe_container_name(".hack", " - artist image") == "hack - artist image"
     assert safe_container_name("A\x00B", " - artist image") == "A_B - artist image"
     assert safe_container_name("..", " - artist image") == "artist - artist image"
+    # U+FFFD is what ``wire_safe`` puts in place of an undecodable byte, so a
+    # container spelling it displays the same as a damaged sibling's name and
+    # ``wire._match_display_child`` refuses BOTH rows with a 409.
+    assert safe_container_name("A\ufffdB", " - artist image") == "A_B - artist image"
     # The ordinary name is untouched — a sanitizer that rewrote every name would
     # rename every container and nothing above would notice.
     assert safe_container_name("ABBA", " - artist image") == "ABBA - artist image"

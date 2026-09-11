@@ -1,8 +1,9 @@
 """Reset to auto moves an uploaded portrait to Trash; it never unlinks it.
 
-The bytes are a file the user uploaded or linked by hand, so the only two
-states this route may leave behind are "inside one Trash entry with an origin
-record" and "still served, nothing reset at all". Every test here goes through
+The bytes are a file the user uploaded or linked by hand, so every state this
+route may leave behind has them "inside one Trash entry with an origin record"
+or "still served, nothing reset at all" - a move that fails part-way is the
+first of those with the slots left alone. Every test here goes through
 the REAL store resolver (``checked_store_dirs``), which is why it needs a real
 library handle rather than the stub
 ``tests/test_artist_image_override_endpoint.py`` resets against.
@@ -10,7 +11,9 @@ library handle rather than the stub
 
 from __future__ import annotations
 
+import errno
 import os
+import shutil
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import Mock
@@ -28,6 +31,7 @@ from app.api.artists import (
     get_artist_image_service,
 )
 from app.artwork.cache import ArtistImageCache, CachedImage
+from app.beets.artist_art import ArtTrashStore
 from app.beets.library import LibraryHandle
 from app.beets.store_layout import StoreLayoutError, checked_store_dirs
 from app.beets.trash_origins import read_trash_origin
@@ -37,6 +41,13 @@ from tests.conftest import beets_dir_for, make_test_handle
 
 PNG = (Path(__file__).parent / "fixtures" / "cover.png").read_bytes()
 RESET = "/api/artists/image/reset"
+#: The hand copy of ``artists_mod._MOVE_FAILED``, so an edit to the wording has
+#: to be made twice and cannot pass unnoticed. ``ArtistImageEditPanel.test.tsx``
+#: keeps a third copy for the panel's error branch.
+MOVE_FAILED = (
+    "The uploaded image could not be moved to Trash, so the reset stopped;"
+    " check Trash before retrying."
+)
 
 
 class _OffService:
@@ -191,9 +202,7 @@ def test_a_store_the_mover_cannot_write_answers_503_and_keeps_the_upload(
         origins_dir.chmod(0o700)
 
     assert resp.status_code == 503
-    assert resp.json()["detail"].startswith(
-        "The uploaded image could not be moved to Trash, so nothing was reset: "
-    )
+    assert resp.json()["detail"].startswith(MOVE_FAILED)
     assert not trash_dir.exists()
     served = cache.get("ABBA")
     assert isinstance(served, CachedImage)
@@ -246,3 +255,125 @@ def test_a_dot_leading_artist_name_gets_a_listable_container(
     assert client.post(RESET, params={"name": ".hack"}).status_code == 200
 
     assert [p.name for p in trash_dir.iterdir()] == ["hack - artist image"]
+
+
+def test_a_move_that_fails_part_way_says_the_reset_stopped_not_that_nothing_moved(
+    client: TestClient,
+    cache: ArtistImageCache,
+    cache_dir: Path,
+    store: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 503 has to be true of a PARTIAL move, which is a supported outcome.
+
+    ``cache.override_files`` returns bytes then sidecar and
+    ``trash_replaced_files`` writes the origin record for whatever landed, so a
+    failure on the second move leaves the portrait itself in Trash with a
+    record. "Nothing was reset" sent the user back to the panel without looking
+    there. Both slots are untouched, which is the half that IS all-or-nothing.
+    """
+    trash_dir, origins_dir = store
+    cache.store_positive("ABBA", b"auto bytes", "image/png")
+    cache.write_override("ABBA", PNG, "image/png")
+    real_move = shutil.move
+    moves = 0
+
+    def fail_on_the_second(src: str, dst: str) -> str:
+        nonlocal moves
+        moves += 1
+        if moves == 2:
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC), dst)
+        return str(real_move(src, dst))
+
+    # ``shutil`` is one shared module object, so patching it here is what the
+    # mover sees. (Reaching through ``app.beets.trash.shutil`` fails mypy
+    # strict: the module does not explicitly export the name.)
+    monkeypatch.setattr(shutil, "move", fail_on_the_second)
+
+    resp = client.post(RESET, params={"name": "ABBA"})
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == f"{MOVE_FAILED} No space left on device"
+    entry = trash_dir / "ABBA - artist image"
+    (image,) = list(entry.glob("*.override"))
+    assert image.read_bytes() == PNG  # the portrait IS in Trash, so say so
+    record = read_trash_origin(origins_dir, entry.name)
+    assert record is not None
+    assert record.origin == str(cache_dir)
+    assert record.moved == "files"
+    # The reset itself stopped: the automatic slot and the orphan sidecar are
+    # exactly as they were, so a retry sweeps the sidecar and clears the slots.
+    assert sorted(p.name.split(".", 1)[1] for p in cache_dir.iterdir()) == [
+        "bin",
+        "mime",
+        "override.mime",
+    ]
+
+
+def test_the_503_carries_the_oserrors_strerror_and_no_server_path(
+    client: TestClient,
+    cache: ArtistImageCache,
+    store: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wire gets ``strerror``; the absolute path is logged instead.
+
+    The same split ``trash_origins._store_unusable`` makes, and the sibling arm
+    of this very ``except`` raises a deliberately path-free sentence — relaying
+    ``str(OSError)`` put the Trash dir in the response body beside it.
+    """
+    trash_dir, _origins = store
+    cache.write_override("ABBA", PNG, "image/png")
+
+    def refuse(src: str, dst: str) -> str:
+        raise OSError(errno.EACCES, os.strerror(errno.EACCES), dst)
+
+    monkeypatch.setattr(shutil, "move", refuse)
+
+    resp = client.post(RESET, params={"name": "ABBA"})
+
+    assert resp.status_code == 503
+    detail = resp.json()["detail"]
+    assert detail == f"{MOVE_FAILED} Permission denied"
+    assert str(trash_dir) not in detail
+
+
+def test_the_move_and_the_clear_run_under_the_beets_swap_lock(
+    client: TestClient, cache: ArtistImageCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """This route is a Trash MUTATOR, so it holds what the other three hold.
+
+    ``app/api/trash.py``'s restore, empty-one and empty-all all take the beets
+    swap lock, and their own gate refuses while it is held. Without it an
+    Empty-all landing between the container's ``mkdir`` and the move rmtree'd
+    the upload this feature exists to protect — and a config Apply landing
+    there moved it into the Trash dir that is no longer the app's. Measured the
+    way ``test_trash_api.test_empty_one_holds_swap_lock_during_removal``
+    measures it: the blocking steps read the lock themselves.
+    """
+    from app.main import app
+
+    seen: dict[str, bool] = {}
+
+    def held() -> bool:
+        lock = getattr(app.state, "beets_swap_lock", None)
+        return lock is not None and bool(lock.locked())
+
+    real_trash = artists_mod._trash_override_files
+    real_slots = artists_mod._reset_slots
+
+    def move_spy(files: list[Path], name: str, store: ArtTrashStore) -> None:
+        seen["move"] = held()
+        real_trash(files, name, store)
+
+    def slots_spy(cache_: ArtistImageCache, name: str) -> tuple[bool, bool]:
+        seen["clear"] = held()
+        return real_slots(cache_, name)
+
+    monkeypatch.setattr(artists_mod, "_trash_override_files", move_spy)
+    monkeypatch.setattr(artists_mod, "_reset_slots", slots_spy)
+    cache.write_override("ABBA", PNG, "image/png")
+
+    assert client.post(RESET, params={"name": "ABBA"}).status_code == 200
+
+    assert seen == {"move": True, "clear": True}

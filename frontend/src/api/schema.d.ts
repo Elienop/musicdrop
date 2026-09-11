@@ -598,9 +598,15 @@ export interface paths {
          *
          *     An image the user uploaded or linked is MOVED to the app's Trash before the
          *     slots are cleared - it is not the app's file to unlink - so a refused or
-         *     unusable Trash store answers 503 with the store's own sentence and the
-         *     override stays exactly where it was. Putting it back is a copy out of that
-         *     Trash entry (README).
+         *     unusable Trash store answers 503 and no slot is cleared. A store refused
+         *     before the first move leaves the override exactly where it was; a move that
+         *     failed part-way leaves what landed in Trash with its origin record, which is
+         *     why the 503 says the reset stopped rather than that nothing moved. Putting
+         *     it back is a copy out of that Trash entry (README).
+         *
+         *     The whole move-and-clear runs under the beets swap lock, the one the three
+         *     Trash routes in ``app/api/trash.py`` hold: an Empty Trash or a config Apply
+         *     landing mid-move is what that serialises.
          *
          *     The result reports each slot separately: neither may have existed, and on an
          *     unwritable cache dir a removal can be refused. The caller shows what
@@ -7367,7 +7373,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description An uploaded or linked image is stored for this artist and could not be moved to Trash, so nothing was reset. */
+            /** @description An uploaded or linked image is stored for this artist and could not be moved to Trash, so the reset stopped. Part of it may already be in Trash. */
             503: {
                 headers: {
                     [name: string]: unknown;

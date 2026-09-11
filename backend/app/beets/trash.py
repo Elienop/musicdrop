@@ -66,7 +66,7 @@ from app.beets.trash_origins import (
 )
 from app.config import Settings
 from app.fsutil import exists, move_no_merge
-from app.wire import display_path
+from app.wire import PLACEHOLDER, display_path
 
 logger = logging.getLogger(__name__)
 
@@ -129,11 +129,15 @@ def safe_container_name(text: str, suffix: str) -> str:
     ``text`` is an artist NAME: ``os.sep``, ``/`` and NUL are replaced, so
     "AC/DC" lands directly under the Trash dir instead of nesting and a NUL
     cannot reach the ``mkdir`` as a ``ValueError`` no ``except OSError`` catches.
-    Leading dots go because ``trash_manage._audio_free_entries`` skips a
+    :data:`app.wire.PLACEHOLDER` goes for a reason the other three do not share:
+    a client string can spell U+FFFD, which is what ``wire_safe`` puts in place
+    of an UNDECODABLE byte, so such a container would display identically to a
+    damaged sibling's name and ``wire._match_display_child`` answers 409 on both
+    rows. Leading dots go because ``trash_manage._audio_free_entries`` skips a
     dot-leading entry that ``empty_all`` still removes; nothing left falls back
     to a word. Length is the allocator's job (``_unique_trash_dest``).
     """
-    for bad in {os.sep, "/", "\x00"}:
+    for bad in {os.sep, "/", "\x00", PLACEHOLDER}:
         text = text.replace(bad, "_")
     return f"{text.lstrip('.') or _UNNAMED_CONTAINER}{suffix}"
 
@@ -925,8 +929,8 @@ def trash_replaced_files(
     directly under ``trash_dir`` (a loose file at the Trash ROOT that
     ``Item.from_path`` cannot read is listed by neither half of
     ``trash_manage.list_trashed_albums``; a container directory is listed by
-    ``_audio_free_entries`` as a zero-track row, so it has a Restore/Empty
-    affordance and Empty-all counts it).
+    ``_audio_free_entries`` as a zero-track row, so it has an Empty affordance
+    - the page renders no Restore for this shape - and Empty-all counts it).
 
     Recorded ``moved="files"``, which is what the listing turns into
     ``restore_mode="by_hand"``: the container is not the folder these files came

@@ -1,8 +1,8 @@
 """Trash management: list / restore / empty.
 
 Sits above the low-level relocation primitive (``app.beets.trash``). Restore has
-two shapes, and which one a row gets is decided by the origin the mover recorded
-for it in the sibling store (``app.beets.trash_origins`` — one JSON file per
+two shapes and one refusal, and which one a row gets is decided by the origin the
+mover recorded for it in the sibling store (``app.beets.trash_origins`` — one JSON file per
 Trash entry, keyed on the entry's name, outside the trashed folder entirely):
 
 * **move back** — the folder came from a known place inside the library, so it
@@ -14,6 +14,9 @@ Trash entry, keyed on the entry's name, outside the trashed folder entirely):
   in move mode, where beets files the album under the CURRENT path templates and
   its duplicate detection makes the attempt safe (a matching library album →
   SKIP, files stay in Trash).
+* **declined** — loose files the app moved aside (``moved="files"``), which are
+  not an album: :func:`restore_album` answers ``could_not_restore`` without
+  reading or relocating anything.
 
 beets imports allowed here (inside app/beets/, CLAUDE.md rule 3).
 """
@@ -135,15 +138,16 @@ _SHARED_FOLDER_NOTE = (
 #: Not an album, so the import every other non-exact row offers has nothing to
 #: import: :func:`restore_album` short-circuits this shape to
 #: ``could_not_restore`` and the page renders no Restore button. The sentence
-#: names the copy that does work, and the row's ``origin`` says where to.
+#: names the copy that does work, and the row's ``origin`` says where to. It
+#: does not restate the row's own label ("Files moved aside."), which the other
+#: two non-exact notes do not either.
 #:
 #: ``frontend/src/pages/settings/SettingsTrashPage.test.tsx`` keeps its own COPY
 #: of this string as a fixture; it goes stale silently, so update it with any
 #: edit here.
 _MOVED_ASIDE_NOTE = (
-    "MusicDrop moved these files aside when it replaced them; they are not an album, so"
-    " there is nothing to restore. To put one back, copy it out of this Trash entry into"
-    " the folder it was at."
+    "MusicDrop replaced these files; they are not an album, so there is nothing to"
+    " restore. To put one back, copy it out of this entry into the folder it was at."
 )
 #: A recorded origin that is no longer inside the library — normally because the
 #: library's ``directory`` now points somewhere else.
@@ -453,9 +457,10 @@ def _audio_free_entries(
                     # restorable folder permanently unrestorable. It is also why
                     # this count gets no ``restore_mode`` value of its own: it is
                     # not evidence a row cannot restore, and a contract field
-                    # would read as if it were. ``"refused"`` exists for the one
-                    # case that is not a guess — a symlinked entry, whose refusal
-                    # comes from the guard both per-row routes run.
+                    # would read as if it were. The two modes that are not a
+                    # guess come from the writer or from a guard instead:
+                    # ``"refused"`` from the symlink predicate both per-row
+                    # routes run, ``"by_hand"`` from a ``moved="files"`` record.
                     track_count=0,
                     format=None,
                     # An audio-free husk with a record is the row this whole
