@@ -555,7 +555,8 @@ describe("ImportPage — live feed", () => {
     );
   });
 
-  // decisions 39, extended to this feed by the owner (2026-09-11). Under 20rem
+  // decisions 39, extended to this feed by the owner (2026-09-11), at the
+  // owner's 28rem — one threshold on all three rows. Under 28rem
   // of ROW the Review/Resolve button drops to its own line under the row: with
   // it inline the title measured 0px wide at viewport 320→344 on a parked
   // duplicate and 320→328 on a needs_review row. jsdom computes no layout, so
@@ -583,8 +584,8 @@ describe("ImportPage — live feed", () => {
     for (const token of [
       "col-start-1",
       "row-start-2",
-      "@min-[20rem]/feedrow:col-start-2",
-      "@min-[20rem]/feedrow:row-start-1",
+      "@min-[28rem]/feedrow:col-start-2",
+      "@min-[28rem]/feedrow:row-start-1",
     ]) {
       expect(group?.className.split(/\s+/)).toContain(token);
     }
@@ -595,11 +596,11 @@ describe("ImportPage — live feed", () => {
       "@min-[18rem]/rowtext:block",
       "@min-[18rem]/rowtext:flex-row",
       "@min-[18rem]/rowtext:items-center",
-      "@min-[20rem]/feedrow:-ml-1",
-      "@min-[20rem]/feedrow:col-start-2",
-      "@min-[20rem]/feedrow:mb-0",
-      "@min-[20rem]/feedrow:mr-4",
-      "@min-[20rem]/feedrow:row-start-1",
+      "@min-[28rem]/feedrow:-ml-1",
+      "@min-[28rem]/feedrow:col-start-2",
+      "@min-[28rem]/feedrow:mb-0",
+      "@min-[28rem]/feedrow:mr-4",
+      "@min-[28rem]/feedrow:row-start-1",
     ]);
     expect(unwiredContainerQueries(wrapper as HTMLElement)).toEqual([]);
   });

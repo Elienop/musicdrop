@@ -139,9 +139,9 @@ describe("ReviewPage", () => {
     // decisions 39 reaches this row too: the defect reproduced here, narrower
     // — the title measured 0px at 320→344 and at 320→328 the "Already in
     // library" badge's ink sat inside Resolve's hit rectangle. Same shape as
-    // the bank row, its own threshold (20rem, this row carrying one control
-    // rather than four). jsdom holds the structure: the action is a grid item
-    // of the <li>, with both arms named.
+    // the bank row, and since 2026-09-11 the bank row's threshold too — the
+    // owner set 28rem on all three rows. jsdom holds the structure: the action
+    // is a grid item of the <li>, with both arms named.
     const row = resolve.closest("li");
     expect(row).toHaveClass("grid");
     expect(row?.className.split(/\s+/)).toContain("@container/decisionrow");
@@ -157,8 +157,8 @@ describe("ReviewPage", () => {
     for (const token of [
       "col-start-1",
       "row-start-2",
-      "@min-[20rem]/decisionrow:col-start-2",
-      "@min-[20rem]/decisionrow:row-start-1",
+      "@min-[28rem]/decisionrow:col-start-2",
+      "@min-[28rem]/decisionrow:row-start-1",
     ]) {
       expect(group?.className.split(/\s+/)).toContain(token);
     }
@@ -167,11 +167,11 @@ describe("ReviewPage", () => {
       // when the row has BOTH a subtitle and a meta line.
       "@min-[18rem]/rowtext:flex-row",
       "@min-[18rem]/rowtext:items-center",
-      "@min-[20rem]/decisionrow:-ml-1",
-      "@min-[20rem]/decisionrow:col-start-2",
-      "@min-[20rem]/decisionrow:mb-0",
-      "@min-[20rem]/decisionrow:mr-4",
-      "@min-[20rem]/decisionrow:row-start-1",
+      "@min-[28rem]/decisionrow:-ml-1",
+      "@min-[28rem]/decisionrow:col-start-2",
+      "@min-[28rem]/decisionrow:mb-0",
+      "@min-[28rem]/decisionrow:mr-4",
+      "@min-[28rem]/decisionrow:row-start-1",
     ]);
     expect(unwiredContainerQueries(row as HTMLElement)).toEqual([]);
   });

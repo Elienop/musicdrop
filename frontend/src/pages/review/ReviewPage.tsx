@@ -206,9 +206,13 @@ function DecisionSection({
             // badge 107.98 + gap 8 + gap 12 + Resolve 73.39 + px-4 16), so
             // under 296.7 (+ the 11.33px ellipsis glyph) the title cannot
             // ellipse; the narrowest row a desktop shows is 473px, at the
-            // 768px sidebar step. 20rem sits between — a smaller number than
-            // the bank row's 28rem because this row carries one control, not
-            // four, and each threshold is that row's own measurement.
+            // 768px sidebar step. The switch is at 28rem — the owner's number
+            // (2026-09-11), the same on all three rows. The floor is true AS a
+            // floor, but at 20rem the phone band went inline and the title
+            // collapsed: viewport 392/400/414/430 measured 42/50/66/74px,
+            // 6/7/10/10 characters of a 46-character album, against
+            // 127/135/151/159px at 28rem. 448 still clears the 473 ceiling,
+            // so no desktop row drops; measured switch at viewport 513.
             <li
               key={album.index}
               className="@container/decisionrow bg-primary/5 grid grid-cols-[minmax(0,1fr)_auto] items-center"
@@ -234,7 +238,7 @@ function DecisionSection({
               />
               {/* `-ml-1` gives back the 4px by which AlbumRow's px-4 exceeds
                   its own gap-3, so the inline arm keeps today's 12px gap. */}
-              <div className="col-start-1 row-start-2 mb-3 ml-4 flex items-center @min-[20rem]/decisionrow:col-start-2 @min-[20rem]/decisionrow:row-start-1 @min-[20rem]/decisionrow:mb-0 @min-[20rem]/decisionrow:-ml-1 @min-[20rem]/decisionrow:mr-4">
+              <div className="col-start-1 row-start-2 mb-3 ml-4 flex items-center @min-[28rem]/decisionrow:col-start-2 @min-[28rem]/decisionrow:row-start-1 @min-[28rem]/decisionrow:mb-0 @min-[28rem]/decisionrow:-ml-1 @min-[28rem]/decisionrow:mr-4">
                 <Button size="sm" asChild>
                   <Link to={to} state={REVIEW_ORIGIN}>
                     {needsDup ? "Resolve" : "Review"}
