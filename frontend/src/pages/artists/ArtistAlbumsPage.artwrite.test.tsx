@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -93,11 +94,43 @@ afterEach(() => {
 });
 
 describe("ArtistAlbumsPage artist-art apply", () => {
-  it("shows the Save art to library button and starts the job when write is enabled", () => {
+  it("confirms first, then starts the job exactly once", async () => {
     renderAt("ABBA");
     const btn = screen.getByRole("button", { name: /save art to library/i });
-    fireEvent.click(btn);
+    await userEvent.click(btn);
+    // The click opens the confirm, it does NOT write: the apply replaces the
+    // folder's artist-poster/artist-background and trashes what it replaces.
+    expect(applyMutate).not.toHaveBeenCalled();
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent(/save art to library\?/i);
+    expect(dialog).toHaveTextContent(/move to trash first/i);
+
+    await userEvent.click(screen.getByRole("button", { name: "Save art" }));
     expect(applyMutate).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts nothing when the confirm is cancelled", async () => {
+    renderAt("ABBA");
+    const btn = screen.getByRole("button", { name: /save art to library/i });
+    await userEvent.click(btn);
+    await screen.findByRole("alertdialog");
+
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(applyMutate).not.toHaveBeenCalled();
+  });
+
+  it("cancels on Escape and hands focus back to the trigger", async () => {
+    renderAt("ABBA");
+    const btn = screen.getByRole("button", { name: /save art to library/i });
+    await userEvent.click(btn);
+    await screen.findByRole("alertdialog");
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(applyMutate).not.toHaveBeenCalled();
+    // Focus must land back on the icon, not on <body>.
+    expect(btn).toHaveFocus();
   });
 
   it("hides the Save art to library button when write is disabled", () => {
@@ -119,8 +152,9 @@ describe("ArtistAlbumsPage artist-art apply", () => {
     // activation would drop keyboard focus to <body> for the whole job.
     expect(btn).toBeEnabled();
     expect(btn).toHaveAttribute("aria-disabled", "true");
-    // Re-clicks while running are swallowed.
+    // Re-clicks while running are swallowed: no confirm, no write.
     fireEvent.click(btn);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(applyMutate).not.toHaveBeenCalled();
     // No inline progress — it must not duplicate the top app banner.
     expect(screen.queryByText(/1 \/ 3/)).toBeNull();

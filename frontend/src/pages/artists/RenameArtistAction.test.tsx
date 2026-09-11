@@ -82,6 +82,11 @@ describe("RenameArtistAction", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /rename artist/i }));
     const input = screen.getByLabelText(/new name/i);
+    // The description says what the rename does to artist art: the new folder
+    // gets it only where it is missing (the apply runs force=False).
+    expect(
+      screen.getByText(/artist art is written into the new folder only where it is missing/i),
+    ).toBeInTheDocument();
     // Pre-preview the verb is "Apply"; a merge preview flips it to "Merge".
     expect(screen.getByRole("button", { name: /^apply/i })).toHaveAttribute(
       "aria-disabled",

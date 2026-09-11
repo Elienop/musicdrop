@@ -274,7 +274,8 @@ export function RenameArtistAction({ name }: Readonly<{ name: string }>) {
           <DialogTitle>Rename {name}</DialogTitle>
           <DialogDescription>
             Changes the album artist on every album by this artist and files the
-            folders under the new name. Track artists are not touched.
+            folders under the new name. Track artists are not touched. Artist
+            art is written into the new folder only where it is missing.
           </DialogDescription>
         </DialogHeader>
 
