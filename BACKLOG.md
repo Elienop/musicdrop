@@ -1079,9 +1079,27 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   Delete dialogs render the real detail — this is the disk-sync path only. Trivial:
   surface the server's `detail` when present.
 
-- **"Save art to library" is a one-click, unconfirmed action that permanently deletes
-  hand-placed `artist-poster.*`/`artist-background.*` — and fires as rename collateral.**
-  (Found 2026-08-28.) `POST /api/artists/art/apply` runs `force=True`
+- ~~**"Save art to library" is a one-click, unconfirmed action that permanently deletes
+  hand-placed `artist-poster.*`/`artist-background.*` — and fires as rename collateral.**~~ —
+  **CLOSED 2026-09-11** (on `fix/art-apply-keeps-hand-placed-art`; PR + squash sha cited at
+  merge). Owner's shape: confirm + Trash, and a rename writes only where missing. The Apply
+  sits behind an AlertDialog ("Save art to library?" / "Writes artist-poster and
+  artist-background files into this artist's folders. Existing ones move to Trash first."),
+  the files a forced write replaces go to one Trash entry per artist folder
+  (`Trash/<folder> - artist art/`, origin record `moved="items"`, `trash_replaced_files`),
+  nothing is written into a folder whose old files did not all move aside, and both rename
+  call sites pass `force=False`; the rename dialog names the art write only when the toggle
+  is on. Browser-verified on a scratch library: the seeded poster's mtime is on the Trash
+  copy, the folder holds the new write, the origin record names the folder. Side fixes the
+  review rounds forced: unpredictable fixed-length temp names created `O_EXCL|O_NOFOLLOW` in
+  both the art and the lyrics writer (a symlink at the derived `.<name>.tmp` was followed and
+  published as the destination — measured), the Trash container claimed by a bare `mkdir`,
+  a per-artist store check on the runner, and a 10 s bound on the start request so a stalled
+  start cannot latch the dialog. Not verified on a real cross-device move: the mid-copy
+  failure is simulated by patching `shutil.move`. Residuals recorded below and under
+  *Accepted residuals* (the Trash row's wording for an art container, the killed-write
+  dotfile, the three derived-name writers left, the per-artist check window).
+  (Original finding, 2026-08-28.) `POST /api/artists/art/apply` ran `force=True`
   (`app/api/artists.py:931`), and `_write_one` under force unlinks EVERY existing
   `artist-<kind>.*` before writing MusicDrop's resolved image
   (`app/beets/artist_art.py:82-84`) — the exact Plex Local Media Assets filenames a Plex
@@ -1091,16 +1109,55 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   (`artists.py:266-272`) — so merging artist A onto B silently replaces B's curated poster
   with whatever Deezer resolved, and the rename dialog never mentions art.
 
-- **`write_artist_art` reports `status="written"` when only some folders wrote** — the same
-  swallowed-substep shape as the album-art divert. (Found 2026-08-28.) The per-directory
-  loop catches `OSError` into a `failed` flag that the status ladder consults only when
-  `written == 0` (`app/beets/artist_art.py:123-129`); `ArtistArtOutcome` carries no error
-  field, so a partial failure reaches neither the wire nor the job tally, and the model's
-  own docstring defines `failed` as "every write attempt errored" — the partial case has no
-  representable value. Trivial once the reporting shape is chosen. Related smaller lie, same
-  family: `ArtistRenameResult.playlists_reexported` counts playlists whose `.m3u8` write
-  FAILED (`_export_playlist` swallows every exception; the counter's docstring says "a
-  failed write still counts") — the honest shape is written vs attempted.
+- ~~**`write_artist_art` reports `status="written"` when only some folders wrote**~~ —
+  **CLOSED 2026-09-11** (on `fix/art-apply-keeps-hand-placed-art`; PR + squash sha cited at
+  merge), as a side effect of the Trash move-aside: `_write_folder` returns
+  `(written, failed)` per folder, `status` is `failed` as soon as one write or move-aside
+  errored while `written` still counts what landed, and the model comment defines `failed`
+  that way. Pinned by `test_a_failed_second_write_keeps_the_count_of_the_first` (poster moved
+  and written, background write refused → `failed`, `written=1`). The job tally counts by
+  status only, so a partial run lands in `failed`, not `written`. (Original finding,
+  2026-08-28: the per-directory loop caught `OSError` into a `failed` flag the status ladder
+  consulted only when `written == 0`, so the partial case had no representable value.)
+
+- **`playlists_reexported` counts playlists whose `.m3u8` write FAILED.** (Found 2026-08-28,
+  split out of the entry above when it closed.) The counter comments in `models/rename.py`,
+  `models/edit.py` and `models/duplicates.py` all say "a failed write still counts" — the
+  export swallows every exception. The honest shape is written vs attempted.
+
+- **The Trash row for an art container reads as an album.** (Found 2026-09-11,
+  browser-measured on `fix/art-apply-keeps-hand-placed-art`.) A forced Save art moves the
+  replaced `artist-poster.*`/`artist-background.*` into `Trash/<folder> - artist art/` with
+  an origin record `moved="items"`. `SettingsTrashPage.tsx` renders that container with the
+  album row's words: title "Unknown artist - Verify Artist - artist art" (no tags to read),
+  the shared-folder note "Approximate restore. This album's files were moved out of a folder
+  it shared with other music … Restoring re-imports the album under your current naming
+  rules.", and a Restore button that ends in `could_not_restore` (`_restore_by_import` over a
+  folder with no audio; `move_back_target` is None for any record that is not
+  `moved="folder"`). README says to copy the files back by hand. Fix shape: the listing row
+  needs to know the entry holds moved-aside files, not an album — a field on `TrashedAlbum`
+  (contract change, so the wire shape is the design question) — then a row with no Restore,
+  a "copy them back from <origin>" hint, and a title without the "Unknown artist - " prefix.
+
+- **A write killed mid-flight leaves a `.<pid>.<16 hex>.<ext>.tmp` dotfile nothing clears.**
+  (Found 2026-09-11 on `fix/art-apply-keeps-hand-placed-art`.) The derived `.<name>.tmp` was
+  cleared by the next write of the same file; the unpredictable name that replaced it (art
+  and lyrics writers) is not, so a process killed between the create and the `os.replace`
+  leaves one dotfile per kill in the artist folder or beside the track. One per kill,
+  invisible to beets, but it accumulates in the library. Fix shape: on the next write into
+  the same directory, unlink `.*.tmp` entries that match the writer's own pattern and are
+  older than a job could run — bounded to the pattern, never a bare glob. `playlists.atomic`
+  carries the same residual.
+
+- **Three writers still use the derived `.<name>.tmp` shape the art and lyrics writers
+  left.** (Found 2026-09-11.) `beets/config_editor.py:391` (config.yaml),
+  `artwork/toggle.py:40` (the art-write toggle file), `playlists/store.py:204` (playlist
+  artwork under the playlists store). A symlink planted at the derived name is followed and
+  then published as the destination — measured on the art writer before this branch. All
+  three write under app-owned paths (the beets data dir), not the attacker-writable music
+  library, so a planter would already own what it could steer: lower reach, same remedy
+  (`artist_art._tmp_path`: random fixed-length name, `O_EXCL|O_NOFOLLOW`) when each file is
+  next touched.
 
 - **`download_image` validates only the FIRST and LAST redirect hop, and issues the
   intermediate requests anyway.** Moved here 2026-08-28 from Deferred minors, where a blind
@@ -1932,6 +1989,14 @@ because a recorded decision is what stops the question being reopened from scrat
 scan here for something to pick up — scan *Open bugs / hardening*. Revisit an item only if
 the condition it names has changed.
 
+- **The Trash store is checked per artist, not per file — the check-to-use window is one
+  artist's write** (2026-09-11, `fix/art-apply-keeps-hand-placed-art`). The runner resolves
+  the store right before each artist's `write_artist_art`; a Trash dir re-pointed under the
+  library between that check and the move lands the moved files there — still a move, nothing
+  deleted, and `trash_replaced_files` refuses a symlink at the container itself. Same window
+  every other Trash caller accepts (delete, duplicates); the only forced caller today is the
+  per-artist Apply, seconds long. Re-derive if a forced multi-artist caller appears.
+
 - **A bank row's meta line is bounded by the enum in practice, not by the contract
   (2026-09-11).** `recommendationLabel` (`BankSection.tsx:445`) maps the tier through
   `RECOMMENDATION_LABEL` and falls through to the raw value on a miss — deliberate, so an
@@ -2326,6 +2391,12 @@ the condition it names has changed.
 
 ## Deferred minors (cosmetic / self-healing — carried from earlier waves)
 
+- **`useStartArtistArtBackfill` carries no start bound.** The Apply start got a 10 s bound
+  (`fix/art-apply-keeps-hand-placed-art`) because a stalled start latched the confirm dialog;
+  the backfill start on the Settings panel is a plain button with no dialog, so a stall greys
+  one button. Add the same `withStartTimeout` when the panel is next touched. Also: the hook
+  test's `10_000` is a literal, not the module-private constant — a changed bound hangs that
+  test instead of failing it.
 - **`tests/test_cited_shas.py` reports every prose cite at line 1.** A `.md` file is read as one
   chunk at `lineno` 1, so a failing cite in BACKLOG.md prints `BACKLOG.md:1` four times for four
   different lines (seen 2026-09-11 when a branch-local sha was cited); the `.ts`/`.py` paths count
