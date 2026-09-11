@@ -489,14 +489,28 @@ function MemberRow({
         checked && "bg-primary/5",
       )}
     >
-      <input
-        type="radio"
-        className="ml-2 shrink-0"
-        name={name}
-        checked={checked}
-        onChange={onChoose}
-        aria-label={`Keep ${album.title} (${album.track_count} tracks)`}
-      />
+      {/* The ≥24px tap target (decisions 40) is a wrapping <label>, not a
+          pseudo-element on the input: Chromium does render `::before` on an
+          `<input>` and Firefox does not, while a label's whole box activates
+          the control it wraps in every engine. `-m-3 p-3` leaves the label's
+          MARGIN box equal to the input's own, so the grid column — and the
+          path line that derives its inset from it — do not move; measured
+          45×37 of target around a 13×13 drawn radio (the UA's box, which is
+          why the target is a padding and not an inset of it).
+          `relative` is load-bearing: without it the 12px that reach past the
+          margin box are painted over by AlbumRow, the LATER in-flow sibling,
+          and the right half of the target is 10.5px instead of 12. What it
+          reaches into is AlbumRow's own `px-4`, 8px short of the cover. */}
+      <label className="relative -m-3 flex p-3">
+        <input
+          type="radio"
+          className="ml-2 shrink-0"
+          name={name}
+          checked={checked}
+          onChange={onChoose}
+          aria-label={`Keep ${album.title} (${album.track_count} tracks)`}
+        />
+      </label>
       {/* ?size=thumb: AlbumRow renders the cover at size-10 (40 CSS px), so
           the 320px derivation already covers 2x DPI. CoverArt never appends
           a query of its own, so a literal append is safe. */}

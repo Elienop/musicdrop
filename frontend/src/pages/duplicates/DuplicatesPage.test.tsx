@@ -14,6 +14,20 @@ type DuplicateAlbum = components["schemas"]["DuplicateAlbum"];
 const DUP_URL = `${window.location.origin}/api/duplicates`;
 const RESOLVE_URL = `${window.location.origin}/api/duplicates/resolve`;
 
+/** The `p-N` token on an element. THROWS when there is none: a lookup that
+ * answers 0 or undefined turns the size assertion that uses it into a
+ * tautology, which is how a vacuous class pin gets written. */
+function paddingToken(el: Element | null | undefined): string {
+  const found = /(?:^|\s)p-([\d.]+)(?:\s|$)/.exec(el?.className ?? "");
+  if (found === null) throw new Error(`no p-* class on: ${el?.className ?? "null"}`);
+  return found[1];
+}
+
+/** …in CSS px. Tailwind's spacing step is 0.25rem = 4px. */
+function padding(el: Element | null | undefined): number {
+  return Number(paddingToken(el)) * 4;
+}
+
 function album(overrides: Partial<DuplicateAlbum> = {}): DuplicateAlbum {
   return {
     id: 1,
@@ -416,12 +430,34 @@ describe("DuplicatesPage", () => {
     // centred on the row it selects instead of on row+path — measured 17px of
     // drift when they shared one `items-center` box. jsdom computes no layout,
     // so the two classes are what a test can hold.
-    const row = screen.getByRole("radio", { name: /Keep In Rainbows \(10 tracks\)/i })
-      .parentElement;
+    const radio = screen.getByRole("radio", { name: /Keep In Rainbows \(10 tracks\)/i });
+    // `closest("li")`, not `parentElement`: the radio's parent is the <label>
+    // that carries its tap target (below).
+    const row = radio.closest("li");
     expect(row).toHaveClass("grid");
     expect(screen.getByTitle("/music/Radiohead/In Rainbows")).toHaveClass(
       "col-start-2",
     );
+  });
+
+  test("the keeper radio's tap target is a wrapping label of at least 24px", async () => {
+    server.use(http.get(DUP_URL, () => HttpResponse.json(reportWithOneGroup())));
+    renderPage();
+    await screen.findByText(/Matched on/i);
+
+    const radio = screen.getByRole("radio", { name: /Keep In Rainbows \(10 tracks\)/i });
+    const label = radio.parentElement;
+    expect(label?.tagName).toBe("LABEL");
+    // DERIVED, not a string match: the padding is what makes the target, and
+    // the negative margin of the SAME size is what keeps the grid column where
+    // it was. A native radio is 13px in Chromium and 16px is the widest UA box
+    // we know of, so the floor is checked against 16.
+    const pad = padding(label);
+    expect(16 + 2 * pad).toBeGreaterThanOrEqual(24);
+    expect(label?.className).toContain(`-m-${paddingToken(label)}`);
+    // `relative`: without it AlbumRow, the later in-flow sibling, paints over
+    // the part of the target that reaches past the margin box.
+    expect(label).toHaveClass("relative");
   });
 
   test("a failed scan renders the shared inline ErrorState", async () => {
