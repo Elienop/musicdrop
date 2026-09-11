@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 
 import type { components } from "@/api/schema";
 import { DuplicatesPage } from "@/pages/duplicates/DuplicatesPage";
+import { unwiredContainerQueries } from "@/test/containerQuery";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
 
@@ -438,6 +439,33 @@ describe("DuplicatesPage", () => {
     expect(screen.getByTitle("/music/Radiohead/In Rainbows")).toHaveClass(
       "col-start-2",
     );
+  });
+
+  test("the suggested keeper's badge is on the meta line, not the title line", async () => {
+    server.use(http.get(DUP_URL, () => HttpResponse.json(reportWithOneGroup())));
+    renderPage();
+    await screen.findByText(/Matched on/i);
+
+    // Owner's ruling 2026-09-11. On the title line the badge is `shrink-0` at
+    // 118.61px and the keeper's title measured 0px wide at viewport 320/328.
+    const badge = screen.getByText("most complete").closest("[data-slot=badge]");
+    expect(badge).not.toBeNull();
+    const meta = screen.getByText(/2007 · 10 tracks · FLAC · 900k/);
+    const title = screen.getAllByText("In Rainbows")[0];
+    expect(meta).toContainElement(badge as HTMLElement);
+    expect(title.parentElement).not.toContainElement(badge as HTMLElement);
+    // Stacked below 28rem of the text column, inline above it — both arms, and
+    // both wired to the container AlbumRow declares (a renamed container
+    // applies nothing at all, silently).
+    for (const token of [
+      "flex-col",
+      "@min-[28rem]/rowtext:flex-row",
+      "@min-[28rem]/rowtext:items-center",
+    ]) {
+      expect(meta.className.split(/\s+/)).toContain(token);
+    }
+    const row = (await within(screen.getByRole("list")).findAllByRole("listitem"))[0];
+    expect(unwiredContainerQueries(row)).toEqual([]);
   });
 
   test("the keeper radio's tap target is a wrapping label of at least 24px", async () => {

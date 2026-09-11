@@ -480,6 +480,7 @@ function MemberRow({
   const parts = (format: string | null): string =>
     [format, bitrate].filter((part) => part !== null).join(" · ");
   const quality = parts(album.format ?? "-");
+  const metaLine = `${album.year ?? "-"} · ${album.track_count} tracks · ${quality}`;
   const nameQuality = parts(album.format);
   const nameSuffix = nameQuality === "" ? "" : `, ${nameQuality}`;
   return (
@@ -539,14 +540,39 @@ function MemberRow({
         coverAssetKey={`album:${album.id}`}
         title={album.title}
         subtitle={album.album_artist}
-        meta={`${album.year ?? "-"} · ${album.track_count} tracks · ${quality}`}
-        badge={
+        // The "most complete" badge sits on the META line, not the title line
+        // (owner's ruling 2026-09-11). On the title line it is `shrink-0` at
+        // 118.61px and the keeper's title measured `clientWidth` 0 at viewport
+        // 320 and 328 and 3.39px at 336, where a badge-less sibling showed
+        // 114px — on the screen whose button moves albums to Trash.
+        //
+        // Stacked below 28rem of the text COLUMN, inline above it, because
+        // AlbumRow's meta slot is `shrink-0`: its used width is max-content,
+        // and a column flex contributes its WIDEST child (the text) where a
+        // row would contribute text + gap + badge. The meta line clips
+        // (`overflow-hidden`) and Badge is itself `overflow-hidden
+        // whitespace-nowrap`, so in any column narrower than that sum the
+        // badge would lose letters rather than move. Widths in BACKLOG.
+        meta={
           album.is_suggested_keeper ? (
-            <Badge variant="secondary" className="shrink-0">
-              <Resolved className="mr-1 size-3" aria-hidden="true" />
-              most complete
-            </Badge>
-          ) : undefined
+            <span className="flex flex-col items-start gap-1 @min-[28rem]/rowtext:flex-row @min-[28rem]/rowtext:items-center @min-[28rem]/rowtext:gap-2">
+              {metaLine}
+              {/* Badge already supplies `shrink-0`, `gap-1` and
+                  `[&>svg]:size-3` — nothing to restate here. The one default
+                  overridden is `whitespace-nowrap`, and for a measured reason:
+                  at viewport 320 the text column is 114px and this badge's
+                  max-content is 114.61, so Badge's own `overflow-hidden` cut
+                  0.61px off the label. Wrapping is allowed here, losing
+                  letters is not. `w-fit` then shrinks it to the column instead
+                  of overflowing it. */}
+              <Badge variant="secondary" className="whitespace-normal">
+                <Resolved aria-hidden="true" />
+                most complete
+              </Badge>
+            </span>
+          ) : (
+            metaLine
+          )
         }
       />
       <div
