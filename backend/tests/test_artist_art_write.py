@@ -344,6 +344,49 @@ def test_a_move_that_dies_mid_copy_leaves_no_container_behind(
     assert read_trash_origin(art_trash.origins_dir, "Artist - artist art") is None
 
 
+def test_a_container_that_appears_before_the_claim_is_refused_not_emptied(
+    tmp_path: Path, art_trash: ArtTrashStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The allocator finds a name free; a directory can still land on it before
+    the ``mkdir``. With ``exist_ok`` that directory passed as ours, and a move
+    that then failed had ``rmtree`` delete it with whatever it held. The
+    ``mkdir`` is the claim: an entry already there is refused before any move.
+    """
+    import shutil
+
+    from app.beets.trash import trash_replaced_files
+
+    folder = tmp_path / "music" / "Artist"
+    folder.mkdir(parents=True)
+    curated = folder / "artist-poster.png"
+    curated.write_bytes(PNG[0])
+
+    def allocated_then_taken(trash_dir: Path, origins_dir: Path, name: str) -> Path:
+        dest = trash_dir / name
+        dest.mkdir()  # somebody else's entry, on the name just handed out
+        (dest / "precious.flac").write_bytes(b"not ours")
+        return dest
+
+    def dies(src: str, dst: str) -> None:
+        raise OSError(28, "No space left on device", dst)
+
+    monkeypatch.setattr("app.beets.trash._unique_trash_dest", allocated_then_taken)
+    monkeypatch.setattr(shutil, "move", dies)
+
+    with pytest.raises(FileExistsError):
+        trash_replaced_files(
+            [curated],
+            container_name="Artist - artist art",
+            origin=folder,
+            trash_dir=art_trash.trash_dir,
+            origins_dir=art_trash.origins_dir,
+        )
+
+    stranger = art_trash.trash_dir / "Artist - artist art" / "precious.flac"
+    assert stranger.read_bytes() == b"not ours"  # the entry that was there stays whole
+    assert curated.read_bytes() == PNG[0]  # the source never left
+
+
 def test_a_dot_leading_artist_folder_gets_a_listed_trash_container(
     tmp_path: Path, art_trash: ArtTrashStore
 ) -> None:

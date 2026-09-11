@@ -14,7 +14,7 @@ the folder's recorded Trash entry.
 
 The move-aside commits before the write, so a folder reported ``failed`` may
 have moved its old art and then failed to write the new file (measured with
-ENOSPC): its art is then only in that Trash entry. A failed folder is a reason
+EACCES): its art is then only in that Trash entry. A failed folder is a reason
 to look in Trash before emptying it.
 """
 
@@ -142,8 +142,9 @@ def _atomic_write_bytes(dst: Path, data: bytes) -> None:
     finally:
         # Whatever is at the temp path: ours, unless something guessed the name
         # this call picked and got there first — in which case the create above
-        # already failed and this unlinks the squatter. See ``lyrics`` for the
-        # one residual (a process killed mid-write leaves the dotfile).
+        # already failed and this unlinks the squatter (a dangling symlink
+        # excepted: ``exists()`` follows it and reads absent). See ``lyrics``
+        # for the one residual (a process killed mid-write leaves the dotfile).
         if tmp.exists():
             with suppress(OSError):
                 tmp.unlink()

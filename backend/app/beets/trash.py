@@ -930,7 +930,10 @@ def trash_replaced_files(
     require_usable_store(origins_dir)
     trash_dir.mkdir(parents=True, exist_ok=True)
     dest = _unique_trash_dest(trash_dir, origins_dir, container_name)
-    dest.mkdir(parents=True, exist_ok=True)
+    # No ``exist_ok``: the allocator found the name free, this is the claim on
+    # it. A directory that arrived in between raises here, before any move, so
+    # the ``rmtree`` below never removes an entry this call did not create.
+    dest.mkdir()
     moved = 0
     try:
         for src in files:
@@ -953,9 +956,9 @@ def trash_replaced_files(
             # ``shutil.move`` is a copy that can die mid-write, leaving a
             # part-copied file here with ``moved == 0``. ``rmdir`` refuses a
             # non-empty dir, which left a container in Trash that no origin
-            # record names. The path is the name ``_unique_trash_dest`` just
-            # found free in both namespaces, so no pre-existing entry holds it;
-            # a symlink there raises instead of being followed.
+            # record names. The ``mkdir`` above is this call's claim on the
+            # name, so nothing that predates it is under it; a symlink there
+            # raises instead of being followed.
             with contextlib.suppress(OSError):
                 shutil.rmtree(dest)
     return dest

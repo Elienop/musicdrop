@@ -202,10 +202,11 @@ def _atomic_write_text(dst: Path, text: str) -> None:
     finally:
         # Whatever is at the temp path: ours, unless something guessed the name
         # this call picked and got there first — in which case the create above
-        # already failed and this unlinks the squatter. That condition is what
-        # keeps the line off paths somebody else put in the music folder. Its
-        # price is that a process KILLED mid-write leaves one dotfile no later
-        # call clears — the residual ``playlists.atomic`` already carries.
+        # already failed and this unlinks the squatter (a dangling symlink
+        # excepted: ``exists()`` follows it and reads absent). That condition is
+        # what keeps the line off paths somebody else put in the music folder.
+        # Its price is that a process KILLED mid-write leaves one dotfile no
+        # later call clears — the residual ``playlists.atomic`` already carries.
         if tmp.exists():
             with suppress(OSError):
                 tmp.unlink()
