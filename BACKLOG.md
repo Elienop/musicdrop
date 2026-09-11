@@ -107,7 +107,10 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   sweep is for: no control clipped at any width, no text ink answering `elementFromPoint` with
   a control, no pixel of the meta span's box clipped. **Only a row with a button becomes a
   grid** — the
-  other four rows are rect-for-rect identical at all 201 widths, by construction and measured.
+  other four rows are rect-for-rect identical at all 201 widths **row-relative**, by
+  construction and measured. In PAGE coordinates they move down at the 9 narrow widths
+  (320→384), because the parked rows above them grow: 28/48/68/88px, read by the review seat
+  2026-09-11.
   Above the switch (viewport 392 and up, row ≥ 320) the two parked rows are identical to before
   in every measured property except AlbumRow's own wrapper box, which is narrower by exactly the
   action slot it no longer holds (80.62px for Review, 85.39 for Resolve) and paints nothing.
@@ -131,6 +134,30 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   action is `Review`/`Resolve`, so re-derive rather than copying the number). NOT done here
   because decisions 39 names `/review`, and extending a ruling to a third surface is the owner's
   call, not an application of it.
+  (Re-measured 2026-09-11 while fixing it, and the count differs: the sweep found a **sixth**
+  sample, (328, `needs_review`) — the number the closure above carries. Both were true as
+  written. The `needs_review` row's fixed content is 22.61px narrower than the
+  parked-duplicate row's (badge 90.13 vs 107.98, action 68.63 vs 73.39), so its title's zero
+  crossing sits near the 328 step and the two runs fall either side of it. Neither run
+  recorded the crossing WIDTH, so re-measure rather than trusting five or six.)
+
+- **A focused action on an `/import` feed row unmounts under the user when the live feed
+  applies that album.** `FeedRow` (`ImportPage.tsx:860`) gets its button from
+  `feedRowAction` (`:823`), which returns one only for `needs_review` /
+  `needs_dup_resolution`; the poll that moves the row past either status makes the action
+  `undefined`, React unmounts the focused control, and focus falls to `<body>` — a keyboard
+  user loses their place mid-page. The dropped action is `Button size="sm"` = **32px** tall,
+  which clears decisions 40's 24px minimum but not 44px, and `frontend/src` declares no
+  `pointer: coarse` floor anywhere. **PRE-EXISTING** — the button lived in `AlbumRow`'s slot
+  on main and unmounted the same way — and **UNMEASURED**: read off the code, not reproduced
+  in a browser by anyone yet. The branch's focus check covered a row GROWING a button, not
+  one losing it.
+- **Asymmetry to check: `/import`'s "Import finished" panel passes no `readOnly`; the failed
+  panel does** (`ImportPage.tsx:1049` vs `:1141`, whose comment gives the reason — a decision
+  POST no worker will consume). Rendered with `phase: "done"` plus a parked album, the done
+  screen shows live Review/Resolve links and its summary line does not mention the parked
+  rows. Same on main. NOT verified that the backend can report `done` while an album is
+  parked — check that first: if it cannot, this is unreachable rather than a bug.
 
 - ~~**`/browse`'s facet checkboxes get 20×24 of the new 24×24 tap target**~~ — **CLOSED
   2026-09-11** (on `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at merge; vault
@@ -2369,8 +2396,9 @@ the condition it names has changed.
 
   ~~**Two selection controls do NOT pass**~~ — **CLOSED 2026-09-11** (on
   `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at merge; vault decisions 40).
-  (The blank line above is load-bearing: without it markdown lazy-continuation glues this
-  closure onto the `SegmentedControl` bullet and that OPEN entry reads as struck.)
+  (The blank line above is load-bearing: without it markdown lazy-continuation pulls this
+  closure into the `SegmentedControl` bullet's own paragraph, so that OPEN entry reads as
+  closed. Not struck — `~~` is inline and cannot reach backwards over the bullet.)
   Measured with `elementFromPoint`, walking outward from each control's centre, at all **six**
   `Checkbox` call sites and the native radio; nothing moved (every row rect identical) and the
   drawn box did not change.
@@ -2572,10 +2600,14 @@ Added by the 2026-08-28 sweeps:
   from the park itself rather than a consumer-side index set (struck above); the feed's and the
   sweep's byte-identical status lines extracted into one shared `StatusLine`; and a paused
   sweep announced at the press instead of up to ~5s later.
-  What it FOUND and fixed along the way, each its own struck entry above: a failed bank row's
-  error moved out of `AlbumRow`'s `shrink-0` meta slot onto its own line, that line clipped to
-  its column so its ink stops taking taps meant for `Ignore`, and the select checkbox re-centred
-  on the row it selects instead of on row+error. The widths it measured but did NOT fix — the
+  What it FOUND and fixed along the way, among them (each its own struck entry above): a failed
+  bank row's error moved out of `AlbumRow`'s `shrink-0` meta slot onto its own line;
+  **`AlbumRow`'s subtitle/meta line** clipped to its column, so the `shrink-0` meta span's ink
+  stops taking taps meant for `Ignore` (at 320-376 that ink ran past the text column and
+  painted inside the button's hit rectangle); the select checkbox re-centred on the row it
+  selects instead of on row+error; `/duplicates`' keeper radio re-centred the same way; and the
+  candidate page's h1 stopped pushing the document 371px sideways at 360px (`min-w-0` AND
+  `break-words` — either alone measures 371). The widths it measured but did NOT fix — the
   0px title, the sliced `Open`, the mid-word meta cut — are the struck entries above, closed by
   decisions 39 on the branch after it.
 - **Import feedback — PR #217, squash `f08bc66` = v0.51.0 (2026-09-08).** How long a run has
