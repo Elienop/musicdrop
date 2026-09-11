@@ -116,10 +116,11 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   a control, no pixel of the meta span's box clipped. **Only a row with a button becomes a
   grid** — the
   other four rows are rect-for-rect identical at all 201 widths **row-relative**, by
-  construction and measured. In PAGE coordinates they move down at the 9 narrow widths
-  (320→384), because the parked rows above them grow: 28/48/68/88px, read by the review seat
-  2026-09-11.
-  Above the switch (viewport 392 and up, row ≥ 320) the two parked rows are identical to before
+  construction and measured. In PAGE coordinates they move down at every width where the
+  action is dropped (320→512, 25 widths), because the parked rows above them grow: 28/48/68/88px
+  at 320→384, read by the review seat on the 20rem build; at 392→512 by what those two rows grew
+  (each 88→132px at 392, 88→112 at 512, re-read by the UX seat after the 28rem move), not re-read in page coordinates.
+  Above the switch (viewport 513 and up, row ≥ 448) the two parked rows are identical to before
   in every measured property except AlbumRow's own wrapper box, which is narrower by exactly the
   action slot it no longer holds (80.62px for Review, 85.39 for Resolve) and paints nothing.
   The live log is undisturbed: with a row transitioning into a parked status at 320, the
@@ -138,7 +139,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   cause as the bank and decision rows (fixed content wider than the row, badge `shrink-0`, title
   `min-w-0`). `FeedRow` (`ImportPage.tsx:856`) has the decision row's exact anatomy — AlbumRow
   plus one action — so the remedy is the one already applied there: the row becomes a grid and
-  the action takes row 2 below a measured threshold (the decision row's is 20rem; this row's
+  the action takes row 2 below a measured threshold (the decision row's was 20rem, and the owner has since set 28rem on all three rows — closure
+  above; this row's
   action is `Review`/`Resolve`, so re-derive rather than copying the number). NOT done here
   because decisions 39 names `/review`, and extending a ruling to a third surface is the owner's
   call, not an application of it.
@@ -161,7 +163,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   in a browser by anyone yet. The branch's focus check covered a row GROWING a button, not
   one losing it.
 - **Asymmetry to check: `/import`'s "Import finished" panel passes no `readOnly`; the failed
-  panel does** (`ImportPage.tsx:1049` vs `:1141`, whose comment gives the reason — a decision
+  panel does** (`ImportPage.tsx:1053` vs `:1145`, whose comment gives the reason — a decision
   POST no worker will consume). Rendered with `phase: "done"` plus a parked album, the done
   screen shows live Review/Resolve links and its summary line does not mention the parked
   rows. Same on main. NOT verified that the backend can report `done` while an album is
@@ -1801,15 +1803,32 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     stacks under the meta text instead of beside it, and at viewport 320, where the column is
     114px against a 114.61px badge, `whitespace-normal` lets the label wrap (badge 114×38
     there, 114.61×22 at the other 204). Row widths are identical to before at every width, the
-    radios' accessible names are unchanged, no control is clipped and no text ink answers
+    radios' accessible names were unchanged by the move (the keeper's has since gained its
+    badge text — below), no control is clipped and no text ink answers
     `elementFromPoint` with a control. The badge also lost 4px (118.61 → 114.61): the icon's
     `mr-1` restated a `gap-1` Badge already applies.
-    **The cost is vertical, and it is the keeper row only:** that row grows **26px** at most
-    widths (the badge's own line), **42px at 320** where the label wraps to two lines, and
-    **2px from 1280 up**, where the badge is inline and its 22px box is taller than the 20px
-    meta line. The sibling row and the card's primary button move down by the same amount —
+    **The cost is vertical, and it is the keeper row only:** that row grows **26px** at the 56 widths
+    where the badge stacks (viewport 328→648, and 768→880 where the sidebar step narrows the text
+    column under 28rem again), **42px at 320** where the label wraps to two lines, and **2px** at the
+    144 widths where it is inline (656→760 and 888 up; re-read by the UX seat after the move), its 22px
+    box being taller than the 20px meta line. The sibling row and the card's primary button move down by the same amount —
     row-relative nothing else changes, and there is no horizontal overflow at any width
     (document `scrollWidth` equals `clientWidth`, 320 through 1920).
+    **Two more from the same pass, recorded and not fixed (UX seat, final round of the branch):** at 35 of
+    201 widths (viewport 496→648 and 768→880) the stacked badge sits under the META's start,
+    105–208px in from the text column's left edge, because subtitle and meta go inline at 18rem
+    of the column while the badge stacks until 28rem; flush-left would mean stacking on the meta
+    LINE rather than inside the meta span, an `AlbumRow` change. And on `/review` at 392→512
+    the two dropped arms do not share a left edge — the decision arm sits under the cover
+    (x≈43 at 480), the bank arm past the checkbox column (x≈88) — each aligned to its own grid
+    track, so neither is wrong, but they read as unrelated in one scroll.
+    **And one closed after it, same branch:** "most complete" was in no radio's accessible name —
+    a sibling text node, so a screen reader arrowing the group never heard which member the app
+    recommends, on the screen that trashes the others. The keeper's name now ends in the badge's
+    text (one spelling, a shared constant), which also makes it distinct from every sibling. Two
+    NON-suggested members sharing a format and bitrate, or with neither to show, still read the
+    same; the folder path is the only always-distinct field, and putting it in the name is a
+    design call for the owner, not this fix.
   `AlbumRow` itself is unchanged.
   **What decisions 39 did NOT settle, recorded as the owner's call:** below the threshold the
   BADGE still owns the title's line. At viewport 320 a bank row's text column is **139px**
@@ -1849,8 +1868,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   "`AlbumRow`'s stacked meta line", a component-wide claim its own body then contradicted).
   The cut was the column being too narrow for the word, and the dropped action line gives that
   column the group's width back: re-measured over the same 201 widths, **0 widths cut on every
-  bank row**, against 13 widths and up to 51.86px hidden. The meta span is byte-identical —
-  `AlbumRow` was not touched, so `/duplicates` keeps its format and bitrate at every width.
+  bank row**, against 13 widths and up to 51.86px hidden. The meta TEXT is unchanged (the keeper's meta span on
+  `/duplicates` now also holds the badge — closure above) — `AlbumRow` was not touched, so `/duplicates` keeps its format and bitrate at every width.
   **The other four call sites cut 0 widths, re-measured after `/import`'s row was fixed too**:
   swept 320→1920 in steps of 8 with a real 15px scrollbar over `/review` (9 rows), `/duplicates`
   (2) and `/import` (6, every status), every row that renders a meta span has **0 px** of that
