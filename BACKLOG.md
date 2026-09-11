@@ -98,7 +98,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   **285.37px** (px-4 16 + cover 40 + gap-3 12 + "Already in library" 107.98 + gap-2 8 + gap-3 12
   + Resolve 73.39 + px-4 16), so the floor is **296.70** (+ the 11.33px ellipsis glyph) and the
   ceiling is the **473px** narrowest desktop row, at the 768px sidebar step — the decision row's
-  numbers to the pixel. The switch is **28rem**, the owner's number (2026-09-11), now the same
+  numbers to the pixel. The switch is **28rem**, the owner's number (decisions 41, 2026-09-11), now the same
   on all three rows: the floor stays true AS a floor, but it is not what sets the threshold.
   At the 20rem this round first shipped, the real phone band went inline and the title
   collapsed — measured on the widest parked row, viewport 392/400/414/430 gave
@@ -1791,7 +1791,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   * **`/import`'s feed row** DOES reproduce it, and is now FIXED under its own struck entry
     (the owner extended decisions 39 to it on 2026-09-11);
   * ~~**`/duplicates`' suggested-keeper member row reproduces it**~~ — **CLOSED 2026-09-11**,
-    the owner's ruling on the same branch: *"Move the badge to the meta line"*. It has no
+    the owner's ruling on the same branch (decisions 42): *"Move the badge to the meta line"*. It has no
     action slot; the `shrink-0` "most complete" badge on the TITLE line was what starved the
     title — `clientWidth` **0 at viewport 320 and 328** (row 223/231), **3.39 at 336**, first
     clearing the 11.33px glyph at row 247 (viewport 344), while the badge-less sibling showed
@@ -1841,7 +1841,10 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   line"*) — measured in the closure above: the keeper's title goes 0 → 114px at viewport 320
   and matches a badge-less sibling at every width. It is NOT taken on the bank row or the feed
   row, whose STATUS badges still own the title line below the threshold; that is still a design
-  call and still the owner's.
+  call and still the owner's. Re-read by the UX seat on the
+  branch's final round: 1–3 characters of title on the bank rows at viewport 320–352 and
+  513–543 (23–24px at 320), eight widths under 60px — the loudest remaining instance of the
+  defect decisions 42 settled on `/duplicates`.
 
 - ~~**A bank row's `Open` button is SLICED by the list's own `overflow-hidden`**~~ — **CLOSED
   2026-09-11** (on `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at merge; vault
@@ -2641,22 +2644,25 @@ Added by the 2026-08-28 sweeps:
 ## Recently shipped
 
 - **Phone-width rows and hit areas — PR #221, squash `a053ffc` = v0.51.2 (2026-09-11).**
-  Decisions 39–42, each browser-measured with a real scrollbar over 201 widths. A row's actions
+  Decisions 39–42, each browser-measured with a real scrollbar, 201–237 widths per surface. A row's actions
   drop below it under 28rem of row width on the bank, decision and parked feed rows (a grid with
   a container query on the row; the title keeps its ellipsis at every width, and the sliced `Open`
   and the badge ink under `Resolve` go with it). 28rem rather than the 20rem first derived from
-  the typographic floor: the phone band 385–430 showed 6–11 title characters inline and 17–24
-  stacked, and 448 clears the 473px narrowest desktop row. The `Checkbox` primitive draws a
+  the typographic floor: at viewport 392–430 the inline title showed 6–10 characters and the
+  stacked one 18–23, and the 473px narrowest desktop row clears 448. The `Checkbox` primitive draws a
   centred 24×24 pseudo-element so every caller meets WCAG 2.2 SC 2.5.8 without growing; the
   `/duplicates` keeper radio gets a padded label; `/browse`'s facet rail stops clipping the target
   at no measured cost. The `/duplicates` "most complete" badge moves to the meta line (keeper
   title 0 → 114px at 320, equal to its sibling at every width; the badge wraps at 320 and never
   truncates), and keeper radio names carry format, bitrate and the badge text, never a
   placeholder. The struck entries above that cite decisions 39–42 are its closures. Recorded and
-  not fixed, each under its own entry: the bank row's status badge still starving its title at
-  320–352; the stacked badge under the meta's start at 35 widths; a focused feed-row action
+  not fixed — three under their own entries, three inside the closures they came from: the bank
+  row's status badge still owning the title line (1–3 characters of title at viewport 320–352 and
+  513–543, 23–24px at 320, read by the UX seat); the stacked badge under the meta's start at 35
+  widths; the two dropped arms on `/review` not sharing a left edge; a focused feed-row action
   unmounting when the live feed applies its album (pre-existing, unmeasured); the done panel's
-  `readOnly` asymmetry; the sha guard's line-1 prose cites.
+  `readOnly` asymmetry; the sha guard's line-1 prose cites. The folder path in a keeper radio's
+  name, when two non-suggested members match, stays the owner's call.
 - **Import-feedback residuals — PR #220, squash `b8fb9f4` = v0.51.1 (2026-09-11).** The five
   residuals #217 left, re-read off `git log -1 --format=%B b8fb9f4` (2026-09-11: this entry had
   named four, and three of them were defects #220 FOUND rather than residuals it closed):
