@@ -197,7 +197,22 @@ function DecisionSection({
             ? `/import/albums/${album.index}/duplicate?job=${jobId}`
             : `/import/albums/${album.index}?job=${jobId}`;
           return (
-            <li key={album.index} className="bg-primary/5">
+            // The same drop as the bank row (decisions 39): the defect
+            // reproduces here, narrower — the title measures 0px at 320→344
+            // and at 320→328 the "Already in library" badge's ink sits inside
+            // Resolve's hit rectangle, so a tap there fired Resolve. A grid so
+            // `items-center` centres each item in its OWN row track. This
+            // row's fixed content is 285.37px (px-4 16 + cover 40 + gap 12 +
+            // badge 107.98 + gap 8 + gap 12 + Resolve 73.39 + px-4 16), so
+            // under 296.7 (+ the 11.33px ellipsis glyph) the title cannot
+            // ellipse; the narrowest row a desktop shows is 473px, at the
+            // 768px sidebar step. 20rem sits between — a smaller number than
+            // the bank row's 28rem because this row carries one control, not
+            // four, and each threshold is that row's own measurement.
+            <li
+              key={album.index}
+              className="@container/decisionrow bg-primary/5 grid grid-cols-[minmax(0,1fr)_auto] items-center"
+            >
               <AlbumRow
                 cover={null}
                 title={title}
@@ -216,14 +231,16 @@ function DecisionSection({
                     {needsDup ? "Already in library" : "Needs review"}
                   </Badge>
                 }
-                action={
-                  <Button size="sm" asChild>
-                    <Link to={to} state={REVIEW_ORIGIN}>
-                      {needsDup ? "Resolve" : "Review"}
-                    </Link>
-                  </Button>
-                }
               />
+              {/* `-ml-1` gives back the 4px by which AlbumRow's px-4 exceeds
+                  its own gap-3, so the inline arm keeps today's 12px gap. */}
+              <div className="col-start-1 row-start-2 mb-3 ml-4 flex items-center @min-[20rem]/decisionrow:col-start-2 @min-[20rem]/decisionrow:row-start-1 @min-[20rem]/decisionrow:mb-0 @min-[20rem]/decisionrow:-ml-1 @min-[20rem]/decisionrow:mr-4">
+                <Button size="sm" asChild>
+                  <Link to={to} state={REVIEW_ORIGIN}>
+                    {needsDup ? "Resolve" : "Review"}
+                  </Link>
+                </Button>
+              </div>
             </li>
           );
         })}

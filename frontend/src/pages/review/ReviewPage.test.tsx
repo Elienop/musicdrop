@@ -131,6 +131,20 @@ describe("ReviewPage", () => {
     expect(review).toHaveAttribute("href", "/import/albums/0?job=j1");
     const resolve = screen.getByRole("link", { name: /resolve/i });
     expect(resolve).toHaveAttribute("href", "/import/albums/1/duplicate?job=j1");
+
+    // decisions 39 reaches this row too: the defect reproduced here, narrower
+    // — the title measured 0px at 320→344 and at 320→328 the "Already in
+    // library" badge's ink sat inside Resolve's hit rectangle. Same shape as
+    // the bank row, its own threshold (20rem, this row carrying one control
+    // rather than four). jsdom holds the structure: the action is a grid item
+    // of the <li>, with both arms named.
+    const row = resolve.closest("li");
+    expect(row).toHaveClass("grid");
+    expect(row?.className).toMatch(/@container\/decisionrow/);
+    const group = resolve.parentElement;
+    expect(group?.parentElement).toBe(row);
+    expect(group?.className.split(/\s+/)).toContain("row-start-2");
+    expect(group?.className).toMatch(/@min-\[20rem\]\/decisionrow:row-start-1/);
   });
 
   test("the decision row's confidence line uses the app's segment separator", async () => {
@@ -476,6 +490,80 @@ describe("ReviewPage", () => {
     renderWithProviders(<ReviewPage />);
     return screen.findByRole("region", { name: /waiting for review/i });
   };
+
+  // decisions 39. Under 28rem of ROW the Ignore/Remove/Open group takes its own
+  // line under the row; above it the row is byte-identical to what it was.
+  // Only two things make that possible, and jsdom can hold both: the group is a
+  // grid ITEM of the <li> (from inside AlbumRow's `action` slot it could not
+  // move without growing AlbumRow's box — the 16/26px checkbox drift #220
+  // fixed), and the <li> is a grid, so `items-center` centres each item in its
+  // own row track instead of against the tallest thing in one flex line. The
+  // widths, the threshold's derivation and the drift being 0 are in the
+  // branch's browser pass; BACKLOG carries the numbers.
+  const needsReviewRow = () => {
+    server.use(
+      http.get(BANK, () =>
+        HttpResponse.json({
+          items: [bankRow({ id: "b3", album: "Album Z" })],
+          total: 1,
+          total_all: 1,
+          offset: 0,
+          limit: 48,
+        }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+    return screen.findByRole("region", { name: /waiting for review/i });
+  };
+
+  test("the action group is a grid item of the row, not a child of AlbumRow", async () => {
+    const section = await needsReviewRow();
+    const ignore = await within(section).findByRole("button", { name: /ignore album z/i });
+    const group = ignore.parentElement;
+    const row = ignore.closest("li");
+    // The group's parent IS the row. Inside AlbumRow's action slot this is the
+    // slot's own wrapper, and the group cannot take a line of its own.
+    expect(group?.parentElement).toBe(row);
+    // Every control is in that one group: one set, not a visible copy plus a
+    // hidden one.
+    expect(group).toContainElement(within(section).getByRole("button", { name: /remove album z/i }));
+    expect(group).toContainElement(within(section).getByRole("link", { name: /open album z/i }));
+    expect(within(section).getAllByRole("button", { name: /ignore album z/i })).toHaveLength(1);
+  });
+
+  test("the row is a grid, so each line centres in its own row track", async () => {
+    const section = await needsReviewRow();
+    const row = (await within(section).findByRole("listitem")) as HTMLElement;
+    expect(row).toHaveClass("grid");
+    expect(row).toHaveClass("items-center");
+    // The container the threshold is measured against is the row itself — a
+    // viewport breakpoint would be wrong: at 768px the sidebar opens and the
+    // row is NARROWER than at 520px.
+    expect(row.className).toMatch(/@container\/bankrow/);
+    const group = within(section).getByRole("button", { name: /ignore album z/i }).parentElement;
+    // Its own line below the row by default; back on the row's line above the
+    // threshold. Both arms named, so dropping either fails.
+    expect(group?.className.split(/\s+/)).toContain("row-start-2");
+    expect(group?.className).toMatch(/@min-\[28rem\]\/bankrow:row-start-1/);
+  });
+
+  test("a failed row's error line sits below the dropped action line", async () => {
+    const failure = "beets refused the import: /srv/music/incoming is not writable";
+    const section = await failedRowSetup(failure);
+    const line = await within(section).findByTitle(failure);
+    const row = line.closest("li");
+    const wrapper = line.parentElement;
+    // Also a grid item of the row (never nested in the part that holds the
+    // checkbox), spanning the full width, in the row AFTER the actions in both
+    // arms — the reading order the one-line arm has.
+    expect(wrapper?.parentElement).toBe(row);
+    expect(wrapper?.className.split(/\s+/)).toContain("col-span-3");
+    expect(wrapper?.className.split(/\s+/)).toContain("row-start-3");
+    expect(wrapper?.className).toMatch(/@min-\[28rem\]\/bankrow:row-start-2/);
+    const controls = [...(row?.querySelectorAll("button, a[href]") ?? [])];
+    // DOM order: the controls come before the error, in both arms.
+    expect(controls.every((c) => c.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+  });
 
   test("a failed row carries its error on its own line, not in the meta slot", async () => {
     const failure =
