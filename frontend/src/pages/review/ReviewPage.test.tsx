@@ -616,7 +616,7 @@ describe("ReviewPage", () => {
     expect(wrapper?.parentElement).toBe(row);
     expect(wrapper?.className.split(/\s+/)).toContain("col-span-3");
     expect(wrapper?.className.split(/\s+/)).toContain("row-start-3");
-    expect(wrapper?.className).toMatch(/@min-\[28rem\]\/bankrow:row-start-2/);
+    expect(wrapper?.className.split(/\s+/)).toContain("@min-[28rem]/bankrow:row-start-2");
     const controls = [...(row?.querySelectorAll("button, a[href]") ?? [])];
     // DOM order: the controls come before the error, in both arms.
     expect(controls.every((c) => c.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);

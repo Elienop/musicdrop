@@ -80,9 +80,13 @@ describe("Checkbox target size", () => {
   });
 
   test("a caller's className still wins for the drawn box", () => {
-    render(<Checkbox aria-label="Select" className="ml-4" />);
+    // `size-5` CONFLICTS with the primitive's `size-4`; twMerge keeps the
+    // caller's. (`ml-4` proved only that an unrelated class survives.)
+    render(<Checkbox aria-label="Select" className="size-5" />);
     const box = screen.getByRole("checkbox");
-    expect(box).toHaveClass("ml-4");
+    expect(box).toHaveClass("size-5");
+    expect(box).not.toHaveClass("size-4");
+    expect(drawnSize(box)).toBe(20);
     expect(pseudoSize(box)).toBeGreaterThanOrEqual(24);
   });
 });
