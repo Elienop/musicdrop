@@ -439,10 +439,14 @@ describe("ReviewPage", () => {
     const row = within(section).getByRole("listitem");
     expect(within(row).getByText(/uncertain match/i)).toBeInTheDocument();
     expect(within(section).getByText(/71%/)).toBeInTheDocument();
-    // One dialect for this line across all five AlbumRow surfaces: the
-    // humanized tier, not the raw `medium` enum, joined with SEGMENT_SEP and
-    // not a plain " · ". Compared on `textContent` because SEGMENT_SEP's
-    // trailing space is a NBSP, which RTL's default normalizer would collapse.
+    // One dialect for the `%` · tier line across the three AlbumRow surfaces
+    // that render it — the import feed, the decision row and this bank row:
+    // the humanized tier, not the raw `medium` enum, joined with SEGMENT_SEP
+    // and not a plain " · ". The other two callers are out of scope, not
+    // exceptions: the inbox row's meta is a bare track count with no
+    // separator, and `/duplicates` joins its own line with a plain " · ".
+    // Compared on `textContent` because SEGMENT_SEP's trailing space is a
+    // NBSP, which RTL's default normalizer would collapse.
     expect(row.textContent).toContain(`71%${SEGMENT_SEP}Medium match`);
     expect(within(section).getByRole("link", { name: /open/i })).toHaveAttribute(
       "href",

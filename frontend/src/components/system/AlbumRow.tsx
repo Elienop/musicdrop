@@ -78,9 +78,12 @@ export function AlbumRow({
           // Below 18rem of column, subtitle and meta take a line each. The
           // meta slot is max-content: 130.5px in the import feed, 185.1px on
           // /duplicates, so one line needs 218px / 272px for a 66px artist. At
-          // 288px they get 136px / 82px. Columns measured 105px (320 viewport)
-          // to 859px; 320/360/414 fall under 288, and those are the widths
-          // where the subtitle measured `clientWidth` 0.
+          // 288px of column they leave the artist 136px / 82px. Those are
+          // scrollbar-independent; the viewport→column mapping is not, so
+          // re-derive it rather than quoting one. Swept 320→1920 in steps of 8
+          // with a real 15px scrollbar: /duplicates runs 114px→1249px and
+          // stacks at 488 and below; a /review bank row runs 0px→1163px, the 0
+          // being a `needs_review` row at 320, which carries a fourth control.
           // gap-x only: a row gap would space the stacked lines apart, and is
           // inert on one line.
           // `overflow-hidden` confines this line's INK to the text column.
@@ -91,7 +94,11 @@ export function AlbumRow({
           // which content wins the space; it stops invisible-to-the-layout ink
           // from taking a tap. It goes HERE and not on the column: the title
           // row above can hold a focusable link, whose focus ring this would
-          // clip.
+          // clip. `subtitle` is a string and no caller puts anything focusable
+          // in `meta` (a ReactNode), which is what keeps that reasoning true of
+          // this line too — the first one that does gets its ring clipped and
+          // this box turned into a scroll container, so give it the title row's
+          // treatment instead of relaxing the clip.
           <div className="text-muted-foreground @min-[18rem]/rowtext:flex-row @min-[18rem]/rowtext:items-center flex min-w-0 flex-col gap-x-2 overflow-hidden text-sm">
             {subtitle !== undefined && (
               <span className="min-w-0 truncate" title={subtitle}>

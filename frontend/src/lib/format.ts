@@ -11,11 +11,11 @@
  * with the middot, exactly as JobDone's identical line already does.
  *
  * It lived in `pages/import/importStatus.ts` while the import page was the
- * only consumer. Two more arrived: `CandidateReview`'s match header, which
- * wraps at 360px and is the reason this glyph pair matters there, and
- * `ReviewPage`'s decision row.
+ * only consumer. Three more arrived: `CandidateReview`'s match header, which
+ * wraps at 360px and is the reason this glyph pair matters there, and two
+ * `AlbumRow` rows — `ReviewPage`'s decision row and `BankSection`'s bank row.
  *
- * The Review row gains nothing measurable and is here for ONE dialect: its
+ * Those two rows gain nothing measurable and are here for ONE dialect: the
  * string reaches `AlbumRow`'s `meta` slot, a `flex-shrink: 0` item whose used
  * width is max-content in the row arm. Measured at 360px with a 68-character
  * artist: 130.5px wide, one client rect, `lines: 1` — identical to the import

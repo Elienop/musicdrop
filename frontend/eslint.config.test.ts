@@ -175,8 +175,11 @@ const MUST_TRIP: ReadonlyArray<readonly [rule: string, filePath: string, code: s
   [
     // A STRING array on purpose: that is the shape the family was raised on, and it is
     // the shape `@typescript-eslint/require-array-sort-compare` — the twin this gate
-    // deliberately does not use — ignores by default. If this case ever goes green while
-    // the rule is still listed, the wrong rule has been substituted.
+    // deliberately does not use — ignores by default. What this case pins is that
+    // SonarJS's own rule keeps reporting that shape; a plugin upgrade that gave it the
+    // same default exemption would leave the gate listed, green and inert. It cannot
+    // catch a SUBSTITUTED rule — a rule key names its plugin, so swapping one changes the
+    // key and the enabled-vs-covered test below fails on the key instead.
     "sonarjs/no-alphabetical-sort",
     MAIN_FILE,
     `export const s = (a: string[]) => [...a].sort();\n`,

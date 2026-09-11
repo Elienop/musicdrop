@@ -1530,7 +1530,9 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   Side-by-side costs 208px (`w-48` cover + `gap-4`) plus 128px per `Field` (`w-12` label 48,
   `gap-2` 8, the "changed" badge 64 and its gap 8 — measured), so a value clears 96px (about 13
   characters) from 432px of panel up. The panel content box moves at **0.5px per px of viewport**
-  across this whole range (that is `sm:grid-cols-2`), and the `@min-[27rem]` arm first engages at
+  wherever `sm:grid-cols-2` applies — NOT across the whole range: below `sm` the panels are
+  stacked full-width and move 1:1, which is what this entry's own 520/528 pair shows (423→431,
+  8px of panel for 8px of viewport, against 4px at 1224→1232). The `@min-[27rem]` arm first engages at
   a **1248px** viewport, where the panel is **436px** — it crosses 432 between 1240 and 1248.
   **Before the panel query**: a value was 0-width at 67 of the 201 widths and clipped at 69 more,
   and the document overflowed at 47 widths (320→960, max 100px — 72/32/49/100/68px at
@@ -1578,6 +1580,30 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   measured three.** `ReviewPage`'s inbox row passes a fixed `N tracks`, so the threshold holds
   there by the same arithmetic. `BankSection`'s did not, and that is fixed separately below.
 
+- ~~**The keeper radio on `/duplicates` sat below the row it selects**~~ — **CLOSED 2026-09-11,
+  the same drift as the bank row's checkbox, on the other page that has a selection control.**
+  `MemberRow`'s `<li>` was `flex items-center` and held the `AlbumRow` **plus** the folder-path
+  scroller, so the radio centred on both: swept 320→1920 in steps of 8 with a real 15px scrollbar,
+  it sat **17px** below its own row at 320→768 and **12px** at 776→1920 — a nonzero drift at all
+  201 widths, never 0. (The 17/12 split is the path scroller's own horizontal scrollbar, which
+  only appears while the path overflows.)
+  Fixed with a two-track grid rather than the bank row's stacked flex wrappers, because the inset
+  the path line has to clear here is the NATIVE radio's width — 13×13 in Chromium, the UA's number
+  and not ours. The path goes in row 2 of the radio's own column track, so the offset is derived;
+  restating it as a padding is off by 1px (`pl-10` = 40 against a measured 41), and it would be a
+  different number in another engine. **After: drift 0 at all 201 widths**, the path text starts
+  at exactly the cover's left edge at all 201 widths (82px ≤414, 312px ≥768, identical to before),
+  and the `AlbumRow` column geometry and every `<li>` height are byte-identical to before at all
+  201 widths — the only thing that moved is the radio.
+  **Swept for the shape (statically, not measured): these two were the only instances of it.**
+  The app has seven other selection-control call sites. Two cannot grow a second line at all
+  (`BrowsePage`'s facet rows and `ImportPlaylistsPage`'s Plex rows both `truncate` their label).
+  Four can — `LyricsBackfillPanel.tsx:86`, `MergePlaylistDialog.tsx:144`,
+  `PlaylistDetailPage.tsx:582`, `ReleaseSearchRow.tsx:98` — but each is a control beside its OWN
+  wrapping label, where centring on the label is the conventional treatment, not a control
+  detaching from a separate row it selects. `BankSection.tsx:291` is a header checkbox with a
+  two-word label. None was browser-measured.
+
 - ~~**A failed bank row's error overran the row and starved its subtitle**~~ — **CLOSED
   2026-09-08.** `BankSection` joined `row.error` into `AlbumRow`'s `meta`; that slot is
   `shrink-0`, so in the ROW arm its used width is max-content and it can neither shrink nor wrap,
@@ -1608,11 +1634,14 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `items-center` body, so the select checkbox centred on row+error and drifted **16px** below its
   own row on a one-line error and **26px** on a two-line one, measured at 1280; the control and
   the row now share their own `items-center` wrapper and the error is a sibling below, and the
-  drift is **0/0/0**. (2) The meta's ink still ran past the column at 320/328/336 (**22.81px** at
-  320, not the 7.81px at one width recorded here) and, on a `needs_review` row, painted INSIDE the
-  Ignore button's hit rectangle — hit-tested with `elementFromPoint`, a tap on that text fired
-  Ignore. `AlbumRow`'s subtitle/meta line now carries `overflow-hidden`: **0 control hits at all
-  201 widths**, against 8 widths (320→376) and 100 sampled ink columns with the class removed.
+  drift is **0/0/0**. (2) The meta's ink still ran past the column at **3 widths** (320/328/336,
+  22.81px at 320) on an ordinary row, and at **8 widths** (320→376) on a `needs_review` row, where
+  it painted INSIDE the Ignore button's hit rectangle — hit-tested with `elementFromPoint`, a tap
+  on that text fired Ignore. The two counts are one sweep over two row kinds, not a contradiction:
+  a `needs_review` row carries a fourth control, which narrows its text column (0px at 320 against
+  28.19px without it), so its ink escapes at more widths. `AlbumRow`'s subtitle/meta line now
+  carries `overflow-hidden`: **0 control hits at all 201 widths**, against those 8 widths and 100
+  sampled ink columns with the class removed.
   The text column itself is **28.19px at 320 and 68.19px at 360** (43/83 was the scrollbar-hidden
   reading).
   Adjacent, NOT fixed: at 320 a bank row's title renders at `clientWidth` **0** — it does not
@@ -1621,8 +1650,47 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   0 at 414. Its text column is 0px there, so the subtitle and meta are clipped away with it. That
   is the same `AlbumRow` title-vs-badge density call recorded above, and it is the owner's. The
   badge is what takes the space: it is `shrink-0`, and at 320 its ink is the only text left in the
-  row — it extends 105.8px past the column and covers 25px of the 56.8px `Open` button, which is
-  inert (a tap there hits the badge, not the button) but does mask the primary action.
+  row — it extends ~106px past a 0-width column.
+  **It does not reach `Open`** (re-measured 2026-09-11, correcting the sentence that stood here).
+  The badge box ends at **239.8** and `Open` starts at **248.97** — 9.17px clear, **0px of
+  overlap** — and the two do not even share a vertical band (badge 456→478, the action controls
+  491→523). `elementFromPoint` swept across the badge's whole painted ink band returns the badge
+  and nothing else, on every row and every width sampled. So the "covers 25px of the 56.8px
+  `Open`, inert (a tap there hits the badge)" sentence recorded here was wrong in both halves: the
+  25px is real but it is not the badge, and there is no overlap for a tap to be inert against.
+  What the 25px actually is, is below.
+
+- **A bank row's `Open` button is SLICED by the list's own `overflow-hidden`** — pre-existing,
+  unchanged by this branch, NOT fixed (measured 2026-09-11). On a `needs_review` row, whose action
+  slot holds Ignore + Remove + Open, the button is **56.81px** wide and the `<ul>`'s
+  `overflow-hidden rounded-xl border` cuts **24.78px of it at 320** — 16.78 at 328, 8.78 at 336,
+  0.78 at 344, 0 from 352: **4 widths**. That is the 25px the entry above misattributed to the
+  badge. A clipped control is worse than an overlapped one: the missing 44% is not in the hit
+  rectangle either, so the row's primary action is part-invisible AND part-untappable there.
+  Identical on the merge-base (`2950304`) and on HEAD, so nothing on this branch caused or changed
+  it. Fixing it is the same density call as above — what wins the row at 320 — and it is the
+  owner's.
+
+- **`AlbumRow`'s stacked meta line is cut mid-word with no ellipsis** — NOT fixed, and the
+  candidate fix was built, measured and rejected (2026-09-11). The `overflow-hidden` added above
+  sits on the subtitle/meta WRAPPER while `truncate` is on the sibling subtitle, so it never
+  reaches the meta span. Stacked, that span is column-width and wraps, and any word wider than the
+  column is cut at the box edge: **13 widths (320→416)**, up to **58.08px** hidden on a
+  `needs_review` bank row (0px column at 320) and 20.03px on an ordinary one (28.19px column) —
+  it renders as `91%` / `· Stro` / `matc`. `/duplicates` and the import feed cut 0 widths.
+  The contained fix is `min-w-0 truncate` on the meta span with its `flex`/`shrink-0`/
+  `items-center` moved behind the existing `@min-[18rem]/rowtext` query. Built and swept, 201
+  widths, real scrollbar: it does what it promises — the row arm is byte-identical on both pages
+  at every sample, and on `/review` the cut becomes a real `…` and the row is 20–40px shorter.
+  **It was not landed because `truncate` also stops the line WRAPPING.** On `/review` that ellipses
+  18 further widths (344→488) where the wrapped line fitted whole. On `/duplicates`, where HEAD
+  hides nothing at any width, it hides **7→79px at 10 widths (320→392)** — and what it hides is the
+  format and bitrate: at 320 two copies both read `2001 · 11 tracks · …` and become
+  indistinguishable on the one page whose purpose is telling them apart.
+  So the choice is a mid-word slice on bank rows against losing the compare data on `/duplicates`.
+  That is the same "what wins the narrow column" call as the two entries above, and it is the
+  owner's. Note the present state is still strictly better than what it replaced: the same ink used
+  to paint over `Ignore`/`Remove` and take the tap.
 
 - ~~**The same unbounded error pushed the WHOLE PAGE sideways on the bank detail screen**~~ —
   **CLOSED 2026-09-08.** `FailedBanner` rendered `item.error` — the same `str(exc)` the row above
@@ -2149,12 +2217,15 @@ the condition it names has changed.
   42 px). Fold the `AlphabetIndex` missing `shadow-xs` (already recorded below) into the
   same touch. Load-bearing on mobile: the segments are the image-source picker at
   `ArtistImageEditPanel.tsx:278`.
-  **`Checkbox` is the one that does NOT pass** (measured 2026-09-08, on `/review`'s bank rows):
-  the shadcn primitive is `size-4`, so its hit rectangle is **16×16**, under SC 2.5.8's 24px
-  Level AA minimum. That is the primitive's floor and it is app-wide, not a bank-row property —
-  every `Checkbox` call site inherits it. Same class of decision as the three above and the
-  owner's to make; a fix belongs in `components/ui/checkbox.tsx` (a pseudo-element hit area, so
-  the visual box does not grow), not at a call site.
+  **Two selection controls do NOT pass** (measured 2026-09-08 and 2026-09-11). `Checkbox` (on
+  `/review`'s bank rows): the shadcn primitive is `size-4`, so its hit rectangle is **16×16**,
+  under SC 2.5.8's 24px Level AA minimum. That is the primitive's floor and it is app-wide, not a
+  bank-row property — every `Checkbox` call site inherits it; a fix belongs in
+  `components/ui/checkbox.tsx` (a pseudo-element hit area, so the visual box does not grow), not
+  at a call site. `/duplicates`' keeper radio is smaller still: an unstyled
+  `input[type="radio"]`, so its box is the UA's — **13×13** in Chromium, measured at all 201
+  widths — and it is the only selection control on that page. Same class of decision as the three
+  above and the owner's to make.
 - Artist-image panel minors, all shipped deliberately: Fetch is `secondary` while the pasted-link
   Set is the only filled control (ranking reads backwards); the URL input's `aria-label`
   shadows its visible label — a genuine SC 2.5.3 Label-in-Name failure (Level A: name

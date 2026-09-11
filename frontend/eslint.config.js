@@ -9,16 +9,24 @@
 // only by the server-side scan after the code was written, reviewed three times, and
 // browser-verified.
 //
-// The selection rule, and the reason there is no `recommended` preset below: every rule
-// here maps to a Sonar rule this project has actually violated and fixed — 26 rules
-// covering 25 of the 27 JS/TS families (769 resolved issues) that the programme cleared,
-// the counts differing because S1082 is a union of two ESLint rules — and `main`
-// currently sits at 0 open issues, so each one is a regression guard rather than a new
-// opinion. Turning on a preset would flag code nobody has agreed to change and would make
-// the gate impossible to land.
+// The selection rule, and the reason there is no `recommended` preset below: with one
+// carve-out, every rule here maps to a Sonar rule this project has actually violated and
+// fixed — 27 rules covering 25 of the 27 JS/TS families (769 resolved issues) that the
+// programme cleared, the counts differing because S1082 is a union of two ESLint rules —
+// and `main` currently sits at 0 open issues, so each one is a regression guard rather
+// than a new opinion. Turning on a preset would flag code nobody has agreed to change and
+// would make the gate impossible to land.
+//
+// The carve-out is `sonarjs/no-alphabetical-sort` (S2871): raised and fixed on a feature
+// branch, never on `main`, so the server reports 0 of them ever. BACKLOG says why.
 //
 // Re-derive those numbers rather than quoting them; they move whenever a family is
-// cleared or regrows. One command, and it needs the server's token:
+// cleared or regrows. The rule count is the one nothing re-runs — `eslint.config.test.ts`
+// pins coverage, never arity — so it went stale once already:
+//
+//   grep -cP '^\s*"[^"]+": "error"' frontend/eslint.config.js
+//
+// The Sonar side needs the server's token:
 //
 //   T=$(cat /mnt/data/sonarqube/token); curl -s -u "$T:" \
 //     'http://127.0.0.1:9000/api/issues/search?componentKeys=musicdrop&languages=ts,js,css&resolved=true&ps=1&facets=rules&facetMode=count'
