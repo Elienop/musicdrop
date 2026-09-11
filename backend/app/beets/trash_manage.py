@@ -130,6 +130,21 @@ _SHARED_FOLDER_NOTE = (
     " MusicDrop cannot put them back exactly. Restoring re-imports the album under your"
     " current naming rules."
 )
+#: ``moved="files"``: loose files MusicDrop moved aside to replace them
+#: (``trash.trash_replaced_files`` — a curated poster, an uploaded portrait).
+#: Not an album, so the import every other non-exact row offers has nothing to
+#: import: :func:`restore_album` short-circuits this shape to
+#: ``could_not_restore`` and the page renders no Restore button. The sentence
+#: names the copy that does work, and the row's ``origin`` says where to.
+#:
+#: ``frontend/src/pages/settings/SettingsTrashPage.test.tsx`` keeps its own COPY
+#: of this string as a fixture; it goes stale silently, so update it with any
+#: edit here.
+_MOVED_ASIDE_NOTE = (
+    "MusicDrop moved these files aside when it replaced them; they are not an album, so"
+    " there is nothing to restore. To put one back, copy it out of this Trash entry into"
+    " the folder it was at."
+)
 #: A recorded origin that is no longer inside the library — normally because the
 #: library's ``directory`` now points somewhere else.
 _OUTSIDE_LIBRARY_NOTE = (
@@ -336,13 +351,14 @@ def _restore_fields(
 ) -> tuple[TrashRestoreMode, str | None, str | None]:
     """``(restore_mode, restore_note, origin)`` for one top-level Trash entry.
 
-    The FOUR ways a row loses its move-back each get their OWN sentence rather
+    The FIVE ways a row loses its move-back each get their OWN sentence rather
     than one generic "cannot restore": the user's next action differs (wait for
     nothing / put it back by hand / re-point the library / go to the volume the
-    link points at), and a row that simply predates the record must say so —
-    that is the owner's decision 2. Three of the four are still an import; the
-    symlinked one is ``"refused"``, because it is the only one whose per-row
-    routes both answer 404 before any work starts.
+    link points at / copy the files out), and a row that simply predates the
+    record must say so — that is the owner's decision 2. Three of the five are
+    still an import. The symlinked one is ``"refused"``, because its two per-row
+    routes both answer 404 before any work starts; the moved-aside one is
+    ``"by_hand"``, because Restore reaches the entry and declines to import it.
 
     ``entry.name`` is the store's key, and it must be the RAW on-disk name — the
     same string ``_walk_trash_groups`` groups on and ``resolve_trash_child`` maps
@@ -367,6 +383,10 @@ def _restore_fields(
     if record is None:
         return "import", _NO_RECORD_NOTE, None
     origin = display_path(record.origin)
+    # Before the ``!= "folder"`` arm, which would offer an import: this shape is
+    # the one the WRITER knew was not an album (see :data:`MovedShape`).
+    if record.moved == "files":
+        return "by_hand", _MOVED_ASIDE_NOTE, origin
     if record.moved != "folder":
         return "import", _SHARED_FOLDER_NOTE, origin
     if move_back_target(record, music_dir=music_dir) is None:
@@ -466,9 +486,11 @@ def restore_album(
     with no usable origin gets exactly the behaviour it has always had, so the
     fallback is the old function unchanged rather than a degraded new one.
 
-    The unmounted-share guard sits HERE, above the branch, because BOTH arms
-    write into the music library and an unmounted share is the same catastrophe
-    for either. It used to sit inside the move-back arm only, which meant a row
+    The unmounted-share guard sits HERE, above the two arms that MOVE, because
+    both write into the music library and an unmounted share is the same
+    catastrophe for either. (The ``moved="files"`` arm answers above it and
+    touches nothing, so there is nothing for either guard to protect.) It used
+    to sit inside the move-back arm only, which meant a row
     with no record — every row trashed before origins existed, and every row
     whose record write failed — answered a dropped share with ``200 restored``
     while beets filed the album onto the bare mountpoint and emptied the Trash
@@ -491,9 +513,15 @@ def restore_album(
     aliased app store's files into the library instead.
     """
     entry = Path(folder_abs)
+    record = read_trash_origin(origins_dir, entry.name)
+    if record is not None and record.moved == "files":
+        # Loose files the app moved aside, not an album (:data:`MovedShape`).
+        # Answered ahead of both guards because nothing is read or relocated:
+        # the entry stays where it is, record included, and the listing already
+        # told the user this row is a hand copy (``restore_mode="by_hand"``).
+        return RestoreResult(restored=False, reason="could_not_restore")
     require_library_present(lib)
     refuse_protected_tree(entry, protected, action="moved")
-    record = read_trash_origin(origins_dir, entry.name)
     origin = move_back_target(record, music_dir=_music_dir(lib))
     if origin is None:
         result = _restore_by_import(

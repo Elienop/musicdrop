@@ -26,8 +26,16 @@ from pydantic import BaseModel
 #:   error. ``restore_note`` says where the album's files really are and what
 #:   does remove the entry (only ``DELETE /api/trash/all``, and it removes the
 #:   link alone).
+#: * ``"by_hand"`` — Restore will do nothing and reports ``could_not_restore``.
+#:   The entry holds loose files MusicDrop moved aside to replace them (an
+#:   uploaded artist portrait, a curated ``artist-poster.*``), which the mover
+#:   recorded ``moved="files"``. They are not an album, so the import the other
+#:   inexact rows offer has nothing to import; ``restore_note`` says to copy them
+#:   out and ``origin`` says where to. The UI renders no Restore button for this
+#:   value. Empty stays live — unlike ``"refused"``, both per-row routes reach
+#:   this entry.
 #:
-#: The third value says what the ROUTES will do, which is why it is allowed to
+#: ``"refused"`` says what the ROUTES will do, which is why it is allowed to
 #: exist while ``track_count == 0`` still gets no value of its own. That count is
 #: a GUESS — 0 there means "nothing here produced a readable media Item", not "no
 #: music", and beets' own discovery takes every non-ignored file as a candidate,
@@ -37,7 +45,7 @@ from pydantic import BaseModel
 #: those two routes passes through, so it is known before the click rather than
 #: predicted. See ``trash_manage._audio_free_entries`` and
 #: ``trash_manage._restore_fields``.
-TrashRestoreMode = Literal["move_back", "import", "refused"]
+TrashRestoreMode = Literal["move_back", "import", "refused", "by_hand"]
 
 
 class TrashedAlbum(BaseModel):
@@ -56,9 +64,11 @@ class TrashedAlbum(BaseModel):
     not start — ``SettingsTrashPage.tsx`` deliberately shows a "may still work"
     hint instead, because 0 there means "no readable tags", not "no music". A
     recorded audio-free husk is exactly such a row AND is restorable exactly,
-    which is the case this record was added for. ``restore_mode == "refused"``
-    is the ONE signal that does disable a control, and it disables BOTH (Restore
-    and this row's Empty), because both of those routes refuse the row outright.
+    which is the case this record was added for. Two values of ``restore_mode``
+    do take a control away: ``"refused"`` disables BOTH (Restore and this row's
+    Empty), because both of those routes refuse the row outright, and
+    ``"by_hand"`` drops Restore alone — that route reaches the entry and
+    declines to import it, while Empty works.
     """
 
     folder: str

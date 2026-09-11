@@ -570,6 +570,27 @@ class ArtistImageCache:
         )
         _atomic_write_bytes(self._dir / f"{key}{_OVERRIDE_SUFFIX}", data)
 
+    def override_files(self, name: str) -> list[Path]:
+        """The override's files to keep, bytes first — empty when there are none.
+
+        For the caller that must move a hand-uploaded portrait somewhere before
+        the slot is cleared: the reset endpoint, which puts them in Trash. Bytes
+        before mime, the order :meth:`clear_override` unlinks in, so a mover
+        that dies partway never leaves bytes behind a stale sidecar.
+
+        Keyed on the BYTES, like :meth:`_clear_slots`' answer: an orphaned mime
+        sidecar (``write_override`` publishes the mime first, so a crash between
+        the two leaves one) is nothing a person uploaded, and it stays with the
+        clear that sweeps it today. Only regular files (or links to one) are
+        listed — that is what ``trash.trash_replaced_files`` accepts.
+        """
+        key = self._key(name)
+        image = self._dir / f"{key}{_OVERRIDE_SUFFIX}"
+        if not image.is_file():
+            return []
+        mime = self._dir / f"{key}{_OVERRIDE_MIME_SUFFIX}"
+        return [image, mime] if mime.is_file() else [image]
+
     def _unlink(self, path: Path) -> bool:
         """Remove one slot file. True when it was there and is now gone.
 

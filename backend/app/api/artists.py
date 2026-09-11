@@ -46,6 +46,8 @@ from app.beets.delete import delete_artist_op
 from app.beets.library import LibraryHandle, list_artists
 from app.beets.rename import apply_artist_rename_op, preview_artist_rename_op
 from app.beets.store_layout import StoreLayoutError, checked_store_dirs
+from app.beets.trash import safe_container_name, trash_replaced_files
+from app.beets.trash_origins import TrashOriginsStoreUnusableError
 from app.config import Settings, resolve_artist_image_cache_dir
 from app.config import settings as _module_settings
 from app.etag import size_scoped_etag
@@ -801,6 +803,52 @@ def _reset_slots(cache: ArtistImageCache, name: str) -> tuple[bool, bool]:
     return cache.clear_override(name), cache.clear_auto(name)
 
 
+def _trash_override_files(files: list[Path], name: str, store: ArtTrashStore) -> None:
+    """Move a stored override's files into one Trash container. Blocking.
+
+    A module-level function rather than a lambda so the offload is assertable.
+    The container is named from the artist's display NAME, so it goes through
+    ``safe_container_name``: "AC/DC" would otherwise nest it out of the Trash
+    page. The origin recorded is the cache dir the files were in — read off the
+    files themselves rather than resolved a second time.
+    """
+    trash_replaced_files(
+        files,
+        container_name=safe_container_name(name, " - artist image"),
+        origin=files[0].parent,
+        trash_dir=store.trash_dir,
+        origins_dir=store.origins_dir,
+    )
+
+
+async def _move_override_to_trash(
+    handle: LibraryHandle, settings: Settings, cache: ArtistImageCache, name: str
+) -> bool:
+    """Put a stored override in Trash; ``True`` when there was one.
+
+    Runs BEFORE the slots are cleared, and a failure here raises instead of
+    letting the clear go ahead: the override is a file the user uploaded or
+    linked, so the alternatives are "in Trash with a record" or "still served",
+    never unlinked. Both 503s are raised inline so the status stays a literal
+    ``tests/test_route_status_declarations.py`` can see.
+    """
+    files = await run_in_threadpool(cache.override_files, name)
+    if not files:
+        return False
+    try:
+        store = await run_in_threadpool(_checked_art_trash_store, handle, settings)
+    except StoreLayoutError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    try:
+        await run_in_threadpool(_trash_override_files, files, name, store)
+    except (OSError, TrashOriginsStoreUnusableError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(f"The uploaded image could not be moved to Trash, so nothing was reset: {exc}"),
+        ) from exc
+    return True
+
+
 @router.post(
     "/artists/image/reset",
     # The app-wide Origin guard is invisible in OpenAPI - middleware emits no
@@ -811,6 +859,13 @@ def _reset_slots(cache: ArtistImageCache, name: str) -> tuple[bool, bool]:
     responses={
         403: {"model": ErrorDetail, "description": "The request is cross-origin."},
         409: _ART_BUSY_RESPONSE,
+        503: {
+            "model": ErrorDetail,
+            "description": (
+                "An uploaded or linked image is stored for this artist and could not be"
+                " moved to Trash, so nothing was reset."
+            ),
+        },
     },
 )
 async def reset_artist_image_endpoint(
@@ -829,6 +884,12 @@ async def reset_artist_image_endpoint(
     they just rejected, because a present ``.bin`` means the resolve path never
     runs again.
 
+    An image the user uploaded or linked is MOVED to the app's Trash before the
+    slots are cleared - it is not the app's file to unlink - so a refused or
+    unusable Trash store answers 503 with the store's own sentence and the
+    override stays exactly where it was. Putting it back is a copy out of that
+    Trash entry (README).
+
     The result reports each slot separately: neither may have existed, and on an
     unwritable cache dir a removal can be refused. The caller shows what
     actually happened instead of implying a re-fetch that did not occur.
@@ -845,7 +906,14 @@ async def reset_artist_image_endpoint(
     store, so the user would press Reset and watch nothing change.
     """
     _gate_artist_art_busy()
+    settings: Settings = getattr(request.app.state, "settings", None) or _module_settings
+    moved_to_trash = await _move_override_to_trash(handle, settings, cache, name)
     cleared_override, cleared_auto = await run_in_threadpool(_reset_slots, cache, name)
+    # The move already took the override's files, so ``clear_override`` finds
+    # nothing to unlink and answers False for the case this route's own 503
+    # protects. The user's answer is "your upload is no longer in play" either
+    # way, and Trash is where it went.
+    cleared_override = moved_to_trash or cleared_override
     if service.is_enabled():
         # Clearing the automatic slot is the point of this route, which means
         # that without a kick the artist shows a monogram until the NEXT image
@@ -985,6 +1053,22 @@ async def stop_artist_art_backfill(
     return reg.state()
 
 
+def _checked_art_trash_store(handle: LibraryHandle, settings: Settings) -> ArtTrashStore:
+    """The Trash store a replaced image goes into, checked for THIS call.
+
+    Raises rather than answering ``None``, because the reset endpoint has to
+    turn a refused store into a 503 with the store's own sentence: it is about
+    to move a file the user uploaded, and unlinking it instead is the data loss
+    the whole move-aside exists to stop. Blocking (``resolve`` + the layout
+    walk's stats).
+
+    Raises:
+        StoreLayoutError: refused, or a path would not resolve.
+    """
+    trash_dir, origins_dir = checked_store_dirs(settings, handle)
+    return ArtTrashStore(trash_dir=trash_dir, origins_dir=origins_dir)
+
+
 def _art_trash_store(app: object, settings: Settings) -> ArtTrashStore | None:
     """Where a REPLACED poster/background goes, or ``None`` if it cannot be named.
 
@@ -1004,7 +1088,7 @@ def _art_trash_store(app: object, settings: Settings) -> ArtTrashStore | None:
     if handle is None:
         return None
     try:
-        trash_dir, origins_dir = checked_store_dirs(settings, handle)
+        return _checked_art_trash_store(handle, settings)
     except StoreLayoutError:
         _log.warning(
             "artist art: the Trash store is refused, so a forced write will not replace"
@@ -1012,7 +1096,6 @@ def _art_trash_store(app: object, settings: Settings) -> ArtTrashStore | None:
             exc_info=True,
         )
         return None
-    return ArtTrashStore(trash_dir=trash_dir, origins_dir=origins_dir)
 
 
 def _start(

@@ -117,6 +117,27 @@ def _trash_container_name(album: Any) -> str:
     return name or "album"
 
 
+#: What a container is called when the text it is named from neutralises to
+#: nothing. Any word does; this one reads in the Trash page's single column.
+_UNNAMED_CONTAINER = "artist"
+
+
+def safe_container_name(text: str, suffix: str) -> str:
+    """``"<text><suffix>"``, as a single listable Trash container level.
+
+    For the movers named from a display string rather than from a folder, where
+    ``text`` is an artist NAME: ``os.sep``, ``/`` and NUL are replaced, so
+    "AC/DC" lands directly under the Trash dir instead of nesting and a NUL
+    cannot reach the ``mkdir`` as a ``ValueError`` no ``except OSError`` catches.
+    Leading dots go because ``trash_manage._audio_free_entries`` skips a
+    dot-leading entry that ``empty_all`` still removes; nothing left falls back
+    to a word. Length is the allocator's job (``_unique_trash_dest``).
+    """
+    for bad in {os.sep, "/", "\x00"}:
+        text = text.replace(bad, "_")
+    return f"{text.lstrip('.') or _UNNAMED_CONTAINER}{suffix}"
+
+
 def _moved_under(lib: Library, items: list[Any], container: Path) -> list[Any]:
     """The items whose CURRENT stored path is inside ``container``.
 
@@ -907,10 +928,11 @@ def trash_replaced_files(
     ``_audio_free_entries`` as a zero-track row, so it has a Restore/Empty
     affordance and Empty-all counts it).
 
-    Recorded ``moved="items"``, which is what the listing turns into an
-    import-restore with no move-back offered: the container is not the folder
-    these files came from, and moving it back would put a directory where two
-    files were. Restoring them is a hand copy out of Trash.
+    Recorded ``moved="files"``, which is what the listing turns into
+    ``restore_mode="by_hand"``: the container is not the folder these files came
+    from, so moving it back would put a directory where two files were, and an
+    import of art has nothing to import. Restoring them is a hand copy out of
+    Trash, and the record is what names the folder to copy them into.
 
     No ``ProtectedTrees`` argument: every entry is lstat'd first and anything
     that is not a regular file or a symlink is refused. That guard runs over all
@@ -950,11 +972,11 @@ def trash_replaced_files(
         # it came out of. Nothing moved means nothing to say — and an empty
         # container would sit in the Trash page forever.
         if moved:
-            # ``origin`` is recorded unchecked, and ``moved="items"`` is what
+            # ``origin`` is recorded unchecked, and ``moved="files"`` is what
             # makes that safe: ``trash_origins.move_back_target`` returns None on
             # any record that is not ``moved="folder"``, before it reaches its
             # lexical containment test, so no path here ever steers a rename.
-            _record_origin(origins_dir, dest, origin=os.path.abspath(str(origin)), moved="items")
+            _record_origin(origins_dir, dest, origin=os.path.abspath(str(origin)), moved="files")
         else:
             # Removed with its contents, not by ``rmdir``: a cross-filesystem
             # ``shutil.move`` is a copy that can die mid-write, leaving a

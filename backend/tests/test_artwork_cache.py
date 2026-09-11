@@ -177,6 +177,49 @@ def test_clear_override_removes_both_files_and_falls_through(
     assert result.data == b"auto"
 
 
+def test_override_files_lists_the_pair_bytes_first(cache: ArtistImageCache, tmp_path: Path) -> None:
+    """What the reset endpoint hands the Trash mover.
+
+    Bytes before mime, the order ``clear_override`` unlinks in, so a mover that
+    dies between the two never leaves bytes behind a stale sidecar. The
+    automatic slot is not listed: the override is the only file here a person
+    put in.
+    """
+    cache.store_positive("ABBA", b"auto", "image/png")
+    cache.write_override("ABBA", b"manual", "image/jpeg")
+    key = cache._key("ABBA")
+
+    assert cache.override_files("ABBA") == [
+        tmp_path / f"{key}.override",
+        tmp_path / f"{key}.override.mime",
+    ]
+
+
+def test_override_files_is_empty_when_there_is_no_override(cache: ArtistImageCache) -> None:
+    # The reset route resolves no Trash store on this answer, so an automatic-only
+    # reset never creates a Trash dir.
+    cache.store_positive("ABBA", b"auto", "image/png")
+    assert cache.override_files("ABBA") == []
+
+
+def test_override_files_ignores_an_orphaned_mime_sidecar(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """An answer keyed on the BYTES, like ``_clear_slots``' is.
+
+    ``write_override`` publishes the mime first, so a crash between the two
+    leaves a sidecar with no image. Nobody uploaded that, so there is nothing
+    for Trash to keep and the clear sweeps it exactly as it does today.
+    """
+    cache.write_override("ABBA", b"manual", "image/jpeg")
+    key = cache._key("ABBA")
+    (tmp_path / f"{key}.override").unlink()
+
+    assert cache.override_files("ABBA") == []
+    assert cache.clear_override("ABBA") is False  # reported on the image slot
+    assert not (tmp_path / f"{key}.override.mime").exists()  # swept anyway
+
+
 def test_clear_override_is_idempotent_when_absent(cache: ArtistImageCache) -> None:
     cache.clear_override("Nobody")  # no error, no-op
     assert cache.get("Nobody") is None

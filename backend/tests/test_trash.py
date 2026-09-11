@@ -35,6 +35,7 @@ from app.beets.trash import (
     _folder_is_shared,
     album_folder,
     album_format_bitrate,
+    safe_container_name,
     trash_album,
     trash_album_folder,
 )
@@ -63,6 +64,23 @@ def test_trash_album_moves_files_and_drops_db(duplicates_lib: Library, tmp_path:
     assert duplicates_lib.get_album(album_id) is None
     assert str(trash) in trash_path
     assert os.path.isdir(trash_path)
+
+
+def test_safe_container_name_keeps_a_display_name_to_one_listable_level() -> None:
+    """The name comes from a display string, so three characters have to go.
+
+    A separator would nest the container out of the Trash listing (only
+    top-level entries are listed) and off its own origin record's key; a leading
+    dot is skipped by the listing while Empty-all still removes it; a NUL raises
+    ValueError at the mkdir, which no ``except OSError`` catches.
+    """
+    assert safe_container_name("AC/DC", " - artist image") == "AC_DC - artist image"
+    assert safe_container_name(".hack", " - artist image") == "hack - artist image"
+    assert safe_container_name("A\x00B", " - artist image") == "A_B - artist image"
+    assert safe_container_name("..", " - artist image") == "artist - artist image"
+    # The ordinary name is untouched — a sanitizer that rewrote every name would
+    # rename every container and nothing above would notice.
+    assert safe_container_name("ABBA", " - artist image") == "ABBA - artist image"
 
 
 def test_album_format_bitrate_reads_first_item(duplicates_lib: Library) -> None:

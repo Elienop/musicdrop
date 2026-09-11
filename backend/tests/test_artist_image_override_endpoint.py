@@ -16,6 +16,7 @@ from app.api.artists import (
 )
 from app.artwork.cache import NEGATIVE, ArtistImageCache, CachedImage
 from app.artwork.service import ArtistImageService
+from app.beets.artist_art import ArtTrashStore
 from app.config import settings as app_settings
 from app.main import app
 
@@ -48,11 +49,25 @@ class _OffService:
 
 @pytest.fixture
 def cache(tmp_path: Path) -> ArtistImageCache:
-    return ArtistImageCache(tmp_path)
+    return ArtistImageCache(tmp_path / "cache")
 
 
 @pytest.fixture
-def client(cache: ArtistImageCache) -> Iterator[TestClient]:
+def art_trash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ArtTrashStore:
+    """Where the reset route puts an override it clears.
+
+    The resolver is replaced rather than fed: ``_StubHandle`` cannot satisfy
+    ``checked_store_dirs``, which needs a real beets library and a beets dir.
+    ``tests/test_artist_image_reset_to_trash.py`` is the file that resolves the
+    real pair through the endpoint and asserts what lands in it.
+    """
+    store = ArtTrashStore(trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins")
+    monkeypatch.setattr(artists_mod, "_checked_art_trash_store", lambda *_a, **_kw: store)
+    return store
+
+
+@pytest.fixture
+def client(cache: ArtistImageCache, art_trash: ArtTrashStore) -> Iterator[TestClient]:
     app.dependency_overrides[get_artist_image_cache] = lambda: cache
     # The from-url tests monkeypatch fetch_image_bytes, so this client is unused;
     # override the dep so it doesn't reach into app.state (lifespan doesn't run).
@@ -209,7 +224,7 @@ def test_cross_origin_reset_is_rejected(client: TestClient) -> None:
     assert resp.status_code == 403
 
 
-def test_the_reset_declares_the_403_and_409_its_own_guards_return() -> None:
+def test_the_reset_declares_the_403_409_and_503_its_own_guards_return() -> None:
     """A status the route really returns must be in the spec with its body.
 
     The test above proves the 403 is real; this proves the generated client is
@@ -223,14 +238,20 @@ def test_the_reset_declares_the_403_and_409_its_own_guards_return() -> None:
     The 409 is invisible for a second reason: `_gate_artist_art_busy` is a plain
     call in the handler body, so nothing but this entry announces it.
     `tests/test_artist_image_busy_gate.py` proves the route really returns it.
+
+    The 503 is a raise in a same-module helper (`_move_override_to_trash`),
+    which `tests/test_route_status_declarations.py` follows — and the reason it
+    must be declared is that the panel branches on it: it is the one answer
+    where nothing was reset.
+    `tests/test_artist_image_reset_to_trash.py` proves both of its causes.
     """
     from app.main import app
 
     responses = app.openapi()["paths"]["/api/artists/image/reset"]["post"]["responses"]
     # 400 (host guard) and 401 (session gate) are declared by the OpenAPI
     # overlay (app/openapi_overlay.py), not by this route.
-    assert sorted(responses) == ["200", "400", "401", "403", "409", "422"]
-    for sentence_status in ("403", "409"):
+    assert sorted(responses) == ["200", "400", "401", "403", "409", "422", "503"]
+    for sentence_status in ("403", "409", "503"):
         content = responses[sentence_status]["content"]
         assert set(content) == {"application/json"}
         assert content["application/json"]["schema"]["$ref"] == "#/components/schemas/ErrorDetail"

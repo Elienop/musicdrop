@@ -596,6 +596,12 @@ export interface paths {
          *     they just rejected, because a present ``.bin`` means the resolve path never
          *     runs again.
          *
+         *     An image the user uploaded or linked is MOVED to the app's Trash before the
+         *     slots are cleared - it is not the app's file to unlink - so a refused or
+         *     unusable Trash store answers 503 with the store's own sentence and the
+         *     override stays exactly where it was. Putting it back is a copy out of that
+         *     Trash entry (README).
+         *
          *     The result reports each slot separately: neither may have existed, and on an
          *     unwritable cache dir a removal can be refused. The caller shows what
          *     actually happened instead of implying a re-fetch that did not occur.
@@ -5151,9 +5157,11 @@ export interface components {
          *     not start — ``SettingsTrashPage.tsx`` deliberately shows a "may still work"
          *     hint instead, because 0 there means "no readable tags", not "no music". A
          *     recorded audio-free husk is exactly such a row AND is restorable exactly,
-         *     which is the case this record was added for. ``restore_mode == "refused"``
-         *     is the ONE signal that does disable a control, and it disables BOTH (Restore
-         *     and this row's Empty), because both of those routes refuse the row outright.
+         *     which is the case this record was added for. Two values of ``restore_mode``
+         *     do take a control away: ``"refused"`` disables BOTH (Restore and this row's
+         *     Empty), because both of those routes refuse the row outright, and
+         *     ``"by_hand"`` drops Restore alone — that route reaches the entry and
+         *     declines to import it, while Empty works.
          */
         TrashedAlbum: {
             /** Folder */
@@ -5172,7 +5180,7 @@ export interface components {
              * Restore Mode
              * @enum {string}
              */
-            restore_mode: "move_back" | "import" | "refused";
+            restore_mode: "move_back" | "import" | "refused" | "by_hand";
             /** Restore Note */
             restore_note: string | null;
             /** Origin */
@@ -7357,6 +7365,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description An uploaded or linked image is stored for this artist and could not be moved to Trash, so nothing was reset. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
         };
