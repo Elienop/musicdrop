@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -36,7 +37,9 @@ vi.mock("@/api/useReorganize", () => ({
 }));
 
 const writeSettings = { enabled: true };
-const applyMutate = vi.fn();
+/** Stands in for the apply hook's `mutationFn`, so a test can make the start
+ * hang (Escape guard) or fail (the stale-alert reset). */
+const applyMutate = vi.fn<() => Promise<unknown>>(() => Promise.resolve({}));
 const backfillStatus: {
   phase: string;
   artist: string | null;
@@ -55,19 +58,23 @@ const backfillStatus: {
   failed: 0,
 };
 
-vi.mock("@/api/useArtistArt", () => ({
-  useArtistArtSettings: () => ({ data: writeSettings }),
-  useArtistArtBackfillStatus: () => ({ data: backfillStatus }),
-  useStartArtistArtApply: () => ({
-    mutate: applyMutate,
-    isPending: false,
-    isError: false,
-    error: null,
-  }),
-}));
+// The apply hook is mocked over a REAL useMutation: a frozen object mock has
+// no subscription, so `reset()` could not be observed and the in-flight window
+// (isPending) could never be entered from an open dialog.
+vi.mock("@/api/useArtistArt", async () => {
+  const { useMutation } = await import("@tanstack/react-query");
+  return {
+    useArtistArtSettings: () => ({ data: writeSettings }),
+    useArtistArtBackfillStatus: () => ({ data: backfillStatus }),
+    useStartArtistArtApply: () =>
+      useMutation<unknown, Error, void>({ mutationFn: applyMutate }),
+  };
+});
 
 function renderAt(name: string) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={[`/artists/${name}`]}>
@@ -82,7 +89,8 @@ function renderAt(name: string) {
 
 afterEach(() => {
   writeSettings.enabled = true;
-  applyMutate.mockClear();
+  applyMutate.mockReset();
+  applyMutate.mockImplementation(() => Promise.resolve({}));
   backfillStatus.phase = "idle";
   backfillStatus.artist = null;
   backfillStatus.processed = 0;
@@ -93,11 +101,114 @@ afterEach(() => {
 });
 
 describe("ArtistAlbumsPage artist-art apply", () => {
-  it("shows the Save art to library button and starts the job when write is enabled", () => {
+  it("confirms first, then starts the job exactly once", async () => {
     renderAt("ABBA");
     const btn = screen.getByRole("button", { name: /save art to library/i });
-    fireEvent.click(btn);
-    expect(applyMutate).toHaveBeenCalledTimes(1);
+    await userEvent.click(btn);
+    // The click opens the confirm, it does NOT write: the apply replaces the
+    // folder's artist-poster/artist-background and trashes what it replaces.
+    expect(applyMutate).not.toHaveBeenCalled();
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent(/save art to library\?/i);
+    // The second sentence binds to the two files the first one names.
+    expect(dialog).toHaveTextContent(
+      /artist-poster and artist-background files into this artist\u2019s folders\. Existing ones move to Trash first\./i,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Save art" }));
+    await waitFor(() => expect(applyMutate).toHaveBeenCalledTimes(1));
+    // preventDefault keeps Radix from closing on the click, so once Save art is
+    // pressed onSuccess is the only close.
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  });
+
+  it("swallows Escape while the start is in flight", async () => {
+    applyMutate.mockImplementation(() => new Promise(() => {})); // never settles
+    renderAt("ABBA");
+    await userEvent.click(screen.getByRole("button", { name: /save art to library/i }));
+    await screen.findByRole("alertdialog");
+    await userEvent.click(screen.getByRole("button", { name: "Save art" }));
+    // Cancel is disabled in this window, so Escape must not be a way out
+    // either: the dialog is where a failed start reports.
+    await screen.findByRole("button", { name: "Saving\u2026" });
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    // and the confirm itself, or a second click starts a second job
+    expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
+
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+  });
+
+  it("reopens with no alert from a failed start", async () => {
+    applyMutate.mockRejectedValue(new Error("A library operation is in progress"));
+    renderAt("ABBA");
+    const btn = screen.getByRole("button", { name: /save art to library/i });
+    await userEvent.click(btn);
+    await userEvent.click(screen.getByRole("button", { name: "Save art" }));
+    // The failure reports in the open dialog, then the user leaves.
+    expect(await screen.findByRole("alert")).toHaveTextContent(/library operation is in progress/i);
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+
+    await userEvent.click(btn);
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent(/save art to library\?/i);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  // The other half of the start request's 10s bound (api/useArtistArt.ts owns
+  // the bound and its sentence): once the start rejects, the dialog has to be
+  // leavable again — both exits are shut while it is pending.
+  it("reports a timed-out start and hands both exits back", async () => {
+    applyMutate.mockRejectedValue(new Error("The request timed out."));
+    renderAt("ABBA");
+    await userEvent.click(screen.getByRole("button", { name: /save art to library/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Save art" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The request timed out.");
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  });
+
+  it("starts nothing when the confirm is cancelled", async () => {
+    renderAt("ABBA");
+    const btn = screen.getByRole("button", { name: /save art to library/i });
+    await userEvent.click(btn);
+    await screen.findByRole("alertdialog");
+
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(applyMutate).not.toHaveBeenCalled();
+  });
+
+  it("cancels on Escape and hands focus back to the trigger", async () => {
+    renderAt("ABBA");
+    const btn = screen.getByRole("button", { name: /save art to library/i });
+    await userEvent.click(btn);
+    await screen.findByRole("alertdialog");
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(applyMutate).not.toHaveBeenCalled();
+    // Focus must land back on the icon, not on <body>.
+    expect(btn).toHaveFocus();
+  });
+
+  // Pins the WIRING, not the sentence (RenameArtistAction.test.tsx owns that):
+  // the note must follow the art-write toggle, not the image toggle.
+  it("carries the write toggle into the rename dialog's art note", async () => {
+    renderAt("ABBA");
+    await userEvent.click(screen.getByRole("button", { name: /rename artist/i }));
+    expect(await screen.findByText(/artist art is written into the new folder/i)).toBeInTheDocument();
+  });
+
+  it("drops the rename dialog's art note when write is disabled", async () => {
+    writeSettings.enabled = false;
+    renderAt("ABBA");
+    await userEvent.click(screen.getByRole("button", { name: /rename artist/i }));
+    await screen.findByText(/track artists are not touched/i);
+    expect(screen.queryByText(/artist art is written/i)).toBeNull();
   });
 
   it("hides the Save art to library button when write is disabled", () => {
@@ -119,8 +230,9 @@ describe("ArtistAlbumsPage artist-art apply", () => {
     // activation would drop keyboard focus to <body> for the whole job.
     expect(btn).toBeEnabled();
     expect(btn).toHaveAttribute("aria-disabled", "true");
-    // Re-clicks while running are swallowed.
+    // Re-clicks while running are swallowed: no confirm, no write.
     fireEvent.click(btn);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(applyMutate).not.toHaveBeenCalled();
     // No inline progress — it must not duplicate the top app banner.
     expect(screen.queryByText(/1 \/ 3/)).toBeNull();

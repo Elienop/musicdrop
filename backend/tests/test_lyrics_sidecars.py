@@ -108,41 +108,91 @@ def test_atomic_write_text_preserves_tightened_mode(tmp_path: Path) -> None:
     assert dst.read_text(encoding="utf-8") == "second\n"
 
 
-def test_a_fifo_at_the_tmp_path_neither_blocks_nor_writes(tmp_path: Path) -> None:
+def test_a_fifo_at_the_derived_tmp_path_neither_blocks_nor_stops_the_write(
+    tmp_path: Path,
+) -> None:
     """The write side of the same hazard the matcher's stat guard closes.
 
-    ``_atomic_write_text`` writes through a derived ``.<name>.tmp`` sibling, and a
-    FIFO planted there makes a plain ``open(tmp, "w")`` block until a reader
-    appears — forever, on the single-slot backfill worker. Creating the temp file
-    exclusively turns that into an immediate EEXIST, which the writer's existing
-    best-effort handling logs and swallows. This test completing at all is the
-    no-hang proof."""
+    A FIFO at the path this writer used to DERIVE (``.<name>.tmp``) made a plain
+    ``open(tmp, "w")`` block until a reader appeared — forever, on the
+    single-slot backfill worker — and then, once the create went exclusive,
+    failed THAT attempt with EEXIST and self-healed, because the writer's
+    ``finally`` unlinked it. A dangling symlink was the squatter that locked the
+    track out for good: ``Path.exists()`` follows it, so it was never unlinked.
+    The temp name is picked per call now, so neither is in the way. This test
+    completing at all is the no-hang proof."""
     from app.beets.lyrics import write_lyric_sidecar
 
     track = tmp_path / "t.flac"
     track.write_bytes(b"")
-    os.mkfifo(tmp_path / ".t.txt.tmp")  # exactly the path the writer derives
+    fifo = tmp_path / ".t.txt.tmp"
+    os.mkfifo(fifo)  # exactly the path the writer used to derive
 
-    assert write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN)) is None
-
-    assert not (tmp_path / "t.txt").exists()  # nothing half-written was left behind
-
-
-def test_a_squatted_tmp_path_is_not_a_permanent_lockout(tmp_path: Path) -> None:
-    """Refusing on EEXIST must not wedge the track forever: the writer's own
-    ``finally`` clears whatever sat at its temp path, so the NEXT write succeeds.
-    Covers a crashed run's leftover ``.tmp`` as much as a planted one."""
-    from app.beets.lyrics import write_lyric_sidecar
-
-    track = tmp_path / "t.flac"
-    track.write_bytes(b"")
-    os.mkfifo(tmp_path / ".t.txt.tmp")
-
-    assert write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN)) is None
     out = write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN))
 
     assert out == str(tmp_path / "t.txt")
     assert "line one" in (tmp_path / "t.txt").read_text(encoding="utf-8")
+    assert stat.S_ISFIFO(os.lstat(fifo).st_mode)  # left where it was, not ours to delete
+
+
+def test_a_symlink_at_the_derived_tmp_path_is_neither_followed_nor_published(
+    tmp_path: Path,
+) -> None:
+    """Sidecars are written inside the music library, which this deployment
+    treats as attacker-writable, so a symlink can be waiting at any name this
+    writer can derive. Measured on the art writer next door before its fix: the
+    write went through the link and ``os.replace`` published the link itself as
+    the destination."""
+    from app.beets.lyrics import write_lyric_sidecar
+
+    secret = tmp_path / "secret.db"
+    secret.write_bytes(b"not lyrics")
+    track = tmp_path / "t.flac"
+    track.write_bytes(b"")
+    planted = tmp_path / ".t.txt.tmp"
+    planted.symlink_to(secret)
+
+    out = write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN))
+
+    assert out == str(tmp_path / "t.txt")
+    assert secret.read_bytes() == b"not lyrics"  # not written through
+    txt = tmp_path / "t.txt"
+    assert not txt.is_symlink()  # the destination is the file itself, not the link
+    assert txt.is_file()
+    assert "line one" in txt.read_text(encoding="utf-8")
+    # the planted link stays, and no temp of ours survived the write
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        planted.name,
+        secret.name,
+        track.name,
+        txt.name,
+    ]
+
+
+def test_the_longest_sidecar_name_the_derived_tmp_allowed_still_writes(
+    tmp_path: Path,
+) -> None:
+    """The temp name must not shrink the set of destination names that write.
+
+    ``.<dst.name>.tmp`` cost 5 bytes, so a sidecar name of ``NAME_MAX - 5``
+    wrote. A temp name that embeds ``dst.name`` plus a pid and 16 hex costs 30,
+    so names of 226-250 bytes fail ENAMETOOLONG instead — which
+    ``write_lyric_sidecar`` logs and reports as None, skipping that track on
+    every later run too. The name no longer grows with the destination's (27-33
+    bytes here), so only the destination's own ``NAME_MAX`` bounds it."""
+    from app.beets.lyrics import write_lyric_sidecar
+
+    name_max = os.pathconf(str(tmp_path), "PC_NAME_MAX")
+    stem = "a" * (name_max - 5 - len(".txt"))
+    track = tmp_path / f"{stem}.flac"
+    track.write_bytes(b"")
+
+    out = write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN))
+
+    sidecar = tmp_path / f"{stem}.txt"
+    assert len(sidecar.name.encode()) == name_max - 5  # the longest the old temp allowed
+    assert out == str(sidecar)
+    assert "line one" in sidecar.read_text(encoding="utf-8")
 
 
 def test_the_tmp_file_is_created_exclusively_and_without_following_symlinks(
@@ -178,6 +228,41 @@ def test_the_tmp_file_is_created_exclusively_and_without_following_symlinks(
     assert created, "the temp file was not created through os.open"
     assert created[0] & os.O_EXCL
     assert created[0] & os.O_NOFOLLOW
+
+
+def test_the_parent_dir_fsync_open_carries_o_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The twin of ``test_artist_art_write``' pin on the same open: the tail of
+    the recipe fsyncs ``dst.parent``, a path this writer did not create.
+
+    A flag pin, not a behavioural one, for the reason the test above gives:
+    measured, a FIFO swapped in at that path makes the bare ``os.O_RDONLY`` open
+    block FOREVER (still blocked after 2 s, no error), so the behavioural
+    version hangs instead of going red. ``O_DIRECTORY`` fails a non-directory
+    ENOTDIR in 34 us.
+    """
+    from app.beets.lyrics import write_lyric_sidecar
+
+    real_open = os.open
+    opened: list[tuple[Any, int]] = []
+
+    def spy(path: Any, flags: int, *rest: Any) -> int:
+        if not flags & os.O_CREAT:
+            opened.append((path, flags))
+        return real_open(path, flags, *rest)
+
+    # `os` is one shared module object — same reason as the test above.
+    monkeypatch.setattr(os, "open", spy)
+    track = tmp_path / "t.flac"
+    track.write_bytes(b"")
+
+    assert write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN)) is not None
+
+    parent = [flags for path, flags in opened if Path(path) == tmp_path]
+    assert parent, "the parent directory was not fsynced through os.open"
+    bare = [f"{flags:#o}" for flags in parent if not flags & os.O_DIRECTORY]
+    assert not bare, f"parent-dir fsync open(s) without O_DIRECTORY: {bare}"
 
 
 def test_synced_result_never_replaces_an_existing_txt(tmp_path: Path) -> None:

@@ -40,6 +40,17 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 - **Search** across the library.
 - **Cover art** — fetch + replace.
 - **Artist images** — portraits resolve automatically from the configured sources (fanart.tv → Spotify → Deezer, first verified match wins; Deezer needs no key) and are written into the library for Plex. To change one, open an artist and use the image action: pick a source, **Fetch**, and **Use this image** to keep it — or upload a file / paste a URL. **Reset to auto** forgets both your pick and the cached automatic image, so the artist is looked up again from scratch. An artist whose portrait isn't cached yet shows their initials while it resolves in the background; it appears without a reload when it lands.
+- **Artist art for Plex** — turn the **Settings → Artist art for Plex** toggle on and MusicDrop
+  writes `artist-poster.*` and `artist-background.*` into each of an artist's folders, the names
+  Plex's Local Media Assets reads. The library-wide backfill in that panel fills gaps only. An
+  artist page's **Save art to library** button replaces what is there: the poster/background it
+  overwrites go to the Trash first, one entry per artist folder. To get a file you placed by hand
+  back, copy it out of `data/beets/trash/` — the Trash page's Restore cannot re-file loose images.
+  If the Trash cannot be used, that folder is reported failed and its files are left alone. A
+  folder reported failed *after* its files moved has them in its Trash entry — look there before
+  you empty the Trash.
+  Renaming or merging an artist writes art only where it is missing — a merge never replaces the
+  target's art.
 - **Lyrics** — presence, per-album fetch, and a library-wide backfill. The backfill is
   **fill-gaps-only on disk**: it writes a `.lrc`/`.txt` sidecar only where none exists and
   never deletes or replaces one you already have. The one exception is a sidecar whose
@@ -400,7 +411,7 @@ MusicDrop has no built-in backup, deliberately: its state is plain files under t
 - `data/beets/plex/plex.json`, `data/beets/slskd/slskd.json` — the Plex and slskd integration settings, mode `0600`. Not just tokens: Plex's library path/section, slskd's downloads prefix and its `auto_import` toggle (lose that and unattended import reverts to its env default, off).
 - `data/beets/password-hash` — the single account's password, as a scrypt hash, mode `0600`, written by the setup form and by **Settings → Account**. Absent, the sign-in screen is the setup form again (that is also the forgotten-password recovery, so a backup without it costs a re-setup, not the library); present but unreadable — whatever sits at that path, if MusicDrop cannot read it as a hash — sign-in is refused and the setup form stays hidden until it is fixed or removed. While `MUSICDROP_PASSWORD_HASH` is set the override wins and this file is shadowed, whatever it holds.
 - `<inbox>/.musicdrop-ledger.json` — the handled-drops record. Defaults to `<beets_dir>/inbox`, inside `/data`; `MUSICDROP_INBOX_DIR` moves it onto the slskd downloads mount — the table's third row.
-- `data/beets/trash/` — deleted albums live here and nowhere else until you empty the Trash; normally the only GB-scale item under `data/`.
+- `data/beets/trash/` — deleted albums, and any artist art a **Save art to library** run replaced, live here and nowhere else until you empty the Trash; normally the only GB-scale item under `data/`.
 - `data/beets/trash-origins/*.json` — where each trashed folder came from, one tiny file per Trash entry (two entry names long enough to share a shortened key share one file; the loser falls back to the approximate restore). Nothing else records it: restore the Trash without these and every row falls back to the approximate restore, which for an art/booklet leftover with no audio means no way back at all. `MUSICDROP_TRASH_ORIGINS_DIR` moves them. A backup that leaves this folder ABSENT is fine — the next delete creates it, exactly as a fresh install does. One restored with permissions the container's user cannot read or write is not: deletes are refused with a 503 until it is fixed (see **Delete & Trash** above).
 - `data/beets/state.pickle` — beets' import state. The banking sweep's forced `incremental` reads its `taghistory`; without it the next sweep re-offers every folder it has already handled.
 - `data/cache/artist-images/` — the `*.override` (+ `*.override.mime`) images you uploaded or pasted by hand, which nothing refetches, and `_enabled.json` / `_art_write_enabled.json`, the two artist-image toggles: lose those and both revert to their env defaults (`MUSICDROP_ARTIST_IMAGES_ENABLED` / `MUSICDROP_ARTIST_ART_WRITE_ENABLED`, off unless set).

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -22,14 +23,20 @@ from app.artwork.factory import build_fanart_background_source, build_source_cha
 from app.artwork.rate_limit import TokenBucketLimiter
 from app.artwork.service import ArtistImageService
 from app.artwork.source import TransientSourceError
-from app.beets.artist_art import has_background, write_artist_art
+from app.beets.artist_art import ArtTrashStore, has_background, write_artist_art
 from app.beets.library import get_artist_mbid, list_artists
 from app.config import Settings
 from app.models.artist_art import ArtistArtOutcome
 
 
 async def _default_fetch_one(
-    service: ArtistImageService, bg_source: Any, lib: Any, name: str, *, force: bool
+    service: ArtistImageService,
+    bg_source: Any,
+    lib: Any,
+    name: str,
+    *,
+    force: bool,
+    resolve_trash: Callable[[], ArtTrashStore | None] | None,
 ) -> ArtistArtOutcome:
     mbid = await asyncio.to_thread(get_artist_mbid, lib, name)
     poster = await service.get_artist_image(name, get_mbid=lambda: mbid)
@@ -48,8 +55,21 @@ async def _default_fetch_one(
             bg = None
         if bg is not None:
             background = (bg.data, bg.content_type)
+    # Asked here, per artist, and not once when the job started: the Trash dir's
+    # configured string is fixed for the process and what it resolves to is not,
+    # so a dir swapped for a symlink into the library mid-run is refused for the
+    # artists still to come (``store_layout.checked_store_dirs``).
+    trash = await asyncio.to_thread(resolve_trash) if resolve_trash is not None else None
     return await asyncio.to_thread(
-        write_artist_art, lib, name, poster=poster, background=background, force=force
+        partial(
+            write_artist_art,
+            lib,
+            name,
+            poster=poster,
+            background=background,
+            force=force,
+            trash=trash,
+        )
     )
 
 
@@ -61,6 +81,7 @@ async def sweep_async(
     settings: Settings,
     delay: float,
     force: bool,
+    resolve_trash: Callable[[], ArtTrashStore | None] | None = None,
     artist: str | None = None,
     names: list[str] | None = None,
     fetch_one: Callable[[str], Awaitable[ArtistArtOutcome]] | None = None,
@@ -70,6 +91,12 @@ async def sweep_async(
 
     ``on_complete`` fires once on termination (done/stopped/fail) so open tabs
     repaint the just-written artist art — same contract as reorganize's sweep.
+
+    ``resolve_trash`` answers where a file a FORCED run replaces goes, and it is
+    asked on the worker for each artist rather than once here (see
+    :func:`_default_fetch_one`). Only the forced run needs it; ``None`` reports
+    every folder whose art the run would have replaced as failed, leaving those
+    files in place (:func:`app.beets.artist_art.write_artist_art`).
     """
     try:
         if names is None:
@@ -102,7 +129,9 @@ async def sweep_async(
             bg_source = build_fanart_background_source(client, settings)
 
             async def real(name: str) -> ArtistArtOutcome:
-                return await _default_fetch_one(service, bg_source, lib, name, force=force)
+                return await _default_fetch_one(
+                    service, bg_source, lib, name, force=force, resolve_trash=resolve_trash
+                )
 
             await _run_loop(reg, names, real, delay)
     except Exception as exc:  # any crash becomes a failed job, never a lost thread
@@ -139,13 +168,17 @@ def start_backfill(
     settings: Settings,
     delay: float,
     force: bool,
+    resolve_trash: Callable[[], ArtTrashStore | None] | None = None,
     artist: str | None = None,
     on_complete: Callable[[], None] | None = None,
 ) -> None:
     """Spawn the sweep on a daemon thread that owns its event loop.
 
     Via ``reg.spawn_worker`` so a refused ``Thread.start()`` frees the slot
-    instead of wedging every library mutation (see SingleSlotRegistry)."""
+    instead of wedging every library mutation (see SingleSlotRegistry).
+    ``resolve_trash`` — see :func:`sweep_async`; the caller supplies it
+    (``api/artists._art_trash_store``) because this thread has no
+    ``Settings``/handle pair of its own."""
     reg.spawn_worker(
         lambda: asyncio.run(
             sweep_async(
@@ -155,6 +188,7 @@ def start_backfill(
                 settings=settings,
                 delay=delay,
                 force=force,
+                resolve_trash=resolve_trash,
                 artist=artist,
                 on_complete=on_complete,
             )

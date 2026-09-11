@@ -40,7 +40,7 @@ function Loc() {
   return <div data-testid="loc">{useLocation().pathname}</div>;
 }
 
-function renderAction() {
+function renderAction(artWriteEnabled = true) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -52,7 +52,7 @@ function renderAction() {
             path="/artists/:name"
             element={
               <>
-                <RenameArtistAction name="Fayrouz" />
+                <RenameArtistAction name="Fayrouz" artWriteEnabled={artWriteEnabled} />
                 <Loc />
               </>
             }
@@ -75,6 +75,24 @@ async function openAndPreview() {
 
 describe("RenameArtistAction", () => {
   beforeEach(() => vi.restoreAllMocks());
+
+  // The server kicks the art job only when the write toggle is on, so the
+  // sentence promising it must follow the toggle.
+  it("names the art write only when the write toggle is on", async () => {
+    renderAction(true);
+    await userEvent.click(screen.getByRole("button", { name: /rename artist/i }));
+    expect(
+      await screen.findByText(/artist art is written into the new folder only where it is missing/i),
+    ).toBeInTheDocument();
+  });
+
+  it("omits the art note when the write toggle is off", async () => {
+    renderAction(false);
+    await userEvent.click(screen.getByRole("button", { name: /rename artist/i }));
+    // The rest of the description still renders — only the promise is gone.
+    expect(await screen.findByText(/track artists are not touched/i)).toBeInTheDocument();
+    expect(screen.queryByText(/artist art is written/i)).toBeNull();
+  });
 
   it("gates the apply verb on a fresh preview and re-gates on input change", async () => {
     const post = vi.spyOn(client, "POST").mockResolvedValue(ok(PREVIEW));

@@ -30,6 +30,8 @@ import os
 import stat as stat_mod
 from pathlib import Path
 
+import pytest
+
 from app.beets.config_editor import _yaml, atomic_write, parse_yaml
 
 
@@ -90,6 +92,35 @@ def test_atomic_write_cleans_up_tmpfile_on_success(tmp_path: Path) -> None:
     atomic_write(cfg, data, _yaml())
     tmps = list(tmp_path.glob(".config.yaml.tmp*"))
     assert tmps == []
+
+
+def test_atomic_write_parent_dir_fsync_open_carries_o_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The PARENT-DIRECTORY fsync this module's docstring names, pinned by flag.
+
+    Measured: a FIFO swapped in at that path makes the bare ``os.O_RDONLY`` open
+    block FOREVER (still blocked after 2 s, no error), so a behavioural test
+    hangs rather than failing. ``O_DIRECTORY`` fails a non-directory ENOTDIR in
+    34 us, and a real directory still opens and fsyncs fine.
+    """
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("a: 1\n")
+    real_open = os.open
+    opened: list[tuple[object, int]] = []
+
+    def spy_open(path: object, flags: int, mode: int = 0o777, *args: object) -> int:
+        if not flags & os.O_CREAT:
+            opened.append((path, flags))
+        return real_open(path, flags, mode, *args)  # type: ignore[arg-type]  # pass-through spy
+
+    monkeypatch.setattr(os, "open", spy_open)
+    atomic_write(cfg, parse_yaml("a: 2\n"), _yaml())
+
+    parent = [flags for path, flags in opened if Path(str(path)) == tmp_path]
+    assert parent, "the parent directory was not fsynced through os.open"
+    bare = [f"{flags:#o}" for flags in parent if not flags & os.O_DIRECTORY]
+    assert not bare, f"parent-dir fsync open(s) without O_DIRECTORY: {bare}"
 
 
 def test_atomic_write_omits_yaml_directive_header(tmp_path: Path) -> None:

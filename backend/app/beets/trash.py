@@ -31,9 +31,12 @@ only beets + the base adapter + settings (no registry/duplicates import).
 from __future__ import annotations
 
 import contextlib
+import errno
 import logging
 import os
 import shutil
+import stat
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -882,6 +885,88 @@ def trash_folder(
     # so before this record it could be permanently deleted and nothing else;
     # with it, Restore moves it straight back where the sweep took it from.
     _record_origin(origins_dir, dest, origin=origin, moved="folder")
+    return dest
+
+
+def trash_replaced_files(
+    files: Sequence[Path],
+    *,
+    container_name: str,
+    origin: Path,
+    trash_dir: Path,
+    origins_dir: Path,
+) -> Path:
+    """Move loose files the app is about to REPLACE into their own Trash container.
+
+    For a write that would otherwise overwrite or unlink a file a person put
+    there by hand — the artist-art writer's ``artist-poster.*`` /
+    ``artist-background.*``. The files go into one collision-free container
+    directly under ``trash_dir`` (a loose file at the Trash ROOT that
+    ``Item.from_path`` cannot read is listed by neither half of
+    ``trash_manage.list_trashed_albums``; a container directory is listed by
+    ``_audio_free_entries`` as a zero-track row, so it has a Restore/Empty
+    affordance and Empty-all counts it).
+
+    Recorded ``moved="items"``, which is what the listing turns into an
+    import-restore with no move-back offered: the container is not the folder
+    these files came from, and moving it back would put a directory where two
+    files were. Restoring them is a hand copy out of Trash.
+
+    No ``ProtectedTrees`` argument: every entry is lstat'd first and anything
+    that is not a regular file or a symlink is refused. That guard runs over all
+    of ``files`` BEFORE ``require_usable_store``, the allocator and the mkdir, so
+    the first lstat precedes the first move by ~0.1 ms (measured) — a directory
+    renamed onto a guarded name inside that window is moved whole. A rename
+    needs write on the source's parent, so only trees already inside the library
+    can be renamed in; accepted as a window, not a guarantee. Non-empty
+    ``files`` is the caller's job.
+
+    Raises:
+        TrashOriginsStoreUnusableError: the origin store cannot be used.
+        OSError: an entry is not a regular file or a symlink, or a move failed.
+            Whatever had already moved keeps its record; a container that got
+            nothing is removed again, with anything a part-copied move left in it.
+    """
+    for src in files:
+        mode = src.lstat().st_mode
+        if not (stat.S_ISREG(mode) or stat.S_ISLNK(mode)):
+            raise OSError(errno.EINVAL, "not a regular file or a symlink", str(src))
+    require_usable_store(origins_dir)
+    trash_dir.mkdir(parents=True, exist_ok=True)
+    dest = _unique_trash_dest(trash_dir, origins_dir, container_name)
+    # No ``exist_ok``: the allocator found the name free, this is the claim on
+    # it. A directory that arrived in between raises here, before any move; one
+    # renamed in after the claim is the window the ``rmtree`` comment names.
+    dest.mkdir()
+    moved = 0
+    try:
+        for src in files:
+            shutil.move(str(src), str(dest / src.name))
+            moved += 1
+    finally:
+        # The record is written for a PARTIAL move too: the files that did land
+        # are in Trash whatever the caller does next, and a container with no
+        # record reads as "predates origin records" instead of naming the folder
+        # it came out of. Nothing moved means nothing to say — and an empty
+        # container would sit in the Trash page forever.
+        if moved:
+            # ``origin`` is recorded unchecked, and ``moved="items"`` is what
+            # makes that safe: ``trash_origins.move_back_target`` returns None on
+            # any record that is not ``moved="folder"``, before it reaches its
+            # lexical containment test, so no path here ever steers a rename.
+            _record_origin(origins_dir, dest, origin=os.path.abspath(str(origin)), moved="items")
+        else:
+            # Removed with its contents, not by ``rmdir``: a cross-filesystem
+            # ``shutil.move`` is a copy that can die mid-write, leaving a
+            # part-copied file here with ``moved == 0``. ``rmdir`` refuses a
+            # non-empty dir, which left a container in Trash that no origin
+            # record names. The ``mkdir`` above claims the name against
+            # anything that PREDATES it; a directory renamed onto the name
+            # AFTER that claim (window mkdir -> first move, ~5 us measured) is
+            # what this removes, and ``shutil.move`` follows a symlink swapped
+            # in there. ``rmtree`` itself refuses a symlink at ``dest``.
+            with contextlib.suppress(OSError):
+                shutil.rmtree(dest)
     return dest
 
 

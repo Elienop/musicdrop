@@ -400,7 +400,8 @@ def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
 
         os.replace(tmp, dst)
 
-        dir_fd = os.open(dst.parent, os.O_RDONLY)
+        # O_DIRECTORY: a FIFO swapped in here blocks forever without it (measured: 2 s, no error).
+        dir_fd = os.open(dst.parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(dir_fd)
         finally:

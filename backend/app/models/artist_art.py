@@ -4,9 +4,9 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-#: written = >=1 file written; skipped = already had art (skip-existing);
+#: written = >=1 file written, none failed; skipped = already had art (skip-existing);
 #: no_art = no poster/background resolved; no_folder = VA/comp/flat-layout/empty;
-#: failed = every write attempt errored (perms/IO).
+#: failed = a write or a move-aside errored (perms/IO), whatever else landed.
 ArtistArtStatus = Literal["written", "skipped", "no_art", "no_folder", "failed"]
 
 

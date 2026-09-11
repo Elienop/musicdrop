@@ -212,7 +212,8 @@ def _write_artwork_atomic(path: Path, data: bytes) -> None:
             os.fsync(handle.fileno())
         os.chmod(tmp, mode)
         os.replace(tmp, path)
-        dir_fd = os.open(path.parent, os.O_RDONLY)
+        # O_DIRECTORY: a FIFO swapped in here blocks forever without it (measured: 2 s, no error).
+        dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(dir_fd)
         finally:

@@ -25,6 +25,17 @@ import { ErrorState } from "@/components/system/ErrorState";
 import { PageBody } from "@/components/system/PageHeader";
 import { PageSkeleton } from "@/components/system/PageSkeleton";
 import { PAGE_SIZE, Pagination } from "@/components/system/Pagination";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { DeleteArtistAction } from "@/pages/artists/DeleteArtistAction";
@@ -280,7 +291,9 @@ export function ArtistAlbumsPage() {
                   {writeEnabled && (
                     <ArtistArtStatus displayName={displayName} />
                   )}
-                  <RenameArtistAction name={artist} />
+                  {/* The art note in the rename dialog only holds while the
+                      write toggle is on — the server gates the art job on it. */}
+                  <RenameArtistAction name={artist} artWriteEnabled={writeEnabled} />
                   <DeleteArtistAction name={artist} albumCount={total} />
                 </>
               }
@@ -315,34 +328,88 @@ export function ArtistAlbumsPage() {
 }
 
 /** The per-artist "Save art to library" action (writes artist-poster /
- * artist-background files into the artist folder for Plex). Just the icon —
- * progress + the failed state show in the topbar activity popover. While any
- * artist-art job runs the button stays FOCUSABLE (aria-disabled + swallowed
- * re-clicks, the Pagination rule — `disabled` on activation would strand
- * keyboard focus on <body> for the whole job); the aria-label stays constant
- * across the spinner swap so the accessible name never flickers. */
+ * artist-background files into EACH of the artist's folders for Plex —
+ * `beets/artist_art.write_artist_art`). Just the icon —
+ * progress + the failed state show in the topbar activity popover.
+ *
+ * Behind a confirm, like the other rail actions that mutate the library:
+ * this write REPLACES the folder's artist-poster/artist-background, and the
+ * files it replaces are moved to Trash (`beets/artist_art.write_artist_art`).
+ * The dialog is shown on every click — there is no endpoint that says whether
+ * this artist's folders hold art, so the copy covers both cases.
+ *
+ * While any artist-art job runs the button stays FOCUSABLE (aria-disabled, and
+ * `onOpenChange` refuses to open — the Pagination rule: `disabled` on
+ * activation would strand keyboard focus on <body> for the whole job); the
+ * aria-label stays constant across the spinner swap so the accessible name
+ * never flickers. */
 function ArtistArtStatus({ displayName }: Readonly<{ displayName: string }>) {
   const status = useArtistArtBackfillStatus();
   const start = useStartArtistArtApply(displayName);
+  const [open, setOpen] = useState(false);
   const running = status.data?.phase === "running";
   const busy = start.isPending || running;
 
   return (
-    <IconAction
-      label="Save art to library"
-      aria-disabled={busy || undefined}
-      className="aria-disabled:opacity-50"
-      onClick={() => {
-        if (busy) return; // job in flight — keep focus, swallow the re-click
-        start.mutate();
+    <AlertDialog
+      open={open}
+      onOpenChange={(next) => {
+        if (next && busy) return; // job in flight — keep focus, open nothing
+        // The mutation outlives the dialog (this component stays mounted), so
+        // a failed start's alert would still be on screen at the next open.
+        if (next) start.reset();
+        setOpen(next);
       }}
     >
-      {start.isPending ? (
-        <Spinner weight="thin" className="size-10 animate-spin" aria-hidden="true" />
-      ) : (
-        <SaveArt weight="thin" className="size-10" aria-hidden="true" />
-      )}
-    </IconAction>
+      <AlertDialogTrigger asChild>
+        <IconAction
+          label="Save art to library"
+          aria-disabled={busy || undefined}
+          className="aria-disabled:opacity-50"
+        >
+          {start.isPending ? (
+            <Spinner weight="thin" className="size-10 animate-spin" aria-hidden="true" />
+          ) : (
+            <SaveArt weight="thin" className="size-10" aria-hidden="true" />
+          )}
+        </IconAction>
+      </AlertDialogTrigger>
+      <AlertDialogContent
+        // Cancel is disabled while the start is in flight, so Escape has to be
+        // swallowed too — otherwise the dialog leaves and a failed start has
+        // nowhere to report.
+        onEscapeKeyDown={(e) => {
+          if (start.isPending) e.preventDefault();
+        }}
+      >
+        <AlertDialogHeader>
+          <AlertDialogTitle>Save art to library?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Writes artist-poster and artist-background files into this
+            artist&rsquo;s folders. Existing ones move to Trash first.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {start.isError && (
+          <p className="text-destructive text-sm" role="alert">
+            {start.error.message}
+          </p>
+        )}
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={start.isPending}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={start.isPending}
+            onClick={(e) => {
+              // preventDefault so the dialog stays open showing "Saving…" until
+              // the start call resolves, then closes on success (DeleteAlbumAction).
+              e.preventDefault();
+              start.mutate(undefined, { onSuccess: () => setOpen(false) });
+            }}
+          >
+            {start.isPending ? "Saving…" : "Save art"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
