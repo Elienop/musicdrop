@@ -2323,6 +2323,11 @@ the condition it names has changed.
 
 ## Deferred minors (cosmetic / self-healing — carried from earlier waves)
 
+- **`tests/test_cited_shas.py` reports every prose cite at line 1.** A `.md` file is read as one
+  chunk at `lineno` 1, so a failing cite in BACKLOG.md prints `BACKLOG.md:1` four times for four
+  different lines (seen 2026-09-11 when a branch-local sha was cited); the `.ts`/`.py` paths count
+  lines. Fix shape: count newlines before `match.start()` the way the block-comment path already
+  does. Cosmetic — the guard still fails correctly.
 - **From the 2026-08-25 #143-Minors triage** (all re-verified at v0.44.0; per-item evidence
   in the vault note `plex-143-review-minors`): `PlexSettingsPanel`'s `pathParts`/`pathInside`
   resolve no `.`/`..`, so a path that climbs back OUT of a reported folder gets the
