@@ -7,6 +7,10 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { SEGMENT_SEP } from "@/lib/format";
 import { ReviewPage } from "@/pages/review/ReviewPage";
+import {
+  containerQueryVariants,
+  unwiredContainerQueries,
+} from "@/test/containerQuery";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
 
@@ -140,11 +144,32 @@ describe("ReviewPage", () => {
     // of the <li>, with both arms named.
     const row = resolve.closest("li");
     expect(row).toHaveClass("grid");
-    expect(row?.className).toMatch(/@container\/decisionrow/);
+    expect(row?.className.split(/\s+/)).toContain("@container/decisionrow");
     const group = resolve.parentElement;
     expect(group?.parentElement).toBe(row);
-    expect(group?.className.split(/\s+/)).toContain("row-start-2");
-    expect(group?.className).toMatch(/@min-\[20rem\]\/decisionrow:row-start-1/);
+    // Both halves of both arms: with the column half dropped the action is
+    // placed at (row 1, col 1) — definite-position items go down before
+    // auto-placed ones — and the AlbumRow is pushed a track right.
+    for (const token of [
+      "col-start-1",
+      "row-start-2",
+      "@min-[20rem]/decisionrow:col-start-2",
+      "@min-[20rem]/decisionrow:row-start-1",
+    ]) {
+      expect(group?.className.split(/\s+/)).toContain(token);
+    }
+    expect(containerQueryVariants(row as HTMLElement)).toEqual([
+      // No `:block` here: that one is on AlbumRow's middot, which renders only
+      // when the row has BOTH a subtitle and a meta line.
+      "@min-[18rem]/rowtext:flex-row",
+      "@min-[18rem]/rowtext:items-center",
+      "@min-[20rem]/decisionrow:-ml-1",
+      "@min-[20rem]/decisionrow:col-start-2",
+      "@min-[20rem]/decisionrow:mb-0",
+      "@min-[20rem]/decisionrow:mr-4",
+      "@min-[20rem]/decisionrow:row-start-1",
+    ]);
+    expect(unwiredContainerQueries(row as HTMLElement)).toEqual([]);
   });
 
   test("the decision row's confidence line uses the app's segment separator", async () => {
@@ -542,9 +567,31 @@ describe("ReviewPage", () => {
     expect(row.className).toMatch(/@container\/bankrow/);
     const group = within(section).getByRole("button", { name: /ignore album z/i }).parentElement;
     // Its own line below the row by default; back on the row's line above the
-    // threshold. Both arms named, so dropping either fails.
-    expect(group?.className.split(/\s+/)).toContain("row-start-2");
-    expect(group?.className).toMatch(/@min-\[28rem\]\/bankrow:row-start-1/);
+    // threshold. BOTH halves of BOTH arms: a grid places definite-position
+    // items before auto-placed ones, so with the column half dropped the
+    // action takes (row 1, col 1) and pushes the checkbox and the AlbumRow a
+    // track right — total visual destruction, with the suite still green.
+    for (const token of [
+      "col-start-2",
+      "row-start-2",
+      "@min-[28rem]/bankrow:col-start-3",
+      "@min-[28rem]/bankrow:row-start-1",
+    ]) {
+      expect(group?.className.split(/\s+/)).toContain(token);
+    }
+    // Every container query on the row, each wired to a container an ancestor
+    // declares — a renamed container applies nothing at all, silently.
+    expect(containerQueryVariants(row)).toEqual([
+      "@min-[18rem]/rowtext:block",
+      "@min-[18rem]/rowtext:flex-row",
+      "@min-[18rem]/rowtext:items-center",
+      "@min-[28rem]/bankrow:-ml-1",
+      "@min-[28rem]/bankrow:col-start-3",
+      "@min-[28rem]/bankrow:mb-0",
+      "@min-[28rem]/bankrow:mr-4",
+      "@min-[28rem]/bankrow:row-start-1",
+    ]);
+    expect(unwiredContainerQueries(row)).toEqual([]);
   });
 
   test("a failed row's error line sits below the dropped action line", async () => {

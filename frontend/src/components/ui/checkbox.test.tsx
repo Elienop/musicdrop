@@ -53,6 +53,23 @@ describe("Checkbox target size", () => {
     }
   });
 
+  test("the pseudo-element is generated at all", () => {
+    render(<Checkbox aria-label="Select" />);
+    const box = screen.getByRole("checkbox");
+    const before = box.className.split(/\s+/).filter((c) => c.startsWith("before:"));
+    // Not vacuous: there ARE `before:` tokens, and one of them must be
+    // `content`. `content` is the single token that makes a ::before generate
+    // a box — without it the size and the four positioning tokens are inert,
+    // the target silently reverts to the drawn 16×16, and nothing else in the
+    // class string changes. jsdom renders no pseudo-elements, so this is what
+    // a test can hold; the measured 24×24 per call site is in the branch's
+    // browser pass.
+    expect(before.length).toBeGreaterThan(0);
+    expect(before.filter((c) => c.startsWith("before:content-"))).toEqual([
+      "before:content-['']",
+    ]);
+  });
+
   test("the target is out of flow and paints nothing", () => {
     render(<Checkbox aria-label="Select" />);
     const box = screen.getByRole("checkbox");
