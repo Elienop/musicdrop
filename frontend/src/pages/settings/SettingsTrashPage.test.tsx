@@ -28,10 +28,11 @@ const album: TrashedAlbum = {
 };
 
 /** The backend writes three distinct why-sentences for an IMPORT row
- * (`_NO_RECORD_NOTE` / `_SHARED_FOLDER_NOTE` / `_OUTSIDE_LIBRARY_NOTE`) and a
- * fourth for the `refused` mode, which is `REFUSED_NOTE` below — four
- * sentences out of `trash_manage._restore_fields`, of which this file's
- * fixtures carry two. The page must render whatever arrives, so the tests
+ * (`_NO_RECORD_NOTE` / `_SHARED_FOLDER_NOTE` / `_OUTSIDE_LIBRARY_NOTE`), a
+ * fourth for the `refused` mode (`REFUSED_NOTE` below) and a fifth for
+ * `by_hand` (`MOVED_ASIDE_NOTE`) — five sentences out of
+ * `trash_manage._restore_fields`, of which this file's fixtures carry three.
+ * The page must render whatever arrives, so the tests
  * carry one VERBATIM rather than a shape — a component that ignored
  * `restore_note` and printed its own copy would pass a shape assertion and
  * fail this one.
@@ -107,9 +108,8 @@ const REFUSED_NOTE =
  * regular files, so no audio group, so null artist/album/format and
  * track_count 0 — and `origin` is the cache dir they came out of. */
 const MOVED_ASIDE_NOTE =
-  "MusicDrop moved these files aside when it replaced them; they are not an album," +
-  " so there is nothing to restore. To put one back, copy it out of this Trash entry" +
-  " into the folder it was at.";
+  "MusicDrop replaced these files; they are not an album, so there is nothing to" +
+  " restore. To put one back, copy it out of this entry into the folder it was at.";
 
 const movedAsideAlbum: TrashedAlbum = {
   folder: "ABBA - artist image",
@@ -222,6 +222,10 @@ describe("SettingsTrashPage", () => {
 
     await user.click(await screen.findByRole("button", { name: "Empty all" }));
     const dialog = await screen.findByRole("alertdialog");
+    // "every album" counted a `by_hand` entry, which holds loose files, as one.
+    expect(
+      within(dialog).getByText(/Permanently deletes every entry in Trash \(1\)/),
+    ).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "Empty all" }));
 
     await waitFor(() => expect(called).toBe(true));
@@ -615,9 +619,14 @@ describe("SettingsTrashPage", () => {
     renderPage();
 
     expect(
-      await screen.findByText(/Each row says where Restore will put it/i),
+      await screen.findByText(/Each row says what Restore will do/i),
     ).toBeInTheDocument();
     expect(screen.queryByText(/puts one back as-is/i)).not.toBeInTheDocument();
+    // A `by_hand` row has no Restore and holds no album, so neither the old
+    // per-row promise nor "every album" can come back.
+    expect(
+      screen.queryByText(/where Restore will put it/i),
+    ).not.toBeInTheDocument();
   });
 
   test("Restore surfaces the already-in-library result", async () => {
@@ -778,6 +787,35 @@ describe("SettingsTrashPage", () => {
     // the one control that remains.
     expect(empty).toHaveAccessibleDescription(/nothing to restore/i);
     expect(screen.getByRole("button", { name: "Empty all" })).toBeEnabled();
+  });
+
+  test("a row with an artist but no album prints its folder once", async () => {
+    // The folder enters the title whenever `album` is null — a loose file
+    // tagged with an artist and no album does that — while the subtitle
+    // fallback was gated on BOTH tags being null, so this row printed
+    // "X Folder" in the title and again underneath it.
+    const artistOnly: TrashedAlbum = {
+      folder: "X Folder",
+      album_artist: "Xartist",
+      album: null,
+      year: null,
+      track_count: 0,
+      format: null,
+      restore_mode: "import",
+      restore_note: NO_RECORD_NOTE,
+      origin: null,
+    };
+    server.use(
+      http.get(TRASH_URL, () =>
+        HttpResponse.json({ albums: [artistOnly], trash_path: "/t" }),
+      ),
+    );
+    renderPage();
+
+    expect(
+      await screen.findByText("Xartist - X Folder"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("X Folder")).toBeNull();
   });
 
   test("a row with no artist and no album is titled by its folder alone", async () => {

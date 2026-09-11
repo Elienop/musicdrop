@@ -73,11 +73,12 @@ export function SettingsTrashPage() {
           <h2 className="text-lg font-semibold">Trash</h2>
           {/* NOT "Restore puts one back as-is": only a `move_back` row goes back
            * to its own folder — an `import` row is re-filed by the current
-           * naming rules. The promise lives per row now, so the header points
-           * at it instead of making it for every row. */}
+           * naming rules, and a `by_hand` row has no Restore at all. The
+           * promise lives per row now, so the header points at it instead of
+           * making one for every row. */}
           <p className="text-muted-foreground text-sm">
-            Deleted albums are moved here. Each row says where Restore will put
-            it; emptying is permanent.
+            Deleted albums, and art MusicDrop replaced, are moved here. Each row
+            says what Restore will do; emptying is permanent.
           </p>
           <p className="text-muted-foreground text-xs break-all">
             {trash_path}
@@ -91,7 +92,7 @@ export function SettingsTrashPage() {
               </Button>
             }
             title="Empty the whole Trash?"
-            body={`Permanently deletes every album in Trash (${albums.length}). This can’t be undone.`}
+            body={`Permanently deletes every entry in Trash (${albums.length}). This can’t be undone.`}
             confirmLabel="Empty all"
             pending={emptyAll.isPending}
             error={emptyAll.isError ? emptyAll.error.message : null}
@@ -305,7 +306,10 @@ function TrashRow({ album }: Readonly<{ album: TrashedAlbum }>) {
   const title = titledByFolder
     ? album.folder
     : `${album.album_artist ?? "Unknown artist"} - ${album.album ?? album.folder}`;
-  const subtitle = meta || (titledByFolder ? null : album.folder);
+  // The folder reaches the title whenever `album` is null, artist tag or not,
+  // so the fallback is gated on the title's own content rather than on
+  // `titledByFolder` — an artist-only row printed its folder twice.
+  const subtitle = meta || (album.album === null ? null : album.folder);
   const reasonId = useId();
   const outlookId = useId();
 

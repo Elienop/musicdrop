@@ -94,6 +94,9 @@ function ArtistImageEditPanelForArtist({
   const fetchButtonRef = useRef<HTMLButtonElement>(null);
   const uploadButtonRef = useRef<HTMLButtonElement>(null);
   const returningFromPreview = useRef(false);
+  // The reset's success sentence, held between `onSuccess` and the confirm
+  // actually leaving the tree. See `onReset`.
+  const resetNote = useRef<string | null>(null);
 
   // "Artist images are on" is not one question: the fetch route accepts when
   // EITHER the image toggle or the write-to-library toggle is on (main.py
@@ -149,6 +152,7 @@ function ArtistImageEditPanelForArtist({
 
   const clearNotices = () => {
     setNote(null);
+    resetNote.current = null;
     setDidReset(false);
     setPickError(null);
     // The mutation's own error state is a notice too: without this a failed
@@ -225,24 +229,37 @@ function ArtistImageEditPanelForArtist({
     setPending(null);
   };
 
+  // The outcome is STASHED, not announced: the `<output>` below sits in the app
+  // root, which Radix keeps `aria-hidden` for as long as the confirm's content
+  // is mounted, and text that changes inside a hidden subtree is not announced.
+  // `onClosed` (the confirm's `onCloseAutoFocus`, dispatched from a
+  // `setTimeout(0)` after the content unmounts) is the first moment the region
+  // is live again. A microtask is too early - it joins the same React commit.
   const onReset = () => {
     clearNotices();
     reset.mutate(undefined, {
       onSuccess: (result) => {
-        setNote(
+        resetNote.current =
           result.cleared_override || result.cleared_auto
             ? "Cleared. This artist’s portrait will be looked up again."
             : // Both false is NOT "nothing to do": an unwritable cache dir
               // swallows the unlink while the in-memory entry is dropped, so
               // what gets served can still have changed. Claim only the part
               // that is true either way.
-              "This artist’s portrait will be looked up again.",
-        );
+              "This artist’s portrait will be looked up again.";
         setDidReset(true);
         onSaved();
         setResetOpen(false);
       },
     });
+  };
+
+  // Fires on every close, so the stash is what says a reset happened: a Cancel
+  // or an Escape finds it empty and announces nothing.
+  const onResetClosed = () => {
+    if (resetNote.current === null) return;
+    setNote(resetNote.current);
+    resetNote.current = null;
   };
 
   const onSetFromUrl = () => {
@@ -401,6 +418,7 @@ function ArtistImageEditPanelForArtist({
                 setResetOpen(next);
               }}
               pending={reset.isPending}
+              onClosed={onResetClosed}
               error={reset.isError ? reset.error.message : null}
               onConfirm={onReset}
             />
@@ -445,22 +463,25 @@ function ArtistImageEditPanelForArtist({
  * whether this artist has an uploaded portrait — the copy covers both cases.
  *
  * The reset is sent from the ACTION only, and `preventDefault` holds the dialog
- * open until it settles: a 503 (the Trash store is unusable, so nothing was
- * reset) has to report where the user pressed the button. Cancel is disabled
- * while it is in flight, so Escape is swallowed too — otherwise the dialog
- * leaves and that sentence has nowhere to land. */
+ * open until it settles: a 503 (the move to Trash failed, so the reset stopped)
+ * has to report where the user pressed the button. Cancel is disabled while it
+ * is in flight, so Escape is swallowed too — otherwise the dialog leaves and
+ * that sentence has nowhere to land. `onClosed` carries the SUCCESS line the
+ * other way, once the app root is announceable again. */
 function ResetToAutoConfirm({
   open,
   onOpenChange,
   pending,
   error,
   onConfirm,
+  onClosed,
 }: Readonly<{
   open: boolean;
   onOpenChange: (next: boolean) => void;
   pending: boolean;
   error: string | null;
   onConfirm: () => void;
+  onClosed: () => void;
 }>) {
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
@@ -474,12 +495,13 @@ function ResetToAutoConfirm({
         onEscapeKeyDown={(e) => {
           if (pending) e.preventDefault();
         }}
+        onCloseAutoFocus={onClosed}
       >
         <AlertDialogHeader>
           <AlertDialogTitle>Reset to auto?</AlertDialogTitle>
           <AlertDialogDescription>
             Forgets this artist&rsquo;s portrait so it is looked up again. An
-            image you uploaded or linked moves to Trash first.
+            image you uploaded or pasted moves to Trash first.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {error && (

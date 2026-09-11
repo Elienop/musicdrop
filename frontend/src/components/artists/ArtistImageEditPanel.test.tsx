@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ArtistImageEditPanel } from "@/components/artists/ArtistImageEditPanel";
@@ -233,7 +233,7 @@ describe("ArtistImageEditPanel", () => {
     expect(
       within(dialog).getByText(
         "Forgets this artist\u2019s portrait so it is looked up again. An image you" +
-          " uploaded or linked moves to Trash first.",
+          " uploaded or pasted moves to Trash first.",
       ),
     ).toBeInTheDocument();
     expect(resetMutate).not.toHaveBeenCalled();
@@ -274,10 +274,14 @@ describe("ArtistImageEditPanel", () => {
   });
 
   it("reports a failed reset inside the confirm and re-enables Cancel", async () => {
+    // Verbatim from `artists.py:_MOVE_FAILED` (the cause is appended by the
+    // route). A hand-kept copy: the panel renders the server's sentence, so a
+    // paraphrase here would pin nothing.
     resetMutate.mockImplementation(() => {
       resetState.isError = true;
       resetState.error = new Error(
-        "The uploaded image could not be moved to Trash, so nothing was reset",
+        "The uploaded image could not be moved to Trash, so the reset stopped;" +
+          " check Trash before retrying.",
       );
     });
     const panel = () => (
@@ -289,7 +293,7 @@ describe("ArtistImageEditPanel", () => {
 
     const dialog = screen.getByRole("alertdialog");
     const alert = within(dialog).getByRole("alert");
-    expect(alert).toHaveTextContent(/nothing was reset/i);
+    expect(alert).toHaveTextContent(/the reset stopped/i);
     expect(within(dialog).getByRole("button", { name: /^cancel$/i })).toBeEnabled();
   });
 
@@ -317,6 +321,52 @@ describe("ArtistImageEditPanel", () => {
     expect(within(reopened).queryByRole("alert")).toBeNull();
   });
 
+  it("writes the success line only after the confirm has left the tree", async () => {
+    // The <output> lives in the app root, which Radix keeps `aria-hidden` for
+    // as long as the confirm's content is mounted — so a note written in
+    // `onSuccess` changes text inside a hidden subtree and is never announced.
+    // The panel stashes it and writes it from `onCloseAutoFocus`, which Radix
+    // dispatches from a `setTimeout(0)` after the content unmounts.
+    //
+    // Measured at that boundary: the region is still EMPTY on the commit that
+    // closes the dialog, and carries the sentence a macrotask later. Setting
+    // the note in `onSuccess` fails the first assertion.
+    resetMutate.mockImplementation(
+      (_v: undefined, opts: { onSuccess: (r: unknown) => void }) =>
+        opts.onSuccess({ ok: true, cleared_override: true, cleared_auto: false }),
+    );
+    render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
+    await confirmReset();
+
+    expect(screen.getByRole("status").textContent).toBe("");
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(/looked up again/i),
+    );
+  });
+
+  it("leaves the outcome line alone when the confirm is cancelled", async () => {
+    // The close hook fires on EVERY close, so the stash is what says a reset
+    // happened. Opening the confirm clears no notices, so without that guard a
+    // Cancel wipes whatever the previous action put in the region.
+    fetchMutate.mockImplementation(
+      (_source: string, opts: { onSuccess: (r: unknown) => void }) =>
+        opts.onSuccess({ found: false, reason: "Spotify has no portrait for ABBA" }),
+    );
+    render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: /^fetch$/i }));
+    expect(screen.getByRole("status")).toHaveTextContent(/no portrait for abba/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /reset to auto/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /^cancel$/i }));
+
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    // A macrotask past the close — the window the reset's own line lands in.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getByRole("status")).toHaveTextContent(/no portrait for abba/i);
+    expect(resetMutate).not.toHaveBeenCalled();
+  });
+
   it("closes the confirm when the reset succeeds", async () => {
     resetMutate.mockImplementation(
       (_v: undefined, opts: { onSuccess: (r: unknown) => void }) =>
@@ -325,7 +375,9 @@ describe("ArtistImageEditPanel", () => {
     render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
     await confirmReset();
     expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(screen.getByRole("status")).toHaveTextContent(/looked up again/i);
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(/looked up again/i),
+    );
   });
 
   it("sets the image from a pasted URL", () => {
@@ -505,7 +557,9 @@ describe("ArtistImageEditPanel", () => {
     render(<ArtistImageEditPanel name="ABBA" onSaved={onSaved} onClose={() => {}} />);
     await confirmReset();
     expect(onSaved).toHaveBeenCalled();
-    expect(screen.getByRole("status")).toHaveTextContent(/looked up again/i);
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(/looked up again/i),
+    );
     // Nothing is left to abandon, so the closing button stops saying "Cancel".
     expect(screen.getByRole("button", { name: /^done$/i })).toBeInTheDocument();
   });
@@ -557,7 +611,9 @@ describe("ArtistImageEditPanel", () => {
     );
     render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
     await confirmReset();
-    expect(screen.getByRole("status")).toHaveTextContent(/looked up again/i);
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(/looked up again/i),
+    );
     // Submitting the pasted link must not leave the reset's outcome standing
     // over it as if it described what just happened.
     fireEvent.change(screen.getByLabelText(/image url/i), {
@@ -582,7 +638,9 @@ describe("ArtistImageEditPanel", () => {
     render(<ArtistImageEditPanel name="ABBA" onSaved={() => {}} onClose={() => {}} />);
     await confirmReset();
     const note = screen.getByRole("status");
-    expect(note.textContent).toBe("This artist’s portrait will be looked up again.");
+    await waitFor(() =>
+      expect(note.textContent).toBe("This artist’s portrait will be looked up again."),
+    );
     expect(note.textContent).not.toMatch(/^Cleared\./);
   });
 
