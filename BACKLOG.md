@@ -1081,8 +1081,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - ~~**"Save art to library" is a one-click, unconfirmed action that permanently deletes
   hand-placed `artist-poster.*`/`artist-background.*` — and fires as rename collateral.**~~ —
-  **CLOSED 2026-09-11** (on `fix/art-apply-keeps-hand-placed-art`; PR + squash sha cited at
-  merge). Owner's shape: confirm + Trash, and a rename writes only where missing. The Apply
+  **CLOSED 2026-09-11** (on `fix/art-apply-keeps-hand-placed-art`; PR #224, squash `a8b08d5` =
+  v0.51.4). Owner's shape: confirm + Trash, and a rename writes only where missing. The Apply
   sits behind an AlertDialog ("Save art to library?" / "Writes artist-poster and
   artist-background files into this artist's folders. Existing ones move to Trash first."),
   the files a forced write replaces go to one Trash entry per artist folder
@@ -1110,8 +1110,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   with whatever Deezer resolved, and the rename dialog never mentions art.
 
 - ~~**`write_artist_art` reports `status="written"` when only some folders wrote**~~ —
-  **CLOSED 2026-09-11** (on `fix/art-apply-keeps-hand-placed-art`; PR + squash sha cited at
-  merge), as a side effect of the Trash move-aside: `_write_folder` returns
+  **CLOSED 2026-09-11** (on `fix/art-apply-keeps-hand-placed-art`; PR #224, squash `a8b08d5` =
+  v0.51.4), as a side effect of the Trash move-aside: `_write_folder` returns
   `(written, failed)` per folder, `status` is `failed` as soon as one write or move-aside
   errored while `written` still counts what landed, and the model comment defines `failed`
   that way. Pinned by `test_a_failed_second_write_keeps_the_count_of_the_first` (poster moved
@@ -1155,6 +1155,22 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   2026-09-11, browser-measured: the container listed with the album row's words — an
   "Unknown artist - " title, the shared-folder "Approximate restore." note, and a Restore
   button whose only outcome was `could_not_restore`.)
+
+- **A `moved="files"` Trash entry has no put-back — the user copies files by hand.** (Named by
+  both implementers on `fix/reset-to-auto-confirms-and-moved-aside-trash-rows` and by all three
+  review seats, 2026-09-12; filed here rather than left in the reports.) `restore_album`
+  short-circuits this shape to `could_not_restore` and the page renders no Restore, so the only
+  exit is the note's instruction: copy the files out of the entry into the folder `origin`
+  names. For a replaced portrait that means preserving an opaque `<sha1>.override` filename —
+  README says so, but a button would not need saying. Fix shape: a sibling of
+  `move_back_target` for this shape (it returns `None` on anything that is not
+  `moved="folder"`, deliberately, before its containment test), whose target is accepted only
+  when `record.origin` resolves inside the music library OR inside one of
+  `config.app_cache_dirs`; then move each file in the container back by name, refuse rather
+  than overwrite when a file of that name is already there, and report per-file. No beets
+  import on this path at all — these are not media. Both halves stay honest only if the
+  sanitizer's `origin_file` key rules are re-read first: the container name is client-derived
+  for the artist-image caller.
 
 - **A write killed mid-flight leaves a `.<pid>.<16 hex>.<ext>.tmp` dotfile nothing clears.**
   (Found 2026-09-11 on `fix/art-apply-keeps-hand-placed-art`.) The derived `.<name>.tmp` was
@@ -2032,6 +2048,16 @@ because a recorded decision is what stops the question being reopened from scrat
 scan here for something to pick up — scan *Open bugs / hardening*. Revisit an item only if
 the condition it names has changed.
 
+- **A `by_hand` Trash row puts the app's artist-image cache dir on the wire as its `origin`**
+  (2026-09-12, `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`). `origin` previously
+  only ever named a path inside the music library or a recorded folder; a portrait **Reset to
+  auto** moved records `files[0].parent`, so the row reads "Was at
+  `/data/cache/artist-images`". Deliberate, and the point of the field here: the row's note
+  tells the user to copy the files back into the folder it was at, and `origin` is what says
+  which folder. Session-gated like the rest of the listing, and a sibling of `trash_path`,
+  which the same response body already carries. Revisit only if an unauthenticated reader of
+  the listing ever exists.
+
 - **The Trash store is checked per artist, not per file — the check-to-use window is one
   artist's write** (2026-09-11, `fix/art-apply-keeps-hand-placed-art`). The runner resolves
   the store right before each artist's `write_artist_art`; a Trash dir re-pointed under the
@@ -2440,6 +2466,14 @@ the condition it names has changed.
 
 ## Deferred minors (cosmetic / self-healing — carried from earlier waves)
 
+- **A confirm dialog's focused control drops focus to `<body>` when it is disabled while
+  pending.** (Family trait, read by the UX seat 2026-09-12; Chromium blurs a focused control on
+  `disabled`, jsdom does not, so no test can see it.) `ArtistArtStatus`, `DeleteAlbumAction`,
+  `ConfirmAction` and the new Reset confirm all disable Cancel and the action for the duration
+  of the request. On the error path focus sits on `<body>` until the next Tab, when the
+  FocusScope pulls it back inside. Fix as a family or not at all: `aria-disabled` plus an
+  early-return guard in the handler, on all four at once. Not a regression — the Reset confirm
+  copied the family.
 - **`useStartArtistArtBackfill` carries no start bound.** The Apply start got a 10 s bound
   (`fix/art-apply-keeps-hand-placed-art`) because a stalled start latched the confirm dialog;
   the backfill start on the Settings panel is a plain button with no dialog, so a stall greys
@@ -2762,6 +2796,32 @@ Added by the 2026-08-28 sweeps:
   option, not utilities).
 
 ## Recently shipped
+
+- **Save art confirms first and moves replaced art to Trash — PR #224, squash `a8b08d5` =
+  v0.51.4 (2026-09-11).** `POST /api/artists/art/apply` sits behind an AlertDialog that names
+  what it writes and says existing files move to Trash first, and the start request carries a
+  10 s bound so a stalled start cannot latch the dialog open.
+  The `artist-poster.*`/`artist-background.*` a forced write replaces go into one Trash entry
+  per artist folder (`<folder> - artist art`, origin record `moved="items"` — this branch
+  renames that shape to `moved="files"`), claimed by a bare
+  `mkdir` so a directory that arrived after the allocator looked raises before any move;
+  nothing is written into a folder whose old files did not all move aside, and
+  `write_artist_art` reports `failed` as soon as one write or move-aside errored while
+  `written` still counts what landed.
+  A rename now writes art only where it is missing — both rename call sites pass `force=False`,
+  so merging artist A onto B no longer replaces B's curated poster, and the rename dialog names
+  the art write only when the toggle is on.
+  Hardening the review rounds forced: the art and lyrics writers create unpredictable
+  fixed-length temp names with `O_EXCL|O_NOFOLLOW` (a symlink planted at the old derived
+  `.<name>.tmp` was followed and published as the destination — measured), and all five
+  parent-dir fsync opens carry `O_DIRECTORY` (a FIFO swapped in there blocked forever — 2 s
+  measured, no error).
+  Closes the struck Save-art entry and the struck partial-`status` entry above. Recorded and
+  not fixed: the two descriptor-anchoring windows (the per-artist store check, and the
+  container claim to the first move), the Reset-to-auto gap this branch is closing, the
+  moved-aside Trash row's wording, the `.<pid>.<16 hex>.<ext>.tmp` dotfile a killed write
+  leaves, and the three derived-name writers left untouched — each under its own entry or
+  inside the closure it came from.
 
 - **The lint gate reads the newest analyzer bundle — PR #222, squash `1de4a0e` = v0.51.3 (2026-09-11).**
   The bundle-on-disk check in `frontend/eslint.config.test.ts` now picks the newest
