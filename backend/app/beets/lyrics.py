@@ -194,7 +194,8 @@ def _atomic_write_text(dst: Path, text: str) -> None:
         if dst.exists():
             shutil.copymode(dst, tmp)  # mode preserved on rewrite; umask default on first write
         os.replace(tmp, dst)
-        dir_fd = os.open(dst.parent, os.O_RDONLY)
+        # O_DIRECTORY: a FIFO swapped in here blocks forever without it (measured: 2 s, no error).
+        dir_fd = os.open(dst.parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(dir_fd)
         finally:

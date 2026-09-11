@@ -912,10 +912,14 @@ def trash_replaced_files(
     these files came from, and moving it back would put a directory where two
     files were. Restoring them is a hand copy out of Trash.
 
-    No ``ProtectedTrees`` argument, and that is not an omission: every entry is
-    lstat'd first and anything that is not a regular file or a symlink is
-    refused, so this function relocates no directory and cannot carry a store
-    away. Non-empty ``files`` is the caller's job.
+    No ``ProtectedTrees`` argument: every entry is lstat'd first and anything
+    that is not a regular file or a symlink is refused. That guard runs over all
+    of ``files`` BEFORE ``require_usable_store``, the allocator and the mkdir, so
+    the first lstat precedes the first move by ~0.1 ms (measured) — a directory
+    renamed onto a guarded name inside that window is moved whole. A rename
+    needs write on the source's parent, so only trees already inside the library
+    can be renamed in; accepted as a window, not a guarantee. Non-empty
+    ``files`` is the caller's job.
 
     Raises:
         TrashOriginsStoreUnusableError: the origin store cannot be used.
@@ -956,9 +960,11 @@ def trash_replaced_files(
             # ``shutil.move`` is a copy that can die mid-write, leaving a
             # part-copied file here with ``moved == 0``. ``rmdir`` refuses a
             # non-empty dir, which left a container in Trash that no origin
-            # record names. The ``mkdir`` above is this call's claim on the
-            # name, so nothing that predates it is under it; a symlink there
-            # raises instead of being followed.
+            # record names. The ``mkdir`` above claims the name against
+            # anything that PREDATES it; a directory renamed onto the name
+            # AFTER that claim (window mkdir -> first move, ~5 us measured) is
+            # what this removes, and ``shutil.move`` follows a symlink swapped
+            # in there. ``rmtree`` itself refuses a symlink at ``dest``.
             with contextlib.suppress(OSError):
                 shutil.rmtree(dest)
     return dest

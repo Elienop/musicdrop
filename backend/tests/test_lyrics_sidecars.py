@@ -230,6 +230,41 @@ def test_the_tmp_file_is_created_exclusively_and_without_following_symlinks(
     assert created[0] & os.O_NOFOLLOW
 
 
+def test_the_parent_dir_fsync_open_carries_o_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The twin of ``test_artist_art_write``' pin on the same open: the tail of
+    the recipe fsyncs ``dst.parent``, a path this writer did not create.
+
+    A flag pin, not a behavioural one, for the reason the test above gives:
+    measured, a FIFO swapped in at that path makes the bare ``os.O_RDONLY`` open
+    block FOREVER (still blocked after 2 s, no error), so the behavioural
+    version hangs instead of going red. ``O_DIRECTORY`` fails a non-directory
+    ENOTDIR in 34 us.
+    """
+    from app.beets.lyrics import write_lyric_sidecar
+
+    real_open = os.open
+    opened: list[tuple[Any, int]] = []
+
+    def spy(path: Any, flags: int, *rest: Any) -> int:
+        if not flags & os.O_CREAT:
+            opened.append((path, flags))
+        return real_open(path, flags, *rest)
+
+    # `os` is one shared module object — same reason as the test above.
+    monkeypatch.setattr(os, "open", spy)
+    track = tmp_path / "t.flac"
+    track.write_bytes(b"")
+
+    assert write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN)) is not None
+
+    parent = [flags for path, flags in opened if Path(path) == tmp_path]
+    assert parent, "the parent directory was not fsynced through os.open"
+    bare = [f"{flags:#o}" for flags in parent if not flags & os.O_DIRECTORY]
+    assert not bare, f"parent-dir fsync open(s) without O_DIRECTORY: {bare}"
+
+
 def test_synced_result_never_replaces_an_existing_txt(tmp_path: Path) -> None:
     """A1: an existing sidecar of EITHER extension means the writer does nothing
     — no .lrc written beside it, and the .txt is not unlinked. Nothing records

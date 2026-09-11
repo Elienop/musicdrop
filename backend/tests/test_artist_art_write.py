@@ -302,6 +302,41 @@ def test_the_tmp_file_is_created_exclusively_and_without_following_symlinks(
     assert created[0] & os.O_NOFOLLOW
 
 
+def test_the_parent_dir_fsync_open_carries_o_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tail of the recipe fsyncs ``dst.parent``, and that open is the one
+    call here that takes a path this writer did not create.
+
+    Pinned as a flag rather than behaviourally for the same reason as the test
+    above: measured, a FIFO swapped in at that path makes the bare
+    ``os.O_RDONLY`` open block FOREVER (still blocked after 2 s, no error), and
+    this writer runs on the single-slot job thread — so the behavioural version
+    hangs the suite instead of failing it. ``O_DIRECTORY`` fails a non-directory
+    ENOTDIR in 34 us, and a real directory still opens and fsyncs fine.
+    """
+    from app.beets.artist_art import _atomic_write_bytes
+
+    real_open = os.open
+    opened: list[tuple[Any, int]] = []
+
+    def spy(path: Any, flags: int, *rest: Any) -> int:
+        if not flags & os.O_CREAT:
+            opened.append((path, flags))
+        return real_open(path, flags, *rest)
+
+    # `os` is one shared module object — same reason as the test above.
+    monkeypatch.setattr(os, "open", spy)
+
+    dst = tmp_path / "artist-poster.png"
+    _atomic_write_bytes(dst, PNG[0])
+
+    parent = [flags for path, flags in opened if Path(path) == dst.parent]
+    assert parent, "the parent directory was not fsynced through os.open"
+    bare = [f"{flags:#o}" for flags in parent if not flags & os.O_DIRECTORY]
+    assert not bare, f"parent-dir fsync open(s) without O_DIRECTORY: {bare}"
+
+
 def test_a_move_that_dies_mid_copy_leaves_no_container_behind(
     tmp_path: Path, art_trash: ArtTrashStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

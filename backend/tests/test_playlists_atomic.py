@@ -40,6 +40,34 @@ def test_secret_tempfile_is_created_with_the_restrictive_mode(
     assert captured == [0o600]
 
 
+def test_the_parent_dir_fsync_open_carries_o_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dir open in the tail of the recipe, which every caller of this shared
+    primitive inherits.
+
+    A flag pin, not a behavioural one: measured, a FIFO swapped in at that path
+    makes the bare ``os.O_RDONLY`` open block FOREVER (still blocked after 2 s,
+    no error), so the behavioural version hangs instead of going red.
+    ``O_DIRECTORY`` fails a non-directory ENOTDIR in 34 us.
+    """
+    real_open = os.open
+    opened: list[tuple[object, int]] = []
+
+    def spy_open(path: object, flags: int, mode: int = 0o777, *args: object) -> int:
+        if not flags & os.O_CREAT:
+            opened.append((path, flags))
+        return real_open(path, flags, mode, *args)  # type: ignore[arg-type]  # pass-through spy
+
+    monkeypatch.setattr(os, "open", spy_open)
+    write_atomic_text(tmp_path / "playlist.m3u8", "hello\n")
+
+    parent = [flags for path, flags in opened if Path(str(path)) == tmp_path]
+    assert parent, "the parent directory was not fsynced through os.open"
+    bare = [f"{flags:#o}" for flags in parent if not flags & os.O_DIRECTORY]
+    assert not bare, f"parent-dir fsync open(s) without O_DIRECTORY: {bare}"
+
+
 def test_secret_final_file_is_owner_only(tmp_path: Path) -> None:
     target = tmp_path / "token.json"
     write_atomic_text(target, "s3cret", mode=0o600)
