@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import shutil
 from collections.abc import Callable
 from contextlib import suppress
@@ -131,27 +132,42 @@ def active_source_names(plugin: Any) -> list[str]:
     return [_backend_name(b) for b in getattr(plugin, "backends", [])]
 
 
-#: Flags for creating the atomic-write temp file. ``O_EXCL`` is the load-bearing
-#: one: a FIFO planted at our derived ``.<name>.tmp`` path would make a plain
-#: ``open(tmp, "w")`` block until a reader appears — forever, with no timeout, on
-#: the single-slot backfill worker. Creating exclusively fails EEXIST instead,
-#: which the caller already logs and swallows. ``O_NOFOLLOW`` is belt-and-braces:
-#: POSIX makes ``O_CREAT | O_EXCL`` fail EEXIST on a symlink anyway (measured), so
-#: it only earns its keep if ``O_EXCL`` is ever dropped. Same hazard, and the same
-#: answer, as :func:`_is_marker_sidecar`'s stat guard on the read side.
+#: Flags for creating the atomic-write temp file, beside the unpredictable name
+#: :func:`_tmp_path` picks. ``O_EXCL`` makes the create fail rather than open
+#: whatever is at that path — a FIFO there made a plain ``open(tmp, "w")`` block
+#: until a reader appeared, forever, on the single-slot backfill worker.
+#: ``O_NOFOLLOW`` refuses a symlink; POSIX makes ``O_CREAT | O_EXCL`` fail EEXIST
+#: on one anyway (measured), so it earns its keep only if ``O_EXCL`` is dropped.
+#: With the random name both now guard a path nothing else can aim at, which is
+#: what makes this writer's temp file unreachable from the music share — the
+#: read-side twin is :func:`_is_marker_sidecar`'s stat guard.
 _TMP_CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+
+
+def _tmp_path(dst: Path) -> Path:
+    """A temp sibling of ``dst`` under a name picked per call, not derived.
+
+    Sidecars are written inside the music library, which this deployment's
+    threat model treats as attacker-writable, and a derived ``.<name>.tmp`` is a
+    path something else can occupy first — measured on the art writer next door:
+    a symlink planted there was followed and ``os.replace`` published the link as
+    the destination. Here the flags above already refused that; the random name
+    is what keeps a squatter from refusing the WRITE instead (a FIFO at the
+    derived path made every attempt for that track fail EEXIST). Same naming
+    rule as ``app.playlists.atomic`` and ``artist_art._tmp_path``.
+    """
+    return dst.parent / f".{dst.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
 
 
 def _atomic_write_text(dst: Path, text: str) -> None:
     """Atomic utf-8 write (text mirror of ``artist_art._atomic_write_bytes``):
-    tmp created EXCLUSIVELY in the same dir (see :data:`_TMP_CREATE_FLAGS`) ->
-    fsync -> dst mode preserved on rewrite (umask default on first write) ->
-    os.replace -> fsync parent dir.
+    an unpredictable tmp created EXCLUSIVELY in the same dir (:func:`_tmp_path`,
+    :data:`_TMP_CREATE_FLAGS`) -> fsync -> dst mode preserved on rewrite (umask
+    default on first write) -> os.replace -> fsync parent dir.
 
-    Raises ``OSError`` — including ``FileExistsError`` when anything at all
-    occupies the temp path — and the caller decides what that means.
+    Raises ``OSError`` and the caller decides what that means.
     """
-    tmp = dst.parent / f".{dst.name}.tmp"
+    tmp = _tmp_path(dst)
     try:
         # 0o666 so the first write still takes the umask default, as the mode
         # test pins; a rewrite has its mode restored by the copymode below.
@@ -174,11 +190,10 @@ def _atomic_write_text(dst: Path, text: str) -> None:
         finally:
             os.close(dir_fd)
     finally:
-        # Clears our own leftover AND whatever squatted at the temp path, so an
-        # EEXIST refusal self-heals on the next call instead of wedging this
-        # track forever (a crashed run leaves a stale .tmp the same way). A
-        # dangling symlink is the one squatter this misses — exists() follows it
-        # — which stays a safe, logged, repeated refusal rather than a block.
+        # Our own leftover, and only ours: the name is this call's, so nothing
+        # here deletes a path somebody else put in the music folder. The price
+        # is that a process KILLED mid-write leaves one dotfile no later call
+        # clears — the residual ``playlists.atomic`` already carries.
         if tmp.exists():
             with suppress(OSError):
                 tmp.unlink()

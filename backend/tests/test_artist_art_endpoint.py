@@ -121,14 +121,16 @@ def test_apply_asks_for_a_forcing_run_and_backfill_does_not(
     assert jobs == [True, False]
 
 
-def test_a_forced_job_is_handed_the_checked_trash_store(
+def test_a_forced_job_is_handed_a_resolver_for_the_checked_trash_store(
     monkeypatch: pytest.MonkeyPatch, edit_lib: Library, tmp_path: Path
 ) -> None:
-    """The job thread has no Settings/handle pair, so the start site resolves the
-    Trash store for it — the same checked pair every delete path takes. Without
-    it a forced run could not move a replaced file aside, and would refuse to
-    write at all."""
+    """The job thread has no Settings/handle pair, so the start site hands it a
+    resolver for the same checked pair every delete path takes. A CALLABLE, not
+    a resolved pair: ``checked_store_dirs`` checks at the moment of use and the
+    job asks it again per artist. Without it a forced run could not move a
+    replaced file aside, and would refuse to write at all."""
     from types import SimpleNamespace
+    from typing import Any
 
     import app.api.artists as artists_mod
     from app.artist_art_jobs.registry import ArtistArtBackfillRegistry
@@ -136,11 +138,11 @@ def test_a_forced_job_is_handed_the_checked_trash_store(
     from app.beets.store_layout import checked_store_dirs
     from app.config import settings
 
-    kwargs: list[object] = []
+    resolvers: list[Any] = []
     monkeypatch.setattr(
         artists_mod,
         "start_art_backfill",
-        lambda _reg, _lib, **kw: kwargs.append(kw["trash"]),
+        lambda _reg, _lib, **kw: resolvers.append(kw["resolve_trash"]),
     )
     handle = make_test_handle(edit_lib, beets_dir_for(tmp_path))
     stub_app = SimpleNamespace(state=SimpleNamespace(settings=None, beets_library=handle))
@@ -150,7 +152,9 @@ def test_a_forced_job_is_handed_the_checked_trash_store(
     artists_mod._start(stub_app, reg, edit_lib, force=False, artist=None)
 
     trash_dir, origins_dir = checked_store_dirs(settings, handle)
-    assert kwargs == [ArtTrashStore(trash_dir=trash_dir, origins_dir=origins_dir), None]
+    forced, unforced = resolvers
+    assert unforced is None  # the skip-existing sweep replaces nothing
+    assert forced() == ArtTrashStore(trash_dir=trash_dir, origins_dir=origins_dir)
 
 
 def test_a_refused_store_layout_still_starts_the_job_with_no_store(
@@ -160,6 +164,7 @@ def test_a_refused_store_layout_still_starts_the_job_with_no_store(
     reports every folder whose art it would have replaced as failed rather than
     replacing it. Declaring a new status here would change the contract."""
     from types import SimpleNamespace
+    from typing import Any
 
     import app.api.artists as artists_mod
     from app.artist_art_jobs.registry import ArtistArtBackfillRegistry
@@ -168,14 +173,16 @@ def test_a_refused_store_layout_still_starts_the_job_with_no_store(
     def refuse(*_a: object, **_kw: object) -> tuple[Path, Path]:
         raise StoreLayoutError("Trash is inside the music library")
 
-    kwargs: list[object] = []
+    resolvers: list[Any] = []
     monkeypatch.setattr(artists_mod, "checked_store_dirs", refuse)
     monkeypatch.setattr(
-        artists_mod, "start_art_backfill", lambda _reg, _lib, **kw: kwargs.append(kw["trash"])
+        artists_mod,
+        "start_art_backfill",
+        lambda _reg, _lib, **kw: resolvers.append(kw["resolve_trash"]),
     )
     handle = make_test_handle(edit_lib, beets_dir_for(tmp_path))
     stub_app = SimpleNamespace(state=SimpleNamespace(settings=None, beets_library=handle))
 
     artists_mod._start(stub_app, ArtistArtBackfillRegistry(), edit_lib, force=True, artist="ABBA")
 
-    assert kwargs == [None]  # started, with nowhere to put a replaced file
+    assert resolvers[0]() is None  # started, with nowhere to put a replaced file

@@ -943,6 +943,10 @@ def trash_replaced_files(
         # it came out of. Nothing moved means nothing to say — and an empty
         # container would sit in the Trash page forever.
         if moved:
+            # ``origin`` is recorded unchecked, and ``moved="items"`` is what
+            # makes that safe: ``trash_origins.move_back_target`` returns None on
+            # any record that is not ``moved="folder"``, before it reaches its
+            # lexical containment test, so no path here ever steers a rename.
             _record_origin(origins_dir, dest, origin=os.path.abspath(str(origin)), moved="items")
         else:
             with contextlib.suppress(OSError):

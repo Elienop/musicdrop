@@ -44,10 +44,11 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   writes `artist-poster.*` and `artist-background.*` into each of an artist's folders, the names
   Plex's Local Media Assets reads. The library-wide backfill in that panel fills gaps only. An
   artist page's **Save art to library** button replaces what is there: the poster/background it
-  overwrites go to the Trash first, one entry per artist folder, so a file you placed by hand can
-  be recovered under **Settings → Trash**. If the Trash cannot be used, that folder is reported
-  failed and its files are left alone. Renaming or merging an artist writes art only where it is
-  missing — a merge never replaces the target's art.
+  overwrites go to the Trash first, one entry per artist folder. To get a file you placed by hand
+  back, copy it out of `data/beets/trash/` — the Trash page's Restore cannot re-file loose images.
+  If the Trash cannot be used, that folder is reported failed and its files are left alone.
+  Renaming or merging an artist writes art only where it is missing — a merge never replaces the
+  target's art.
 - **Lyrics** — presence, per-album fetch, and a library-wide backfill. The backfill is
   **fill-gaps-only on disk**: it writes a `.lrc`/`.txt` sidecar only where none exists and
   never deletes or replaces one you already have. The one exception is a sidecar whose

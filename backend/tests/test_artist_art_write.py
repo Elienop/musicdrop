@@ -108,14 +108,19 @@ def test_force_moves_the_replaced_file_to_trash(
 
 
 def test_force_refuses_the_write_when_the_replaced_file_cannot_be_trashed(
-    edit_lib: Library,
+    edit_lib: Library, tmp_path: Path
 ) -> None:
     """No usable Trash store means the curated file stays and the folder fails —
     the one thing a forced write must never do is destroy it anyway."""
     name = _artist_of(edit_lib)
-    # A store under / that this process cannot create: require_usable_store's
-    # mkdir probe raises EACCES for a non-root user.
-    store = ArtTrashStore(trash_dir=Path("/x-musicdrop"), origins_dir=Path("/x-musicdrop"))
+    # A regular FILE where the origin store should be: require_usable_store's
+    # mkdir probe raises EEXIST on it for EVERY user (its docstring measured
+    # that shape). A path under / would instead lean on EACCES, which root does
+    # not get — as root that test created the directory and passed for the
+    # wrong reason.
+    blocked = tmp_path / "origins-is-a-file"
+    blocked.write_bytes(b"")
+    store = ArtTrashStore(trash_dir=tmp_path / "trash", origins_dir=blocked)
     dirs = get_artist_dirs(edit_lib, name)
     for d in dirs:  # the curated file, seeded by hand
         (d / "artist-poster.png").write_bytes(PNG[0])
@@ -231,3 +236,93 @@ def test_force_refuses_the_write_when_no_trash_store_was_given(edit_lib: Library
     assert (out.status, out.written) == ("failed", 0)
     for d in dirs:
         assert (d / "artist-poster.jpg").read_bytes() == PNG[0]
+
+
+def test_a_symlink_at_the_derived_tmp_path_is_neither_followed_nor_published(
+    tmp_path: Path,
+) -> None:
+    """The temp file's name is this call's, so a planted one is not in the way.
+
+    The artist folder is inside the music library, which this deployment treats
+    as attacker-writable. With a derived ``.<name>.tmp`` a symlink planted there
+    was followed by the write and then published AS the destination by
+    ``os.replace`` — measured, ``library.db`` overwritten with image bytes while
+    the run reported the file written.
+    """
+    from app.beets.artist_art import _atomic_write_bytes
+
+    secret = tmp_path / "library.db"
+    secret.write_bytes(b"the beets database")
+    dst = tmp_path / "artist-poster.png"
+    planted = tmp_path / f".{dst.name}.tmp"  # exactly the path the writer used to derive
+    planted.symlink_to(secret)
+
+    _atomic_write_bytes(dst, PNG[0])
+
+    assert secret.read_bytes() == b"the beets database"  # not written through
+    assert not dst.is_symlink()  # the destination is the file itself, not the link
+    assert dst.is_file()
+    assert dst.read_bytes() == PNG[0]
+    assert planted.is_symlink()  # left where it was, not deleted by our cleanup
+    # and no temp of ours survived the write
+    assert sorted(p.name for p in tmp_path.iterdir()) == [planted.name, dst.name, secret.name]
+
+
+def test_a_dot_leading_artist_folder_gets_a_listed_trash_container(
+    tmp_path: Path, art_trash: ArtTrashStore
+) -> None:
+    """Every container this mover makes must show up on the Trash page.
+
+    ``trash_manage._audio_free_entries`` skips a dot-leading top-level entry,
+    while ``empty_all`` still removes it — so a folder named ``.hack`` (or a
+    beets path whose last component is ``..``) would put a row in Trash the user
+    never sees and Empty-all deletes.
+    """
+    from app.beets.artist_art import _move_aside
+
+    music = tmp_path / "music"
+    folder = music / ".hack"
+    folder.mkdir(parents=True)
+    curated = folder / "artist-poster.png"
+    curated.write_bytes(PNG[0])
+
+    _move_aside(folder, [curated], trash=art_trash)
+
+    listed = list_trashed_albums(
+        art_trash.trash_dir, origins_dir=art_trash.origins_dir, music_dir=str(music)
+    )
+    assert [row.folder for row in listed] == ["hack - artist art"]
+    assert (art_trash.trash_dir / "hack - artist art" / "artist-poster.png").read_bytes() == PNG[0]
+
+
+def test_a_failed_second_write_keeps_the_count_of_the_first(
+    edit_lib: Library, art_trash: ArtTrashStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A replacement that landed is reported even when the next file fails.
+
+    The old poster is in Trash and the new one is on disk, so an outcome of
+    ``written=0`` would tell the user nothing happened to a folder that was just
+    rewritten. The folder still reports ``failed`` — one file did not make it.
+    """
+    import app.beets.artist_art as artist_art
+
+    name = _artist_of(edit_lib)
+    write_artist_art(edit_lib, name, poster=PNG, background=None, force=True, trash=art_trash)
+    real = artist_art._atomic_write_bytes
+    calls: list[Path] = []
+
+    def flaky(dst: Path, data: bytes) -> None:
+        calls.append(dst)
+        if len(calls) > 1:  # the background, after the poster has landed
+            raise OSError(13, "Permission denied", str(dst))
+        real(dst, data)
+
+    monkeypatch.setattr(artist_art, "_atomic_write_bytes", flaky)
+    out = write_artist_art(edit_lib, name, poster=JPG, background=JPG, force=True, trash=art_trash)
+
+    assert (out.status, out.written) == ("failed", 1)
+    for d in get_artist_dirs(edit_lib, name):
+        assert (d / "artist-poster.jpg").read_bytes() == JPG[0]  # the replacement landed
+        assert not (d / "artist-background.jpg").exists()  # the one that failed did not
+        # and the file it replaced is in Trash, not back in the folder
+        assert (art_trash.trash_dir / f"{d.name} - artist art" / "artist-poster.png").is_file()

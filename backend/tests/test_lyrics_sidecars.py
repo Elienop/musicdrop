@@ -108,41 +108,63 @@ def test_atomic_write_text_preserves_tightened_mode(tmp_path: Path) -> None:
     assert dst.read_text(encoding="utf-8") == "second\n"
 
 
-def test_a_fifo_at_the_tmp_path_neither_blocks_nor_writes(tmp_path: Path) -> None:
+def test_a_fifo_at_the_derived_tmp_path_neither_blocks_nor_stops_the_write(
+    tmp_path: Path,
+) -> None:
     """The write side of the same hazard the matcher's stat guard closes.
 
-    ``_atomic_write_text`` writes through a derived ``.<name>.tmp`` sibling, and a
-    FIFO planted there makes a plain ``open(tmp, "w")`` block until a reader
-    appears — forever, on the single-slot backfill worker. Creating the temp file
-    exclusively turns that into an immediate EEXIST, which the writer's existing
-    best-effort handling logs and swallows. This test completing at all is the
-    no-hang proof."""
+    A FIFO at the path this writer used to DERIVE (``.<name>.tmp``) made a plain
+    ``open(tmp, "w")`` block until a reader appeared — forever, on the
+    single-slot backfill worker — and then, once the create went exclusive, made
+    every attempt for that track fail EEXIST instead. The temp name is picked per
+    call now, so the squatter is simply not in the way. This test completing at
+    all is the no-hang proof."""
     from app.beets.lyrics import write_lyric_sidecar
 
     track = tmp_path / "t.flac"
     track.write_bytes(b"")
-    os.mkfifo(tmp_path / ".t.txt.tmp")  # exactly the path the writer derives
+    fifo = tmp_path / ".t.txt.tmp"
+    os.mkfifo(fifo)  # exactly the path the writer used to derive
 
-    assert write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN)) is None
-
-    assert not (tmp_path / "t.txt").exists()  # nothing half-written was left behind
-
-
-def test_a_squatted_tmp_path_is_not_a_permanent_lockout(tmp_path: Path) -> None:
-    """Refusing on EEXIST must not wedge the track forever: the writer's own
-    ``finally`` clears whatever sat at its temp path, so the NEXT write succeeds.
-    Covers a crashed run's leftover ``.tmp`` as much as a planted one."""
-    from app.beets.lyrics import write_lyric_sidecar
-
-    track = tmp_path / "t.flac"
-    track.write_bytes(b"")
-    os.mkfifo(tmp_path / ".t.txt.tmp")
-
-    assert write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN)) is None
     out = write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN))
 
     assert out == str(tmp_path / "t.txt")
     assert "line one" in (tmp_path / "t.txt").read_text(encoding="utf-8")
+    assert stat.S_ISFIFO(os.lstat(fifo).st_mode)  # left where it was, not ours to delete
+
+
+def test_a_symlink_at_the_derived_tmp_path_is_neither_followed_nor_published(
+    tmp_path: Path,
+) -> None:
+    """Sidecars are written inside the music library, which this deployment
+    treats as attacker-writable, so a symlink can be waiting at any name this
+    writer can derive. Measured on the art writer next door before its fix: the
+    write went through the link and ``os.replace`` published the link itself as
+    the destination."""
+    from app.beets.lyrics import write_lyric_sidecar
+
+    secret = tmp_path / "secret.db"
+    secret.write_bytes(b"not lyrics")
+    track = tmp_path / "t.flac"
+    track.write_bytes(b"")
+    planted = tmp_path / ".t.txt.tmp"
+    planted.symlink_to(secret)
+
+    out = write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN))
+
+    assert out == str(tmp_path / "t.txt")
+    assert secret.read_bytes() == b"not lyrics"  # not written through
+    txt = tmp_path / "t.txt"
+    assert not txt.is_symlink()  # the destination is the file itself, not the link
+    assert txt.is_file()
+    assert "line one" in txt.read_text(encoding="utf-8")
+    # the planted link stays, and no temp of ours survived the write
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        planted.name,
+        secret.name,
+        track.name,
+        txt.name,
+    ]
 
 
 def test_the_tmp_file_is_created_exclusively_and_without_following_symlinks(

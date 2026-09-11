@@ -7,14 +7,17 @@ Plex can read it. Plex's Local Media Assets reads ``artist-poster.<ext>`` +
 
 Those filenames are also what a person curates by hand, so a ``force`` write
 does not unlink what it replaces: the files it would overwrite go to the app's
-Trash first (:func:`app.beets.trash.trash_replaced_files`), and a folder whose
-old files could not be moved aside is left alone and reported failed.
+Trash first (:func:`app.beets.trash.trash_replaced_files`). Nothing is written
+into a folder whose old files did not all move aside: that folder is reported
+failed, the files that did not move are still there, and any that did are in
+the folder's recorded Trash entry.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import secrets
 import shutil
 from contextlib import suppress
 from dataclasses import dataclass
@@ -48,8 +51,10 @@ class ArtTrashRefusedError(Exception):
 
     One type for every way that can happen — no store resolved for this run, a
     store the app cannot use, an entry that is not a file, a failed move — so
-    the caller has one arm to take and the file it would have replaced is
-    provably still there when it is taken.
+    the caller has one arm to take, and nothing is written into that folder when
+    it is taken. ``trash_replaced_files`` moves file by file and keeps a record
+    for whatever moved, so a move that failed part-way through leaves the
+    earlier files in that Trash entry and the rest where they were.
     """
 
 
@@ -76,13 +81,44 @@ def get_artist_dirs(lib: Any, name: str) -> list[Path]:
     return sorted(dirs)
 
 
+#: Flags for creating the atomic-write temp file, beside the unpredictable name
+#: :func:`_tmp_path` picks. ``O_EXCL`` refuses an existing path instead of
+#: opening it, ``O_NOFOLLOW`` refuses a symlink. Same pair, same reason, as
+#: ``lyrics._TMP_CREATE_FLAGS``.
+_TMP_CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+
+
+def _tmp_path(dst: Path) -> Path:
+    """A temp sibling of ``dst`` under a name picked per call, not derived.
+
+    This writer's directory is inside the music library, which this
+    deployment's threat model treats as attacker-writable, and a derived
+    ``.<name>.tmp`` is a path something else can occupy first: a symlink planted
+    there was followed by ``open(tmp, "wb")``, and ``os.replace`` then published
+    the link itself as ``dst`` — measured, ``library.db`` overwritten with JPEG
+    bytes while the run reported the file written. Same naming rule as
+    ``app.playlists.atomic``, which also keeps two concurrent writers of one
+    target off a single inode.
+    """
+    return dst.parent / f".{dst.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+
+
 def _atomic_write_bytes(dst: Path, data: bytes) -> None:
-    """Atomic write (bytes variant of config_editor.atomic_write): tmp in same dir
-    -> fsync -> dst mode preserved on rewrite (umask default on first write)
-    -> os.replace -> fsync parent dir."""
-    tmp = dst.parent / f".{dst.name}.tmp"
+    """Atomic write (bytes variant of config_editor.atomic_write): an
+    unpredictable tmp in the same dir (:func:`_tmp_path`) -> fsync -> dst mode
+    preserved on rewrite (umask default on first write) -> os.replace -> fsync
+    parent dir."""
+    tmp = _tmp_path(dst)
     try:
-        with open(tmp, "wb") as f:
+        # 0o666 so the first write still takes the umask default, as the mode
+        # test pins; a rewrite has its mode copied from dst below.
+        fd = os.open(tmp, _TMP_CREATE_FLAGS, 0o666)
+        try:
+            stream = os.fdopen(fd, "wb")
+        except BaseException:  # pragma: no cover - fdopen fails only on a bad fd
+            os.close(fd)
+            raise
+        with stream as f:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
@@ -95,6 +131,8 @@ def _atomic_write_bytes(dst: Path, data: bytes) -> None:
         finally:
             os.close(dir_fd)
     finally:
+        # Ours alone, since the name is this call's — see ``lyrics`` for the one
+        # residual that leaves (a process killed mid-write leaves the dotfile).
         if tmp.exists():
             with suppress(OSError):
                 tmp.unlink()
@@ -133,6 +171,22 @@ def _folder_plan(
     return plan
 
 
+#: What a container is called when the artist folder's name is all dots. Any
+#: word does; this one reads in the Trash page's single column.
+_UNNAMED_FOLDER = "artist"
+
+
+def _container_name(directory: Path) -> str:
+    """The Trash container's name for one artist folder.
+
+    Leading dots are dropped because ``trash_manage._audio_free_entries`` skips
+    a dot-leading top-level entry when it lists the Trash, while
+    ``empty_all`` still removes it: an artist folder named ``.hack`` would put a
+    container in Trash that the page never shows and Empty-all deletes.
+    """
+    return f"{directory.name.lstrip('.') or _UNNAMED_FOLDER} - artist art"
+
+
 def _move_aside(directory: Path, replaced: list[Path], *, trash: ArtTrashStore | None) -> None:
     """Move this folder's replaced poster/background files to Trash, or refuse.
 
@@ -147,7 +201,7 @@ def _move_aside(directory: Path, replaced: list[Path], *, trash: ArtTrashStore |
     try:
         trash_replaced_files(
             replaced,
-            container_name=f"{directory.name} - artist art",
+            container_name=_container_name(directory),
             origin=directory,
             trash_dir=trash.trash_dir,
             origins_dir=trash.origins_dir,
@@ -165,24 +219,35 @@ def _move_aside(directory: Path, replaced: list[Path], *, trash: ArtTrashStore |
 
 def _write_folder(
     directory: Path, plan: list[_PendingWrite], *, force: bool, trash: ArtTrashStore | None
-) -> int:
-    """Write one folder's planned files; returns how many were written.
+) -> tuple[int, bool]:
+    """Write one folder's planned files; returns ``(written, failed)``.
 
     Order is the contract: every file this write replaces goes to Trash FIRST,
-    and a refusal there raises before anything is written, so a folder whose old
-    art could not be moved aside still holds it.
+    and a refusal there raises before anything is written, so nothing is written
+    into a folder whose old art did not move aside.
+
+    A failed write is caught per FILE rather than left to the caller: the
+    folder's second file can fail after its first has already landed, and a
+    count lost at that point would report an artist whose art was replaced as
+    having written nothing.
     """
     if force:
         replaced = [old for pending in plan for old in pending.existing]
         if replaced:
             _move_aside(directory, replaced, trash=trash)
     written = 0
+    failed = False
     for pending in plan:
         if pending.existing and not force:
             continue  # skip-existing
-        _atomic_write_bytes(pending.dst, pending.data)
-        written += 1
-    return written
+        try:
+            _atomic_write_bytes(pending.dst, pending.data)
+        except OSError:
+            _log.warning("artist art was not written to %r", str(pending.dst), exc_info=True)
+            failed = True
+        else:
+            written += 1
+    return written, failed
 
 
 def has_background(lib: Any, name: str) -> bool:
@@ -206,14 +271,19 @@ def write_artist_art(
     force: bool,
     trash: ArtTrashStore | None,
 ) -> ArtistArtOutcome:
-    """Write poster/background into each of the artist's folders. A single-folder
-    IO error is recorded (status='failed' if nothing else wrote), never raised.
+    """Write poster/background into each of the artist's folders. An IO error is
+    recorded (status='failed', ``written`` still counting what landed), never
+    raised.
 
     ``force`` replaces what is already there; without it a folder that has the
     file is skipped. Replacing means moving the old file to Trash, so ``trash``
     is required rather than defaulted — a caller that has no store to name says
     so, and every folder holding art it would replace is then reported failed
     with its files untouched.
+
+    ``written`` counts the files that landed and ``status`` is ``failed`` as
+    soon as one did not, so a run that replaced some art and then failed reports
+    both halves instead of one.
     """
     dirs = get_artist_dirs(lib, name)
     if not dirs:
@@ -224,7 +294,7 @@ def write_artist_art(
     failed = False
     for directory in dirs:
         try:
-            written += _write_folder(
+            wrote, folder_failed = _write_folder(
                 directory,
                 _folder_plan(directory, poster=poster, background=background),
                 force=force,
@@ -232,11 +302,14 @@ def write_artist_art(
             )
         except (OSError, ArtTrashRefusedError):
             failed = True
+        else:
+            written += wrote
+            failed = failed or folder_failed
     status: ArtistArtStatus
-    if written:
-        status = "written"
-    elif failed:
+    if failed:
         status = "failed"
+    elif written:
+        status = "written"
     else:
         status = "skipped"
     return ArtistArtOutcome(artist=name, status=status, written=written, dirs=len(dirs))

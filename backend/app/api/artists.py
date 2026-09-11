@@ -1,4 +1,5 @@
 import logging
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Final, Literal, cast
 
@@ -987,6 +988,11 @@ async def stop_artist_art_backfill(
 def _art_trash_store(app: object, settings: Settings) -> ArtTrashStore | None:
     """Where a REPLACED poster/background goes, or ``None`` if it cannot be named.
 
+    Handed to the job as a callable, not a resolved pair: ``checked_store_dirs``
+    is a per-call check, and the job asks this again for every artist so a Trash
+    dir swapped for a symlink into the library after the start is refused for
+    the folders still to come.
+
     Only the forced write needs it, so only the forced write pays for the layout
     walk. ``None`` is the honest answer to a refused or unresolvable store, and
     it is not a 503 here: this route's job is to START a job, the run reports the
@@ -1028,9 +1034,10 @@ def _start(
         settings=app_settings,
         delay=delay,
         force=force,
-        # Resolved only for a forced run — the skip-existing sweep replaces
-        # nothing, so it has no file to move aside.
-        trash=_art_trash_store(app, app_settings) if force else None,
+        # Only a forced run gets a resolver — the skip-existing sweep replaces
+        # nothing, so it has no file to move aside. Not called here: the job
+        # asks it per artist, on its own thread.
+        resolve_trash=partial(_art_trash_store, app, app_settings) if force else None,
         artist=artist,
         # Repaint open tabs when the run finishes (fired from the daemon thread;
         # the broker hops onto the main loop via call_soon_threadsafe). UNSCOPED:
