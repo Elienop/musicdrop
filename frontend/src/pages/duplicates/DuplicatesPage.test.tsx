@@ -411,6 +411,17 @@ describe("DuplicatesPage", () => {
     expect(covers[0].getAttribute("src")).toBe("/api/albums/1/cover?size=thumb");
     // The quality/meta line folded into the row.
     expect(screen.getByText(/2007 · 10 tracks · FLAC · 900k/)).toBeInTheDocument();
+    // The keeper radio and the row share grid row 1; the folder path is row 2
+    // of the SAME column track (`col-start-2`), which is what keeps the radio
+    // centred on the row it selects instead of on row+path — measured 17px of
+    // drift when they shared one `items-center` box. jsdom computes no layout,
+    // so the two classes are what a test can hold.
+    const row = screen.getByRole("radio", { name: /Keep In Rainbows \(10 tracks\)/i })
+      .parentElement;
+    expect(row).toHaveClass("grid");
+    expect(screen.getByTitle("/music/Radiohead/In Rainbows")).toHaveClass(
+      "col-start-2",
+    );
   });
 
   test("a failed scan renders the shared inline ErrorState", async () => {
