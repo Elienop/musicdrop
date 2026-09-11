@@ -91,6 +91,32 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 ## Open bugs / hardening
 
+- **`/import`'s feed row starves its title exactly like the two `/review` rows did** — found
+  2026-09-11 while closing decisions 39, NOT fixed, and it corrects a premise that has stood
+  since #220: "`/import`'s feed row was clean" was about ink over a control, not about the
+  title. Measured in `/import?job=…` at 320→344 with a real 15px scrollbar, on the widest badge
+  the feed renders ("Already in library"): the title is `clientWidth` **0 at 320, 328, 336 and
+  344** on the `needs_dup_resolution` row and **0 at 320** on the `needs_review` one — the same
+  cause as the bank and decision rows (fixed content wider than the row, badge `shrink-0`, title
+  `min-w-0`). `FeedRow` (`ImportPage.tsx:856`) has the decision row's exact anatomy — AlbumRow
+  plus one action — so the remedy is the one already applied there: the row becomes a grid and
+  the action takes row 2 below a measured threshold (the decision row's is 20rem; this row's
+  action is `Review`/`Resolve`, so re-derive rather than copying the number). NOT done here
+  because decisions 39 names `/review`, and extending a ruling to a third surface is the owner's
+  call, not an application of it.
+
+- **`/browse`'s facet checkboxes get 20×24 of the new 24×24 tap target** — found 2026-09-11
+  while closing decisions 40, NOT fixed. The primitive's pseudo-element reaches 4px past the
+  drawn box on every side, but the facet rail (`BrowsePage.tsx:346`) is
+  `max-h-72 overflow-y-auto` and its content box starts at exactly the checkbox's left edge, so
+  the left 4px is clipped — `overflow-y: auto` alone makes `overflow-x` compute to `auto`, which
+  clips. Measured with `elementFromPoint` at 390px: **20×24**, against 16×16 before and 24×24 at
+  every other call site. Not a regression and not a neighbour collision (the 4px is page margin,
+  and the associated `<label>` beside it is 277px of target for the same control); the row pitch
+  is 26px, so SC 2.5.8's spacing exception is met either way. The fix is 4px of room inside the
+  clip — `-ml-1 pl-1` on the aside keeps every facet row's ink where it is — and it is a layout
+  change on a page the ruling does not name.
+
 - ~~**`tests/test_import_session.py::test_attended_astracks_lands_the_singletons_full_pipeline`
   writes to the developer's PERSONAL beets config dir**~~ — **FIXED on branch
   `fix/test-suite-beets-dir-isolation`, 2026-08-31.** (No sha cited: a branch-local one is
@@ -1659,8 +1685,27 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `Open`, inert (a tap there hits the badge)" sentence recorded here was wrong in both halves: the
   25px is real but it is not the badge, and there is no overlap for a tap to be inert against.
   What the 25px actually is, is below.
+  **The "Adjacent, NOT fixed" title-at-0px material above is CLOSED 2026-09-11** — on
+  `fix/phone-width-rows-and-hit-areas` (PR + squash sha cited at merge), vault decisions 39:
+  below 28rem of ROW the bank row's action group takes its own line under the row, so the text
+  column keeps the ~169px the group was taking. Re-measured over the same 201 widths with the
+  scrollbar present: the title is **23.02px at 320** (0 before) and never 0 at any width, on a
+  `needs_review` row carrying the widest badge the app can render ("Already in library",
+  107.98px) and its fourth control. Measured on TWO of `AlbumRow`'s FIVE call sites — the bank
+  row (`BankSection.tsx`) and the decision row (`ReviewPage.tsx`) — each with its own measured
+  threshold. The other three: the inbox row does not reproduce it (title never below 37.8px,
+  one control, no badge) and is untouched; `/duplicates`' member row has no action slot;
+  `/import`'s feed row DOES reproduce it and is NOT fixed — its own entry is under *Open bugs*.
+  `AlbumRow` itself is unchanged.
 
-- **A bank row's `Open` button is SLICED by the list's own `overflow-hidden`** — pre-existing,
+- ~~**A bank row's `Open` button is SLICED by the list's own `overflow-hidden`**~~ — **CLOSED
+  2026-09-11** (on `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at merge; vault
+  decisions 39): the button is on its own line under the row below 28rem, where the slice
+  happened, so the list's `overflow-hidden` has nothing to cut. Measured over the same 201
+  widths: **0 controls clipped at any width** on all five bank rows, against 24.78px of the
+  56.81px `Open` at 320 (16.78/8.78/0.78 at 328/336/344). Below is the original entry.
+
+  **A bank row's `Open` button is SLICED by the list's own `overflow-hidden`** — pre-existing,
   unchanged by this branch, NOT fixed (measured 2026-09-11). On a `needs_review` row, whose action
   slot holds Ignore + Remove + Open, the button is **56.81px** wide and the `<ul>`'s
   `overflow-hidden rounded-xl border` cuts **24.78px of it at 320** — 16.78 at 328, 8.78 at 336,
@@ -1671,7 +1716,17 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   it. Fixing it is the same density call as above — what wins the row at 320 — and it is the
   owner's.
 
-- **`AlbumRow`'s stacked meta line is cut mid-word with no ellipsis** — NOT fixed, and the
+- ~~**`AlbumRow`'s stacked meta line is cut mid-word with no ellipsis**~~ — **CLOSED
+  2026-09-11** (on `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at merge; vault
+  decisions 39), and NOT by the rejected `truncate`, which is still rejected for the reason
+  below. The cut was the column being too narrow for the word, and the dropped action line
+  gives that column the group's width back: re-measured over the same 201 widths, **0 widths
+  cut on every bank row**, against 13 widths and up to 51.86px hidden. The meta span is
+  byte-identical — `AlbumRow` was not touched, so `/duplicates` keeps its format and bitrate at
+  every width. `/import`'s feed row still carries the narrow-column cause (own entry below).
+  Below is the original entry, kept for the rejected fix's measurements.
+
+  **`AlbumRow`'s stacked meta line is cut mid-word with no ellipsis** — NOT fixed, and the
   candidate fix was built, measured and rejected (2026-09-11). The `overflow-hidden` added above
   sits on the subtitle/meta WRAPPER while `truncate` is on the sibling subtitle, so it never
   reaches the meta span. Stacked, that span is column-width and wraps, and any word wider than the
@@ -2007,7 +2062,7 @@ the condition it names has changed.
   widening `origin_occupied` to name the broken link is a contract change.
 
 - ~~**`awaiting_decision` can read true while beets works, and then STICKS**~~ — **FIXED on
-  `fix/import-feedback-residuals`** (2026-09-08; PR + squash sha cited at merge). The flag no
+  `fix/import-feedback-residuals`** (2026-09-08; **PR #220, squash `b8fb9f4` = v0.51.1**). The flag no
   longer comes from a consumer-side set of indices: `ImportBridge.has_unanswered_park` answers
   it from the park itself — a registered reply slot with no answer delivered into it — and
   `ImportJob.parked_awaiting` is gone with its two adds and both discards. The push marks the
@@ -2217,6 +2272,24 @@ the condition it names has changed.
   42 px). Fold the `AlphabetIndex` missing `shadow-xs` (already recorded below) into the
   same touch. Load-bearing on mobile: the segments are the image-source picker at
   `ArtistImageEditPanel.tsx:278`.
+  ~~**Two selection controls do NOT pass**~~ — **CLOSED 2026-09-11** (on
+  `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at merge; vault decisions 40).
+  Measured with `elementFromPoint`, walking outward from each control's centre, at all **six**
+  `Checkbox` call sites and the native radio; the drawn boxes are byte-identical (screenshot
+  crops of both controls, checked and unchecked, focused and not, hash the same before and
+  after) and nothing moved (every row rect identical). `Checkbox` 16×16 → a **24×24** target
+  from a pseudo-element in the primitive: `BankSection.tsx:291` (Select all) and `:495` (bank
+  row) 24×24, `ImportPlaylistsPage.tsx:409` 24×24, `MergePlaylistDialog.tsx:148` 24×24,
+  `PlaylistDetailPage.tsx:583` 51×24 (its wrapping label is wider), `BrowsePage.tsx:167`
+  **20×24 — the one that does not reach 24 in both axes**, because the facet rail is an
+  `overflow-y-auto` scroller whose content box starts at the checkbox's own left edge and clips
+  the pseudo's left 4px (`overflow-y` alone makes `overflow-x` compute to `auto`). Its own
+  entry is under *Open bugs*. `/duplicates`' keeper radio 13×13 → **45×37**, from a wrapping
+  `<label>` rather than a pseudo-element: Chromium renders `::before` on an `<input>` and
+  Firefox does not. **No enlarged area overlaps another control**: every control on all five
+  pages was hit-tested at its centre, its four edge midpoints and its four quarter points — 0
+  points taken by a neighbour. Below is the original entry.
+
   **Two selection controls do NOT pass** (measured 2026-09-08 and 2026-09-11). `Checkbox` (on
   `/review`'s bank rows): the shadcn primitive is `size-4`, so its hit rectangle is **16×16**,
   under SC 2.5.8's 24px Level AA minimum. That is the primitive's floor and it is app-wide, not a
@@ -2377,6 +2450,23 @@ Added by the 2026-08-28 sweeps:
 
 ## Recently shipped
 
+- **Import-feedback residuals — PR #220, squash `b8fb9f4` = v0.51.1 (2026-09-11).** The five
+  residuals #217 left: `awaiting_decision` answered from the park itself rather than a
+  consumer-side index set (struck above), a failed bank row's error moved out of `AlbumRow`'s
+  `shrink-0` meta slot onto its own line, `AlbumRow`'s subtitle/meta line clipped to its column
+  so its ink stops taking taps meant for `Ignore`, and the select checkbox re-centred on the row
+  it selects instead of on row+error. The widths it measured but did NOT fix — the 0px title,
+  the sliced `Open`, the mid-word meta cut — are the struck entries above, closed by decisions
+  39 on the branch after it.
+- **Import feedback — PR #217, squash `f08bc66` = v0.51.0 (2026-09-08).** How long a run has
+  taken and when it needs you. `ImportJobState` gains two server-side fields: `elapsed_seconds`
+  (the server's own monotonic clock, so a reload does not restart it and the browser's clock is
+  never consulted; it keeps counting while a job is parked and freezes at the first terminal
+  transition) and `awaiting_decision` (true while the worker is blocked in `park()` — not
+  inferable from row statuses, because an unattended duplicate skips without parking and a
+  `search` re-lookup keeps its row `needs_review` while beets works). The import page, its
+  status line and the empty state read both. The residuals it left are #220's entry above; the
+  four it recorded but did not fix are struck or open under their own entries.
 - **Trash and store containment — PR #215, squash `35d37bc` = v0.50.2 (2026-09-05).** Vault decision 35: a Trash inside the
   music library is allowed; one that is or contains the music library, the beets dir, the origin
   store or an app folder is refused at startup, on Save/Validate/Apply and at every destructive
