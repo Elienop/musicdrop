@@ -458,6 +458,10 @@ function GroupCard({
  * the distinguishing aunique `[NN]` suffix at the END of the path stays
  * reachable (an end-ellipsis would hide it; `title` still carries the whole
  * path for hover). */
+/** The suggested keeper's badge text — one spelling, on the badge and in the
+ * radio's accessible name. */
+const MOST_COMPLETE = "most complete";
+
 function MemberRow({
   album,
   name,
@@ -477,12 +481,15 @@ function MemberRow({
   // quality that exists has a single spelling: nothing to say → the clause is
   // absent; bitrate alone → the bitrate, with no leading `·`.
   const bitrate = album.bitrate_kbps ? `${album.bitrate_kbps}k` : null;
-  const parts = (format: string | null): string =>
-    [format, bitrate].filter((part) => part !== null).join(" · ");
-  const quality = parts(album.format ?? "-");
+  const parts = (format: string | null, rate: string | null): string =>
+    [format, rate].filter((part) => part !== null).join(" · ");
+  const quality = parts(album.format ?? "-", bitrate);
   const metaLine = `${album.year ?? "-"} · ${album.track_count} tracks · ${quality}`;
-  const nameQuality = parts(album.format);
+  const nameQuality = parts(album.format, bitrate);
   const nameSuffix = nameQuality === "" ? "" : `, ${nameQuality}`;
+  // The badge is a sibling text node, so a screen reader arrowing the group
+  // never hears which member the app recommends unless the name says so.
+  const nameTag = album.is_suggested_keeper ? `, ${MOST_COMPLETE}` : "";
   return (
     // The radio centres on the ROW it selects, never on row+path. An
     // `items-center` flex <li> holding both centred the control on the whole
@@ -525,11 +532,12 @@ function MemberRow({
           // count are the same on every option and the name alone ("Keep In
           // Rainbows (10 tracks)") named all of them identically. `quality` is
           // the same string the row renders — one spelling, not a second.
-          // It does not make the name unique when two members share a format
-          // AND a bitrate, nor when two have neither to show; the only
-          // always-distinct field is the folder path, and that is a design
-          // call parked in BACKLOG, not this fix.
-          aria-label={`Keep ${album.title} (${album.track_count} tracks${nameSuffix})`}
+          // The suggested keeper's name also ends in its badge text, so it is
+          // distinct from every sibling. Two NON-suggested members that share
+          // a format AND a bitrate, or have neither to show, still read the
+          // same; the only always-distinct field is the folder path, and that
+          // is a design call parked in BACKLOG, not this fix.
+          aria-label={`Keep ${album.title} (${album.track_count} tracks${nameSuffix})${nameTag}`}
         />
       </label>
       {/* ?size=thumb: AlbumRow renders the cover at size-10 (40 CSS px), so
@@ -567,7 +575,7 @@ function MemberRow({
                   of overflowing it. */}
               <Badge variant="secondary" className="whitespace-normal">
                 <Resolved aria-hidden="true" />
-                most complete
+                {MOST_COMPLETE}
               </Badge>
             </span>
           ) : (

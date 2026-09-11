@@ -466,6 +466,11 @@ describe("DuplicatesPage", () => {
     }
     const row = (await within(screen.getByRole("list")).findAllByRole("listitem"))[0];
     expect(unwiredContainerQueries(row)).toEqual([]);
+    // The one Badge default overridden, and the measurement that earns it: at
+    // viewport 320 the text column is 114px against a 114.61px label, and
+    // Badge's own `overflow-hidden whitespace-nowrap` cut 0.61px off it.
+    // Wrapping is allowed here; losing letters is not.
+    expect((badge as HTMLElement).className.split(/\s+/)).toContain("whitespace-normal");
   });
 
   test("the keeper radio's tap target is a wrapping label of at least 24px", async () => {
@@ -534,6 +539,11 @@ describe("DuplicatesPage", () => {
     // same string, not a second spelling of it.
     expect(names[0]).toContain("FLAC · 900k");
     expect(names[1]).toContain("MP3 · 320k");
+    // And the suggested keeper's name ends in its badge text — the badge is a
+    // sibling text node, so without this a screen reader arrowing the group
+    // never hears which member the app recommends.
+    expect(names[0]).toMatch(/, most complete$/);
+    expect(names[1]).not.toContain("most complete");
   });
 
   test("a keeper radio's name has no quality clause rather than a placeholder", async () => {
@@ -575,7 +585,7 @@ describe("DuplicatesPage", () => {
     // Nothing to say → the clause is absent. Bitrate only → the bitrate, with
     // no leading separator.
     expect(names).toEqual([
-      "Keep In Rainbows (10 tracks)",
+      "Keep In Rainbows (10 tracks), most complete",
       "Keep In Rainbows (10 tracks, 320k)",
     ]);
     // The rows' own meta lines are unchanged: `-` is a visual convention, and
