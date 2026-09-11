@@ -508,6 +508,54 @@ describe("DuplicatesPage", () => {
     expect(names[1]).toContain("MP3 · 320k");
   });
 
+  test("a keeper radio's name has no quality clause rather than a placeholder", async () => {
+    // The contract types both `format` and `bitrate_kbps` nullable. With both
+    // null the name read "Keep In Rainbows (10 tracks, -)" and with only the
+    // bitrate "(10 tracks, - · 320k)" — a placeholder voiced as "dash", read
+    // out of Chromium's AX tree. The VISIBLE meta keeps its `-`.
+    server.use(
+      http.get(DUP_URL, () =>
+        HttpResponse.json({
+          mode: "strict",
+          group_count: 1,
+          album_count: 2,
+          groups: [
+            {
+              match_reason: "MusicBrainz album id",
+              suggested_keeper_id: 1,
+              members: [
+                album({ id: 1, format: null, bitrate_kbps: null }),
+                album({
+                  id: 2,
+                  format: null,
+                  bitrate_kbps: 320,
+                  folder: "/music/Radiohead/In Rainbows (1)",
+                  is_suggested_keeper: false,
+                }),
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    renderPage();
+    await screen.findByText(/Matched on/i);
+
+    const names = screen
+      .getAllByRole("radio")
+      .map((r) => r.getAttribute("aria-label") ?? "");
+    // Nothing to say → the clause is absent. Bitrate only → the bitrate, with
+    // no leading separator.
+    expect(names).toEqual([
+      "Keep In Rainbows (10 tracks)",
+      "Keep In Rainbows (10 tracks, 320k)",
+    ]);
+    // The rows' own meta lines are unchanged: `-` is a visual convention, and
+    // the quality that exists is spelled once, the same way in both places.
+    expect(screen.getByText("2007 · 10 tracks · -")).toBeInTheDocument();
+    expect(screen.getByText("2007 · 10 tracks · - · 320k")).toBeInTheDocument();
+  });
+
   test("a failed scan renders the shared inline ErrorState", async () => {
     server.use(http.get(DUP_URL, () => new HttpResponse(null, { status: 500 })));
     renderPage();

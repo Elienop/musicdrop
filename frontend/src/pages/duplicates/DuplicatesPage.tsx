@@ -469,8 +469,19 @@ function MemberRow({
   checked: boolean;
   onChoose: () => void;
 }> ) {
-  const bitrateNote = ` · ${album.bitrate_kbps}k`;
-  const quality = `${album.format ?? "-"}${album.bitrate_kbps ? bitrateNote : ""}`;
+  // The contract types both `format` and `bitrate_kbps` nullable. The VISIBLE
+  // meta keeps `-` for a missing format (this page's placeholder convention);
+  // an accessible NAME must not carry it — a placeholder read aloud as "dash"
+  // names nothing, and with both fields null every member read
+  // "Keep X (10 tracks, -)", identical again. One join for both strings, so a
+  // quality that exists has a single spelling: nothing to say → the clause is
+  // absent; bitrate alone → the bitrate, with no leading `·`.
+  const bitrate = album.bitrate_kbps ? `${album.bitrate_kbps}k` : null;
+  const parts = (format: string | null): string =>
+    [format, bitrate].filter((part) => part !== null).join(" · ");
+  const quality = parts(album.format ?? "-");
+  const nameQuality = parts(album.format);
+  const nameSuffix = nameQuality === "" ? "" : `, ${nameQuality}`;
   return (
     // The radio centres on the ROW it selects, never on row+path. An
     // `items-center` flex <li> holding both centred the control on the whole
@@ -514,9 +525,10 @@ function MemberRow({
           // Rainbows (10 tracks)") named all of them identically. `quality` is
           // the same string the row renders — one spelling, not a second.
           // It does not make the name unique when two members share a format
-          // AND a bitrate; the only always-distinct field is the folder path,
-          // and that is a design call, not this fix.
-          aria-label={`Keep ${album.title} (${album.track_count} tracks, ${quality})`}
+          // AND a bitrate, nor when two have neither to show; the only
+          // always-distinct field is the folder path, and that is a design
+          // call parked in BACKLOG, not this fix.
+          aria-label={`Keep ${album.title} (${album.track_count} tracks${nameSuffix})`}
         />
       </label>
       {/* ?size=thumb: AlbumRow renders the cover at size-10 (40 CSS px), so
