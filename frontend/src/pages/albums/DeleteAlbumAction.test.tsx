@@ -68,6 +68,27 @@ describe("DeleteAlbumAction", () => {
     await waitFor(() => expect(screen.getByTestId("loc")).toHaveTextContent("/artists/"));
   });
 
+  it("reopens with no alert from a failed delete", async () => {
+    vi.spyOn(client, "DELETE").mockResolvedValue({
+      data: undefined,
+      error: { detail: "A library operation is in progress" },
+      response: { ok: false, status: 409 },
+    } as never);
+    renderAction();
+
+    const btn = screen.getByRole("button", { name: /delete album/i });
+    await userEvent.click(btn);
+    await userEvent.click(screen.getByRole("button", { name: /move to trash/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/library operation is in progress/i);
+
+    // The mutation outlives the dialog, so the next open must not inherit it.
+    await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    await userEvent.click(btn);
+    await screen.findByRole("alertdialog");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("does nothing when cancelled", async () => {
     const del = vi.spyOn(client, "DELETE");
     renderAction();

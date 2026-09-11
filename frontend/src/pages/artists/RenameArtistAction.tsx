@@ -178,8 +178,17 @@ function PreviewPanel({
  * the apply verb is aria-disabled until a fresh Preview exists, and any
  * keystroke re-gates. Buttons never go `disabled` (focus would strand on
  * <body>); busy is a non-visual channel (aria-disabled/aria-busy + spinner).
+ *
+ * `artWriteEnabled` mirrors the artist-art write toggle, because the server
+ * kicks the art job only when that toggle is on (`api/artists.py`
+ * `rename_artist_endpoint`). With it off the description must not promise an
+ * art write. Required, not defaulted: a silent default would put the sentence
+ * back on a fresh install, where the toggle ships off.
  */
-export function RenameArtistAction({ name }: Readonly<{ name: string }>) {
+export function RenameArtistAction({
+  name,
+  artWriteEnabled,
+}: Readonly<{ name: string; artWriteEnabled: boolean }>) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [newName, setNewName] = useState(name);
@@ -274,8 +283,9 @@ export function RenameArtistAction({ name }: Readonly<{ name: string }>) {
           <DialogTitle>Rename {name}</DialogTitle>
           <DialogDescription>
             Changes the album artist on every album by this artist and files the
-            folders under the new name. Track artists are not touched. Artist
-            art is written into the new folder only where it is missing.
+            folders under the new name. Track artists are not touched.
+            {artWriteEnabled &&
+              " Artist art is written into the new folder only where it is missing."}
           </DialogDescription>
         </DialogHeader>
 

@@ -40,7 +40,7 @@ function Loc() {
   return <div data-testid="loc">{useLocation().pathname}</div>;
 }
 
-function renderAction() {
+function renderAction(artWriteEnabled = true) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -52,7 +52,7 @@ function renderAction() {
             path="/artists/:name"
             element={
               <>
-                <RenameArtistAction name="Fayrouz" />
+                <RenameArtistAction name="Fayrouz" artWriteEnabled={artWriteEnabled} />
                 <Loc />
               </>
             }
@@ -76,17 +76,30 @@ async function openAndPreview() {
 describe("RenameArtistAction", () => {
   beforeEach(() => vi.restoreAllMocks());
 
+  // The server kicks the art job only when the write toggle is on, so the
+  // sentence promising it must follow the toggle.
+  it("names the art write only when the write toggle is on", async () => {
+    renderAction(true);
+    await userEvent.click(screen.getByRole("button", { name: /rename artist/i }));
+    expect(
+      await screen.findByText(/artist art is written into the new folder only where it is missing/i),
+    ).toBeInTheDocument();
+  });
+
+  it("omits the art note when the write toggle is off", async () => {
+    renderAction(false);
+    await userEvent.click(screen.getByRole("button", { name: /rename artist/i }));
+    // The rest of the description still renders — only the promise is gone.
+    expect(await screen.findByText(/track artists are not touched/i)).toBeInTheDocument();
+    expect(screen.queryByText(/artist art is written/i)).toBeNull();
+  });
+
   it("gates the apply verb on a fresh preview and re-gates on input change", async () => {
     const post = vi.spyOn(client, "POST").mockResolvedValue(ok(PREVIEW));
     renderAction();
 
     await userEvent.click(screen.getByRole("button", { name: /rename artist/i }));
     const input = screen.getByLabelText(/new name/i);
-    // The description says what the rename does to artist art: the new folder
-    // gets it only where it is missing (the apply runs force=False).
-    expect(
-      screen.getByText(/artist art is written into the new folder only where it is missing/i),
-    ).toBeInTheDocument();
     // Pre-preview the verb is "Apply"; a merge preview flips it to "Merge".
     expect(screen.getByRole("button", { name: /^apply/i })).toHaveAttribute(
       "aria-disabled",

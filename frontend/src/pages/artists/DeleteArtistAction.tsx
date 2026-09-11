@@ -32,7 +32,15 @@ export function DeleteArtistAction({
   const [open, setOpen] = useState(false);
 
   return (
-    <AlertDialog open={open} onOpenChange={setOpen}>
+    <AlertDialog
+      open={open}
+      onOpenChange={(next) => {
+        // The mutation outlives the dialog, so clear a failed attempt's alert
+        // on the way in rather than reopening onto it.
+        if (next) del.reset();
+        setOpen(next);
+      }}
+    >
       <AlertDialogTrigger asChild>
         <IconAction label="Delete artist">
           <Remove weight="thin" className="size-10" aria-hidden="true" />

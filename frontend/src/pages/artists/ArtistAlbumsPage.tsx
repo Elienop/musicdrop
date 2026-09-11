@@ -291,7 +291,9 @@ export function ArtistAlbumsPage() {
                   {writeEnabled && (
                     <ArtistArtStatus displayName={displayName} />
                   )}
-                  <RenameArtistAction name={artist} />
+                  {/* The art note in the rename dialog only holds while the
+                      write toggle is on — the server gates the art job on it. */}
+                  <RenameArtistAction name={artist} artWriteEnabled={writeEnabled} />
                   <DeleteArtistAction name={artist} albumCount={total} />
                 </>
               }
@@ -326,7 +328,8 @@ export function ArtistAlbumsPage() {
 }
 
 /** The per-artist "Save art to library" action (writes artist-poster /
- * artist-background files into the artist folder for Plex). Just the icon —
+ * artist-background files into EACH of the artist's folders for Plex —
+ * `beets/artist_art.write_artist_art`). Just the icon —
  * progress + the failed state show in the topbar activity popover.
  *
  * Behind a confirm, like every other action here that touches files on disk:
@@ -352,6 +355,9 @@ function ArtistArtStatus({ displayName }: Readonly<{ displayName: string }>) {
       open={open}
       onOpenChange={(next) => {
         if (next && busy) return; // job in flight — keep focus, open nothing
+        // The mutation outlives the dialog (this component stays mounted), so
+        // a failed start's alert would still be on screen at the next open.
+        if (next) start.reset();
         setOpen(next);
       }}
     >
@@ -368,12 +374,19 @@ function ArtistArtStatus({ displayName }: Readonly<{ displayName: string }>) {
           )}
         </IconAction>
       </AlertDialogTrigger>
-      <AlertDialogContent>
+      <AlertDialogContent
+        // Cancel is disabled while the start is in flight, so Escape has to be
+        // swallowed too — otherwise the dialog leaves and a failed start has
+        // nowhere to report.
+        onEscapeKeyDown={(e) => {
+          if (start.isPending) e.preventDefault();
+        }}
+      >
         <AlertDialogHeader>
           <AlertDialogTitle>Save art to library?</AlertDialogTitle>
           <AlertDialogDescription>
             Writes artist-poster and artist-background files into this
-            artist&rsquo;s folder. Files already there move to Trash first.
+            artist&rsquo;s folders. Existing ones move to Trash first.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {start.isError && (
