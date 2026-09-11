@@ -151,6 +151,21 @@ describe("ArtistAlbumsPage artist-art apply", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
+  // The other half of the start request's 10s bound (api/useArtistArt.ts owns
+  // the bound and its sentence): once the start rejects, the dialog has to be
+  // leavable again — both exits are shut while it is pending.
+  it("reports a timed-out start and hands both exits back", async () => {
+    applyMutate.mockRejectedValue(new Error("The request timed out."));
+    renderAt("ABBA");
+    await userEvent.click(screen.getByRole("button", { name: /save art to library/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Save art" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The request timed out.");
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  });
+
   it("starts nothing when the confirm is cancelled", async () => {
     renderAt("ABBA");
     const btn = screen.getByRole("button", { name: /save art to library/i });

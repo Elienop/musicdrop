@@ -55,7 +55,37 @@ describe("useStartArtistArtApply", () => {
     await result.current.mutateAsync();
     expect(post).toHaveBeenCalledWith("/api/artists/art/apply", {
       params: { query: { name: "ABBA" } },
+      signal: expect.any(AbortSignal),
     });
+  });
+
+  it("fails with a short message when the start does not answer within the bound", async () => {
+    vi.useFakeTimers();
+    try {
+      // Answers only when the signal fires, so the bound is the only thing
+      // that can end this call — a stalled proxy or a dropped connection.
+      vi.spyOn(client, "POST").mockImplementation((async (
+        _path: string,
+        init: { signal: AbortSignal },
+      ) =>
+        new Promise((_resolve, reject) => {
+          init.signal.addEventListener("abort", () => reject(new Error("aborted")));
+        })) as never);
+      const { result } = renderHook(() => useStartArtistArtApply("ABBA"), { wrapper: wrapper() });
+      const rejects = expect(result.current.mutateAsync()).rejects.toThrow(
+        "The request timed out.",
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejects;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a non-timeout failure's own message", async () => {
+    vi.spyOn(client, "POST").mockRejectedValue(new Error("Failed to fetch"));
+    const { result } = renderHook(() => useStartArtistArtApply("ABBA"), { wrapper: wrapper() });
+    await expect(result.current.mutateAsync()).rejects.toThrow("Failed to fetch");
   });
 
   it("throws the enable-first message on a 403 response", async () => {
