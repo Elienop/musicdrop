@@ -1166,14 +1166,14 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `fix/art-apply-keeps-hand-placed-art`; all Low, none exploitable for privilege.)
   (1) `trash_replaced_files` lstat-guards every file, then runs `require_usable_store`, the
   allocator and the container `mkdir` before the first `shutil.move` — first lstat to first
-  move measured at 0.13 ms; a directory renamed onto `artist-poster.jpg` in that window is
+  move measured at ~0.1 ms; a directory renamed onto `artist-poster.jpg` in that window is
   moved whole into the container (rename needs write on the source's parent, so only trees
   already inside the library can be renamed in; the reach is "attacker-owned data relocated
   into Trash"). (2) The container `mkdir()` is the claim on the name only for what predates
-  it: after it returns (mkdir to first move 6 µs) a symlink swapped in at the name is followed
-  by `shutil.move` — the file lands outside `trash_dir` — and on the `moved == 0` arm a real
-  directory renamed in is what `rmtree` removes (`rmtree` on a symlink raises, that half
-  holds). Precondition: write on `trash_dir`, which the layout rule permits when Trash sits
+  it: after it returns (mkdir to first move ~5 µs) a directory renamed onto the name (one
+  syscall) is what `rmtree` removes on the `moved == 0` arm, and a symlink put there (`rmdir`
+  + `symlink`, two) is followed by `shutil.move` — the file lands outside `trash_dir`
+  (`rmtree` on a symlink raises, that half holds). Precondition: write on `trash_dir`, which the layout rule permits when Trash sits
   strictly inside the music dir. (3) `O_NOFOLLOW` guards the final component only: with the
   artist folder itself a symlink (`/music/Artist -> /data`), `_atomic_write_bytes` and
   `_atomic_write_text` create the temp file and `os.replace` INSIDE the target — measured
