@@ -19,6 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { SEGMENT_SEP } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /**
@@ -131,27 +132,63 @@ function MatchHeader({
   return (
     <div className="flex flex-col gap-1">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <h1 tabIndex={-1} className="font-display text-display font-semibold tracking-tight">
+        {/* Both classes, and neither is enough alone — this heading is a flex
+            ITEM of the row above, unlike AlbumDetailPage's h1, which does the
+            job with `break-words` in normal flow. `min-w-0` is the rule
+            SettingsTrashPage.tsx:209-211 writes out: the item's default
+            `min-width: auto` floors it at the longest unbreakable token, and
+            `overflow-wrap` chooses where lines break without lowering that
+            floor. Measured at 360px with a 30-character artist and a
+            45-character album, as document scroll: 371px with neither, 371px
+            with `break-words` alone (the h1 box just grows past the viewport),
+            371px with `min-w-0` alone (the box is capped and the text spills
+            out of it instead — the element reports 395px), 0 with both. */}
+        <h1
+          tabIndex={-1}
+          className="font-display text-display font-semibold tracking-tight min-w-0 break-words"
+        >
           {after.artist ?? "Unknown artist"} - {after.album ?? "Unknown album"}
         </h1>
       </div>
-      <p className="text-muted-foreground flex items-center gap-2 text-sm">
+      {/* One text flow, not a flex row. As `flex items-center gap-2` this line
+          put every segment on one flex line, and at 360px the browser had to
+          squeeze the widest of them: measured 3 line boxes, with `items-center`
+          then parking the %, the separator and the `view` link on the middle
+          one. Normal inline layout wraps between words instead.
+          {@link SEGMENT_SEP} is every boundary on the line, the `view` link's
+          included, so one dialect reads the whole sentence and a wrapped line
+          opens with the middot rather than stranding one. None of them is
+          `aria-hidden`: the hidden middot here carried the only whitespace
+          between "Medium match" and the source list, and Chrome's AX tree
+          showed the two StaticText nodes adjacent.
+
+          `break-words` holds the overflow cap the dropped `truncate` was also
+          holding — wrapping the label and country beats ellipsing them on the
+          screen where the release is being judged, but an unbreakable token
+          then has nothing to stop it. The same remedy AlbumDetailPage's h1
+          carries. Measured at 360px with a 60-character label: 242px of
+          element overflow and 218px of document scroll without it. */}
+      <p className="text-muted-foreground text-sm break-words">
         <span className="text-foreground font-medium">
           {Math.round(candidate.confidence)}%
         </span>
-        {showRecommendation && <>· {RECOMMENDATION_LABEL[candidate.recommendation]}</>}
-        {sourceBits.length > 0 && <span aria-hidden="true">·</span>}
-        <span className="truncate">{sourceBits.join(" · ")}</span>
+        {showRecommendation &&
+          `${SEGMENT_SEP}${RECOMMENDATION_LABEL[candidate.recommendation]}`}
+        {sourceBits.length > 0 &&
+          `${SEGMENT_SEP}${sourceBits.join(SEGMENT_SEP)}`}
         {candidate.data_url && (
-          <a
-            href={candidate.data_url}
-            target="_blank"
-            rel="noreferrer"
-            className="text-foreground inline-flex items-center gap-1 underline underline-offset-4"
-          >
-            view <span className="sr-only">(opens the release page in a new tab)</span>
-            <External className="size-3" aria-hidden="true" />
-          </a>
+          <>
+            {SEGMENT_SEP}
+            <a
+              href={candidate.data_url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-foreground inline-flex items-center gap-1 underline underline-offset-4"
+            >
+              view <span className="sr-only">(opens the release page in a new tab)</span>
+              <External className="size-3" aria-hidden="true" />
+            </a>
+          </>
         )}
       </p>
     </div>
@@ -257,18 +294,40 @@ function AlbumPanel({
 }> ) {
   const changed = new Set(changedFields);
   return (
-    <div className="border-border flex flex-col gap-3 rounded-xl border p-4">
+    // Container query, not a breakpoint: the panel's width is not a function
+    // of the viewport's. The `md` sidebar takes ~230px back and `sm:grid-cols-2`
+    // halves the panel, so the well SHRINKS as the viewport grows — content
+    // box, scrollbar present: 511px at a 608px viewport, 247px at 640px, 196px
+    // at 768px, which is the narrowest panel in the whole 320-1920 range.
+    // `@container` also drops the panel's min-content contribution to the grid
+    // track, which is what the document overflow came from.
+    <div className="@container/panel border-border flex flex-col gap-3 rounded-xl border p-4">
       <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
         {heading}
       </p>
-      <div className="flex gap-4">
-        <div className="flex w-48 shrink-0 flex-col gap-1.5">
+      {/* 27rem = 432px is the panel content box below which the cover column
+          stops leaving the fields a readable well. Measured with the review
+          fixture (content box, scrollbar present): side-by-side costs 208px
+          (w-48 cover + gap-4) plus 128px per Field (w-12 label + gap-2 + the
+          "changed" badge and its gap, 64+8), so a value clears 96px — about 13
+          characters — from 432px up. 1280px gives the panel 452px, so the
+          desktop view stays side-by-side with 20px to spare, and the panel
+          first reaches 432px at a 1248px viewport. */}
+      <div className="flex flex-col gap-3 @min-[27rem]/panel:flex-row @min-[27rem]/panel:gap-4">
+        <div className="flex w-48 max-w-full shrink-0 flex-col gap-1.5">
           <CoverArt src={coverUrl} className="w-full rounded-lg" />
           {coverCaption && (
             <p className="text-muted-foreground text-xs">{coverCaption}</p>
           )}
         </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5 self-center">
+        {/* `self-center` only in the side-by-side arm: in the stacked arm it
+            would shrink the field column to fit-content and re-create the
+            squeeze it exists to avoid.
+            The gap tracks `Field`'s own 14rem threshold: once a field stacks,
+            its label and value sit 0px apart, so 2px to the NEXT field reads as
+            eight equal lines rather than four labelled pairs. Below 14rem the
+            gap between fields therefore has to beat the gap inside one. */}
+        <div className="flex min-w-0 flex-col gap-2 @min-[14rem]/panel:gap-0.5 @min-[27rem]/panel:flex-1 @min-[27rem]/panel:self-center">
           <Field label="Album" value={change.album} changed={changed.has("album")} />
           <Field label="Artist" value={change.artist} changed={changed.has("artist")} />
           <Field
@@ -293,16 +352,38 @@ function Field({
   changed: boolean;
 }> ) {
   return (
-    <div className="flex items-baseline gap-2 text-sm">
+    // Below 14rem = 224px of panel the label takes its own line. The fixed
+    // overhead of the shared line is 128px (w-12 label + gap-2 + badge + gap-2,
+    // measured 48/8/64/8), so at 224px a value clears 96px and below it it does
+    // not: at the app's narrowest panel — 196px of content box at a 768px
+    // viewport, scrollbar present — the shared line left the value 67px for an
+    // 84px value, one pixel under the 68px the arithmetic gives; the residue is
+    // sub-pixel. Stacked, the value shares its line only with the badge and
+    // clears 124px there. gap-x only: a row gap would space the stacked lines
+    // apart, and is inert on one line.
+    // THE THRESHOLD IS IN PANEL UNITS, THE PREDICATE IS THE FIELDS COLUMN.
+    // Those agree only because `27rem − (w-48 + gap-4)` is exactly 14rem: at the
+    // panel's own 432px threshold the side-by-side fields column is 224px, so
+    // the two arms meet with no gap and no double-stack. Change `w-48` or
+    // `gap-4` and this number has to move with them, silently otherwise.
+    <div className="flex flex-col gap-x-2 text-sm @min-[14rem]/panel:flex-row @min-[14rem]/panel:items-baseline">
       <span className="text-muted-foreground w-12 shrink-0">{label}</span>
-      <span className={cn("truncate", changed && "text-foreground font-medium")}>
-        {value ?? "-"}
+      <span className="flex min-w-0 items-baseline gap-2">
+        <span
+          className={cn(
+            "min-w-0 truncate",
+            changed && "text-foreground font-medium",
+          )}
+          title={value ?? undefined}
+        >
+          {value ?? "-"}
+        </span>
+        {changed && (
+          <Badge variant="secondary" className="shrink-0">
+            changed
+          </Badge>
+        )}
       </span>
-      {changed && (
-        <Badge variant="secondary" className="shrink-0">
-          changed
-        </Badge>
-      )}
     </div>
   );
 }

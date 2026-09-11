@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import type { ImportJobState } from "@/api/useImport";
+import type { ImportJobState, SweepStatus } from "@/api/useImport";
 import {
   ELAPSED_AFTER_S,
   announceMessage,
@@ -213,8 +213,8 @@ describe("announceMessage", () => {
   });
 
   // The other three corners of the suppression. Keying it on `awaiting_decision`
-  // alone silenced a run that named nothing, and `registry.parked_awaiting` can
-  // stick for the rest of a run, so that silence was permanent.
+  // alone silenced a run that named nothing, and the flag could then stick for
+  // the rest of a run, so that silence was permanent.
   test("only a NAMED wait drops the clause", () => {
     const speak = (data: ImportJobState) =>
       announceMessage({ isPending: false, isError: false, notFound: false, data });
@@ -487,8 +487,73 @@ describe("announceMessage", () => {
     });
     // Distinct from the visible line ("Pausing; finishing the current album…"),
     // which is the file's own rule for the one live region — the exact text
-    // below is what enforces it.
-    expect(spoken).toBe("Stopping after this album. Processed 12, imported 8, banked 4.");
+    // below is what enforces it. No counters and no elapsed clause: the bypass
+    // in ImportRun is sticky, so this string is what the announcer holds for the
+    // rest of the run and anything moving in it is re-read in full.
+    expect(spoken).toBe("Stopping after this album.");
+  });
+
+  // The invariant behind that exact text, stated as a comparison so a wording
+  // change cannot quietly reintroduce a moving part. Every field that keeps
+  // moving after Pause is accepted is varied at once: the last album emits two
+  // outcome records (the second carries `album_id` and bumps `auto_applied`),
+  // and the clock runs on across a minute boundary, which is where the elapsed
+  // clause used to tick. Browser-measured on the branch tip: four announcements
+  // in ~5s, closest pair 974ms.
+  test("a paused sweep says one fixed thing while its counters and clock move", () => {
+    const spoken = (over: Partial<SweepStatus>, elapsed: number) =>
+      announceMessage({
+        isPending: false,
+        isError: false,
+        notFound: false,
+        data: sweepState({
+          phase: "applying",
+          elapsed_seconds: elapsed,
+          sweep: {
+            processed: 6,
+            auto_applied: 4,
+            banked: 2,
+            skipped_known: 0,
+            current_folder: "/in/x",
+            paused: true,
+            ...over,
+          },
+        }),
+      });
+    const atPause = spoken({}, 118);
+    expect(atPause).toBe("Stopping after this album.");
+    // The initial outcome: processed + banked move.
+    expect(spoken({ processed: 7, banked: 3 }, 135)).toBe(atPause);
+    // The follow-up carrying `album_id`: auto_applied moves.
+    expect(spoken({ processed: 7, banked: 3, auto_applied: 5 }, 136)).toBe(atPause);
+    // A minute boundary crossed while the album finishes.
+    expect(spoken({ processed: 7, banked: 3, auto_applied: 5 }, 190)).toBe(atPause);
+    // A pause long enough to cross an HOUR, where the clause changes unit.
+    expect(spoken({ skipped_known: 9 }, 3700)).toBe(atPause);
+    // Control: the same varying inputs DO move an unpaused sweep, so the
+    // assertions above are about the pause and not about a dead code path.
+    const sweeping = (over: Partial<SweepStatus>, elapsed: number) =>
+      announceMessage({
+        isPending: false,
+        isError: false,
+        notFound: false,
+        data: sweepState({
+          phase: "applying",
+          elapsed_seconds: elapsed,
+          sweep: {
+            processed: 6,
+            auto_applied: 4,
+            banked: 2,
+            skipped_known: 0,
+            current_folder: "/in/x",
+            paused: false,
+            ...over,
+          },
+        }),
+      });
+    expect(sweeping({}, 118)).toBe("Sweeping. Processed 6, imported 4, banked 2. Running for 1 minute.");
+    expect(sweeping({ processed: 7, banked: 3 }, 135)).not.toBe(sweeping({}, 118));
+    expect(sweeping({}, 190)).not.toBe(sweeping({}, 118));
   });
 
   test("a finished sweep announces complete vs paused", () => {

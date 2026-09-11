@@ -4,6 +4,10 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { describe, expect, it } from "vitest";
 
 import { AlbumRow } from "@/components/system/AlbumRow";
+import {
+  containerQueryVariants,
+  unwiredContainerQueries,
+} from "@/test/containerQuery";
 import { renderWithProviders } from "@/test/render";
 
 describe("AlbumRow", () => {
@@ -89,5 +93,36 @@ describe("AlbumRow", () => {
     );
     await userEvent.click(screen.getByRole("link", { name: "OK Computer" }));
     expect(screen.getByText("state: Import")).toBeInTheDocument();
+  });
+
+  // The subtitle line stacks below 18rem of column. jsdom computes no layout,
+  // so the widths are browser-measured and recorded in the component; what a
+  // test CAN hold is that the variants are wired to a declared container —
+  // rename one side and CSS reports nothing, the row silently keeps one arm.
+  // The PRESENCE list is half the pin: an empty unwired list also means "no
+  // variants here", so on its own it survives deleting the whole layer.
+  it("wires every container-query variant to a declared container", () => {
+    const { container } = render(
+      <AlbumRow
+        cover={null}
+        title="OK Computer"
+        subtitle="Radiohead"
+        meta="76% · Medium match"
+      />,
+    );
+    expect(containerQueryVariants(container)).toEqual([
+      "@min-[18rem]/rowtext:block",
+      "@min-[18rem]/rowtext:flex-row",
+      "@min-[18rem]/rowtext:items-center",
+    ]);
+    expect(unwiredContainerQueries(container)).toEqual([]);
+    // Same element, second property: `overflow-hidden` is what keeps this
+    // line's ink out of the action slot's buttons, where `elementFromPoint`
+    // measured a tap on it firing Ignore. jsdom computes no layout, so the
+    // class is the only thing a test can hold — and without this a tidy-up of
+    // the string drops it with 1491 tests still green.
+    expect(screen.getByText("Radiohead").parentElement).toHaveClass(
+      "overflow-hidden",
+    );
   });
 });

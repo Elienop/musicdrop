@@ -720,6 +720,48 @@ describe("ImportPage — live feed", () => {
     expect(spinnerOf(line)).toHaveClass("animate-spin");
   });
 
+  test("each spinner's top correction matches its own icon size", async () => {
+    // The extracted `StatusLine` and the resume banner are two shapes of the
+    // same line, and this is the invariant both owe: the spinner sits on the
+    // FIRST line box when the text wraps. `items-start` alone does not do it —
+    // the icon needs (line-height 20px - icon size) / 2 of top margin, which is
+    // 2px (`mt-0.5`) for the status line's size-4 icon and ZERO for the
+    // banner's size-5 one, because 20px already matches the line box.
+    //
+    // jsdom cannot measure a line box, so what is asserted here is the pairing
+    // in BOTH directions: a correction copied onto the banner, or dropped from
+    // the status line, breaks a half. The browser pass measures the offset
+    // itself (0px at 1280 and at 360, on all three lines).
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(makeJob({ elapsed_seconds: 300 }))),
+    );
+    const feed = renderAt("/import?job=job-1");
+    const status = spinnerOf(lineOf(await screen.findByText("· 5m")));
+    expect(status.getAttribute("class")?.split(/\s+/)).toEqual(
+      expect.arrayContaining(["size-4", "mt-0.5"]),
+    );
+    feed.unmount();
+
+    server.use(
+      http.get(ACTIVE_URL, () =>
+        HttpResponse.json({
+          active: true,
+          job_id: "job-9",
+          origin: "inbox",
+          needs_review_count: 3,
+        }),
+      ),
+    );
+    renderAt("/import");
+    await screen.findByRole("link", { name: /resume/i });
+    const banner = spinnerOf(
+      lineOf(screen.getByText(/3 albums set aside for review/)),
+    );
+    const bannerTokens = banner.getAttribute("class")?.split(/\s+/) ?? [];
+    expect(bannerTokens).toContain("size-5");
+    expect(bannerTokens).not.toContain("mt-0.5");
+  });
+
   test("a run parked on the operator keeps its elapsed value", async () => {
     // The number counts the WHOLE run, from the start — it is not a "time since
     // last progress" gauge, so hiding it here would make it vanish and come
@@ -1725,6 +1767,72 @@ describe("ImportPage — sweep & bank", () => {
     const segment = await screen.findByText("· 1h 1m");
     expect(segment.closest("p")).toHaveTextContent("Sweeping 21…");
     expect(screen.getByText(". 1 hour 1 minute.")).toHaveClass("sr-only");
+  });
+
+  test("a paused sweep is announced without waiting out the throttle", async () => {
+    // The announcer is throttled to 4s so a 1s poll cannot spam it, and at
+    // mount that window holds it on the "Loading the import." placeholder. A
+    // pause is user-initiated — the person just pressed a button and is owed an
+    // answer — so it bypasses the window, as the terminal states already do.
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({
+            phase: "applying",
+            sweep: {
+              processed: 6,
+              auto_applied: 4,
+              banked: 2,
+              skipped_known: 0,
+              current_folder: "/library/Adele/21",
+              paused: true,
+            },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    // waitFor's default ceiling is 1000ms — a quarter of the throttle window,
+    // so a pass here cannot be the window simply elapsing.
+    //
+    // Anchored, not substring-matched: the bypass is sticky, so this string is
+    // what the announcer holds for the rest of the run, and `role="status"` is
+    // atomic — anything appended to it is re-read in full every time a counter
+    // moves. The counters above are nonzero so a regression that puts them back
+    // has something to say.
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(
+        /^Stopping after this album\.$/,
+      ),
+    );
+  });
+
+  test("the announcer's throttle is still in force for a sweep nobody paused", async () => {
+    // The control the test above needs. Without it, a throttle that held
+    // nothing back at all would produce the same pass; here the visible line
+    // has already rendered while the spoken one is still the placeholder.
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({
+            phase: "applying",
+            sweep: {
+              processed: 6,
+              auto_applied: 4,
+              banked: 2,
+              skipped_known: 0,
+              current_folder: "/library/Adele/21",
+              paused: false,
+            },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    expect(await screen.findByText("Sweeping 21…")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Loading the import.");
   });
 
   test("a short sweep's status line reads exactly as it did before", async () => {

@@ -44,13 +44,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SEGMENT_SEP } from "@/lib/format";
 import { useThrottledValue } from "@/lib/useThrottledValue";
 import { cn } from "@/lib/utils";
 import {
   ELAPSED_AFTER_S,
-  SEGMENT_SEP,
   announceMessage,
   elapsedLabel,
+  isPausedSweep,
   spokenElapsed,
 } from "@/pages/import/importStatus";
 
@@ -101,6 +102,52 @@ function elapsedSentence(seconds: number): React.ReactNode | undefined {
       <span aria-hidden="true">{`Ran for ${label}.`}</span>
       <span className="sr-only">{`Ran for ${spoken}.`}</span>
     </>
+  );
+}
+
+/** The import page's live status line: a spinner, then wrapping text. Two
+ * callers — the feed's count line and the sweep's folder line. Their `<p>`
+ * class strings were byte-identical before this existed, which is why the
+ * alignment fix below needed a pass per copy. The `<svg>` ones were NOT: the
+ * feed's was `cn("mt-0.5 size-4 shrink-0", working ? "animate-spin" :
+ * "invisible")` and the sweep's the literal `"mt-0.5 size-4 shrink-0
+ * animate-spin"`. They render the same only while the feed is working, which is
+ * what the `spinning` prop is for.
+ *
+ * `items-start`, not `items-center`: at 360px both callers' text takes two
+ * lines (measured) and centring parked the spinner mid-paragraph, 10px below
+ * the first line's centre. `mt-0.5` puts it back — (line-height 20px − size-4
+ * 16px) / 2 = 2px. Measured after the extraction: the icon's box centre sits
+ * 0px from the first line box's centre, at 1280 and at 360, for both callers.
+ *
+ * The spinner box is always rendered and only hidden: mounting and unmounting
+ * it on every park and unpark shifted the whole line ~24px sideways (size-4 +
+ * gap-2) each time. `invisible` keeps the box, and a hidden element must not
+ * animate.
+ *
+ * The resume banner is a third line of this shape and is deliberately NOT a
+ * caller. Measured, it differs in six properties rather than one: gap 12px vs
+ * 8px, icon 20px vs 16px, top correction 0 vs 2px (its icon matches the line
+ * box exactly), `font-medium` vs inherited, the muted colour on the icon
+ * rather than on the line, and no `min-h-5`. It also owns the `id` that the
+ * Start button's `aria-describedby` points at. Both shapes satisfy the same
+ * invariant today — offset 0 from the first line box, measured at 1280 and
+ * 360 — and the banner's own comment carries its numbers. */
+function StatusLine({
+  spinning,
+  children,
+}: Readonly<{ spinning: boolean; children: React.ReactNode }>) {
+  return (
+    <p className="text-muted-foreground flex min-h-5 items-start gap-2 text-sm">
+      <Spinner
+        className={cn(
+          "mt-0.5 size-4 shrink-0",
+          spinning ? "animate-spin" : "invisible",
+        )}
+        aria-hidden="true"
+      />
+      <span>{children}</span>
+    </p>
   );
 }
 
@@ -228,7 +275,12 @@ function ImportEntry() {
             </Button>
           }
         >
-          {/* `items-start`, not `items-center`: at 360px the text column is
+          {/* The third line of the spinner + wrapping-text shape, and the one
+              {@link StatusLine} does not cover — six measured properties
+              apart, listed in that component's docstring. Change one, read the
+              other.
+
+              `items-start`, not `items-center`: at 360px the text column is
               167px and both banner strings wrap, which centred the spinner
               mid-paragraph (measured 20px below the first line's centre, three
               lines). No top margin here, unlike the status lines: this spinner
@@ -359,7 +411,28 @@ function ImportRun({ jobId }: Readonly<{ jobId: string }>) {
   const throttled = useThrottledValue(message, 4000);
   const terminal =
     notFound || isError || (data !== undefined && isTerminalPhase(data.phase));
-  const status = terminal ? message : throttled;
+  // A pause bypasses the throttle too. Pressing Pause changed the visible line
+  // within a poll but left the announcer up to ~5s behind it (a 1s poll plus
+  // the 4s window), and the button self-disables on click, so the one thing
+  // that acknowledged the press was silent the longest. It is a user-initiated
+  // change, and the person who just pressed a button is owed an answer.
+  //
+  // Read off the job rather than the mutation, so it needs no state from
+  // SweepRun: `paused` is set once, by `registry.pause_sweep`, and nothing
+  // clears it for the life of the job. That also makes the bypass STICKY
+  // instead of a one-render pulse — a pulse would hand the announcer back a
+  // stale throttled message on the very next render.
+  //
+  // Sticky means the throttle is OFF for the rest of the run, so what bounds
+  // the announcer after a pause is the message itself, not the window:
+  // `sweepMessage`'s paused branch drops the counters and `announceMessage`
+  // drops the elapsed clause, leaving "Stopping after this album." unchanged
+  // until a terminal phase. React writes the same string, the DOM does not
+  // change, and nothing is re-read. Carrying the counters here instead gave
+  // four announcements in ~5s, closest pair 974ms, because the last album's two
+  // outcome records keep the numbers moving after Pause is accepted.
+  const pausedSweep = isPausedSweep(data);
+  const status = terminal || pausedSweep ? message : throttled;
   const announcer = (
     <p className="sr-only" role="status" aria-live="polite">
       {status}
@@ -469,53 +542,36 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
   ).length;
   return (
     <div className="flex flex-col gap-4">
-      {/* `items-start`, not `items-center`: this line wraps to two lines at
-          360px, and centring parked the spinner mid-paragraph (measured 10px
-          below the first line's centre). */}
-      <p className="text-muted-foreground flex min-h-5 items-start gap-2 text-sm">
-        {/* Always mounted, only hidden: mounting/unmounting it on every park
-            and unpark shifted the whole line ~24px sideways (size-4 + gap-2)
-            each time. `invisible` keeps the box, and a hidden element must not
-            animate. `mt-0.5` is (line-height 20px - size-4) / 2, which puts the
-            icon on the FIRST line box however many the text takes. */}
-        <Spinner
-          className={cn(
-            "mt-0.5 size-4 shrink-0",
-            working ? "animate-spin" : "invisible",
-          )}
-          aria-hidden="true"
-        />
-        <span>
-          {/* With nothing in the feed yet, the count line would read
-              "0 albums imported" — say what's actually happening instead. */}
-          {scanningEmpty ? (
-            <>Scanning your folder&hellip;</>
-          ) : (
-            <>
-              {/* No known total (the feed grows as the worker reads) — count
-                  what's applied + flag whether one album awaits a decision.
-                  `needs_review` is at most 1 (review is sequential), but derive
-                  the count so that invariant is self-evident. */}
-              {state.progress.applied}{" "}
-              {state.progress.applied === 1 ? "album" : "albums"} imported
-              {state.progress.skipped > 0 &&
-                `${SEGMENT_SEP}${state.progress.skipped} skipped`}
-              {state.progress.needs_review > 0 &&
-                `${SEGMENT_SEP}${state.progress.needs_review} album${state.progress.needs_review === 1 ? "" : "s"} needs review`}
-              {/* Import-time duplicates are named "already in library" so
-                  "Duplicates" (the Manage page) names exactly one thing. */}
-              {needsDup > 0 && `${SEGMENT_SEP}${needsDup} already in library`}
-            </>
-          )}
-          {/* Same middot dialect as the counts, inside the one text flow so it
-              reads as part of the line rather than a second column. Shown
-              throughout, parked included: it is the whole run's duration, not a
-              "since last progress" gauge, so hiding it while a decision is owed
-              would make it vanish and come back carrying the operator's own
-              thinking time. */}
-          <ElapsedSegment seconds={state.elapsed_seconds} />
-        </span>
-      </p>
+      <StatusLine spinning={working}>
+        {/* With nothing in the feed yet, the count line would read
+            "0 albums imported" — say what's actually happening instead. */}
+        {scanningEmpty ? (
+          <>Scanning your folder&hellip;</>
+        ) : (
+          <>
+            {/* No known total (the feed grows as the worker reads) — count
+                what's applied + flag whether one album awaits a decision.
+                `needs_review` is at most 1 (review is sequential), but derive
+                the count so that invariant is self-evident. */}
+            {state.progress.applied}{" "}
+            {state.progress.applied === 1 ? "album" : "albums"} imported
+            {state.progress.skipped > 0 &&
+              `${SEGMENT_SEP}${state.progress.skipped} skipped`}
+            {state.progress.needs_review > 0 &&
+              `${SEGMENT_SEP}${state.progress.needs_review} album${state.progress.needs_review === 1 ? "" : "s"} needs review`}
+            {/* Import-time duplicates are named "already in library" so
+                "Duplicates" (the Manage page) names exactly one thing. */}
+            {needsDup > 0 && `${SEGMENT_SEP}${needsDup} already in library`}
+          </>
+        )}
+        {/* Same middot dialect as the counts, inside the one text flow so it
+            reads as part of the line rather than a second column. Shown
+            throughout, parked included: it is the whole run's duration, not a
+            "since last progress" gauge, so hiding it while a decision is owed
+            would make it vanish and come back carrying the operator's own
+            thinking time. */}
+        <ElapsedSegment seconds={state.elapsed_seconds} />
+      </StatusLine>
 
       {state.albums.length === 0 ? (
         <FeedSkeleton />
@@ -662,22 +718,17 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
           action={<SweepDoneCta sweep={sweep} />}
         />
       ) : (
-        // Same alignment as the feed's status line: this one carries a folder
-        // name, so it wraps sooner.
-        <p className="text-muted-foreground flex min-h-5 items-start gap-2 text-sm">
-          <Spinner
-            className="mt-0.5 size-4 shrink-0 animate-spin"
-            aria-hidden="true"
-          />
-          <span>
-            {sweepStatusLabel(sweep.paused, sweep.current_folder)}
-            {/* A sweep is the longest-running import there is and it returns
-                before LiveFeed ever renders, so this is the only place its
-                duration shows while it runs. Same threshold and middot dialect
-                as the feed's status line. */}
-            <ElapsedSegment seconds={state.elapsed_seconds} />
-          </span>
-        </p>
+        // A sweep is never idle while this branch renders — it runs until a
+        // terminal phase, which the branch above owns — so the spinner spins
+        // throughout, unlike the feed's.
+        <StatusLine spinning>
+          {sweepStatusLabel(sweep.paused, sweep.current_folder)}
+          {/* A sweep is the longest-running import there is and it returns
+              before LiveFeed ever renders, so this is the only place its
+              duration shows while it runs. Same threshold and middot dialect
+              as the feed's status line. */}
+          <ElapsedSegment seconds={state.elapsed_seconds} />
+        </StatusLine>
       )}
 
       <SweepTiles sweep={sweep} />

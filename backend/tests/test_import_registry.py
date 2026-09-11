@@ -1,7 +1,8 @@
+import queue
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 import pytest
 
@@ -27,6 +28,9 @@ from app.models.import_models import (
 
 if TYPE_CHECKING:  # annotation only — every runtime use is a local import, as elsewhere here
     from app.beets.import_session import ImportBridge
+
+# The payload a gated park channel carries: ParkedAlbum or DuplicatePrompt.
+_ParkT = TypeVar("_ParkT")
 
 
 def _candidate(rec: Recommendation, *, confidence: float = 75.5) -> Candidate:
@@ -77,6 +81,19 @@ def _needs_review_outcome(index: int) -> AlbumOutcome:
         recommendation=Recommendation.medium,
         confidence=75.5,
         status=AlbumOutcomeStatus.needs_review,
+    )
+
+
+def _dup_outcome(index: int) -> AlbumOutcome:
+    """The needs_dup_resolution outcome the worker emits BEFORE it parks a prompt."""
+    return AlbumOutcome(
+        album_index=index,
+        folder=f"/music/incoming/album{index}",
+        artist="Radiohead",
+        album="OK Computer",
+        recommendation=Recommendation.strong,
+        confidence=0.0,
+        status=AlbumOutcomeStatus.needs_dup_resolution,
     )
 
 
@@ -1164,8 +1181,6 @@ def test_album_id_attach_keeps_decided_status() -> None:
     Kills: the attach branch also setting
     ``row.status = ImportAlbumStatus.applied``.
     """
-    import queue
-
     from app.beets.import_session import ImportBridge
     from app.import_jobs.registry import ImportJob
 
@@ -1174,10 +1189,9 @@ def test_album_id_attach_keeps_decided_status() -> None:
     reg._job = ImportJob(id="attach-status", bridge=bridge, phase=ImportPhase.reviewing)
     job = reg._job
 
-    bridge._replies[0] = queue.Queue(maxsize=1)  # park() registers the reply slot
-    bridge._out.put(_parked(0, Recommendation.medium))
     bridge.note_outcome(_needs_review_outcome(0))
-    reg.drain("attach-status")
+    _park_on_a_worker_thread(bridge, _parked(0, Recommendation.medium))
+    _poll(lambda: reg.state("attach-status").awaiting_decision, lambda v: v is True)
     reg.record_choice("attach-status", 0, ImportChoice(action=ImportAction.apply))
     row = job.albums.get(0)
     assert row is not None
@@ -1460,6 +1474,9 @@ def test_awaiting_decision_is_false_during_a_search_relookup() -> None:
     state = reg.state("relookup")
     assert state.albums[0].status is ImportAlbumStatus.needs_review  # NOT decided, by design
     assert state.phase is ImportPhase.reviewing  # still active: not the terminal gate answering
+    # Two things make this False and nothing here picks between them: ``answered``
+    # on a standing slot, or a woken worker that already released it. The gated pin
+    # is test_awaiting_decision_clears_when_a_choice_beats_its_park_onto_the_queue.
     assert state.awaiting_decision is False  # beets is working, not the operator
 
     # ...and the re-park puts the operator back in the loop.
@@ -1488,6 +1505,10 @@ def test_awaiting_decision_covers_a_parked_duplicate_prompt() -> None:
 
     state = reg.state("dup-parked")
     assert state.phase is ImportPhase.reviewing  # still active
+    # As in the search re-lookup above: ``answered`` or an already-released slot
+    # both give False, and this test does not separate them. The gated pin for
+    # this channel is
+    # test_awaiting_decision_clears_when_a_duplicate_decision_beats_its_prompt.
     assert state.awaiting_decision is False
 
 
@@ -1495,7 +1516,10 @@ def test_awaiting_decision_survives_a_park_buffered_before_its_row() -> None:
     """A park popped before its feed row exists still blocks the worker.
 
     The buffer branch has no row to hang the payload on, so a row-derived answer
-    would report "not waiting" while the worker sits in ``park()`` forever.
+    would report "not waiting" while the worker sits in ``park()`` forever. A
+    REAL park drives this (not a bare ``_out.put``): the reply slot the worker
+    registers is what the answer is read from, and a fixture without one is not
+    a picture of a blocked worker.
     """
     from app.beets.import_session import ImportBridge
     from app.import_jobs.registry import ImportJob
@@ -1505,12 +1529,19 @@ def test_awaiting_decision_survives_a_park_buffered_before_its_row() -> None:
     job = ImportJob(id="buffered", bridge=bridge, phase=ImportPhase.reviewing)
     reg._job = job
 
-    bridge._out.put(_parked(0, Recommendation.medium))  # reaches the channel with no outcome yet
+    _park_on_a_worker_thread(bridge, _parked(0, Recommendation.medium))  # no outcome emitted
+
+    def _drain_then_pending() -> dict[int, ParkedAlbum]:
+        reg.state("buffered")  # drains; the pop lands in the buffer branch
+        return job.pending_parked
+
+    _poll(_drain_then_pending, lambda pending: 0 in pending)
     state = reg.state("buffered")
 
     assert job.albums == {}  # no row exists
     assert 0 in job.pending_parked  # buffered, not discarded
     assert state.awaiting_decision is True
+    reg.record_choice("buffered", 0, ImportChoice(action=ImportAction.skip))  # release the thread
 
 
 def test_awaiting_decision_is_false_on_a_job_that_died_while_parked() -> None:
@@ -1527,11 +1558,132 @@ def test_awaiting_decision_is_false_on_a_job_that_died_while_parked() -> None:
     job = ImportJob(id="died", bridge=bridge, phase=ImportPhase.reviewing)
     reg._job = job
     bridge.note_outcome(_needs_review_outcome(0))
-    bridge._out.put(_parked(0, Recommendation.medium))
-    assert reg.state("died").awaiting_decision is True  # control: True while it ran
+    _park_on_a_worker_thread(bridge, _parked(0, Recommendation.medium))
+    _poll(lambda: reg.state("died").awaiting_decision, lambda v: v is True)  # control: while it ran
 
     job.phase = ImportPhase.failed
     job.error = "beets blew up"
 
-    assert job.parked_awaiting == {0}  # the row is still parked...
+    assert bridge.has_unanswered_park() is True  # the park is still registered...
     assert reg.state("died").awaiting_decision is False  # ...but the worker is gone
+    reg.record_choice("died", 0, ImportChoice(action=ImportAction.skip))  # release the thread
+
+
+# ----- awaiting_decision: a choice accepted for a park that is not yet QUEUED -----
+
+
+class _HoldBeforeQueueing(queue.Queue[_ParkT]):
+    """A park channel that holds the worker between its two steps.
+
+    ``park`` registers its reply slot under the bridge lock, releases it, and
+    only THEN puts the park on this queue. Arm ``hold`` and the next put stops
+    at the gate, so a test can push a choice while the slot is live and the park
+    is still unqueued. Deterministic by construction: looping the natural test
+    does not reach this ordering (the sibling race in ``test_import_session``
+    measured 25/25 the other way, pinned to one core).
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.hold = threading.Event()
+        self.at_gate = threading.Event()
+        self.go = threading.Event()
+
+    def put(self, item: _ParkT, block: bool = True, timeout: float | None = None) -> None:
+        if self.hold.is_set():
+            self.hold.clear()  # one-shot: hold this park, not the ones around it
+            self.at_gate.set()
+            assert self.go.wait(5.0), "gate never released"
+        super().put(item, block, timeout)
+
+
+def test_awaiting_decision_clears_when_a_choice_beats_its_park_onto_the_queue() -> None:
+    """A choice accepted for a registered-but-unqueued park leaves nobody waiting.
+
+    The worker registers its reply slot before it queues the park, so a choice
+    pushed in that gap is delivered to a live slot and the worker runs on. The
+    drain that pops the park afterwards must not read that woken worker as
+    blocked: it did, and the flag then held until the terminal transition, with
+    the run polling at 10 s and no spinner for the rest of the import.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    gate: _HoldBeforeQueueing[ParkedAlbum] = _HoldBeforeQueueing()
+    bridge = ImportBridge()
+    bridge._out = gate  # white-box: the park channel, gated between register and queue
+    reg = ImportJobRegistry()
+    job = ImportJob(id="beaten", bridge=bridge, phase=ImportPhase.reviewing)
+    reg._job = job
+    finished = threading.Event()
+
+    def worker() -> None:
+        # choose_match emits the needs_review outcome BEFORE it parks, so the row
+        # the client answers exists first; the second park is the `search` re-park.
+        bridge.note_outcome(_needs_review_outcome(0))
+        bridge.park(_parked(0, Recommendation.medium))
+        bridge.note_outcome(_needs_review_outcome(0))
+        gate.hold.set()
+        bridge.park(_parked(0, Recommendation.medium))
+        finished.set()
+
+    threading.Thread(target=worker, daemon=True).start()
+    _poll(lambda: reg.state("beaten").awaiting_decision, lambda v: v is True)
+
+    reg.record_choice(
+        "beaten", 0, ImportChoice(action=ImportAction.search, search=ImportSearch(release_id="r1"))
+    )
+    assert gate.at_gate.wait(2.0), "the re-park never reached the gate"
+
+    reg.record_choice("beaten", 0, ImportChoice(action=ImportAction.apply))  # into the live slot
+    assert reg.state("beaten").awaiting_decision is False  # answered, though the slot still stands
+
+    gate.go.set()  # the park lands on the queue, the worker takes its waiting choice
+    assert finished.wait(2.0), "the worker never left park()"
+
+    state = reg.state("beaten")  # this drain pops the already-answered park
+    assert state.phase is ImportPhase.reviewing  # still active: not the terminal gate answering
+    assert state.awaiting_decision is False
+    assert reg.state("beaten").awaiting_decision is False  # ...and it does not stick
+
+
+def test_awaiting_decision_clears_when_a_duplicate_decision_beats_its_prompt() -> None:
+    """The duplicate channel's twin: same gap, same one-shot pop, same stick.
+
+    ``get_duplicate_action`` also emits its outcome before it parks, so a client
+    can answer index 0 while the prompt is registered and unqueued — here with a
+    single submit, no re-park needed.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+    from app.models.import_models import DuplicateAction, DuplicateDecision
+
+    gate: _HoldBeforeQueueing[DuplicatePrompt] = _HoldBeforeQueueing()
+    bridge = ImportBridge()
+    bridge._dup_out = gate  # white-box: as above, on the duplicate channel
+    reg = ImportJobRegistry()
+    job = ImportJob(id="dup-beaten", bridge=bridge, phase=ImportPhase.reviewing)
+    reg._job = job
+    finished = threading.Event()
+
+    def worker() -> None:
+        bridge.note_outcome(_dup_outcome(0))
+        gate.hold.set()
+        bridge.park_duplicate(_dup_prompt(0))
+        finished.set()
+
+    threading.Thread(target=worker, daemon=True).start()
+    assert gate.at_gate.wait(2.0), "the prompt never reached the gate"
+
+    reg.record_duplicate_decision(
+        "dup-beaten", 0, DuplicateDecision(action=DuplicateAction.keep_both)
+    )
+    assert reg.state("dup-beaten").awaiting_decision is False  # answered, slot still standing
+
+    gate.go.set()
+    assert finished.wait(2.0), "the worker never left park_duplicate()"
+
+    state = reg.state("dup-beaten")  # this drain pops the already-answered prompt
+    assert state.phase is ImportPhase.reviewing  # still active: not the terminal gate answering
+    assert state.awaiting_decision is False
+    assert reg.state("dup-beaten").awaiting_decision is False  # ...and it does not stick

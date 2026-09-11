@@ -383,6 +383,16 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   reasons are written out in `frontend/eslint.config.js` under "DELIBERATELY OFF"; do not
   re-derive them, and do not enable either rule without porting the suppression first.
 
+  **Added 2026-09-08: `sonarjs/no-alphabetical-sort` (S2871), taking the gate to 27 rules.**
+  The family's whole life was one branch — `api/issues/search` reports 0 S2871 against
+  `musicdrop` ever, resolved or open — so lock-on-clear applies to a family that never reached
+  `main`. The twin is NOT `@typescript-eslint/require-array-sort-compare`, the obvious pick:
+  S2871's `implementation` is `original` with `eslintId` `no-alphabetical-sort`, so SonarJS ships
+  its own rule and that IS what the analyzer runs. The typescript-eslint rule is wrong in both
+  directions, measured on the offending line: at its default (`ignoreStringArrays: true`) it
+  reports NOTHING, and with that option off it has no equivalent of Sonar's
+  `isSortUsedForNormalizationComparison` exemption, so it would be stricter than the server.
+
   **The gate now lints its own config, which it could not before.**
   `frontend/eslint.config.js` used to resolve to ZERO enabled rules — every block needed the
   typed parser and no tsconfig included a `.js` file at the frontend root — so the one `.js`
@@ -1503,6 +1513,206 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   and don't build the regression strand with `chmod` — those tests self-skip as root;
   insert into `_memory` directly.
 
+- ~~**The candidate page overflows worst BETWEEN the breakpoints**~~ — **CLOSED 2026-09-08 with a
+  container query on the panel, and 2026-09-08 (second pass) with a second one on `Field`.**
+  The panel declares `@container/panel` and stacks its cover above the fields below 27rem of
+  panel content; below 14rem the `Field` label takes its own line as well.
+  **All widths below are the panel's CONTENT box with the scrollbar present, swept 320→1920 in
+  steps of 8 (201 widths, one realistic fixture).** The first pass recorded `clientWidth` taken
+  with scrollbars hidden and called it the content box, so its three first-pass panel widths
+  (558/286/235 at 608/640/768) read **47/39/39px too wide**; they are 511/247/196 and are
+  corrected here. The spread is not a constant: 32px of it is the `p-4` padding, and the rest is
+  the scrollbar's effect on the LAYOUT, which differs by arm — at 608 the panels are stacked
+  full-width so 15px of scrollbar costs the panel all 15, while at 640 and 768 `sm:grid-cols-2`
+  has halved it so 15px of viewport costs ~7px of panel. The already-content-box figures moved by
+  that same ~7px (203→196, 459→452). Container-query size IS the content box — verified
+  with a `100cqw` probe, equal to `clientWidth` − 32 at all 201 widths.
+  Side-by-side costs 208px (`w-48` cover + `gap-4`) plus 128px per `Field` (`w-12` label 48,
+  `gap-2` 8, the "changed" badge 64 and its gap 8 — measured), so a value clears 96px (about 13
+  characters) from 432px of panel up. The panel content box moves at **0.5px per px of viewport**
+  wherever `sm:grid-cols-2` applies — NOT across the whole range: below `sm` the panels are
+  stacked full-width and move 1:1, which is what this entry's own 520/528 pair shows (423→431,
+  8px of panel for 8px of viewport, against 4px at 1224→1232). The `@min-[27rem]` arm first engages at
+  a **1248px** viewport, where the panel is **436px** — it crosses 432 between 1240 and 1248.
+  **Before the panel query**: a value was 0-width at 67 of the 201 widths and clipped at 69 more,
+  and the document overflowed at 47 widths (320→960, max 100px — 72/32/49/100/68px at
+  320/360/640/768/832). **After it**, no value was 0 at any width and document overflow was 0
+  everywhere, but **7 values were still clipped, at 5 widths (768/776/784/792/800) across two
+  fields** — the After panel's Album and Label. That was the `Field` row, not the cover: at the
+  app's narrowest panel (196px of content at a 768px viewport, because the `md` sidebar has opened
+  but `sm:grid-cols-2` has already halved it) the shared line left 67px for an 84px value.
+  **After the `Field` query, 0 values are clipped and 0 are 0-width at any of the 201 widths** —
+  for THIS fixture. That is not a property `Field` guarantees: with a realistic long artist the
+  same sweep clips 532 of the 1608 measurements. The query removes the arithmetic squeeze, not
+  every possible overflow.
+  It changed 72 of 1608 panel×field×width measurements; the other 1536 are byte-identical, and
+  every width that moved is 320 or 768–824. 1280 gives the panel 452px, so the desktop stays
+  side-by-side with 20px to spare and is byte-identical throughout. Five widths were clean
+  side-by-side before either query and stack now — 520, 528, 1224, 1232, 1240
+  (423/431/**423.5/427.5/431.5**px of panel) — all just under the 432px threshold and all fully
+  readable stacked. The last three were first recorded as 424/428/432 from `clientWidth` − 32,
+  which rounds: 432 could not have been in a "stacks now" list, because at exactly 27rem the
+  side-by-side arm applies. The panel is 431.5px there.
+  Second pass, on the stacked arm only: the fields column carries `gap-2` below 14rem and keeps
+  `gap-0.5` above it. Stacked, a label sits 0px from its own value, so 2px to the next field read
+  as eight equal lines rather than four labelled pairs; measured at 768 the gap between fields is
+  now 8px against 0 inside one, and at 360 and 1280 it is still 2px.
+
+- ~~**`AlbumRow`'s subtitle truncates to zero width at 360px**~~ — **CLOSED 2026-09-08, same
+  mechanism, and the stop condition held.** The row's text column declares `@container/rowtext`
+  and the subtitle line stacks below 18rem of column, dropping the separator with it. The
+  threshold is one number for callers with different meta widths: in the row arm the meta slot is
+  max-content —
+  130.5px in the import feed, 185.1px on `/duplicates` — so one line needs 218px/272px for a 66px
+  artist, and at 288px they get 136px/82px. Measured on all three surfaces at 320→1920 in steps of
+  32: **before**, the subtitle was `clientWidth` 0 at 320 and 360 on all three surfaces and cut at
+  414 (49/66px feed and Review, 18/66px duplicates); document overflow was 19px on `/duplicates`
+  at 320.
+  **After**, the subtitle is the full column width at every width, the middot no longer opens the
+  line, and document overflow is 0. **136 of the 153 surface×width measurements are byte-identical
+  to before; the 17 that changed are all at viewports ≤480.** Four of them (the feed and Review
+  rows at 448 and 480) had a whole subtitle already and now stack — the price of one threshold
+  sized for the wider `/duplicates` meta. Adjacent, NOT fixed: the TITLE row has the same shape
+  (`min-w-0 truncate` title beside a `shrink-0` badge) and is cut at 320 — 7/38px in the feed,
+  2/87px on `/duplicates`, whole from 414. Whether the title or the badge wins that space is the
+  same `AlbumRow` design call, and it is the owner's.
+  **Scope of the three surfaces above: there are FIVE `<AlbumRow>` call sites, and the sweep
+  measured three.** `ReviewPage`'s inbox row passes a fixed `N tracks`, so the threshold holds
+  there by the same arithmetic. `BankSection`'s did not, and that is fixed separately below.
+
+- ~~**The keeper radio on `/duplicates` sat below the row it selects**~~ — **CLOSED 2026-09-11,
+  the same drift as the bank row's checkbox, on the other page that has a selection control.**
+  `MemberRow`'s `<li>` was `flex items-center` and held the `AlbumRow` **plus** the folder-path
+  scroller, so the radio centred on both: swept 320→1920 in steps of 8 with a real 15px scrollbar,
+  it sat **17px** below its own row at 320→768 and **12px** at 776→1920 — a nonzero drift at all
+  201 widths, never 0. (The 17/12 split is the path scroller's own horizontal scrollbar, which
+  only appears while the path overflows.)
+  Fixed with a two-track grid rather than the bank row's stacked flex wrappers, because the inset
+  the path line has to clear here is the NATIVE radio's width — 13×13 in Chromium, the UA's number
+  and not ours. The path goes in row 2 of the radio's own column track, so the offset is derived;
+  restating it as a padding is off by 1px (`pl-10` = 40 against a measured 41), and it would be a
+  different number in another engine. **After: drift 0 at all 201 widths**, the path text starts
+  at exactly the cover's left edge at all 201 widths (82px ≤414, 312px ≥768, identical to before),
+  and the `AlbumRow` column geometry and every `<li>` height are byte-identical to before at all
+  201 widths — the only thing that moved is the radio.
+  **Swept for the shape (statically, not measured): these two were the only instances of it.**
+  The app has seven other selection-control call sites. Two cannot grow a second line at all
+  (`BrowsePage`'s facet rows and `ImportPlaylistsPage`'s Plex rows both `truncate` their label).
+  Four can — `LyricsBackfillPanel.tsx:86`, `MergePlaylistDialog.tsx:144`,
+  `PlaylistDetailPage.tsx:582`, `ReleaseSearchRow.tsx:98` — but each is a control beside its OWN
+  wrapping label, where centring on the label is the conventional treatment, not a control
+  detaching from a separate row it selects. `BankSection.tsx:291` is a header checkbox with a
+  two-word label. None was browser-measured.
+
+- ~~**A failed bank row's error overran the row and starved its subtitle**~~ — **CLOSED
+  2026-09-08.** `BankSection` joined `row.error` into `AlbumRow`'s `meta`; that slot is
+  `shrink-0`, so in the ROW arm its used width is max-content and it can neither shrink nor wrap,
+  and the string is `str(exc)` from `app/bank/apply_runner.py` — unbounded. There are TWO such
+  sources: `:281` re-raises the runner's exception, and `:506` writes
+  `state.error or "import failed"`.
+  **Every width below is measured with a real 15px scrollbar present**, 320→1920 in steps of 8
+  (201 widths). The first pass hid it and its numbers are corrected here; the tell was an exact
+  15px delta on every viewport-derived figure.
+  Measured on `/review` with a matched-but-failed row (76% · medium · a 115-character beets
+  error): the meta cell went **845px** wide — a max-content width, so it depends on the string,
+  not on the scrollbar — and the sibling `min-w-0 truncate` subtitle was `clientWidth` **0 at 89
+  of the 201 widths, 584→1336**, with a gap at 768–808 where the `md` sidebar drops the column
+  under 18rem and the line stacks. (Any width COUNT here is a function of the error string's
+  width; re-deriving it with a different 115-character string moves it. The two endpoints
+  recorded before — 568→1280 in a code comment, 568→1368 here — were both wrong AND
+  under-determined.) The meta's ink spilled past its own column at those same 89 widths.
+  No cap fixes it in the slot: the widest legitimate meta across the other four callers is 185.1px
+  (`/duplicates`) and the 18rem threshold is sized for that, so keeping the budget leaves the error
+  about 9 characters. Like-for-like against that ceiling the error cell was **4.6×** it.
+  The percentage and recommendation stay in the slot; the error moved to its
+  own line below the row (`break-words`, `line-clamp-2`, whole string reachable through the row's
+  own Open link). **After**: the subtitle is 0-width at no width, the meta is 130.5px (the
+  humanized `Medium match`, up from 88px for the raw enum), its ink never leaves the column, and
+  document overflow was 0 before and after. A failed row is 32px taller with a one-line error and
+  52px with a two-line one, at 1280.
+  Second pass fixed two things this one shipped or left. (1) The error line went inside the `<li>`'s
+  `items-center` body, so the select checkbox centred on row+error and drifted **16px** below its
+  own row on a one-line error and **26px** on a two-line one, measured at 1280; the control and
+  the row now share their own `items-center` wrapper and the error is a sibling below, and the
+  drift is **0/0/0**. (2) The meta's ink still ran past the column at **3 widths** (320/328/336,
+  22.81px at 320) on an ordinary row, and at **8 widths** (320→376) on a `needs_review` row, where
+  it painted INSIDE the Ignore button's hit rectangle — hit-tested with `elementFromPoint`, a tap
+  on that text fired Ignore. The two counts are one sweep over two row kinds, not a contradiction:
+  a `needs_review` row carries a fourth control, which narrows its text column (0px at 320 against
+  28.19px without it), so its ink escapes at more widths. `AlbumRow`'s subtitle/meta line now
+  carries `overflow-hidden`: **0 control hits at all 201 widths**, against those 8 widths and 100
+  sampled ink columns with the class removed.
+  The text column itself is **28.19px at 320 and 68.19px at 360** (43/83 was the scrollbar-hidden
+  reading).
+  Adjacent, NOT fixed: at 320 a bank row's title renders at `clientWidth` **0** — it does not
+  ellipse, it vanishes, and no "…" fits. At 360 a row without the Ignore button gets 10px (the
+  ellipsis glyph, no character); a `needs_review` row, which carries that extra button, is still
+  0 at 414. Its text column is 0px there, so the subtitle and meta are clipped away with it. That
+  is the same `AlbumRow` title-vs-badge density call recorded above, and it is the owner's. The
+  badge is what takes the space: it is `shrink-0`, and at 320 its ink is the only text left in the
+  row — it extends ~106px past a 0-width column.
+  **It does not reach `Open`** (re-measured 2026-09-11, correcting the sentence that stood here).
+  The badge box ends at **239.8** and `Open` starts at **248.97** — 9.17px clear, **0px of
+  overlap** — and the two do not even share a vertical band (badge 456→478, the action controls
+  491→523). `elementFromPoint` swept across the badge's whole painted ink band returns the badge
+  and nothing else, on every row and every width sampled. So the "covers 25px of the 56.8px
+  `Open`, inert (a tap there hits the badge)" sentence recorded here was wrong in both halves: the
+  25px is real but it is not the badge, and there is no overlap for a tap to be inert against.
+  What the 25px actually is, is below.
+
+- **A bank row's `Open` button is SLICED by the list's own `overflow-hidden`** — pre-existing,
+  unchanged by this branch, NOT fixed (measured 2026-09-11). On a `needs_review` row, whose action
+  slot holds Ignore + Remove + Open, the button is **56.81px** wide and the `<ul>`'s
+  `overflow-hidden rounded-xl border` cuts **24.78px of it at 320** — 16.78 at 328, 8.78 at 336,
+  0.78 at 344, 0 from 352: **4 widths**. That is the 25px the entry above misattributed to the
+  badge. A clipped control is worse than an overlapped one: the missing 44% is not in the hit
+  rectangle either, so the row's primary action is part-invisible AND part-untappable there.
+  Identical on the merge-base (`2950304`) and on HEAD, so nothing on this branch caused or changed
+  it. Fixing it is the same density call as above — what wins the row at 320 — and it is the
+  owner's.
+
+- **`AlbumRow`'s stacked meta line is cut mid-word with no ellipsis** — NOT fixed, and the
+  candidate fix was built, measured and rejected (2026-09-11). The `overflow-hidden` added above
+  sits on the subtitle/meta WRAPPER while `truncate` is on the sibling subtitle, so it never
+  reaches the meta span. Stacked, that span is column-width and wraps, and any word wider than the
+  column is cut at the box edge: **13 widths (320→416)**, up to **58.08px** hidden on a
+  `needs_review` bank row (0px column at 320) and 20.03px on an ordinary one (28.19px column) —
+  it renders as `91%` / `· Stro` / `matc`. `/duplicates` and the import feed cut 0 widths.
+  The contained fix is `min-w-0 truncate` on the meta span with its `flex`/`shrink-0`/
+  `items-center` moved behind the existing `@min-[18rem]/rowtext` query. Built and swept, 201
+  widths, real scrollbar: it does what it promises — the row arm is byte-identical on both pages
+  at every sample, and on `/review` the cut becomes a real `…` and the row is 20–40px shorter.
+  **It was not landed because `truncate` also stops the line WRAPPING.** On `/review` that ellipses
+  18 further widths (344→488) where the wrapped line fitted whole. On `/duplicates`, where HEAD
+  hides nothing at any width, it hides **7→79px at 10 widths (320→392)** — and what it hides is the
+  format and bitrate: at 320 two copies both read `2001 · 11 tracks · …` and become
+  indistinguishable on the one page whose purpose is telling them apart.
+  So the choice is a mid-word slice on bank rows against losing the compare data on `/duplicates`.
+  That is the same "what wins the narrow column" call as the two entries above, and it is the
+  owner's. Note the present state is still strictly better than what it replaced: the same ink used
+  to paint over `Ignore`/`Remove` and take the tap.
+
+- ~~**The same unbounded error pushed the WHOLE PAGE sideways on the bank detail screen**~~ —
+  **CLOSED 2026-09-08.** `FailedBanner` rendered `item.error` — the same `str(exc)` the row above
+  moved out of its meta slot — with no wrap, inside `StatusBanner`'s `min-w-0 flex-1` column,
+  beside a non-shrinking "Open Duplicates" action. Measured at 360 with a 131-character unbroken
+  path (scrollbar present): the ink ran **589px past its column** and **436px past the banner's
+  own right edge**, and `documentElement.scrollWidth` was **757 against a clientWidth of 345** —
+  412px of horizontal page scroll, not just a spilled column. At 768: 411px past the column,
+  987 against 753.
+  Fix is `break-words` on the `<p>` and nothing else. NOT a clamp: this page is the diagnosis
+  surface and has to show the whole string. `overflow-wrap` lowers no ancestor's min-content
+  floor, and the `<p>` is a block child of the `min-w-0` column rather than a flex item, so it
+  needs no second `min-w-0` (the row's version does — there the text IS a flex item). **After**:
+  the ink stays inside the column at both widths, `scrollWidth == clientWidth`, and the string
+  takes 11 lines at 360 and 4 at 768, entirely inside the banner box. The 360 column is 167px of
+  the banner's 321 because the action slot is `shrink-0`; that is StatusBanner's shape, unchanged.
+  Also guarded: a whitespace-only `str(exc)` now renders nothing instead of an empty line.
+
+- **The `view` link in `CandidateReview`'s match header has no `focus-ring` class** and falls back
+  to the UA outline, while `styles.css:191-208` calls `focus-ring` this app's one dialect. Belongs
+  with the pending global focus-ring decision, which is the owner's.
+
 ## Accepted residuals and deliberate decisions (not work)
 
 Nothing in this section is a task. Each item was decided, with its reasoning, and is kept
@@ -1796,39 +2006,64 @@ the condition it names has changed.
   data; it is stated in `trash_manage._restore_to_origin`'s docstring, which also says why
   widening `origin_occupied` to name the broken link is a contract change.
 
-- **`awaiting_decision` can read true while beets works, and then STICKS**
-  (2026-09-08, import-feedback slice; blast radius corrected 2026-09-08). `park()` registers
-  its reply queue before queueing the park, so a choice accepted for a park that is registered
-  but not yet drained discards nothing and the next drain adds the index anyway. The window is
-  a few preemptible instructions (the lock is released, then the park is queued), not a
-  bounded sub-microsecond one, and it needs a double submit inside it. Both discards
-  (`record_choice`, `record_duplicate_decision`) are index-scoped and that index is already
-  answered, so the ordinary paths clear nothing — `get_parked` is a bare pop with no liveness
-  check, and a rejected retry discards nothing because `record_choice` discards after
-  `push_choice`. One path does clear it: a `search` re-parks the same index, and answering that
-  park succeeds and empties the set. Otherwise the flag holds to the terminal transition, and
-  the run polls at 10 s instead of 1 s with no spinner. The spoken elapsed clause is NOT lost —
-  a non-`search` choice sets the row `decided` and `needs_review` counts only that literal
-  status, so nothing names the wait and the clause is still spoken. Closing it means a blocked
-  flag on the bridge — a concurrency-boundary change with its own design. Stated at
-  `registry.ImportJob.parked_awaiting`.
+- ~~**`awaiting_decision` can read true while beets works, and then STICKS**~~ — **FIXED on
+  `fix/import-feedback-residuals`** (2026-09-08; PR + squash sha cited at merge). The flag no
+  longer comes from a consumer-side set of indices: `ImportBridge.has_unanswered_park` answers
+  it from the park itself — a registered reply slot with no answer delivered into it — and
+  `ImportJob.parked_awaiting` is gone with its two adds and both discards. The push marks the
+  slot in the same critical section as the put, so the reading falls with the answer rather
+  than with the drain that follows it, and one expression covers both channels. The trigger was
+  WIDER than recorded above: the worker emits its needs_review / needs_dup_resolution outcome
+  BEFORE it parks, so the row a client answers already exists, and any choice landing between
+  the slot's registration and the park's queueing was accepted against a live slot — the
+  duplicate channel needs one submit, not two. Reproduced deterministically by gating the park
+  channel between those two steps —
+  `test_awaiting_decision_clears_when_a_choice_beats_its_park_onto_the_queue` and its duplicate
+  twin, both of which fail on the parent commit.
 
-- **The plain-space middot survives outside the import page** (2026-09-08). `ReviewPage.tsx:208`
-  builds the confidence + recommendation string as one plain-space `%` · `label`, so a wrap can
-  strand a dangling "·" there. `CandidateReview.tsx:142` is a different shape: a bare flex item
-  in a container with no `flex-wrap`, so no wrap can strand it — its defect is the 360px squeeze
-  recorded below. `SEGMENT_SEP` is import-page-local by design; its docstring says so.
+- ~~**The plain-space middot survives outside the import page**~~ — **CLOSED 2026-09-08, and the
+  recorded defect did not reproduce.** `SEGMENT_SEP` moved to `lib/format.ts` and both
+  `ReviewPage`'s decision row and `CandidateReview`'s match header now use it, so the app has one
+  dialect for the `%` · `match` line. But the reason recorded here was wrong: nothing wraps in
+  `AlbumRow`'s `meta` slot, because that slot is `flex-shrink: 0` and in the ROW arm its used
+  width is therefore
+  max-content. Measured in Chromium at 360px with a 68-character artist: 130.5px wide, ONE client
+  rect, one line — byte-identical to the import feed's row, which has always passed the constant
+  into the same slot. The slot clips rather than wrapping — since 2026-09-08 at the
+  subtitle/meta line itself, not only at the list. The
+  only place the glyph pair is load-bearing outside the status lines is the match header, which
+  genuinely wraps (below). Adjacent, NOT fixed: at 360px that same row truncates the artist to
+  zero width and leaves `AlbumRow`'s own separator middot leading the line ("· 76% · Medium
+  match"), and the meta box overruns the text column by 4.8px — which of the artist and the
+  match wins that space is an `AlbumRow` design call with app-wide reach. Since 2026-09-08 the
+  overrunning INK is clipped to the column (see the bank-row entry above); the space question
+  is untouched.
 
-- **The import status line is the same recipe three times** (2026-09-08). `ImportPage.tsx`
-  builds a spinner + wrapping text line for the live feed, for the sweep and for the resume
-  banner, which is why the alignment fix needed a pass per copy. All three carry `items-start`
-  today; the shape is simply not extracted.
+- ~~**The import status line is the same recipe three times**~~ — **CLOSED 2026-09-08: two of the
+  three were one recipe; the third is a different one.** The feed's count line and the sweep's
+  folder line shared a byte-identical `<p>` class string and are now one `StatusLine`. Their
+  `<svg>` class EXPRESSIONS differed — `cn("mt-0.5 size-4 shrink-0", working ? "animate-spin" :
+  "invisible")` against the literal `"mt-0.5 size-4 shrink-0 animate-spin"` — and coincide only
+  while the feed is working, which is why the extraction needed a `spinning` prop. The resume banner is deliberately NOT a
+  caller: measured in Chromium it is six properties apart, not one (gap 12px vs 8px, icon 20px vs
+  16px, top correction 0 vs 2px because its icon matches the 20px line box exactly, `font-medium`
+  vs inherited, the muted colour on the icon rather than on the line, no `min-h-5`), and it owns
+  the `id` the Start button's `aria-describedby` points at. Covering it takes a variant used once.
+  All three satisfy the invariant that mattered — the spinner's box centre sits 0px from the first
+  line box's centre, measured at 1280 and 360 — and the two sites now name each other in
+  comments, so the third cannot be missed silently again.
 
-- **`CandidateReview`'s metadata line collapses at 360px** (2026-09-08, measured). The row is
-  a nowrap flex whose anonymous "· Medium match" item is squeezed to three lines; `items-center`
-  then parks the %, the separator and the "view" link on the middle line. Not the alignment
-  defect fixed on the status lines — `items-start` alone would not fix it, so it needs a
-  wrap/shrink decision.
+- ~~**`CandidateReview`'s metadata line collapses at 360px**~~ — **CLOSED 2026-09-08.** The
+  wrap/shrink decision was neither: the row is a sentence, so it stopped being a flex row. As
+  `flex items-center gap-2` the browser had to fit every segment on one flex line and squeezed the
+  widest — measured in Chromium at 360px: 3 line boxes, the "·" alone on the first, "Medium" and
+  "match" split across the next two, and the %, the second separator and the `view` link parked on
+  the middle one, with the source list ellipsed to "C…". It is now one text flow: 2 line boxes,
+  every segment intact, the full source list visible, and the second line OPENS with a middot
+  because every separator is `SEGMENT_SEP`. The source list also loses `truncate` with the flex
+  row — on the screen where the release is being judged, wrapping the label and country beats
+  ellipsing them. Adjacent, NOT fixed and pre-existing (present in the before shot): the candidate
+  page overflows horizontally by 17px at 360px, clipping the AFTER-IMPORT panel's "changed" badge.
 
 - **Wire-safety net coverage caveats** (by design, recorded so nobody assumes otherwise):
   SSE `/api/events` bypasses the response class (scopes are tag-derived today, never paths);
@@ -1982,6 +2217,15 @@ the condition it names has changed.
   42 px). Fold the `AlphabetIndex` missing `shadow-xs` (already recorded below) into the
   same touch. Load-bearing on mobile: the segments are the image-source picker at
   `ArtistImageEditPanel.tsx:278`.
+  **Two selection controls do NOT pass** (measured 2026-09-08 and 2026-09-11). `Checkbox` (on
+  `/review`'s bank rows): the shadcn primitive is `size-4`, so its hit rectangle is **16×16**,
+  under SC 2.5.8's 24px Level AA minimum. That is the primitive's floor and it is app-wide, not a
+  bank-row property — every `Checkbox` call site inherits it; a fix belongs in
+  `components/ui/checkbox.tsx` (a pseudo-element hit area, so the visual box does not grow), not
+  at a call site. `/duplicates`' keeper radio is smaller still: an unstyled
+  `input[type="radio"]`, so its box is the UA's — **13×13** in Chromium, measured at all 201
+  widths — and it is the only selection control on that page. Same class of decision as the three
+  above and the owner's to make.
 - Artist-image panel minors, all shipped deliberately: Fetch is `secondary` while the pasted-link
   Set is the only filled control (ranking reads backwards); the URL input's `aria-label`
   shadows its visible label — a genuine SC 2.5.3 Label-in-Name failure (Level A: name

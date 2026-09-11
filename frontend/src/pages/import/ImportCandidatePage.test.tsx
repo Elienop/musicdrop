@@ -7,6 +7,10 @@ import { beforeEach, describe, expect, test } from "vitest";
 
 import type { Candidate } from "@/api/useImport";
 import { ImportCandidatePage } from "@/pages/import/ImportCandidatePage";
+import {
+  containerQueryVariants,
+  unwiredContainerQueries,
+} from "@/test/containerQuery";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
 
@@ -225,6 +229,93 @@ describe("ImportCandidatePage", () => {
     expect(screen.getByText("bonus.mp3")).toBeInTheDocument();
   });
 
+  test("the match header is one wrapping text flow, glued at every separator", async () => {
+    server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
+    renderAt();
+    await screen.findByRole("heading", { name: /Radiohead - OK Computer/i });
+
+    // The whole line in one assertion — the joins are the thing under test, and
+    // fragments cannot pin a join. Every separator is `SEGMENT_SEP`: a plain
+    // space, the middot, then U+00A0, so a wrap breaks BEFORE the middot and
+    // never strands one at the end of a line. Written as escapes because a
+    // literal NBSP is invisible in review, and read off `textContent` because
+    // the default RTL normalizer collapses U+00A0 to a plain space — a text
+    // query cannot tell the two separators apart.
+    const line = screen.getByText(
+      (_, el) => el?.tagName === "P" && (el.textContent ?? "").startsWith("76%"),
+    );
+    expect(line.textContent).toBe(
+      "76% \u00b7\u00a0Medium match \u00b7\u00a0MusicBrainz \u00b7\u00a01997 " +
+        "\u00b7\u00a0CD \u00b7\u00a0GB \u00b7\u00a0Parlophone " +
+        "\u00b7\u00a0view (opens the release page in a new tab)",
+    );
+    // `textContent` INCLUDES `aria-hidden` nodes, so the assertion above cannot
+    // see a separator that renders but is not spoken \u2014 and one here was not.
+    // The middot before the source list was hidden, and since `SEGMENT_SEP`
+    // carries this line's only whitespace, Chrome's AX tree read "\u2026Medium
+    // match" and "MusicBrainz\u2026" as adjacent StaticText nodes. Every separator
+    // is plain text now, so dropping the hidden nodes must not change the
+    // string. The `<svg>` is the control: it is the one `aria-hidden` node
+    // left, and it contributes nothing to `textContent` either way.
+    const withoutHidden = (node: Node): string => {
+      if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+      if (node.nodeType !== Node.ELEMENT_NODE) return "";
+      if ((node as Element).getAttribute("aria-hidden") === "true") return "";
+      return [...node.childNodes].map(withoutHidden).join("");
+    };
+    // The helper's own control: it must actually drop a hidden subtree, or the
+    // assertion below passes by doing nothing.
+    const probe = document.createElement("p");
+    probe.innerHTML = 'a<span aria-hidden="true">HIDDEN</span>b';
+    expect(probe.textContent).toBe("aHIDDENb");
+    expect(withoutHidden(probe)).toBe("ab");
+
+    expect(withoutHidden(line)).toBe(line.textContent);
+    const hidden = line.querySelectorAll('[aria-hidden="true"]');
+    expect(hidden).toHaveLength(1);
+    expect(hidden[0].tagName).toBe("svg"); // decorative, and carries no text
+    // The layout half: as `flex items-center gap-2` this line put every segment
+    // on one flex line and the browser squeezed the widest of them to three
+    // line boxes at 360px. Normal inline layout wraps between words instead.
+    // jsdom cannot measure that, so what is pinned here is the class the
+    // squeeze needed; the wrap itself is a browser measurement.
+    const tokens = line.className.split(/\s+/);
+    expect(tokens).not.toContain("flex");
+    // Dropping the flex row also dropped the `truncate` that was capping this
+    // line's contribution to the page's scroll width. `break-words` is what
+    // holds that cap now — measured at 360px with a 60-character unbreakable
+    // label, 242px of element overflow and 218px of document scroll without it,
+    // 0 and 17 with it (the 17 is AlbumPanel's, recorded separately).
+    expect(tokens).toContain("break-words");
+    // Control: a line that lost its classes entirely would also pass the line
+    // above, so pin what must still be there.
+    expect(tokens).toContain("text-sm");
+    expect(tokens).toContain("text-muted-foreground");
+  });
+
+  test("the header h1 carries BOTH classes an unbreakable title needs", async () => {
+    server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
+    renderAt();
+    const h1 = await screen.findByRole("heading", { name: /Radiohead - OK Computer/i });
+
+    // Two classes, and neither works alone here. This h1 is a flex ITEM of a
+    // row, so its default `min-width: auto` floors it at the longest
+    // unbreakable token; `overflow-wrap` picks where lines break but does not
+    // lower that floor (SettingsTrashPage.tsx:209-211 writes the rule out).
+    // Measured at 360px with a 30-character artist and a 45-character album:
+    // 371px of document scroll with neither, 371px with `break-words` alone,
+    // and 0 with both. AlbumDetailPage's h1 needs only `break-words` because it
+    // is in normal flow — the class list is not transferable, the reason is.
+    const tokens = h1.className.split(/\s+/);
+    expect(tokens).toContain("min-w-0");
+    expect(tokens).toContain("break-words");
+    // Control: pin the parent shape the two classes are answering, so a future
+    // move out of the flex row makes this test say so rather than pass on.
+    expect(h1.parentElement?.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["flex", "flex-wrap"]),
+    );
+  });
+
   test("shows the current file's format in the Format column", async () => {
     server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
     renderAt();
@@ -297,6 +388,30 @@ describe("ImportCandidatePage", () => {
     const afterTable = screen.getByRole("table", { name: "After import" });
     expect(within(nowTable).getByText("1")).toBeInTheDocument();
     expect(within(afterTable).getByText("19")).toBeInTheDocument();
+  });
+
+  // The before/after panels lay themselves out from their own width, not the
+  // viewport's. jsdom computes no layout, so the widths that chose 27rem and
+  // 14rem are browser-measured and recorded in the component; what a test CAN
+  // hold is that the variants are wired to a declared container — rename one
+  // side and CSS reports nothing, the panel silently keeps one arm.
+  // The PRESENCE list is half the pin: an empty unwired list also means "no
+  // variants here", so on its own it survives deleting the whole layer.
+  test("wires every container-query variant to a declared container", async () => {
+    server.use(http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())));
+    const { container } = renderAt();
+
+    await screen.findByText("Paranoid Android");
+    expect(containerQueryVariants(container)).toEqual([
+      "@min-[14rem]/panel:flex-row",
+      "@min-[14rem]/panel:gap-0.5",
+      "@min-[14rem]/panel:items-baseline",
+      "@min-[27rem]/panel:flex-1",
+      "@min-[27rem]/panel:flex-row",
+      "@min-[27rem]/panel:gap-4",
+      "@min-[27rem]/panel:self-center",
+    ]);
+    expect(unwiredContainerQueries(container)).toEqual([]);
   });
 
   test("a title-only change still shows the number as a plain position in each panel", async () => {

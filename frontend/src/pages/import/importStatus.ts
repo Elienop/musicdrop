@@ -1,5 +1,16 @@
 import type { ImportJobState, SweepStatus } from "@/api/useImport";
 
+/** A sweep that has accepted Pause and is still finishing its current album.
+ *
+ * One predicate for one concept: the announcer drops its elapsed clause on this,
+ * and the page turns its announcement throttle off on it, and those two must not
+ * be able to disagree. The origin check is redundant against today's backend —
+ * `sweep` is only ever populated for a sweep origin — but the contract permits
+ * the pair, and the message branch below reads the same two fields. */
+export function isPausedSweep(data: ImportJobState | undefined): boolean {
+  return data?.origin === "sweep" && data.sweep?.paused === true;
+}
+
 /** The single spoken status for the whole run — it is the one `aria-live`
  * source. Verb-first, and worded away from the visible cue/panels so a test can
  * single one out by its whole text.
@@ -31,10 +42,14 @@ export function announceMessage(args: {
   // A failure IS a finish: the clock stops at both terminal transitions, so the
   // clause is valid and past tense there too.
   const finished = done || data.phase === "failed";
+  // A paused, still-running sweep names its own wait — see {@link sweepMessage}
+  // — so it takes the same treatment as a named decision: no clause, and the
+  // announcement is one fixed string until the run reaches a terminal phase.
+  const pausedSweep = isPausedSweep(data);
   const clause = elapsedClause(
     data.elapsed_seconds,
     finished,
-    data.awaiting_decision && namesAWait(data),
+    pausedSweep || (data.awaiting_decision && namesAWait(data)),
   );
   if (data.phase === "failed") return failedMessage(data) + clause;
   if (data.origin === "sweep" && data.sweep) {
@@ -59,20 +74,22 @@ export function announceMessage(args: {
 /** The spoken elapsed sentence appended to a data-bearing announcement — empty
  * under a minute, past tense once the run is over.
  *
- * Dropped only when the announcement already NAMES the wait. `role="status"` is
- * implicitly atomic, so each minute tick re-reads the WHOLE string, and while a
- * named decision is owed nothing else can change — a 20-minute decision became
- * 20 full re-reads carrying no new information, and asserting activity. With
- * the clause gone the string is static and the announcer's identical-string
- * de-dup suppresses the repeat. The visible line keeps its value; that number
- * counts the whole run and must not vanish.
+ * Dropped when the announcement already NAMES the wait. Two announcements do: a
+ * parked decision (below) and a paused sweep ("Stopping after this album.").
+ * `role="status"` is implicitly atomic, so each minute tick re-reads the WHOLE
+ * string, and while a named decision is owed nothing else can change — a
+ * 20-minute decision became 20 full re-reads carrying no new information, and
+ * asserting activity. With the clause gone the string is static and the
+ * announcer's identical-string de-dup suppresses the repeat. The visible line
+ * keeps its value; that number counts the whole run and must not vanish.
  *
  * Keying on `awaiting_decision` alone was wrong twice over. A park buffered
  * before its row exists sets the flag with nothing to name, so the whole
  * announcement collapsed to `"Imported 0."` — the "working or wedged?"
- * ambiguity this clause exists to remove. And the flag can stick for the rest
- * of a run (see `registry.ImportJob.parked_awaiting`), which made that silence
- * permanent. The flag is still an AND term: a `search` re-lookup keeps its row
+ * ambiguity this clause exists to remove. And the flag could then stick for the
+ * rest of a run, which made that silence permanent — closed since, by asking the
+ * bridge directly (`ImportBridge.has_unanswered_park`) instead of mirroring it
+ * consumer-side. The flag is still an AND term: a `search` re-lookup keeps its row
  * `needs_review` while beets queries MusicBrainz, and there the clock is the
  * only thing that changes. */
 function elapsedClause(
@@ -96,17 +113,23 @@ function elapsedClause(
  * live region kept saying "Sweeping." there, asserting an activity the state
  * had left, and the Pause button self-disables on click so nothing else spoke.
  * Worded away from the visible line ("Pausing; finishing the current album…")
- * so the two never substring-collide. */
+ * so the two never substring-collide.
+ *
+ * The paused branch carries NO counters, and {@link announceMessage} drops the
+ * elapsed clause for it, so the string cannot change until the run ends. Both
+ * halves are needed: the counters keep moving after Pause is accepted (the last
+ * album emits two outcome records, the second carrying `album_id`), and
+ * `role="status"` is atomic, so each re-read the whole sentence with one number
+ * changed — measured four announcements in ~5s, closest pair 974ms. The tiles
+ * carry the numbers on screen and the terminal announcement repeats them. */
 function sweepMessage(sweep: SweepStatus, phase: ImportJobState["phase"]): string {
   if (phase !== "done") {
+    if (sweep.paused) return "Stopping after this album.";
     // The moving triple only. `role="status"` is atomic, so a live sweep
     // re-reads this whole string every poll for as long as it runs — the same
     // repetition the elapsed clause was gated to stop. `skipped_known` decides
     // nothing while the run is in flight, and the tile carries it on screen.
-    const counts = sweepCounts(sweep);
-    return sweep.paused
-      ? `Stopping after this album. ${counts}`
-      : `Sweeping. ${counts}`;
+    return `Sweeping. ${sweepCounts(sweep)}`;
   }
   // Spoken once, and a claim about the whole run — so every category it holds.
   const counts = sweepCounts(sweep) + knownClause(sweep);
@@ -222,25 +245,6 @@ function progressMessage(data: ImportJobState): string {
 /** Seconds a run must pass before its status line carries the elapsed value.
  * Below it the wait is not worth asking about, so a fast import gains no text. */
 export const ELAPSED_AFTER_S = 30;
-
-/** Separator between a status line's segments. The space AFTER the middot is
- * non-breaking, so a wrap cannot strand a dangling "·" at the end of a line;
- * the ordinary space before it is where the line is allowed to break — which
- * means a wrapped line CAN open with the middot (measured: 22 of 71 error
- * lengths at 360px, back when the failed panel glued the duration to the raw
- * exception with this constant). The failed panel builds it again for its count
- * line — the page's own text, not an exception. Measured at 360px: one line at
- * realistic counts, and at six figures it wraps and opens with the middot,
- * exactly as JobDone's identical line already does.
- *
- * Import-page-local on purpose, and the two rows outside it are not the same
- * defect. `ReviewPage.tsx:208` builds the confidence + recommendation string
- * with a plain-space middot, so a wrap can strand one there — a recorded
- * residual, not an oversight in this constant's reach.
- * `CandidateReview.tsx:142` puts its middot in a bare flex item whose container
- * has no `flex-wrap`, so no wrap can strand it; that row's recorded defect is
- * the 360px squeeze instead. */
-export const SEGMENT_SEP = " ·\u00a0";
 
 /** `head` plus a second unit, dropping it when zero — "1h", not "1h 0m". The
  * inner space is non-breaking so the two halves never wrap apart. */

@@ -166,8 +166,8 @@ export function isTerminalPhase(phase: ImportPhase): boolean {
  * re-lookup deliberately keeps its row `needs_review` while beets works — both
  * used to read as "blocked", which dropped the spinner and backed the poll off
  * for a decision nobody would ever be asked for. `awaiting_decision` is the
- * registry's own answer (it tracks the indices it is blocked in `reply.get()`
- * on, backend/app/import_jobs/registry.py). */
+ * server's own answer: the bridge reports whether a park is still unanswered
+ * (`ImportBridge.has_unanswered_park`, backend/app/beets/import_session.py). */
 export function isWorking(state: ImportJobState): boolean {
   return ACTIVE_PHASES.has(state.phase) && !state.awaiting_decision;
 }

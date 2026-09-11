@@ -472,7 +472,23 @@ function MemberRow({
   const bitrateNote = ` · ${album.bitrate_kbps}k`;
   const quality = `${album.format ?? "-"}${album.bitrate_kbps ? bitrateNote : ""}`;
   return (
-    <li className={cn("flex items-center gap-1", checked && "bg-primary/5")}>
+    // The radio centres on the ROW it selects, never on row+path. An
+    // `items-center` flex <li> holding both centred the control on the whole
+    // box and left it 17px (320-768) / 12px (1280) below its own row — the
+    // same drift, from the same cause, as the bank row's checkbox in
+    // BankSection.
+    // A grid rather than that fix's stacked flex wrappers because the inset
+    // the path line has to clear is the NATIVE radio's width (13px in
+    // Chromium), which is the UA's number and not ours: placing the path in
+    // row 2 of the SAME column track derives that offset instead of restating
+    // it as a padding. `gap-x` only — a row gap would push the path off its
+    // row, and `items-center` centres each item in its own grid row.
+    <li
+      className={cn(
+        "grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-1",
+        checked && "bg-primary/5",
+      )}
+    >
       <input
         type="radio"
         className="ml-2 shrink-0"
@@ -481,31 +497,29 @@ function MemberRow({
         onChange={onChoose}
         aria-label={`Keep ${album.title} (${album.track_count} tracks)`}
       />
-      <div className="min-w-0 flex-1">
-        {/* ?size=thumb: AlbumRow renders the cover at size-10 (40 CSS px), so
-            the 320px derivation already covers 2x DPI. CoverArt never appends
-            a query of its own, so a literal append is safe. */}
-        <AlbumRow
-          cover={`/api/albums/${album.id}/cover?size=thumb`}
-          coverAssetKey={`album:${album.id}`}
-          title={album.title}
-          subtitle={album.album_artist}
-          meta={`${album.year ?? "-"} · ${album.track_count} tracks · ${quality}`}
-          badge={
-            album.is_suggested_keeper ? (
-              <Badge variant="secondary" className="shrink-0">
-                <Resolved className="mr-1 size-3" aria-hidden="true" />
-                most complete
-              </Badge>
-            ) : undefined
-          }
-        />
-        <div
-          className="text-muted-foreground thin-scrollbar overflow-x-auto px-4 pb-2 font-mono text-xs whitespace-nowrap"
-          title={album.folder}
-        >
-          {album.folder}
-        </div>
+      {/* ?size=thumb: AlbumRow renders the cover at size-10 (40 CSS px), so
+          the 320px derivation already covers 2x DPI. CoverArt never appends
+          a query of its own, so a literal append is safe. */}
+      <AlbumRow
+        cover={`/api/albums/${album.id}/cover?size=thumb`}
+        coverAssetKey={`album:${album.id}`}
+        title={album.title}
+        subtitle={album.album_artist}
+        meta={`${album.year ?? "-"} · ${album.track_count} tracks · ${quality}`}
+        badge={
+          album.is_suggested_keeper ? (
+            <Badge variant="secondary" className="shrink-0">
+              <Resolved className="mr-1 size-3" aria-hidden="true" />
+              most complete
+            </Badge>
+          ) : undefined
+        }
+      />
+      <div
+        className="text-muted-foreground thin-scrollbar col-start-2 overflow-x-auto px-4 pb-2 font-mono text-xs whitespace-nowrap"
+        title={album.folder}
+      >
+        {album.folder}
       </div>
     </li>
   );

@@ -5,6 +5,7 @@ import { http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
+import { SEGMENT_SEP } from "@/lib/format";
 import { ReviewPage } from "@/pages/review/ReviewPage";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw-server";
@@ -130,6 +131,46 @@ describe("ReviewPage", () => {
     expect(review).toHaveAttribute("href", "/import/albums/0?job=j1");
     const resolve = screen.getByRole("link", { name: /resolve/i });
     expect(resolve).toHaveAttribute("href", "/import/albums/1/duplicate?job=j1");
+  });
+
+  test("the decision row's confidence line uses the app's segment separator", async () => {
+    server.use(
+      http.get(ACTIVE, () =>
+        HttpResponse.json({ active: true, job_id: "j1", origin: "inbox", needs_review_count: 1 }),
+      ),
+      http.get(JOB, () =>
+        HttpResponse.json({
+          job_id: "j1",
+          phase: "reviewing",
+          progress: { applied: 0, needs_review: 1, skipped: 0 },
+          albums: [
+            album({
+              index: 0,
+              album: "Echoes",
+              status: "needs_review",
+              confidence: 76,
+              recommendation: "medium",
+            }),
+          ],
+          summary: null,
+          error: null,
+          origin: "inbox",
+          set_aside: 0,
+        }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+    await screen.findByRole("link", { name: /^review$/i });
+
+    // Located on its shape (the SPAN whose text ends in the label), then
+    // compared as a literal string. `getByText` cannot do the second half: the
+    // default RTL normalizer collapses U+00A0 to a plain space, so a text query
+    // reads " \u00b7\u00a0" and " \u00b7 " as the same thing. The NBSP is
+    // written as an escape because a literal one is invisible in review.
+    const meta = screen.getByText(
+      (_, el) => el?.tagName === "SPAN" && (el.textContent ?? "").endsWith("Medium match"),
+    );
+    expect(meta.textContent).toBe("76% \u00b7\u00a0Medium match");
   });
 
   test("inbox rows render name, set-aside tag, and track count", async () => {
@@ -398,10 +439,89 @@ describe("ReviewPage", () => {
     const row = within(section).getByRole("listitem");
     expect(within(row).getByText(/uncertain match/i)).toBeInTheDocument();
     expect(within(section).getByText(/71%/)).toBeInTheDocument();
+    // One dialect for the `%` · tier line across the three AlbumRow surfaces
+    // that render it — the import feed, the decision row and this bank row:
+    // the humanized tier, not the raw `medium` enum, joined with SEGMENT_SEP
+    // and not a plain " · ". The other two callers are out of scope, not
+    // exceptions: the inbox row's meta is a bare track count with no
+    // separator, and `/duplicates` joins its own line with a plain " · ".
+    // Compared on `textContent` because SEGMENT_SEP's trailing space is a
+    // NBSP, which RTL's default normalizer would collapse.
+    expect(row.textContent).toContain(`71%${SEGMENT_SEP}Medium match`);
     expect(within(section).getByRole("link", { name: /open/i })).toHaveAttribute(
       "href",
       "/review/bank/b1",
     );
+  });
+
+  // `error` is `str(exc)` from the apply runner, so it is unbounded, and
+  // AlbumRow's `meta` slot is `shrink-0` — used width max-content in the row
+  // arm, so it can neither shrink nor wrap and an unbounded string in it runs
+  // over the row's own controls. Widths in BACKLOG, "A failed bank row's error
+  // overran the row". jsdom computes no layout, so what a test can hold is that
+  // the error is OUT of that slot and that the classes bounding it are on the
+  // elements that must carry them.
+  const failedRowSetup = (error: string | null) => {
+    server.use(
+      http.get(BANK, () =>
+        HttpResponse.json({
+          items: [bankRow({ id: "b2", album: "Album Y", status: "failed", error })],
+          total: 1,
+          total_all: 1,
+          offset: 0,
+          limit: 48,
+        }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+    return screen.findByRole("region", { name: /waiting for review/i });
+  };
+
+  test("a failed row carries its error on its own line, not in the meta slot", async () => {
+    const failure =
+      "beets refused the import: /srv/music/incoming/Radiohead_-_Amnesiac/disc1 is not writable";
+    const section = await failedRowSetup(failure);
+    const line = await within(section).findByTitle(failure);
+    // Whole text, and NOTHING else in that element: joining it into the meta
+    // line would put the confidence and recommendation in here with it.
+    expect(line.textContent).toBe(failure);
+    // The meta bits survive the move — they are what the slot is sized for.
+    expect(within(section).getByText(/71%/)).toBeInTheDocument();
+    expect(line).not.toContainElement(within(section).getByText(/71%/));
+  });
+
+  // The regression the component comment warns about, pinned instead of only
+  // described. `line-clamp` clips at the PADDING box, so padding on the clamped
+  // element itself shows a sliced third line — measured 10px of one, at 768 as
+  // well as 360. The padding therefore lives on the wrapper. `break-words` and
+  // `min-w-0` are a pair: the clamped span is a flex item of the <p>, so
+  // without the floor an unbroken path sets its own min-content width and the
+  // wrap cannot lower it.
+  test("the clamp and the padding sit on different elements", async () => {
+    const failure = "/srv/music/incoming/" + "a".repeat(120) + "/track01.flac";
+    const section = await failedRowSetup(failure);
+    const line = await within(section).findByTitle(failure);
+    const clamped = within(line).getByText(failure);
+    expect(clamped.className).toContain("line-clamp-2");
+    expect(clamped.className).toContain("break-words");
+    expect(clamped.className).toContain("min-w-0");
+    // No padding on the clamped element, in any direction.
+    expect(clamped.className).not.toMatch(/(^|\s)p[btlrxy]?-/);
+    const wrapper = line.parentElement;
+    expect(wrapper?.className).toMatch(/(^|\s)p[btlrxy]?-/);
+  });
+
+  // The guard's other direction, both spellings the runner can produce. An
+  // unguarded render leaves an empty padded line carrying a blank `title`.
+  test.each([
+    ["null", null],
+    ["whitespace-only", "  \n "],
+  ])("a failed row with a %s error renders no error line", async (_name, error) => {
+    const section = await failedRowSetup(error);
+    await within(section).findByText("Album Y");
+    expect(within(section).queryByTitle("")).not.toBeInTheDocument();
+    const row = within(section).getByRole("listitem");
+    expect(row.querySelector(".line-clamp-2")).toBeNull();
   });
 
   test("an all-resolved bank keeps the section and its history hint reachable", async () => {

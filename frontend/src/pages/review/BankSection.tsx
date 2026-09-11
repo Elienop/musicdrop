@@ -13,7 +13,8 @@ import {
   type BankReason,
   type BankStatus,
 } from "@/api/useBank";
-import { Albums, Remove } from "@/components/icons";
+import { RECOMMENDATION_LABEL } from "@/api/useImport";
+import { Albums, Remove, Warning } from "@/components/icons";
 import { AlbumRow } from "@/components/system/AlbumRow";
 import { EmptyState } from "@/components/system/EmptyState";
 import { ErrorState } from "@/components/system/ErrorState";
@@ -33,6 +34,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { SEGMENT_SEP } from "@/lib/format";
 
 import { lastSegment } from "./lastSegment";
 
@@ -430,7 +432,18 @@ export function BankSection() {
  * Open/Ignore/Remove.
  * The status chip names the lifecycle for settled rows; needs_review rows
  * show the REASON instead (what kind of decision awaits). Failed rows carry
- * their error in the meta line. */
+ * their error on its own line below the row. */
+
+/** The row's recommendation tier, humanized. The bank contract types this
+ * field as a bare `string` rather than the `Recommendation` enum the import
+ * feed carries, so an unknown tier falls through as itself instead of
+ * rendering `undefined`. */
+const RECOMMENDATION_TEXT: Readonly<Record<string, string>> =
+  RECOMMENDATION_LABEL;
+function recommendationLabel(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  return RECOMMENDATION_TEXT[value] ?? value;
+}
 
 /** Chip tone per status: the decision awaiting stands out, the attention
  * states recede to an outline, and the settled/quiet ones recede furthest. */
@@ -460,81 +473,121 @@ function BankRow({
   const title = (row.album ?? lastSegment(row.folder)) || "Unknown album";
   const metaBits = [
     row.confidence != null ? `${Math.round(row.confidence)}%` : null,
-    row.recommendation ?? null,
-    row.status === "failed" && row.error ? row.error : null,
+    recommendationLabel(row.recommendation),
   ].filter((b): b is string => Boolean(b));
+  // NOT in `meta`: that slot is `shrink-0`, so in the row arm its used width is
+  // max-content and it can neither shrink nor wrap. This string is `str(exc)`
+  // from the apply runner (`app/bank/apply_runner.py`) — unbounded — so in that
+  // slot the meta cell's ink starved the sibling subtitle and painted across
+  // the row's own controls. Measurements are in BACKLOG under "A failed bank
+  // row's error overran the row"; keep them there, not here.
+  // `line-clamp-2` bounds the row: the whole string is reached through the
+  // row's own Open link, where `BankReviewPage` renders it untruncated in a
+  // `role="alert"` banner. `title` is a hover extra, not that route — a <p>
+  // takes no keyboard focus and touch has no hover.
+  const failure = row.status === "failed" ? (row.error ?? "").trim() : "";
   return (
-    <li className="flex items-center gap-0">
-      {row.status !== "applying" ? (
-        <Checkbox
-          className="ml-4"
-          checked={selected}
-          onCheckedChange={(checked) => onSelect(checked === true)}
-          aria-label={`Select ${title}`}
-        />
-      ) : (
-        <span className="ml-4 w-4 shrink-0" aria-hidden="true" />
-      )}
-      <div className="min-w-0 flex-1">
-        <AlbumRow
-          cover={null}
-          title={title}
-          subtitle={row.artist ?? "Unknown artist"}
-          meta={metaBits.join(" · ") || undefined}
-          badge={
-            <Badge variant={bankBadgeVariant(row.status)}>
-              {row.status === "needs_review" ? BANK_REASON_LABEL[row.reason] : BANK_STATUS_LABEL[row.status]}
-            </Badge>
-          }
-          action={
-            <div className="flex items-center gap-1.5">
-              {row.status === "needs_review" && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={busy}
-                  aria-label={`Ignore ${title}`}
-                  onClick={onIgnore}
-                >
-                  Ignore
-                </Button>
-              )}
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
+    // The checkbox centres on the ROW, never on row+error: the error is a
+    // sibling of this wrapper, outside its `items-center` context.
+    <li className="flex flex-col">
+      <div className="flex items-center">
+        {row.status !== "applying" ? (
+          <Checkbox
+            className="ml-4"
+            checked={selected}
+            onCheckedChange={(checked) => onSelect(checked === true)}
+            aria-label={`Select ${title}`}
+          />
+        ) : (
+          <span className="ml-4 w-4 shrink-0" aria-hidden="true" />
+        )}
+        <div className="min-w-0 flex-1">
+          <AlbumRow
+            cover={null}
+            title={title}
+            subtitle={row.artist ?? "Unknown artist"}
+            meta={metaBits.join(SEGMENT_SEP) || undefined}
+            badge={
+              <Badge variant={bankBadgeVariant(row.status)}>
+                {row.status === "needs_review" ? BANK_REASON_LABEL[row.reason] : BANK_STATUS_LABEL[row.status]}
+              </Badge>
+            }
+            action={
+              <div className="flex items-center gap-1.5">
+                {row.status === "needs_review" && (
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
                     disabled={busy}
-                    aria-label={`Remove ${title}`}
+                    aria-label={`Ignore ${title}`}
+                    onClick={onIgnore}
                   >
-                    <Remove aria-hidden="true" />
+                    Ignore
                   </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Remove this row?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      The files stay on disk, but the banked candidates are
-                      forfeited; a re-sweep will NOT pick this folder up again.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction onClick={onRemove}>Remove</AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-              <Button size="sm" asChild>
-                <Link to={`/review/bank/${row.id}`} aria-label={`Open ${title}`}>
-                  Open
-                </Link>
-              </Button>
-            </div>
-          }
-        />
+                )}
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={busy}
+                      aria-label={`Remove ${title}`}
+                    >
+                      <Remove aria-hidden="true" />
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Remove this row?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        The files stay on disk, but the banked candidates are
+                        forfeited; a re-sweep will NOT pick this folder up again.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction onClick={onRemove}>Remove</AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+                <Button size="sm" asChild>
+                  <Link to={`/review/bank/${row.id}`} aria-label={`Open ${title}`}>
+                    Open
+                  </Link>
+                </Button>
+              </div>
+            }
+          />
+        </div>
       </div>
+      {failure !== "" && (
+        // Its own line, so the width it needs is the row's, not the meta slot's,
+        // and `pl-12` re-states the row's own content inset (checkbox slot 32 +
+        // AlbumRow's px-4) rather than inheriting it.
+        // The padding is on the wrapper, not the clamped element: line-clamp
+        // clips at the PADDING box, so a third line paints into any padding the
+        // clamped element carries itself (measured at 360px).
+        // `min-w-0` on the clamped span is load-bearing — it is a flex item of
+        // the <p>, so without it an unbroken path sets its own floor and
+        // `break-words` cannot lower it (same pair as SettingsTrashPage).
+        // The icon carries the error register: the body stays muted so a long
+        // reason does not shout, but a failure reason must not read as the
+        // artist subtitle directly above it.
+        <div className="pr-4 pb-3 pl-12">
+          <p
+            className="text-muted-foreground flex items-start gap-1.5 text-sm"
+            title={failure}
+          >
+            <Warning
+              className="text-destructive mt-0.5 size-3.5 shrink-0"
+              aria-hidden="true"
+            />
+            <span className="line-clamp-2 min-w-0 break-words">{failure}</span>
+          </p>
+        </div>
+      )}
     </li>
   );
 }
