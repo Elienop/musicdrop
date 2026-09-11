@@ -2640,6 +2640,23 @@ Added by the 2026-08-28 sweeps:
 
 ## Recently shipped
 
+- **Phone-width rows and hit areas — PR #221, squash `a053ffc` = v0.51.2 (2026-09-11).**
+  Decisions 39–42, each browser-measured with a real scrollbar over 201 widths. A row's actions
+  drop below it under 28rem of row width on the bank, decision and parked feed rows (a grid with
+  a container query on the row; the title keeps its ellipsis at every width, and the sliced `Open`
+  and the badge ink under `Resolve` go with it). 28rem rather than the 20rem first derived from
+  the typographic floor: the phone band 385–430 showed 6–11 title characters inline and 17–24
+  stacked, and 448 clears the 473px narrowest desktop row. The `Checkbox` primitive draws a
+  centred 24×24 pseudo-element so every caller meets WCAG 2.2 SC 2.5.8 without growing; the
+  `/duplicates` keeper radio gets a padded label; `/browse`'s facet rail stops clipping the target
+  at no measured cost. The `/duplicates` "most complete" badge moves to the meta line (keeper
+  title 0 → 114px at 320, equal to its sibling at every width; the badge wraps at 320 and never
+  truncates), and keeper radio names carry format, bitrate and the badge text, never a
+  placeholder. The struck entries above that cite decisions 39–42 are its closures. Recorded and
+  not fixed, each under its own entry: the bank row's status badge still starving its title at
+  320–352; the stacked badge under the meta's start at 35 widths; a focused feed-row action
+  unmounting when the live feed applies its album (pre-existing, unmeasured); the done panel's
+  `readOnly` asymmetry; the sha guard's line-1 prose cites.
 - **Import-feedback residuals — PR #220, squash `b8fb9f4` = v0.51.1 (2026-09-11).** The five
   residuals #217 left, re-read off `git log -1 --format=%B b8fb9f4` (2026-09-11: this entry had
   named four, and three of them were defects #220 FOUND rather than residuals it closed):
