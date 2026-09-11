@@ -921,7 +921,7 @@ def trash_replaced_files(
         TrashOriginsStoreUnusableError: the origin store cannot be used.
         OSError: an entry is not a regular file or a symlink, or a move failed.
             Whatever had already moved keeps its record; a container that got
-            nothing is removed again.
+            nothing is removed again, with anything a part-copied move left in it.
     """
     for src in files:
         mode = src.lstat().st_mode
@@ -949,8 +949,15 @@ def trash_replaced_files(
             # lexical containment test, so no path here ever steers a rename.
             _record_origin(origins_dir, dest, origin=os.path.abspath(str(origin)), moved="items")
         else:
+            # Removed with its contents, not by ``rmdir``: a cross-filesystem
+            # ``shutil.move`` is a copy that can die mid-write, leaving a
+            # part-copied file here with ``moved == 0``. ``rmdir`` refuses a
+            # non-empty dir, which left a container in Trash that no origin
+            # record names. The path is the name ``_unique_trash_dest`` just
+            # found free in both namespaces, so no pre-existing entry holds it;
+            # a symlink there raises instead of being followed.
             with contextlib.suppress(OSError):
-                dest.rmdir()
+                shutil.rmtree(dest)
     return dest
 
 

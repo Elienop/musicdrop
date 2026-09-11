@@ -11,6 +11,11 @@ Trash first (:func:`app.beets.trash.trash_replaced_files`). Nothing is written
 into a folder whose old files did not all move aside: that folder is reported
 failed, the files that did not move are still there, and any that did are in
 the folder's recorded Trash entry.
+
+The move-aside commits before the write, so a folder reported ``failed`` may
+have moved its old art and then failed to write the new file (measured with
+ENOSPC): its art is then only in that Trash entry. A failed folder is a reason
+to look in Trash before emptying it.
 """
 
 from __future__ import annotations
@@ -96,11 +101,15 @@ def _tmp_path(dst: Path) -> Path:
     ``.<name>.tmp`` is a path something else can occupy first: a symlink planted
     there was followed by ``open(tmp, "wb")``, and ``os.replace`` then published
     the link itself as ``dst`` — measured, ``library.db`` overwritten with JPEG
-    bytes while the run reported the file written. Same naming rule as
+    bytes while the run reported the file written.
+
+    The name does NOT embed ``dst.name``, so its length does not grow with the
+    destination's — the same shape as ``lyrics._tmp_path``, which needs that
+    because its destination names run to NAME_MAX. Same naming rule as
     ``app.playlists.atomic``, which also keeps two concurrent writers of one
     target off a single inode.
     """
-    return dst.parent / f".{dst.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+    return dst.parent / f".{os.getpid()}.{secrets.token_hex(8)}{dst.suffix}.tmp"
 
 
 def _atomic_write_bytes(dst: Path, data: bytes) -> None:
@@ -131,8 +140,10 @@ def _atomic_write_bytes(dst: Path, data: bytes) -> None:
         finally:
             os.close(dir_fd)
     finally:
-        # Ours alone, since the name is this call's — see ``lyrics`` for the one
-        # residual that leaves (a process killed mid-write leaves the dotfile).
+        # Whatever is at the temp path: ours, unless something guessed the name
+        # this call picked and got there first — in which case the create above
+        # already failed and this unlinks the squatter. See ``lyrics`` for the
+        # one residual (a process killed mid-write leaves the dotfile).
         if tmp.exists():
             with suppress(OSError):
                 tmp.unlink()

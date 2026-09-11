@@ -46,7 +46,9 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   artist page's **Save art to library** button replaces what is there: the poster/background it
   overwrites go to the Trash first, one entry per artist folder. To get a file you placed by hand
   back, copy it out of `data/beets/trash/` — the Trash page's Restore cannot re-file loose images.
-  If the Trash cannot be used, that folder is reported failed and its files are left alone.
+  If the Trash cannot be used, that folder is reported failed and its files are left alone. A
+  folder reported failed *after* its files moved has them in its Trash entry — look there before
+  you empty the Trash.
   Renaming or merging an artist writes art only where it is missing — a merge never replaces the
   target's art.
 - **Lyrics** — presence, per-album fetch, and a library-wide backfill. The backfill is

@@ -138,9 +138,10 @@ def active_source_names(plugin: Any) -> list[str]:
 #: until a reader appeared, forever, on the single-slot backfill worker.
 #: ``O_NOFOLLOW`` refuses a symlink; POSIX makes ``O_CREAT | O_EXCL`` fail EEXIST
 #: on one anyway (measured), so it earns its keep only if ``O_EXCL`` is dropped.
-#: With the random name both now guard a path nothing else can aim at, which is
-#: what makes this writer's temp file unreachable from the music share — the
-#: read-side twin is :func:`_is_marker_sidecar`'s stat guard.
+#: Both guard a path nothing in the music share can aim at WITHOUT GUESSING the
+#: name :func:`_tmp_path` picked; a squatter that did land on it fails the create
+#: and is unlinked by the ``finally`` below. The read-side twin is
+#: :func:`_is_marker_sidecar`'s stat guard.
 _TMP_CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
 
 
@@ -152,11 +153,20 @@ def _tmp_path(dst: Path) -> Path:
     path something else can occupy first — measured on the art writer next door:
     a symlink planted there was followed and ``os.replace`` published the link as
     the destination. Here the flags above already refused that; the random name
-    is what keeps a squatter from refusing the WRITE instead (a FIFO at the
-    derived path made every attempt for that track fail EEXIST). Same naming
-    rule as ``app.playlists.atomic`` and ``artist_art._tmp_path``.
+    is what keeps a squatter from refusing the WRITE instead. A FIFO at the
+    derived path failed the create and then self-healed, because the ``finally``
+    below unlinked it. A DANGLING symlink was the lockout: ``Path.exists()``
+    follows it, so it was never unlinked and every attempt for that track failed
+    EEXIST.
+
+    The name does NOT embed ``dst.name``, so its length does not grow with the
+    destination's: 33 bytes for this writer's ``.lrc``/``.txt`` and this box's
+    7-digit ``pid_max``. Embedding it cost ``len(dst.name) + 30``, which made a
+    sidecar name of 226-250 bytes fail ENAMETOOLONG where the 5-byte
+    ``.<name>.tmp`` had written it. Same naming rule as ``app.playlists.atomic``
+    and ``artist_art._tmp_path``.
     """
-    return dst.parent / f".{dst.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+    return dst.parent / f".{os.getpid()}.{secrets.token_hex(8)}{dst.suffix}.tmp"
 
 
 def _atomic_write_text(dst: Path, text: str) -> None:
@@ -190,10 +200,12 @@ def _atomic_write_text(dst: Path, text: str) -> None:
         finally:
             os.close(dir_fd)
     finally:
-        # Our own leftover, and only ours: the name is this call's, so nothing
-        # here deletes a path somebody else put in the music folder. The price
-        # is that a process KILLED mid-write leaves one dotfile no later call
-        # clears — the residual ``playlists.atomic`` already carries.
+        # Whatever is at the temp path: ours, unless something guessed the name
+        # this call picked and got there first — in which case the create above
+        # already failed and this unlinks the squatter. That condition is what
+        # keeps the line off paths somebody else put in the music folder. Its
+        # price is that a process KILLED mid-write leaves one dotfile no later
+        # call clears — the residual ``playlists.atomic`` already carries.
         if tmp.exists():
             with suppress(OSError):
                 tmp.unlink()

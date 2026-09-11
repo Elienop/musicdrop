@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 from beets.library import Library
@@ -116,8 +117,8 @@ def test_force_refuses_the_write_when_the_replaced_file_cannot_be_trashed(
     # A regular FILE where the origin store should be: require_usable_store's
     # mkdir probe raises EEXIST on it for EVERY user (its docstring measured
     # that shape). A path under / would instead lean on EACCES, which root does
-    # not get — as root that test created the directory and passed for the
-    # wrong reason.
+    # not get — as root it created the directory, the write went through, and
+    # this test went RED for the wrong reason while littering /x-musicdrop.
     blocked = tmp_path / "origins-is-a-file"
     blocked.write_bytes(b"")
     store = ArtTrashStore(trash_dir=tmp_path / "trash", origins_dir=blocked)
@@ -266,6 +267,81 @@ def test_a_symlink_at_the_derived_tmp_path_is_neither_followed_nor_published(
     assert planted.is_symlink()  # left where it was, not deleted by our cleanup
     # and no temp of ours survived the write
     assert sorted(p.name for p in tmp_path.iterdir()) == [planted.name, dst.name, secret.name]
+
+
+def test_the_tmp_file_is_created_exclusively_and_without_following_symlinks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The flags themselves, read off the ``os.open`` call — the twin of
+    ``test_lyrics_sidecars``' pin on the same pair.
+
+    Measured: dropping ``O_EXCL | O_NOFOLLOW`` from this writer left all 3446
+    tests green. The symlink test next door still passed because the unguessable
+    temp name keeps a planted link out of the way on its own, so nothing else
+    here reads these flags.
+    """
+    from app.beets.artist_art import _atomic_write_bytes
+
+    real_open = os.open
+    created: list[int] = []
+
+    def spy(path: Any, flags: int, *rest: Any) -> int:
+        if flags & os.O_CREAT:
+            created.append(flags)
+        return real_open(path, flags, *rest)
+
+    # `os` is one shared module object, so patching it here is what the adapter
+    # sees. (Reaching through `app.beets.artist_art.os` instead fails mypy
+    # strict: the module does not explicitly export the name.)
+    monkeypatch.setattr(os, "open", spy)
+
+    _atomic_write_bytes(tmp_path / "artist-poster.png", PNG[0])
+
+    assert created, "the temp file was not created through os.open"
+    assert created[0] & os.O_EXCL
+    assert created[0] & os.O_NOFOLLOW
+
+
+def test_a_move_that_dies_mid_copy_leaves_no_container_behind(
+    tmp_path: Path, art_trash: ArtTrashStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cross-filesystem ``shutil.move`` is a copy: dying mid-write leaves a
+    part-copied file in the container with nothing moved.
+
+    ``rmdir`` refused that dir, so the container stayed in Trash as a row no
+    origin record names and no source folder is missing files for. The container
+    is this call's own fresh name, so it is removed with its contents.
+    """
+    import shutil
+
+    from app.beets.trash import trash_replaced_files
+
+    folder = tmp_path / "music" / "Artist"
+    folder.mkdir(parents=True)
+    curated = folder / "artist-poster.png"
+    curated.write_bytes(PNG[0])
+
+    def part_copied_then_dies(src: str, dst: str) -> None:
+        Path(dst).write_bytes(PNG[0][:4])  # the copy half of the move got this far
+        raise OSError(28, "No space left on device", dst)
+
+    # `shutil` is one shared module object, so patching it here is what the
+    # adapter sees. (Reaching through `app.beets.trash.shutil` instead fails
+    # mypy strict: the module does not explicitly export the name.)
+    monkeypatch.setattr(shutil, "move", part_copied_then_dies)
+
+    with pytest.raises(OSError):
+        trash_replaced_files(
+            [curated],
+            container_name="Artist - artist art",
+            origin=folder,
+            trash_dir=art_trash.trash_dir,
+            origins_dir=art_trash.origins_dir,
+        )
+
+    assert list(art_trash.trash_dir.iterdir()) == []  # no phantom container
+    assert curated.read_bytes() == PNG[0]  # the source never left
+    assert read_trash_origin(art_trash.origins_dir, "Artist - artist art") is None
 
 
 def test_a_dot_leading_artist_folder_gets_a_listed_trash_container(

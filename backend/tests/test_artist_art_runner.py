@@ -95,11 +95,74 @@ async def test_the_trash_store_is_taken_on_the_worker_for_each_artist(
         service, None, edit_lib, name, force=True, resolve_trash=resolve
     )
 
-    assert asked == [name]  # asked on the worker, in the write's own thread
+    assert asked == [name]  # asked by the job, right before the write
     assert (out.status, out.written) == ("failed", 0)
     for d in get_artist_dirs(edit_lib, name):
         assert (d / "artist-poster.png").read_bytes() == curated  # untouched
         assert not (d / "artist-poster.jpg").exists()
+
+
+@pytest.mark.anyio
+async def test_the_sweep_asks_for_the_trash_store_once_per_artist(
+    rename_lib: Library, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through the real ``_default_fetch_one``, over two artists: the resolver is
+    asked again for the second, and its refusal applies to that artist alone.
+
+    A memo of the first answer — anywhere between the endpoint and the write —
+    would send the rest of the run's replaced art wherever the first artist's
+    store pointed, including a Trash dir swapped for a symlink into the library
+    after the run started.
+    """
+    import app.artist_art_jobs.runner as runner
+    from app.beets.artist_art import ArtTrashStore, get_artist_dirs
+
+    store = ArtTrashStore(trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins")
+    curated = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+    folders = {n: get_artist_dirs(rename_lib, n) for n in ("Fayrouz", "Fairuz")}
+    for dirs in folders.values():
+        for d in dirs:
+            (d / "artist-poster.png").write_bytes(curated)
+
+    class _Poster:
+        async def get_artist_image(self, n: str, *, get_mbid: Any) -> tuple[bytes, str]:
+            return (b"\xff\xd8\xff new poster", "image/jpeg")
+
+    monkeypatch.setattr(runner, "get_artist_mbid", lambda lib, n: None)
+    monkeypatch.setattr(runner, "build_source_chain", lambda client, s: None)
+    monkeypatch.setattr(runner, "build_fanart_background_source", lambda client, s: None)
+    monkeypatch.setattr(runner, "ArtistImageService", lambda **kw: _Poster())
+
+    asked: list[int] = []
+
+    def resolve() -> ArtTrashStore | None:
+        asked.append(1)
+        return store if len(asked) == 1 else None  # refused from the second artist on
+
+    reg = ArtistArtBackfillRegistry()
+    reg.start(force=True)
+    await sweep_async(
+        reg,
+        rename_lib,
+        cache_dir=tmp_path / "cache",
+        settings=settings,
+        delay=0,
+        force=True,
+        resolve_trash=resolve,
+        names=["Fayrouz", "Fairuz"],
+    )
+
+    assert len(asked) == 2  # once per artist, not once per run
+    state = reg.state()
+    assert (state.written, state.failed) == (1, 1)
+    first = folders["Fayrouz"][0]
+    assert (first / "artist-poster.jpg").read_bytes() == b"\xff\xd8\xff new poster"
+    assert not (first / "artist-poster.png").exists()  # replaced, and in Trash
+    second = folders["Fairuz"][0]
+    assert (second / "artist-poster.png").read_bytes() == curated  # untouched
+    assert not (second / "artist-poster.jpg").exists()  # nothing written
+    # one container, the first artist's — the refused artist got none
+    assert [p.name for p in store.trash_dir.iterdir()] == ["Fayrouz - artist art"]
 
 
 @pytest.mark.anyio
