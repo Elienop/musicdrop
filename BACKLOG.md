@@ -1125,6 +1125,18 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `models/edit.py` and `models/duplicates.py` all say "a failed write still counts" — the
   export swallows every exception. The honest shape is written vs attempted.
 
+- **"Reset to auto" in the artist-image panel deletes a hand-uploaded portrait with no
+  confirm, and nothing refetches it.** (Found 2026-09-11 by the final code seat on
+  `fix/art-apply-keeps-hand-placed-art`.) The panel opens from the same rail as Save art
+  (`ArtistAlbumsPage.tsx`, `aria-controls="artist-image-panel"`); its Reset POST reaches
+  `ArtistImageCache.clear_override` (`backend/app/artwork/cache.py`), which unlinks the
+  `*.override` bytes and mime sidecar — no dialog, no Trash. README's Trash section says of
+  exactly those files "which nothing refetches". Same family as the Save-art entry this branch
+  closed, one panel over. Fix shape: a confirm on Reset when an override exists, and the
+  override moved aside (`trash_replaced_files` fits: two regular files, one container) — the
+  design call is whether an app-cache file should ever feed the Trash listing, since an
+  override is not library data.
+
 - **The Trash row for an art container reads as an album.** (Found 2026-09-11,
   browser-measured on `fix/art-apply-keeps-hand-placed-art`.) A forced Save art moves the
   replaced `artist-poster.*`/`artist-background.*` into `Trash/<folder> - artist art/` with
@@ -1148,6 +1160,32 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   the same directory, unlink `.*.tmp` entries that match the writer's own pattern and are
   older than a job could run — bounded to the pattern, never a bare glob. `playlists.atomic`
   carries the same residual.
+
+- **The move-aside and both library writers act on NAMES after checking them — three measured
+  windows that only descriptor anchoring closes.** (Found 2026-09-11 by the security seat on
+  `fix/art-apply-keeps-hand-placed-art`; all Low, none exploitable for privilege.)
+  (1) `trash_replaced_files` lstat-guards every file, then runs `require_usable_store`, the
+  allocator and the container `mkdir` before the first `shutil.move` — first lstat to first
+  move measured at 0.13 ms; a directory renamed onto `artist-poster.jpg` in that window is
+  moved whole into the container (rename needs write on the source's parent, so only trees
+  already inside the library can be renamed in; the reach is "attacker-owned data relocated
+  into Trash"). (2) The container `mkdir()` is the claim on the name only for what predates
+  it: after it returns (mkdir to first move 6 µs) a symlink swapped in at the name is followed
+  by `shutil.move` — the file lands outside `trash_dir` — and on the `moved == 0` arm a real
+  directory renamed in is what `rmtree` removes (`rmtree` on a symlink raises, that half
+  holds). Precondition: write on `trash_dir`, which the layout rule permits when Trash sits
+  strictly inside the music dir. (3) `O_NOFOLLOW` guards the final component only: with the
+  artist folder itself a symlink (`/music/Artist -> /data`), `_atomic_write_bytes` and
+  `_atomic_write_text` create the temp file and `os.replace` INSIDE the target — measured
+  `/data/artist-poster.jpg` written. Bounded to eight basenames (`artist-poster`/
+  `artist-background` × the four allow-listed extensions) and needs an album imported through
+  the symlinked spelling; preexisting on `main`, the branch made it safer (the move-aside globs
+  the same directory, so a file there goes to Trash instead of being clobbered). Fix shape,
+  one design: open the claimed container and the artist folder once
+  (`O_RDONLY|O_DIRECTORY|O_NOFOLLOW`) and do every create, `rename`, `replace` and fsync
+  through that descriptor (`dir_fd=` / `dst_dir_fd=`; keep a copy fallback for EXDEV) — the
+  descriptor stays on the directory the check saw whatever the name does afterwards. Until
+  then the docstrings say "window", not "cannot".
 
 - **Three writers still use the derived `.<name>.tmp` shape the art and lyrics writers
   left.** (Found 2026-09-11.) `beets/config_editor.py:391` (config.yaml),
@@ -1993,9 +2031,15 @@ the condition it names has changed.
   artist's write** (2026-09-11, `fix/art-apply-keeps-hand-placed-art`). The runner resolves
   the store right before each artist's `write_artist_art`; a Trash dir re-pointed under the
   library between that check and the move lands the moved files there — still a move, nothing
-  deleted, and `trash_replaced_files` refuses a symlink at the container itself. Same window
-  every other Trash caller accepts (delete, duplicates); the only forced caller today is the
-  per-artist Apply, seconds long. Re-derive if a forced multi-artist caller appears.
+  deleted. A symlink that PREDATES the container claim is refused (a dangling one fails the
+  `mkdir`, a live one makes the allocator pick the next name); one swapped in after the claim
+  is the open window recorded under *Open bugs / hardening*. Same window every other Trash
+  caller accepts (delete, duplicates); the only forced caller today is the per-artist Apply,
+  seconds long. Strictly wider than "per artist": the store check reads
+  `app.state.beets_library` fresh while the runner writes through the `lib` captured at start,
+  and a config Apply can swap it mid-run — traced fail-closed (a music dir re-pointed inside
+  Trash makes the check refuse; a torn-down handle raises out of `get_artist_dirs` into the
+  job's failed state before any write). Re-derive if a forced multi-artist caller appears.
 
 - **A bank row's meta line is bounded by the enum in practice, not by the contract
   (2026-09-11).** `recommendationLabel` (`BankSection.tsx:445`) maps the tier through
