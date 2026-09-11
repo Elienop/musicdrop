@@ -64,6 +64,13 @@ const FRONTEND_ROOT = import.meta.dirname;
  * they were compared only against `node_modules`, so a Sonar upgrade left the gate mirroring
  * a bundle that no longer existed while every test stayed green.
  */
+/** The typescript-eslint the bundle declares. Compared against the BUNDLE only, never
+ * against `node_modules`: the repo floats `^8.68.0` on purpose (eslint.config.js, "the fifth
+ * plugin behind a mirrored rule"), and the divergence is re-checked inert by hand at each
+ * bundle version. This constant is what makes that comment's number fail loudly when the
+ * next SonarQube image moves it again. */
+const ANALYZER_TSESLINT_VERSION = "8.67.0";
+
 const ANALYZER_PLUGIN_VERSIONS: Record<string, string> = {
   "eslint-plugin-unicorn": "65.0.1",
   "eslint-plugin-react": "7.37.5",
@@ -76,19 +83,25 @@ const SCANNER_CACHE = "/mnt/data/sonarqube/scanner-cache";
 /**
  * The newest `sonar-javascript-plugin.jar` under `root` by mtime, or null when there is
  * none. The scanner cache keeps one entry per analyzer version it has ever downloaded, so
- * after a SonarQube upgrade it holds several (two since the 2026-09-11 move to 26.9). The
- * entry names are hashes and `readdirSync` orders by NAME, so "first jar found" is a coin
- * toss between the old bundle and the new one — and reading the old one is a silent pass
- * in exactly the direction the bundle test below exists to make loud.
+ * after a SonarQube upgrade it holds several. The entry names are hashes and `readdirSync`
+ * orders by NAME, so "first jar found" is a coin toss between the old bundle and the new
+ * one — and reading the old one is a silent pass in exactly the direction the bundle test
+ * below exists to make loud.
+ *
+ * Known hole: mtime is the FIRST-download time and a cache hit restamps nothing (measured
+ * 2026-09-11 — a scan at 17:03 left every entry at 16:53). After a downgrade, or a re-pull
+ * of an older image whose entry is already cached, the entry the server now runs looks
+ * older and this still answers the newer bundle. If that ever matters, the entry's directory
+ * name is the jar's md5, which `api/plugins/installed` advertises for the running server.
  */
 function newestAnalyzerJar(root: string): string | null {
   if (!existsSync(root)) return null;
   let newest: { jar: string; mtimeMs: number } | null = null;
   for (const entry of readdirSync(root)) {
     const jar = path.join(root, entry, "sonar-javascript-plugin.jar");
-    if (!existsSync(jar)) continue;
-    const { mtimeMs } = statSync(jar);
-    if (newest === null || mtimeMs > newest.mtimeMs) newest = { jar, mtimeMs };
+    const st = statSync(jar, { throwIfNoEntry: false });
+    if (st === undefined) continue; // an entry for another plugin, or pruned under us
+    if (newest === null || st.mtimeMs > newest.mtimeMs) newest = { jar, mtimeMs: st.mtimeMs };
   }
   return newest?.jar ?? null;
 }
@@ -754,12 +767,14 @@ describe("eslint.config.js", () => {
         mkdirSync(path.dirname(jar));
         writeFileSync(jar, "");
       }
+      // atime and mtime stamped APART (utimes sets both): a helper keyed on atime — the
+      // one key that is dead on a `noatime` mount — picks the wrong jar and fails here.
       const now = Date.now() / 1000;
-      utimesSync(older, now - 3600, now - 3600);
-      utimesSync(newer, now, now);
+      utimesSync(older, now, now - 3600); // atime new, mtime OLD
+      utimesSync(newer, now - 7200, now); // atime old, mtime NEW
       expect(newestAnalyzerJar(root)).toBe(newer);
       // The other way round too, so this is mtime and not "last by name" in disguise.
-      utimesSync(older, now + 60, now + 60);
+      utimesSync(older, now - 7200, now + 60);
       expect(newestAnalyzerJar(root)).toBe(older);
       // An entry with no jar is skipped; a missing cache is unknown, not clean.
       mkdirSync(path.join(root, "m-no-jar"));
@@ -798,6 +813,12 @@ describe("eslint.config.js", () => {
       return;
     }
 
+    // The unpinned fifth plugin: its number lives in a comment, and this is that comment's
+    // reader. Bundle only — `node_modules` is allowed to float past it.
+    expect(
+      bundle["@typescript-eslint/eslint-plugin"],
+      `the analyzer bundle now declares @typescript-eslint/eslint-plugin@${bundle["@typescript-eslint/eslint-plugin"]}, not ${ANALYZER_TSESLINT_VERSION} — re-check the two mirrored rules against the installed version, then update eslint.config.js's comment and this constant together`,
+    ).toBe(ANALYZER_TSESLINT_VERSION);
     for (const [name, recorded] of Object.entries(ANALYZER_PLUGIN_VERSIONS)) {
       expect(
         bundle[name],
