@@ -11,9 +11,9 @@ from collections.abc import Callable, Collection
 from pathlib import Path
 from typing import Any
 
-from app.beets.library import LibraryHandle, library_paths_context
+from app.beets.library import LibraryHandle, LibraryRootUnavailableError, library_paths_context
 from app.beets.orphans import find_orphan_folders
-from app.beets.protected import ProtectedTreeError, protected_trees
+from app.beets.protected import ProtectedTreeError
 from app.beets.reorganize import (
     collect_units,
     live_album_roots,
@@ -23,6 +23,7 @@ from app.beets.reorganize import (
 from app.beets.store_layout import (
     StoreLayoutError,
     check_store_layout,
+    checked_protected_trees,
     lib_music_and_library,
 )
 from app.beets.trash import trash_folder
@@ -239,23 +240,31 @@ def _sweep_orphans(
             library_path=library_path,
             settings=store_settings,
         )
+        # Ahead of the creation below, and that order is pinned: a phase this
+        # guard refuses must leave no Trash directory behind
+        # (``test_the_orphan_pass_is_skipped_when_the_origin_store_cannot_be_used``).
+        require_usable_store(trash_origins_dir)
+        # Beside the layout check, from the pair it just approved: the spelled
+        # rows above miss an alias, so each candidate is asked again by inode
+        # below. THE checked form, not a bare ``protected_trees``: this phase
+        # hands ``trash_folder`` an identity set, and that mover creates the
+        # Trash by path, so without the anchored creation here a symlinked
+        # component below the music root is followed on this path alone (code
+        # seat W2).
+        protected = checked_protected_trees(
+            store_settings, handle, trash_dir=trash_dir, origins_dir=trash_origins_dir
+        )
     except StoreLayoutError:
         _log.warning("orphan sweep skipped: the store layout is refused", exc_info=True)
         return False
-    # Beside the layout check, from the pair it just approved: the spelled rows
-    # above miss an alias, so each candidate is asked again by inode below.
-    protected = protected_trees(
-        settings=store_settings,
-        music_dir=music_root,
-        beets_dir=handle.beets_dir,
-        trash_dir=trash_dir,
-        origins_dir=trash_origins_dir,
-        library_path=library_path,
-    )
-    try:
-        require_usable_store(trash_origins_dir)
     except TrashOriginsStoreUnusableError:
         _log.warning("orphan sweep skipped: the Trash origin store cannot be used", exc_info=True)
+        return False
+    except LibraryRootUnavailableError:
+        # The same warning-and-skip: the Trash would have to be created inside a
+        # library whose music is not there, and a directory left on a bare
+        # mountpoint defeats the cheap mounted-check for every later caller.
+        _log.warning("orphan sweep skipped: the music library is not there", exc_info=True)
         return False
     seeds = None if scope == "library" else vacated
     for folder in find_orphan_folders(

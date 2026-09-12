@@ -1314,7 +1314,13 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   (`trash_album` relocates per item with beets' `Album.move`). `trash_album_folder` and
   `trash_folder` receive `ProtectedTrees` and use it for the SOURCE guard, not for the root open;
   `trash_album` does not receive it at all, so plumbing it through its three call sites — one of
-  them the import session — is part of the work.
+  them the import session — is part of the work. Those `mkdir`s are now no-ops on every path a
+  request reaches: `checked_protected_trees` creates the Trash through the anchored walk first, at
+  the delete ops, the three Trash routes, the artist-art store, duplicates' resolve and the orphan
+  sweep. The ONE site where they still create it is the import session's post-import cleanup
+  (`import_session.py:1774`), which runs `check_store_layout` and then `trash_album`, and holds no
+  `LibraryHandle` to hand `checked_protected_trees` — giving it one, or a handle-free form of that
+  call, is the rest of this item.
   Three measured facts the next reader needs:
   (1) **The destination.** Measured on the move-aside before its fix: `music/.trash` swapped for a
   symlink after `checked_store_dirs` put the container in `somewhere-else/` with the origin record
@@ -2213,20 +2219,25 @@ the condition it names has changed.
   seats measured an absolute name renaming the file onto itself and REPORTING SUCCESS, so
   `_refuse_a_non_bare_name` now runs ahead of the staging stats.)
 
-- **Two microseconds between the Trash's creation and the stat that identifies it** (2026-09-12,
-  same branch; narrowed by its fix round). `checked_protected_trees` now CREATES the Trash and then
-  takes its identity (`store_layout._ensure_trash_root`), so no mover creates it and none sees
-  `trash=None` — a Trash renamed away inside that window is refused, not re-created, which is a
-  safe failure rather than an escape (`tests/test_trash_replaced_root.py`). Two residuals, both
-  accepted: a real directory a stranger LEFT at the configured path is adopted, and no check here
-  can undo that — a party who owns the Trash's location owns it whoever creates the directory; and
-  the window itself, which only "the checked resolve hands back an open fd" closes (see the
-  folder-movers entry above, which wants the same shape). The symlinked-INTERMEDIATE escape that
-  used to sit here is closed: below the music root each part is created through its parent's
-  descriptor and a link at any of them is refused (`MUSICDROP_TRASH_DIR is not reachable below the
-  music library`), and the arm that created the root by path is gone. Precondition unchanged: write
-  on the Trash's parent, i.e. a Trash configured inside the music library, since the default
-  `<beets_dir>/trash` is excluded by the layout rule (*music contains beets* is refused).
+- **CLOSED 2026-09-12 — the window between the Trash's creation and the stat that identified
+  it** (same branch, closed by its third fix round). It was titled "two microseconds" and
+  measured **18 µs** (median; p99 22), and the record named only the shape that fails safe. What
+  it actually bought, measured by the security seat: a real racer won it **537 times in 100 876
+  requests (0.53 %)**, and a won window put that request's files outside the music library and
+  pointed `empty_all`'s `rmtree` at a directory of the attacker's choosing — an escalation from
+  "write inside the music library" to "recursive delete anywhere the app user can write", for one
+  request per win. A forced artist-art sweep asks once per artist, so ~5 expected wins per
+  thousand artists. The DEFAULT `<beets_dir>/trash` layout was the no-gain case throughout (that
+  chain is the operator's, and the layout rule keeps the beets dir out of the library).
+  `_ensure_trash_root` now returns `fstat` on the descriptor its own anchored walk reached and
+  `protected_trees` takes it as `trash_ident=`, so there is no second resolution by name to race:
+  the mover's own open must land on the directory the walk reached or be refused
+  (`tests/test_trash_root_creation.py::test_the_identity_the_movers_get_is_the_one_the_walk_opened`).
+  One residual, accepted and unchanged: a real directory a stranger LEFT at the configured path is
+  adopted, and no check here can undo that — a party who owns the Trash's location owns it
+  whoever creates the directory. `checked_protected_trees` creates the Trash, so no mover creates
+  it and none sees `trash=None`; the folder-movers entry above still wants the same
+  descriptor-shaped fix on its own three paths.
 
 - **The artist-image reset answers 409 while the beets swap lock is held, rather than waiting
   for it** (2026-09-12, `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`). The reset is

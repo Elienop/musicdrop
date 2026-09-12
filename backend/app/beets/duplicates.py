@@ -30,13 +30,18 @@ from app.beets.config_editor import _settings, _swap_lock
 from app.beets.existing_album import to_existing_album
 from app.beets.library import (
     LibraryHandle,
+    LibraryRootUnavailableError,
     _album_fields,
     _album_genre,
     _coerce_optional_str,
     _coerce_str,
     _require_id,
 )
-from app.beets.store_layout import StoreLayoutError, checked_store_dirs
+from app.beets.store_layout import (
+    StoreLayoutError,
+    checked_protected_trees,
+    checked_store_dirs,
+)
 from app.beets.trash import (
     album_folder,
     album_format_bitrate,
@@ -409,13 +414,27 @@ def _checked_store(app: FastAPI) -> tuple[LibraryHandle, Path, Path]:
     written out here rather than shared because the two files' 503 sentences
     differ: a duplicate resolve moves copies, it does not delete an album.
 
+    The identity set it builds is DISCARDED, because ``trash_album`` takes none
+    (a recorded residual). What the call is here for is the creation: it makes
+    the Trash through the anchored walk, so ``resolve_duplicate_group``'s own
+    ``mkdir(parents=True)`` can no longer follow a symlinked component below the
+    music root (code seat W2), and the library-presence guard runs before
+    anything is written into the music root.
+
     Raised inline so the status stays a literal
     tests/test_route_status_declarations.py can see.
     """
     handle: LibraryHandle = app.state.beets_library
+    settings = _settings(app)
     try:
-        trash_dir, origins_dir = checked_store_dirs(_settings(app), handle)
+        trash_dir, origins_dir = checked_store_dirs(settings, handle)
+        checked_protected_trees(settings, handle, trash_dir=trash_dir, origins_dir=origins_dir)
     except StoreLayoutError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"{exc} No copies have been moved.",
+        ) from exc
+    except LibraryRootUnavailableError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"{exc} No copies have been moved.",

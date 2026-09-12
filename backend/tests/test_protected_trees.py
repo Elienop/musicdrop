@@ -1302,13 +1302,19 @@ def test_the_orphan_sweep_reads_the_settings_the_route_threaded_in(tmp_path: Pat
 def test_the_sweep_builds_its_set_from_the_pair_the_layout_check_approved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The five arguments, asserted directly rather than through an outcome.
+    """The arguments, asserted directly rather than through an outcome.
 
     The test above only reaches ``settings=``: it turns on a CONFIGURED inbox,
-    so the four path arguments could each be wrong and it would still refuse.
-    They are what tie the set to the same music root, beets dir and pair
+    so the path arguments could each be wrong and it would still refuse. They
+    are what tie the set to the same music root, beets dir and pair
     ``check_store_layout`` has just accepted, which is the whole point of taking
     it beside that call.
+
+    Four of the six moved INSIDE the callee: the sweep asks
+    ``checked_protected_trees``, which derives the music root, the beets dir and
+    the database path from this handle itself, so they cannot drift from the pair
+    — what is left to pin here is the handle, the settings object the route
+    threaded in, and the two paths this phase was given.
     """
     from app.reorganize_jobs import runner as runner_mod
     from app.reorganize_jobs.registry import ReorganizeRegistry
@@ -1321,14 +1327,16 @@ def test_the_sweep_builds_its_set_from_the_pair_the_layout_check_approved(
     handle = make_test_handle(lib, beets_dir)
     trash = tmp_path / "trash"
     seen: dict[str, object] = {}
-    monkeypatch.setattr(
-        runner_mod,
-        "protected_trees",
-        lambda **kwargs: (
-            seen.update(kwargs),
-            ProtectedTrees(ids={}, trash=None, trash_alias=None),
-        )[1],
-    )
+
+    def spy(
+        settings_arg: object, handle_arg: object, *, trash_dir: Path, origins_dir: Path
+    ) -> ProtectedTrees:
+        seen.update(
+            settings=settings_arg, handle=handle_arg, trash_dir=trash_dir, origins_dir=origins_dir
+        )
+        return ProtectedTrees(ids={}, trash=None, trash_alias=None)
+
+    monkeypatch.setattr(runner_mod, "checked_protected_trees", spy)
 
     reg = ReorganizeRegistry()
     reg.start(scope="library", artist=None, album_id=None, scope_label="library")
@@ -1345,11 +1353,9 @@ def test_the_sweep_builds_its_set_from_the_pair_the_layout_check_approved(
     )
 
     assert seen["settings"] is settings
-    assert seen["music_dir"] == music
-    assert seen["beets_dir"] == handle.beets_dir
+    assert seen["handle"] is handle
     assert seen["trash_dir"] == trash
     assert seen["origins_dir"] == origins_for(trash)
-    assert seen["library_path"] == beets_dir / "library.db"
 
 
 # --------------------------------------------------------------------------

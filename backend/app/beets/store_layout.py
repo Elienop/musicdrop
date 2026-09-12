@@ -936,13 +936,19 @@ def checked_protected_trees(
 ) -> ProtectedTrees:
     """The identities the movers and the remover refuse, for THIS request.
 
-    Taken beside :func:`checked_store_dirs`, from the pair it returned, by the
-    request sites that hand a mover or the remover an identity set: the delete
-    ops, the Trash page's DELETE routes, and the artist-art store. The orphan
-    sweep reads ``protected_entries`` directly for its own ignore list, and
-    ``trash_album``'s callers pass no set at all (a recorded residual). Separate
-    from that call because every OTHER caller of it only reads the pair and would
-    pay a dozen stats for nothing.
+    Taken beside :func:`checked_store_dirs`, from the pair it returned, by every
+    request site that hands a mover or the remover an identity set: the delete
+    ops, the Trash page's DELETE routes, the artist-art store, and the
+    reorganize orphan sweep (``reorganize_jobs/runner.py``). Duplicates' resolve
+    calls it too and DISCARDS the set, because ``trash_album`` takes none (a
+    recorded residual) — what it wants is the creation. ``api/reorganize.py``
+    reads ``protected_entries`` directly for the sweep's ignore list, which is a
+    list of paths rather than a set of identities. The one destructive path that
+    does NOT come through here is the import session's post-import cleanup
+    (``import_session.py:1774``), which holds no ``LibraryHandle``; its
+    ``trash_album`` still creates the Trash by path (a recorded residual).
+    Separate from :func:`checked_store_dirs` because every OTHER caller of that
+    only reads the pair and would pay a dozen stats for nothing.
 
     The Trash is CREATED here when it is absent (:func:`_ensure_trash_root`), so
     no mover sees ``protected.trash is None`` and none has to create it by path.
