@@ -577,6 +577,12 @@ def checked_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path,
     return trash, origins
 
 
+# The four Trash-chain refusals below carry no ``config_key``: the value at
+# fault is ``MUSICDROP_TRASH_DIR``, which is env-derived and not a
+# ``config.yaml`` key the editor can paint. ``store_layout_report`` reaches them
+# through :func:`_check_trash_is_reachable` and falls back to ``directory:``,
+# which is the line the editor can act from — so this is deliberate rather than
+# an omission to "fix".
 def _refuse_an_unreachable_trash(spelled: Path, exc: OSError) -> StoreLayoutError:
     """The refusal for a Trash path whose own chain below the music root is not
     walkable — a symlinked component, or a file in the way.
@@ -868,6 +874,32 @@ def _ensure_trash_root(settings: Settings, *, music_dir: Path, trash_dir: Path) 
         return _fstat_ident(fd)
     finally:
         os.close(fd)
+
+
+def _check_trash_is_reachable(*, music_dir: Path, settings: Settings, trash_dir: Path) -> None:
+    """Raise the refusal a destructive request would, without creating anything.
+
+    ``store_layout_report`` painted Settings from the rows alone and the
+    reachability walk lives at the destructive call sites, so a Trash below the
+    music root through a symlinked component read HEALTHY where the operator
+    configures it while every delete, restore and Empty-Trash answered 503
+    (security seat L-3). Same walk and the same messages, no ``mkdir``.
+
+    Silent for a part that is simply not there yet — none of the five paths has
+    to exist — and silent for one it cannot open for any other reason: the
+    destructive routes word an EACCES with the errno in hand, and a report that
+    refused on a permission bit would paint a row the operator cannot act on.
+
+    Raises:
+        StoreLayoutError: the spelling climbs or reaches into the library without
+            naming it, or a part below the music root is not a directory.
+    """
+    spelled = _checked_trash_spelling(settings.trash_dir, trash_dir)
+    try:
+        fd = _open_the_trash_chain(music_dir=music_dir, spelled=spelled, create=False)
+    except OSError:
+        return
+    os.close(fd)
 
 
 def checked_protected_trees(
@@ -1208,6 +1240,9 @@ def layout_check_for_config(
             library_path=Path(raw_library),
             settings=settings,
         )
+        # The rows say WHERE the Trash may sit; this says whether the app can
+        # reach it. Read-only, so a report still creates nothing.
+        _check_trash_is_reachable(music_dir=Path(raw_directory), settings=settings, trash_dir=trash)
     except StoreLayoutError as exc:
         return LayoutCheck(exc, skipped)
     return LayoutCheck(None, skipped)

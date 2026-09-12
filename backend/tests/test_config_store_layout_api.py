@@ -120,6 +120,48 @@ def test_validate_accepts_the_directory_the_library_already_uses(
     assert r.json()["errors"] == []
 
 
+def test_validate_flags_a_symlinked_component_below_the_music_root(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rows say WHERE the Trash may sit; this says whether it can be REACHED.
+
+    Measured 2026-09-12 (security seat L-3): the report ran the rows only and the
+    reachability walk lived at the three destructive call sites, so a Trash below
+    the music root through a symlinked component painted a healthy Settings page
+    while every delete, restore and Empty-Trash answered 503.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    holder = music / "a"
+    holder.mkdir()
+    elsewhere = beets_library.beets_dir.parent / "somewhere-else"
+    elsewhere.mkdir()
+    holder.rmdir()
+    holder.symlink_to(elsewhere)
+    monkeypatch.setattr("app.config.settings.trash_dir", str(music / "a" / "b" / ".trash"))
+
+    rows = _layout_rows(client, _yaml_pointing_at(music))
+
+    assert len(rows) == 1, rows
+    assert "not reachable below the music library" in str(rows[0]["msg"])
+    assert list(elsewhere.iterdir()) == [], "a report creates nothing"
+
+
+def test_validate_accepts_a_trash_below_the_music_root_that_is_reachable(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control: the same nested layout with real directories all the way.
+
+    A Trash strictly inside the music library is allowed on purpose, and its
+    parts do not have to exist yet — the walk stops at the first one that is
+    absent without a row.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    monkeypatch.setattr("app.config.settings.trash_dir", str(music / "a" / "b" / ".trash"))
+
+    assert _layout_rows(client, _yaml_pointing_at(music)) == []
+    assert not (music / "a").exists(), "a report creates nothing"
+
+
 def test_validate_flags_a_directory_that_would_sit_under_trash(
     client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
