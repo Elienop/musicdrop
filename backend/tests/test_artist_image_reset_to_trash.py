@@ -38,7 +38,7 @@ from app.beets.store_layout import StoreLayoutError, checked_store_dirs
 from app.beets.trash_origins import read_trash_origin
 from app.config import settings as app_settings
 from app.main import app
-from tests.conftest import beets_dir_for, make_test_handle
+from tests.conftest import beets_dir_for, make_test_handle, protected_for
 
 PNG = (Path(__file__).parent / "fixtures" / "cover.png").read_bytes()
 RESET = "/api/artists/image/reset"
@@ -572,3 +572,45 @@ def test_an_upload_that_lands_after_the_move_survives_the_reset(
     # The OLD pair is the one in Trash, alone.
     (image,) = list((trash_dir / "ABBA - artist image").glob("*.override"))
     assert image.read_bytes() == PNG
+
+
+def test_a_trash_aliased_onto_another_store_answers_503_with_its_own_cause(
+    client: TestClient,
+    cache: ArtistImageCache,
+    store: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bind-mount alias arm reaches the wire as itself (security seat L-5).
+
+    ``open_checked_dir`` refuses three different things and the mover relayed one
+    sentence for all of them, so an operator whose Trash is bind-mounted onto
+    another MusicDrop directory was told the directory had changed under the
+    request. The layout rule refuses the two SPELLINGS being equal, so a real
+    bind mount is the only way to reach this — and the identity set one produces
+    is what this fixture builds.
+    """
+    trash_dir, _origins = store
+    cache.write_override("ABBA", PNG, "image/png")
+    real_store = artists_mod._checked_art_trash_store
+
+    def aliased(handle: LibraryHandle, settings: Any) -> ArtTrashStore:
+        resolved = real_store(handle, settings)
+        return ArtTrashStore(
+            trash_dir=resolved.trash_dir,
+            origins_dir=resolved.origins_dir,
+            # One inode, two of the app's names for it: what a bind mount does.
+            protected=protected_for(trash_dir=resolved.trash_dir, origins_dir=resolved.trash_dir),
+        )
+
+    monkeypatch.setattr(artists_mod, "_checked_art_trash_store", aliased)
+
+    resp = client.post(RESET, params={"name": "ABBA"})
+
+    assert resp.status_code == 503
+    detail = resp.json()["detail"]
+    assert detail == (
+        f"{MOVE_FAILED} the Trash directory is the same folder as another MusicDrop directory"
+    )
+    assert str(trash_dir) not in detail
+    assert list(trash_dir.iterdir()) == [], "nothing moved"
+    assert isinstance(cache.get("ABBA"), CachedImage), "the upload is still served"
