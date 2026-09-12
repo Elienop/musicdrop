@@ -58,6 +58,7 @@ from app.config import Settings, resolve_artist_image_cache_dir
 from app.config import settings as _module_settings
 from app.etag import size_scoped_etag
 from app.events.emit import emit_art_changed, emit_library_changed
+from app.fsutil import open_root
 from app.library_busy import raise_if_library_busy, raise_if_swap_lock_held
 from app.models.artist import (
     Artist,
@@ -841,7 +842,7 @@ def _trash_override_files(files: list[Path], name: str, store: ArtTrashStore) ->
     anchoring exists for.
     """
     cache_dir = files[0].parent
-    dir_fd = os.open(cache_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK)
+    dir_fd = open_root(cache_dir)
     try:
         trash_replaced_files(
             [file.name for file in files],

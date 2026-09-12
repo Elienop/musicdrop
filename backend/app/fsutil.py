@@ -216,17 +216,15 @@ def move_no_merge(src: Path, dest: Path) -> None:
 
 
 #: Every component BELOW the root is opened this way: a link is refused instead of
-#: followed, and a FIFO planted mid-path cannot block the open. Twin spelling:
-#: ``trash_manage._DIR_FLAGS`` (``app/beets/trash_manage.py:1190``). Spelled twice
-#: on purpose — importing it would give this leaf module an ``app.beets`` edge, and
-#: the two must stay identical.
-_BELOW_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+#: followed, and a FIFO planted mid-path cannot block the open. The ONE definition:
+#: the Trash remover's descent and the move-aside's container open import it.
+BELOW_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
 
 #: The ROOT is opened FOLLOWING links: an operator's beets ``directory:`` may be a
 #: symlink and refusing it would refuse the library. Same reading as
 #: ``store_layout.py:723``. Owner ruling 2026-09-12: below the root a bind mount is
 #: the supported spelling for spanning disks, so a link there is refused.
-_ROOT_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK
+ROOT_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK
 
 
 def open_root(root: Path) -> int:
@@ -239,7 +237,7 @@ def open_root(root: Path) -> int:
 
     The returned fd is the caller's to close.
     """
-    return os.open(root, _ROOT_FLAGS)
+    return os.open(root, ROOT_FLAGS)
 
 
 def open_below(root: Path, rel: Path) -> int:
@@ -276,7 +274,7 @@ def open_below(root: Path, rel: Path) -> int:
     fd = open_root(root)
     try:
         for part in parts:
-            below = os.open(part, _BELOW_FLAGS, dir_fd=fd)
+            below = os.open(part, BELOW_FLAGS, dir_fd=fd)
             os.close(fd)
             fd = below
     except BaseException:

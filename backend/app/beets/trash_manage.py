@@ -56,7 +56,7 @@ from app.beets.trash_origins import (
     move_back_target,
     read_trash_origin,
 )
-from app.fsutil import exists, move_no_merge, occupied
+from app.fsutil import BELOW_FLAGS, exists, move_no_merge, occupied
 from app.models.bank import BankApplyDirective
 from app.models.import_models import AlbumOutcomeStatus
 from app.models.trash import EmptyResult, RestoreResult, TrashedAlbum, TrashRestoreMode
@@ -1185,14 +1185,10 @@ class _Refusal:
     partial: bool
 
 
-#: Every directory the removal descends into is opened this way: the link is
-#: never followed, and a FIFO planted mid-tree cannot block the open.
-_DIR_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
-
-
 def _open_dir(name: str, dir_fd: int) -> int:
-    """The one open the removal runs on a directory. One spelling of the flags."""
-    return os.open(name, _DIR_FLAGS, dir_fd=dir_fd)
+    """The one open the removal runs on a directory: ``fsutil.BELOW_FLAGS``, so the
+    link is never followed and a FIFO planted mid-tree cannot block the open."""
+    return os.open(name, BELOW_FLAGS, dir_fd=dir_fd)
 
 
 def _ident(st: os.stat_result) -> tuple[int, int]:

@@ -1232,7 +1232,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   (`outside/artist-poster.jpg`, `outside/Album/01 t.lrc`). Now art answers `status="failed"` and
   lyrics `None`, each with one WARNING naming the folder; the root itself may still be a link
   (owner ruling 2026-09-12, `decisions.md` #45 — bind mounts are the supported spelling for
-  spanning disks). Mutant: dropping `O_NOFOLLOW` from `_BELOW_FLAGS` fails
+  spanning disks). Mutant: dropping `O_NOFOLLOW` from `BELOW_FLAGS` fails
   `test_a_symlinked_component_below_the_root_is_refused`.
   The EXDEV fallback the entry asked for is a descriptor copy carrying mode and `st_mtime_ns`,
   recreating a symlink from its own target and unlinking the source last, and it is now covered by

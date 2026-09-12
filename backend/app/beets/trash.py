@@ -67,7 +67,7 @@ from app.beets.trash_origins import (
     write_trash_origin,
 )
 from app.config import Settings
-from app.fsutil import _BELOW_FLAGS, exists, move_no_merge
+from app.fsutil import BELOW_FLAGS, exists, move_no_merge
 from app.wire import PLACEHOLDER, display_path
 
 logger = logging.getLogger(__name__)
@@ -1132,7 +1132,7 @@ def _open_checked_trash_root(trash_dir: Path, protected: ProtectedTrees) -> int:
     """
     if protected.trash is None:
         trash_dir.mkdir(parents=True, exist_ok=True)
-        return os.open(trash_dir, _BELOW_FLAGS)
+        return os.open(trash_dir, BELOW_FLAGS)
     try:
         return open_checked_dir(trash_dir, protected)
     except ProtectedTreeError as exc:
@@ -1221,7 +1221,7 @@ def trash_replaced_files(
         # An open that fails leaves the claimed directory behind rather than
         # removing it: with no fd there is no identity to check, and an empty
         # container in Trash is litter where removing a stranger's would not be.
-        fd = os.open(dest.name, _BELOW_FLAGS, dir_fd=trash_fd)
+        fd = os.open(dest.name, BELOW_FLAGS, dir_fd=trash_fd)
         try:
             # Closed before anything else touches ``fd`` (the scandir dup shares
             # the offset — see ``_discard_own_container``).
