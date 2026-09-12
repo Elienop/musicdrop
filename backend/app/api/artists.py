@@ -47,7 +47,11 @@ from app.beets.config_editor import _swap_lock
 from app.beets.delete import delete_artist_op
 from app.beets.library import LibraryHandle, list_artists
 from app.beets.rename import apply_artist_rename_op, preview_artist_rename_op
-from app.beets.store_layout import StoreLayoutError, checked_store_dirs
+from app.beets.store_layout import (
+    StoreLayoutError,
+    checked_protected_trees,
+    checked_store_dirs,
+)
 from app.beets.trash import safe_container_name, trash_replaced_files
 from app.beets.trash_origins import TrashOriginsStoreUnusableError
 from app.config import Settings, resolve_artist_image_cache_dir
@@ -846,6 +850,7 @@ def _trash_override_files(files: list[Path], name: str, store: ArtTrashStore) ->
             origin=cache_dir,
             trash_dir=store.trash_dir,
             origins_dir=store.origins_dir,
+            protected=store.protected,
         )
     finally:
         os.close(dir_fd)
@@ -1112,13 +1117,19 @@ def _checked_art_trash_store(handle: LibraryHandle, settings: Settings) -> ArtTr
     turn a refused store into a 503 with the store's own sentence: it is about
     to move a file the user uploaded, and unlinking it instead is the data loss
     the whole move-aside exists to stop. Blocking (``resolve`` + the layout
-    walk's stats).
+    walk's stats + a stat per app-owned directory).
+
+    The identities go with the pair: the mover opens the Trash ROOT as the
+    directory this examined, so the two must come from one moment.
 
     Raises:
         StoreLayoutError: refused, or a path would not resolve.
     """
     trash_dir, origins_dir = checked_store_dirs(settings, handle)
-    return ArtTrashStore(trash_dir=trash_dir, origins_dir=origins_dir)
+    protected = checked_protected_trees(
+        settings, handle, trash_dir=trash_dir, origins_dir=origins_dir
+    )
+    return ArtTrashStore(trash_dir=trash_dir, origins_dir=origins_dir, protected=protected)
 
 
 def _art_trash_store(app: object, settings: Settings) -> ArtTrashStore | None:

@@ -29,6 +29,7 @@ import pytest
 
 from app.beets.trash import trash_replaced_files
 from app.beets.trash_origins import read_trash_origin
+from tests.conftest import protected_for
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 40
 CONTAINER = "Artist - artist art"
@@ -41,7 +42,12 @@ def _folder(tmp_path: Path) -> Path:
 
 
 def _move(names: list[str], folder: Path, tmp_path: Path) -> Path:
-    """The mover, against a Trash + origin store that do not exist yet."""
+    """The mover, against a Trash + origin store that do not exist yet.
+
+    ``protected_for`` over a Trash dir that is not there answers ``trash=None``,
+    which is the first-use arm — the one these tests want, since none of them is
+    about the root. ``tests/test_trash_replaced_root.py`` is.
+    """
     fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
     try:
         return trash_replaced_files(
@@ -51,6 +57,9 @@ def _move(names: list[str], folder: Path, tmp_path: Path) -> Path:
             origin=folder,
             trash_dir=tmp_path / "trash",
             origins_dir=tmp_path / "trash-origins",
+            protected=protected_for(
+                trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins"
+            ),
         )
     finally:
         os.close(fd)

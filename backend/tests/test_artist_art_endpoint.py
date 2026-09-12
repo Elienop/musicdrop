@@ -135,7 +135,7 @@ def test_a_forced_job_is_handed_a_resolver_for_the_checked_trash_store(
     import app.api.artists as artists_mod
     from app.artist_art_jobs.registry import ArtistArtBackfillRegistry
     from app.beets.artist_art import ArtTrashStore
-    from app.beets.store_layout import checked_store_dirs
+    from app.beets.store_layout import checked_protected_trees, checked_store_dirs
     from app.config import settings
 
     resolvers: list[Any] = []
@@ -152,9 +152,16 @@ def test_a_forced_job_is_handed_a_resolver_for_the_checked_trash_store(
     artists_mod._start(stub_app, reg, edit_lib, force=False, artist=None)
 
     trash_dir, origins_dir = checked_store_dirs(settings, handle)
+    # The identities too: the mover opens the Trash ROOT as the directory this
+    # examined, so a store resolved without them is a store nothing checked.
+    protected = checked_protected_trees(
+        settings, handle, trash_dir=trash_dir, origins_dir=origins_dir
+    )
     forced, unforced = resolvers
     assert unforced is None  # the skip-existing sweep replaces nothing
-    assert forced() == ArtTrashStore(trash_dir=trash_dir, origins_dir=origins_dir)
+    assert forced() == ArtTrashStore(
+        trash_dir=trash_dir, origins_dir=origins_dir, protected=protected
+    )
 
 
 def test_a_refused_store_layout_still_starts_the_job_with_no_store(

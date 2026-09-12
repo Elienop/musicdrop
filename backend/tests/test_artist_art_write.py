@@ -11,6 +11,7 @@ from beets.library import Library
 from app.beets.artist_art import ArtTrashStore, get_artist_dirs, write_artist_art
 from app.beets.trash_manage import list_trashed_albums
 from app.beets.trash_origins import read_trash_origin
+from tests.conftest import protected_for
 
 PNG = (b"\x89PNG\r\n\x1a\n" + b"\x00" * 40, "image/png")
 JPG = (b"\xff\xd8\xff" + b"\x00" * 40, "image/jpeg")
@@ -22,8 +23,20 @@ def _artist_of(lib: Library) -> str:
 
 @pytest.fixture
 def art_trash(tmp_path: Path) -> ArtTrashStore:
-    """The Trash store a forced write moves the files it replaces into."""
-    return ArtTrashStore(trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins")
+    """The Trash store a forced write moves the files it replaces into.
+
+    The real identity record, over a Trash dir that does not exist yet, so
+    ``protected.trash`` is None: the first-use arm, where the mover creates the
+    root itself. The swapped-root refusals live in
+    ``tests/test_trash_replaced_root.py``.
+    """
+    return ArtTrashStore(
+        trash_dir=tmp_path / "trash",
+        origins_dir=tmp_path / "trash-origins",
+        protected=protected_for(
+            trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins"
+        ),
+    )
 
 
 def test_get_artist_dirs_returns_album_parent(edit_lib: Library) -> None:
@@ -131,7 +144,11 @@ def test_force_refuses_the_write_when_the_replaced_file_cannot_be_trashed(
     # this test went RED for the wrong reason while littering /x-musicdrop.
     blocked = tmp_path / "origins-is-a-file"
     blocked.write_bytes(b"")
-    store = ArtTrashStore(trash_dir=tmp_path / "trash", origins_dir=blocked)
+    store = ArtTrashStore(
+        trash_dir=tmp_path / "trash",
+        origins_dir=blocked,
+        protected=protected_for(trash_dir=tmp_path / "trash", origins_dir=blocked),
+    )
     dirs = get_artist_dirs(edit_lib, name)
     for d in dirs:  # the curated file, seeded by hand
         (d / "artist-poster.png").write_bytes(PNG[0])
@@ -210,7 +227,6 @@ def test_a_trashed_art_container_can_be_emptied(
     """The Trash page's per-row Empty removes the container and its record —
     nothing about this entry needs a new delete path."""
     from app.beets.trash_manage import empty_one
-    from tests.conftest import protected_for
 
     name = _artist_of(edit_lib)
     write_artist_art(edit_lib, name, poster=PNG, background=None, force=True, trash=art_trash)
@@ -343,6 +359,7 @@ def test_a_move_that_dies_mid_copy_leaves_no_container_behind(
                 origin=folder,
                 trash_dir=art_trash.trash_dir,
                 origins_dir=art_trash.origins_dir,
+                protected=art_trash.protected,
             )
     finally:
         os.close(fd)
@@ -395,6 +412,7 @@ def test_a_cross_device_move_copies_through_the_descriptors_and_unlinks_last(
             origin=folder,
             trash_dir=art_trash.trash_dir,
             origins_dir=art_trash.origins_dir,
+            protected=art_trash.protected,
         )
     finally:
         os.umask(old_umask)
@@ -450,6 +468,7 @@ def test_a_source_swapped_before_the_cross_device_copy_is_refused(
                 origin=folder,
                 trash_dir=art_trash.trash_dir,
                 origins_dir=art_trash.origins_dir,
+                protected=art_trash.protected,
             )
     finally:
         os.close(fd)
@@ -523,6 +542,7 @@ def test_a_container_that_appears_before_the_claim_is_refused_not_emptied(
                 origin=folder,
                 trash_dir=art_trash.trash_dir,
                 origins_dir=art_trash.origins_dir,
+                protected=art_trash.protected,
             )
     finally:
         os.close(fd)
@@ -580,6 +600,7 @@ def test_a_stranger_that_takes_the_claimed_name_is_refused_and_not_emptied(
                 origin=folder,
                 trash_dir=art_trash.trash_dir,
                 origins_dir=art_trash.origins_dir,
+                protected=art_trash.protected,
             )
     finally:
         os.close(fd)
@@ -631,6 +652,7 @@ def test_a_directory_swapped_onto_a_guarded_name_is_put_back_and_refused(
                 origin=folder,
                 trash_dir=art_trash.trash_dir,
                 origins_dir=art_trash.origins_dir,
+                protected=art_trash.protected,
             )
     finally:
         os.close(fd)

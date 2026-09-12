@@ -52,7 +52,9 @@ from app.beets.library import (
     require_library_root,
 )
 from app.beets.protected import (
+    ProtectedTreeError,
     ProtectedTrees,
+    open_checked_dir,
     refuse_a_held_store,
     refuse_protected_tree,
 )
@@ -65,7 +67,7 @@ from app.beets.trash_origins import (
     write_trash_origin,
 )
 from app.config import Settings
-from app.fsutil import _BELOW_FLAGS, _ROOT_FLAGS, exists, move_no_merge
+from app.fsutil import _BELOW_FLAGS, exists, move_no_merge
 from app.wire import PLACEHOLDER, display_path
 
 logger = logging.getLogger(__name__)
@@ -1097,6 +1099,48 @@ def _discard_own_container(name: str, *, fd: int, trash_fd: int) -> None:
             os.rmdir(name, dir_fd=trash_fd)
 
 
+def _open_checked_trash_root(trash_dir: Path, protected: ProtectedTrees) -> int:
+    """A descriptor on the Trash ROOT: the directory the layout check examined.
+
+    ``store_layout`` refuses a Trash that IS or CONTAINS the music library and
+    permits one strictly INSIDE it (the owner's ruling — deletes become same-disk
+    renames). In that layout the Trash's parent is attacker-writable, so opening
+    the root by path followed a symlink swapped in after ``checked_store_dirs``:
+    measured, the container and the file landed in a directory of the attacker's
+    choosing while the checked Trash stayed empty and the origin record named an
+    entry that does not exist. ``open_checked_dir`` compares the identity
+    ``protected_trees`` stat'd beside that check — the same descriptor
+    ``trash_manage.empty_all`` enumerates through, so a symlinked Trash root is
+    refused by both or by neither.
+
+    FIRST USE has no identity: ``protected.trash`` is ``None`` when the Trash
+    was not there to stat, and nothing creates it at startup — all four movers
+    do, on demand. Refusing would fail the first forced art write of a fresh
+    install, so the directory is created and opened ``O_NOFOLLOW``: a symlink
+    planted at the path is still refused, a real directory a stranger left there
+    is not. That needs write on the Trash's PARENT, which for a Trash inside the
+    music library is the allowed layout rather than this window, and the default
+    ``<beets_dir>/trash`` is out of reach — the layout rule refuses a beets dir
+    inside the library.
+
+    Raises:
+        OSError: the Trash is not the directory that was checked. An ``OSError``
+            rather than ``ProtectedTreeError`` because both callers already have
+            one arm for it, and because the reset endpoint relays ``strerror``
+            to keep the configured path off the wire while that exception spells
+            it in full.
+    """
+    if protected.trash is None:
+        trash_dir.mkdir(parents=True, exist_ok=True)
+        return os.open(trash_dir, _BELOW_FLAGS)
+    try:
+        return open_checked_dir(trash_dir, protected)
+    except ProtectedTreeError as exc:
+        raise OSError(
+            errno.EINVAL, "the Trash directory changed after it was checked", str(trash_dir)
+        ) from exc
+
+
 def trash_replaced_files(
     names: Sequence[str],
     *,
@@ -1105,6 +1149,7 @@ def trash_replaced_files(
     origin: Path,
     trash_dir: Path,
     origins_dir: Path,
+    protected: ProtectedTrees,
 ) -> Path:
     """Move loose files the app is about to REPLACE into their own Trash container.
 
@@ -1131,14 +1176,17 @@ def trash_replaced_files(
     from, so moving it back would put a directory where two files were, and an
     import of art has nothing to import. Restoring them is a hand copy out of
     Trash, and the record is what names the folder to copy them into. The record
-    goes by PATH, not through a descriptor: the origins store is kept out of the
-    library by the layout rule (``store_layout``), so it is not the surface this
-    anchoring is about.
+    goes by PATH, not through a descriptor: a layout ROW keeps the origins store
+    out of the music library, so its parent is not attacker-writable. The Trash
+    ROOT has no such row — one strictly inside the library is allowed — so it is
+    NOT opened by path: :func:`_open_checked_trash_root` opens the identity the
+    layout check examined, and everything below it is a name resolved from that
+    descriptor.
 
-    No ``ProtectedTrees`` argument: every entry is lstat'd through
-    ``src_dir_fd`` first and anything that is not a regular file or a symlink is
-    refused, and :func:`_move_between_fds` confirms through the CONTAINER's
-    descriptor what each rename actually landed.
+    ``protected`` is what carries that identity. The entries themselves need no
+    tree guard: each is lstat'd through ``src_dir_fd`` first and anything that is
+    not a regular file or a symlink is refused, and :func:`_move_between_fds`
+    confirms through the CONTAINER's descriptor what each rename landed.
 
     Two claims on the container name, because one is not enough:
     ``os.mkdir(dest.name, dir_fd=trash_fd)`` refuses anything that predates it
@@ -1149,8 +1197,9 @@ def trash_replaced_files(
 
     Raises:
         TrashOriginsStoreUnusableError: the origin store cannot be used.
-        OSError: a name is not a bare entry, an entry is not a regular file or
-            a symlink, the container name was taken, or a move failed. Whatever
+        OSError: a name is not a bare entry, the Trash root is not the
+            directory that was checked, an entry is not a regular file or a
+            symlink, the container name was taken, or a move failed. Whatever
             had already moved keeps its record; a container that got nothing is
             removed again, with anything a part-copied move left in it.
     """
@@ -1160,14 +1209,14 @@ def trash_replaced_files(
     for name, st in staged:
         _refuse_a_non_file(name, st)
     require_usable_store(origins_dir)
-    trash_dir.mkdir(parents=True, exist_ok=True)
-    dest = _unique_trash_dest(trash_dir, origins_dir, container_name)
-    # The Trash ROOT is opened FOLLOWING links, like the library root and the
-    # beets dir: it is an operator setting and may legitimately be a symlink.
-    # ``dest.name`` under it is not — ``_one_trash_level`` made it a single
-    # separator- and NUL-free level, so it is a NAME this descriptor resolves.
-    trash_fd = os.open(trash_dir, _ROOT_FLAGS)
+    trash_fd = _open_checked_trash_root(trash_dir, protected)
     try:
+        # After the root open, so a refused Trash is not allocated in. The
+        # allocator still reads by path and answers a CANDIDATE; what claims it
+        # is the ``mkdir`` below, inside the checked directory. ``dest.name`` is
+        # a name that descriptor resolves — ``_one_trash_level`` made it a
+        # single separator- and NUL-free level.
+        dest = _unique_trash_dest(trash_dir, origins_dir, container_name)
         os.mkdir(dest.name, dir_fd=trash_fd)
         # An open that fails leaves the claimed directory behind rather than
         # removing it: with no fd there is no identity to check, and an empty

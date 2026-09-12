@@ -36,6 +36,7 @@ from typing import Any
 from beets.dbcore.query import MatchQuery
 
 from app.beets.library import _music_dir
+from app.beets.protected import ProtectedTrees
 from app.beets.trash import safe_container_name, trash_replaced_files
 from app.beets.trash_origins import TrashOriginsStoreUnusableError
 from app.fsutil import open_below
@@ -52,11 +53,19 @@ _MIME_EXT = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "im
 
 @dataclass(frozen=True)
 class ArtTrashStore:
-    """Where a replaced poster/background goes. Both halves of the Trash store,
-    taken together because :mod:`app.beets.trash` needs both for every move."""
+    """Where a replaced poster/background goes, and what was checked about it.
+
+    Both halves of the Trash store, taken together because :mod:`app.beets.trash`
+    needs both for every move, plus the identities the layout check examined
+    beside them: the mover opens the Trash ROOT as the directory ``protected``
+    names, so a Trash swapped for a symlink after the check is refused instead of
+    followed. Required rather than defaulted — a store resolved without it would
+    be a store nothing checked.
+    """
 
     trash_dir: Path
     origins_dir: Path
+    protected: ProtectedTrees
 
 
 class ArtTrashRefusedError(Exception):
@@ -200,6 +209,7 @@ def _move_aside(
             origin=directory,
             trash_dir=trash.trash_dir,
             origins_dir=trash.origins_dir,
+            protected=trash.protected,
         )
     except (OSError, TrashOriginsStoreUnusableError) as exc:
         _log.warning(

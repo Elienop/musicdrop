@@ -374,6 +374,49 @@ def test_the_503_carries_the_oserrors_strerror_and_no_server_path(
     assert str(trash_dir) not in detail
 
 
+def test_a_trash_root_swapped_after_the_check_answers_503_and_keeps_the_upload(
+    client: TestClient,
+    cache: ArtistImageCache,
+    store: tuple[Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Trash root the mover opens is the directory THIS request examined.
+
+    ``checked_store_dirs`` resolves a path and ``checked_protected_trees``
+    stats it; the swap goes in between that pair and the move, which is the
+    window a party who can write the Trash's parent has. Measured before the
+    identity compare: the container and the portrait landed in
+    ``somewhere-else`` and the origin record named an entry that does not exist.
+    """
+    trash_dir, _origins = store
+    trash_dir.mkdir(parents=True)  # there at check time, so it HAS an identity
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    cache.write_override("ABBA", PNG, "image/png")
+    real_store = artists_mod._checked_art_trash_store
+
+    def check_then_swap(handle: LibraryHandle, settings: Any) -> ArtTrashStore:
+        checked = real_store(handle, settings)
+        os.rename(checked.trash_dir, tmp_path / "real-trash")
+        os.symlink(elsewhere, checked.trash_dir)
+        return checked
+
+    monkeypatch.setattr(artists_mod, "_checked_art_trash_store", check_then_swap)
+
+    resp = client.post(RESET, params={"name": "ABBA"})
+
+    assert resp.status_code == 503
+    detail = resp.json()["detail"]
+    assert detail == f"{MOVE_FAILED} the Trash directory changed after it was checked"
+    assert str(trash_dir) not in detail
+    assert list(elsewhere.iterdir()) == [], "nothing landed outside the checked Trash"
+    assert list((tmp_path / "real-trash").iterdir()) == []
+    served = cache.get("ABBA")
+    assert isinstance(served, CachedImage)
+    assert served.data == PNG, "the upload is still served, nothing was reset"
+
+
 def test_the_move_and_the_clear_run_under_the_beets_swap_lock(
     client: TestClient, cache: ArtistImageCache, monkeypatch: pytest.MonkeyPatch
 ) -> None:

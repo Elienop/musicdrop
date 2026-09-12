@@ -32,6 +32,7 @@ import pytest
 
 from app.beets.trash import trash_replaced_files
 from app.beets.trash_origins import read_trash_origin
+from tests.conftest import protected_for
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 40
 SIBLING = b"the file the planted symlink points at"
@@ -128,6 +129,10 @@ def test_a_real_cross_device_move_aside_carries_mode_mtime_and_the_symlink(
             origin=folder,
             trash_dir=shm_trash,
             origins_dir=origins,
+            # The fixture hands back a path it has NOT created, which is what
+            # ``protected_trees`` sees as ``trash=None``: first use, where the
+            # mover creates the root itself.
+            protected=protected_for(trash_dir=shm_trash, origins_dir=origins),
         )
     finally:
         os.close(fd)
