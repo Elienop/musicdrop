@@ -33,7 +33,7 @@ from app.api.artists import (
 )
 from app.artwork.cache import ArtistImageCache, CachedImage
 from app.beets.artist_art import ArtTrashStore
-from app.beets.library import LibraryHandle
+from app.beets.library import LibraryHandle, LibraryRootUnavailableError
 from app.beets.store_layout import StoreLayoutError, checked_store_dirs
 from app.beets.trash_origins import read_trash_origin
 from app.config import settings as app_settings
@@ -191,6 +191,40 @@ def test_a_refused_store_answers_503_with_its_sentence_and_resets_nothing(
     assert sorted(p.name.split(".", 1)[1] for p in cache_dir.iterdir()) == [
         "bin",
         "mime",
+        "override",
+        "override.mime",
+    ]
+
+
+def test_an_unmounted_library_answers_503_and_keeps_the_upload(
+    client: TestClient,
+    cache: ArtistImageCache,
+    cache_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The store's OTHER refusal tier, and it is a different exception class.
+
+    The store's creation refuses to make a Trash inside a library whose music is
+    not there, which is a ``LibraryRootUnavailableError`` rather than a
+    ``StoreLayoutError``. Measured 2026-09-12 (code seat W3, mutant m23): with
+    that arm deleted the whole suite still passed, and the route would answer 500
+    on a request that is about to move a file the user uploaded.
+    """
+    cache.write_override("ABBA", PNG, "image/png")
+
+    def unmounted(*_a: object, **_kw: object) -> object:
+        raise LibraryRootUnavailableError("Library folder is empty. Is the music share mounted?")
+
+    monkeypatch.setattr(artists_mod, "_checked_art_trash_store", unmounted)
+
+    resp = client.post(RESET, params={"name": "ABBA"})
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Library folder is empty. Is the music share mounted?"
+    served = cache.get("ABBA")
+    assert isinstance(served, CachedImage)
+    assert served.data == PNG  # still the portrait the user uploaded
+    assert sorted(p.name.split(".", 1)[1] for p in cache_dir.iterdir()) == [
         "override",
         "override.mime",
     ]
