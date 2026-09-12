@@ -1712,10 +1712,13 @@ def test_delete_op_503_when_the_trash_dir_cannot_be_created(
     album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
     album_id = _require_id(album.id)
     req = _store_fault_req(duplicates_lib, tmp_path, locked / "trash")
+    # Created outside the block (nothing runs until asyncio.run drives it), so
+    # the raises body holds the one call that can throw.
+    coro = delete_album_op(req, album_id)  # type: ignore[arg-type]  # duck-typed stub
 
     try:
         with pytest.raises(HTTPException) as ei:
-            asyncio.run(delete_album_op(req, album_id))  # type: ignore[arg-type]  # stub req
+            asyncio.run(coro)
     finally:
         locked.chmod(0o700)
 
