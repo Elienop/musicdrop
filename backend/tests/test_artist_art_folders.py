@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from app.beets.artist_art import ArtTrashStore, get_artist_dirs, has_background, write_artist_art
+from tests.conftest import protected_for
 
 PNG = (b"\x89PNG\r\n\x1a\n" + b"\x00" * 40, "image/png")
 
@@ -53,7 +54,15 @@ class _StubLib:
 
 @pytest.fixture
 def art_trash(tmp_path: Path) -> ArtTrashStore:
-    return ArtTrashStore(trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins")
+    """The real identity record over a Trash dir that does not exist yet (the
+    first-use arm, as in ``test_artist_art_write.py``)."""
+    return ArtTrashStore(
+        trash_dir=tmp_path / "trash",
+        origins_dir=tmp_path / "trash-origins",
+        protected=protected_for(
+            trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins"
+        ),
+    )
 
 
 def test_a_symlinked_artist_folder_has_no_background_to_read(tmp_path: Path) -> None:
