@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import os
+import stat
 import threading
 import uuid
 from collections.abc import Callable
@@ -61,6 +62,62 @@ def test_artwork_write_parent_dir_fsync_open_carries_o_directory(
     assert parent, "the parent directory was not fsynced through os.open"
     bare = [f"{flags:#o}" for flags in parent if not flags & os.O_DIRECTORY]
     assert not bare, f"parent-dir fsync open(s) without O_DIRECTORY: {bare}"
+
+
+def test_a_symlink_at_the_old_derived_tmp_name_is_neither_followed_nor_published(
+    tmp_path: Path,
+) -> None:
+    """Artwork publishes through the shared sink, not through ``.<name>.tmp``.
+
+    Measured on the old body: the create followed the planted link, so the
+    secret took the art bytes and 0o600 and ``os.replace`` renamed the LINK
+    onto the artwork path.
+    """
+    secret = tmp_path / "secret.txt"
+    secret.write_bytes(b"plex-token")
+    secret.chmod(0o644)
+    art_dir = tmp_path / "artwork"
+    art_dir.mkdir()
+    art = art_dir / "cover.jpg"
+    planted = art_dir / f".{art.name}.tmp"
+    planted.symlink_to(secret)
+
+    data = b"\xff\xd8\xffjpeg-bytes"
+    store._write_artwork_atomic(art, data)
+
+    assert secret.read_bytes() == b"plex-token"
+    assert stat.S_IMODE(secret.stat().st_mode) == 0o644
+    # The published artwork is a regular file of its own, still owner-only.
+    assert not art.is_symlink()
+    assert art.read_bytes() == data
+    assert stat.S_IMODE(art.stat().st_mode) == 0o600
+    # Untouched: the old shape is not this writer's temp and not swept either.
+    assert planted.is_symlink()
+    assert os.readlink(planted) == str(secret)
+
+
+def test_the_artwork_tmp_is_exclusive_no_follow_and_not_named_after_the_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every create this write makes refuses an existing path and a symlink, and
+    carries no part of the target's name — so nobody can precompute it."""
+    real_open = os.open
+    creates: list[tuple[str, int]] = []
+
+    def spy_open(*args: Any, **kwargs: Any) -> int:
+        if int(args[1]) & os.O_CREAT:
+            creates.append((os.fsdecode(args[0]), int(args[1])))
+        return real_open(*args, **kwargs)  # pass-through spy
+
+    monkeypatch.setattr(os, "open", spy_open)
+    art = tmp_path / "artwork" / "cover.jpg"
+    store._write_artwork_atomic(art, b"\xff\xd8\xff")
+
+    assert creates, "no file was created"
+    for name, flags in creates:
+        assert art.name not in name, f"the temp name embeds the target: {name}"
+        assert flags & os.O_EXCL, f"{name} created without O_EXCL ({flags:#o})"
+        assert flags & os.O_NOFOLLOW, f"{name} created without O_NOFOLLOW ({flags:#o})"
 
 
 def test_get_missing_returns_none(tmp_path: Path) -> None:
