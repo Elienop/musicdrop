@@ -67,7 +67,7 @@ from app.beets.trash_origins import (
     write_trash_origin,
 )
 from app.config import Settings
-from app.fsutil import BELOW_FLAGS, exists, move_no_merge
+from app.fsutil import BELOW_FLAGS, exists, fsync_dir, move_no_merge
 from app.wire import PLACEHOLDER, display_path
 
 logger = logging.getLogger(__name__)
@@ -978,8 +978,14 @@ def _publish_then_unlink(
 
     A name that is GONE needs no unlink: somebody else removed it and the copy
     in Trash is the end state this was moving towards.
+
+    A filesystem that cannot fsync a DIRECTORY at all is not a failed move —
+    FUSE and network mounts, which is exactly why this arm runs — so
+    ``fsutil.fsync_dir`` swallows those two errnos and nothing else: measured,
+    propagating one turned a completed move into a refusal with the file in two
+    places.
     """
-    os.fsync(dst_dir_fd)
+    fsync_dir(dst_dir_fd)
     try:
         current = os.stat(name, dir_fd=src_dir_fd, follow_symlinks=False)
     except FileNotFoundError:
@@ -1041,13 +1047,18 @@ def _move_between_fds(name: str, *, src_dir_fd: int, dst_dir_fd: int, st: os.sta
 
     ``os.rename`` first, and the lstat through ``dst_dir_fd`` after it is what
     decides whether what arrived may stay: it must be the same ``(st_dev,
-    st_ino)`` the caller staged, or it is renamed back and the call refuses.
-    Both of the measured swaps that reach here fail it — a directory renamed
-    onto a guarded name, which used to be moved whole (the guard's lstat
-    precedes the move by ~0.1 ms), and a different regular file, which used to
-    be accepted with the record naming the one that was checked. A rename
-    preserves dev+ino, so what the container KEEPS is the file the staging
-    ``_refuse_a_non_file`` accepted.
+    st_ino)`` the caller staged AND still a regular file or a symlink, or it is
+    renamed back and the call refuses. Both of the measured swaps that reach
+    here fail it — a directory renamed onto a guarded name, which used to be
+    moved whole (the guard's lstat precedes the move by ~0.1 ms), and a
+    different regular file, which used to be accepted with the record naming the
+    one that was checked.
+
+    The type is re-asked because an identity is not unique over TIME: ext4 and
+    xfs allocate inodes from a bitmap and hand a freed number out again, so a
+    match can be a directory that took the number of the file this staged —
+    measured, with the clause removed, staging a directory's own identity
+    relocated the whole tree into the container.
 
     EXDEV — a Trash dir on another filesystem — falls back to a copy through the
     same two descriptors.
@@ -1060,7 +1071,9 @@ def _move_between_fds(name: str, *, src_dir_fd: int, dst_dir_fd: int, st: os.sta
         _copy_between_fds(name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, st=st)
         return
     landed = os.stat(name, dir_fd=dst_dir_fd, follow_symlinks=False)
-    if _st_ident(landed) == _st_ident(st):
+    if _st_ident(landed) == _st_ident(st) and (
+        stat.S_ISREG(landed.st_mode) or stat.S_ISLNK(landed.st_mode)
+    ):
         return
     # Put back, and the call refuses either way. Suppressed because the source
     # name can be occupied again by then: the entry then stays in the container,
@@ -1099,6 +1112,22 @@ def _discard_own_container(name: str, *, fd: int, trash_fd: int) -> None:
             os.rmdir(name, dir_fd=trash_fd)
 
 
+def _root_refusal_strerror(protected: ProtectedTrees) -> str:
+    """Which of ``open_checked_dir``'s three refusals this was, without its path.
+
+    Read off the same ``protected`` the refusal was decided from — the alias and
+    the absent identity are both tested BEFORE the open, so this is the cause
+    rather than a guess. One strerror for all three used to tell an operator
+    whose Trash is bind-mounted onto another MusicDrop directory that something
+    had raced (security seat L-5).
+    """
+    if protected.trash is None:
+        return "the Trash directory could not be examined when it was checked"
+    if protected.trash_alias is not None:
+        return "the Trash directory is the same folder as another MusicDrop directory"
+    return "the Trash directory changed after it was checked"
+
+
 def _open_checked_trash_root(trash_dir: Path, protected: ProtectedTrees) -> int:
     """A descriptor on the Trash ROOT: the directory the layout check examined.
 
@@ -1113,15 +1142,19 @@ def _open_checked_trash_root(trash_dir: Path, protected: ProtectedTrees) -> int:
     ``trash_manage.empty_all`` enumerates through, so a symlinked Trash root is
     refused by both or by neither.
 
-    FIRST USE has no identity: ``protected.trash`` is ``None`` when the Trash
-    was not there to stat, and nothing creates it at startup — all four movers
-    do, on demand. Refusing would fail the first forced art write of a fresh
-    install, so the directory is created and opened ``O_NOFOLLOW``: a symlink
-    planted at the path is still refused, a real directory a stranger left there
-    is not. That needs write on the Trash's PARENT, which for a Trash inside the
-    music library is the allowed layout rather than this window, and the default
-    ``<beets_dir>/trash`` is out of reach — the layout rule refuses a beets dir
-    inside the library.
+    This is the mover's ONLY open of the root, and it never creates: the Trash is
+    created where its identity is taken (``store_layout._ensure_trash_root``), so
+    ``protected.trash is None`` means the directory went away between those two
+    lines and is refused — a safe failure, and the arm that used to create it
+    here is what let a symlinked intermediate component relocate the Trash for
+    good (security seat M-3). A stranger's directory that predates the creation
+    is accepted, as it was before: that is the attacker owning the Trash's
+    location, which no check here can undo.
+
+    The chained ``ProtectedTreeError``'s own sentence ends "Nothing was removed"
+    — the remover's wording, since the message is shared with it
+    (``tests/test_trash_api.py`` pins that string); it reaches a mover's log
+    through ``__cause__`` only.
 
     Raises:
         OSError: the Trash is not the directory that was checked. An ``OSError``
@@ -1130,15 +1163,10 @@ def _open_checked_trash_root(trash_dir: Path, protected: ProtectedTrees) -> int:
             to keep the configured path off the wire while that exception spells
             it in full.
     """
-    if protected.trash is None:
-        trash_dir.mkdir(parents=True, exist_ok=True)
-        return os.open(trash_dir, BELOW_FLAGS)
     try:
         return open_checked_dir(trash_dir, protected)
     except ProtectedTreeError as exc:
-        raise OSError(
-            errno.EINVAL, "the Trash directory changed after it was checked", str(trash_dir)
-        ) from exc
+        raise OSError(errno.EINVAL, _root_refusal_strerror(protected), str(trash_dir)) from exc
 
 
 def trash_replaced_files(

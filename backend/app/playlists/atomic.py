@@ -40,6 +40,7 @@ import time
 from contextlib import suppress
 from pathlib import Path
 
+from app.fsutil import fsync_dir, open_root
 from app.wire import display_path
 
 _log = logging.getLogger(__name__)
@@ -155,7 +156,9 @@ def _write_through_dir_fd(name: str, data: bytes, *, mode: int | None, dir_fd: i
             if final is not None:
                 os.fchmod(handle.fileno(), final)  # exact mode; the create honours umask
         os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-        os.fsync(dir_fd)
+        # The publish has happened; a filesystem that cannot fsync a directory
+        # must not turn this into a refusal (``fsutil.fsync_dir``).
+        fsync_dir(dir_fd)
     finally:
         with suppress(OSError):
             os.unlink(tmp, dir_fd=dir_fd)
@@ -188,8 +191,10 @@ def write_atomic_bytes(
         _write_through_dir_fd(path.name, data, mode=mode, dir_fd=dir_fd)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    # O_DIRECTORY: a FIFO swapped in here blocks forever without it (measured: 2 s, no error).
-    owned = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    # ``fsutil.open_root``: the one spelling of "open this directory, following a
+    # link AT it". Its ``O_DIRECTORY`` is what keeps a FIFO swapped in here from
+    # blocking the open forever (measured: 2 s, no error).
+    owned = open_root(path.parent)
     try:
         _write_through_dir_fd(path.name, data, mode=mode, dir_fd=owned)
     finally:

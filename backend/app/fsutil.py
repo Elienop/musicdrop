@@ -76,6 +76,27 @@ def is_dir(path: Path) -> bool:
 DEST_OCCUPIED = frozenset({errno.EEXIST, errno.ENOTEMPTY, errno.ENOTDIR})
 
 
+#: What a filesystem answers when it cannot fsync a DIRECTORY at all. Measured
+#: errnos for that shape, and the FUSE / network mounts that give them are the
+#: ones the cross-device arms exist for.
+CANNOT_FSYNC_A_DIR: Final = frozenset({errno.ENOTSUP, errno.EINVAL})
+
+
+def fsync_dir(dir_fd: int) -> None:
+    """Force a directory's own entries durable, unless it cannot be fsynced.
+
+    Both callers run this AFTER the entry they care about is published, so the
+    fsync is a durability extra rather than a correctness precondition: a
+    filesystem that answers ENOTSUP/EINVAL for it turned a completed write into
+    a refusal (security seat L-6). Every other errno is a fault and raises.
+    """
+    try:
+        os.fsync(dir_fd)
+    except OSError as exc:
+        if exc.errno not in CANNOT_FSYNC_A_DIR:
+            raise
+
+
 def occupied(path: Path) -> bool:
     """Whether something is at ``path`` that a move-back must refuse.
 

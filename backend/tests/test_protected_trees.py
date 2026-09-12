@@ -1114,7 +1114,9 @@ def test_the_delete_ops_build_the_set_they_hand_the_mover(
     assert "'Kid A' contains the inbox" in str(caught.value.detail)
     assert "Nothing has been deleted." in str(caught.value.detail)
     assert len(list(lib.albums())) == 1
-    assert not trash.exists()
+    # The op's own check creates the Trash ROOT before it takes the identity it
+    # hands the mover; what the refusal must leave is an EMPTY one.
+    assert list(trash.iterdir()) == []
 
 
 # --------------------------------------------------------------------------

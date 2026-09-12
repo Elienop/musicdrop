@@ -25,17 +25,18 @@ def _artist_of(lib: Library) -> str:
 def art_trash(tmp_path: Path) -> ArtTrashStore:
     """The Trash store a forced write moves the files it replaces into.
 
-    The real identity record, over a Trash dir that does not exist yet, so
-    ``protected.trash`` is None: the first-use arm, where the mover creates the
-    root itself. The swapped-root refusals live in
+    The real identity record, over a Trash dir CREATED first — the shape
+    ``store_layout.checked_protected_trees`` builds, which creates the directory
+    one line before it takes the identity. A store built over an absent Trash
+    carries ``trash=None``, which every mover now refuses; the refusals live in
     ``tests/test_trash_replaced_root.py``.
     """
+    trash = tmp_path / "trash"
+    trash.mkdir()
     return ArtTrashStore(
-        trash_dir=tmp_path / "trash",
+        trash_dir=trash,
         origins_dir=tmp_path / "trash-origins",
-        protected=protected_for(
-            trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins"
-        ),
+        protected=protected_for(trash_dir=trash, origins_dir=tmp_path / "trash-origins"),
     )
 
 
@@ -190,7 +191,7 @@ def test_force_refuses_a_folder_whose_art_name_is_a_directory(
     for d in get_artist_dirs(edit_lib, name):
         assert (d / "artist-poster.png").is_dir()
         assert not (d / "artist-poster.jpg").exists()
-    assert not art_trash.trash_dir.exists()  # no container left behind
+    assert list(art_trash.trash_dir.iterdir()) == []  # no container left behind
 
 
 def test_no_art_when_both_none(edit_lib: Library) -> None:
@@ -764,7 +765,7 @@ def test_a_symlinked_artist_folder_is_refused_and_nothing_is_written_outside(
     assert folder.is_symlink()  # the link itself is left alone
     assert curated.read_bytes() == PNG[0]  # nothing outside the library moved
     assert not (outside / "artist-poster.jpg").exists()  # and nothing was written there
-    assert not art_trash.trash_dir.exists()
+    assert list(art_trash.trash_dir.iterdir()) == []
     lines = [r.getMessage() for r in caplog.records if r.name == "app.beets.artist_art"]
     assert len(lines) == 1
     assert str(folder) in lines[0]
@@ -793,4 +794,4 @@ def test_a_folder_outside_the_library_root_fails_without_raising(
 
     assert (out.status, out.written) == ("failed", 0)
     assert list(stranger.iterdir()) == []  # the write went nowhere
-    assert not art_trash.trash_dir.exists()
+    assert list(art_trash.trash_dir.iterdir()) == []

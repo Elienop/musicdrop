@@ -25,6 +25,7 @@ listed in one place, the BACKLOG entry for this slice.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import os
 import stat
@@ -39,6 +40,7 @@ from app.beets.library import LibraryHandle, _music_dir
 from app.beets.protected import ProtectedTrees, protected_trees
 from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
 from app.config import Settings, app_owned_dirs, export_dir
+from app.fsutil import BELOW_FLAGS, open_root
 
 __all__ = [
     "BEETS_SETTING",
@@ -575,6 +577,115 @@ def checked_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path,
     return trash, origins
 
 
+def _refuse_an_unreachable_trash(spelled: Path, exc: OSError) -> StoreLayoutError:
+    """The refusal for a Trash path whose own chain below the music root is not
+    walkable — a symlinked component, or a file in the way.
+
+    Measured: ``O_DIRECTORY|O_NOFOLLOW`` answers ENOTDIR for a link AND for a
+    plain file, so the errno cannot say which; the wording matches
+    ``lyrics._album_dir_fd``'s for the same ambiguity.
+    """
+    return StoreLayoutError(
+        f"{TRASH_SETTING} is not reachable below the music library:"
+        f" {str(spelled)!r} ({exc.strerror} — a link or a file in the way)."
+        " Bind mounts are the supported spelling for a folder on another disk.",
+        headline=f"{TRASH_SETTING} is not reachable below the music library",
+    )
+
+
+def _refuse_an_uncreatable_trash(trash_dir: Path, exc: OSError) -> StoreLayoutError:
+    """The refusal for a Trash directory that could not be created at all.
+
+    A refusal here rather than an absent identity downstream: every mover would
+    then refuse with the remover's wording ("could not be examined"), which does
+    not say that the directory is missing or why.
+    """
+    return StoreLayoutError(
+        f"{TRASH_SETTING} could not be created: {str(trash_dir)!r} ({exc.strerror})."
+        " Fix its permissions or its mount.",
+        headline=f"{TRASH_SETTING} could not be created",
+    )
+
+
+def _trash_parts_below_music(music_dir: Path, configured: str, trash_dir: Path) -> Path | None:
+    """The Trash's parts below the music root by SPELLING, or ``None``.
+
+    The CONFIGURED value is asked first because it is the only spelling an
+    anchored walk can trust: ``resolve_trash_dir`` collapses links, so a Trash
+    at ``<M>/a/b/.trash`` whose ``a`` was swapped for a symlink RESOLVES outside
+    the library and would read as "not below it" — the shape the walk exists to
+    refuse (measured, security seat M-3). The resolved path is asked second, for
+    a Trash the operator spelled through a link ABOVE the music root.
+    """
+    spellings = [Path(configured)] if configured else []
+    spellings.append(trash_dir)
+    for spelled in spellings:
+        with contextlib.suppress(ValueError):
+            rel = spelled.relative_to(music_dir)
+            if rel.parts:
+                return rel
+    return None
+
+
+def _create_below(root: Path, rel: Path) -> None:
+    """``mkdir`` every missing part of ``rel`` through its parent's descriptor.
+
+    One ``mkdir`` then one ``BELOW_FLAGS`` open per part, so the next part is
+    resolved from the directory this call just made rather than from a name: a
+    part that is a symlink is refused at the open instead of followed.
+    ``fsutil.open_below``'s rule, with the creation folded in.
+    """
+    fd = open_root(root)
+    try:
+        for part in rel.parts:
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(part, dir_fd=fd)
+            try:
+                below = os.open(part, BELOW_FLAGS, dir_fd=fd)
+            except OSError as exc:
+                if exc.errno in (errno.ENOTDIR, errno.ELOOP):
+                    raise _refuse_an_unreachable_trash(root / rel, exc) from exc
+                raise
+            os.close(fd)
+            fd = below
+    finally:
+        os.close(fd)
+
+
+def _ensure_trash_root(settings: Settings, *, music_dir: Path, trash_dir: Path) -> None:
+    """Create the Trash directory, so the identity taken next describes a real one.
+
+    One line before that stat, because a mover handed ``protected.trash is None``
+    has nothing to compare and the arm that created the Trash itself opened it by
+    PATH: measured (security seat M-3), ``mkdir(parents=True)`` plus a leaf-only
+    ``O_NOFOLLOW`` followed a symlink at an INTERMEDIATE component of
+    ``<M>/a/b/.trash``, the files left the library, and every later request
+    stat'd and opened the relocation through the same link and agreed with it.
+
+    Below the music root every part is created through its parent's descriptor,
+    because that chain is attacker-writable in the layout the owner permits (T
+    strictly inside M). Elsewhere — the shipped ``<beets_dir>/trash``, or a Trash
+    on another disk — the chain is the operator's and ``mkdir(parents=True)``
+    creates it, links and all.
+
+    A real directory a stranger already left at the configured path is accepted
+    either way: that is the attacker owning the Trash's location, which no check
+    here can undo.
+
+    Raises:
+        StoreLayoutError: the Trash is not reachable below the music root, or it
+            could not be created.
+    """
+    rel = _trash_parts_below_music(music_dir, settings.trash_dir, trash_dir)
+    try:
+        if rel is None:
+            trash_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            _create_below(music_dir, rel)
+    except OSError as exc:
+        raise _refuse_an_uncreatable_trash(trash_dir, exc) from exc
+
+
 def checked_protected_trees(
     settings: Settings, handle: LibraryHandle, *, trash_dir: Path, origins_dir: Path
 ) -> ProtectedTrees:
@@ -584,8 +695,18 @@ def checked_protected_trees(
     two request sites that destroy or relocate a tree (the sweep runner builds
     its own). Separate from that call because the other four of its six callers
     do neither and would pay a dozen stats for nothing.
+
+    The Trash is CREATED here when it is absent (:func:`_ensure_trash_root`), so
+    no mover sees ``protected.trash is None`` and none has to create it by path.
+    It is the same directory the movers already ``mkdir`` themselves, and a
+    stranger's pre-existing directory at the configured path is accepted either
+    way, so what moves is only WHERE the creation happens.
+
+    Raises:
+        StoreLayoutError: the Trash could not be created below the music root.
     """
     music, library = lib_music_and_library(handle.lib)
+    _ensure_trash_root(settings, music_dir=music, trash_dir=trash_dir)
     return protected_trees(
         settings=settings,
         music_dir=music,

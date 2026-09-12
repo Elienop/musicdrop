@@ -39,9 +39,10 @@ def _record(trash_dir: Path, tmp_path: Path) -> ProtectedTrees:
 
     The suite's own ``protected_for``, which is the real
     ``app.beets.protected.protected_trees``, so what these tests hand the mover
-    is what a request hands it. A Trash dir that does not exist yet has no
-    identity and comes back as ``trash=None`` — the first-use arm, and the same
-    absence production starts from.
+    is what a request hands it. A Trash dir that is not there when this runs has
+    no identity and comes back as ``trash=None``, which the mover refuses: the
+    creation happens one line earlier in production
+    (``store_layout._ensure_trash_root``), never here.
     """
     return protected_for(trash_dir=trash_dir, origins_dir=tmp_path / "trash-origins")
 
@@ -129,37 +130,41 @@ def test_a_trash_root_that_vanished_after_the_check_is_refused_not_recreated(
     assert (folder / "artist-poster.png").read_bytes() == PNG
 
 
-def test_the_first_use_creates_the_trash_root_and_moves(tmp_path: Path) -> None:
-    """``protected.trash`` is None until something creates the Trash, and this
-    mover is one of the four things that do.
+def test_a_trash_root_with_no_identity_is_refused_by_the_mover(tmp_path: Path) -> None:
+    """The mover NEVER creates the root, so ``trash=None`` is a refusal.
 
-    Nothing creates it at startup, so refusing here would fail the first forced
-    art write (and the first artist-image reset) of a fresh install. There is no
-    identity to compare against a directory that did not exist.
+    The Trash is created where its identity is taken
+    (``store_layout._ensure_trash_root``), so ``None`` means the directory went
+    away between those two lines — measured (probe_2a2), a party who owns the
+    Trash's parent re-opens that window at will by renaming the real Trash
+    aside, and the arm that created the root here then accepted whatever they
+    left at the path. A refusal is the safe end of that: nothing moved.
     """
-    folder = tmp_path / "music" / "Artist"
-    folder.mkdir(parents=True)
-    (folder / "artist-poster.png").write_bytes(PNG)
-    trash = tmp_path / "beets" / "trash"
+    folder, trash = _library(tmp_path)
+    away = tmp_path / "carried-off"
+    os.rename(trash, away)
     protected = _record(trash, tmp_path)
     assert protected.trash is None, "the premise: nothing was there to stat"
+    trash.mkdir()  # whatever is at the path now, checked or not
 
-    dest = _move(folder, trash, protected, tmp_path)
+    with pytest.raises(OSError) as caught:
+        _move(folder, trash, protected, tmp_path)
 
-    assert dest.parent == trash
-    assert (dest / "artist-poster.png").read_bytes() == PNG
-    assert not (folder / "artist-poster.png").exists()
+    assert caught.value.errno == errno.EINVAL
+    assert caught.value.strerror == "the Trash directory could not be examined when it was checked"
+    assert (folder / "artist-poster.png").read_bytes() == PNG
+    assert list(trash.iterdir()) == []
+    assert read_trash_origin(tmp_path / "trash-origins", CONTAINER) is None
 
 
-def test_a_symlink_at_an_unchecked_trash_root_is_still_refused(tmp_path: Path) -> None:
-    """What the first-use arm keeps: the open is ``O_NOFOLLOW``.
+def test_a_symlink_at_an_unchecked_trash_root_is_refused_before_it_is_opened(
+    tmp_path: Path,
+) -> None:
+    """A symlink at a Trash path that was never checked: refused on the identity.
 
-    A symlink planted at the Trash path before anything created it used to be
-    followed. What it does NOT cover is a real directory a stranger left there,
-    which needs write on the Trash's parent — for a Trash inside the music
-    library that is the layout the owner allows, and the default
-    ``<beets_dir>/trash`` is out of reach because ``store_layout`` refuses a
-    beets dir inside the library.
+    It used to reach an ``O_NOFOLLOW`` open, which refused a link at the LEAF and
+    followed one at any component above it (security seat M-3). Nothing opens
+    this path now until an identity exists for it.
     """
     folder, real = _library(tmp_path)
     elsewhere = tmp_path / "somewhere-else"
@@ -172,7 +177,7 @@ def test_a_symlink_at_an_unchecked_trash_root_is_still_refused(tmp_path: Path) -
     with pytest.raises(OSError) as caught:
         _move(folder, real, unchecked, tmp_path)
 
-    assert caught.value.errno in (errno.ELOOP, errno.ENOTDIR), caught.value
+    assert caught.value.strerror == "the Trash directory could not be examined when it was checked"
     assert list(elsewhere.iterdir()) == []
     assert (folder / "artist-poster.png").read_bytes() == PNG
 
@@ -244,3 +249,30 @@ def test_the_art_writer_reports_failed_and_writes_nothing_when_the_root_was_swap
         assert (folder / "artist-poster.png").read_bytes() == PNG, "the curated file stayed"
     assert list(elsewhere.iterdir()) == []
     assert list((tmp_path / "real-trash").iterdir()) == []
+
+
+def test_a_trash_aliased_onto_another_store_says_so_rather_than_racing(
+    tmp_path: Path,
+) -> None:
+    """The bind-mount alias arm keeps its own cause (security seat L-5).
+
+    ``open_checked_dir`` refuses three different things and the mover used to
+    relay one sentence for all of them, so an operator whose Trash IS the origin
+    store — what a bind mount does, and what every spelled layout row allows —
+    was told the directory had changed under the request.
+    """
+    folder, trash = _library(tmp_path)
+    aliased = protected_for(trash_dir=trash, origins_dir=trash)
+    assert aliased.trash_alias is not None, "the premise: one inode, two stores"
+
+    with pytest.raises(OSError) as caught:
+        _move(folder, trash, aliased, tmp_path)
+
+    assert caught.value.errno == errno.EINVAL
+    assert (
+        caught.value.strerror
+        == "the Trash directory is the same folder as another MusicDrop directory"
+    )
+    assert caught.value.filename == str(trash), "the path travels off the wire"
+    assert (folder / "artist-poster.png").read_bytes() == PNG
+    assert list(trash.iterdir()) == []

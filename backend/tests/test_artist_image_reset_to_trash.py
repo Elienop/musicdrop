@@ -203,8 +203,10 @@ def test_a_store_the_mover_cannot_write_answers_503_and_keeps_the_upload(
     """The other half of the refusal: the layout is fine and the store is not.
 
     A read-only origins dir is the fault ``require_usable_store`` refuses on,
-    and it is refused BEFORE the Trash dir is created — so the 503 names the
-    cause and the override is still where it was.
+    and it is refused before anything is allocated in the Trash — so the 503
+    names the cause and the override is still where it was. The Trash ROOT is
+    there either way: this request's own layout check created it before it took
+    the identity the mover compares.
     """
     trash_dir, origins_dir = store
     origins_dir.mkdir(parents=True)
@@ -218,7 +220,7 @@ def test_a_store_the_mover_cannot_write_answers_503_and_keeps_the_upload(
 
     assert resp.status_code == 503
     assert resp.json()["detail"].startswith(MOVE_FAILED)
-    assert not trash_dir.exists()
+    assert list(trash_dir.iterdir()) == []
     served = cache.get("ABBA")
     assert isinstance(served, CachedImage)
     assert served.data == PNG

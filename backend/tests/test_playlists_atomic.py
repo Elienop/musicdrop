@@ -7,6 +7,7 @@ that leaves the token bytes briefly world-readable.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import re
@@ -471,3 +472,49 @@ def test_a_write_that_swept_still_publishes_through_the_same_dir_fd(tmp_path: Pa
 
     assert not stale.exists(), "the sweep removed nothing, so this proves nothing"
     assert after == ["a.m3u8", "b.m3u8", "p.m3u8"]
+
+
+def _fsync_that_refuses_directories(err: int) -> Any:
+    """``os.fsync`` answering ``err`` for a DIRECTORY fd, real for anything else.
+
+    The file's own fsync is a correctness precondition (the bytes must be on
+    disk before the publish) and must keep raising; only the parent-dir fsync is
+    the durability extra this swallows.
+    """
+    real_fsync = os.fsync
+
+    def fsync(fd: int) -> None:
+        if stat_mod.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(err, os.strerror(err))
+        real_fsync(fd)
+
+    return fsync
+
+
+def test_a_directory_that_cannot_be_fsynced_still_completes_the_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENOTSUP on the parent-dir fsync is a filesystem saying "not supported".
+
+    FUSE and network mounts answer it, and the publish has already happened by
+    then — so propagating it turned a completed write into a refusal for the
+    exact deployments the cross-device paths exist for.
+    """
+    monkeypatch.setattr(os, "fsync", _fsync_that_refuses_directories(errno.ENOTSUP))
+
+    write_atomic_bytes(tmp_path / "p.m3u8", b"data")
+
+    assert (tmp_path / "p.m3u8").read_bytes() == b"data"
+    assert not list(tmp_path.glob(".*.tmp")), "and the temp was still cleaned up"
+
+
+def test_a_real_fsync_failure_on_the_directory_still_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only "this filesystem cannot" is swallowed: EIO is a fault, not a policy."""
+    monkeypatch.setattr(os, "fsync", _fsync_that_refuses_directories(errno.EIO))
+
+    with pytest.raises(OSError) as caught:
+        write_atomic_bytes(tmp_path / "p.m3u8", b"data")
+
+    assert caught.value.errno == errno.EIO

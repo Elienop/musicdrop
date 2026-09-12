@@ -22,6 +22,7 @@ import errno
 import logging
 import os
 import shutil
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -42,12 +43,16 @@ def _folder(tmp_path: Path) -> Path:
 
 
 def _move(names: list[str], folder: Path, tmp_path: Path) -> Path:
-    """The mover, against a Trash + origin store that do not exist yet.
+    """The mover, against a Trash root created the way a request creates it.
 
-    ``protected_for`` over a Trash dir that is not there answers ``trash=None``,
-    which is the first-use arm — the one these tests want, since none of them is
-    about the root. ``tests/test_trash_replaced_root.py`` is.
+    ``store_layout.checked_protected_trees`` makes the directory one line before
+    it takes the identity, so a mover never sees ``trash=None``; these tests are
+    about the NAMES, and ``tests/test_trash_replaced_root.py`` is about the root.
+    The origin store is still absent — ``require_usable_store`` is what creates
+    that one.
     """
+    trash = tmp_path / "trash"
+    trash.mkdir(exist_ok=True)
     fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
     try:
         return trash_replaced_files(
@@ -55,11 +60,9 @@ def _move(names: list[str], folder: Path, tmp_path: Path) -> Path:
             src_dir_fd=fd,
             container_name=CONTAINER,
             origin=folder,
-            trash_dir=tmp_path / "trash",
+            trash_dir=trash,
             origins_dir=tmp_path / "trash-origins",
-            protected=protected_for(
-                trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins"
-            ),
+            protected=protected_for(trash_dir=trash, origins_dir=tmp_path / "trash-origins"),
         )
     finally:
         os.close(fd)
@@ -98,9 +101,10 @@ def test_a_name_that_is_not_a_bare_entry_is_refused(name: str, tmp_path: Path) -
     assert caught.value.errno == errno.EINVAL
     assert caught.value.strerror == "not a bare entry name"
     assert caught.value.filename == name
-    # Refused before the store check, the mkdir and the allocation: neither
-    # directory exists, so there is no container and no record to inspect.
-    assert not (tmp_path / "trash").exists()
+    # Refused before the store check and the allocation: the Trash root is
+    # there (the request's own check creates it) and holds nothing, and the
+    # origin store was never created, so there is no record to inspect.
+    assert list((tmp_path / "trash").iterdir()) == []
     assert not (tmp_path / "trash-origins").exists()
 
 
@@ -118,7 +122,7 @@ def test_an_absolute_name_cannot_report_a_move_it_did_not_make(tmp_path: Path) -
 
     assert caught.value.strerror == "not a bare entry name"
     assert curated.read_bytes() == PNG
-    assert not (tmp_path / "trash").exists()
+    assert list((tmp_path / "trash").iterdir()) == []
     assert read_trash_origin(tmp_path / "trash-origins", CONTAINER) is None
 
 
@@ -136,7 +140,7 @@ def test_a_climbing_name_cannot_take_a_file_out_of_the_library(tmp_path: Path) -
 
     assert caught.value.strerror == "not a bare entry name"
     assert database.read_bytes() == b"THE-DATABASE"
-    assert not (tmp_path / "trash").exists()
+    assert list((tmp_path / "trash").iterdir()) == []
 
 
 def test_a_separator_cannot_reach_a_file_outside_the_anchored_folder(tmp_path: Path) -> None:
@@ -162,7 +166,7 @@ def test_a_separator_cannot_reach_a_file_outside_the_anchored_folder(tmp_path: P
 
     assert caught.value.strerror == "not a bare entry name"
     assert (outside / "f").read_bytes() == b"OUTSIDE-THE-LIBRARY"
-    assert not (tmp_path / "trash").exists()
+    assert list((tmp_path / "trash").iterdir()) == []
 
 
 def test_a_source_swapped_before_the_rename_is_put_back_and_refused(
@@ -300,3 +304,96 @@ def test_the_container_is_fsynced_before_the_copied_source_is_unlinked(
     assert ("fsync", dest.stat().st_ino) in events[:unlinked], (
         f"the container was not fsynced before the source went: {events}"
     )
+
+
+def test_a_directory_whose_identity_was_staged_is_not_relocated(tmp_path: Path) -> None:
+    """The rename arm checks identity AND type, because identity is not unique
+    over time.
+
+    ``(st_dev, st_ino)`` from the staging lstat is what the post-rename lstat is
+    compared against, and ext4/xfs allocate inodes from a bitmap — a freed
+    regular file's number is handed out again. Staging a DIRECTORY's own
+    identity is exactly what such a filesystem gives the compare, and measured
+    with the type clause removed, the whole tree was relocated into the
+    container: the outcome the guard exists to stop.
+    """
+    from app.beets.trash import _move_between_fds
+
+    src = tmp_path / "music" / "Artist"
+    src.mkdir(parents=True)
+    dst = tmp_path / "container"
+    dst.mkdir()
+    tree = src / "artist-poster.png"
+    tree.mkdir()
+    (tree / "inside.flac").write_bytes(b"a tree")
+
+    src_fd = os.open(src, os.O_RDONLY | os.O_DIRECTORY)
+    dst_fd = os.open(dst, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        st = os.stat(tree.name, dir_fd=src_fd, follow_symlinks=False)
+        with pytest.raises(OSError) as caught:
+            _move_between_fds(tree.name, src_dir_fd=src_fd, dst_dir_fd=dst_fd, st=st)
+    finally:
+        os.close(dst_fd)
+        os.close(src_fd)
+
+    assert caught.value.strerror == "the file changed after it was checked"
+    assert (tree / "inside.flac").read_bytes() == b"a tree", "put back, whole"
+    assert list(dst.iterdir()) == [], "and nothing stayed in the container"
+
+
+def _fsync_that_refuses_directories(err: int) -> Any:
+    """``os.fsync`` answering ``err`` for a DIRECTORY fd, real for anything else.
+
+    The copy's own fsync is a correctness precondition — the bytes must be on
+    disk before the source is unlinked — and must keep raising; only the
+    container's DIRECTORY fsync is the durability extra this swallows.
+    """
+    real_fsync = os.fsync
+
+    def fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(err, os.strerror(err))
+        real_fsync(fd)
+
+    return fsync
+
+
+def test_a_container_that_cannot_be_fsynced_still_completes_the_move(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENOTSUP from the container fsync is not a failed move.
+
+    The copy arm exists BECAUSE the Trash is on another filesystem, and a FUSE
+    or network mount can answer "not supported" for an fsync on a directory —
+    measured (security seat L-6): the copy was in Trash, the source still on
+    disk, and the caller reported the art write refused.
+    """
+    folder = _folder(tmp_path)
+    curated = folder / "artist-poster.png"
+    curated.write_bytes(PNG)
+    monkeypatch.setattr(os, "rename", _across_a_device_boundary(os.rename))
+    monkeypatch.setattr(os, "fsync", _fsync_that_refuses_directories(errno.ENOTSUP))
+
+    dest = _move([curated.name], folder, tmp_path)
+
+    assert (dest / curated.name).read_bytes() == PNG
+    assert not curated.exists(), "the source was still unlinked last"
+
+
+def test_a_real_fsync_failure_on_the_container_still_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only "this filesystem cannot" is swallowed: EIO is a fault, so the source
+    stays where it is and the caller hears about it."""
+    folder = _folder(tmp_path)
+    curated = folder / "artist-poster.png"
+    curated.write_bytes(PNG)
+    monkeypatch.setattr(os, "rename", _across_a_device_boundary(os.rename))
+    monkeypatch.setattr(os, "fsync", _fsync_that_refuses_directories(errno.EIO))
+
+    with pytest.raises(OSError) as caught:
+        _move([curated.name], folder, tmp_path)
+
+    assert caught.value.errno == errno.EIO
+    assert curated.read_bytes() == PNG, "not unlinked"

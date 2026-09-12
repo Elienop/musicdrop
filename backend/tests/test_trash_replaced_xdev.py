@@ -74,8 +74,12 @@ def shm_trash(tmp_path: Path) -> Iterator[Path]:
             pytest.fail(f"MUSICDROP_REQUIRE_XDEV=1 and {reason}")
         pytest.skip(reason)
     root = Path(tempfile.mkdtemp(dir=SHM, prefix="musicdrop-xdev-"))
+    trash = root / "trash"
+    # Created here, the way a request's own check creates it before taking the
+    # identity the mover compares (``store_layout._ensure_trash_root``).
+    trash.mkdir()
     try:
-        yield root / "trash"
+        yield trash
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -129,9 +133,6 @@ def test_a_real_cross_device_move_aside_carries_mode_mtime_and_the_symlink(
             origin=folder,
             trash_dir=shm_trash,
             origins_dir=origins,
-            # The fixture hands back a path it has NOT created, which is what
-            # ``protected_trees`` sees as ``trash=None``: first use, where the
-            # mover creates the root itself.
             protected=protected_for(trash_dir=shm_trash, origins_dir=origins),
         )
     finally:

@@ -118,12 +118,12 @@ async def test_the_sweep_asks_for_the_trash_store_once_per_artist(
     from app.beets.artist_art import ArtTrashStore, get_artist_dirs
     from tests.conftest import protected_for
 
+    trash = tmp_path / "trash"
+    trash.mkdir()  # the request's own check creates it before taking the identity
     store = ArtTrashStore(
-        trash_dir=tmp_path / "trash",
+        trash_dir=trash,
         origins_dir=tmp_path / "trash-origins",
-        protected=protected_for(
-            trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins"
-        ),
+        protected=protected_for(trash_dir=trash, origins_dir=tmp_path / "trash-origins"),
     )
     curated = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
     folders = {n: get_artist_dirs(rename_lib, n) for n in ("Fayrouz", "Fairuz")}

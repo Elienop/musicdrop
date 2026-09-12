@@ -512,13 +512,15 @@ def _checked_store(app: FastAPI) -> tuple[LibraryHandle, Path, Path, ProtectedTr
     """
     handle: LibraryHandle = app.state.beets_library
     settings = _settings(app)
+    # One arm for both: ``checked_protected_trees`` CREATES the Trash when it is
+    # absent, and refuses the same way when it cannot.
     try:
         trash_dir, origins_dir = checked_store_dirs(settings, handle)
+        protected = checked_protected_trees(
+            settings, handle, trash_dir=trash_dir, origins_dir=origins_dir
+        )
     except StoreLayoutError as exc:
         raise HTTPException(status_code=503, detail=_NOTHING_DELETED_LAYOUT.format(exc)) from exc
-    protected = checked_protected_trees(
-        settings, handle, trash_dir=trash_dir, origins_dir=origins_dir
-    )
     return handle, trash_dir, origins_dir, protected
 
 
