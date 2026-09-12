@@ -180,7 +180,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   parked — check that first: if it cannot, this is unreachable rather than a bug.
 
 - ~~**`/browse`'s facet checkboxes get 20×24 of the new 24×24 tap target**~~ — **CLOSED
-  2026-09-11** (on `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at merge; vault
+  2026-09-11** (on `fix/phone-width-rows-and-hit-areas`, PR #221, squash `a053ffc` = v0.51.2; vault
   decisions 40 — the ruling names the primitive and says every caller inherits it, so a call
   site that defeats it is inside the ruling). **Measured cost: none.**
   The remedy is NOT the `-ml-1 pl-1` recorded below, which costs 4px of every facet label
@@ -1137,7 +1137,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - ~~**"Reset to auto" in the artist-image panel deletes a hand-uploaded portrait with no
   confirm, and nothing refetches it.**~~ — **CLOSED 2026-09-11** (on
-  `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`; PR + squash sha cited at merge).
+  `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`, PR #225, squash `9e918e6` =
+  v0.51.5).
   Reset is behind an AlertDialog in the Save-art shape — "Reset to auto?", and a description
   that warns an uploaded or pasted image moves to Trash — and the POST is sent from the
   dialog's action alone, held open until it settles. The endpoint moves the `*.override` pair
@@ -1152,7 +1153,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   README said of exactly those files "which nothing refetches".)
 
 - ~~**The Trash row for an art container reads as an album.**~~ — **CLOSED 2026-09-11** (on
-  `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`; PR + squash sha cited at merge).
+  `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`, PR #225, squash `9e918e6` =
+  v0.51.5).
   The wire says it now: `trash_replaced_files` records `moved="files"`, `_restore_fields` maps
   that to a fifth `restore_mode` — `by_hand`, with `_MOVED_ASIDE_NOTE` and the origin — and
   `restore_album` short-circuits such an entry to `could_not_restore` without running an
@@ -1902,7 +1904,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   25px is real but it is not the badge, and there is no overlap for a tap to be inert against.
   What the 25px actually is, is below.
   **The "Adjacent, NOT fixed" title-at-0px material above is CLOSED 2026-09-11** — on
-  `fix/phone-width-rows-and-hit-areas` (PR + squash sha cited at merge), vault decisions 39:
+  `fix/phone-width-rows-and-hit-areas` (PR #221, squash `a053ffc` = v0.51.2), vault decisions 39:
   below 28rem of ROW the bank row's action group takes its own line under the row, so the text
   column keeps the ~169px the group was taking. Re-measured over the same 201 widths with the
   scrollbar present: the title is **23.02px at 320** (0 before) and never 0 at any width, on a
@@ -1973,7 +1975,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   defect decisions 42 settled on `/duplicates`.
 
 - ~~**A bank row's `Open` button is SLICED by the list's own `overflow-hidden`**~~ — **CLOSED
-  2026-09-11** (on `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at merge; vault
+  2026-09-11** (on `fix/phone-width-rows-and-hit-areas`, PR #221, squash `a053ffc` = v0.51.2; vault
   decisions 39): the button is on its own line under the row below 28rem, where the slice
   happened, so the list's `overflow-hidden` has nothing to cut. Measured over the same 201
   widths: **0 controls clipped at any width** on all five bank rows, against 24.78px of the
@@ -1991,7 +1993,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   owner's.
 
 - ~~**A BANK ROW's stacked meta line is cut mid-word with no ellipsis**~~ — **CLOSED
-  2026-09-11** (on `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at merge; vault
+  2026-09-11** (on `fix/phone-width-rows-and-hit-areas`, PR #221, squash `a053ffc` = v0.51.2; vault
   decisions 39), and NOT by the rejected `truncate`, which is still rejected for the reason
   below. **The title is scoped to the bank row deliberately** (2026-09-11: it read
   "`AlbumRow`'s stacked meta line", a component-wide claim its own body then contradicted).
@@ -2650,7 +2652,7 @@ the condition it names has changed.
   `ArtistImageEditPanel.tsx:278`.
 
   ~~**Two selection controls do NOT pass**~~ — **CLOSED 2026-09-11** (on
-  `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at merge; vault decisions 40).
+  `fix/phone-width-rows-and-hit-areas`, PR #221, squash `a053ffc` = v0.51.2; vault decisions 40).
   (The blank line above is load-bearing: without it markdown lazy-continuation pulls this
   closure into the `SegmentedControl` bullet's own paragraph, so that OPEN entry reads as
   closed. Not struck — `~~` is inline and cannot reach backwards over the bullet.)
@@ -2846,13 +2848,34 @@ Added by the 2026-08-28 sweeps:
 
 ## Recently shipped
 
+- **Reset to auto confirms first and moves the uploaded portrait to Trash; Trash lists
+  moved-aside files as their own row — PR #225, squash `9e918e6` = v0.51.5 (2026-09-12).**
+  `POST /api/artists/image/reset` sits behind an AlertDialog ("Reset to auto?"); an uploaded
+  or pasted override moves into a Trash entry with a `files` origin record before the
+  automatic slot is cleared, so no path unlinks a person's upload. The move and the clear run
+  under the beets swap lock: 409 while the lock is held (the lock half of the library-busy
+  check, `raise_if_swap_lock_held`) or while the art sweep runs, the sweep gate asked again
+  with the lock held; 503 saying the reset stopped when a move fails part-way, with the OS
+  strerror and no server path. Trash rows for `moved="files"` entries read "Files moved
+  aside." with the folder they were at and Empty as the only action; the header no longer
+  promises a restore location; container names built from tags share the display-name
+  neutraliser (`_one_trash_level`: separators, NUL, U+FFFD, leading dots).
+  Cleanup the rounds forced: `ArtistImageCache.clear_override` deleted (no production caller),
+  the reset route's OpenAPI description cut to one sentence, six universals ("and nothing
+  else", "nothing sweeps it") corrected and pinned, the lock re-check pinned on lock STATE per
+  read rather than a read count.
+  Closes the struck Reset-to-auto entry and the struck art-container-row entry above.
+  Recorded and not fixed: the filler's ungated auto-slot write, the mid-move upload bound
+  (never lost), the cover route's 500 on an unparseable track, and the descriptor anchoring
+  this branch takes up.
+
 - **Save art confirms first and moves replaced art to Trash — PR #224, squash `a8b08d5` =
   v0.51.4 (2026-09-11).** `POST /api/artists/art/apply` sits behind an AlertDialog that names
   what it writes and says existing files move to Trash first, and the start request carries a
   10 s bound so a stalled start cannot latch the dialog open.
   The `artist-poster.*`/`artist-background.*` a forced write replaces go into one Trash entry
-  per artist folder (`<folder> - artist art`, origin record `moved="items"` — this branch
-  renames that shape to `moved="files"`), claimed by a bare
+  per artist folder (`<folder> - artist art`, origin record `moved="items"`, renamed to
+  `moved="files"` by PR #225), claimed by a bare
   `mkdir` so a directory that arrived after the allocator looked raises before any move;
   nothing is written into a folder whose old files did not all move aside, and
   `write_artist_art` reports `failed` as soon as one write or move-aside errored while
@@ -2867,7 +2890,7 @@ Added by the 2026-08-28 sweeps:
   measured, no error).
   Closes the struck Save-art entry and the struck partial-`status` entry above. Recorded and
   not fixed: the two descriptor-anchoring windows (the per-artist store check, and the
-  container claim to the first move), the Reset-to-auto gap this branch is closing, the
+  container claim to the first move), the Reset-to-auto gap (closed by PR #225), the
   moved-aside Trash row's wording, the `.<pid>.<16 hex>.<ext>.tmp` dotfile a killed write
   leaves, and the three derived-name writers left untouched — each under its own entry or
   inside the closure it came from.
