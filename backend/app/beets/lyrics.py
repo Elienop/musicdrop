@@ -145,18 +145,32 @@ def _sidecar_base(item: Any) -> str | None:
     return sidecar_base(getattr(item, "path", None))
 
 
-def _has_sidecar(item: Any) -> bool:
-    """Whether a ``.lrc`` or ``.txt`` lyric sidecar already sits next to the track.
+def _sidecar_present(item: Any) -> bool:
+    """Whether a lyric sidecar sits next to the track, read through the album
+    folder's own descriptor — the same one the write resolves its names against.
 
-    By NAME, and the only reader left that is: it answers the
-    ``skipped_existing`` REPORT in :func:`_early_skip_outcome`, which acts on
-    nothing. Every syscall that reads, unlinks or writes a sidecar goes through
-    the album folder's own descriptor instead (:func:`_album_dir_fd`).
+    This decides the ``skipped_existing`` early return in
+    :func:`_early_skip_outcome`, so it gates the FETCH: read by NAME it could
+    disagree with the write, and did. A dangling symlink at a sidecar name is
+    absent to ``os.path.exists`` and PRESENT to the descriptor's ``lstat``, so
+    such a track was fetched on every run and never written; a sidecar visible
+    only THROUGH a symlinked album folder was the mirror image, reported as
+    complete on a file the write refuses to touch.
+
+    A folder this cannot open answers False — the fetch then runs (the DB layer
+    still benefits) and :func:`write_lyric_sidecar` logs its own refusal, once.
     """
     base = _sidecar_base(item)
     if base is None:
         return False
-    return any(os.path.exists(base + ext) for ext in SIDECAR_EXTS)
+    try:
+        dir_fd = _open_album_dir(Path(base).parent, Path(_music_dir(item._db)))
+    except (OSError, ValueError):
+        return False
+    try:
+        return bool(_present_sidecars(base, dir_fd=dir_fd))
+    finally:
+        os.close(dir_fd)
 
 
 def _sidecar_names(base: str) -> list[str]:
@@ -547,7 +561,7 @@ def _early_skip_outcome(
             item_id=item_id, status="skipped_instrumental", source=None, written=False
         )
     # Already complete: has a lyrics tag AND a Plex sidecar.
-    if not force and item.lyrics and _has_sidecar(item):
+    if not force and item.lyrics and _sidecar_present(item):
         return ItemLyricsOutcome(
             item_id=item_id, status="skipped_existing", source=None, written=False
         )

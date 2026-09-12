@@ -1017,3 +1017,84 @@ def test_sidecar_written_even_when_write_off(edit_lib: Library) -> None:
     base, _ext = os.path.splitext(os.fsdecode(item.path))
     assert Path(base + ".txt").exists()  # sidecar independent of the write gate
     assert not MediaFile(os.fsdecode(item.path)).lyrics  # file tag empty
+
+
+# --- The early-skip gate reads through the album folder's descriptor ----------
+
+
+class _CountingBackend:
+    """A backend that records whether it was asked at all."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def fetch(self, artist: str, title: str, album: str, length: int) -> Lyrics | None:
+        self.calls.append(str(title))
+        return Lyrics(PLAIN)
+
+
+def test_a_dangling_symlink_at_the_sidecar_name_counts_as_present_for_the_skip(
+    edit_lib: Library,
+) -> None:
+    """The skip gate and the WRITE must agree about what "has a sidecar" means.
+
+    ``follow_symlinks=False`` counts a dangling link as PRESENT, so the writer
+    refuses it — while ``os.path.exists`` reads it as absent. With the gate by
+    NAME, such a track was fetched on every run, forever, and never written
+    (security review Q2a): the fetch succeeded, the write refused, and the next
+    run read "absent" again.
+    """
+    from app.beets.lyrics import fetch_item_lyrics
+
+    item = _first_item(edit_lib)
+    item.lyrics = "already in the tag"
+    item.store()
+    base, _ext = os.path.splitext(os.fsdecode(item.path))
+    Path(base + ".lrc").symlink_to(Path(base + ".gone"))
+    backend = _CountingBackend()
+
+    out = fetch_item_lyrics(_FakePlugin([backend]), item, force=False, write=False)  # type: ignore[list-item]  # a stand-in backend
+
+    assert out.status == "skipped_existing"
+    assert backend.calls == [], "and the network was never asked"
+    assert Path(base + ".lrc").is_symlink(), "nothing published over the link"
+    assert not Path(base + ".gone").exists()
+
+
+def test_a_symlinked_album_folder_is_not_skipped_by_the_sidecar_gate(tmp_path: Path) -> None:
+    """A folder the anchored walk refuses answers "no sidecar", so the fetch runs.
+
+    Reading it by NAME resolves THROUGH the link and reports the sidecar there,
+    so the item was reported ``skipped_existing`` on the strength of a file the
+    write would refuse to touch. The conservative answer is the other one: fetch,
+    fill the tag, and let the write log its own refusal.
+    """
+    import shutil
+
+    from app.beets.lyrics import fetch_item_lyrics
+
+    music = tmp_path / "music"
+    music.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    os.symlink(outside, music / "Artist")
+    from tests.conftest import build_library
+
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+    track = music / "Artist" / "01 t.flac"
+    shutil.copyfile(Path(__file__).parent / "fixtures" / "silent.flac", track)
+    seed = Item(album="Album", albumartist="Artist", artist="Artist", title="t", track=1, disc=1)
+    seed.path = os.fsencode(str(track))
+    lib.add_album([seed])
+    item = _first_item(lib)
+    item.lyrics = "already in the tag"
+    item.store()
+    curated = outside / "01 t.lrc"
+    curated.write_text("[00:09.00] the user's own synced line\n", encoding="utf-8")
+    backend = _CountingBackend()
+
+    out = fetch_item_lyrics(_FakePlugin([backend]), item, force=False, write=False)  # type: ignore[list-item]  # a stand-in backend
+
+    assert out.status == "found", "fetched, not skipped on a file the write cannot reach"
+    assert backend.calls, "the backend was asked"
+    assert curated.read_text(encoding="utf-8") == "[00:09.00] the user's own synced line\n"
