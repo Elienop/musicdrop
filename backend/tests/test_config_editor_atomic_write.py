@@ -29,6 +29,7 @@ from __future__ import annotations
 import os
 import stat as stat_mod
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -109,10 +110,12 @@ def test_atomic_write_parent_dir_fsync_open_carries_o_directory(
     real_open = os.open
     opened: list[tuple[object, int]] = []
 
-    def spy_open(path: object, flags: int, mode: int = 0o777, *args: object) -> int:
-        if not flags & os.O_CREAT:
-            opened.append((path, flags))
-        return real_open(path, flags, mode, *args)  # type: ignore[arg-type]  # pass-through spy
+    # *args/**kwargs: the writer passes dir_fd= to os.open, which a
+    # positional-only spy would reject with a TypeError.
+    def spy_open(*args: Any, **kwargs: Any) -> int:
+        if not int(args[1]) & os.O_CREAT:
+            opened.append((args[0], int(args[1])))
+        return real_open(*args, **kwargs)  # pass-through spy
 
     monkeypatch.setattr(os, "open", spy_open)
     atomic_write(cfg, parse_yaml("a: 2\n"), _yaml())

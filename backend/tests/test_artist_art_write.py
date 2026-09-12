@@ -287,10 +287,13 @@ def test_the_tmp_file_is_created_exclusively_and_without_following_symlinks(
     real_open = os.open
     created: list[int] = []
 
-    def spy(path: Any, flags: int, *rest: Any) -> int:
+    # *args/**kwargs: the shared writer passes dir_fd= to os.open, which a
+    # positional-only spy would reject with a TypeError.
+    def spy(*args: Any, **kwargs: Any) -> int:
+        flags = int(args[1])
         if flags & os.O_CREAT:
             created.append(flags)
-        return real_open(path, flags, *rest)
+        return real_open(*args, **kwargs)
 
     # `os` is one shared module object, so patching it here is what the adapter
     # sees. (Reaching through `app.beets.artist_art.os` instead fails mypy
@@ -322,10 +325,12 @@ def test_the_parent_dir_fsync_open_carries_o_directory(
     real_open = os.open
     opened: list[tuple[Any, int]] = []
 
-    def spy(path: Any, flags: int, *rest: Any) -> int:
+    # *args/**kwargs — same reason as the spy above.
+    def spy(*args: Any, **kwargs: Any) -> int:
+        flags = int(args[1])
         if not flags & os.O_CREAT:
-            opened.append((path, flags))
-        return real_open(path, flags, *rest)
+            opened.append((args[0], flags))
+        return real_open(*args, **kwargs)
 
     # `os` is one shared module object — same reason as the test above.
     monkeypatch.setattr(os, "open", spy)
