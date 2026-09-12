@@ -17,11 +17,14 @@ descriptor ``trash_manage.empty_all`` enumerates through.
 from __future__ import annotations
 
 import errno
+import logging
 import os
 from pathlib import Path
 
 import pytest
+from beets.library import Library
 
+from app.beets.artist_art import ArtTrashStore, get_artist_dirs, write_artist_art
 from app.beets.protected import ProtectedTrees
 from app.beets.trash import trash_replaced_files
 from app.beets.trash_origins import read_trash_origin
@@ -193,3 +196,51 @@ def test_the_refusal_keeps_the_trash_path_out_of_its_message(tmp_path: Path) -> 
 
     assert str(trash) not in str(caught.value.strerror)
     assert caught.value.filename == str(trash)
+
+
+def test_the_art_writer_reports_failed_and_writes_nothing_when_the_root_was_swapped(
+    edit_lib: Library, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The forced write's half of the same refusal, end to end.
+
+    ``_move_aside`` turns the mover's ``OSError`` into ``ArtTrashRefusedError``
+    with one WARNING naming the folder and how many files would have been
+    replaced, and ``_write_folder``'s order means nothing is written into a
+    folder whose old art did not move. Without that arm the outcome is the same
+    ``failed`` and the log line is the only difference — so the line is what
+    this asserts.
+    """
+    trash = tmp_path / "trash"
+    trash.mkdir()
+    origins = tmp_path / "trash-origins"
+    store = ArtTrashStore(
+        trash_dir=trash,
+        origins_dir=origins,
+        protected=protected_for(trash_dir=trash, origins_dir=origins),
+    )
+    name = str(next(iter(edit_lib.albums())).albumartist)
+    dirs = get_artist_dirs(edit_lib, name)
+    assert dirs
+    for folder in dirs:  # the curated files, seeded by hand
+        (folder / "artist-poster.png").write_bytes(PNG)
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    os.rename(trash, tmp_path / "real-trash")
+    os.symlink(elsewhere, trash)
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.artist_art"):
+        out = write_artist_art(
+            edit_lib,
+            name,
+            poster=(PNG, "image/png"),
+            background=None,
+            force=True,
+            trash=store,
+        )
+
+    assert (out.status, out.written) == ("failed", 0)
+    assert "file(s) it would replace could not be moved to Trash" in caplog.text
+    for folder in dirs:
+        assert (folder / "artist-poster.png").read_bytes() == PNG, "the curated file stayed"
+    assert list(elsewhere.iterdir()) == []
+    assert list((tmp_path / "real-trash").iterdir()) == []
