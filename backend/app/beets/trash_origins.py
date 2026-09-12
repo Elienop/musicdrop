@@ -186,8 +186,11 @@ def origin_file(origins_dir: Path, entry_name: str) -> Path:
     is a silent, permanent loss of the exact restore for exactly the longest
     album folders. Such a name gets a truncated head plus a digest of the WHOLE
     name instead — deterministic, so the reader recomputes the same key. The
-    budget is :data:`_MAX_KEY_BYTES`, not ``NAME_MAX``, because the atomic write
-    needs room for its own temp name.
+    budget is :data:`_MAX_KEY_BYTES`, not ``NAME_MAX``, and it stays there for
+    COMPATIBILITY with the keys already on disk: this function truncated them to
+    exactly that, and widening it renames existing records out of reach. The
+    temp-name reason the constant used to carry is gone — the writer's temp no
+    longer grows with the target (see :data:`_MAX_KEY_BYTES`).
 
     **The truncated key is not injective, and not by 2^64 either.** The recipe is
     in BYTES, exactly as the cut above is: for any long name ``N2`` the SHORT

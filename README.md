@@ -49,6 +49,11 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   If the Trash cannot be used, that folder is reported failed and its files are left alone. A
   folder reported failed *after* its files moved has them in its Trash entry — look there before
   you empty the Trash.
+  Art is written only into folders reached from the library root without following a symlink: an
+  artist or album folder that *is* a link, or that sits under one, is reported failed with a log
+  line naming it, and nothing is written or moved aside. The library root itself may be a link.
+  To spread a library across disks, bind-mount the second disk into the library instead of
+  linking to it.
   Renaming or merging an artist writes art only where it is missing — a merge never replaces the
   target's art.
 - **Lyrics** — presence, per-album fetch, and a library-wide backfill. The backfill is
@@ -57,6 +62,9 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   entire content is the legacy `[Instrumental]` marker: an instrumental verdict cleans it
   up, and a found verdict treats it as absent and replaces it with the fetched lyrics — a
   real sidecar, including one half of a mixed pair, is never deleted or replaced.
+  Sidecars follow the same rule as artist art: a track whose album folder is only reachable
+  through a symlink below the library root is skipped with a log line, and a bind mount is the
+  supported way to put part of a library on another disk.
 - **Edit tags** — album & track, from the UI. A rename that would land the album's cover on a name another file already holds is refused before anything moves — the tag changes still write, the files stay put, and the preview says why (beets alone would silently rename the cover to a `.1` sibling).
 - **Import** — interactive candidate picker, resume, an import-time duplicate guard (duplicates always route to review, whatever `duplicate_action` says), and search-by-release-ID when the right match isn't offered. Unattended runs **bank** undecidable albums for later review instead of stalling, and the summary verifies each album actually **landed** in the library.
 - **Duplicates** — find & resolve duplicate albums (resolve one, or resolve-all).
@@ -131,7 +139,8 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   - **Files moved aside** — loose files MusicDrop moved out of the way when it replaced them:
     art a **Save art to library** run overwrote, or a portrait **Reset to auto** removed. They are
     not an album, so there is no Restore button — copy them out of the entry into the folder the row
-    names. Empty works as usual.
+    names. Empty works as usual. A Trash on a different disk from the library is fine: the files are
+    copied across and keep their permissions and timestamp, and a link is put back as a link.
   - **Can’t be restored** — the fifth way a row loses its exact move-back, and the only one
     whose Empty is turned down too: the Trash entry is itself a *link* to a folder elsewhere
     (usually on another volume, which is how an album whose own folder is a link gets here,

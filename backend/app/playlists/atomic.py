@@ -47,8 +47,8 @@ _TMP_CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
 #: with the destination's name, and a name nobody can precompute keeps two
 #: concurrent writers of one target off a single inode — with a shared
 #: ``.<name>.tmp``, writer B's ``O_TRUNC`` wipes writer A's bytes and A
-#: publishes truncated content. Same shape as ``artist_art._tmp_path`` and
-#: ``lyrics._tmp_path``.
+#: publishes truncated content. The art and lyrics writers each had their own
+#: copy of this shape; both were deleted and both now call this helper.
 _TMP_NAME_RE = re.compile(r"^\.\d+\.[0-9a-f]{16}(\.[^./]*)?\.tmp$")
 
 #: A temp file older than this hour was left by a process killed mid-write; no
