@@ -607,23 +607,27 @@ def _refuse_an_uncreatable_trash(trash_dir: Path, exc: OSError) -> StoreLayoutEr
     )
 
 
-def _trash_parts_below_music(music_dir: Path, configured: str, trash_dir: Path) -> Path | None:
+def _trash_parts_below_music(music_dir: Path, configured: str) -> Path | None:
     """The Trash's parts below the music root by SPELLING, or ``None``.
 
-    The CONFIGURED value is asked first because it is the only spelling an
-    anchored walk can trust: ``resolve_trash_dir`` collapses links, so a Trash
-    at ``<M>/a/b/.trash`` whose ``a`` was swapped for a symlink RESOLVES outside
-    the library and would read as "not below it" — the shape the walk exists to
-    refuse (measured, security seat M-3). The resolved path is asked second, for
-    a Trash the operator spelled through a link ABOVE the music root.
+    The CONFIGURED value, not the resolved one: ``resolve_trash_dir`` collapses
+    links, so a Trash at ``<M>/a/b/.trash`` whose ``a`` was swapped for a symlink
+    RESOLVES outside the library and reads as "not below it" — exactly the shape
+    the anchored walk exists to refuse (measured, security seat M-3). Empty
+    ``configured`` is the shipped ``<beets_dir>/trash``, which the layout rule
+    keeps out of the library.
+
+    ``absolute`` + ``normpath``: a relative setting is cwd-relative (the gotcha
+    ``config.py`` names) and would otherwise never compare, and ``normpath``
+    drops any ``..`` lexically so no part handed to the walk can climb.
     """
-    spellings = [Path(configured)] if configured else []
-    spellings.append(trash_dir)
-    for spelled in spellings:
-        with contextlib.suppress(ValueError):
-            rel = spelled.relative_to(music_dir)
-            if rel.parts:
-                return rel
+    if not configured:
+        return None
+    spelled = Path(os.path.normpath(Path(configured).absolute()))
+    with contextlib.suppress(ValueError):
+        rel = spelled.relative_to(music_dir)
+        if rel.parts:
+            return rel
     return None
 
 
@@ -676,7 +680,7 @@ def _ensure_trash_root(settings: Settings, *, music_dir: Path, trash_dir: Path) 
         StoreLayoutError: the Trash is not reachable below the music root, or it
             could not be created.
     """
-    rel = _trash_parts_below_music(music_dir, settings.trash_dir, trash_dir)
+    rel = _trash_parts_below_music(music_dir, settings.trash_dir)
     try:
         if rel is None:
             trash_dir.mkdir(parents=True, exist_ok=True)

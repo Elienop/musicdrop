@@ -216,3 +216,30 @@ def test_the_trash_routes_answer_503_when_the_trash_cannot_be_created(
 
     assert resp.status_code == 503
     assert "could not be created" in resp.json()["detail"]
+
+
+def test_a_relative_trash_setting_below_the_music_root_is_anchored_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cwd-relative ``MUSICDROP_TRASH_DIR`` is the same layout, spelled shorter.
+
+    ``config.py`` names the cwd-relative gotcha and this app's own defaults are
+    relative, so the spelling test absolutises before it compares — without
+    that, a relative setting never reads as "below the music root" and the whole
+    chain is created by path.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    holder = music / "a"
+    holder.mkdir()
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    os.rename(holder, tmp_path / "real-a")
+    os.symlink(elsewhere, holder)
+    monkeypatch.chdir(music)
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, Path("a/b/.trash"))
+
+    assert "not reachable below the music library" in str(caught.value)
+    assert list(elsewhere.iterdir()) == []
