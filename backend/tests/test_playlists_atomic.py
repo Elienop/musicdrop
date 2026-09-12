@@ -7,6 +7,7 @@ that leaves the token bytes briefly world-readable.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import stat as stat_mod
@@ -343,10 +344,16 @@ def test_the_mode_is_pinned_against_the_umask(tmp_path: Path) -> None:
     assert stat_mod.S_IMODE(keep.stat().st_mode) == 0o646
 
 
-def test_a_symlink_at_the_target_is_replaced_by_a_regular_file(tmp_path: Path) -> None:
+def test_a_symlink_at_the_target_is_replaced_by_a_regular_file(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """A link at the destination is replaced, its target left alone — and it
     donates no mode under ``mode=None``, because the stat behind that regime does
-    not follow it (a followed link would hand over its target's 0o600)."""
+    not follow it (a followed link would hand over its target's 0o600).
+
+    That replacement is LOGGED. Measured: a dotfiles-symlinked, credential-
+    bearing ``config.yaml`` became a 0o644 regular file after a Save, with
+    nothing anywhere saying the link was gone."""
     outside = tmp_path / "outside.txt"
     outside.write_bytes(b"untouched")
     outside.chmod(0o600)
@@ -355,7 +362,8 @@ def test_a_symlink_at_the_target_is_replaced_by_a_regular_file(tmp_path: Path) -
 
     old_umask = os.umask(0o022)
     try:
-        write_atomic_bytes(target, b"data", mode=None)
+        with caplog.at_level(logging.WARNING, logger="app.playlists.atomic"):
+            write_atomic_bytes(target, b"data", mode=None)
     finally:
         os.umask(old_umask)
 
@@ -363,6 +371,23 @@ def test_a_symlink_at_the_target_is_replaced_by_a_regular_file(tmp_path: Path) -
     assert target.read_bytes() == b"data"
     assert outside.read_bytes() == b"untouched"
     assert stat_mod.S_IMODE(target.stat().st_mode) == 0o644
+    assert len(caplog.records) == 1
+    assert "replaced a symlink" in caplog.text
+    assert "p.m3u8" in caplog.text
+
+
+def test_an_ordinary_rewrite_logs_nothing(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """The control for the line above: the warning must fire for a LINK at the
+    destination and not for the ordinary create-or-rewrite, which is every other
+    call this writer takes."""
+    target = tmp_path / "p.m3u8"
+
+    with caplog.at_level(logging.WARNING, logger="app.playlists.atomic"):
+        write_atomic_bytes(target, b"first", mode=None)
+        write_atomic_bytes(target, b"second", mode=None)
+
+    assert target.read_bytes() == b"second"
+    assert caplog.records == []
 
 
 def test_a_directory_at_the_target_refuses_the_publish_and_leaves_no_temp(tmp_path: Path) -> None:
