@@ -448,6 +448,14 @@ def write_lyric_sidecar(item: Any, lyrics: Lyrics, *, root: Path) -> str | None:
                 _is_marker_sidecar_at(name, dir_fd=dir_fd, shown=str(dst.parent / name))
                 for name in present
             ):
+                # The tag now holds the lyrics and the FILE layer is gap-fill
+                # only, so the existing sidecar wins. One line, because "found"
+                # with nothing written is otherwise invisible — and it fires once
+                # per track, since the filled tag then answers the skip gate.
+                _log.warning(
+                    "lyric sidecar not written, one is already beside the track: %r",
+                    display_path(str(dst)),
+                )
                 return None
             # Every sidecar here is a stale "[Instrumental]" marker, which AGREES
             # with "no lyrics" — keeping it would leave Plex showing
@@ -460,10 +468,12 @@ def write_lyric_sidecar(item: Any, lyrics: Lyrics, *, root: Path) -> str | None:
             # Only ``dst.name`` travels: every name is resolved against the fd the
             # walk returned. ``mode=None`` takes the umask default, so the sidecar
             # is as readable as the rest of the library (the Plex process is
-            # another uid). Its preserve-on-rewrite arm is unreachable from here:
-            # the gate above only lets a write through when nothing sits at the
-            # name or every sidecar was a marker just unlinked, so every write is
-            # a create.
+            # another uid). Its preserve-on-rewrite arm is all but unreachable
+            # from here: the gate above only lets a write through when nothing
+            # sits at the name or every sidecar was a marker just unlinked — the
+            # one way a file is still at the name is an unlink that FAILED and
+            # logged (``_remove_marker_sidecars_at``), where preserving that
+            # file's mode is the wanted answer anyway.
             write_atomic_text(Path(dst.name), body + "\n", mode=None, dir_fd=dir_fd)
         except (OSError, UnicodeEncodeError):
             # UnicodeEncodeError (a ValueError): the shared writer's encode is
@@ -632,9 +642,11 @@ def _try_backend(
         return None, False  # this pair/backend simply has nothing
     except requests.exceptions.RequestException as exc:
         # Concise one-liner (str(exc) reads "429 ... Too Many Requests
-        # for url: ...") instead of a per-item traceback flood.
+        # for url: ...") instead of a per-item traceback flood. The label is raw
+        # TAG text, so it goes ``%r``: the same forged-log-line shape a path has
+        # (a newline plus an ANSI escape in a title), measured on the folder name.
         _log.warning(
-            "lyrics fetch failed: %s [%s]: %s",
+            "lyrics fetch failed: %r [%s]: %s",
             _item_label(item),
             _backend_name(backend),
             exc,

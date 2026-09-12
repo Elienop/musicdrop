@@ -1098,3 +1098,26 @@ def test_a_symlinked_album_folder_is_not_skipped_by_the_sidecar_gate(tmp_path: P
     assert out.status == "found", "fetched, not skipped on a file the write cannot reach"
     assert backend.calls, "the backend was asked"
     assert curated.read_text(encoding="utf-8") == "[00:09.00] the user's own synced line\n"
+
+
+def test_the_gap_fill_refusal_says_so_once(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """ "found" with no sidecar written is otherwise invisible.
+
+    The tag now holds the lyrics, so the next run's skip gate answers
+    ``skipped_existing`` and this line never repeats for that track — one
+    record, once, which is why it is a WARNING and not a per-sweep flood.
+    """
+    from app.beets.lyrics import write_lyric_sidecar
+
+    track = tmp_path / "t.flac"
+    track.write_bytes(b"")
+    (tmp_path / "t.txt").write_text("the user's own plain lyrics", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.lyrics"):
+        assert write_lyric_sidecar(_fake_item(track), Lyrics(SYNCED), root=tmp_path) is None
+
+    lines = [r for r in caplog.records if r.name == "app.beets.lyrics"]
+    assert len(lines) == 1
+    assert "one is already beside the track" in lines[0].getMessage()

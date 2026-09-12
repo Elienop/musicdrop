@@ -247,23 +247,34 @@ def test_a_trashed_art_container_can_be_emptied(
     assert read_trash_origin(art_trash.origins_dir, entry.name) is None
 
 
-def test_force_refuses_the_write_when_no_trash_store_was_given(edit_lib: Library) -> None:
+def test_force_refuses_the_write_when_no_trash_store_was_given(
+    edit_lib: Library, caplog: pytest.LogCaptureFixture
+) -> None:
     """No store to name is the same answer as an unusable one: do not write.
 
     Seeded with the extension the new file WOULD take, because that is the shape
     with no second chance — ``os.replace`` would destroy the curated file in
     place and leave nothing behind to notice.
+
+    One WARNING per refused folder, naming it and how many files stayed: this
+    arm used to raise with nothing logged at all, and the outer arm that logged
+    for it also logged a second time for the mover's own refusals.
     """
     name = _artist_of(edit_lib)
     dirs = get_artist_dirs(edit_lib, name)
     for d in dirs:
         (d / "artist-poster.jpg").write_bytes(PNG[0])
 
-    out = write_artist_art(edit_lib, name, poster=JPG, background=None, force=True, trash=None)
+    with caplog.at_level(logging.WARNING, logger="app.beets.artist_art"):
+        out = write_artist_art(edit_lib, name, poster=JPG, background=None, force=True, trash=None)
 
     assert (out.status, out.written) == ("failed", 0)
     for d in dirs:
         assert (d / "artist-poster.jpg").read_bytes() == PNG[0]
+    lines = [r for r in caplog.records if r.name == "app.beets.artist_art"]
+    assert len(lines) == len(dirs), "one line per refused folder"
+    assert "could not be moved to Trash" in lines[0].getMessage()
+    assert lines[0].exc_info is None, "there is no exception to trace here"
 
 
 def test_the_fsynced_directory_is_the_folder_the_walk_opened_and_never_a_reopen(

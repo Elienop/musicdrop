@@ -8,9 +8,9 @@ remove the beets dir. The identity question is asked again where a tree is moved
 or removed, against the ``(st_dev, st_ino)`` of every DIRECTORY in it: one stat
 per directory in the tree it walks.
 
-A leaf module — ``app.config`` and nothing else of this app's — so the movers,
-the remover and ``store_layout`` can all reach it. Residuals live in one place,
-the BACKLOG entry for this slice.
+A leaf module — ``app.config``, ``app.fsutil`` and nothing else of this app's,
+both leaves themselves — so the movers, the remover and ``store_layout`` can all
+reach it. Residuals live in one place, the BACKLOG entry for this slice.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Final, Literal
 
 from app.config import Settings, app_owned_dirs, export_dir
+from app.fsutil import BELOW_FLAGS
 
 logger = logging.getLogger(__name__)
 
@@ -283,11 +284,16 @@ def open_checked_dir(path: Path, protected: ProtectedTrees) -> int:
     identity is the Trash's own rather than one of the app's other directories,
     which is what a bind mount aliases and every spelled row allows.
 
-    The caller enumerates through this descriptor, so a swap of the Trash ROOT
-    after the open changes nothing it reads. Each ENTRY name resolves anew inside
-    it: that identity is ``trash_manage._remove_checked_entry``'s to pin, and
+    The caller acts through this descriptor — the remover enumerates, the
+    move-aside creates its container under it — so a swap of the Trash ROOT
+    after the open reaches neither. Each ENTRY name resolves anew inside it:
+    that identity is ``trash_manage._remove_checked_entry``'s to pin, and
     measured, a rename onto an entry's name after this returns was enough to
     delete the tree it named.
+
+    The refusals say "Nothing was removed", which is the remover's wording and
+    is pinned as a string by ``tests/test_trash_api.py``; a MOVER surfaces them
+    as its own ``OSError`` and keeps this exception only as ``__cause__``.
     """
     expected = protected.trash
     if expected is None:
@@ -302,7 +308,7 @@ def open_checked_dir(path: Path, protected: ProtectedTrees) -> int:
             " Nothing was removed."
         )
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        fd = os.open(path, BELOW_FLAGS)
     except OSError as exc:
         raise ProtectedTreeError(
             f"Refused: {str(path)!r} is not the directory MusicDrop checked"

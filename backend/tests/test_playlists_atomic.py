@@ -373,7 +373,9 @@ def test_a_symlink_at_the_target_is_replaced_by_a_regular_file(
     assert outside.read_bytes() == b"untouched"
     assert stat_mod.S_IMODE(target.stat().st_mode) == 0o644
     assert len(caplog.records) == 1
-    assert "replaced a symlink" in caplog.text
+    # Present tense: the line fires BEFORE the publish, so a write that then
+    # failed would have logged a replacement that did not happen.
+    assert "replacing a symlink" in caplog.text
     assert "p.m3u8" in caplog.text
 
 

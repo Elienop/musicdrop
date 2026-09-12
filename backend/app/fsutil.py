@@ -237,8 +237,14 @@ def move_no_merge(src: Path, dest: Path) -> None:
 
 
 #: Every component BELOW the root is opened this way: a link is refused instead of
-#: followed, and a FIFO planted mid-path cannot block the open. The ONE definition:
-#: the Trash remover's descent and the move-aside's container open import it.
+#: followed, and a FIFO planted mid-path cannot block the open (measured: with
+#: ``O_DIRECTORY`` a FIFO answers ENOTDIR in 6 us, so ``O_NONBLOCK`` is belt and
+#: braces rather than the thing that saves the open). The ONE definition, and
+#: these are all its readers: :func:`open_below`'s walk, the Trash remover's
+#: descent, the move-aside's container open, ``store_layout``'s creation of a
+#: Trash below the music root, and ``protected.open_checked_dir``'s open of the
+#: Trash ROOT — the one place a ROOT is opened ``O_NOFOLLOW``, because that root
+#: is the one directory the app must not reach through a link.
 BELOW_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
 
 #: The ROOT is opened FOLLOWING links: an operator's beets ``directory:`` may be a
@@ -251,10 +257,13 @@ ROOT_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK
 def open_root(root: Path) -> int:
     """Open ``root`` itself as a directory fd, FOLLOWING a link at it.
 
-    The one spelling of the root open every anchored caller shares, so the three
-    hand-written copies cannot drift. ``O_DIRECTORY`` is mandatory rather than
-    tidy: measured 2026-09-12, a FIFO at ``root`` answers ENOTDIR with it and
-    BLOCKS the open for as long as no writer appears without it.
+    The one spelling every anchored caller shares, so no hand-written copy can
+    drift from it. Its readers: :func:`open_below`'s walk, the lyrics writer's
+    flat-library root, the artist-image cache dir, the shared atomic writer's
+    own parent open, and ``store_layout``'s anchored Trash creation.
+    ``O_DIRECTORY`` is mandatory rather than tidy: measured 2026-09-12, a FIFO at
+    ``root`` answers ENOTDIR with it and BLOCKS the open for as long as no writer
+    appears without it.
 
     The returned fd is the caller's to close.
     """

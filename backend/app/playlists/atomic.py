@@ -22,11 +22,15 @@ parents and opens them by name itself.
 ``mode`` defaults to world-readable ``0o644`` (fine for playlists/`.m3u8`);
 callers writing a secret (e.g. the Plex admin token) pass ``mode=0o600`` so the
 file is owner-only, and ``mode=None`` preserves an existing regular file's mode
-on rewrite (the library-side writers, which must not reset a tightened file).
+on rewrite — read by ``config_editor.atomic_write`` and
+``artwork.toggle.set_enabled``, which rewrite a file the operator may have
+tightened. The library-side writers pass ``mode=None`` too, for the umask
+default: their own comments say the preserve arm is all but unreachable from
+them, because what sits at the name has just been moved aside or unlinked.
 
 A SYMLINK at the destination is replaced by a regular file, and that is logged
-once: the operator loses the link and, under ``mode=None``, the target's mode
-with it.
+once, BEFORE the publish: the operator loses the link and, under ``mode=None``,
+the target's mode with it.
 """
 
 from __future__ import annotations
@@ -136,8 +140,13 @@ def _write_through_dir_fd(name: str, data: bytes, *, mode: int | None, dir_fd: i
         # The publish replaces the LINK, so the operator loses it and the new
         # file takes the umask default instead of the target's mode: measured, a
         # dotfiles-linked 0o600 config.yaml became a 0o644 regular file with
-        # nothing in the logs.
-        _log.warning("replaced a symlink with a regular file: %r", display_path(name))
+        # nothing in the logs. Present tense: this runs BEFORE the publish, and a
+        # write that then fails replaced nothing.
+        #
+        # A BARE name, because for a ``dir_fd`` caller that is all this function
+        # has — the parent belongs to the descriptor. The caller's own log line
+        # is the locator (``'session_secret'`` alone says nothing about where).
+        _log.warning("replacing a symlink with a regular file: %r", display_path(name))
     final = _preserved_mode(existing) if mode is None else mode
     tmp = _tmp_name(name)
     try:

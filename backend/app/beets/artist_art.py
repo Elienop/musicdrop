@@ -6,10 +6,12 @@ All artist-art disk writes live here (rule 3). Mirrors cover.py: bind
 umask 022). Plex's Local Media Assets reads ``artist-poster.<ext>`` +
 ``artist-background.<ext>`` from the artist folder.
 
-Every syscall for one artist folder — the listing, the writes, the move-aside —
-goes through ONE descriptor opened part by part below the library root
-(:func:`_open_folder`), so a folder reached through a symlinked component is
-reported failed instead of written outside the library.
+Every syscall that names a file in an artist folder — the listing, the writes,
+the move-aside, and the background probe :func:`has_background` runs on a
+non-forced sweep — goes through a descriptor opened part by part below the
+library root (:func:`_open_folder`), so a folder reached through a symlinked
+component is reported failed instead of written outside the library. One per
+act, not one per folder: the probe opens its own.
 
 Those filenames are also what a person curates by hand, so a ``force`` write
 does not unlink what it replaces: the files it would overwrite go to the app's
@@ -185,6 +187,15 @@ def _container_name(directory: Path) -> str:
     return safe_container_name(directory.name, " - artist art")
 
 
+#: One wording for every move-aside refusal, so the count of files and the
+#: folder read the same whether a store was resolved at all or the mover
+#: refused. ``%r`` + ``display_path``: a folder name carrying a newline and an
+#: ANSI escape forges log lines (the rule is stated at ``api/artists.py``).
+_MOVE_ASIDE_REFUSED = (
+    "artist art was not written to %r: the %d file(s) it would replace could not be moved to Trash"
+)
+
+
 def _move_aside(
     directory: Path, replaced: list[str], *, fd: int, trash: ArtTrashStore | None
 ) -> None:
@@ -198,8 +209,13 @@ def _move_aside(
 
     ``replaced`` are names in the folder ``fd`` is open on, the same descriptor
     the writes use, so the files moved aside are the ones the plan read.
+
+    Every refusal is logged HERE, once, and :func:`write_artist_art` logs none
+    of them again: both arms raise ``ArtTrashRefusedError``, and a second record
+    up there made a refused folder cost two warnings and two tracebacks.
     """
     if trash is None:
+        _log.warning(_MOVE_ASIDE_REFUSED, display_path(str(directory)), len(replaced))
         raise ArtTrashRefusedError("no Trash store was resolved for this run")
     try:
         trash_replaced_files(
@@ -213,11 +229,7 @@ def _move_aside(
         )
     except (OSError, TrashOriginsStoreUnusableError) as exc:
         _log.warning(
-            "artist art was not written to %r: the %d file(s) it would replace could not"
-            " be moved to Trash",
-            str(directory),
-            len(replaced),
-            exc_info=True,
+            _MOVE_ASIDE_REFUSED, display_path(str(directory)), len(replaced), exc_info=True
         )
         raise ArtTrashRefusedError(str(exc)) from exc
 
@@ -258,7 +270,7 @@ def _write_folder(
             _log.warning(
                 "artist art was not written to %r in %r",
                 pending.name,
-                str(directory),
+                display_path(str(directory)),
                 exc_info=True,
             )
             failed = True
@@ -288,8 +300,8 @@ def has_background(lib: Any, name: str) -> bool:
 
 def _folder_has_background(root: Path, directory: Path) -> bool:
     """Whether ``directory`` holds an ``artist-background.*``, read through its own
-    descriptor. ``fnmatch`` over the bare names is the twin of the writer's
-    ``fnmatchcase`` plan."""
+    descriptor. ``fnmatchcase`` over the bare names, the same match the writer's
+    plan makes (case-sensitive — pinned)."""
     try:
         fd = _open_folder(root, directory)
     except (OSError, ValueError):
@@ -349,7 +361,7 @@ def write_artist_art(
             _log.warning(
                 "artist art was not written to %r: it is not reachable by name below the"
                 " library root — use a bind mount for a folder on another disk",
-                str(directory),
+                display_path(str(directory)),
                 exc_info=True,
             )
             failed = True
@@ -362,7 +374,12 @@ def write_artist_art(
                 force=force,
                 trash=trash,
             )
-        except (OSError, ArtTrashRefusedError):
+        except ArtTrashRefusedError:
+            # ``_move_aside`` logged this folder, with the traceback when there
+            # was one. A record here too made a refused folder cost two warnings
+            # and two tracebacks.
+            failed = True
+        except OSError:
             # The arms around this one log; this one reported ``failed`` with no
             # reason at all, and it is the arm a ``_folder_plan`` listing failure
             # takes. The traceback is the reason.

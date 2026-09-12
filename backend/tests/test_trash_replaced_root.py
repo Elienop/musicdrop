@@ -214,6 +214,10 @@ def test_the_art_writer_reports_failed_and_writes_nothing_when_the_root_was_swap
     folder whose old art did not move. Without that arm the outcome is the same
     ``failed`` and the log line is the only difference — so the line is what
     this asserts.
+
+    ONE line per refused folder: ``write_artist_art`` used to log a second
+    record, with a second traceback, for the refusal ``_move_aside`` had just
+    reported (code seat S10).
     """
     trash = tmp_path / "trash"
     trash.mkdir()
@@ -245,6 +249,9 @@ def test_the_art_writer_reports_failed_and_writes_nothing_when_the_root_was_swap
 
     assert (out.status, out.written) == ("failed", 0)
     assert "file(s) it would replace could not be moved to Trash" in caplog.text
+    lines = [r for r in caplog.records if r.name == "app.beets.artist_art"]
+    assert len(lines) == len(dirs), "one record per refused folder, not two"
+    assert lines[0].exc_info is not None, "and it carries the traceback"
     for folder in dirs:
         assert (folder / "artist-poster.png").read_bytes() == PNG, "the curated file stayed"
     assert list(elsewhere.iterdir()) == []
