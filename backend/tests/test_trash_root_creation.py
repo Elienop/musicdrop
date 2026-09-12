@@ -559,6 +559,32 @@ def test_a_chain_the_walk_cannot_climb_is_refused_rather_than_read_as_outside(
     assert "could not be checked against the music library" in str(caught.value)
 
 
+@pytest.mark.skipif(os.getuid() == 0, reason="root opens an unreadable directory anyway")
+def test_a_present_but_unreadable_music_root_still_anchors_the_walk(tmp_path: Path) -> None:
+    """W2: ``open_root`` needs read, and the identity only needs a stat.
+
+    Mode ``0o111`` — traversable, not readable — is the wrong-``PUID``/``PGID``
+    shape the README already names for the origin store. Measured 2026-09-12
+    (code seat W2) on the arm this replaces: EACCES meant no identity, so
+    ``below`` never became true, the climb was skipped, and the jump-in spelling
+    was ACCEPTED and created inside the library where the ``0o755`` control
+    refuses it.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    jump_in = _jump_in_link(tmp_path, music)
+    os.chmod(music, 0o111)
+
+    try:
+        with pytest.raises(StoreLayoutError) as caught:
+            _trees(tmp_path, music, jump_in / ".trash")
+    finally:
+        os.chmod(music, 0o755)  # or the tmp_path teardown cannot clean up
+
+    assert "reaches into the music library without naming it" in str(caught.value)
+    assert list((music / "a").iterdir()) == [], "refused before anything was created"
+
+
 @pytest.mark.skipif(os.getuid() == 0, reason="root reads an unreadable directory anyway")
 def test_a_search_only_ancestor_above_the_trash_is_climbed_not_refused(tmp_path: Path) -> None:
     """The control for the refusal above: ``0o111`` is not "cannot be checked".

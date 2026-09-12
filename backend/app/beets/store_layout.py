@@ -709,25 +709,36 @@ def _fstat_ident(fd: int) -> tuple[int, int]:
     return (st.st_dev, st.st_ino)
 
 
-def _music_root_ident(music_dir: Path, spelled: Path) -> tuple[int, int] | None:
-    """The music root's identity, or ``None`` when it will not open.
+def _music_root_ident(music_dir: Path, spelled: Path, *, creating: bool) -> tuple[int, int] | None:
+    """The music root's identity, or ``None`` when there is none to take.
 
     ``open_root`` FOLLOWS a link at the root, because an operator's beets
     ``directory:`` may be one — so the identity is the directory beets indexes,
     whichever of its spellings the Trash names.
 
+    A root that will not OPEN may still be there: measured 2026-09-12 (code seat
+    W2), mode ``0o111`` answers EACCES to ``open_root``, which needs read, while
+    ``os.stat`` needs only search on the parent and returns the same pair an
+    ``fstat`` would. The walk only ever compares that pair, so the stat is
+    evidence enough — without it a spelling that reaches into the library is
+    neither anchored nor refused.
+
     Raises:
-        StoreLayoutError: the root will not open and the Trash is spelled below
-            it, which is the dropped share the operator has to hear about. With
-            no identity there is no other evidence than the spelling, which is
-            why this one decision is lexical.
+        StoreLayoutError: the root will not open, the Trash is spelled below it,
+            and this call is about to CREATE — the dropped share the operator has
+            to hear about. With no identity there is no evidence but the
+            spelling, which is why this one decision is lexical. Only while
+            creating: the report is silent for a path that is not there yet, and
+            refusing there made Settings → Beets unsavable while the root was
+            missing (code seat W1, measured 2026-09-12 — Save answered 422 for an
+            edit that named no path).
     """
     try:
         fd = open_root(music_dir)
     except OSError as exc:
-        if _is_spelled_below(spelled, music_dir):
+        if creating and _is_spelled_below(spelled, music_dir):
             raise _refuse_an_unopenable_music_root(music_dir, exc) from exc
-        return None
+        return _stat_id(music_dir)
     try:
         return _fstat_ident(fd)
     finally:
@@ -875,7 +886,7 @@ def _open_the_trash_chain(
             walk could not climb left that question unanswered.
         OSError: any other fault the walk met; the caller words it.
     """
-    root_ident = _music_root_ident(music_dir, spelled)
+    root_ident = _music_root_ident(music_dir, spelled, creating=before_creating is not None)
     parts = spelled.parts[1:]
     fd = os.open("/", ROOT_FLAGS)
     try:

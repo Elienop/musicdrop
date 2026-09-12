@@ -186,6 +186,27 @@ def test_validate_flags_a_file_in_the_operators_chain_outside_the_library(
     assert chain.read_bytes() == b"not a directory", "a report creates nothing"
 
 
+def test_validate_paints_no_row_for_a_directory_that_is_not_there_yet(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """W1: the read-only report inherited the destructive path's mount refusal.
+
+    Measured 2026-09-12 (code seat W1): a candidate ``directory:`` that does not
+    exist, with the Trash spelled below it, painted "could not be opened … Is the
+    music share mounted?" — and ``config_editor.save`` turns a row into a 422
+    while the editor disables Save on any row, so a typo'd or not-yet-created
+    ``directory:`` blocked EVERY beets-config save (plugins, naming, import).
+    The rows are deliberately silent for a path that is not there yet; the
+    destructive path keeps the refusal
+    (``test_an_unmounted_music_root_is_reported_as_the_music_roots_fault``).
+    """
+    candidate = beets_library.beets_dir.parent / "newmusic"  # never created
+    monkeypatch.setattr("app.config.settings.trash_dir", str(candidate / ".trash"))
+
+    assert _layout_rows(client, _yaml_pointing_at(candidate)) == []
+    assert not candidate.exists(), "a report creates nothing"
+
+
 def test_validate_flags_a_directory_that_would_sit_under_trash(
     client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
