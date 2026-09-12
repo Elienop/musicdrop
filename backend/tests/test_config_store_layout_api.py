@@ -162,6 +162,30 @@ def test_validate_accepts_a_trash_below_the_music_root_that_is_reachable(
     assert not (music / "a").exists(), "a report creates nothing"
 
 
+def test_validate_flags_a_file_in_the_operators_chain_outside_the_library(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The last shape the report read HEALTHY while every delete answered 503.
+
+    Measured 2026-09-12: an EACCES or a symlink loop anywhere in the Trash's
+    chain is refused by the rows' own resolve first, but a plain FILE in the
+    operator's chain ABOVE the music root reached the reachability walk and
+    painted nothing — the walk returned on the OSError. The wording is the
+    destructive routes' own, because that is the answer the next delete gives.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    chain = beets_library.beets_dir.parent / "chain"
+    chain.write_bytes(b"not a directory")
+    monkeypatch.setattr("app.config.settings.trash_dir", str(chain / "trash"))
+
+    rows = _layout_rows(client, _yaml_pointing_at(music))
+
+    assert len(rows) == 1, rows
+    assert "could not be created" in str(rows[0]["msg"])
+    assert "Not a directory" in str(rows[0]["msg"])
+    assert chain.read_bytes() == b"not a directory", "a report creates nothing"
+
+
 def test_validate_flags_a_directory_that_would_sit_under_trash(
     client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:

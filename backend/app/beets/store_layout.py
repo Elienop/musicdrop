@@ -915,19 +915,28 @@ def _check_trash_is_reachable(*, music_dir: Path, settings: Settings, trash_dir:
     (security seat L-3). Same walk and the same messages, no ``mkdir``.
 
     Silent for a part that is simply not there yet — none of the five paths has
-    to exist — and silent for one it cannot open for any other reason: the
-    destructive routes word an EACCES with the errno in hand, and a report that
-    refused on a permission bit would paint a row the operator cannot act on.
+    to exist, and the walk stops at the first missing one. Any other fault is
+    worded exactly as the destructive routes word it, because that is the answer
+    the operator's next delete will get.
+
+    Which faults actually arrive here, measured 2026-09-12: an EACCES or a
+    symlink loop never does, because ``check_store_layout``'s own resolve refuses
+    them first ("could not be examined", "could not be resolved"). What reached
+    here and painted NOTHING was a FILE in the operator's chain ABOVE the music
+    root — the report read healthy while every destructive request answered "could
+    not be created (Not a directory)". A mutant that returned here instead of
+    raising survived all 3590 tests before this arm was added.
 
     Raises:
         StoreLayoutError: the spelling climbs or reaches into the library without
-            naming it, or a part below the music root is not a directory.
+            naming it, a part below the music root is not a directory, or the
+            chain cannot be walked at all.
     """
     spelled = _checked_trash_spelling(settings.trash_dir, trash_dir)
     try:
         fd = _open_the_trash_chain(music_dir=music_dir, spelled=spelled, before_creating=None)
-    except OSError:
-        return
+    except OSError as exc:
+        raise _refuse_an_uncreatable_trash(spelled, exc) from exc
     os.close(fd)
 
 
