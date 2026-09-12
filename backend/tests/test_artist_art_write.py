@@ -634,6 +634,14 @@ def test_a_directory_swapped_onto_a_guarded_name_is_put_back_and_refused(
     The lstat through the CONTAINER's descriptor is what decides whether what
     arrived may stay: a directory is renamed back and the call refuses, so this
     mover still relocates no tree.
+
+    The ``unlink`` + ``mkdir`` below gives the impostor a new inode on this box,
+    which the identity compare alone catches — but a filesystem that reissues the
+    freed number would hand it the SAME one. The type clause is what makes this
+    test filesystem-independent, and
+    ``tests/test_trash_replaced_names.py::
+    test_a_directory_whose_identity_was_staged_is_not_relocated`` is the one that
+    pins it directly.
     """
     from app.beets.trash import trash_replaced_files
 
