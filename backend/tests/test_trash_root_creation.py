@@ -552,11 +552,10 @@ def test_a_stray_marker_on_the_mountpoint_does_not_buy_a_trash_inside(tmp_path: 
     require_library_root(handle.lib)  # the cheap guard is satisfied by the marker
     settings = Settings(trash_dir=str(music / "a" / ".trash"))
     trash_dir = resolve_trash_dir(settings, handle)
+    origins_dir = origins_for(trash_dir)
 
     with pytest.raises(LibraryRootUnavailableError) as caught:
-        checked_protected_trees(
-            settings, handle, trash_dir=trash_dir, origins_dir=origins_for(trash_dir)
-        )
+        checked_protected_trees(settings, handle, trash_dir=trash_dir, origins_dir=origins_dir)
 
     assert "none of the music files the library names are in it" in str(caught.value)
     assert [p.name for p in music.iterdir()] == [".stfolder"], "nothing created beside the marker"

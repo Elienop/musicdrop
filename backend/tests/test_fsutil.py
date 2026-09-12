@@ -278,9 +278,10 @@ def test_fsync_dir_raises_for_an_fd_that_is_not_a_directory() -> None:
     L-1), and a use-after-close in either writer would have passed silently.
     """
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    fd = sock.fileno()
     try:
         with pytest.raises(OSError) as caught:
-            fsutil.fsync_dir(sock.fileno())
+            fsutil.fsync_dir(fd)
     finally:
         sock.close()
 
