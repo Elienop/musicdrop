@@ -1,4 +1,5 @@
 import logging
+import os
 from functools import partial
 from pathlib import Path
 from typing import Annotated, Final, Literal, cast
@@ -828,14 +829,26 @@ def _trash_override_files(files: list[Path], name: str, store: ArtTrashStore) ->
     ``safe_container_name``: "AC/DC" would otherwise nest it out of the Trash
     page. The origin recorded is the cache dir the files were in — read off the
     files themselves rather than resolved a second time.
+
+    The mover takes NAMES against a directory descriptor, so the cache dir is
+    opened once here and the two files are passed by name. FOLLOWING links,
+    unlike the library-side caller: this is an app-owned directory the operator
+    may legitimately place through a symlink, and it is not the surface the
+    anchoring exists for.
     """
-    trash_replaced_files(
-        files,
-        container_name=safe_container_name(name, " - artist image"),
-        origin=files[0].parent,
-        trash_dir=store.trash_dir,
-        origins_dir=store.origins_dir,
-    )
+    cache_dir = files[0].parent
+    dir_fd = os.open(cache_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK)
+    try:
+        trash_replaced_files(
+            [file.name for file in files],
+            src_dir_fd=dir_fd,
+            container_name=safe_container_name(name, " - artist image"),
+            origin=cache_dir,
+            trash_dir=store.trash_dir,
+            origins_dir=store.origins_dir,
+        )
+    finally:
+        os.close(dir_fd)
 
 
 #: The 503 when the move into Trash fails. "The reset stopped" rather than

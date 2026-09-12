@@ -38,7 +38,7 @@ import shutil
 import stat
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from beets.library import Library
 from beets.util import bytestring_path
@@ -65,7 +65,7 @@ from app.beets.trash_origins import (
     write_trash_origin,
 )
 from app.config import Settings
-from app.fsutil import exists, move_no_merge
+from app.fsutil import _BELOW_FLAGS, _ROOT_FLAGS, exists, move_no_merge
 from app.wire import PLACEHOLDER, display_path
 
 logger = logging.getLogger(__name__)
@@ -925,9 +925,124 @@ def trash_folder(
     return dest
 
 
+#: The copy the EXDEV arm creates in the container. ``O_EXCL`` refuses a name
+#: that is already taken instead of writing into it, ``O_NOFOLLOW`` refuses a
+#: symlink planted at it.
+_COPY_CREATE_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+
+
+def _st_ident(st: os.stat_result) -> tuple[int, int]:
+    """``(st_dev, st_ino)`` — the twin of ``trash_manage._ident``."""
+    return (st.st_dev, st.st_ino)
+
+
+def _refuse_a_non_file(name: str, st: os.stat_result) -> None:
+    """Refuse anything but a regular file or a symlink. One spelling, two sites."""
+    if not (stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)):
+        raise OSError(errno.EINVAL, "not a regular file or a symlink", name)
+
+
+def _copy_between_fds(name: str, *, src_dir_fd: int, dst_dir_fd: int, st: os.stat_result) -> None:
+    """Copy ``name`` from one directory descriptor to the other, then unlink it.
+
+    The EXDEV arm, which the Docker default takes for every move: Trash lives on
+    ``/data`` and the library on ``/music``. Every name here is resolved against
+    one of the two descriptors, so no component is re-read from a path.
+
+    A symlink is recreated from its own target rather than copied through. A
+    regular file is opened ``O_NOFOLLOW`` and its ``fstat`` compared with the
+    identity the caller lstat'd: another inode at the name means the source
+    changed after the check, and the copy is refused. The source is unlinked
+    LAST, so a copy that dies leaves the original where it was.
+    """
+    if stat.S_ISLNK(st.st_mode):
+        os.symlink(os.readlink(name, dir_fd=src_dir_fd), name, dir_fd=dst_dir_fd)
+        os.unlink(name, dir_fd=src_dir_fd)
+        return
+    src_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=src_dir_fd)
+    try:
+        if _st_ident(os.fstat(src_fd)) != _st_ident(st):
+            raise OSError(errno.EINVAL, "the file changed after it was checked", name)
+        mode = stat.S_IMODE(st.st_mode)
+        with os.fdopen(src_fd, "rb", closefd=False) as reader:
+            dst_fd = os.open(name, _COPY_CREATE_FLAGS, mode, dir_fd=dst_dir_fd)
+            with os.fdopen(dst_fd, "wb") as writer:
+                shutil.copyfileobj(reader, writer)
+                writer.flush()
+                os.fsync(writer.fileno())
+                # Mode and mtime through the copy's OWN fd: a name would be one
+                # more re-resolution, and the pair is what a user reads the file
+                # back by.
+                os.fchmod(writer.fileno(), mode)
+                os.utime(writer.fileno(), ns=(st.st_atime_ns, st.st_mtime_ns))
+    finally:
+        os.close(src_fd)
+    os.unlink(name, dir_fd=src_dir_fd)
+
+
+def _move_between_fds(name: str, *, src_dir_fd: int, dst_dir_fd: int, st: os.stat_result) -> None:
+    """Move ``name`` between two directory descriptors, or refuse.
+
+    ``os.rename`` first, and the lstat through ``dst_dir_fd`` after it is what
+    decides whether what arrived may stay: a directory renamed onto a guarded
+    name used to be moved whole (the guard's lstat preceded the move by ~0.1 ms,
+    measured), and is now renamed back with the call refused. So what the
+    container KEEPS cannot be anything but a regular file or a symlink.
+
+    EXDEV — a Trash dir on another filesystem — falls back to a copy through the
+    same two descriptors.
+    """
+    try:
+        os.rename(name, name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        _copy_between_fds(name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, st=st)
+        return
+    landed = os.stat(name, dir_fd=dst_dir_fd, follow_symlinks=False)
+    if stat.S_ISREG(landed.st_mode) or stat.S_ISLNK(landed.st_mode):
+        return
+    # Put back, and the call refuses either way. Suppressed because the source
+    # name can be occupied again by then: the entry then stays in the container,
+    # where the caller's ``moved == 0`` cleanup meets it.
+    with contextlib.suppress(OSError):
+        os.rename(name, name, src_dir_fd=dst_dir_fd, dst_dir_fd=src_dir_fd)
+    _refuse_a_non_file(name, landed)
+
+
+def _discard_own_container(name: str, *, fd: int, trash_fd: int) -> None:
+    """Remove the container this call created, while it is still that directory.
+
+    Reached when nothing moved. ``rmdir`` alone refused a container holding a
+    part-copied file and left a Trash row no origin record names, and
+    ``shutil.rmtree`` cannot do it through a descriptor: ``rmtree(".",
+    dir_fd=fd)`` answers EINVAL (measured) and ``rmtree(name, dir_fd=trash_fd)``
+    re-resolves the name.
+
+    The children go through ``fd``, the directory the ``mkdir`` claimed, and the
+    ``rmdir`` runs only while ``name`` still means that same directory —
+    ``trash_manage._Remover._directory``'s shape. A DIRECTORY among the children
+    is left alone: ``unlink`` refuses one, so a stranger's tree renamed in is
+    never removed and the ``rmdir`` then answers ENOTEMPTY.
+    """
+    claimed = os.fstat(fd)
+    # Closed before the unlink loop: an fd scandir DUPS the fd and the dup
+    # SHARES its offset, so one iterator left open makes every later enumeration
+    # of that fd read [] (measured).
+    with os.scandir(fd) as entries:
+        children = [entry.name for entry in entries]
+    for child in children:
+        with contextlib.suppress(OSError):
+            os.unlink(child, dir_fd=fd)
+    with contextlib.suppress(OSError):
+        if _st_ident(os.stat(name, dir_fd=trash_fd, follow_symlinks=False)) == _st_ident(claimed):
+            os.rmdir(name, dir_fd=trash_fd)
+
+
 def trash_replaced_files(
-    files: Sequence[Path],
+    names: Sequence[str],
     *,
+    src_dir_fd: int,
     container_name: str,
     origin: Path,
     trash_dir: Path,
@@ -937,74 +1052,100 @@ def trash_replaced_files(
 
     For a write that would otherwise overwrite or unlink a file a person put
     there by hand — the artist-art writer's ``artist-poster.*`` /
-    ``artist-background.*``. The files go into one collision-free container
-    directly under ``trash_dir`` (a loose file at the Trash ROOT that
-    ``Item.from_path`` cannot read is listed by neither half of
+    ``artist-background.*``, the uploaded artist portrait. The files go into one
+    collision-free container directly under ``trash_dir`` (a loose file at the
+    Trash ROOT that ``Item.from_path`` cannot read is listed by neither half of
     ``trash_manage.list_trashed_albums``; a container directory is listed by
     ``_audio_free_entries`` as a zero-track row, so it has an Empty affordance
     - the page renders no Restore for this shape - and Empty-all counts it).
+
+    ``names`` are bare entry names in the directory ``src_dir_fd`` is open on,
+    and that descriptor is the only way the sources are reached: the caller
+    opened it, so a component swapped for a symlink afterwards cannot move what
+    this reads. BARE is the contract — POSIX ignores a ``dir_fd`` for an
+    ABSOLUTE path, so a caller passing one would anchor nothing. Both callers
+    pass what a ``scandir`` of that descriptor (or ``Path.name``) gave them.
+    Non-empty ``names`` is the caller's job.
 
     Recorded ``moved="files"``, which is what the listing turns into
     ``restore_mode="by_hand"``: the container is not the folder these files came
     from, so moving it back would put a directory where two files were, and an
     import of art has nothing to import. Restoring them is a hand copy out of
-    Trash, and the record is what names the folder to copy them into.
+    Trash, and the record is what names the folder to copy them into. The record
+    goes by PATH, not through a descriptor: the origins store is kept out of the
+    library by the layout rule (``store_layout``), so it is not the surface this
+    anchoring is about.
 
-    No ``ProtectedTrees`` argument: every entry is lstat'd first and anything
-    that is not a regular file or a symlink is refused. That guard runs over all
-    of ``files`` BEFORE ``require_usable_store``, the allocator and the mkdir, so
-    the first lstat precedes the first move by ~0.1 ms (measured) — a directory
-    renamed onto a guarded name inside that window is moved whole. A rename
-    needs write on the source's parent, so only trees already inside the library
-    can be renamed in; accepted as a window, not a guarantee. Non-empty
-    ``files`` is the caller's job.
+    No ``ProtectedTrees`` argument: every entry is lstat'd through
+    ``src_dir_fd`` first and anything that is not a regular file or a symlink is
+    refused, and :func:`_move_between_fds` confirms through the CONTAINER's
+    descriptor what each rename actually landed.
+
+    Two claims on the container name, because one is not enough:
+    ``os.mkdir(dest.name, dir_fd=trash_fd)`` refuses anything that predates it
+    (EEXIST), and the ``os.open`` + emptiness probe under it refuse a stranger's
+    EMPTY directory renamed onto the name in between — ``rename`` REPLACES an
+    empty directory (measured), so the claim alone does not hold the name. A
+    non-empty one is somebody's content: refused, and nothing in it is touched.
 
     Raises:
         TrashOriginsStoreUnusableError: the origin store cannot be used.
-        OSError: an entry is not a regular file or a symlink, or a move failed.
-            Whatever had already moved keeps its record; a container that got
-            nothing is removed again, with anything a part-copied move left in it.
+        OSError: an entry is not a regular file or a symlink, the container name
+            was taken, or a move failed. Whatever had already moved keeps its
+            record; a container that got nothing is removed again, with anything
+            a part-copied move left in it.
     """
-    for src in files:
-        mode = src.lstat().st_mode
-        if not (stat.S_ISREG(mode) or stat.S_ISLNK(mode)):
-            raise OSError(errno.EINVAL, "not a regular file or a symlink", str(src))
+    staged = [(name, os.stat(name, dir_fd=src_dir_fd, follow_symlinks=False)) for name in names]
+    for name, st in staged:
+        _refuse_a_non_file(name, st)
     require_usable_store(origins_dir)
     trash_dir.mkdir(parents=True, exist_ok=True)
     dest = _unique_trash_dest(trash_dir, origins_dir, container_name)
-    # No ``exist_ok``: the allocator found the name free, this is the claim on
-    # it. A directory that arrived in between raises here, before any move; one
-    # renamed in after the claim is the window the ``rmtree`` comment names.
-    dest.mkdir()
-    moved = 0
+    # The Trash ROOT is opened FOLLOWING links, like the library root and the
+    # beets dir: it is an operator setting and may legitimately be a symlink.
+    # ``dest.name`` under it is not — ``_one_trash_level`` made it a single
+    # separator- and NUL-free level, so it is a NAME this descriptor resolves.
+    trash_fd = os.open(trash_dir, _ROOT_FLAGS)
     try:
-        for src in files:
-            shutil.move(str(src), str(dest / src.name))
-            moved += 1
+        os.mkdir(dest.name, dir_fd=trash_fd)
+        # An open that fails leaves the claimed directory behind rather than
+        # removing it: with no fd there is no identity to check, and an empty
+        # container in Trash is litter where removing a stranger's would not be.
+        fd = os.open(dest.name, _BELOW_FLAGS, dir_fd=trash_fd)
+        try:
+            # Closed before anything else touches ``fd`` (the scandir dup shares
+            # the offset — see ``_discard_own_container``).
+            with os.scandir(fd) as entries:
+                stranger = next(entries, None) is not None
+            if stranger:
+                raise OSError(errno.ENOTEMPTY, "the container name was taken", str(dest))
+            moved = 0
+            try:
+                for name, st in staged:
+                    _move_between_fds(name, src_dir_fd=src_dir_fd, dst_dir_fd=fd, st=st)
+                    moved += 1
+            finally:
+                # The record is written for a PARTIAL move too: the files that
+                # did land are in Trash whatever the caller does next, and a
+                # container with no record reads as "predates origin records"
+                # instead of naming the folder it came out of. Nothing moved
+                # means nothing to say — and an empty container would sit in the
+                # Trash page forever.
+                if moved:
+                    # ``origin`` is recorded unchecked, and ``moved="files"`` is
+                    # what makes that safe: ``trash_origins.move_back_target``
+                    # returns None on any record that is not ``moved="folder"``,
+                    # before it reaches its lexical containment test, so no path
+                    # here ever steers a rename.
+                    _record_origin(
+                        origins_dir, dest, origin=os.path.abspath(str(origin)), moved="files"
+                    )
+                else:
+                    _discard_own_container(dest.name, fd=fd, trash_fd=trash_fd)
+        finally:
+            os.close(fd)
     finally:
-        # The record is written for a PARTIAL move too: the files that did land
-        # are in Trash whatever the caller does next, and a container with no
-        # record reads as "predates origin records" instead of naming the folder
-        # it came out of. Nothing moved means nothing to say — and an empty
-        # container would sit in the Trash page forever.
-        if moved:
-            # ``origin`` is recorded unchecked, and ``moved="files"`` is what
-            # makes that safe: ``trash_origins.move_back_target`` returns None on
-            # any record that is not ``moved="folder"``, before it reaches its
-            # lexical containment test, so no path here ever steers a rename.
-            _record_origin(origins_dir, dest, origin=os.path.abspath(str(origin)), moved="files")
-        else:
-            # Removed with its contents, not by ``rmdir``: a cross-filesystem
-            # ``shutil.move`` is a copy that can die mid-write, leaving a
-            # part-copied file here with ``moved == 0``. ``rmdir`` refuses a
-            # non-empty dir, which left a container in Trash that no origin
-            # record names. The ``mkdir`` above claims the name against
-            # anything that PREDATES it; a directory renamed onto the name
-            # AFTER that claim (window mkdir -> first move, ~5 us measured) is
-            # what this removes, and ``shutil.move`` follows a symlink swapped
-            # in there. ``rmtree`` itself refuses a symlink at ``dest``.
-            with contextlib.suppress(OSError):
-                shutil.rmtree(dest)
+        os.close(trash_fd)
     return dest
 
 

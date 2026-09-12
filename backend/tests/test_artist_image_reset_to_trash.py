@@ -14,9 +14,9 @@ from __future__ import annotations
 import asyncio
 import errno
 import os
-import shutil
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -290,24 +290,28 @@ def test_a_move_that_fails_part_way_says_the_reset_stopped_not_that_nothing_move
     trash_dir, origins_dir = store
     cache.store_positive("ABBA", b"auto bytes", "image/png")
     cache.write_override("ABBA", PNG, "image/png")
-    real_move = shutil.move
+    real_rename = os.rename
     moves = 0
 
-    def fail_on_the_second(src: str, dst: str) -> str:
+    def fail_on_the_second(*args: Any, **kwargs: Any) -> None:
         nonlocal moves
+        if "dst_dir_fd" not in kwargs:  # the mover's own move, not the app's others
+            real_rename(*args, **kwargs)
+            return
         moves += 1
         if moves == 2:
-            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC), dst)
-        return str(real_move(src, dst))
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC), str(args[1]))
+        real_rename(*args, **kwargs)
 
-    # ``shutil`` is one shared module object, so patching it here is what the
-    # mover sees. (Reaching through ``app.beets.trash.shutil`` fails mypy
-    # strict: the module does not explicitly export the name.)
-    monkeypatch.setattr(shutil, "move", fail_on_the_second)
+    # ``os`` is one shared module object, so patching it here is what the mover
+    # sees. (Reaching through ``app.beets.trash.os`` fails mypy strict: the
+    # module does not explicitly export the name.)
+    monkeypatch.setattr(os, "rename", fail_on_the_second)
 
     resp = client.post(RESET, params={"name": "ABBA"})
 
     assert resp.status_code == 503
+    assert moves == 2, "the mover's own renames were not the ones spied on"
     assert resp.json()["detail"] == f"{MOVE_FAILED} No space left on device"
     entry = trash_dir / "ABBA - artist image"
     (image,) = list(entry.glob("*.override"))
@@ -327,7 +331,7 @@ def test_a_move_that_fails_part_way_says_the_reset_stopped_not_that_nothing_move
     # ``override_files`` is keyed on the bytes, which are in Trash already. No
     # reset removes the orphan sidecar; it stays until the next upload's
     # ``write_override`` overwrites it or a rename purges the key.
-    monkeypatch.setattr(shutil, "move", real_move)
+    monkeypatch.setattr(os, "rename", real_rename)
     retry = client.post(RESET, params={"name": "ABBA"})
     assert retry.status_code == 200
     assert retry.json() == {"ok": True, "cleared_override": False, "cleared_auto": True}
@@ -349,14 +353,22 @@ def test_the_503_carries_the_oserrors_strerror_and_no_server_path(
     trash_dir, _origins = store
     cache.write_override("ABBA", PNG, "image/png")
 
-    def refuse(src: str, dst: str) -> str:
-        raise OSError(errno.EACCES, os.strerror(errno.EACCES), dst)
+    real_rename = os.rename
+    refused: list[bool] = []
 
-    monkeypatch.setattr(shutil, "move", refuse)
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        if "dst_dir_fd" not in kwargs:
+            real_rename(*args, **kwargs)
+            return
+        refused.append(True)
+        raise OSError(errno.EACCES, os.strerror(errno.EACCES), str(args[1]))
+
+    monkeypatch.setattr(os, "rename", refuse)
 
     resp = client.post(RESET, params={"name": "ABBA"})
 
     assert resp.status_code == 503
+    assert refused, "the mover's own rename was not the one spied on"
     detail = resp.json()["detail"]
     assert detail == f"{MOVE_FAILED} Permission denied"
     assert str(trash_dir) not in detail
