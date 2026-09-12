@@ -1343,6 +1343,49 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   Precondition is unchanged — write on the Trash's parent, i.e. a Trash configured inside the music
   library.
 
+- **A duplicate resolve that faults part-way drops the earlier albums' rows and keeps the
+  rest.** (Found 2026-09-12 on `fix/descriptor-anchored-library-writes`; security seat L-2,
+  pre-existing.) `resolve_duplicate_group` (`app/beets/duplicates.py`) wraps its loop in one
+  `with lib.transaction():`, which reads as atomic and is not: with the second loser's
+  `trash_album` raising, measured album rows `[1,2,3,4,5]` became `[1,3,4,5]` — the first
+  loser's rows dropped, its files under Trash with an origin record, album 3 untouched, HTTP
+  500. Recoverable, and the 500's body already says so ("Moved copies are recoverable in the
+  Trash folder"), so this is a clarity-of-state bug rather than a loss. The real behaviour is
+  now pinned (`test_a_fault_on_the_second_loser_leaves_the_first_one_dropped`) and the
+  docstring says it. The option not taken: give each album its own transaction, so the state
+  after a fault is per-album rather than ambiguous — it does NOT make the call atomic (the
+  earlier album stays dropped either way), it only stops the ambiguity, which is why it was
+  recorded instead of shipped. Whoever takes it should decide what the response should then
+  say about the albums that DID move.
+
+- **The `..` climb cannot see through a bind mount, so a Trash spelled below a bind-mounted
+  library subdirectory takes the unanchored arm.** (Found 2026-09-12 on
+  `fix/descriptor-anchored-library-writes`; security seat M-1.) `store_layout._reaches_the_music_root`
+  asks whether the directory the walk reached is inside the music library by climbing `..`
+  through descriptors. From a MOUNT root, `..` crosses to the mountpoint's parent, so a bind
+  mount of `<M>/a` at an outside path is never recognised as being inside the library:
+  measured under `unshare --map-root-user --mount`, `_reaches_the_music_root(leaf)` answered
+  False and two requests in a row put the Trash at the attacker's link target, with
+  `empty_all` enumerating it. Same consequence as the per-component refusal shipped in this
+  round, one spelling over — and that refusal does NOT close it (measured on a copy carrying
+  the fix). Precondition: the operator bind-mounts a directory that is inside the library to a
+  path outside it and spells the Trash below that path, plus the attacker's write access
+  inside the library. Not the documented layout — compose recommends `MUSICDROP_TRASH_DIR=/music/.trash`,
+  which is anchored. Documented for now (README's `MUSICDROP_TRASH_DIR` bullet and that
+  function's docstring both name the gap). The three options the seat costed:
+  (1) accept, as now — honest, closes nothing;
+  (2) refuse ANY symlink in the Trash's configured chain (`BELOW_FLAGS` for every component),
+  which closes this and the link shape together, and costs 4 real test failures — three of
+  them "this configuration is now refused instead of supported" — plus a real hazard the
+  seat's own run demonstrated: with `TMPDIR` on a symlink a fifth test failed because the
+  Trash path ran through a link nobody configured, and `/tmp`, `/var`, a home dir or a Docker
+  host path being a link would refuse the Trash with nothing on screen to explain it;
+  (3) parse `/proc/self/mountinfo` and refuse a spelling that traverses a mount whose root is
+  inside the music library — precise, Linux-only (which this app is), ~20 lines plus a parser
+  to keep correct. Described, not measured.
+  **(2) vs (3) is an owner design call**: *should `MUSICDROP_TRASH_DIR` be required to be
+  spelled with no symlink in its path?* Both refuse configurations the app supports today.
+
 - **`download_image` validates only the FIRST and LAST redirect hop, and issues the
   intermediate requests anyway.** Moved here 2026-08-28 from Deferred minors, where a blind
   SSRF sat under a heading that says "cosmetic / self-healing". Measured:

@@ -299,6 +299,14 @@ def test_fsync_dir_swallows_einval_for_a_real_directory(tmp_path: Path) -> None:
     for directory in ("/proc/self", str(tmp_path)):
         fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
         try:
+            if directory == "/proc/self":
+                # The premise, asserted rather than assumed: on a kernel whose
+                # procfs fsync SUCCEEDS this test would pass without exercising
+                # the swallow at all, and a mutant that dropped it would survive
+                # there (code seat suggestion 3).
+                with pytest.raises(OSError) as direct:
+                    os.fsync(fd)
+                assert direct.value.errno == errno.EINVAL
             fsutil.fsync_dir(fd)
         finally:
             os.close(fd)

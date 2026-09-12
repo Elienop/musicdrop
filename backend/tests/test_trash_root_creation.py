@@ -309,9 +309,10 @@ def test_a_relative_trash_setting_below_the_music_root_is_anchored_too(
     """A cwd-relative ``MUSICDROP_TRASH_DIR`` is the same layout, spelled shorter.
 
     ``config.py`` names the cwd-relative gotcha and this app's own defaults are
-    relative, so the spelling test absolutises before it compares — without
-    that, a relative setting never reads as "below the music root" and the whole
-    chain is created by path.
+    relative, so the walk absolutises the spelling before it descends it:
+    without that, ``parts[1:]`` drops the first component and the walk descends a
+    DIFFERENT absolute path from ``/`` — measured 2026-09-12, ``a/b/.trash``
+    became an attempt to create ``/b/.trash``.
     """
     music = tmp_path / "music"
     music.mkdir()

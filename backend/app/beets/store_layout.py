@@ -691,7 +691,11 @@ def _checked_trash_spelling(configured: str, trash_dir: Path) -> Path:
 
     ``absolute`` because a relative setting is cwd-relative (the gotcha
     ``config.py`` names) and ``normpath`` because ``os.open`` takes one component
-    at a time; a ``..`` is refused rather than collapsed.
+    at a time; a ``..`` is refused rather than collapsed. A NUL in the value
+    would reach ``os.open`` as ``ValueError``, which no caller's ``except
+    OSError`` catches — unreachable today because all five call sites resolve
+    first and ``_unresolvable`` refuses it there (measured 2026-09-12, code seat
+    suggestion 5).
 
     Raises:
         StoreLayoutError: the configured spelling holds a ``..`` part.
@@ -1016,8 +1020,8 @@ def checked_protected_trees(
 
     Taken beside :func:`checked_store_dirs`, from the pair it returned, by every
     request site that hands a mover or the remover an identity set: the delete
-    ops, the Trash page's DELETE routes, the artist-art store, and the
-    reorganize orphan sweep (``reorganize_jobs/runner.py``). Duplicates' resolve
+    ops, the Trash page's restore and DELETE routes, the artist-art store, and
+    the reorganize orphan sweep (``reorganize_jobs/runner.py``). Duplicates' resolve
     calls it too and DISCARDS the set, because ``trash_album`` takes none (a
     recorded residual) — what it wants is the creation. ``api/reorganize.py``
     reads ``protected_entries`` directly for the sweep's ignore list, which is a
