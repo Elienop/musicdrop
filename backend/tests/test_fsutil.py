@@ -7,13 +7,16 @@ re-raised — swallowing a permission or mount failure would turn a real
 incident into a silent 404.
 
 Plus :func:`app.fsutil.open_below`: the descent from the music root that refuses
-a symlinked component below it, and the errno the kernel actually answers.
+a symlinked component below it, and the errno the kernel actually answers; and
+:func:`app.fsutil.fsync_dir`, whose swallow is scoped to fds that really are
+directories because EINVAL means two different things.
 """
 
 from __future__ import annotations
 
 import errno
 import os
+import socket
 from pathlib import Path
 from typing import Any
 
@@ -263,3 +266,38 @@ def test_a_nul_in_a_part_refuses_without_leaking_the_walked_fd(tmp_path: Path) -
     with pytest.raises(ValueError):
         fsutil.open_below(root, Path("Artist/a\x00b"))
     assert _open_fds() == before
+
+
+def test_fsync_dir_raises_for_an_fd_that_is_not_a_directory() -> None:
+    """EINVAL is also what a descriptor NUMBER answers once a socket owns it.
+
+    Real syscalls, no patching: measured 2026-09-12 on this box, ``os.fsync`` on
+    a unix socket and on a pipe read end both answer errno 22 — the errno the
+    swallow exists for — while a merely CLOSED fd answers EBADF. So "the fd is
+    not open any more" was never masked, but a reused NUMBER was (security seat
+    L-1), and a use-after-close in either writer would have passed silently.
+    """
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        with pytest.raises(OSError) as caught:
+            fsutil.fsync_dir(sock.fileno())
+    finally:
+        sock.close()
+
+    assert caught.value.errno == errno.EINVAL
+
+
+def test_fsync_dir_swallows_einval_for_a_real_directory(tmp_path: Path) -> None:
+    """The other half: a DIRECTORY answering EINVAL is a filesystem that cannot.
+
+    Measured on this box, again with no patching: a directory fsync on procfs
+    and on sysfs answers errno 22 (``/proc/self`` and ``/sys``), where ``/tmp``
+    answers OK. ``/proc/self`` is the fixture because it is the shape the swallow
+    is for, and ``tmp_path`` is the control that takes the no-error path.
+    """
+    for directory in ("/proc/self", str(tmp_path)):
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fsutil.fsync_dir(fd)
+        finally:
+            os.close(fd)

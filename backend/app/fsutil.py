@@ -44,6 +44,7 @@ import contextlib
 import errno
 import os
 import shutil
+import stat
 from pathlib import Path
 from typing import Final
 
@@ -76,9 +77,13 @@ def is_dir(path: Path) -> bool:
 DEST_OCCUPIED = frozenset({errno.EEXIST, errno.ENOTEMPTY, errno.ENOTDIR})
 
 
-#: What a filesystem answers when it cannot fsync a DIRECTORY at all. Measured
-#: errnos for that shape, and the FUSE / network mounts that give them are the
-#: ones the cross-device arms exist for.
+#: What a filesystem answers when it cannot fsync a DIRECTORY at all. Both
+#: measured on this box, 2026-09-12: ENOTSUP from the patched-``os.fsync`` pair
+#: the two tests drive, EINVAL from a real directory fsync on procfs and on
+#: sysfs (``errno=22`` for ``/proc/self`` and ``/sys``, OK for ``/tmp``).
+#: EROFS is deliberately NOT here: ``fsync(2)`` documents it in the same clause,
+#: but a filesystem that went read-only between the publish and this call is a
+#: fault worth raising, not a filesystem that never could.
 CANNOT_FSYNC_A_DIR: Final = frozenset({errno.ENOTSUP, errno.EINVAL})
 
 
@@ -89,11 +94,18 @@ def fsync_dir(dir_fd: int) -> None:
     fsync is a durability extra rather than a correctness precondition: a
     filesystem that answers ENOTSUP/EINVAL for it turned a completed write into
     a refusal (security seat L-6). Every other errno is a fault and raises.
+
+    The swallow is paired with "and the fd really is a directory", because EINVAL
+    is also what a descriptor NUMBER answers once something else owns it —
+    measured, a closed-then-reused number held by a socket or a pipe answers
+    errno 22, while a merely closed one answers EBADF and still raises (security
+    seat L-1). Without the pairing, a use-after-close in either writer would pass
+    silently instead of surfacing.
     """
     try:
         os.fsync(dir_fd)
     except OSError as exc:
-        if exc.errno not in CANNOT_FSYNC_A_DIR:
+        if exc.errno not in CANNOT_FSYNC_A_DIR or not stat.S_ISDIR(os.fstat(dir_fd).st_mode):
             raise
 
 

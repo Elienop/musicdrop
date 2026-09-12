@@ -981,9 +981,10 @@ def _publish_then_unlink(
 
     A filesystem that cannot fsync a DIRECTORY at all is not a failed move —
     FUSE and network mounts, which is exactly why this arm runs — so
-    ``fsutil.fsync_dir`` swallows those two errnos and nothing else: measured,
-    propagating one turned a completed move into a refusal with the file in two
-    places.
+    ``fsutil.fsync_dir`` swallows those two errnos, and only for an fd that IS a
+    directory: measured, propagating one turned a completed move into a refusal
+    with the file in two places, and EINVAL alone would also have swallowed a
+    descriptor number a socket had taken over.
     """
     fsync_dir(dst_dir_fd)
     try:
