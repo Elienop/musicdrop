@@ -261,18 +261,29 @@ BELOW_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOC
 
 #: The ROOT is opened FOLLOWING links: an operator's beets ``directory:`` may be a
 #: symlink and refusing it would refuse the library. Same reading as
-#: ``store_layout.py:723``. Owner ruling 2026-09-12: below the root a bind mount is
-#: the supported spelling for spanning disks, so a link there is refused.
+#: ``store_layout._music_root_ident``. Owner ruling 2026-09-12: below the root a
+#: bind mount is the supported spelling for spanning disks, so a link there is
+#: refused.
+#:
+#: Read directly, and not only through :func:`open_root`, by
+#: ``store_layout._open_the_trash_chain``: every component ABOVE the music root
+#: is the operator's chain and is opened the same way, from its parent's
+#: descriptor — which :func:`open_root` takes no ``dir_fd`` to express. Same
+#: flags, one definition; the three sites are ``/``, each part above the root,
+#: and the ``..`` climb that asks whether a spelling landed inside the library.
 ROOT_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK
 
 
 def open_root(root: Path) -> int:
     """Open ``root`` itself as a directory fd, FOLLOWING a link at it.
 
-    The one spelling every anchored caller shares, so no hand-written copy can
-    drift from it. Its readers: :func:`open_below`'s walk, the lyrics writer's
-    flat-library root, the artist-image cache dir, the shared atomic writer's
-    own parent open, and ``store_layout``'s anchored Trash creation.
+    The one spelling every anchored caller with a PATH shares, so no hand-written
+    copy can drift from it. Its readers: :func:`open_below`'s walk, the lyrics
+    writer's flat-library root, the artist-image cache dir, the shared atomic
+    writer's own parent open, and ``store_layout``'s stat of the music root. A
+    caller opening from a descriptor passes :data:`ROOT_FLAGS` itself, because
+    this takes no ``dir_fd`` — ``store_layout._open_the_trash_chain`` is the one
+    that does.
     ``O_DIRECTORY`` is mandatory rather than tidy: measured 2026-09-12, a FIFO at
     ``root`` answers ENOTDIR with it and BLOCKS the open for as long as no writer
     appears without it.

@@ -70,8 +70,8 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 - **Duplicates** — find & resolve duplicate albums (resolve one, or resolve-all).
 - **Release identity** — which release an album is (source · label · country · media · disambiguation), with view-release links.
 - **Delete & Trash** — delete albums or artists into a reversible Trash; restore or empty it
-  under **Settings → Trash**. Two setup faults refuse a delete with a 503, and neither drops a
-  library row. The first is the music root being missing, empty or unreadable (an unmounted
+  under **Settings → Trash**. Three setup faults refuse a delete with a 503, and none of them
+  drops a library row. The first is the music root being missing, empty or unreadable (an unmounted
   share), so a genuinely emptied library needs a remount (or beets' own CLI) before its
   leftover entries can be cleared. It is checked before the delete starts and again per album,
   so nothing has moved when it refuses — with one narrow exception, a share that drops during
@@ -82,8 +82,9 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   restored backup, a read-only `/data`). That one is asked ahead of every branch of a delete,
   so nothing has moved when it refuses. MusicDrop will not delete an album it cannot record the
   origin of, because the name it would hand that folder in Trash may still be spoken for by a
-  record it cannot see. The message says which of the two it is; fix that folder's permissions
-  or its mount and retry. **Deleting an album** additionally covers the case a stray file used
+  record it cannot see. The third is the Trash folder itself not being reachable or creatable —
+  see `MUSICDROP_TRASH_DIR` below. The message says which of the three it is; fix that folder's
+  permissions or its mount and retry. **Deleting an album** additionally covers the case a stray file used
   to hide: a `.stfolder`, a `lost+found` or an empty leftover directory sitting on a local
   mountpoint whose share has dropped makes the folder look mounted, so before a delete drops
   rows having moved nothing, MusicDrop confirms that at least one of the music *files* the
@@ -223,7 +224,7 @@ A few more knobs are env-only, with defaults that suit most setups:
 
 - `MUSICDROP_INBOX_SETTLE_SECONDS` (default 60) — the quiet window an inbox folder must hold before **Review all** will import it: the inbox is slskd's live output dir, so a folder touched within the last 60 s is skipped (listed as still receiving; a per-row Review overrides) rather than imported half-finished, where the remainder would later re-import as a duplicate.
 - `MUSICDROP_MAX_BODY_BYTES` (default 25 MiB) — the request-body cap: anything larger (an oversized cover upload, a giant playlist import) is refused with a 413 before the body is read.
-- `MUSICDROP_TRASH_DIR` (default `<beets dir>/trash`) — where deleted albums wait, on the same mount as `directory:` (`/music/.trash`). Refused: a Trash that is or contains the music library, the beets data dir, the origin store or another app folder. Inside the music library or the beets data dir is fine.
+- `MUSICDROP_TRASH_DIR` (default `<beets dir>/trash`) — where deleted albums wait, on the same mount as `directory:` (`/music/.trash`). Refused: a Trash that is or contains the music library, the beets data dir, the origin store or another app folder. Inside the music library or the beets data dir is fine — but inside the library every folder on the way to it must be a real directory: a symlinked component (or a file in the way) is refused with a 503 at every delete, and a bind mount is the supported way to put the Trash on another disk. Spell it with the same root as beets' `directory:`, and without `..`.
 - `MUSICDROP_TRASH_ORIGINS_DIR` (default `<beets dir>/trash-origins`) — the restore records (see **Backup & restore**); needs a folder of its own: not inside the music library or the Trash, and not on top of either; the default `<beets dir>/trash-origins` is fine.
 - `MUSICDROP_BEETS_DIR` and beets' `directory:` must be separate trees (the shipped `/data` and `/music` are), and `library:` may not sit in the Trash or the origin store — a red row on the offending line in **Settings → Beets**, with Save and Apply refused.
 - `MUSICDROP_LYRICS_BACKFILL_DELAY_SECONDS` (default 0.2) — the courtesy inter-track pause during lyrics fetches (the library-wide backfill and per-album fetches), also used as the inter-artist pause in the artist-image backfill; beets separately rate-limits the lyrics HTTP itself.

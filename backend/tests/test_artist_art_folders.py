@@ -54,8 +54,14 @@ class _StubLib:
 
 @pytest.fixture
 def art_trash(tmp_path: Path) -> ArtTrashStore:
-    """The real identity record over a Trash dir that does not exist yet (the
-    first-use arm, as in ``test_artist_art_write.py``)."""
+    """The real identity record over a Trash dir that does not exist yet.
+
+    A Trash that is never REACHED: both tests taking this fixture answer before
+    the mover runs (``no_folder``, and ``failed`` on a listing error), so nothing
+    here has to create it. (It used to say "the first-use arm" — that arm is
+    gone; the creation happens in ``store_layout._ensure_trash_root``, which no
+    test in this file reaches.)
+    """
     return ArtTrashStore(
         trash_dir=tmp_path / "trash",
         origins_dir=tmp_path / "trash-origins",

@@ -412,8 +412,9 @@ def test_delete_op_503_when_the_origin_store_cannot_be_used(
     assert len(list(duplicates_lib.albums())) == total_before
     assert duplicates_lib.get_album(album_id) is not None
     assert os.path.isdir(folder), "the album's files are still where the library says"
-    # The Trash ROOT exists — the request's own layout check creates it before
-    # taking the identity the movers compare — and nothing was allocated in it.
+    # The Trash ROOT exists — the request's own IDENTITY check creates it
+    # (``checked_protected_trees``; the layout walk creates nothing) — and
+    # nothing was allocated in it.
     assert list(trash.iterdir()) == [], "no Trash name was allocated"
     if shape == "file":
         assert origins.read_bytes() == b"not a directory", "the store is as it was"

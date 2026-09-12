@@ -1139,18 +1139,21 @@ def _open_checked_trash_root(trash_dir: Path, protected: ProtectedTrees) -> int:
     measured, the container and the file landed in a directory of the attacker's
     choosing while the checked Trash stayed empty and the origin record named an
     entry that does not exist. ``open_checked_dir`` compares the identity
-    ``protected_trees`` stat'd beside that check — the same descriptor
-    ``trash_manage.empty_all`` enumerates through, so a symlinked Trash root is
-    refused by both or by neither.
+    ``store_layout._ensure_trash_root`` took by ``fstat`` on the descriptor its
+    own anchored walk reached — never a second resolve by name, whose 18 µs
+    window a racer won 537 times in 100 876 requests (security seat M-1). The
+    descriptor this returns is the one ``trash_manage.empty_all`` enumerates
+    through, so a symlinked Trash root is refused by both or by neither.
 
     This is the mover's ONLY open of the root, and it never creates: the Trash is
-    created where its identity is taken (``store_layout._ensure_trash_root``), so
-    ``protected.trash is None`` means the directory went away between those two
-    lines and is refused — a safe failure, and the arm that used to create it
-    here is what let a symlinked intermediate component relocate the Trash for
-    good (security seat M-3). A stranger's directory that predates the creation
-    is accepted, as it was before: that is the attacker owning the Trash's
-    location, which no check here can undo.
+    created where its identity is taken (``store_layout._ensure_trash_root``),
+    which either returns one or raises. So ``protected.trash is None`` now means
+    a set built without that walk — no request path builds one, and it is still
+    REFUSED rather than skipped, for the caller this module cannot see. The arm
+    that used to create the root here is what let a symlinked intermediate
+    component relocate the Trash for good (security seat M-3). A stranger's
+    directory that predates the creation is accepted, as it was before: that is
+    the attacker owning the Trash's location, which no check here can undo.
 
     The chained ``ProtectedTreeError``'s own sentence ends "Nothing was removed"
     — the remover's wording, since the message is shared with it

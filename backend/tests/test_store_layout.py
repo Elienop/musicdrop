@@ -598,9 +598,10 @@ def test_a_trash_path_that_cannot_be_stat_d_is_a_refusal_not_a_pass(tmp_path: Pa
 def test_a_path_that_is_merely_absent_still_passes(tmp_path: Path) -> None:
     """The other side of the stat guard: none of the five has to exist yet.
 
-    ENOENT and ENOTDIR are the allowed errnos — a first boot creates the Trash
-    on demand, and the module docstring says so. A guard that refused every
-    ``stat`` failure would refuse the shipped default before the first delete.
+    ENOENT and ENOTDIR are the allowed errnos — nothing creates the Trash at
+    boot (``main.py`` only checks); the first destructive request does, in
+    ``store_layout._ensure_trash_root``. A guard that refused every ``stat``
+    failure would refuse the shipped default before that request.
     """
     _check(
         music=tmp_path / "music",
