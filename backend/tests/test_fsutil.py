@@ -162,6 +162,34 @@ def test_a_symlinked_root_is_followed(tmp_path: Path) -> None:
         os.close(fd)
 
 
+def test_open_root_follows_a_link_at_the_root(tmp_path: Path) -> None:
+    """The one spelling of the root open the anchored callers share. An
+    operator's beets ``directory:`` may be a link, so this one FOLLOWS."""
+    real = tmp_path / "elsewhere"
+    real.mkdir()
+    root = tmp_path / "music"
+    root.symlink_to(real, target_is_directory=True)
+
+    fd = fsutil.open_root(root)
+    try:
+        assert _ident(fd) == _ident_of(real)
+    finally:
+        os.close(fd)
+
+
+def test_open_root_refuses_a_fifo_instead_of_blocking_on_it(tmp_path: Path) -> None:
+    """``O_DIRECTORY`` is mandatory, not tidy: measured, a FIFO at the root
+    answers ENOTDIR with it and BLOCKS the open for as long as no writer appears
+    without it. This test completing at all is the no-hang half."""
+    root = tmp_path / "music"
+    os.mkfifo(root)
+
+    with pytest.raises(OSError) as err:
+        fsutil.open_root(root)
+
+    assert err.value.errno == errno.ENOTDIR
+
+
 @pytest.mark.parametrize("rel", ["..", "../outside", "Artist/../../outside", ".", ""])
 def test_a_climbing_or_empty_rel_is_refused_before_any_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rel: str

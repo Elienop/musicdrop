@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from beets.library import Library
+from beets.library import Item, Library
 from beets.util.lyrics import Lyrics
 from mediafile import MediaFile
 
@@ -92,24 +92,26 @@ def test_plain_lyrics_write_txt(tmp_path: Path) -> None:
     assert "[00:" not in body  # no timestamps in the plain sidecar
 
 
-def test_sidecar_mode_is_world_readable(tmp_path: Path) -> None:
-    """Kept here, not moved to the shared writer's suite: that suite pins the
-    ``mode=None`` REGIME, this pins the argument THIS writer passes. A sidecar
-    written 0o600 is unreadable by the Plex process (another uid), and the shared
-    suite stays green for that mutant."""
+def test_the_written_mode_is_the_umask_and_not_a_fixed_0o644(tmp_path: Path) -> None:
+    """This caller passes ``mode=None``, so the operator's umask decides.
+
+    Kept here, not moved to the shared writer's suite: that suite pins the
+    ``mode=None`` REGIME, this pins the argument THIS writer passes. Under
+    umask 0o022 the two are indistinguishable (``0o644 & ~0o022 == 0o644``),
+    which is measured: ``mode=0o644`` at the call site survived the whole file.
+    Under 0o077 it does not — the same shape as the art writer's sibling pin.
+    """
     from app.beets.lyrics import write_lyric_sidecar
 
     track = tmp_path / "t.flac"
     track.write_bytes(b"")
-    old_umask = os.umask(0o022)
+    old_umask = os.umask(0o077)
     try:
         write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN), root=tmp_path)
     finally:
         os.umask(old_umask)
-    mode = stat.S_IMODE((tmp_path / "t.txt").stat().st_mode)
-    # first write takes the umask default; umask 0o022 -> 0o644, matching the
-    # rest of the library, so the Plex process (other uid) can read it
-    assert mode == 0o644
+
+    assert stat.S_IMODE((tmp_path / "t.txt").stat().st_mode) == 0o600
 
 
 def test_the_longest_sidecar_name_the_derived_tmp_allowed_still_writes(
@@ -222,6 +224,7 @@ def test_a_symlinked_album_folder_is_refused_and_nothing_lands_outside(
     assert sorted(q.name for q in outside.iterdir()) == ["01 t.flac"]
     assert len(caplog.records) == 1
     assert str(album) in caplog.text
+    # The OSError arm: a link IS the thing a bind mount replaces.
     assert "bind mount" in caplog.text
 
 
@@ -274,6 +277,10 @@ def test_a_folder_outside_the_root_is_refused_without_raising(
     assert sorted(q.name for q in stray.iterdir()) == ["01 t.flac"]
     assert len(caplog.records) == 1
     assert str(stray) in caplog.text
+    # The ValueError arm gets its OWN sentence: this folder is not under the
+    # root at all, and a bind mount would not put it there.
+    assert "not under the library root" in caplog.text
+    assert "bind mount" not in caplog.text
 
 
 def test_a_track_in_the_library_root_itself_still_gets_its_sidecar(tmp_path: Path) -> None:
@@ -291,6 +298,258 @@ def test_a_track_in_the_library_root_itself_still_gets_its_sidecar(tmp_path: Pat
 
     assert out == str(root / "Artist - Song.txt")
     assert "line one" in (root / "Artist - Song.txt").read_text(encoding="utf-8")
+
+
+def test_the_marker_clear_behind_a_symlinked_folder_is_refused(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The DELETE half is anchored too, and it is the destructive one.
+
+    Measured before this: the writer cleared the marker sidecar THROUGH the link
+    and then logged "not reachable below the library root" and wrote nothing —
+    the refusal line was not "nothing happened". The descriptor is opened first
+    now, so a refused folder is refused for the read, the unlink and the write
+    alike."""
+    from app.beets.lyrics import write_lyric_sidecar
+
+    root = tmp_path / "music"
+    (root / "Artist").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    album = root / "Artist" / "Album"
+    os.symlink("../../outside", album)
+    track = album / "t.flac"
+    track.write_bytes(b"")
+    marker = outside / "t.lrc"
+    marker.write_text("[00:01.00] [Instrumental]\n", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.lyrics"):
+        out = write_lyric_sidecar(_fake_item(track), Lyrics(SYNCED), root=root)
+
+    assert out is None
+    assert marker.read_text(encoding="utf-8") == "[00:01.00] [Instrumental]\n"
+    assert sorted(q.name for q in outside.iterdir()) == ["t.flac", "t.lrc"]
+    assert len(caplog.records) == 1  # ONE line: the clear did not log its own
+    assert "lyric sidecar skipped" in caplog.text
+
+
+def test_the_instrumental_verdict_clear_behind_a_symlinked_folder_is_refused(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The same escape from the other caller — the instrumental verdict's clear.
+
+    Measured before this: ``remove_instrumental_marker_sidecars`` deleted the
+    file behind the link and reported the LINK's spelling as the path removed."""
+    from app.beets.lyrics import remove_instrumental_marker_sidecars
+
+    root = tmp_path / "music"
+    (root / "Artist").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    album = root / "Artist" / "Album"
+    os.symlink("../../outside", album)
+    track = album / "t.flac"
+    track.write_bytes(b"")
+    marker = outside / "t.lrc"
+    marker.write_text("[Instrumental]\n", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.lyrics"):
+        removed = remove_instrumental_marker_sidecars(_fake_item(track), root=root)
+
+    assert removed == []
+    assert marker.read_text(encoding="utf-8") == "[Instrumental]\n"
+    assert len(caplog.records) == 1
+    assert "lyric sidecars left alone" in caplog.text
+
+
+def test_the_instrumental_verdict_anchors_against_the_items_own_library_root(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``_store_instrumental`` derives the root from the item's own library
+    handle (``item._db``) rather than taking one on its signature, so the verdict
+    path is anchored without changing what its callers pass."""
+    from app.beets.lyrics import _store_instrumental
+
+    root = tmp_path / "music"
+    (root / "Artist").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    album = root / "Artist" / "Album"
+    os.symlink("../../outside", album)
+    track = album / "t.flac"
+    track.write_bytes(b"")
+    marker = outside / "t.txt"
+    marker.write_text("[Instrumental]\n", encoding="utf-8")
+
+    lib = Library(str(tmp_path / "lib.db"), directory=str(root))
+    item = Item(path=os.fsencode(str(track)), title="t", artist="A", album="Al")
+    lib.add(item)
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.lyrics"):
+        _store_instrumental(item, Lyrics("", "lrclib", "u"))
+
+    assert item["lyrics_instrumental"] == 1  # the verdict still lands on the row
+    assert marker.read_text(encoding="utf-8") == "[Instrumental]\n"
+    assert len(caplog.records) == 1
+    assert "lyric sidecars left alone" in caplog.text
+
+
+def test_every_sidecar_syscall_lands_in_the_folder_the_descriptor_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One descriptor decides the folder, so a swap after it is opened cannot
+    move the gate, the clear or the write.
+
+    The security seat's retarget race made deterministic: the album folder is
+    renamed aside and a DECOY holding the user's own lyrics takes its path, the
+    instant after the descriptor is opened. The two folders disagree about WHICH
+    names exist, which is what separates the three by-path spellings:
+
+    * a by-PATH presence gate reads the decoy's ``t.lrc``, cannot find it through
+      the fd, and refuses — the marker in the opened folder is never cleared;
+    * a by-PATH unlink deletes the DECOY's ``t.txt``, which holds real lyrics;
+    * anchored, every name resolves in the folder the walk approved.
+    """
+    from app.beets import lyrics as mod
+
+    root = tmp_path / "music"
+    album = root / "Artist" / "Album"
+    album.mkdir(parents=True)
+    track = album / "t.flac"
+    track.write_bytes(b"")
+    (album / "t.txt").write_text("[Instrumental]\n", encoding="utf-8")
+
+    decoy = root / "Artist" / "Decoy"
+    decoy.mkdir()
+    (decoy / "t.txt").write_text("the user's own lyrics\n", encoding="utf-8")
+    (decoy / "t.lrc").write_text("[00:09.00] the user's own synced line\n", encoding="utf-8")
+
+    moved = root / "Artist" / "Moved"
+    real_open_album = mod._open_album_dir
+
+    def swapping_open(directory: Path, r: Path) -> int:
+        fd = real_open_album(directory, r)
+        os.rename(album, moved)
+        os.rename(decoy, album)  # the decoy now answers to the album's path
+        return fd
+
+    monkeypatch.setattr(mod, "_open_album_dir", swapping_open)
+
+    out = mod.write_lyric_sidecar(_fake_item(track), Lyrics(SYNCED), root=root)
+
+    assert out == str(album / "t.lrc")  # the pre-swap spelling
+    assert "[00:01.00] line one" in (moved / "t.lrc").read_text(encoding="utf-8")
+    assert not (moved / "t.txt").exists()  # the marker cleared, in the opened folder
+    assert (album / "t.txt").read_text(encoding="utf-8") == "the user's own lyrics\n"
+    assert (album / "t.lrc").read_text(encoding="utf-8") == (
+        "[00:09.00] the user's own synced line\n"
+    )
+
+
+def test_a_symlink_at_the_sidecar_name_is_neither_read_through_nor_replaced(
+    tmp_path: Path,
+) -> None:
+    """``O_NOFOLLOW`` on the sidecar open: a symlink at ``t.txt`` is not read
+    through, so its target's content cannot make the file look like a disposable
+    marker. Something IS at the name, so the gap-fill gate refuses and the link
+    survives. Without the flag the marker behind it qualifies, the link is
+    unlinked and a regular file takes its place."""
+    from app.beets.lyrics import write_lyric_sidecar
+
+    track = tmp_path / "t.flac"
+    track.write_bytes(b"")
+    target = tmp_path / "elsewhere.txt"
+    target.write_text("[Instrumental]\n", encoding="utf-8")
+    link = tmp_path / "t.txt"
+    link.symlink_to(target)
+
+    assert write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN), root=tmp_path) is None
+
+    assert link.is_symlink()
+    assert target.read_text(encoding="utf-8") == "[Instrumental]\n"
+    assert not (tmp_path / "t.lrc").exists()
+
+
+def test_a_dangling_symlink_at_the_sidecar_name_is_not_a_gap(tmp_path: Path) -> None:
+    """The presence stat is ``follow_symlinks=False``, so a DANGLING link counts
+    as present and the writer refuses. Following it would read "absent" and
+    publish a regular file over the link the user put there."""
+    from app.beets.lyrics import write_lyric_sidecar
+
+    track = tmp_path / "t.flac"
+    track.write_bytes(b"")
+    link = tmp_path / "t.txt"
+    link.symlink_to(tmp_path / "gone.txt")
+
+    assert write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN), root=tmp_path) is None
+
+    assert link.is_symlink()
+    assert not (tmp_path / "gone.txt").exists()
+
+
+def test_an_empty_body_clears_no_marker(tmp_path: Path) -> None:
+    """The clear happens only on the path that goes on to WRITE. A fetched body
+    that strips to nothing returns before the folder is even opened, so the stale
+    marker is left for the next run rather than removed for no replacement."""
+    from app.beets.lyrics import write_lyric_sidecar
+
+    track = tmp_path / "t.flac"
+    track.write_bytes(b"")
+    marker = tmp_path / "t.txt"
+    marker.write_text("[Instrumental]\n", encoding="utf-8")
+
+    assert write_lyric_sidecar(_fake_item(track), Lyrics("   "), root=tmp_path) is None
+
+    assert marker.read_text(encoding="utf-8") == "[Instrumental]\n"
+
+
+def test_a_lone_surrogate_in_the_fetched_lyrics_is_logged_not_raised(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The shared writer's encode is STRICT UTF-8, so a lone surrogate raises
+    ``UnicodeEncodeError`` — a ``ValueError``, which ``except OSError`` does not
+    catch. This writer's contract is that it never raises: None, one log line,
+    no file."""
+    from app.beets.lyrics import write_lyric_sidecar
+
+    track = tmp_path / "t.flac"
+    track.write_bytes(b"")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.lyrics"):
+        out = write_lyric_sidecar(_fake_item(track), Lyrics("line \udcff one"), root=tmp_path)
+
+    assert out is None
+    assert not (tmp_path / "t.txt").exists()
+    assert len(caplog.records) == 1
+    assert "write failed" in caplog.text
+
+
+def test_a_newline_in_the_folder_name_cannot_forge_a_second_log_line(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Paths are logged ``%r`` through ``display_path``, the rule stated at
+    ``api/artists.py:896``. Measured with ``%s``: a folder named with a newline
+    and an ANSI escape produced a second line carrying an attacker-chosen
+    timestamp, severity and colour."""
+    from app.beets.lyrics import write_lyric_sidecar
+
+    root = tmp_path / "music"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    evil = "Artist\n2026-09-12 00:00:00 CRITICAL forged\x1b[31m"
+    os.symlink(outside, root / evil)
+    track = root / evil / "t.flac"
+    track.write_bytes(b"")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.lyrics"):
+        assert write_lyric_sidecar(_fake_item(track), Lyrics(PLAIN), root=root) is None
+
+    assert len(caplog.records) == 1
+    message = caplog.records[0].getMessage()
+    assert "\n" not in message  # one line, not two
+    assert "\x1b" not in message  # no live escape
+    assert "\\n2026-09-12 00:00:00 CRITICAL forged\\x1b[31m" in message
 
 
 def test_synced_result_never_replaces_an_existing_txt(tmp_path: Path) -> None:
@@ -402,16 +661,20 @@ def test_a_mixed_marker_and_real_pair_is_left_entirely_alone(tmp_path: Path) -> 
 
 
 def test_no_sidecars_is_not_an_all_marker_set(tmp_path: Path) -> None:
-    """Vacuous truth is not a marker set: with nothing on disk, "every sidecar is
-    a marker" must be False, not an empty-``all()`` True. The writer gates this
-    behind ``_has_sidecar`` today, so the clause is what keeps a future caller
-    from reading the predicate as "safe to delete"."""
-    from app.beets.lyrics import _sidecars_are_all_markers
+    """Vacuous truth is not a marker set: the gate reads the names PRESENT in the
+    album folder's descriptor and only takes the all-markers branch when that
+    list is non-empty. An empty list run through ``all()`` is True, which is how
+    a content guard turns back into a blanket deleter."""
+    from app.beets.lyrics import _present_sidecars
 
     track = tmp_path / "t.flac"
     track.write_bytes(b"")
 
-    assert _sidecars_are_all_markers(_fake_item(track)) is False
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        assert _present_sidecars(str(tmp_path / "t"), dir_fd=fd) == []
+    finally:
+        os.close(fd)
 
 
 def test_no_path_no_file_no_raise(tmp_path: Path) -> None:
@@ -450,7 +713,7 @@ def test_remove_marker_sidecars_deletes_both_marker_forms(tmp_path: Path) -> Non
     (tmp_path / "t.lrc").write_text("[00:01.00] [Instrumental]\n", encoding="utf-8")
     (tmp_path / "t.txt").write_text("[Instrumental]\n", encoding="utf-8")
 
-    removed = remove_instrumental_marker_sidecars(_fake_item(track))
+    removed = remove_instrumental_marker_sidecars(_fake_item(track), root=tmp_path)
 
     assert sorted(removed) == sorted([str(tmp_path / "t.lrc"), str(tmp_path / "t.txt")])
     assert not (tmp_path / "t.lrc").exists()
@@ -470,7 +733,7 @@ def test_remove_marker_sidecars_keeps_real_lyrics(tmp_path: Path) -> None:
     txt = tmp_path / "t.txt"
     txt.write_text("a real plain line\n", encoding="utf-8")
 
-    assert remove_instrumental_marker_sidecars(_fake_item(track)) == []
+    assert remove_instrumental_marker_sidecars(_fake_item(track), root=tmp_path) == []
 
     assert lrc.exists()
     assert txt.exists()
@@ -486,7 +749,7 @@ def test_remove_marker_sidecars_keeps_a_mixed_file(tmp_path: Path) -> None:
     lrc = tmp_path / "t.lrc"
     lrc.write_text("[00:01.00] [Instrumental]\n[00:30.00] then the singing\n", encoding="utf-8")
 
-    assert remove_instrumental_marker_sidecars(_fake_item(track)) == []
+    assert remove_instrumental_marker_sidecars(_fake_item(track), root=tmp_path) == []
     assert lrc.exists()
 
 
@@ -501,34 +764,51 @@ def test_remove_marker_sidecars_keeps_an_empty_sidecar(tmp_path: Path) -> None:
     txt = tmp_path / "t.txt"
     txt.write_text("   \n", encoding="utf-8")
 
-    assert remove_instrumental_marker_sidecars(_fake_item(track)) == []
+    assert remove_instrumental_marker_sidecars(_fake_item(track), root=tmp_path) == []
     assert txt.exists()
 
 
-def _boom(exc: Exception) -> Any:
-    """A stand-in for the module's ``open`` that always raises ``exc``.
+def _fail_read(exc: Exception) -> Any:
+    """A stand-in for ``os.read`` that always raises ``exc``.
 
     Fault injection is the only root-independent way to reach the matcher's read
-    branches: this deployment may run as root, for whom a 0o000 regular file is
-    still readable, and every NON-regular fixture is now rejected by the stat
-    guard before any read happens.
+    branch: this deployment may run as root, for whom a 0o000 regular file is
+    still readable, and every NON-regular fixture is rejected by the ``fstat``
+    before any read happens.
     """
 
-    def _open(*_args: Any, **_kwargs: Any) -> Any:
+    def _read(*_args: Any, **_kwargs: Any) -> bytes:
         raise exc
+
+    return _read
+
+
+def _fail_name_open(exc: Exception) -> Any:
+    """``os.open`` raising ``exc`` for every NAME resolved against a ``dir_fd``.
+
+    The folder-descriptor opens (no ``dir_fd=``) still work, so the fault lands
+    on the sidecar open alone.
+    """
+    real_open = os.open
+
+    def _open(*args: Any, **kwargs: Any) -> int:
+        if "dir_fd" in kwargs:
+            raise exc
+        return real_open(*args, **kwargs)
 
     return _open
 
 
-def test_marker_check_never_opens_a_non_regular_file(
+def test_marker_check_never_reads_a_non_regular_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The stat guard must reject a non-regular path BEFORE any open.
+    """The ``fstat`` must reject a non-regular file before any read.
 
-    Opening a FIFO for reading blocks until a writer appears, and the backfill
-    worker is single-slot — one named pipe at a sidecar path would park it until
-    the process restarts. Monkeypatching the module's ``open`` to explode turns
-    that hang into a fast, deterministic failure, so the guard has a pin that
+    Reading a FIFO blocks until a writer appears, and the backfill worker is
+    single-slot — one named pipe at a sidecar path would park it until the
+    process restarts. ``O_NONBLOCK`` keeps the OPEN from blocking (a FIFO opens
+    fine and a directory opens fine, measured), so the type check is what stands
+    between the worker and that read. A forwarding spy counts the reads, which
     does not depend on a timeout."""
     from app.beets.lyrics import remove_instrumental_marker_sidecars
 
@@ -536,16 +816,21 @@ def test_marker_check_never_opens_a_non_regular_file(
     track.write_bytes(b"")
     os.mkfifo(tmp_path / "t.lrc")
     (tmp_path / "t.txt").mkdir()
-    # raising=False creates the module-level name; a module global shadows the
-    # builtin for code inside that module, which scopes the fault injection to
-    # exactly this one caller instead of patching builtins.open globally.
-    monkeypatch.setattr(
-        "app.beets.lyrics.open",
-        _boom(AssertionError("must not open a non-regular file")),
-        raising=False,
-    )
 
-    assert remove_instrumental_marker_sidecars(_fake_item(track)) == []
+    real_read = os.read
+    reads: list[int] = []
+
+    def spy_read(fd: int, length: int) -> bytes:
+        reads.append(fd)
+        return real_read(fd, length)
+
+    monkeypatch.setattr(os, "read", spy_read)
+
+    assert remove_instrumental_marker_sidecars(_fake_item(track), root=tmp_path) == []
+
+    assert reads == []
+    assert stat.S_ISFIFO((tmp_path / "t.lrc").stat().st_mode)
+    assert (tmp_path / "t.txt").is_dir()
 
 
 def test_a_fifo_at_the_sidecar_path_neither_blocks_nor_is_deleted(tmp_path: Path) -> None:
@@ -558,7 +843,7 @@ def test_a_fifo_at_the_sidecar_path_neither_blocks_nor_is_deleted(tmp_path: Path
     fifo = tmp_path / "t.lrc"
     os.mkfifo(fifo)
 
-    assert remove_instrumental_marker_sidecars(_fake_item(track)) == []
+    assert remove_instrumental_marker_sidecars(_fake_item(track), root=tmp_path) == []
 
     assert stat.S_ISFIFO(fifo.stat().st_mode)
 
@@ -578,7 +863,7 @@ def test_remove_marker_sidecars_ignores_a_directory_silently(
     blocked.mkdir()
 
     with caplog.at_level(logging.WARNING, logger="app.beets.lyrics"):
-        assert remove_instrumental_marker_sidecars(_fake_item(track)) == []
+        assert remove_instrumental_marker_sidecars(_fake_item(track), root=tmp_path) == []
 
     assert blocked.is_dir()
     assert caplog.text == ""  # rejected by the stat, never opened
@@ -595,10 +880,10 @@ def test_remove_marker_sidecars_keeps_a_marker_it_cannot_read(
     track.write_bytes(b"")
     marker = tmp_path / "t.txt"
     marker.write_text("[Instrumental]\n", encoding="utf-8")
-    monkeypatch.setattr("app.beets.lyrics.open", _boom(OSError("disk went away")), raising=False)
+    monkeypatch.setattr(os, "read", _fail_read(OSError("disk went away")))
 
     with caplog.at_level(logging.WARNING, logger="app.beets.lyrics"):
-        assert remove_instrumental_marker_sidecars(_fake_item(track)) == []
+        assert remove_instrumental_marker_sidecars(_fake_item(track), root=tmp_path) == []
 
     assert marker.exists()
     assert "unreadable, keeping it" in caplog.text
@@ -608,20 +893,19 @@ def test_remove_marker_sidecars_keeps_a_marker_it_cannot_read(
 def test_remove_marker_sidecars_keeps_a_marker_that_raced_away(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A file that vanishes between the stat and the open is KEPT and, unlike a
-    real read error, logs NOTHING — a race is not a fault worth a warning."""
+    """A file that vanishes before the open is KEPT and, unlike a real read
+    error, logs NOTHING — a race is not a fault worth a warning, and it is the
+    same arm the ordinary "no sidecar here" case takes."""
     from app.beets.lyrics import remove_instrumental_marker_sidecars
 
     track = tmp_path / "t.flac"
     track.write_bytes(b"")
     marker = tmp_path / "t.txt"
     marker.write_text("[Instrumental]\n", encoding="utf-8")
-    monkeypatch.setattr(
-        "app.beets.lyrics.open", _boom(FileNotFoundError("raced away")), raising=False
-    )
+    monkeypatch.setattr(os, "open", _fail_name_open(FileNotFoundError("raced away")))
 
     with caplog.at_level(logging.WARNING, logger="app.beets.lyrics"):
-        assert remove_instrumental_marker_sidecars(_fake_item(track)) == []
+        assert remove_instrumental_marker_sidecars(_fake_item(track), root=tmp_path) == []
 
     assert marker.exists()
     assert caplog.text == ""
@@ -639,7 +923,7 @@ def test_remove_marker_sidecars_keeps_a_broken_symlink(tmp_path: Path) -> None:
     dangling = tmp_path / "t.lrc"
     dangling.symlink_to(tmp_path / "gone.lrc")
 
-    assert remove_instrumental_marker_sidecars(_fake_item(track)) == []
+    assert remove_instrumental_marker_sidecars(_fake_item(track), root=tmp_path) == []
     assert dangling.is_symlink()
 
 
@@ -656,7 +940,7 @@ def test_remove_marker_sidecars_keeps_an_oversized_marker_file(tmp_path: Path) -
     txt.write_text(line * (_MARKER_READ_CAP // len(line) + 2), encoding="utf-8")
     assert txt.stat().st_size > _MARKER_READ_CAP
 
-    assert remove_instrumental_marker_sidecars(_fake_item(track)) == []
+    assert remove_instrumental_marker_sidecars(_fake_item(track), root=tmp_path) == []
     assert txt.exists()
 
 
@@ -665,7 +949,7 @@ def test_remove_marker_sidecars_noop_when_none_exist(tmp_path: Path) -> None:
 
     track = tmp_path / "t.flac"
     track.write_bytes(b"")
-    assert remove_instrumental_marker_sidecars(_fake_item(track)) == []
+    assert remove_instrumental_marker_sidecars(_fake_item(track), root=tmp_path) == []
     assert track.exists()
 
 
@@ -677,15 +961,15 @@ def test_remove_marker_sidecars_leaves_neighbours_alone(tmp_path: Path) -> None:
     neighbour = tmp_path / "other.lrc"
     neighbour.write_text("[Instrumental]\n", encoding="utf-8")
 
-    assert remove_instrumental_marker_sidecars(_fake_item(track)) == []
+    assert remove_instrumental_marker_sidecars(_fake_item(track), root=tmp_path) == []
     assert neighbour.exists()  # only this track's own siblings are in scope
 
 
-def test_remove_marker_sidecars_no_path_no_raise() -> None:
+def test_remove_marker_sidecars_no_path_no_raise(tmp_path: Path) -> None:
     from app.beets.lyrics import remove_instrumental_marker_sidecars
 
-    assert remove_instrumental_marker_sidecars(SimpleNamespace(path=b"")) == []
-    assert remove_instrumental_marker_sidecars(SimpleNamespace(path=None)) == []
+    assert remove_instrumental_marker_sidecars(SimpleNamespace(path=b""), root=tmp_path) == []
+    assert remove_instrumental_marker_sidecars(SimpleNamespace(path=None), root=tmp_path) == []
 
 
 # --- Task 2: force synced fetching -------------------------------------------

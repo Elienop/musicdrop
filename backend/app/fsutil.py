@@ -29,7 +29,9 @@ swallow-vs-reraise posture as the ``exists()`` guards in
 ``app/artwork/cache.py``, scoped to the failure a request can actually
 cause.
 
-The third is the anchored descent, :func:`open_below`. Anything that ENUMERATES
+The third is the anchored descent, :func:`open_root` + :func:`open_below` — the
+one spelling of "open the root, following links" and of "walk every part below it
+refusing one". Anything that ENUMERATES
 through an fd it returns must CLOSE its iterator: ``os.scandir(fd)`` dups the fd
 and the dup SHARES the offset, so one partially consumed iterator left open makes
 every later ``scandir``/``listdir`` on that fd read ``[]`` (measured 2026-09-12,
@@ -227,6 +229,19 @@ _BELOW_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLO
 _ROOT_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK
 
 
+def open_root(root: Path) -> int:
+    """Open ``root`` itself as a directory fd, FOLLOWING a link at it.
+
+    The one spelling of the root open every anchored caller shares, so the three
+    hand-written copies cannot drift. ``O_DIRECTORY`` is mandatory rather than
+    tidy: measured 2026-09-12, a FIFO at ``root`` answers ENOTDIR with it and
+    BLOCKS the open for as long as no writer appears without it.
+
+    The returned fd is the caller's to close.
+    """
+    return os.open(root, _ROOT_FLAGS)
+
+
 def open_below(root: Path, rel: Path) -> int:
     """Open ``root/rel`` as a directory fd, refusing a symlink at every part below ``root``.
 
@@ -258,7 +273,7 @@ def open_below(root: Path, rel: Path) -> int:
     parts = rel.parts
     if rel.is_absolute() or not parts or ".." in parts:
         raise ValueError(f"not a name below the root: {str(rel)!r}")
-    fd = os.open(root, _ROOT_FLAGS)
+    fd = open_root(root)
     try:
         for part in parts:
             below = os.open(part, _BELOW_FLAGS, dir_fd=fd)
