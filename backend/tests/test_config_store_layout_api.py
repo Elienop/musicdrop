@@ -186,6 +186,49 @@ def test_validate_flags_a_file_in_the_operators_chain_outside_the_library(
     assert chain.read_bytes() == b"not a directory", "a report creates nothing"
 
 
+@pytest.mark.skipif(os.getuid() == 0, reason="root searches an unsearchable directory anyway")
+def test_validate_flags_a_trash_chain_the_walk_cannot_climb(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fail-closed climb's REPORT arm: a row here, and Save refused with it.
+
+    The refusal was pinned only where a delete meets it
+    (``test_a_chain_the_walk_cannot_climb_is_refused_rather_than_read_as_outside``),
+    and this path reaches it through its own read-only walk — so the arm that
+    reads "cannot answer" as "outside the library" could come back on the report
+    alone and Settings would read healthy again, which is the shape security seat
+    L-3 was about. Measured 2026-09-13: mode ``0o400`` is readable, so the walk
+    opens the Trash, and not searchable, so the ``..`` climb out of it answers
+    EACCES. The control is the document itself — the same YAML saves with 200 in
+    ``test_save_still_writes_an_acceptable_document``.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    unsearchable = beets_library.beets_dir.parent / "srv-trash"
+    unsearchable.mkdir()
+    os.chmod(unsearchable, 0o400)
+    monkeypatch.setattr("app.config.settings.trash_dir", str(unsearchable))
+    config_path = beets_library.config_path
+    before = config_path.read_bytes()
+
+    try:
+        rows = _layout_rows(client, _yaml_pointing_at(music))
+        saved = client.post(
+            "/api/config/save",
+            json={"yaml_text": _yaml_pointing_at(music), "base_sha256": _sha(config_path)},
+        )
+    finally:
+        os.chmod(unsearchable, 0o700)  # or the tmp_path teardown cannot clean up
+
+    assert len(rows) == 1, rows
+    assert rows[0]["loc"] == "directory"
+    assert "could not be checked against the music library" in str(rows[0]["msg"])
+    assert saved.status_code == 422, saved.text
+    refusals = [d for d in saved.json()["detail"] if d["type"] == "store_layout"]
+    assert len(refusals) == 1, saved.json()
+    assert "could not be checked against the music library" in str(refusals[0]["msg"])
+    assert config_path.read_bytes() == before, "a refused Save writes nothing"
+
+
 def test_validate_paints_no_row_for_a_directory_that_is_not_there_yet(
     client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -541,11 +541,12 @@ def test_a_chain_the_walk_cannot_climb_is_refused_rather_than_read_as_outside(
 
     "No" is the arm that anchors NOTHING, so an unanswerable question decided the
     Trash was outside the library and the identity was taken anyway. Reachable at
-    the deepest existing part: mode ``0o400`` is readable, so the walk opens it,
+    the deepest component the walk OPENED, a middle one included (measured
+    2026-09-13, code seat W-2): mode ``0o400`` is readable, so the walk opens it,
     and not searchable, so the ``..`` climb out of it answers EACCES (measured
     2026-09-12, with ``ROOT_FLAGS`` and with the ``O_PATH`` climb flags). The
-    Trash ITSELF is that part here, so nothing is left to create and the fail-open
-    arm ACCEPTED it — which is the difference this test pins. No loss was
+    Trash ITSELF is that component here, so nothing is left to create and the
+    fail-open arm ACCEPTED it — which is the difference this test pins. No loss was
     reachable through it (a mover needs write and search there too); the
     direction was the unsafe one (security seat L-1).
     """

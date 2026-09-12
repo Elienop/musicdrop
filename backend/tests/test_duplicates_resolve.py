@@ -63,8 +63,6 @@ def _a_strict_group_of_three(tmp_path: Path) -> Library:
     ``duplicates_lib``'s strict group is a pair, which cannot show what a
     mid-loop fault leaves: there is no earlier album to leave dropped.
     """
-    import os
-
     from beets.library import Item
 
     from tests.conftest import build_library
@@ -94,9 +92,12 @@ def test_a_fault_on_the_second_loser_leaves_the_first_one_dropped(
 ) -> None:
     """The transaction is per-CALL, not per-album (security seat L-2).
 
-    Measured 2026-09-12: with the second ``trash_album`` raising, album rows
-    ``[1,2,3,4,5]`` became ``[1,3,4,5]`` — the first loser's rows stay dropped,
-    its files are in Trash with an origin record, and the route answers 500.
+    Measured 2026-09-13 on THIS fixture, with the second ``trash_album`` raising:
+    album rows ``[1,2,3]`` became ``[1,3]`` and item rows ``[1..6]`` became
+    ``[1,2,5,6]`` — the first loser's rows stay dropped, its files are in Trash
+    (``Artist A - Album``) with an origin record, and the route answers 500. The
+    security seat measured the same shape as ``[1,2,3,4,5] → [1,3,4,5]`` on a
+    five-album library, which is the list ``duplicates.py`` quotes.
     Pre-existing, and recoverable through Restore, which is what the response
     body already promises. Pinned rather than redesigned; the per-album
     transaction is recorded in ``BACKLOG.md``.
@@ -133,6 +134,7 @@ def test_a_fault_on_the_second_loser_leaves_the_first_one_dropped(
     assert lib.get_album(losers[0]) is None, "the first loser's rows are gone and stay gone"
     assert lib.get_album(losers[1]) is not None
     assert lib.get_album(keep) is not None
+    assert (trash / "Artist A - Album").is_dir(), "the first loser's files really are in Trash"
     assert list(origins.glob("*.json")), "and its move left the record Restore needs"
 
 
