@@ -696,9 +696,12 @@ def checked_protected_trees(
     """The identities the movers and the remover refuse, for THIS request.
 
     Taken beside :func:`checked_store_dirs`, from the pair it returned, by the
-    two request sites that destroy or relocate a tree (the sweep runner builds
-    its own). Separate from that call because the other four of its six callers
-    do neither and would pay a dozen stats for nothing.
+    request sites that hand a mover or the remover an identity set: the delete
+    ops, the Trash page's DELETE routes, and the artist-art store. The orphan
+    sweep reads ``protected_entries`` directly for its own ignore list, and
+    ``trash_album``'s callers pass no set at all (a recorded residual). Separate
+    from that call because every OTHER caller of it only reads the pair and would
+    pay a dozen stats for nothing.
 
     The Trash is CREATED here when it is absent (:func:`_ensure_trash_root`), so
     no mover sees ``protected.trash is None`` and none has to create it by path.
