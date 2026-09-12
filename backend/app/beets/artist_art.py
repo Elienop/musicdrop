@@ -41,6 +41,7 @@ from app.beets.trash_origins import TrashOriginsStoreUnusableError
 from app.fsutil import open_below
 from app.models.artist_art import ArtistArtOutcome, ArtistArtStatus
 from app.playlists.atomic import write_atomic_bytes
+from app.wire import display_path
 
 _log = logging.getLogger(__name__)
 
@@ -73,8 +74,12 @@ class ArtTrashRefusedError(Exception):
 def get_artist_dirs(lib: Any, name: str) -> list[Path]:
     """Distinct $albumartist parent dirs for an artist's non-compilation albums.
 
-    Skips compilations / Various Artists and any album whose parent is the
-    library root (a non-$albumartist/$album layout — don't pollute the root).
+    Skips compilations / Various Artists, any album whose parent is the library
+    root, and any album whose item dir IS the root (a flat ``path_formats``, with
+    the tracks directly in it) — neither the root nor the directory above it is a
+    place to write. Measured before the second half: a flat library reported
+    every artist ``failed`` with a per-folder traceback, having tried to write
+    ABOVE the root; it answers ``no_folder`` now, which the UI already renders.
 
     The root is ``library._music_dir``'s spelling, which is what
     :func:`write_artist_art` anchors every write against: two spellings of one
@@ -91,8 +96,8 @@ def get_artist_dirs(lib: Any, name: str) -> list[Path]:
             except ValueError:
                 continue  # empty album (no items)
             parent = album_dir.parent
-            if parent == lib_root:
-                continue  # flat layout — refuse to write into the library root
+            if parent == lib_root or album_dir == lib_root:
+                continue  # flat layout — neither the root nor above it
             dirs.add(parent)
     return sorted(dirs)
 
@@ -260,8 +265,32 @@ def has_background(lib: Any, name: str) -> bool:
     when the write would be a no-op anyway: the skip-existing gate in
     :func:`_write_folder` is per-folder, so the fetch is only wasted when ALL
     folders already have the file.
-    False when any folder lacks it (the fetch is still needed to fill that one)."""
-    return all(any(d.glob(f"{_BACKGROUND}.*")) for d in get_artist_dirs(lib, name))
+    False when any folder lacks it (the fetch is still needed to fill that one).
+
+    Listed through the same descriptor the writer uses (:func:`_open_folder`), so
+    this read cannot answer for a folder reached through a symlinked component
+    that the write would refuse — measured, it used to answer True for one. A
+    folder that cannot be opened counts as LACKING the file, so the fetch still
+    runs for it and the writer reports the refusal."""
+    root = Path(_music_dir(lib))
+    return all(_folder_has_background(root, d) for d in get_artist_dirs(lib, name))
+
+
+def _folder_has_background(root: Path, directory: Path) -> bool:
+    """Whether ``directory`` holds an ``artist-background.*``, read through its own
+    descriptor. ``fnmatch`` over the bare names is the twin of the writer's
+    ``fnmatchcase`` plan."""
+    try:
+        fd = _open_folder(root, directory)
+    except (OSError, ValueError):
+        return False
+    try:
+        # Inside the ``with``: an fd scandir dups the fd and the dup SHARES its
+        # offset, so an iterator left open makes a later enumeration read [].
+        with os.scandir(fd) as entries:
+            return any(fnmatch.fnmatchcase(entry.name, f"{_BACKGROUND}.*") for entry in entries)
+    finally:
+        os.close(fd)
 
 
 def write_artist_art(
@@ -324,6 +353,12 @@ def write_artist_art(
                 trash=trash,
             )
         except (OSError, ArtTrashRefusedError):
+            # The arms around this one log; this one reported ``failed`` with no
+            # reason at all, and it is the arm a ``_folder_plan`` listing failure
+            # takes. The traceback is the reason.
+            _log.warning(
+                "artist art was not written to %r", display_path(str(directory)), exc_info=True
+            )
             failed = True
         else:
             written += wrote
