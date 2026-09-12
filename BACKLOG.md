@@ -1358,33 +1358,80 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   recorded instead of shipped. Whoever takes it should decide what the response should then
   say about the albums that DID move.
 
-- **The `..` climb cannot see through a bind mount, so a Trash spelled below a bind-mounted
-  library subdirectory takes the unanchored arm.** (Found 2026-09-12 on
-  `fix/descriptor-anchored-library-writes`; security seat M-1.) `store_layout._reaches_the_music_root`
-  asks whether the directory the walk reached is inside the music library by climbing `..`
-  through descriptors. From a MOUNT root, `..` crosses to the mountpoint's parent, so a bind
-  mount of `<M>/a` at an outside path is never recognised as being inside the library:
-  measured under `unshare --map-root-user --mount`, `_reaches_the_music_root(leaf)` answered
-  False and two requests in a row put the Trash at the attacker's link target, with
-  `empty_all` enumerating it. Same consequence as the per-component refusal shipped in this
-  round, one spelling over — and that refusal does NOT close it (measured on a copy carrying
-  the fix). Precondition: the operator bind-mounts a directory that is inside the library to a
-  path outside it and spells the Trash below that path, plus the attacker's write access
-  inside the library. Not the documented layout — compose recommends `MUSICDROP_TRASH_DIR=/music/.trash`,
-  which is anchored. Documented for now (README's `MUSICDROP_TRASH_DIR` bullet and that
-  function's docstring both name the gap). The three options the seat costed:
-  (1) accept, as now — honest, closes nothing;
-  (2) refuse ANY symlink in the Trash's configured chain (`BELOW_FLAGS` for every component),
-  which closes this and the link shape together, and costs 4 real test failures — three of
-  them "this configuration is now refused instead of supported" — plus a real hazard the
-  seat's own run demonstrated: with `TMPDIR` on a symlink a fifth test failed because the
-  Trash path ran through a link nobody configured, and `/tmp`, `/var`, a home dir or a Docker
-  host path being a link would refuse the Trash with nothing on screen to explain it;
+- **A symlink or a bind mount in the Trash's configured chain relocates the Trash outside the
+  music library, and this branch's per-component refusal closes neither shape.** (Found
+  2026-09-12, folded together and re-measured 2026-09-13, on
+  `fix/descriptor-anchored-library-writes`; security seats M-1 and H-1'.)
+  `store_layout._below_the_music_root` and `_reaches_the_music_root`
+  (`app/beets/store_layout.py`) ask whether the directory the walk REACHED is inside the music
+  library, by climbing `..` through descriptors. Two ways that question answers "outside" for a
+  path that really is inside:
+  (a) **the link's target, one component up.** The question is asked about each component's FINAL
+  resolution, so with the operator's `/srv/x -> <M>/a` an attacker who owns `<M>/a` — or, when
+  the operator's target does not exist yet, who merely CREATES it as a symlink, no race and no
+  rename — moves the whole walk out of the library before any descriptor it holds is inside it.
+  Measured on this branch's tip: both requests ACCEPTED, `trash_dir` at the attacker's target,
+  the mover writing there, two origin records written, and the Settings report CLEAN exactly when
+  the escape arms (it refuses the same spelling while unattacked). One symlink plus the
+  operator's own Empty Trash then recursively deletes whatever lives at that path: `empty_all`
+  answered `removed=1` and a pre-existing `victim-parent/b/.trash/precious/taxes.pdf` was gone,
+  with nothing staged by the probe.
+  (b) **a bind mount.** From a MOUNT root, `..` crosses to the mountpoint's parent, so a bind
+  mount of `<M>/a` at an outside path is never recognised as being inside the library: measured
+  under `unshare --map-root-user --mount`, `_reaches_the_music_root(leaf)` answered False and two
+  requests in a row put the Trash at that outside path, with `empty_all` enumerating it.
+  **Trigger.** `MUSICDROP_TRASH_DIR` names a path that reaches inside the music library through
+  something the app follows — a symlink above the root (a) or a bind mount of a library
+  subdirectory (b) — plus, for (a), the attacker write access inside the library that the whole
+  layout rule exists for. A correctly spelled Trash is not reachable this way: the attacker
+  cannot plant above the music root. Not the documented layout either — compose recommends
+  `MUSICDROP_TRASH_DIR=/music/.trash`, which is anchored.
+  **Blast radius**, bounded by the row layer, which runs against the RESOLVED destination
+  (measured 2026-09-13): the origin store is refused, `/` fails on permissions, and the music
+  root itself keeps `below = True` and so keeps the library-presence guard — but the beets data
+  dir and an arbitrary outside directory were both ACCEPTED, i.e. anywhere the app's uid can
+  `mkdir`. What the app then does there: writes deleted albums and moved-aside art, keeps origin
+  records that promise the moves are recoverable, and `rmtree`s the contents on Empty Trash.
+  **Cause.** The chain above the music root is the OPERATOR's, so the walk follows links there
+  (`ROOT_FLAGS`), and the only question asked about a component is where it ENDS UP — never what
+  it IS.
+  The options, with 2026-09-13 costs:
+  (1) accept, as now — honest, closes nothing. The unattacked spelling is still refused, so the
+  operator sees a 503 and a Settings row right up until the attacker arms it.
+  (2) refuse ANY symlink in the configured chain (`BELOW_FLAGS` at every component, and the
+  ENOTDIR/ELOOP refusal no longer gated on `below`). Closes BOTH shapes. Measured price on this
+  branch's tip: full suite `13 failed, 3589 passed` against a `5 failed` baseline in the same
+  scratch copy = **8 real failures**, and every one of the eight is a test this branch itself
+  added. Five are refusal-message changes (the two jump-in refusals, the unreadable-root arm, the
+  reaches-into-the-library refusal and the file-in-the-chain report row — all still refused, with
+  "is not reachable below the music library" instead). **Three are layouts this branch supports
+  today, lost**: a Trash outside the library reached through the operator's own link
+  (`test_a_trash_outside_the_library_is_created_through_the_operators_chain`), the alias spelling
+  (`test_the_alias_spelling_is_created_when_nothing_is_in_the_way`), and the search-only ancestor
+  (`test_a_search_only_ancestor_above_the_trash_is_climbed_not_refused`) — the layout the
+  `O_PATH` climb was chosen to keep. Four of the eight came from the branch's last round: the two
+  jump-in refusals, the unreadable-root arm and that search-only-ancestor test. The hazard stands
+  too: with `TMPDIR` on a symlink a further test failed because the Trash ran through a link
+  nobody configured, and `/tmp`, `/var`, a home dir or a Docker host path being a link would
+  refuse the Trash. The refusal itself is at least actionable — it names the configured path and
+  says bind mounts are the supported spelling for a folder on another disk.
   (3) parse `/proc/self/mountinfo` and refuse a spelling that traverses a mount whose root is
-  inside the music library — precise, Linux-only (which this app is), ~20 lines plus a parser
-  to keep correct. Described, not measured.
-  **(2) vs (3) is an owner design call**: *should `MUSICDROP_TRASH_DIR` be required to be
-  spelled with no symlink in its path?* Both refuse configurations the app supports today.
+  inside the music library — closes (b) ONLY. It is a mount check and (a) is a link, so picking
+  it as "the precise one" leaves the bigger shape open. Linux-only (which this app is), ~20 lines
+  plus a parser to keep correct. Described, not measured.
+  (4) check each link's TARGET instead of its resolution: while the walk is still above the root,
+  `os.readlink(part, dir_fd=fd)` for a component that is a link, and refuse a target that
+  resolves inside the music root other than the root itself. Closes (a), not (b). Attractive
+  because the attacker can only plant inside the library, so "target inside the library" is
+  exactly the set that hands them control, and none of the four supported layouts has such a
+  target — reasoned from those four fixtures, never written or run. Needs a link budget and care
+  with relative targets.
+  **One owner question:** *should `MUSICDROP_TRASH_DIR` be required to be spelled with no symlink
+  in its path?* Yes = option 2: both shapes closed, three supported layouts and five refusal
+  messages to re-write, and the `/tmp`-is-a-link hazard accepted. No = (3) or (4) for one shape
+  each, or (1) with the gap documented, which is where the branch leaves it (README's
+  `MUSICDROP_TRASH_DIR` bullet, the Delete & Trash paragraph and `_reaches_the_music_root`'s
+  docstring all name it).
 
 - **`download_image` validates only the FIRST and LAST redirect hop, and issues the
   intermediate requests anyway.** Moved here 2026-08-28 from Deferred minors, where a blind
@@ -2281,6 +2328,28 @@ the condition it names has changed.
   whoever creates the directory. `checked_protected_trees` creates the Trash, so no mover creates
   it and none sees `trash=None`; the folder-movers entry above still wants the same
   descriptor-shaped fix on its own three paths.
+
+- **The create loop never re-asks whether a component is below the music root, so a part it
+  creates above the root can be swapped for a link inside that window** (2026-09-13, same
+  branch; security seat L-2'). `_open_the_trash_chain` (`app/beets/store_layout.py`) walks the
+  EXISTING prefix asking `_below_the_music_root` per component, then carries that decision into
+  the create loop — measured by tracing the question: the request that creates `srv`, `x` and
+  `.trash` asks 9 times and stops at their parent, the next request (they exist) asks 12. So a
+  racer who wins the `os.mkdir(part, dir_fd=fd)` → `os.open(part, ROOT_FLAGS, dir_fd=fd)` window
+  and leaves a symlink there is followed, and the Trash lands at its target unanchored.
+  Precondition: write access on the OPERATOR's chain above the music root, which is outside the
+  threat model the layout rule is written for (the attacker's reach is inside the library) — the
+  reason this is a residual and not the bug above it. Not driven as a race, only measured as the
+  asymmetry.
+
+- **The Settings report is silent for "music root absent + Trash spelled below it" while every
+  destructive request answers 503** (2026-09-13, same branch; code seat W1, security seat L-4').
+  Deliberate: the row used to fire for a `directory:` that is simply not there yet, which blocked
+  Save for an edit that named no path (`test_validate_paints_no_row_for_a_directory_that_is_not_there_yet`
+  pins the silence; `test_an_unmounted_music_root_is_reported_as_the_music_roots_fault` pins the
+  refusal). Cost: a dropped share gives the operator no pre-delete signal, and the first thing
+  they see is a 503 on their next delete. An ADVISORY row — not a blocking one, which is what
+  made Save unsavable — is the shape not taken; it was out of the fix round's scope.
 
 - **The artist-image reset answers 409 while the beets swap lock is held, rather than waiting
   for it** (2026-09-12, `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`). The reset is
