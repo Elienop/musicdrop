@@ -9,9 +9,11 @@ import pytest
 from beets.library import Library
 from fastapi.testclient import TestClient
 
+import app.api.artists as artists_mod
 from app.api.albums import get_library
 from app.api.artists import get_artist_image_cache, get_artist_image_service
 from app.artwork.cache import ArtistImageCache
+from app.beets.artist_art import ArtTrashStore
 from app.main import app
 from tests.conftest import beets_dir_for, make_test_handle
 
@@ -67,9 +69,15 @@ def test_album_edit_emits_library_changed(
 
 @pytest.fixture
 def art_client(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[tuple[TestClient, _RecordingBroker, ArtistImageCache]]:
-    cache = ArtistImageCache(tmp_path)
+    cache = ArtistImageCache(tmp_path / "cache")
+    # Reset moves a stored override to Trash and clears the automatic slot, and
+    # stub handle below cannot satisfy the real resolver (it needs a beets
+    # library). What lands in this store is pinned in
+    # tests/test_artist_image_reset_to_trash.py; here it only has to work.
+    store = ArtTrashStore(trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins")
+    monkeypatch.setattr(artists_mod, "_checked_art_trash_store", lambda *_a, **_kw: store)
     broker = _RecordingBroker()
     app.state.event_broker = broker
     app.dependency_overrides[get_artist_image_cache] = lambda: cache

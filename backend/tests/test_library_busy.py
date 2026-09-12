@@ -8,7 +8,11 @@ import pytest
 from fastapi import HTTPException
 
 from app.import_jobs.registry import get_registry
-from app.library_busy import library_job_active, raise_if_library_busy
+from app.library_busy import (
+    library_job_active,
+    raise_if_library_busy,
+    raise_if_swap_lock_held,
+)
 from app.models.import_models import ImportOptions
 
 # (source-module attribute to patch, the exclude key that drops that job)
@@ -63,6 +67,33 @@ def test_raise_if_busy_raises_when_swap_lock_held() -> None:
     with pytest.raises(HTTPException) as exc:
         raise_if_library_busy(app)
     assert exc.value.status_code == 409
+
+
+def test_the_lock_only_gate_refuses_with_the_same_sentence_as_the_union() -> None:
+    """One message for both halves: the artist-image reset takes the lock-only
+    gate and answers beside the three Trash routes, which take the union."""
+
+    class _LockedLock:
+        def locked(self) -> bool:
+            return True
+
+    app = SimpleNamespace(state=SimpleNamespace(beets_swap_lock=_LockedLock()))
+    with pytest.raises(HTTPException) as lock_only:
+        raise_if_swap_lock_held(app)
+    with pytest.raises(HTTPException) as union:
+        raise_if_library_busy(app)
+    assert lock_only.value.status_code == 409
+    assert lock_only.value.detail == union.value.detail
+
+
+def test_the_lock_only_gate_ignores_an_active_library_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An import only READS the lock, so the reset must not refuse for its
+    length - that is the whole reason this gate is not the union."""
+    monkeypatch.setattr("app.lyrics_jobs.registry.lyrics_backfill_active", lambda: True)
+    app = SimpleNamespace(state=SimpleNamespace(beets_swap_lock=None))
+    raise_if_swap_lock_held(app)  # no raise
 
 
 # ----- I2: the union check and the slot claim must be ONE atomic step -----

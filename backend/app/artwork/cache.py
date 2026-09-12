@@ -570,6 +570,31 @@ class ArtistImageCache:
         )
         _atomic_write_bytes(self._dir / f"{key}{_OVERRIDE_SUFFIX}", data)
 
+    def override_files(self, name: str) -> list[Path]:
+        """The override's files to keep, bytes first — empty when there are none.
+
+        For the caller that must move a hand-uploaded portrait somewhere before
+        the slot is cleared: the reset endpoint, which puts them in Trash. Bytes
+        before mime, the reverse of ``write_override``'s publish order, so a
+        mover that dies partway never leaves bytes behind a stale sidecar.
+
+        Keyed on the BYTES, like :meth:`_clear_slots`' answer: an orphaned mime
+        sidecar (``write_override`` publishes the mime first, so a crash between
+        the two leaves one) is nothing a person uploaded, so there is nothing for
+        Trash to keep and the reset leaves it — a reset on such a key answers
+        ``cleared_override: False``. It stays until the next ``write_override``
+        overwrites it or an artist rename purges the old key.
+        Unlinking a mime-without-bytes instead would race that mime-first
+        publish. Only regular files (or links to one) are listed — that is what
+        ``trash.trash_replaced_files`` accepts.
+        """
+        key = self._key(name)
+        image = self._dir / f"{key}{_OVERRIDE_SUFFIX}"
+        if not image.is_file():
+            return []
+        mime = self._dir / f"{key}{_OVERRIDE_MIME_SUFFIX}"
+        return [image, mime] if mime.is_file() else [image]
+
     def _unlink(self, path: Path) -> bool:
         """Remove one slot file. True when it was there and is now gone.
 
@@ -602,10 +627,10 @@ class ArtistImageCache:
         The image path is a separate parameter rather than the first of a list
         so the answer cannot drift onto a sidecar: the sidecar results are
         discarded at the language level, not by convention. That matters because
-        the divergence is reachable — ``store_positive`` and ``write_override``
-        both publish the mime BEFORE the bytes, so a crash between the two
-        leaves an orphaned sidecar, and a clear that answered "something went
-        away" would report a reset that never happened.
+        the divergence is reachable — ``store_positive`` publishes the mime
+        BEFORE the bytes, so a crash between the two leaves an orphaned sidecar,
+        and a clear that answered "something went away" would report a reset
+        that never happened.
 
         Image before sidecars, so a concurrent ``get()`` never pairs image bytes
         with a vanished mime.
@@ -614,28 +639,6 @@ class ArtistImageCache:
         for sidecar in sidecars:
             self._unlink(sidecar)
         return removed
-
-    def clear_override(self, name: str) -> bool:
-        """Remove a manual override -> next get() falls back to auto/cache.
-
-        Unlink the BYTES before the MIME (mirror-image of write_override's
-        mime-before-bytes order) so a concurrent get() never reads override
-        bytes paired with a missing mime sidecar. Returns whether an override
-        was actually removed — the ``.override`` slot's outcome, never the
-        sidecar's (see :meth:`_clear_slots`).
-
-        Scoped to the override slot ONLY, which is why it cannot be the whole
-        of a "reset to automatic": the ``.bin`` it falls back to is the image
-        the user just rejected. See :meth:`clear_auto`.
-
-        No in-memory drop here on purpose: ``write_override`` does not go
-        through ``_or_remember``, so an override never reaches
-        :class:`_MemoryFallback` and there is nothing of its own to forget.
-        """
-        key = self._key(name)
-        return self._clear_slots(
-            self._dir / f"{key}{_OVERRIDE_SUFFIX}", self._dir / f"{key}{_OVERRIDE_MIME_SUFFIX}"
-        )
 
     def clear_auto(self, name: str) -> bool:
         """Forget the AUTOMATIC image for ``name`` so the next lookup re-resolves.
@@ -654,7 +657,7 @@ class ArtistImageCache:
         :class:`_MemoryFallback`, and unlinking files alone would keep serving
         it for the life of the process.
 
-        Bytes before mime (mirroring :meth:`clear_override`) so a concurrent
+        Bytes before mime, the reverse of the publish order, so a concurrent
         ``get()`` never pairs image bytes with a vanished sidecar. The thumb
         pair needs no ordering: either file missing is a thumb-cache miss, which
         re-derives.
@@ -871,8 +874,7 @@ class ArtistImageCache:
             data = data_path.read_bytes()
         except OSError as exc:
             # exists()-then-read is also a window the backfill daemon's atomic
-            # replace — and the clear_auto / clear_override unlinks — can move
-            # under us.
+            # replace — and ``clear_auto``'s unlinks — can move under us.
             warn_throttled("cache-read", "artist-image cache slot is unreadable: %s", exc)
             return None
         content_type = FALLBACK_CONTENT_TYPE

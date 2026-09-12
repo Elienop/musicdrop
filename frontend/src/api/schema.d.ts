@@ -588,28 +588,8 @@ export interface paths {
         put?: never;
         /**
          * Reset Artist Image Endpoint
-         * @description Forget every stored portrait for ``name`` so it is looked up again.
-         *
-         *     Clears the manual override AND the cached automatic image (plus its
-         *     negative marker and derived thumb). Clearing only the override - which is
-         *     all this used to do - drops the user straight back onto the automatic image
-         *     they just rejected, because a present ``.bin`` means the resolve path never
-         *     runs again.
-         *
-         *     The result reports each slot separately: neither may have existed, and on an
-         *     unwritable cache dir a removal can be refused. The caller shows what
-         *     actually happened instead of implying a re-fetch that did not occur.
-         *
-         *     A background refill is then kicked off (see the body) so the artist does not
-         *     sit on a monogram until something asks for the image again.
-         *
-         *     Origin-guarded: a body-less POST is a CORS-simple request, so without this
-         *     dependency a foreign page could reset portraits (the DELETE this replaced
-         *     was preflight-protected by its method alone).
-         *
-         *     409 while the artist-art sweep runs: clearing the automatic slot under a
-         *     sweep that is mid-resolve for the same artist is undone by the sweep's own
-         *     store, so the user would press Reset and watch nothing change.
+         * @description Forget this artist's portrait so it is looked up again; an uploaded or
+         *     pasted image moves to Trash first.
          */
         post: operations["reset_artist_image_endpoint_api_artists_image_reset_post"];
         delete?: never;
@@ -5151,9 +5131,11 @@ export interface components {
          *     not start — ``SettingsTrashPage.tsx`` deliberately shows a "may still work"
          *     hint instead, because 0 there means "no readable tags", not "no music". A
          *     recorded audio-free husk is exactly such a row AND is restorable exactly,
-         *     which is the case this record was added for. ``restore_mode == "refused"``
-         *     is the ONE signal that does disable a control, and it disables BOTH (Restore
-         *     and this row's Empty), because both of those routes refuse the row outright.
+         *     which is the case this record was added for. Two values of ``restore_mode``
+         *     do take a control away: ``"refused"`` disables BOTH (Restore and this row's
+         *     Empty), because both of those routes refuse the row outright, and
+         *     ``"by_hand"`` drops Restore alone — that route reaches the entry and
+         *     declines to import it, while Empty works.
          */
         TrashedAlbum: {
             /** Folder */
@@ -5172,7 +5154,7 @@ export interface components {
              * Restore Mode
              * @enum {string}
              */
-            restore_mode: "move_back" | "import" | "refused";
+            restore_mode: "move_back" | "import" | "refused" | "by_hand";
             /** Restore Note */
             restore_note: string | null;
             /** Origin */
@@ -7341,7 +7323,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description An artist-art job is running, so image changes are refused until it finishes. */
+            /** @description An artist-art job is running or the beets swap lock is held, so the reset is refused until it finishes. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -7357,6 +7339,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description An uploaded or pasted image is stored for this artist and could not be fully moved to Trash, so the reset stopped. Part of it may already be in Trash. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
         };

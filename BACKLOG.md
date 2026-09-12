@@ -151,6 +151,16 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   crossing sits near the 328 step and the two runs fall either side of it. Neither run
   recorded the crossing WIDTH, so re-measure rather than trusting five or six.)
 
+- **`GET /api/albums/{id}/cover` answers 500, not 404, when an album has no `artpath` and
+  its first track's file cannot be parsed** (found 2026-09-12 with a stand-in file in a
+  scratch library; pre-existing, not the reset branch's code). `_cover_from_embedded` in
+  `app/beets/library.py` checks `isfile` and then calls `MediaFile(track_path)` unguarded, so
+  a truncated or wrong-extension file raises `mediafile.exceptions.UnreadableFileError` out of
+  the route, while the `artpath` arm degrades to `None`. The grid still shows its placeholder
+  (the `<img>` error path), but every paint of that album logs a traceback and the thumb cache
+  records no miss. Fix shape to verify: catch `UnreadableFileError` around the parse and
+  answer `None`, pinned by a track file that is a few bytes of text.
+
 - **A focused action on an `/import` feed row unmounts under the user when the live feed
   applies that album.** `FeedRow` (`ImportPage.tsx:860`) gets its button from
   `feedRowAction` (`:823`), which returns one only for `needs_review` /
@@ -1081,8 +1091,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - ~~**"Save art to library" is a one-click, unconfirmed action that permanently deletes
   hand-placed `artist-poster.*`/`artist-background.*` — and fires as rename collateral.**~~ —
-  **CLOSED 2026-09-11** (on `fix/art-apply-keeps-hand-placed-art`; PR + squash sha cited at
-  merge). Owner's shape: confirm + Trash, and a rename writes only where missing. The Apply
+  **CLOSED 2026-09-11** (on `fix/art-apply-keeps-hand-placed-art`; PR #224, squash `a8b08d5` =
+  v0.51.4). Owner's shape: confirm + Trash, and a rename writes only where missing. The Apply
   sits behind an AlertDialog ("Save art to library?" / "Writes artist-poster and
   artist-background files into this artist's folders. Existing ones move to Trash first."),
   the files a forced write replaces go to one Trash entry per artist folder
@@ -1110,8 +1120,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   with whatever Deezer resolved, and the rename dialog never mentions art.
 
 - ~~**`write_artist_art` reports `status="written"` when only some folders wrote**~~ —
-  **CLOSED 2026-09-11** (on `fix/art-apply-keeps-hand-placed-art`; PR + squash sha cited at
-  merge), as a side effect of the Trash move-aside: `_write_folder` returns
+  **CLOSED 2026-09-11** (on `fix/art-apply-keeps-hand-placed-art`; PR #224, squash `a8b08d5` =
+  v0.51.4), as a side effect of the Trash move-aside: `_write_folder` returns
   `(written, failed)` per folder, `status` is `failed` as soon as one write or move-aside
   errored while `written` still counts what landed, and the model comment defines `failed`
   that way. Pinned by `test_a_failed_second_write_keeps_the_count_of_the_first` (poster moved
@@ -1125,31 +1135,52 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `models/edit.py` and `models/duplicates.py` all say "a failed write still counts" — the
   export swallows every exception. The honest shape is written vs attempted.
 
-- **"Reset to auto" in the artist-image panel deletes a hand-uploaded portrait with no
-  confirm, and nothing refetches it.** (Found 2026-09-11 by the final code seat on
-  `fix/art-apply-keeps-hand-placed-art`.) The panel opens from the same rail as Save art
-  (`ArtistAlbumsPage.tsx`, `aria-controls="artist-image-panel"`); its Reset POST reaches
-  `ArtistImageCache.clear_override` (`backend/app/artwork/cache.py`), which unlinks the
-  `*.override` bytes and mime sidecar — no dialog, no Trash. README's Trash section says of
-  exactly those files "which nothing refetches". Same family as the Save-art entry this branch
-  closed, one panel over. Fix shape: a confirm on Reset when an override exists, and the
-  override moved aside (`trash_replaced_files` fits: two regular files, one container) — the
-  design call is whether an app-cache file should ever feed the Trash listing, since an
-  override is not library data.
+- ~~**"Reset to auto" in the artist-image panel deletes a hand-uploaded portrait with no
+  confirm, and nothing refetches it.**~~ — **CLOSED 2026-09-11** (on
+  `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`; PR + squash sha cited at merge).
+  Reset is behind an AlertDialog in the Save-art shape — "Reset to auto?", and a description
+  that warns an uploaded or pasted image moves to Trash — and the POST is sent from the
+  dialog's action alone, held open until it settles. The endpoint moves the `*.override` pair
+  to `Trash/<artist> - artist image` via `trash_replaced_files` before clearing any slot, and
+  answers 503 when that store is refused or unwritable — the reset stops, and a store refused
+  before the first move leaves the override untouched. The design call landed on "yes, an app-cache file may feed
+  the Trash listing", with its own row kind rather than the album words — the entry below.
+  Pinned by `tests/test_artist_image_reset_to_trash.py` (7) and six confirm tests in
+  `ArtistImageEditPanel.test.tsx`. (Original finding, 2026-09-11 by the final code seat on
+  `fix/art-apply-keeps-hand-placed-art`: Reset reached `ArtistImageCache.clear_override`,
+  which unlinked the override bytes and mime sidecar with no dialog and no Trash, while
+  README said of exactly those files "which nothing refetches".)
 
-- **The Trash row for an art container reads as an album.** (Found 2026-09-11,
-  browser-measured on `fix/art-apply-keeps-hand-placed-art`.) A forced Save art moves the
-  replaced `artist-poster.*`/`artist-background.*` into `Trash/<folder> - artist art/` with
-  an origin record `moved="items"`. `SettingsTrashPage.tsx` renders that container with the
-  album row's words: title "Unknown artist - Verify Artist - artist art" (no tags to read),
-  the shared-folder note "Approximate restore. This album's files were moved out of a folder
-  it shared with other music … Restoring re-imports the album under your current naming
-  rules.", and a Restore button that ends in `could_not_restore` (`_restore_by_import` over a
-  folder with no audio; `move_back_target` is None for any record that is not
-  `moved="folder"`). README says to copy the files back by hand. Fix shape: the listing row
-  needs to know the entry holds moved-aside files, not an album — a field on `TrashedAlbum`
-  (contract change, so the wire shape is the design question) — then a row with no Restore,
-  a "copy them back from <origin>" hint, and a title without the "Unknown artist - " prefix.
+- ~~**The Trash row for an art container reads as an album.**~~ — **CLOSED 2026-09-11** (on
+  `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`; PR + squash sha cited at merge).
+  The wire says it now: `trash_replaced_files` records `moved="files"`, `_restore_fields` maps
+  that to a fifth `restore_mode` — `by_hand`, with `_MOVED_ASIDE_NOTE` and the origin — and
+  `restore_album` short-circuits such an entry to `could_not_restore` without running an
+  import. The row reads "Files moved aside.", the backend's note, "Was at <origin>", with no
+  Restore button at all and an Empty whose confirm says "these files" instead of "this
+  album's files". A row with no artist and no album is titled by its folder alone, rendered
+  once (the subtitle no longer repeats it), which also drops the invented "Unknown artist - "
+  from the husk and symlinked-entry rows. Pinned by four new `SettingsTrashPage.test.tsx`
+  tests plus the listing/restore pins in `test_trash_manage.py`. (Original finding,
+  2026-09-11, browser-measured: the container listed with the album row's words — an
+  "Unknown artist - " title, the shared-folder "Approximate restore." note, and a Restore
+  button whose only outcome was `could_not_restore`.)
+
+- **A `moved="files"` Trash entry has no put-back — the user copies files by hand.** (Named by
+  both implementers on `fix/reset-to-auto-confirms-and-moved-aside-trash-rows` and by all three
+  review seats, 2026-09-12; filed here rather than left in the reports.) `restore_album`
+  short-circuits this shape to `could_not_restore` and the page renders no Restore, so the only
+  exit is the note's instruction: copy the files out of the entry into the folder `origin`
+  names. For a replaced portrait that means preserving an opaque `<sha1>.override` filename —
+  README says so, but a button would not need saying. Fix shape: a sibling of
+  `move_back_target` for this shape (it returns `None` on anything that is not
+  `moved="folder"`, deliberately, before its containment test), whose target is accepted only
+  when `record.origin` resolves inside the music library OR inside one of
+  `config.app_cache_dirs`; then move each file in the container back by name, refuse rather
+  than overwrite when a file of that name is already there, and report per-file. No beets
+  import on this path at all — these are not media. Both halves stay honest only if the
+  sanitizer's `origin_file` key rules are re-read first: the container name is client-derived
+  for the artist-image caller.
 
 - **A write killed mid-flight leaves a `.<pid>.<16 hex>.<ext>.tmp` dotfile nothing clears.**
   (Found 2026-09-11 on `fix/art-apply-keeps-hand-placed-art`.) The derived `.<name>.tmp` was
@@ -2027,6 +2058,55 @@ because a recorded decision is what stops the question being reopened from scrat
 scan here for something to pick up — scan *Open bugs / hardening*. Revisit an item only if
 the condition it names has changed.
 
+- **The artist-image reset answers 409 while the beets swap lock is held, rather than waiting
+  for it** (2026-09-12, `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`). The reset is
+  a Trash mutator, so it takes the same lock the three routes in `api/trash.py` take — and
+  refuses the same way, with their sentence, via the LOCK half of the gate only (an import
+  reads the lock and never holds it, so the job union would refuse a portrait reset for the
+  length of one). Waiting was the alternative and was rejected: no holder is bounded (a
+  restore re-imports, a duplicates merge runs a whole batch) and `apiFetch` sets no timeout,
+  so the confirm dialog would sit pinned with Cancel disabled on an unbounded wait, with
+  nothing on screen saying why. The gate is asked again with the lock held, because the
+  pre-check's own window plus the acquire can outlive the flag it read. Revisit only if the
+  reset gains a progress surface that can honestly show a wait.
+
+- **The background portrait filler writes the auto slot with no gate, so a reset's auto clear
+  can be undone by a filler write that starts after the inner gate read** (2026-09-12,
+  `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`). The inner re-check covers the
+  sweep, not the filler's single-flight kick. The loser is one automatic image that the next
+  lookup replaces; never a user upload, which the reset moves to Trash and the clear no longer
+  touches. Recorded, not fixed: gating the filler would serialise a background fetch behind a
+  user action for nothing a user can see.
+
+- **An upload that lands while the reset is moving the override is not serialised against it,
+  and the bound is "never lost"** (2026-09-12, `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`).
+  The swap lock covers Trash writers; the override upload routes take the art-sweep gate only.
+  The reset moves the exact paths `override_files` returned and then clears only the auto slot,
+  so a new upload published mid-move ends either in the Trash entry (moved with the old pair) or
+  in the cache dir without its mime sidecar (served under the generic type until the next upload
+  overwrites it). No arm unlinks it. Two tabs or a scripted client to reach; recorded, not fixed.
+
+- **The reset's move-failure WARNING names the Trash dir in both arms, and its 503 carries two
+  audiences** (2026-09-12, same branch). Two notes on the same 503 path, both deliberate.
+  (a) The log line interpolates `store.trash_dir` even when the fault is the origins store —
+  the less specific of the two paths, but nothing is missing: `trash_origins._store_unusable`
+  logs its own path at WARNING in the same `%r`+`display_path` shape, so the operator has
+  both lines. (b) The status is either a path-free user sentence (`_MOVE_FAILED` plus the
+  `OSError`'s `strerror`) or the layout error's operator sentence, which names absolute paths
+  on purpose — the house posture, identical at `api/trash.py` and `api/reorganize.py`. Noted
+  because a reader who greps only `_MOVE_FAILED` would conclude the route never puts a path on
+  the wire.
+
+- **A `by_hand` Trash row puts the app's artist-image cache dir on the wire as its `origin`**
+  (2026-09-12, `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`). `origin` previously
+  only ever named a path inside the music library or a recorded folder; a portrait **Reset to
+  auto** moved records `files[0].parent`, so the row reads "Was at
+  `/data/cache/artist-images`". Deliberate, and the point of the field here: the row's note
+  tells the user to copy the files back into the folder it was at, and `origin` is what says
+  which folder. Session-gated like the rest of the listing, and a sibling of `trash_path`,
+  which the same response body already carries. Revisit only if an unauthenticated reader of
+  the listing ever exists.
+
 - **The Trash store is checked per artist, not per file — the check-to-use window is one
   artist's write** (2026-09-11, `fix/art-apply-keeps-hand-placed-art`). The runner resolves
   the store right before each artist's `write_artist_art`; a Trash dir re-pointed under the
@@ -2435,6 +2515,14 @@ the condition it names has changed.
 
 ## Deferred minors (cosmetic / self-healing — carried from earlier waves)
 
+- **A confirm dialog's focused control drops focus to `<body>` when it is disabled while
+  pending.** (Family trait, read by the UX seat 2026-09-12; Chromium blurs a focused control on
+  `disabled`, jsdom does not, so no test can see it.) `ArtistArtStatus`, `DeleteAlbumAction`,
+  `ConfirmAction` and the new Reset confirm all disable Cancel and the action for the duration
+  of the request. On the error path focus sits on `<body>` until the next Tab, when the
+  FocusScope pulls it back inside. Fix as a family or not at all: `aria-disabled` plus an
+  early-return guard in the handler, on all four at once. Not a regression — the Reset confirm
+  copied the family.
 - **`useStartArtistArtBackfill` carries no start bound.** The Apply start got a 10 s bound
   (`fix/art-apply-keeps-hand-placed-art`) because a stalled start latched the confirm dialog;
   the backfill start on the Settings panel is a plain button with no dialog, so a stall greys
@@ -2630,8 +2718,8 @@ the condition it names has changed.
   its integration test only exercises the hash-fallback branch.
 - Thumb edge-case paths (animated/palette/CMYK/tiny source images) were verified by reviewer
   probes but are unpinned by tests; the alpha test only checks image mode.
-- `.thumb.src`/`.thumb.bin` pair is not atomic as a unit (a `clear_override` tag-revisit
-  corner); served-tag vs. served-bytes TOCTOU is inherited from the cover cache class (fix:
+- `.thumb.src`/`.thumb.bin` pair is not atomic as a unit (a tag-revisit corner when the
+  override slot changes under a served thumb); served-tag vs. served-bytes TOCTOU is inherited from the cover cache class (fix:
   `get_thumb` should return its src_tag, which also drops a stat); the 304-path + off-loop
   constraints are unpinned by tests.
 - `get_artist_image_cache`'s sibling has no lazy fallback (same latent isolated-run fragility
@@ -2757,6 +2845,32 @@ Added by the 2026-08-28 sweeps:
   option, not utilities).
 
 ## Recently shipped
+
+- **Save art confirms first and moves replaced art to Trash — PR #224, squash `a8b08d5` =
+  v0.51.4 (2026-09-11).** `POST /api/artists/art/apply` sits behind an AlertDialog that names
+  what it writes and says existing files move to Trash first, and the start request carries a
+  10 s bound so a stalled start cannot latch the dialog open.
+  The `artist-poster.*`/`artist-background.*` a forced write replaces go into one Trash entry
+  per artist folder (`<folder> - artist art`, origin record `moved="items"` — this branch
+  renames that shape to `moved="files"`), claimed by a bare
+  `mkdir` so a directory that arrived after the allocator looked raises before any move;
+  nothing is written into a folder whose old files did not all move aside, and
+  `write_artist_art` reports `failed` as soon as one write or move-aside errored while
+  `written` still counts what landed.
+  A rename now writes art only where it is missing — both rename call sites pass `force=False`,
+  so merging artist A onto B no longer replaces B's curated poster, and the rename dialog names
+  the art write only when the toggle is on.
+  Hardening the review rounds forced: the art and lyrics writers create unpredictable
+  fixed-length temp names with `O_EXCL|O_NOFOLLOW` (a symlink planted at the old derived
+  `.<name>.tmp` was followed and published as the destination — measured), and all five
+  parent-dir fsync opens carry `O_DIRECTORY` (a FIFO swapped in there blocked forever — 2 s
+  measured, no error).
+  Closes the struck Save-art entry and the struck partial-`status` entry above. Recorded and
+  not fixed: the two descriptor-anchoring windows (the per-artist store check, and the
+  container claim to the first move), the Reset-to-auto gap this branch is closing, the
+  moved-aside Trash row's wording, the `.<pid>.<16 hex>.<ext>.tmp` dotfile a killed write
+  leaves, and the three derived-name writers left untouched — each under its own entry or
+  inside the closure it came from.
 
 - **The lint gate reads the newest analyzer bundle — PR #222, squash `1de4a0e` = v0.51.3 (2026-09-11).**
   The bundle-on-disk check in `frontend/eslint.config.test.ts` now picks the newest

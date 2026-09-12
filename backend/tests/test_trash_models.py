@@ -23,6 +23,24 @@ def test_trashed_album_minimal() -> None:
     assert a.restore_mode == "import"
 
 
+def test_the_moved_aside_mode_is_on_the_wire() -> None:
+    """``by_hand`` is a contract value, so the generated client has a branch for
+    it: the UI renders no Restore button on this row."""
+    a = TrashedAlbum(
+        folder="ABBA - artist image",
+        album_artist=None,
+        album=None,
+        year=None,
+        track_count=0,
+        format=None,
+        restore_mode="by_hand",
+        restore_note="MusicDrop replaced these files; they are not an album.",
+        origin="/data/cache/artist-images",
+    )
+    assert a.restore_mode == "by_hand"
+    assert a.origin == "/data/cache/artist-images"
+
+
 def test_listing_and_results() -> None:
     listing = TrashListing(
         albums=[

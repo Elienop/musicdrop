@@ -2494,7 +2494,7 @@
           "artists"
         ],
         "summary": "Reset Artist Image Endpoint",
-        "description": "Forget every stored portrait for ``name`` so it is looked up again.\n\nClears the manual override AND the cached automatic image (plus its\nnegative marker and derived thumb). Clearing only the override - which is\nall this used to do - drops the user straight back onto the automatic image\nthey just rejected, because a present ``.bin`` means the resolve path never\nruns again.\n\nThe result reports each slot separately: neither may have existed, and on an\nunwritable cache dir a removal can be refused. The caller shows what\nactually happened instead of implying a re-fetch that did not occur.\n\nA background refill is then kicked off (see the body) so the artist does not\nsit on a monogram until something asks for the image again.\n\nOrigin-guarded: a body-less POST is a CORS-simple request, so without this\ndependency a foreign page could reset portraits (the DELETE this replaced\nwas preflight-protected by its method alone).\n\n409 while the artist-art sweep runs: clearing the automatic slot under a\nsweep that is mid-resolve for the same artist is undone by the sweep's own\nstore, so the user would press Reset and watch nothing change.",
+        "description": "Forget this artist's portrait so it is looked up again; an uploaded or\npasted image moves to Trash first.",
         "operationId": "reset_artist_image_endpoint_api_artists_image_reset_post",
         "parameters": [
           {
@@ -2530,7 +2530,17 @@
             }
           },
           "409": {
-            "description": "An artist-art job is running, so image changes are refused until it finishes.",
+            "description": "An artist-art job is running or the beets swap lock is held, so the reset is refused until it finishes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "An uploaded or pasted image is stored for this artist and could not be fully moved to Trash, so the reset stopped. Part of it may already be in Trash.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16821,7 +16831,8 @@
             "enum": [
               "move_back",
               "import",
-              "refused"
+              "refused",
+              "by_hand"
             ],
             "title": "Restore Mode"
           },
@@ -16861,7 +16872,7 @@
           "origin"
         ],
         "title": "TrashedAlbum",
-        "description": "One album sitting in Trash (no beets DB row \u2014 read off disk).\n\n``folder`` is the album's path RELATIVE to the Trash dir; it is the key the\nrestore/empty endpoints take (resolved + traversal-checked server-side).\n\n``restore_mode`` / ``restore_note`` / ``origin`` describe what Restore would\ndo to THIS row, so the UI can say it before the user clicks rather than\ndiscovering it in the result. A row trashed before origins were recorded is\n``\"import\"`` with a note stating that \u2014 visible and explained, never a\nRestore that silently lands somewhere else.\n\nNote for the UI: it does NOT disable Restore on ``track_count == 0`` and must\nnot start \u2014 ``SettingsTrashPage.tsx`` deliberately shows a \"may still work\"\nhint instead, because 0 there means \"no readable tags\", not \"no music\". A\nrecorded audio-free husk is exactly such a row AND is restorable exactly,\nwhich is the case this record was added for. ``restore_mode == \"refused\"``\nis the ONE signal that does disable a control, and it disables BOTH (Restore\nand this row's Empty), because both of those routes refuse the row outright."
+        "description": "One album sitting in Trash (no beets DB row \u2014 read off disk).\n\n``folder`` is the album's path RELATIVE to the Trash dir; it is the key the\nrestore/empty endpoints take (resolved + traversal-checked server-side).\n\n``restore_mode`` / ``restore_note`` / ``origin`` describe what Restore would\ndo to THIS row, so the UI can say it before the user clicks rather than\ndiscovering it in the result. A row trashed before origins were recorded is\n``\"import\"`` with a note stating that \u2014 visible and explained, never a\nRestore that silently lands somewhere else.\n\nNote for the UI: it does NOT disable Restore on ``track_count == 0`` and must\nnot start \u2014 ``SettingsTrashPage.tsx`` deliberately shows a \"may still work\"\nhint instead, because 0 there means \"no readable tags\", not \"no music\". A\nrecorded audio-free husk is exactly such a row AND is restorable exactly,\nwhich is the case this record was added for. Two values of ``restore_mode``\ndo take a control away: ``\"refused\"`` disables BOTH (Restore and this row's\nEmpty), because both of those routes refuse the row outright, and\n``\"by_hand\"`` drops Restore alone \u2014 that route reaches the entry and\ndeclines to import it, while Empty works."
       },
       "TypedSearchPage": {
         "properties": {

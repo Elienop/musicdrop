@@ -97,7 +97,9 @@ def test_force_moves_the_replaced_file_to_trash(
         record = read_trash_origin(art_trash.origins_dir, entry.name)
         assert record is not None
         assert record.origin == str(d)  # the artist folder it came out of
-        assert record.moved == "items"  # no move-back: the entry is not that folder
+        # Not "items": these are loose files, not an album's tracks, so neither a
+        # move-back nor an import is on offer (trash_origins.MovedShape).
+        assert record.moved == "files"
 
     listed = list_trashed_albums(
         art_trash.trash_dir,
@@ -105,7 +107,7 @@ def test_force_moves_the_replaced_file_to_trash(
         music_dir=os.fsdecode(edit_lib.directory),
     )
     assert [row.folder for row in listed] == [p.name for p in entries]
-    assert [row.restore_mode for row in listed] == ["import"] * len(entries)
+    assert [row.restore_mode for row in listed] == ["by_hand"] * len(entries)
 
 
 def test_force_refuses_the_write_when_the_replaced_file_cannot_be_trashed(

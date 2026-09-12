@@ -95,6 +95,13 @@ logger = logging.getLogger(__name__)
 #: for any entry, so it already reads as "no record" and degrades to
 #: import-restore. Only this branch's own earlier commits ever wrote one, and the
 #: branch is unmerged, so no such file exists outside a developer's ``/data``.
+#:
+#: Adding ``moved="files"`` did not earn a bump either, for the reason above:
+#: :func:`_parse` matches the value literal by literal, so an older reader
+#: handed one reads "no record" and offers import-restore — a degrade, not a
+#: misread. The other direction is the same: a container this mover recorded
+#: ``"items"`` before the new value existed still lists ``"import"``, and that
+#: import finds no media and answers ``could_not_restore``.
 _SCHEMA = 1
 
 #: The longest filename to attempt, in BYTES. ``NAME_MAX`` is 255 on ext4/xfs/
@@ -129,7 +136,13 @@ _MAX_KEY_BYTES = _NAME_MAX - 32
 #:   to go back among a stranger's, and the re-import that has to follow takes a
 #:   DIRECTORY (``ImportTaskFactory.paths`` makes one album task per file when
 #:   handed files), so it would sweep the neighbours into the same album.
-MovedShape = Literal["folder", "items"]
+#: * ``"files"`` — loose files the app was about to replace, moved into a
+#:   container it made for them (``trash_replaced_files``). Not an album and not
+#:   the folder they came out of, so neither a move-back nor an import applies:
+#:   ``trash_manage`` lists it ``"by_hand"`` and restore answers
+#:   ``could_not_restore``. ``"items"`` cannot say this — ``trash_album`` records
+#:   that too and IS restorable by import.
+MovedShape = Literal["folder", "items", "files"]
 
 
 @dataclass(frozen=True)
@@ -138,7 +151,7 @@ class TrashOrigin:
 
     Only ever constructed by :func:`read_trash_origin`, which types every field
     it keeps — so ``origin`` is always an absolute path string and ``moved`` is
-    always one of the two shapes. That is TYPING, not a hostility check: the file
+    always one of the shapes. That is TYPING, not a hostility check: the file
     is one this app wrote on the ``/data`` side, and what the parse defends
     against is a truncated write, a hand edit, or a payload from another version.
 
@@ -681,6 +694,8 @@ def _parse(raw: object) -> TrashOrigin | None:
         moved = "folder"
     elif moved_raw == "items":
         moved = "items"
+    elif moved_raw == "files":
+        moved = "files"
     else:
         return None
     return TrashOrigin(origin=os.path.normpath(origin), moved=moved)
@@ -874,7 +889,9 @@ def move_back_target(record: TrashOrigin | None, *, music_dir: str) -> Path | No
     * no record we can use — a row trashed before origins were recorded, or one
       whose record could not be written or cannot be read back
       (:func:`read_trash_origin` logs which);
-    * ``moved="items"`` — see :data:`MovedShape`;
+    * ``moved`` is anything but ``"folder"`` — see :data:`MovedShape`; the
+      ``"files"`` shape is not even an import (``trash_manage.restore_album``
+      short-circuits it);
     * an origin outside the CURRENT music library — the honest answer after the
       user re-points ``directory`` at another library, where the recorded folder
       is a real path that this library would never see.

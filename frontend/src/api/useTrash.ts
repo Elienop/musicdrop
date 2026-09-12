@@ -53,9 +53,10 @@ export function useTrashList() {
 }
 
 /** Put a trashed album back. NOT always "as-is": the row's `restore_mode`
- * decides whether the backend moves the folder to its recorded origin or
- * re-imports it under the current naming rules — see `RestoreOutlook` in
- * SettingsTrashPage, which says which before the user commits. On success it
+ * decides whether the backend moves the folder to its recorded origin,
+ * re-imports it under the current naming rules, or declines — see
+ * `RestoreOutlook` in SettingsTrashPage, which says which before the user
+ * commits. On success it
  * may rejoin the library, so blow the cache (roster/grids/stats) AND refresh
  * the trash list. */
 export function useRestoreTrash() {

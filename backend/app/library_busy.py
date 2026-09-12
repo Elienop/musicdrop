@@ -143,24 +143,42 @@ def library_job_active(*, exclude: Container[str] = ()) -> bool:
     )
 
 
+#: The 409 detail every api-layer site refuses with unless it passes its own.
+#: One definition so the lock-only gate below says the same thing as the union.
+LIBRARY_BUSY_MESSAGE = "A library operation is in progress; try again when it finishes"
+
+
+def raise_if_swap_lock_held(app: object, *, message: str = LIBRARY_BUSY_MESSAGE) -> None:
+    """Raise ``HTTPException(409, message)`` if the beets swap lock is held.
+
+    The LOCK half of :func:`raise_if_library_busy` on its own, for a route that
+    must not WAIT on the lock but already has a narrower job gate of its own:
+    the union would refuse it for the length of an unrelated import, which only
+    ever READS the lock (``app/import_jobs/gates.py``). Best-effort
+    ``Lock.locked()`` — the single-user TOCTOU posture every site here uses.
+    """
+    from fastapi import HTTPException, status
+
+    lock = getattr(getattr(app, "state", None), "beets_swap_lock", None)
+    if lock is not None and lock.locked():
+        raise HTTPException(status.HTTP_409_CONFLICT, message)
+
+
 def raise_if_library_busy(
     app: object,
     *,
     exclude: Container[str] = (),
-    message: str = "A library operation is in progress; try again when it finishes",
+    message: str = LIBRARY_BUSY_MESSAGE,
 ) -> None:
     """Raise ``HTTPException(409, message)`` if a library job is active OR the
     beets swap lock is held — the api-layer variant of the gate.
 
     ``app`` is the FastAPI app (duck-typed ``object`` so tests can pass a stub
     carrying ``state``); ``exclude`` drops the caller's own job from the union;
-    ``message`` is the 409 detail. Best-effort ``Lock.locked()`` — the same
-    single-user TOCTOU posture the individual sites always used.
+    ``message`` is the 409 detail.
     """
     from fastapi import HTTPException, status
 
     if library_job_active(exclude=exclude):
         raise HTTPException(status.HTTP_409_CONFLICT, message)
-    lock = getattr(getattr(app, "state", None), "beets_swap_lock", None)
-    if lock is not None and lock.locked():
-        raise HTTPException(status.HTTP_409_CONFLICT, message)
+    raise_if_swap_lock_held(app, message=message)

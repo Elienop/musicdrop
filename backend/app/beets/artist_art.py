@@ -31,7 +31,7 @@ from typing import Any
 
 from beets.dbcore.query import MatchQuery
 
-from app.beets.trash import trash_replaced_files
+from app.beets.trash import safe_container_name, trash_replaced_files
 from app.beets.trash_origins import TrashOriginsStoreUnusableError
 from app.models.artist_art import ArtistArtOutcome, ArtistArtStatus
 
@@ -185,20 +185,15 @@ def _folder_plan(
     return plan
 
 
-#: What a container is called when the artist folder's name is all dots. Any
-#: word does; this one reads in the Trash page's single column.
-_UNNAMED_FOLDER = "artist"
-
-
 def _container_name(directory: Path) -> str:
     """The Trash container's name for one artist folder.
 
-    Leading dots are dropped because ``trash_manage._audio_free_entries`` skips
-    a dot-leading top-level entry when it lists the Trash, while
-    ``empty_all`` still removes it: an artist folder named ``.hack`` would put a
-    container in Trash that the page never shows and Empty-all deletes.
+    The shared sanitizer (``trash.safe_container_name``) does the work: a folder
+    name holds no path separator, so what it neutralises here is the leading dot
+    that would keep the container off the Trash page while Empty-all still
+    removed it.
     """
-    return f"{directory.name.lstrip('.') or _UNNAMED_FOLDER} - artist art"
+    return safe_container_name(directory.name, " - artist art")
 
 
 def _move_aside(directory: Path, replaced: list[Path], *, trash: ArtTrashStore | None) -> None:

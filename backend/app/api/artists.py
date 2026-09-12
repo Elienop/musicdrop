@@ -42,15 +42,18 @@ from app.artwork.source import TransientSourceError
 from app.artwork.toggle import ArtistArtWriteToggle, ArtistImageToggle
 from app.beets import library as beets_library
 from app.beets.artist_art import ArtTrashStore
+from app.beets.config_editor import _swap_lock
 from app.beets.delete import delete_artist_op
 from app.beets.library import LibraryHandle, list_artists
 from app.beets.rename import apply_artist_rename_op, preview_artist_rename_op
 from app.beets.store_layout import StoreLayoutError, checked_store_dirs
+from app.beets.trash import safe_container_name, trash_replaced_files
+from app.beets.trash_origins import TrashOriginsStoreUnusableError
 from app.config import Settings, resolve_artist_image_cache_dir
 from app.config import settings as _module_settings
 from app.etag import size_scoped_etag
 from app.events.emit import emit_art_changed, emit_library_changed
-from app.library_busy import raise_if_library_busy
+from app.library_busy import raise_if_library_busy, raise_if_swap_lock_held
 from app.models.artist import (
     Artist,
     ArtistImageOverrideResult,
@@ -67,6 +70,7 @@ from app.models.errors import ErrorDetail, StructuredErrorDetail, validation_or_
 from app.models.rename import ArtistRenamePreview, ArtistRenameRequest, ArtistRenameResult
 from app.playlists.reexport import reexport_playlists_containing
 from app.playlists.store import get_playlists_dir
+from app.wire import display_path
 
 _log = logging.getLogger(__name__)
 
@@ -84,6 +88,17 @@ _IMAGE_NOT_FOUND = "Artist image not found"
 _ART_BUSY_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": "An artist-art job is running, so image changes are refused until it finishes.",
+}
+
+#: The reset's 409, which has a cause the shared entry above does not: it is a
+#: Trash mutator, so it also refuses while the beets swap lock is held rather
+#: than queueing behind a holder with no bound.
+_RESET_BUSY_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": (
+        "An artist-art job is running or the beets swap lock is held, so the reset is"
+        " refused until it finishes."
+    ),
 }
 
 #: The OpenAPI entries for the two art-WRITE job starters (apply + backfill),
@@ -790,15 +805,87 @@ async def set_artist_image_override_from_url_endpoint(
     return ArtistImageOverrideResult(ok=True, content_type=mime)
 
 
-def _reset_slots(cache: ArtistImageCache, name: str) -> tuple[bool, bool]:
-    """Clear both stored portraits for ``name`` in ONE threadpool hop.
+def _clear_auto_slot(cache: ArtistImageCache, name: str) -> bool:
+    """Clear the CACHED AUTOMATIC portrait for ``name``. Blocking.
 
-    Returns ``(cleared_override, cleared_auto)``. A module-level function rather
-    than a lambda so the offload is assertable, and rather than a third cache
-    method so the cache keeps only the two primitives that mean something on
-    their own.
+    True when the automatic slot held an image. A module-level function rather
+    than a lambda so the offload is assertable.
+
+    The OVERRIDE slot is deliberately not touched here: its files went to Trash
+    before this ran, so a slot-scoped unlink of the override pair would
+    re-resolve the slot and remove whatever it holds NOW - after an upload that
+    landed in between, a file that never reached Trash. The reset removes
+    exactly what it moved.
     """
-    return cache.clear_override(name), cache.clear_auto(name)
+    return cache.clear_auto(name)
+
+
+def _trash_override_files(files: list[Path], name: str, store: ArtTrashStore) -> None:
+    """Move a stored override's files into one Trash container. Blocking.
+
+    A module-level function rather than a lambda so the offload is assertable.
+    The container is named from the artist's display NAME, so it goes through
+    ``safe_container_name``: "AC/DC" would otherwise nest it out of the Trash
+    page. The origin recorded is the cache dir the files were in — read off the
+    files themselves rather than resolved a second time.
+    """
+    trash_replaced_files(
+        files,
+        container_name=safe_container_name(name, " - artist image"),
+        origin=files[0].parent,
+        trash_dir=store.trash_dir,
+        origins_dir=store.origins_dir,
+    )
+
+
+#: The 503 when the move into Trash fails. "The reset stopped" rather than
+#: "nothing was reset": the mover records a partial move, so the portrait can
+#: already be in Trash — measured in
+#: ``tests/test_artist_image_reset_to_trash.py``. The cause is appended by the
+#: caller as the ``OSError``'s ``strerror``, never as a server path.
+_MOVE_FAILED: Final = (
+    "The uploaded image could not be fully moved to Trash, so the reset stopped;"
+    " check Trash before retrying."
+)
+
+
+async def _move_override_to_trash(
+    handle: LibraryHandle, settings: Settings, cache: ArtistImageCache, name: str
+) -> bool:
+    """Put a stored override in Trash; ``True`` when there was one.
+
+    Runs BEFORE the slots are cleared, and a failure here raises instead of
+    letting the clear go ahead: the override is a file the user uploaded or
+    pasted, so the alternatives are "in Trash with a record" or "still served",
+    never unlinked. Both 503s are raised inline so the status stays a literal
+    ``tests/test_route_status_declarations.py`` can see.
+
+    :data:`_MOVE_FAILED` says the reset stopped rather than that nothing moved:
+    ``trash_replaced_files`` records a PARTIAL move on purpose, and the image
+    moves before its mime sidecar (``cache.override_files`` order), so a failure
+    on the second move leaves the portrait in Trash with a record.
+    """
+    files = await run_in_threadpool(cache.override_files, name)
+    if not files:
+        return False
+    try:
+        store = await run_in_threadpool(_checked_art_trash_store, handle, settings)
+    except StoreLayoutError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    try:
+        await run_in_threadpool(_trash_override_files, files, name, store)
+    except (OSError, TrashOriginsStoreUnusableError) as exc:
+        # The path is logged and kept off the wire, the shape
+        # ``trash_origins._store_unusable`` uses; ``%r`` because a configured
+        # store path carrying a newline or an ANSI escape forges log lines.
+        _log.warning(
+            "The artist-image reset could not move an override into Trash at %r.",
+            display_path(str(store.trash_dir)),
+            exc_info=True,
+        )
+        why = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
+        raise HTTPException(status_code=503, detail=f"{_MOVE_FAILED} {why}") from exc
+    return True
 
 
 @router.post(
@@ -810,7 +897,15 @@ def _reset_slots(cache: ArtistImageCache, name: str) -> tuple[bool, bool]:
     # FastAPI's HTTPValidationError, whose `detail` is a list.
     responses={
         403: {"model": ErrorDetail, "description": "The request is cross-origin."},
-        409: _ART_BUSY_RESPONSE,
+        409: _RESET_BUSY_RESPONSE,
+        503: {
+            "model": ErrorDetail,
+            "description": (
+                "An uploaded or pasted image is stored for this artist and could not be"
+                " fully moved to Trash, so the reset stopped. Part of it may already be"
+                " in Trash."
+            ),
+        },
     },
 )
 async def reset_artist_image_endpoint(
@@ -821,31 +916,33 @@ async def reset_artist_image_endpoint(
     handle: Annotated[LibraryHandle, Depends(get_library)],
     filler: Annotated[ArtistImageFiller, Depends(get_artist_image_filler)],
 ) -> ArtistImageResetResult:
-    """Forget every stored portrait for ``name`` so it is looked up again.
-
-    Clears the manual override AND the cached automatic image (plus its
-    negative marker and derived thumb). Clearing only the override - which is
-    all this used to do - drops the user straight back onto the automatic image
-    they just rejected, because a present ``.bin`` means the resolve path never
-    runs again.
-
-    The result reports each slot separately: neither may have existed, and on an
-    unwritable cache dir a removal can be refused. The caller shows what
-    actually happened instead of implying a re-fetch that did not occur.
-
-    A background refill is then kicked off (see the body) so the artist does not
-    sit on a monogram until something asks for the image again.
-
-    Origin-guarded: a body-less POST is a CORS-simple request, so without this
-    dependency a foreign page could reset portraits (the DELETE this replaced
-    was preflight-protected by its method alone).
-
-    409 while the artist-art sweep runs: clearing the automatic slot under a
-    sweep that is mid-resolve for the same artist is undone by the sweep's own
-    store, so the user would press Reset and watch nothing change.
+    """Forget this artist's portrait so it is looked up again; an uploaded or
+    pasted image moves to Trash first.
     """
     _gate_artist_art_busy()
-    cleared_override, cleared_auto = await run_in_threadpool(_reset_slots, cache, name)
+    # Refuse rather than QUEUE behind the lock: no holder is bounded (a restore
+    # re-imports, a duplicates merge runs a whole batch) and ``apiFetch`` sets
+    # no timeout, so waiting pins the confirm dialog with Cancel disabled for as
+    # long as the holder runs. The lock half only - the job union would refuse
+    # for the length of an import, which never holds the lock.
+    raise_if_swap_lock_held(request.app)
+    settings: Settings = getattr(request.app.state, "settings", None) or _module_settings
+    # The beets swap lock, held across the store check, the move and the clear:
+    # this route is a Trash MUTATOR now, and the three in ``app/api/trash.py``
+    # hold the same lock. An Empty-all landing between the container's ``mkdir``
+    # and the move rmtree'd the file this feature exists to protect, and a
+    # config Apply landing there moved it into the OLD Trash dir.
+    async with _swap_lock(request.app):
+        # Asked AGAIN, now that the lock is ours: the gate above read a flag the
+        # pre-check's own 409 window and the acquire can outlive, and a sweep
+        # that started meanwhile re-stores the slot this is about to clear. A
+        # 409 raised here leaves the lock through ``async with``.
+        _gate_artist_art_busy()
+        moved_to_trash = await _move_override_to_trash(handle, settings, cache, name)
+        # The AUTOMATIC slot too: a present ``.bin`` means the resolve path never
+        # runs, so clearing only the override lands the user back on the image
+        # they just rejected.
+        cleared_auto = await run_in_threadpool(_clear_auto_slot, cache, name)
     if service.is_enabled():
         # Clearing the automatic slot is the point of this route, which means
         # that without a kick the artist shows a monogram until the NEXT image
@@ -868,8 +965,12 @@ async def reset_artist_image_endpoint(
     # would duplicate it across languages (casefold != toLowerCase). Album
     # covers ARE scoped — they key off a stable numeric id.
     emit_art_changed(request.app)
+    # ``cleared_override`` IS the move: the files are in Trash and the clear
+    # above leaves the slot alone, so nothing else can have emptied it. The
+    # user's answer is "your upload is no longer in play", and Trash is where
+    # it went.
     return ArtistImageResetResult(
-        ok=True, cleared_override=cleared_override, cleared_auto=cleared_auto
+        ok=True, cleared_override=moved_to_trash, cleared_auto=cleared_auto
     )
 
 
@@ -881,22 +982,28 @@ def _gate_library_busy(app: object) -> None:
 def _gate_artist_art_busy() -> None:
     """Refuse an artist-IMAGE mutation while the artist-art sweep is running.
 
-    Narrower than ``_gate_library_busy`` on purpose. These endpoints write only
-    the artist-image cache directory, and exactly ONE background job touches
-    those files: the artist-art sweep, which builds its own ArtistImageCache
-    over the same dir. Using the full library-busy union would 409 a portrait
-    upload for the whole length of an unrelated import, to prevent a collision
-    that import cannot cause. ``artist_art_backfill_active`` is called directly
-    rather than through ``library_job_active(exclude=...)`` so a sixth job type
-    added later cannot silently join this gate.
+    Narrower than ``_gate_library_busy`` on purpose. What these endpoints write
+    in the artist-image cache directory has exactly ONE background job touching
+    it: the artist-art sweep, which builds its own ArtistImageCache over the
+    same dir. Using the full library-busy union would 409 a portrait upload for
+    the whole length of an unrelated import, to prevent a collision that import
+    cannot cause. ``artist_art_backfill_active`` is called directly rather than
+    through ``library_job_active(exclude=...)`` so a sixth job type added later
+    cannot silently join this gate.
 
-    This is a COHERENCE guard, not a corruption guard: cache writes are atomic
-    (tmp + os.replace) and the override slot always beats the positive one. What
-    it prevents is a nonsense OUTCOME - a reset that clears the automatic slot
-    while the sweep is mid-resolve for that same artist can be undone by the
-    sweep's own store, and ``POST /artists/art/apply`` copies whatever the cache
-    holds into the music folder, so an image changing under it makes the file it
-    writes nondeterministic.
+    The reset writes the Trash dir and the origin store as well, which three
+    lock-holding routes in ``app/api/trash.py`` also mutate. That half is
+    serialised by the beets swap lock the reset holds, not by this gate - so
+    read the route's own ``async with`` before concluding it is only gated here.
+
+    For the cache writes this gate does cover, it is a COHERENCE guard, not a
+    corruption guard: they are atomic (tmp + os.replace) and the override slot
+    always beats the positive one. What it prevents is a nonsense OUTCOME - a
+    reset that clears the automatic slot while the sweep is mid-resolve for that
+    same artist can be undone by the sweep's own store, and
+    ``POST /artists/art/apply`` copies whatever the cache holds into the music
+    folder, so an image changing under it makes the file it writes
+    nondeterministic.
 
     The FETCH route is deliberately NOT gated: it writes nothing. It shares the
     service's limiter with the sweep, which paces it rather than conflicting.
@@ -985,6 +1092,22 @@ async def stop_artist_art_backfill(
     return reg.state()
 
 
+def _checked_art_trash_store(handle: LibraryHandle, settings: Settings) -> ArtTrashStore:
+    """The Trash store a replaced image goes into, checked for THIS call.
+
+    Raises rather than answering ``None``, because the reset endpoint has to
+    turn a refused store into a 503 with the store's own sentence: it is about
+    to move a file the user uploaded, and unlinking it instead is the data loss
+    the whole move-aside exists to stop. Blocking (``resolve`` + the layout
+    walk's stats).
+
+    Raises:
+        StoreLayoutError: refused, or a path would not resolve.
+    """
+    trash_dir, origins_dir = checked_store_dirs(settings, handle)
+    return ArtTrashStore(trash_dir=trash_dir, origins_dir=origins_dir)
+
+
 def _art_trash_store(app: object, settings: Settings) -> ArtTrashStore | None:
     """Where a REPLACED poster/background goes, or ``None`` if it cannot be named.
 
@@ -1004,7 +1127,7 @@ def _art_trash_store(app: object, settings: Settings) -> ArtTrashStore | None:
     if handle is None:
         return None
     try:
-        trash_dir, origins_dir = checked_store_dirs(settings, handle)
+        return _checked_art_trash_store(handle, settings)
     except StoreLayoutError:
         _log.warning(
             "artist art: the Trash store is refused, so a forced write will not replace"
@@ -1012,7 +1135,6 @@ def _art_trash_store(app: object, settings: Settings) -> ArtTrashStore | None:
             exc_info=True,
         )
         return None
-    return ArtTrashStore(trash_dir=trash_dir, origins_dir=origins_dir)
 
 
 def _start(

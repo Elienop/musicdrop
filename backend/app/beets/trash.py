@@ -66,7 +66,7 @@ from app.beets.trash_origins import (
 )
 from app.config import Settings
 from app.fsutil import exists, move_no_merge
-from app.wire import display_path
+from app.wire import PLACEHOLDER, display_path
 
 logger = logging.getLogger(__name__)
 
@@ -102,19 +102,56 @@ def album_folder(lib: Library, items: list[Any]) -> str:
     return os.path.dirname(_abs_path(lib, items[0].path))
 
 
+#: What a container is called when the text it is named from neutralises to
+#: nothing. Any word does; this one reads in the Trash page's single column.
+_UNNAMED_CONTAINER = "artist"
+
+
+def _one_trash_level(text: str) -> str:
+    """``text`` reduced to a single listable Trash container level; may be EMPTY.
+
+    The one replace set both container-name builders share, so a tag cannot
+    reach ``mkdir`` with something a display name is protected from.
+    ``os.sep``, ``/`` and NUL go so "AC/DC" lands directly under the Trash dir
+    instead of nesting and a NUL cannot reach the ``mkdir`` as a ``ValueError``
+    no ``except OSError`` catches. :data:`app.wire.PLACEHOLDER` goes for a
+    reason the other three do not share: a client string and an ID3 tag can
+    both spell U+FFFD, which is what ``wire_safe`` puts in place of an
+    UNDECODABLE byte, so such a container would display identically to a
+    damaged sibling's name and ``wire._match_display_child`` answers 409 on
+    both rows. Leading dots go because ``trash_manage._audio_free_entries``
+    skips a dot-leading entry that ``empty_all`` still removes. Length is the
+    allocator's job (``_unique_trash_dest``); the empty answer is the caller's,
+    because the fallback word differs per caller.
+    """
+    for bad in {os.sep, "/", "\x00", PLACEHOLDER}:
+        text = text.replace(bad, "_")
+    return text.lstrip(".")
+
+
 def _trash_container_name(album: Any) -> str:
     """A readable, filesystem-safe ``"<albumartist> - <album>"`` container name.
 
-    Path separators (``os.sep`` and a literal ``/`` on any OS) are neutralised so
-    the name is a single dir level; both fields empty falls back to ``"album"``
-    (``_unique_trash_dest`` handles that too, but keep the intent explicit here).
+    Neutralised through :func:`_one_trash_level`, the same set
+    :func:`safe_container_name` uses: a tag can carry a separator, a NUL or a
+    U+FFFD just as a display name can. Both fields empty falls back to
+    ``"album"`` (``_unique_trash_dest`` handles that too, but keep the intent
+    explicit here).
     """
     artist = _coerce_optional_str(getattr(album, "albumartist", None)) or ""
     title = _coerce_optional_str(getattr(album, "album", None)) or ""
     name = f"{artist} - {title}".strip(" -") if (artist or title) else ""
-    for bad in {os.sep, "/"}:
-        name = name.replace(bad, "_")
-    return name or "album"
+    return _one_trash_level(name) or "album"
+
+
+def safe_container_name(text: str, suffix: str) -> str:
+    """``"<text><suffix>"``, as a single listable Trash container level.
+
+    For the movers named from a display string rather than from a folder, where
+    ``text`` is an artist NAME. Neutralising is :func:`_one_trash_level`'s job;
+    nothing left falls back to a word.
+    """
+    return f"{_one_trash_level(text) or _UNNAMED_CONTAINER}{suffix}"
 
 
 def _moved_under(lib: Library, items: list[Any], container: Path) -> list[Any]:
@@ -837,10 +874,10 @@ def _delete_undo_failure(
     where it came from" about files that are in neither place they would look.
 
     ``%r`` on the paths and on what this logs. A Trash folder's name comes from
-    the album's own tags, ``_trash_container_name`` neutralises path separators
-    and nothing else, and ``display_path`` replaces only UNDECODABLE bytes — so
-    a newline or an ANSI escape in an ``albumartist`` survives to here and,
-    interpolated raw, forges log lines.
+    the album's own tags, ``_trash_container_name`` neutralises separators, NUL
+    and U+FFFD but no other control character, and ``display_path`` replaces
+    only UNDECODABLE bytes — so a newline or an ANSI escape in an
+    ``albumartist`` survives to here and, interpolated raw, forges log lines.
     """
     logger.exception(
         "could not move %r back out of Trash after removing its library rows failed",
@@ -904,13 +941,14 @@ def trash_replaced_files(
     directly under ``trash_dir`` (a loose file at the Trash ROOT that
     ``Item.from_path`` cannot read is listed by neither half of
     ``trash_manage.list_trashed_albums``; a container directory is listed by
-    ``_audio_free_entries`` as a zero-track row, so it has a Restore/Empty
-    affordance and Empty-all counts it).
+    ``_audio_free_entries`` as a zero-track row, so it has an Empty affordance
+    - the page renders no Restore for this shape - and Empty-all counts it).
 
-    Recorded ``moved="items"``, which is what the listing turns into an
-    import-restore with no move-back offered: the container is not the folder
-    these files came from, and moving it back would put a directory where two
-    files were. Restoring them is a hand copy out of Trash.
+    Recorded ``moved="files"``, which is what the listing turns into
+    ``restore_mode="by_hand"``: the container is not the folder these files came
+    from, so moving it back would put a directory where two files were, and an
+    import of art has nothing to import. Restoring them is a hand copy out of
+    Trash, and the record is what names the folder to copy them into.
 
     No ``ProtectedTrees`` argument: every entry is lstat'd first and anything
     that is not a regular file or a symlink is refused. That guard runs over all
@@ -950,11 +988,11 @@ def trash_replaced_files(
         # it came out of. Nothing moved means nothing to say — and an empty
         # container would sit in the Trash page forever.
         if moved:
-            # ``origin`` is recorded unchecked, and ``moved="items"`` is what
+            # ``origin`` is recorded unchecked, and ``moved="files"`` is what
             # makes that safe: ``trash_origins.move_back_target`` returns None on
             # any record that is not ``moved="folder"``, before it reaches its
             # lexical containment test, so no path here ever steers a rename.
-            _record_origin(origins_dir, dest, origin=os.path.abspath(str(origin)), moved="items")
+            _record_origin(origins_dir, dest, origin=os.path.abspath(str(origin)), moved="files")
         else:
             # Removed with its contents, not by ``rmdir``: a cross-filesystem
             # ``shutil.move`` is a copy that can die mid-write, leaving a

@@ -334,6 +334,47 @@ def test_restore_duplicate_skips_and_keeps_files(tmp_path: Path) -> None:
     assert list(folder.rglob("*.flac"))  # still in Trash, untouched
 
 
+def test_a_container_recorded_before_the_files_shape_still_degrades_to_an_import(
+    tmp_path: Path,
+) -> None:
+    """A record written by the PREVIOUS version keeps today's behaviour.
+
+    ``trash_replaced_files`` recorded ``moved="items"`` for these art containers
+    before the ``"files"`` shape existed, and such rows are on disk now. They
+    still list as an import, and that import finds no media to take — so it
+    answers ``could_not_restore`` with the files and the record both still
+    there. A degrade, never a misread.
+    """
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
+    trash = tmp_path / "trash"
+    entry = trash / "Artist - artist art"
+    entry.mkdir(parents=True)
+    (entry / "artist-poster.png").write_bytes(b"\x89PNG")
+    write_trash_origin(
+        origins_for(trash),
+        entry.name,
+        origin=str(tmp_path / "music" / "Artist"),
+        moved="items",
+    )
+
+    (row,) = list_trashed_albums(
+        trash, origins_dir=origins_for(trash), music_dir=str(tmp_path / "music")
+    )
+    assert row.restore_mode == "import"
+
+    result = restore_album(
+        lib,
+        str(entry),
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
+        protected=protected_for(lib),
+    )
+
+    assert (result.restored, result.reason) == (False, "could_not_restore")
+    assert (entry / "artist-poster.png").read_bytes() == b"\x89PNG"
+    assert read_trash_origin(origins_for(trash), entry.name) is not None
+
+
 def test_resolve_trash_child_guards_traversal(tmp_path: Path) -> None:
     trash = tmp_path / "trash"
     (trash / "Album").mkdir(parents=True)

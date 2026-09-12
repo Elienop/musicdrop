@@ -162,24 +162,52 @@ def test_positive_mime_written_before_bytes(cache: ArtistImageCache, tmp_path: P
     assert (tmp_path / f"{key}.bin").exists()
 
 
-def test_clear_override_removes_both_files_and_falls_through(
-    cache: ArtistImageCache, tmp_path: Path
-) -> None:
+def test_override_files_lists_the_pair_bytes_first(cache: ArtistImageCache, tmp_path: Path) -> None:
+    """What the reset endpoint hands the Trash mover.
+
+    Bytes before mime, the reverse of ``write_override``'s publish order, so a
+    mover that dies between the two never leaves bytes behind a stale sidecar.
+    The automatic slot is not listed: the override is the only file here a
+    person put in.
+    """
     cache.store_positive("ABBA", b"auto", "image/png")
     cache.write_override("ABBA", b"manual", "image/jpeg")
-    cache.clear_override("ABBA")
     key = cache._key("ABBA")
-    assert not (tmp_path / f"{key}.override").exists()
-    assert not (tmp_path / f"{key}.override.mime").exists()
-    # With the override gone, get() falls through to the positive slot.
-    result = cache.get("ABBA")
-    assert isinstance(result, CachedImage)
-    assert result.data == b"auto"
+
+    assert cache.override_files("ABBA") == [
+        tmp_path / f"{key}.override",
+        tmp_path / f"{key}.override.mime",
+    ]
 
 
-def test_clear_override_is_idempotent_when_absent(cache: ArtistImageCache) -> None:
-    cache.clear_override("Nobody")  # no error, no-op
-    assert cache.get("Nobody") is None
+def test_override_files_is_empty_when_there_is_no_override(cache: ArtistImageCache) -> None:
+    # The reset route resolves no Trash store on this answer, so an automatic-only
+    # reset never creates a Trash dir.
+    cache.store_positive("ABBA", b"auto", "image/png")
+    assert cache.override_files("ABBA") == []
+
+
+def test_override_files_ignores_an_orphaned_mime_sidecar(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """An answer keyed on the BYTES, like ``_clear_slots``' is.
+
+    ``write_override`` publishes the mime first, so a crash between the two
+    leaves a sidecar with no image. Nobody uploaded that, so there is nothing
+    for Trash to keep and the reset leaves it. No reset removes it; it goes
+    when the next upload overwrites it or a rename purges the key.
+    """
+    cache.write_override("ABBA", b"manual", "image/jpeg")
+    key = cache._key("ABBA")
+    (tmp_path / f"{key}.override").unlink()
+
+    assert cache.override_files("ABBA") == []
+    # Not swept: ``clear_auto`` names the automatic slots only.
+    assert cache.clear_auto("ABBA") is False
+    assert (tmp_path / f"{key}.override.mime").exists()
+    # Overwritten in place by the next upload, never unlinked.
+    cache.write_override("ABBA", b"second", "image/png")
+    assert (tmp_path / f"{key}.override.mime").read_text(encoding="utf-8") == "image/png"
 
 
 def test_store_positive_publishes_bin_via_atomic_replace(
@@ -287,7 +315,9 @@ def test_validator_prefers_override(cache: ArtistImageCache) -> None:
     cache.write_override("ABBA", b"manual-bytes", "image/jpeg")
     override_tag = cache.validator("ABBA")
     assert override_tag != auto_tag
-    cache.clear_override("ABBA")
+    # What the reset does to the override slot: the files LEAVE it (to Trash).
+    for path in cache.override_files("ABBA"):
+        path.unlink()
     assert cache.validator("ABBA") == auto_tag
 
 
@@ -1254,30 +1284,13 @@ def test_clear_auto_reports_the_image_slot_never_a_sidecar(tmp_path: Path) -> No
     assert not (tmp_path / f"{bare}.bin").exists()
 
 
-def test_clear_override_reports_the_image_slot_never_a_sidecar(tmp_path: Path) -> None:
-    """Same guarantee on the override pair, reachable the same way: ``.override``
-    is published after ``.override.mime``, so a crash between them leaves an
-    orphaned sidecar that must not read as "an override was removed"."""
-    cache = ArtistImageCache(tmp_path)
-
-    orphan = cache._key("Sidecar Only")
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    (tmp_path / f"{orphan}.override.mime").write_text("image/png", encoding="utf-8")
-    assert cache.clear_override("Sidecar Only") is False
-    assert not (tmp_path / f"{orphan}.override.mime").exists()
-
-    bare = cache._key("Bytes Only")
-    (tmp_path / f"{bare}.override").write_bytes(b"image-bytes")
-    assert cache.clear_override("Bytes Only") is True
-    assert not (tmp_path / f"{bare}.override").exists()
-
-
 def test_the_clear_calls_unlink_the_image_before_its_mime_sidecar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Mirror-image of the write order, and now worth pinning rather than only
-    documenting: both clears run through one ``_clear_slots`` loop, so hoisting
-    the sweep above the image is a single-line edit that no other test notices.
+    documenting: ``clear_auto`` runs through the ``_clear_slots`` loop, so
+    hoisting the sweep above the image is a single-line edit that no other test
+    notices.
 
     Sweeping the sidecar first opens a window where a concurrent ``get()`` finds
     image bytes with no mime and serves them as ``application/octet-stream``.
@@ -1286,7 +1299,6 @@ def test_the_clear_calls_unlink_the_image_before_its_mime_sidecar(
     """
     cache = ArtistImageCache(tmp_path)
     cache.store_positive("ABBA", b"auto", "image/png")
-    cache.write_override("ABBA", b"manual", "image/png")
     key = cache._key("ABBA")
 
     order: list[str] = []
@@ -1298,10 +1310,8 @@ def test_the_clear_calls_unlink_the_image_before_its_mime_sidecar(
 
     monkeypatch.setattr(ArtistImageCache, "_unlink", spy)
     cache.clear_auto("ABBA")
-    cache.clear_override("ABBA")
 
     assert order.index(f"{key}.bin") < order.index(f"{key}.mime")
-    assert order.index(f"{key}.override") < order.index(f"{key}.override.mime")
 
 
 def test_clear_auto_drops_a_fresh_negative_marker_so_the_next_call_re_resolves(
@@ -1380,29 +1390,19 @@ def test_clear_auto_forgets_an_in_memory_negative_marker(tmp_path: Path) -> None
         os.chmod(tmp_path, 0o755)
 
 
-def test_clear_override_reports_whether_it_removed_anything(tmp_path: Path) -> None:
-    cache = ArtistImageCache(tmp_path)
-    assert cache.clear_override("ABBA") is False
-    cache.write_override("ABBA", b"manual", "image/png")
-    assert cache.clear_override("ABBA") is True
-    assert cache.get("ABBA") is None
-
-
-def test_clear_calls_never_raise_on_an_unremovable_slot(
+def test_clear_auto_never_raises_on_an_unremovable_slot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # EACCES after a container recreate re-chowned the volume: report False,
     # never 500 the endpoint.
     cache = ArtistImageCache(tmp_path)
     cache.store_positive("ABBA", b"auto", "image/png")
-    cache.write_override("ABBA", b"manual", "image/png")
 
     def boom(self: Path) -> None:
         raise PermissionError(13, "Permission denied")
 
     monkeypatch.setattr(Path, "unlink", boom)
     assert cache.clear_auto("ABBA") is False
-    assert cache.clear_override("ABBA") is False
 
 
 def test_a_refused_unlink_is_reported_once_not_per_slot(
@@ -1571,8 +1571,9 @@ def test_rename_merge_source_override_outranks_target_auto(
     assert isinstance(got, CachedImage)
     assert got.data == b"pinned"
     assert got.content_type == "image/png"
-    # Clearing the pin reveals the target's auto image again (it was kept beneath).
-    assert cache.clear_override("Fairuz") is True
+    # Moving the pin out reveals the target's auto image again (kept beneath).
+    for path in cache.override_files("Fairuz"):
+        path.unlink()
     got2 = cache.get("Fairuz")
     assert isinstance(got2, CachedImage)
     assert got2.data == b"auto"
@@ -1738,3 +1739,25 @@ def test_rename_move_failure_returns_kept_target(
     got = cache.get("Fairuz")
     assert isinstance(got, CachedImage)
     assert got.data == b"auto"
+
+
+def test_rename_purges_an_orphaned_override_sidecar_at_the_old_key(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """The one path that removes a mime-without-bytes, as ``override_files`` says.
+
+    ``write_override`` publishes the mime first, so a crash between the two
+    leaves a sidecar no reset removes (its answer is keyed on the bytes). A
+    rename whose target already holds a portrait purges EVERY old-key suffix,
+    the orphan included.
+    """
+    cache.write_override("Fayrouz", b"pinned", "image/png")
+    old_key = cache._key("Fayrouz")
+    (tmp_path / f"{old_key}.override").unlink()  # the crash: bytes never landed
+    assert cache.override_files("Fayrouz") == []
+    cache.store_positive("Fairuz", b"target", "image/jpeg")
+
+    assert cache.rename("Fayrouz", "Fairuz") == "kept_target"
+
+    assert not (tmp_path / f"{old_key}.override.mime").exists()
+    assert not any(name.startswith(old_key) for name in _slot_files(tmp_path))

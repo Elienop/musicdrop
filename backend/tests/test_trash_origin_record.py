@@ -229,6 +229,27 @@ def test_trash_album_records_the_source_folder_as_items(tmp_path: Path) -> None:
     assert move_back_target(record, music_dir=str(tmp_path / "music")) is None
 
 
+def test_a_files_record_round_trips_and_never_offers_a_move_back(tmp_path: Path) -> None:
+    """The shape ``trash_replaced_files`` writes for loose files it moved aside.
+
+    Read back as itself — not collapsed onto ``"items"``, which is a restorable
+    album — and the origin it carries never steers a rename: it names the folder
+    the files were IN, so a move-back would put a directory where two files were.
+    """
+    entry = tmp_path / "trash" / "ABBA - artist image"
+    entry.mkdir(parents=True)
+    origin = tmp_path / "music" / "ABBA"
+    write_trash_origin(_origins(tmp_path), entry.name, origin=str(origin), moved="files")
+
+    record = _record(tmp_path, entry)
+
+    assert record.origin == str(origin)
+    assert record.moved == "files"
+    # Inside the library and it still gets no move-back: the shape decides,
+    # before the containment test move_back_target would otherwise reach.
+    assert move_back_target(record, music_dir=str(tmp_path / "music")) is None
+
+
 def test_the_record_carries_a_trash_time_nothing_else_on_disk_keeps(tmp_path: Path) -> None:
     """``trashed_at`` has no reader, and this test is what keeps it on disk.
 
@@ -539,6 +560,76 @@ def test_listing_marks_an_origin_outside_the_library_as_an_import(tmp_path: Path
     assert row.origin == str(tmp_path / "elsewhere" / "Dummy")
     assert row.restore_note is not None
     assert "not inside the current music library" in row.restore_note
+
+
+def _moved_aside_container(tmp_path: Path, *, origin: Path) -> Path:
+    """A Trash entry in the shape ``trash_replaced_files`` leaves behind.
+
+    Loose files, no audio, and a ``moved="files"`` record naming the folder they
+    were taken out of — an uploaded artist portrait here.
+    """
+    entry = tmp_path / "trash" / "ABBA - artist image"
+    entry.mkdir(parents=True)
+    (entry / "a1b2.override").write_bytes(b"\x89PNG portrait")
+    (entry / "a1b2.override.mime").write_text("image/png")
+    write_trash_origin(_origins(tmp_path), entry.name, origin=str(origin), moved="files")
+    return entry
+
+
+def test_listing_marks_a_moved_aside_container_as_a_hand_copy(tmp_path: Path) -> None:
+    """Loose files the app replaced are not an album, and the row says so.
+
+    ``"import"`` would offer a restore that cannot work (there is no media to
+    import) and ``"move_back"`` would put a directory where two files were, so
+    this row gets its own mode: the user copies the files out, and ``origin``
+    is where to copy them to.
+    """
+    origin = tmp_path / "cache" / "artist-images"
+    _moved_aside_container(tmp_path, origin=origin)
+
+    (row,) = list_trashed_albums(
+        tmp_path / "trash", origins_dir=_origins(tmp_path), music_dir=str(tmp_path / "music")
+    )
+
+    assert row.restore_mode == "by_hand"
+    assert row.origin == str(origin)
+    assert row.restore_note is not None
+    assert "MusicDrop replaced these files" in row.restore_note
+    assert "nothing to restore" in row.restore_note
+    assert "copy it out of this entry" in row.restore_note
+    assert row.track_count == 0
+
+
+def test_restore_on_a_moved_aside_container_runs_no_import_and_keeps_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restore on that row answers without touching anything.
+
+    The import arm is replaced with a raiser: reaching it would move the files
+    into the library under a stranger's tags, or fail with the record already
+    deleted. The record has to survive the call — it is the only thing that says
+    where the files belong.
+    """
+    lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
+    entry = _moved_aside_container(tmp_path, origin=tmp_path / "cache" / "artist-images")
+
+    def never(*_a: object, **_kw: object) -> NoReturn:
+        raise AssertionError("a moved-aside container must not be imported")
+
+    monkeypatch.setattr("app.beets.trash_manage._restore_by_import", never)
+
+    result = restore_album(
+        lib,
+        str(entry),
+        trash_dir=tmp_path / "trash",
+        origins_dir=_origins(tmp_path),
+        protected=protected_for(lib),
+    )
+
+    assert result == RestoreResult(restored=False, reason="could_not_restore")
+    assert (entry / "a1b2.override").read_bytes() == b"\x89PNG portrait"
+    record = _record(tmp_path, entry)
+    assert record.moved == "files"  # still readable after the refusal
 
 
 def test_a_recorded_husk_is_a_zero_track_row_that_can_still_move_back(tmp_path: Path) -> None:
@@ -1461,12 +1552,12 @@ def test_a_failed_return_to_trash_cannot_forge_a_log_line(
 ) -> None:
     """``%r``, not ``%s`` — and the same in the message whose traceback this logs.
 
-    ``_trash_container_name`` neutralises path separators and nothing else, so a
-    newline or an ANSI escape in an ``albumartist`` survives into the folder
-    name; ``display_path`` replaces only UNDECODABLE bytes, never control
-    characters. Interpolated raw, that lets a crafted album name write whatever
-    it likes into the server log, on the one code path an operator reads when a
-    restore has already gone wrong.
+    ``_trash_container_name`` neutralises separators, NUL and U+FFFD but no
+    other control character, so a newline or an ANSI escape in an
+    ``albumartist`` survives into the folder name; ``display_path`` replaces
+    only UNDECODABLE bytes, never control characters. Interpolated raw, that
+    lets a crafted album name write whatever it likes into the server log, on
+    the one code path an operator reads when a restore has already gone wrong.
 
     The HTTP surface was never affected (JSON escapes it), which is exactly why
     this needs its own test: nothing else would have caught it.
@@ -2262,12 +2353,12 @@ def test_an_unusable_record_cannot_forge_a_log_line_through_its_own_filename(
     """``%r`` on the record path, and it got MORE load-bearing with the move.
 
     The key is the Trash entry's NAME, which comes from the album's own tags —
-    ``_trash_container_name`` neutralises path separators and nothing else — so a
-    newline or an ANSI escape in an ``albumartist`` now reaches this log line
-    inside the record's own FILENAME. Interpolated with ``%s`` that lets a
-    crafted album name write whatever it likes into the server log, on the one
-    line an operator reads when a record has gone bad. The sidecar's fixed
-    filename could not carry any of this.
+    ``_trash_container_name`` neutralises separators, NUL and U+FFFD but no
+    other control character — so a newline or an ANSI escape in an
+    ``albumartist`` now reaches this log line inside the record's own FILENAME.
+    Interpolated with ``%s`` that lets a crafted album name write whatever it
+    likes into the server log, on the one line an operator reads when a record
+    has gone bad. The sidecar's fixed filename could not carry any of this.
     """
     forged = "Dummy\x1b[31m\nCRITICAL:app:all clear"
     origins = tmp_path / "trash-origins"

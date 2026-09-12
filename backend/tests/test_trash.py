@@ -33,13 +33,15 @@ from app.beets.trash import (
     _album_root,
     _delete_whereabouts,
     _folder_is_shared,
+    _trash_container_name,
     album_folder,
     album_format_bitrate,
+    safe_container_name,
     trash_album,
     trash_album_folder,
 )
 from app.beets.trash_origins import TrashOriginsStoreUnusableError
-from app.wire import display_path
+from app.wire import PLACEHOLDER, display_path
 from tests.conftest import (
     beets_dir_for,
     build_library,
@@ -63,6 +65,69 @@ def test_trash_album_moves_files_and_drops_db(duplicates_lib: Library, tmp_path:
     assert duplicates_lib.get_album(album_id) is None
     assert str(trash) in trash_path
     assert os.path.isdir(trash_path)
+
+
+def test_safe_container_name_keeps_a_display_name_to_one_listable_level() -> None:
+    """The name comes from a display string, so four characters have to go.
+
+    A separator would nest the container out of the Trash listing (only
+    top-level entries are listed) and off its own origin record's key; a leading
+    dot is skipped by the listing while Empty-all still removes it; a NUL raises
+    ValueError at the mkdir, which no ``except OSError`` catches; U+FFFD is the
+    display form of a byte no path can spell, so it collides with a damaged
+    sibling.
+    """
+    assert safe_container_name("AC/DC", " - artist image") == "AC_DC - artist image"
+    assert safe_container_name(".hack", " - artist image") == "hack - artist image"
+    assert safe_container_name("A\x00B", " - artist image") == "A_B - artist image"
+    assert safe_container_name("..", " - artist image") == "artist - artist image"
+    # U+FFFD is what ``wire_safe`` puts in place of an undecodable byte, so a
+    # container spelling it displays the same as a damaged sibling's name and
+    # ``wire._match_display_child`` refuses BOTH rows with a 409.
+    assert safe_container_name("A\ufffdB", " - artist image") == "A_B - artist image"
+    # The ordinary name is untouched — a sanitizer that rewrote every name would
+    # rename every container and nothing above would notice.
+    assert safe_container_name("ABBA", " - artist image") == "ABBA - artist image"
+
+
+def test_a_tag_built_container_name_is_neutralised_like_a_display_name(
+    tmp_path: Path,
+) -> None:
+    """The album-delete name comes from TAGS, which can spell the same four.
+
+    ``albumartist``/``album`` are library text, and a literal U+FFFD in one used
+    to reach the Trash dir: that entry displays identically to a damaged
+    sibling's name and ``wire._match_display_child`` then answers 409 on BOTH
+    rows, so neither can be restored or emptied. A NUL reached ``dest.mkdir()``
+    as a ``ValueError`` no ``except OSError`` catches. One replace set now, so a
+    tag cannot spell what a display name is protected from.
+    """
+    for artist, title in ((f"AB{PLACEHOLDER}BA", "Gold"), ("a\x00b", "x")):
+        name = _trash_container_name(SimpleNamespace(albumartist=artist, album=title))
+
+        assert os.sep not in name
+        assert "/" not in name
+        assert "\x00" not in name
+        assert PLACEHOLDER not in name
+        # Path-spellable, one level, and the listing (which reads top-level
+        # entries only) can see it.
+        (tmp_path / name).mkdir()
+        assert [e.name for e in tmp_path.iterdir()] == [name]
+        assert os.fsdecode(os.fsencode(name)) == name
+        (tmp_path / name).rmdir()
+
+    # A leading dot too: ``trash_manage._audio_free_entries`` skips a
+    # dot-leading entry that ``empty_all`` still removes.
+    assert _trash_container_name(SimpleNamespace(albumartist=".hack", album="Gold")) == (
+        "hack - Gold"
+    )
+    # Untouched for a tag that spells none of them and leads with no dot - every
+    # existing entry name has to keep its spelling, or the origin records stop
+    # matching.
+    assert _trash_container_name(SimpleNamespace(albumartist="ABBA", album="Gold")) == (
+        "ABBA - Gold"
+    )
+    assert _trash_container_name(SimpleNamespace(albumartist=None, album=None)) == "album"
 
 
 def test_album_format_bitrate_reads_first_item(duplicates_lib: Library) -> None:
