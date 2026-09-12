@@ -521,6 +521,13 @@ def _checked_store(app: FastAPI) -> tuple[LibraryHandle, Path, Path, ProtectedTr
         )
     except StoreLayoutError as exc:
         raise HTTPException(status_code=503, detail=_NOTHING_DELETED_LAYOUT.format(exc)) from exc
+    # The guard the ops below reach anyway, now reachable HERE too: creating a
+    # Trash inside a library whose music is not there leaves a directory on a
+    # bare mountpoint that defeats the cheap mounted-check for every later
+    # caller (security seat H-1). Same tier and the same promise — it fires
+    # before anything moves.
+    except LibraryRootUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=_NOTHING_DELETED_LAYOUT.format(exc)) from exc
     return handle, trash_dir, origins_dir, protected
 
 

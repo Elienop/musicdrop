@@ -19,13 +19,16 @@ ways (security seat H-2).
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
 import pytest
+from beets.library import Item
 from fastapi.testclient import TestClient
 
-from app.beets.library import LibraryHandle
+from app.beets.disk_sync import run_disk_sync
+from app.beets.library import LibraryHandle, LibraryRootUnavailableError
 from app.beets.protected import (
     ProtectedTreeError,
     ProtectedTrees,
@@ -36,6 +39,21 @@ from app.beets.store_layout import StoreLayoutError, checked_protected_trees
 from app.beets.trash import resolve_trash_dir
 from app.config import Settings
 from tests.conftest import build_library, make_test_handle, origins_for
+
+
+def _ignore(_value: object) -> None:
+    """A progress callback the tests do not read."""
+
+
+def _never() -> bool:
+    """A stop predicate that never fires."""
+    return False
+
+
+def _ident_of(path: Path) -> tuple[int, int]:
+    """``(st_dev, st_ino)``, the pair the movers compare."""
+    st = os.stat(path)
+    return (st.st_dev, st.st_ino)
 
 
 def _handle(tmp_path: Path, music: Path) -> LibraryHandle:
@@ -88,6 +106,7 @@ def test_a_trash_below_the_music_root_is_created_part_by_part(tmp_path: Path) ->
     """
     music = tmp_path / "music"
     music.mkdir()
+    _library_root_with(music)
 
     trees, trash_dir = _trees(tmp_path, music, music / "a" / "b" / ".trash")
 
@@ -259,6 +278,25 @@ def test_the_trash_routes_answer_503_when_the_trash_cannot_be_created(
 
     assert resp.status_code == 503
     assert "could not be created" in resp.json()["detail"]
+
+
+def test_the_trash_routes_answer_503_when_the_library_looks_unmounted(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The presence guard reaches the routes as the sentence README documents.
+
+    ``checked_protected_trees`` raises ``LibraryRootUnavailableError`` now, which
+    is not a ``StoreLayoutError`` — without its own arm the guard would leave a
+    500 on the one fault ("the share is down") the operator most needs named.
+    """
+    music = Path(beets_library.lib.directory.decode())  # the fixture's root: empty
+    monkeypatch.setattr("app.config.settings.trash_dir", str(music / "a" / ".trash"))
+
+    resp = client.delete("/api/trash/all")
+
+    assert resp.status_code == 503
+    assert "Is the music share mounted?" in resp.json()["detail"]
+    assert list(music.iterdir()) == [], "nothing created on the bare mountpoint"
 
 
 def test_a_relative_trash_setting_below_the_music_root_is_anchored_too(
@@ -440,6 +478,79 @@ def test_a_trash_spelling_that_climbs_is_refused(tmp_path: Path) -> None:
 
     assert "may not contain '..'" in str(caught.value)
     assert sorted(p.name for p in music.iterdir()) == ["An Artist"]
+
+
+def _library_on_a_dropped_share(tmp_path: Path) -> tuple[LibraryHandle, Path]:
+    """A 3-row library whose share has just gone: mountpoint present, EMPTY.
+
+    What a dropped NAS/SMB/NFS mount really leaves behind — the kernel keeps the
+    mountpoint directory, so ``os.path.isdir`` stays true and every file the
+    library names reads as deleted.
+    """
+    music = tmp_path / "music"
+    album = music / "Artist" / "Album"
+    album.mkdir(parents=True)
+    handle = _handle(tmp_path, music)
+    for n in (1, 2, 3):
+        track = album / f"0{n} Track.mp3"
+        track.write_bytes(b"\x00" * 64)
+        handle.lib.add(
+            Item(
+                path=os.fsencode(str(track)),
+                title=f"T{n}",
+                artist="Artist",
+                album="Album",
+                mtime=1,
+            )
+        )
+    shutil.rmtree(music / "Artist")
+    return handle, music
+
+
+def test_a_dropped_share_gets_no_trash_inside_the_music_root(tmp_path: Path) -> None:
+    """H-1: the creation used to run ahead of every library-presence guard.
+
+    ``require_library_root``'s second half exists because a dropped mount leaves
+    the mountpoint present but EMPTY, and disk sync's per-item removal is gated
+    on it — its own comment says "the loop would wipe thousands of DB rows in one
+    pass". Measured 2026-09-12 (security seat H-1): with a Trash configured
+    inside the library, one destructive request supplied that entry itself, the
+    cheap guard passed from then on, and the next sweep dropped 3 of 3 rows.
+    """
+    handle, music = _library_on_a_dropped_share(tmp_path)
+    settings = Settings(trash_dir=str(music / "a" / "b" / ".trash"))
+    trash_dir = resolve_trash_dir(settings, handle)
+    origins_dir = origins_for(trash_dir)
+
+    with pytest.raises(LibraryRootUnavailableError) as caught:
+        checked_protected_trees(settings, handle, trash_dir=trash_dir, origins_dir=origins_dir)
+
+    assert "Is the music share mounted?" in str(caught.value)
+    assert list(music.iterdir()) == [], "nothing created on the bare mountpoint"
+    with pytest.raises(LibraryRootUnavailableError):
+        run_disk_sync(handle.lib, on_total=_ignore, on_item=_ignore, should_stop=_never)
+    assert len(list(handle.lib.items())) == 3, "rows before == rows after"
+
+
+def test_a_dropped_share_still_allows_the_trash_outside_the_library(tmp_path: Path) -> None:
+    """The control: the shipped ``<beets_dir>/trash`` is not the library's to lose.
+
+    Nothing is created inside the music root on this arm, so refusing it would
+    503 Empty Trash for a fault it cannot reach — the Trash is on local disk and
+    reclaiming its space is exactly what the operator wants while the share is
+    down.
+    """
+    handle, music = _library_on_a_dropped_share(tmp_path)
+    settings = Settings(trash_dir="")
+    trash_dir = resolve_trash_dir(settings, handle)
+
+    trees = checked_protected_trees(
+        settings, handle, trash_dir=trash_dir, origins_dir=origins_for(trash_dir)
+    )
+
+    assert trash_dir.is_dir()
+    assert trees.trash == _ident_of(trash_dir)
+    assert list(music.iterdir()) == []
 
 
 def test_the_identity_the_movers_get_is_the_one_the_walk_opened(

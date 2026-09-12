@@ -36,7 +36,7 @@ from typing import Any, Final, NamedTuple
 import beets
 import confuse
 
-from app.beets.library import LibraryHandle, _music_dir
+from app.beets.library import LibraryHandle, _music_dir, require_library_present
 from app.beets.protected import ProtectedTrees, protected_trees
 from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
 from app.config import Settings, app_owned_dirs, export_dir
@@ -778,7 +778,9 @@ def _step_into(fd: int, part: str, *, below: bool, create: bool, spelled: Path) 
         raise
 
 
-def _open_the_trash_chain(*, music_dir: Path, spelled: Path, create: bool) -> int:
+def _open_the_trash_chain(
+    *, music_dir: Path, spelled: Path, before_creating: Callable[[], None] | None
+) -> int:
     """A descriptor on the Trash, decided by IDENTITY component by component.
 
     From ``/`` down, one ``os.open`` per part. Above the music root the parts are
@@ -799,8 +801,12 @@ def _open_the_trash_chain(*, music_dir: Path, spelled: Path, create: bool) -> in
     reaches into the library through a link the walk never identifies is refused
     with nothing left behind.
 
-    ``create`` is ``False`` for the report's read-only form, which stops at the
-    first part that is not there yet: none of the five paths has to exist.
+    ``before_creating`` is run ONCE, immediately before the first part is created
+    below the music root, and never on the arm that creates nothing there — the
+    library-presence guard, which has no business refusing a Trash the music
+    share cannot reach. ``None`` creates nothing at all: the report's read-only
+    form, which stops at the first part that is not there yet, because none of
+    the five paths has to exist.
 
     The returned fd is the caller's to close.
 
@@ -826,8 +832,11 @@ def _open_the_trash_chain(*, music_dir: Path, spelled: Path, create: bool) -> in
                 below = True
         if not below and root_ident is not None and _reaches_the_music_root(fd, root_ident):
             raise _refuse_a_trash_around_the_music_root(spelled)
-        if create:
-            for part in parts[walked:]:
+        if before_creating is not None:
+            missing = parts[walked:]
+            if missing and below:
+                before_creating()
+            for part in missing:
                 opened = _step_into(fd, part, below=below, create=True, spelled=spelled)
                 os.close(fd)
                 fd = opened
@@ -837,7 +846,9 @@ def _open_the_trash_chain(*, music_dir: Path, spelled: Path, create: bool) -> in
         raise
 
 
-def _ensure_trash_root(settings: Settings, *, music_dir: Path, trash_dir: Path) -> tuple[int, int]:
+def _ensure_trash_root(
+    settings: Settings, *, music_dir: Path, trash_dir: Path, lib: Any
+) -> tuple[int, int]:
     """Create the Trash directory and answer the identity of what was opened.
 
     The identity comes from ``fstat`` on the descriptor the walk itself reached,
@@ -860,14 +871,32 @@ def _ensure_trash_root(settings: Settings, *, music_dir: Path, trash_dir: Path) 
     that is the attacker owning the Trash's location, which no check here can
     undo.
 
+    Nothing is created INSIDE a library that is not there: the anchored arm
+    writes into the music root, and a directory on a bare mountpoint defeats
+    ``require_library_root``'s "an empty root is not mounted" half for every
+    later caller — measured 2026-09-12 (security seat H-1), one destructive
+    request on a dropped share supplied that entry and the next disk sync dropped
+    3 of 3 rows. ``require_library_present`` and not the cheap guard, because the
+    cheap one is itself defeated by any stray entry on the mountpoint (measured:
+    a ``.stfolder`` and it passes, while the DB sample still refuses). It runs
+    only when a part below the root really has to be created, so a Trash that is
+    already there costs nothing and a Trash outside the library is not refused
+    for a fault it cannot reach.
+
     Raises:
         StoreLayoutError: the spelling climbs or reaches into the library without
             naming it, the Trash is not reachable below the music root, or it
             could not be created.
+        LibraryRootUnavailableError: a part below the music root would have to be
+            created while the library's own music is not there.
     """
     spelled = _checked_trash_spelling(settings.trash_dir, trash_dir)
     try:
-        fd = _open_the_trash_chain(music_dir=music_dir, spelled=spelled, create=True)
+        fd = _open_the_trash_chain(
+            music_dir=music_dir,
+            spelled=spelled,
+            before_creating=lambda: require_library_present(lib),
+        )
     except OSError as exc:
         raise _refuse_an_uncreatable_trash(spelled, exc) from exc
     try:
@@ -896,7 +925,7 @@ def _check_trash_is_reachable(*, music_dir: Path, settings: Settings, trash_dir:
     """
     spelled = _checked_trash_spelling(settings.trash_dir, trash_dir)
     try:
-        fd = _open_the_trash_chain(music_dir=music_dir, spelled=spelled, create=False)
+        fd = _open_the_trash_chain(music_dir=music_dir, spelled=spelled, before_creating=None)
     except OSError:
         return
     os.close(fd)
@@ -928,7 +957,7 @@ def checked_protected_trees(
         StoreLayoutError: the Trash could not be created below the music root.
     """
     music, library = lib_music_and_library(handle.lib)
-    trash_ident = _ensure_trash_root(settings, music_dir=music, trash_dir=trash_dir)
+    trash_ident = _ensure_trash_root(settings, music_dir=music, trash_dir=trash_dir, lib=handle.lib)
     return protected_trees(
         settings=settings,
         music_dir=music,

@@ -45,7 +45,7 @@ from app.beets import library as beets_library
 from app.beets.artist_art import ArtTrashStore
 from app.beets.config_editor import _swap_lock
 from app.beets.delete import delete_artist_op
-from app.beets.library import LibraryHandle, list_artists
+from app.beets.library import LibraryHandle, LibraryRootUnavailableError, list_artists
 from app.beets.rename import apply_artist_rename_op, preview_artist_rename_op
 from app.beets.store_layout import (
     StoreLayoutError,
@@ -891,6 +891,11 @@ async def _move_override_to_trash(
         store = await run_in_threadpool(_checked_art_trash_store, handle, settings)
     except StoreLayoutError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    # The same tier: the store check refuses to create a Trash inside a library
+    # whose music is not there (security seat H-1), and the override is still
+    # served rather than unlinked.
+    except LibraryRootUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     try:
         await run_in_threadpool(_trash_override_files, files, name, store)
     except (OSError, TrashOriginsStoreUnusableError) as exc:
@@ -1153,7 +1158,10 @@ def _art_trash_store(app: object, settings: Settings) -> ArtTrashStore | None:
         return None
     try:
         return _checked_art_trash_store(handle, settings)
-    except StoreLayoutError:
+    except (StoreLayoutError, LibraryRootUnavailableError):
+        # Both refusals mean the same thing here — there is no store to move a
+        # replaced file into — and both are per-artist, so a sweep reports the
+        # folders it could not touch rather than failing the job.
         _log.warning(
             "artist art: the Trash store is refused, so a forced write will not replace"
             " any existing file",
