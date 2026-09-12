@@ -559,6 +559,34 @@ def test_a_chain_the_walk_cannot_climb_is_refused_rather_than_read_as_outside(
     assert "could not be checked against the music library" in str(caught.value)
 
 
+@pytest.mark.skipif(os.getuid() == 0, reason="root reads an unreadable directory anyway")
+def test_a_search_only_ancestor_above_the_trash_is_climbed_not_refused(tmp_path: Path) -> None:
+    """The control for the refusal above: ``0o111`` is not "cannot be checked".
+
+    Now that an unfinished climb REFUSES, what the climb needs decides which
+    layouts are still supported. It opens each rung ``O_PATH``, which needs
+    search alone — measured 2026-09-12: ``0o111`` (the wrong-``PUID``/``PGID``
+    shape) answers EACCES to ``ROOT_FLAGS`` and climbs fine with ``O_PATH``.
+    The dir has to be one the WALK does not open, so the Trash is spelled through
+    a link the operator owns, which is the supported outside-the-library layout.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    _library_root_with(music)
+    outer = tmp_path / "outer"
+    (outer / "deep").mkdir(parents=True)
+    os.symlink(outer / "deep", tmp_path / "mounted")
+    os.chmod(outer, 0o111)
+
+    try:
+        trees, trash_dir = _trees(tmp_path, music, tmp_path / "mounted" / "trash")
+    finally:
+        os.chmod(outer, 0o755)  # or the tmp_path teardown cannot clean up
+
+    assert (outer / "deep" / "trash").is_dir(), "created through the operator's own link"
+    assert trees.trash == _ident_of(trash_dir)
+
+
 def test_a_trash_spelling_that_climbs_is_refused(tmp_path: Path) -> None:
     """A ``..`` in the configured value names one directory and reads as another.
 
