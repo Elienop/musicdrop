@@ -465,6 +465,100 @@ def test_a_trash_that_reaches_into_the_library_without_naming_it_is_refused(
     assert list((music / "a").iterdir()) == [], "refused before anything was created"
 
 
+def _jump_in_link(tmp_path: Path, music: Path) -> Path:
+    """The operator's half of the jump-in shape: ``<tmp>/srv-x -> <M>/a``.
+
+    Only the operator can make this one — a link ABOVE the music root is outside
+    the attacker's reach — and it is the configuration the refusal above exists
+    for. The tests below add the attacker's half, which is a link INSIDE the
+    library, where the owner's layout ruling leaves write access.
+    """
+    _library_root_with(music)
+    (music / "a").mkdir()
+    os.symlink(music / "a", tmp_path / "srv-x")
+    return tmp_path / "srv-x"
+
+
+def test_an_attackers_link_at_the_leaf_of_a_jump_in_spelling_is_refused(
+    tmp_path: Path,
+) -> None:
+    """H-1: one link below the operator's jump-in point moved the walk out first.
+
+    Measured 2026-09-12 (security seat H-1, J5) on the arm this replaces: the
+    jump-in question was asked ONCE, about the descriptor the walk ended on, and
+    every part above the root is opened following links — so the attacker's
+    ``.trash`` link took the walk outside the library and the climb then answered
+    "not inside" correctly. Both requests were ACCEPTED, the movers wrote to the
+    attacker's directory, and ``empty_all`` enumerated it.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    jump_in = _jump_in_link(tmp_path, music)
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    os.symlink(elsewhere, music / "a" / ".trash")
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, jump_in / ".trash")
+
+    assert "reaches into the music library without naming it" in str(caught.value)
+    assert list(elsewhere.iterdir()) == [], "nothing created outside the library"
+
+
+def test_an_attackers_link_mid_chain_of_a_jump_in_spelling_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The same escape one component deeper (security seat H-1, J1/J4).
+
+    The refusal is about the component the walk is standing on, so it fires at
+    the operator's own link — before the attacker's part is opened at all.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    jump_in = _jump_in_link(tmp_path, music)
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    os.symlink(elsewhere, music / "a" / "b")
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, jump_in / "b" / ".trash")
+
+    assert "reaches into the music library without naming it" in str(caught.value)
+    assert list(elsewhere.iterdir()) == [], "nothing created outside the library"
+
+
+@pytest.mark.skipif(os.getuid() == 0, reason="root searches an unsearchable directory anyway")
+def test_a_chain_the_walk_cannot_climb_is_refused_rather_than_read_as_outside(
+    tmp_path: Path,
+) -> None:
+    """L-1: the climb used to answer "no" when it could not answer at all.
+
+    "No" is the arm that anchors NOTHING, so an unanswerable question decided the
+    Trash was outside the library and the identity was taken anyway. Reachable at
+    the deepest existing part: mode ``0o400`` is readable, so the walk opens it,
+    and not searchable, so the ``..`` climb out of it answers EACCES (measured
+    2026-09-12, with ``ROOT_FLAGS`` and with the ``O_PATH`` climb flags). The
+    Trash ITSELF is that part here, so nothing is left to create and the fail-open
+    arm ACCEPTED it — which is the difference this test pins. No loss was
+    reachable through it (a mover needs write and search there too); the
+    direction was the unsafe one (security seat L-1).
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    _library_root_with(music)
+    unsearchable = tmp_path / "srv-trash"
+    unsearchable.mkdir()
+    os.chmod(unsearchable, 0o400)
+
+    try:
+        with pytest.raises(StoreLayoutError) as caught:
+            _trees(tmp_path, music, unsearchable)
+    finally:
+        os.chmod(unsearchable, 0o700)  # or the tmp_path teardown cannot clean up
+
+    assert "could not be checked against the music library" in str(caught.value)
+
+
 def test_a_trash_spelling_that_climbs_is_refused(tmp_path: Path) -> None:
     """A ``..`` in the configured value names one directory and reads as another.
 

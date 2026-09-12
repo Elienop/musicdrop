@@ -646,6 +646,22 @@ def _refuse_a_trash_around_the_music_root(spelled: Path) -> StoreLayoutError:
     )
 
 
+def _refuse_an_uncheckable_trash_chain(spelled: Path, exc: OSError) -> StoreLayoutError:
+    """The refusal for a chain the walk cannot climb back out of.
+
+    The climb decides whether the spelling landed inside the music library, so
+    answering "not inside" to a question that could not be asked anchors nothing
+    (security seat L-1). Reachable at the deepest existing part when it is
+    readable but not searchable: measured 2026-09-12, mode ``0o400`` answers
+    EACCES to ``os.open('..')``, and a mover needs write and search there anyway.
+    """
+    return StoreLayoutError(
+        f"{TRASH_SETTING} could not be checked against the music library:"
+        f" {str(spelled)!r} ({exc.strerror}). Fix the permissions on its folders.",
+        headline=f"{TRASH_SETTING} could not be checked against the music library",
+    )
+
+
 def _refuse_an_unopenable_music_root(music_dir: Path, exc: OSError) -> StoreLayoutError:
     """The refusal for a Trash below a music root that will not open at all.
 
@@ -726,15 +742,31 @@ def _is_spelled_below(spelled: Path, music_dir: Path) -> bool:
         return False
 
 
-def _reaches_the_music_root(fd: int, root_ident: tuple[int, int]) -> bool:
+#: The flags the ``..`` climb opens each rung with. ``O_PATH`` because the climb
+#: only ever ``fstat``s: measured 2026-09-12, it answers the same ``(st_dev,
+#: st_ino)`` and is usable as a ``dir_fd`` for the next rung, while needing
+#: search alone — a ``0o111`` ancestor above the Trash answers EACCES to
+#: :data:`~app.fsutil.ROOT_FLAGS` and climbs fine with this. That matters now
+#: that a climb which cannot finish is a refusal rather than a "no".
+_CLIMB_FLAGS: Final = os.O_PATH | os.O_DIRECTORY
+
+
+def _reaches_the_music_root(fd: int, root_ident: tuple[int, int], *, spelled: Path) -> bool:
     """Whether the directory ``fd`` is open on is the music root or sits below it.
 
     A ``..`` climb through descriptors, because the question is about the
-    directory the walk really reached and not about its spelling: the chain above
-    the root is followed, so a link there can land inside the library with no
-    component of the spelling naming it. ``/`` is its own parent, which is the
-    stop condition; a chain this process cannot climb answers "no", the same way
-    ``protected._note_walk_error`` treats a directory it cannot read.
+    directory the walk really reached and not about how it is spelled — with one
+    measured exception: ``..`` from a MOUNT root crosses to the mountpoint's
+    parent, so a bind mount of a library subdirectory at an outside path reads as
+    outside the library (security seat M-1, measured 2026-09-12 under ``unshare
+    --map-root-user --mount``; recorded as a residual in ``BACKLOG.md``). The
+    chain above the root is followed, so a link there can land inside the library
+    with no component of the spelling naming it. ``/`` is its own parent, which
+    is the stop condition.
+
+    Raises:
+        StoreLayoutError: the climb could not be finished, so the answer is
+            unknown; "no" would anchor nothing (security seat L-1).
     """
     here, here_ident = fd, _fstat_ident(fd)
     if here_ident == root_ident:
@@ -743,9 +775,9 @@ def _reaches_the_music_root(fd: int, root_ident: tuple[int, int]) -> bool:
     try:
         while True:
             try:
-                up = os.open("..", ROOT_FLAGS, dir_fd=here)
-            except OSError:
-                return False
+                up = os.open("..", _CLIMB_FLAGS, dir_fd=here)
+            except OSError as exc:
+                raise _refuse_an_uncheckable_trash_chain(spelled, exc) from exc
             up_ident = _fstat_ident(up)
             if climbed is not None:
                 os.close(climbed)
@@ -758,6 +790,28 @@ def _reaches_the_music_root(fd: int, root_ident: tuple[int, int]) -> bool:
     finally:
         if climbed is not None:
             os.close(climbed)
+
+
+def _below_the_music_root(fd: int, root_ident: tuple[int, int], spelled: Path) -> bool:
+    """Whether the walk has reached the music root, refusing if it is INSIDE it.
+
+    Asked about every component the walk stands on while it is still above the
+    root, not once about the leaf: every part above the root is opened following
+    links, so the first link the attacker plants below an operator's jump-in
+    point moves the walk out of the library, and the climb from out there then
+    answers "not inside" correctly. Measured 2026-09-12 (security seat H-1) on
+    the arm this replaces: both requests were accepted, the movers wrote to the
+    attacker's directory and ``empty_all`` enumerated it.
+
+    Raises:
+        StoreLayoutError: this component is below the music root, or the climb
+            could not be finished.
+    """
+    if _fstat_ident(fd) == root_ident:
+        return True
+    if _reaches_the_music_root(fd, root_ident, spelled=spelled):
+        raise _refuse_a_trash_around_the_music_root(spelled)
+    return False
 
 
 def _step_into(fd: int, part: str, *, below: bool, create: bool, spelled: Path) -> int:
@@ -785,10 +839,15 @@ def _open_the_trash_chain(
 
     From ``/`` down, one ``os.open`` per part. Above the music root the parts are
     the OPERATOR's — a symlinked ``directory:``, a ``/srv`` that is a link — so
-    they are opened following links; the moment an opened part's ``(st_dev,
-    st_ino)`` IS the music root's, every further part is opened ``BELOW_FLAGS``
-    and created through its parent's descriptor, because that is the chain the
-    owner's layout ruling leaves attacker-writable.
+    they are opened following links, and each one is asked
+    :func:`_below_the_music_root` as the walk stands on it; the moment an opened
+    part's ``(st_dev, st_ino)`` IS the music root's, every further part of the
+    EXISTING prefix is opened ``BELOW_FLAGS`` and created through its parent's
+    descriptor, because that is the chain the owner's layout ruling leaves
+    attacker-writable. The create loop carries that decision rather than
+    re-taking it, so a part created above the root and swapped for a link to the
+    root inside that window is opened following links — the operator-chain race
+    recorded in ``BACKLOG.md``.
 
     Identity and not spelling, measured 2026-09-12 (security seat H-2, code seat
     W1): the two settings can name one root two ways — a Trash under an ALIAS of
@@ -811,8 +870,9 @@ def _open_the_trash_chain(
     The returned fd is the caller's to close.
 
     Raises:
-        StoreLayoutError: a part below the music root is not a directory, or the
-            spelling reaches into the library without naming it.
+        StoreLayoutError: a part below the music root is not a directory, the
+            spelling reaches into the library without naming it, or a chain the
+            walk could not climb left that question unanswered.
         OSError: any other fault the walk met; the caller words it.
     """
     root_ident = _music_root_ident(music_dir, spelled)
@@ -828,10 +888,8 @@ def _open_the_trash_chain(
             os.close(fd)
             fd = opened
             walked += 1
-            if not below and root_ident is not None and _fstat_ident(fd) == root_ident:
-                below = True
-        if not below and root_ident is not None and _reaches_the_music_root(fd, root_ident):
-            raise _refuse_a_trash_around_the_music_root(spelled)
+            if not below and root_ident is not None:
+                below = _below_the_music_root(fd, root_ident, spelled)
         if before_creating is not None:
             missing = parts[walked:]
             if missing and below:
