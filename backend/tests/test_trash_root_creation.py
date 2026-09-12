@@ -28,7 +28,11 @@ from beets.library import Item
 from fastapi.testclient import TestClient
 
 from app.beets.disk_sync import run_disk_sync
-from app.beets.library import LibraryHandle, LibraryRootUnavailableError
+from app.beets.library import (
+    LibraryHandle,
+    LibraryRootUnavailableError,
+    require_library_root,
+)
 from app.beets.protected import (
     ProtectedTreeError,
     ProtectedTrees,
@@ -530,6 +534,32 @@ def test_a_dropped_share_gets_no_trash_inside_the_music_root(tmp_path: Path) -> 
     with pytest.raises(LibraryRootUnavailableError):
         run_disk_sync(handle.lib, on_total=_ignore, on_item=_ignore, should_stop=_never)
     assert len(list(handle.lib.items())) == 3, "rows before == rows after"
+
+
+def test_a_stray_marker_on_the_mountpoint_does_not_buy_a_trash_inside(tmp_path: Path) -> None:
+    """Which guard: the DB sample, not the cheap "the root has an entry" one.
+
+    Measured 2026-09-12: with a ``.stfolder`` on the local mountpoint —
+    Syncthing's marker, and the shape ``require_library_root``'s own docstring
+    names as its accepted residual — the cheap guard PASSES while the DB sample
+    still refuses. The cheap one is what disk sync runs per removal, so it may
+    stay O(1); this creation runs once per destructive request and can afford the
+    sample, and it is the creation that supplies the stray entry the cheap guard
+    is then fooled by.
+    """
+    handle, music = _library_on_a_dropped_share(tmp_path)
+    (music / ".stfolder").mkdir()
+    require_library_root(handle.lib)  # the cheap guard is satisfied by the marker
+    settings = Settings(trash_dir=str(music / "a" / ".trash"))
+    trash_dir = resolve_trash_dir(settings, handle)
+
+    with pytest.raises(LibraryRootUnavailableError) as caught:
+        checked_protected_trees(
+            settings, handle, trash_dir=trash_dir, origins_dir=origins_for(trash_dir)
+        )
+
+    assert "none of the music files the library names are in it" in str(caught.value)
+    assert [p.name for p in music.iterdir()] == [".stfolder"], "nothing created beside the marker"
 
 
 def test_a_dropped_share_still_allows_the_trash_outside_the_library(tmp_path: Path) -> None:
