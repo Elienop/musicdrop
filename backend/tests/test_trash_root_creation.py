@@ -451,6 +451,11 @@ def test_a_trash_that_reaches_into_the_library_without_naming_it_is_refused(
     The walk never meets the root's identity, so nothing would anchor the parts
     it then creates inside the library. One spelling is supported, and the
     refusal names it.
+
+    This arm plants only the OPERATOR's half, so it exercises the walk with
+    nothing below the link — which is why it passed through two review rounds
+    while the attacker's half escaped (security seat H-1). The two tests below
+    plant that half.
     """
     music = tmp_path / "music"
     music.mkdir()
