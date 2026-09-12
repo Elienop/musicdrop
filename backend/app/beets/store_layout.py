@@ -577,7 +577,7 @@ def checked_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path,
     return trash, origins
 
 
-# The four Trash-chain refusals below carry no ``config_key``: the value at
+# The five Trash-chain refusals below carry no ``config_key``: the value at
 # fault is ``MUSICDROP_TRASH_DIR``, which is env-derived and not a
 # ``config.yaml`` key the editor can paint. ``store_layout_report`` reaches them
 # through :func:`_check_trash_is_reachable` and falls back to ``directory:``,
@@ -651,9 +651,13 @@ def _refuse_an_uncheckable_trash_chain(spelled: Path, exc: OSError) -> StoreLayo
 
     The climb decides whether the spelling landed inside the music library, so
     answering "not inside" to a question that could not be asked anchors nothing
-    (security seat L-1). Reachable at the deepest existing part when it is
-    readable but not searchable: measured 2026-09-12, mode ``0o400`` answers
-    EACCES to ``os.open('..')``, and a mover needs write and search there anyway.
+    (security seat L-1). Reachable at the deepest component the walk OPENED when
+    that one is readable but not searchable — a MIDDLE component included: the
+    walk needs read to open a part and search only to go deeper, and the climb is
+    asked right after the open. Measured 2026-09-13 (code seat W-2), mode
+    ``0o400`` on ``<T>/mid`` with the Trash spelled at ``<T>/mid/inner/trash``
+    fires at ``mid``; the arm this replaces worded the same shape as "could not
+    be created". A mover needs write and search there anyway.
     """
     return StoreLayoutError(
         f"{TRASH_SETTING} could not be checked against the music library:"
@@ -693,9 +697,10 @@ def _checked_trash_spelling(configured: str, trash_dir: Path) -> Path:
     ``config.py`` names) and ``normpath`` because ``os.open`` takes one component
     at a time; a ``..`` is refused rather than collapsed. A NUL in the value
     would reach ``os.open`` as ``ValueError``, which no caller's ``except
-    OSError`` catches — unreachable today because all five call sites resolve
-    first and ``_unresolvable`` refuses it there (measured 2026-09-12, code seat
-    suggestion 5).
+    OSError`` catches — unreachable today because every caller resolves first and
+    ``_unresolvable`` refuses it there (measured 2026-09-12, code seat suggestion
+    5). No count here: the five :func:`checked_protected_trees` sites are not all
+    of them, :func:`layout_check_for_config` resolves and then walks too.
 
     Raises:
         StoreLayoutError: the configured spelling holds a ``..`` part.
@@ -763,6 +768,12 @@ def _is_spelled_below(spelled: Path, music_dir: Path) -> bool:
 #: search alone — a ``0o111`` ancestor above the Trash answers EACCES to
 #: :data:`~app.fsutil.ROOT_FLAGS` and climbs fine with this. That matters now
 #: that a climb which cannot finish is a refusal rather than a "no".
+#:
+#: ``os.O_PATH`` is Linux-only, and the only such constant in ``app/``: measured
+#: 2026-09-13, the nine ``os.O_*``/``os.*_OK`` constants this package uses are
+#: otherwise POSIX. On another platform this line raises ``AttributeError`` at
+#: import — the app ships in a Linux container, and BACKLOG's mountinfo option
+#: for the same decision is Linux-only too.
 _CLIMB_FLAGS: Final = os.O_PATH | os.O_DIRECTORY
 
 
@@ -810,13 +821,19 @@ def _reaches_the_music_root(fd: int, root_ident: tuple[int, int], *, spelled: Pa
 def _below_the_music_root(fd: int, root_ident: tuple[int, int], spelled: Path) -> bool:
     """Whether the walk has reached the music root, refusing if it is INSIDE it.
 
-    Asked about every component the walk stands on while it is still above the
-    root, not once about the leaf: every part above the root is opened following
-    links, so the first link the attacker plants below an operator's jump-in
-    point moves the walk out of the library, and the climb from out there then
-    answers "not inside" correctly. Measured 2026-09-12 (security seat H-1) on
-    the arm this replaces: both requests were accepted, the movers wrote to the
-    attacker's directory and ``empty_all`` enumerated it.
+    Asked about every component of the EXISTING prefix the walk stands on while
+    it is still above the root, not once about the leaf: every part above the root
+    is opened following links, so the first link the attacker plants below an
+    operator's jump-in point moves the walk out of the library, and the climb from
+    out there then answers "not inside" correctly. Measured 2026-09-12 (security
+    seat H-1) on the arm this replaces: both requests were accepted, the movers
+    wrote to the attacker's directory and ``empty_all`` enumerated it.
+
+    The EXISTING prefix and not every part: a component the create loop creates is
+    never asked, which :func:`_open_the_trash_chain` describes as the
+    operator-chain race. Measured 2026-09-13 (security seat L-2') by tracing the
+    question — the request that creates ``srv``, ``x`` and ``.trash`` asks 9 times
+    and stops at their parent; the next request, with all three there, asks 12.
 
     Raises:
         StoreLayoutError: this component is below the music root, or the climb
@@ -857,12 +874,14 @@ def _open_the_trash_chain(
     they are opened following links, and each one is asked
     :func:`_below_the_music_root` as the walk stands on it; the moment an opened
     part's ``(st_dev, st_ino)`` IS the music root's, every further part of the
-    EXISTING prefix is opened ``BELOW_FLAGS`` and created through its parent's
-    descriptor, because that is the chain the owner's layout ruling leaves
-    attacker-writable. The create loop carries that decision rather than
+    EXISTING prefix is opened ``BELOW_FLAGS``, and the missing tail is created
+    through its parent's descriptor — an existing part is not created. Those
+    flags below the root because that is the chain the owner's layout ruling
+    leaves attacker-writable. The create loop carries that decision rather than
     re-taking it, so a part created above the root and swapped for a link to the
-    root inside that window is opened following links — the operator-chain race
-    recorded in ``BACKLOG.md``.
+    root inside that window is opened following links — the operator-chain race,
+    recorded under *Accepted residuals* in ``BACKLOG.md`` ("The create loop never
+    re-asks whether a component is below the music root").
 
     Identity and not spelling, measured 2026-09-12 (security seat H-2, code seat
     W1): the two settings can name one root two ways — a Trash under an ALIAS of
@@ -992,10 +1011,15 @@ def _check_trash_is_reachable(*, music_dir: Path, settings: Settings, trash_dir:
     worded exactly as the destructive routes word it, because that is the answer
     the operator's next delete will get.
 
-    Which faults actually arrive here, measured 2026-09-12: an EACCES or a
-    symlink loop never does, because ``check_store_layout``'s own resolve refuses
-    them first ("could not be examined", "could not be resolved"). What reached
-    here and painted NOTHING was a FILE in the operator's chain ABOVE the music
+    Which faults actually arrive here, measured 2026-09-13 through this report's
+    own path: an EACCES the ROW layer's ``stat`` meets does not — no search bit on
+    an ancestor answers "could not be examined" there, and a symlink loop answers
+    "could not be resolved" — but an EACCES the ``..`` climb meets DOES, and is
+    painted as "could not be checked against the music library (Permission
+    denied)". A ``0o400`` Trash outside the library is that arm; the same mode
+    inside the library is accepted here, because the identity check settles the
+    question before the climb is asked. What also reached here and painted NOTHING
+    before this arm existed was a FILE in the operator's chain ABOVE the music
     root — the report read healthy while every destructive request answered "could
     not be created (Not a directory)". A mutant that returned here instead of
     raising survived all 3590 tests before this arm was added.
