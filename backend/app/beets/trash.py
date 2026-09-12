@@ -937,9 +937,57 @@ def _st_ident(st: os.stat_result) -> tuple[int, int]:
 
 
 def _refuse_a_non_file(name: str, st: os.stat_result) -> None:
-    """Refuse anything but a regular file or a symlink. One spelling, two sites."""
+    """Refuse anything but a regular file or a symlink, from a staged ``lstat``."""
     if not (stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)):
         raise OSError(errno.EINVAL, "not a regular file or a symlink", name)
+
+
+def _refuse_a_non_bare_name(name: str) -> None:
+    """Refuse a name that is not a bare entry of the source directory.
+
+    What the anchoring rests on, so it is a syscall-free check rather than a
+    sentence in a docstring. POSIX ignores a ``dir_fd`` for an ABSOLUTE name:
+    ``os.rename(name, name, src_dir_fd=, dst_dir_fd=)`` renamed the file onto
+    itself and REPORTED success — measured, ``moved`` counted it and the origin
+    record was written for a container that got nothing. ``../library.db``
+    un-anchored both ends and left the file loose at the Trash ROOT. A separator
+    anchors only the FIRST component: ``os.stat("sub/f", dir_fd=,
+    follow_symlinks=False)`` reached a file outside the descriptor through a
+    symlinked ``sub``.
+    """
+    if not name or name in (".", "..") or "/" in name or os.sep in name:
+        raise OSError(errno.EINVAL, "not a bare entry name", name)
+
+
+def _publish_then_unlink(
+    name: str, *, src_dir_fd: int, dst_dir_fd: int, st: os.stat_result
+) -> None:
+    """Make the container's new entry durable, then drop the original.
+
+    ``fsync`` on the CONTAINER's descriptor first, because until that returns
+    the only entry naming those bytes on disk may still be the one about to go.
+
+    There is no unlink-by-fd, so the source is re-lstat'd through ``src_dir_fd``
+    immediately before it: another inode at the name is a file that arrived
+    after the copy, and unlinking it would destroy something that never reached
+    Trash (measured). It is left alone instead — the copy stays in Trash, the
+    newcomer stays on disk — with one line, because the pair then reads as a
+    duplicate. The window is not closed, only narrowed to the two syscalls.
+
+    A name that is GONE needs no unlink: somebody else removed it and the copy
+    in Trash is the end state this was moving towards.
+    """
+    os.fsync(dst_dir_fd)
+    try:
+        current = os.stat(name, dir_fd=src_dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if _st_ident(current) != _st_ident(st):
+        logger.warning(
+            "%r was replaced after it was copied to Trash, so it was left in place", name
+        )
+        return
+    os.unlink(name, dir_fd=src_dir_fd)
 
 
 def _copy_between_fds(name: str, *, src_dir_fd: int, dst_dir_fd: int, st: os.stat_result) -> None:
@@ -952,12 +1000,18 @@ def _copy_between_fds(name: str, *, src_dir_fd: int, dst_dir_fd: int, st: os.sta
     A symlink is recreated from its own target rather than copied through. A
     regular file is opened ``O_NOFOLLOW`` and its ``fstat`` compared with the
     identity the caller lstat'd: another inode at the name means the source
-    changed after the check, and the copy is refused. The source is unlinked
-    LAST, so a copy that dies leaves the original where it was.
+    changed after the check, and the copy is refused. A rewrite IN PLACE is not
+    another inode, so a copy can carry post-check bytes with the pre-check mode
+    and mtime — the check says the name still means that file, not that the file
+    did not change.
+
+    The source goes LAST, through :func:`_publish_then_unlink`: what that
+    ordering covers is a CRASH (the original is still where it was), and what it
+    does not is a SWAP in the window, which is why the unlink re-reads the name.
     """
     if stat.S_ISLNK(st.st_mode):
         os.symlink(os.readlink(name, dir_fd=src_dir_fd), name, dir_fd=dst_dir_fd)
-        os.unlink(name, dir_fd=src_dir_fd)
+        _publish_then_unlink(name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, st=st)
         return
     src_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=src_dir_fd)
     try:
@@ -977,17 +1031,21 @@ def _copy_between_fds(name: str, *, src_dir_fd: int, dst_dir_fd: int, st: os.sta
                 os.utime(writer.fileno(), ns=(st.st_atime_ns, st.st_mtime_ns))
     finally:
         os.close(src_fd)
-    os.unlink(name, dir_fd=src_dir_fd)
+    _publish_then_unlink(name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, st=st)
 
 
 def _move_between_fds(name: str, *, src_dir_fd: int, dst_dir_fd: int, st: os.stat_result) -> None:
     """Move ``name`` between two directory descriptors, or refuse.
 
     ``os.rename`` first, and the lstat through ``dst_dir_fd`` after it is what
-    decides whether what arrived may stay: a directory renamed onto a guarded
-    name used to be moved whole (the guard's lstat preceded the move by ~0.1 ms,
-    measured), and is now renamed back with the call refused. So what the
-    container KEEPS cannot be anything but a regular file or a symlink.
+    decides whether what arrived may stay: it must be the same ``(st_dev,
+    st_ino)`` the caller staged, or it is renamed back and the call refuses.
+    Both of the measured swaps that reach here fail it — a directory renamed
+    onto a guarded name, which used to be moved whole (the guard's lstat
+    precedes the move by ~0.1 ms), and a different regular file, which used to
+    be accepted with the record naming the one that was checked. A rename
+    preserves dev+ino, so what the container KEEPS is the file the staging
+    ``_refuse_a_non_file`` accepted.
 
     EXDEV — a Trash dir on another filesystem — falls back to a copy through the
     same two descriptors.
@@ -1000,14 +1058,14 @@ def _move_between_fds(name: str, *, src_dir_fd: int, dst_dir_fd: int, st: os.sta
         _copy_between_fds(name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, st=st)
         return
     landed = os.stat(name, dir_fd=dst_dir_fd, follow_symlinks=False)
-    if stat.S_ISREG(landed.st_mode) or stat.S_ISLNK(landed.st_mode):
+    if _st_ident(landed) == _st_ident(st):
         return
     # Put back, and the call refuses either way. Suppressed because the source
     # name can be occupied again by then: the entry then stays in the container,
     # where the caller's ``moved == 0`` cleanup meets it.
     with contextlib.suppress(OSError):
         os.rename(name, name, src_dir_fd=dst_dir_fd, dst_dir_fd=src_dir_fd)
-    _refuse_a_non_file(name, landed)
+    raise OSError(errno.EINVAL, "the file changed after it was checked", name)
 
 
 def _discard_own_container(name: str, *, fd: int, trash_fd: int) -> None:
@@ -1062,10 +1120,11 @@ def trash_replaced_files(
     ``names`` are bare entry names in the directory ``src_dir_fd`` is open on,
     and that descriptor is the only way the sources are reached: the caller
     opened it, so a component swapped for a symlink afterwards cannot move what
-    this reads. BARE is the contract — POSIX ignores a ``dir_fd`` for an
-    ABSOLUTE path, so a caller passing one would anchor nothing. Both callers
-    pass what a ``scandir`` of that descriptor (or ``Path.name``) gave them.
-    Non-empty ``names`` is the caller's job.
+    this reads. BARE is enforced, not assumed — :func:`_refuse_a_non_bare_name`
+    refuses an absolute name, ``.``, ``..``, and any separator before a stat is
+    taken, because a violation did not fail here: it reported success. Both
+    callers pass what a ``scandir`` of that descriptor (or ``Path.name``) gave
+    them. Non-empty ``names`` is the caller's job.
 
     Recorded ``moved="files"``, which is what the listing turns into
     ``restore_mode="by_hand"``: the container is not the folder these files came
@@ -1090,11 +1149,13 @@ def trash_replaced_files(
 
     Raises:
         TrashOriginsStoreUnusableError: the origin store cannot be used.
-        OSError: an entry is not a regular file or a symlink, the container name
-            was taken, or a move failed. Whatever had already moved keeps its
-            record; a container that got nothing is removed again, with anything
-            a part-copied move left in it.
+        OSError: a name is not a bare entry, an entry is not a regular file or
+            a symlink, the container name was taken, or a move failed. Whatever
+            had already moved keeps its record; a container that got nothing is
+            removed again, with anything a part-copied move left in it.
     """
+    for name in names:
+        _refuse_a_non_bare_name(name)  # ahead of the stats: "sub/f" stats OUTSIDE
     staged = [(name, os.stat(name, dir_fd=src_dir_fd, follow_symlinks=False)) for name in names]
     for name, st in staged:
         _refuse_a_non_file(name, st)
