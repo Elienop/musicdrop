@@ -151,6 +151,16 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   crossing sits near the 328 step and the two runs fall either side of it. Neither run
   recorded the crossing WIDTH, so re-measure rather than trusting five or six.)
 
+- **`GET /api/albums/{id}/cover` answers 500, not 404, when an album has no `artpath` and
+  its first track's file cannot be parsed** (found 2026-09-12 with a stand-in file in a
+  scratch library; pre-existing, not the reset branch's code). `_cover_from_embedded` in
+  `app/beets/library.py` checks `isfile` and then calls `MediaFile(track_path)` unguarded, so
+  a truncated or wrong-extension file raises `mediafile.exceptions.UnreadableFileError` out of
+  the route, while the `artpath` arm degrades to `None`. The grid still shows its placeholder
+  (the `<img>` error path), but every paint of that album logs a traceback and the thumb cache
+  records no miss. Fix shape to verify: catch `UnreadableFileError` around the parse and
+  answer `None`, pinned by a track file that is a few bytes of text.
+
 - **A focused action on an `/import` feed row unmounts under the user when the live feed
   applies that album.** `FeedRow` (`ImportPage.tsx:860`) gets its button from
   `feedRowAction` (`:823`), which returns one only for `needs_review` /
