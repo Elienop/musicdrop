@@ -28,12 +28,9 @@ import asyncio
 import hashlib
 import io
 import logging
-import os
 import re
-import shutil
 import threading
 from collections.abc import Collection
-from contextlib import suppress
 from pathlib import Path
 from typing import Any, Final, NamedTuple, cast
 
@@ -77,6 +74,7 @@ from app.models.config_editor import (
     ValidationErrorItem,
     loc_to_dot_sep,
 )
+from app.playlists.atomic import write_atomic_text
 
 __all__ = [
     "apply",
@@ -344,36 +342,22 @@ def _strip_yaml_directive(text: str) -> str:
 
 
 def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
-    """Atomic write with crash-safety on ext4.
+    """Dump ``data`` and publish it as ``dst`` through the shared atomic writer.
 
-    Sequence (per Dan Luu's *Files are hard* — danluu.com/file-consistency/ —
-    and LWN's ext4-rename discussion — lwn.net/Articles/322823/): write a
-    tempfile in the SAME directory as ``dst`` -> fsync the tempfile ->
-    ``copymode`` from ``dst`` (mode bits only — see note below on why we do
-    NOT use ``copystat``) -> ``os.replace`` -> fsync the PARENT DIRECTORY.
-    Skipping the parent-dir fsync leaves a window where the rename can be
-    lost on power-cut even on ext4 with delayed allocation tuned for it;
-    the dir fsync forces the directory entry change durable.
+    The recipe lives in one place — ``write_atomic_text``: a temp beside the
+    target under a name nobody can precompute, fsync, ``os.replace``, then the
+    parent-dir fsync that forces the rename durable. Nothing here derives the
+    temp's name from ``dst``; a link planted at the old ``.<name>.tmp`` sibling
+    was followed and then published AS the destination.
 
-    Why ``copymode`` and not ``copystat``: ``shutil.copystat`` copies mode
-    bits, atime, mtime, AND extended attributes / flags. Preserving mtime
-    is wrong here because the Save endpoint's freshness signal
-    (:attr:`BeetsConfigSnapshot.apply_pending`) is driven by
-    ``current_mtime > handle.file_mtime_at_load``; preserving the old
-    mtime would mask "the user just saved" from "nothing changed" and the
-    Apply button would never light up after a Save. ``copymode`` preserves
-    the user's chosen permissions (e.g. ``0o600`` on credential-bearing
-    files) without freezing the mtime — exactly the policy this slice
-    wants.
-
-    First-write fallback: when ``dst`` does not exist (defensive — production
-    callers go through ``setup_beets()`` which always ensures the file),
-    chmod the tempfile to ``0o644`` so the post-replace file isn't left at
-    the umask-derived mode.
-
-    The ``atomicwrites`` PyPI package is deprecated by its own author in
-    favor of this recipe (github.com/untitaker/python-atomicwrites), so we
-    roll it ourselves rather than pull in an unmaintained dep.
+    ``mode=None`` is this file's policy, and it is mode bits ONLY: an existing
+    regular config keeps its permissions (e.g. ``0o600`` on a credential-bearing
+    file) while its mtime advances. The advancing mtime is the Save freshness
+    signal (:attr:`BeetsConfigSnapshot.apply_pending` compares
+    ``current_mtime`` to ``handle.file_mtime_at_load``); carrying the old mtime
+    over would mask "the user just saved" and the Apply button would never light
+    up. First write: the umask default. See ``write_atomic_bytes`` for what
+    ``None`` does when the target is not a regular file.
     """
     # Dump to a buffer and strip the "%YAML 1.1" directive prologue (see
     # _strip_yaml_directive) rather than write ``yaml.dump(data, f)`` directly:
@@ -387,32 +371,7 @@ def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
     # crashing beets' re.compile on Apply). 1.1 keeps them quoted.
     buf = io.StringIO()
     yaml.dump(data, buf)
-    text = _strip_yaml_directive(buf.getvalue())
-    tmp = dst.parent / f".{dst.name}.tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-
-        if dst.exists():
-            shutil.copymode(dst, tmp)
-
-        os.replace(tmp, dst)
-
-        # O_DIRECTORY: a FIFO swapped in here blocks forever without it (measured: 2 s, no error).
-        dir_fd = os.open(dst.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-    finally:
-        # Best-effort cleanup if something raised mid-flight (a successful
-        # os.replace already consumed the tempfile name, so this is a no-op
-        # on the happy path).
-        if tmp.exists():
-            with suppress(OSError):
-                tmp.unlink()
+    write_atomic_text(dst, _strip_yaml_directive(buf.getvalue()), mode=None)
 
 
 # Serializes the read-SHA -> compare -> atomic-write of ``save``/``save_naming``
@@ -445,16 +404,16 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
        change content" case (see ``test_save_409_on_sha_change``). The CAS token
        hashes the same RAW bytes the GET snapshot served as ``yaml_text``, so the
        editor's base and the write target line up exactly.
-    4. **Atomic write** via ``atomic_write`` — fsync + dir-fsync + ``copymode``.
-       The submitted document is written verbatim (no secret-preserve merge: the
-       editor serves and edits the raw file). ``copymode`` (mode bits only) and
-       NOT ``copystat`` — the helper intentionally lets atime/mtime advance so
-       step 5's freshness signal fires.
+    4. **Atomic write** via ``atomic_write`` — fsync + dir-fsync + the file's
+       own mode preserved (``mode=None``). The submitted document is written
+       verbatim (no secret-preserve merge: the editor serves and edits the raw
+       file). Mode bits only: atime/mtime advance so step 5's freshness signal
+       fires.
     5. **Return new snapshot** — ``apply_pending`` will be ``True`` because the
        mtime advanced past ``handle.file_mtime_at_load`` (this is the load-bearing
-       reason ``atomic_write`` uses ``copymode`` instead of ``copystat`` — the
-       latter would freeze mtime and the Apply button would never light up);
-       the Apply endpoint (Task 8) is what clears it.
+       reason ``atomic_write`` preserves the mode and not the mtime — a frozen
+       mtime and the Apply button would never light up); the Apply endpoint
+       (Task 8) is what clears it.
     """
     yaml = _yaml()
 

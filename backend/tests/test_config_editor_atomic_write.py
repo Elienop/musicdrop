@@ -1,27 +1,22 @@
 """Layer-3 config editor — atomic write tests (Plan Task 4).
 
-Pins the canonical atomic-write recipe from Dan Luu's *Files are hard*
-(danluu.com/file-consistency/) + the LWN ext4-rename discussion
-(lwn.net/Articles/322823/): tmpfile in the same dir, fsync the tmpfile,
-``copymode`` from dst (mode bits only — atime/mtime intentionally NOT
-preserved so the Save signal advances ``apply_pending``; ``shutil.copystat``
-would carry the old mtime over and freeze the freshness check, so we use
-``shutil.copymode`` instead), ``os.replace``, then fsync the PARENT
-DIRECTORY (otherwise the rename can be lost on power-cut even on ext4).
-The ``atomicwrites`` PyPI package was deprecated by its own author in
-favor of this recipe (see github.com/untitaker/python-atomicwrites), so
-we roll it ourselves.
+``atomic_write`` dumps the YAML and hands the bytes to the shared writer
+(``app.playlists.atomic.write_atomic_text``), so what is pinned here is this
+file's policy on top of that recipe: the YAML directive is stripped, the
+parent directory is fsynced, and ``mode=None`` preserves the config's own mode
+bits while letting mtime advance (``shutil.copystat`` would carry the old mtime
+over and freeze the Save signal ``apply_pending`` reads).
 
 Mode tests pin two regimes:
 
-* pre-existing dst -> ``copymode`` preserves the user's mode (e.g. 0o600).
-* no pre-existing dst -> first write takes the ``open()`` default under
-  the process umask (typically 0o644 under the conventional umask 0o022).
+* pre-existing regular dst -> its mode is preserved (e.g. 0o600).
+* no pre-existing dst -> first write takes the umask default (0o644 under the
+  conventional umask 0o022).
 
-The tempfile-cleanup test pins the success-path invariant: the
-``.config.yaml.tmp`` sidecar must not survive a successful write,
-because the ``finally`` cleanup branch + ``os.replace`` semantics
-together imply it's already gone (replace consumes the tmpfile name).
+Two tests pin the temp file: nothing of the target's name is derived into it
+(a symlink planted at the old ``.config.yaml.tmp`` sibling was followed and
+then published AS the destination), and no temp of ours survives a successful
+write.
 """
 
 from __future__ import annotations
@@ -47,9 +42,9 @@ def test_atomic_write_writes_content(tmp_path: Path) -> None:
 
 
 def test_atomic_write_preserves_mode(tmp_path: Path) -> None:
-    """``copymode`` carries the user's mode bits (e.g. 0o600) from dst -> tmp
-    so the post-replace file keeps the same permissions. Only mode bits — NOT
-    atime/mtime — see the module docstring for why."""
+    """``mode=None`` keeps the existing config's mode bits (e.g. 0o600) across a
+    rewrite. Only mode bits — NOT atime/mtime — see the module docstring for
+    why."""
     cfg = tmp_path / "config.yaml"
     cfg.write_text("a: 1\n")
     cfg.chmod(0o600)
@@ -91,8 +86,37 @@ def test_atomic_write_cleans_up_tmpfile_on_success(tmp_path: Path) -> None:
     cfg.write_text("a: 1\n")
     data = parse_yaml("a: 2\n")
     atomic_write(cfg, data, _yaml())
-    tmps = list(tmp_path.glob(".config.yaml.tmp*"))
-    assert tmps == []
+    # The whole directory, not a glob of one shape: the temp name is picked per
+    # call, so a leftover under any shape shows up here.
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["config.yaml"]
+
+
+def test_a_symlink_at_the_old_derived_tmp_path_is_neither_followed_nor_published(
+    tmp_path: Path,
+) -> None:
+    """The temp's name is this call's own, so a planted one is not in the way.
+
+    With the old ``.<dst.name>.tmp`` sibling, a link planted there was opened
+    through (truncating its target) and then published AS the destination by
+    ``os.replace`` — measured on the art writer: ``library.db`` overwritten
+    with image bytes while the run reported the file written.
+    """
+    secret = tmp_path / "library.db"
+    secret.write_bytes(b"the beets database")
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("a: 1\n")
+    planted = tmp_path / f".{cfg.name}.tmp"  # exactly the path this writer used to derive
+    planted.symlink_to(secret)
+
+    atomic_write(cfg, parse_yaml("a: 2\n"), _yaml())
+
+    assert secret.read_bytes() == b"the beets database"  # not written through
+    assert not cfg.is_symlink()  # the destination is the file itself, not the link
+    assert cfg.is_file()
+    assert "a: 2" in cfg.read_text()
+    assert planted.is_symlink()  # left where it was, not deleted by our cleanup
+    assert planted.readlink() == secret  # and still aimed at the same file
+    assert sorted(p.name for p in tmp_path.iterdir()) == [planted.name, cfg.name, secret.name]
 
 
 def test_atomic_write_parent_dir_fsync_open_carries_o_directory(
