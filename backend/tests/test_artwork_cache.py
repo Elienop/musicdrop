@@ -1739,3 +1739,25 @@ def test_rename_move_failure_returns_kept_target(
     got = cache.get("Fairuz")
     assert isinstance(got, CachedImage)
     assert got.data == b"auto"
+
+
+def test_rename_purges_an_orphaned_override_sidecar_at_the_old_key(
+    cache: ArtistImageCache, tmp_path: Path
+) -> None:
+    """The one path that removes a mime-without-bytes, as ``override_files`` says.
+
+    ``write_override`` publishes the mime first, so a crash between the two
+    leaves a sidecar no reset removes (its answer is keyed on the bytes). A
+    rename whose target already holds a portrait purges EVERY old-key suffix,
+    the orphan included.
+    """
+    cache.write_override("Fayrouz", b"pinned", "image/png")
+    old_key = cache._key("Fayrouz")
+    (tmp_path / f"{old_key}.override").unlink()  # the crash: bytes never landed
+    assert cache.override_files("Fayrouz") == []
+    cache.store_positive("Fairuz", b"target", "image/jpeg")
+
+    assert cache.rename("Fayrouz", "Fairuz") == "kept_target"
+
+    assert not (tmp_path / f"{old_key}.override.mime").exists()
+    assert not any(name.startswith(old_key) for name in _slot_files(tmp_path))
