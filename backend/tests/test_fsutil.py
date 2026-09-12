@@ -5,12 +5,17 @@ Contract: a name-shaped failure (kernel: "File name too long") answers as
 "does not exist" so unknown-name refusal paths work; EVERY other OSError is
 re-raised — swallowing a permission or mount failure would turn a real
 incident into a silent 404.
+
+Plus :func:`app.fsutil.open_below`: the descent from the music root that refuses
+a symlinked component below it, and the errno the kernel actually answers.
 """
 
 from __future__ import annotations
 
 import errno
+import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -89,3 +94,144 @@ def test_a_symlink_to_an_empty_directory_is_occupied(tmp_path: Path) -> None:
 
     assert fsutil.occupied(link) is True, "following it would leave the music library"
     assert fsutil.occupied(target) is False, "...while the empty directory itself is free"
+
+
+def _ident(fd: int) -> tuple[int, int]:
+    st = os.fstat(fd)
+    return (st.st_dev, st.st_ino)
+
+
+def _ident_of(path: Path) -> tuple[int, int]:
+    st = os.stat(path)
+    return (st.st_dev, st.st_ino)
+
+
+def _open_fds() -> int:
+    return len(os.listdir("/proc/self/fd"))
+
+
+def _spy_os_open(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Record every ``os.open`` path and pass it through, so a refusal that did
+    not happen is visible as an fd the walk really opened."""
+    calls: list[object] = []
+    real_open = os.open
+
+    def spy(*args: Any, **kwargs: Any) -> int:  # widened: os.open is overloaded
+        calls.append(args[0])
+        return int(real_open(*args, **kwargs))
+
+    monkeypatch.setattr(os, "open", spy)
+    return calls
+
+
+def test_a_symlinked_component_below_the_root_is_refused(tmp_path: Path) -> None:
+    """The errno is MEASURED, not taken from ``open(2)``.
+
+    ``O_DIRECTORY|O_NOFOLLOW`` on a symlink answers ENOTDIR (20) here, not the
+    documented ELOOP — ELOOP needs ``O_NOFOLLOW`` without ``O_DIRECTORY``.
+    """
+    root = tmp_path / "music"
+    (root / "Real").mkdir(parents=True)
+    (tmp_path / "outside").mkdir()
+    (root / "Link").symlink_to(tmp_path / "outside", target_is_directory=True)
+
+    before = _open_fds()
+    with pytest.raises(OSError) as excinfo:
+        fsutil.open_below(root, Path("Link"))
+    assert excinfo.value.errno == errno.ENOTDIR
+    assert _open_fds() == before, "the root fd the walk opened is closed on the refusal"
+
+    fd = fsutil.open_below(root, Path("Real"))  # control: the real sibling opens
+    try:
+        assert _ident(fd) == _ident_of(root / "Real")
+    finally:
+        os.close(fd)
+
+
+def test_a_symlinked_root_is_followed(tmp_path: Path) -> None:
+    """An operator's beets ``directory:`` may be a link; only parts BELOW it are refused."""
+    real = tmp_path / "elsewhere"
+    (real / "Artist").mkdir(parents=True)
+    root = tmp_path / "music"
+    root.symlink_to(real, target_is_directory=True)
+
+    fd = fsutil.open_below(root, Path("Artist"))
+    try:
+        assert _ident(fd) == _ident_of(real / "Artist")
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.parametrize("rel", ["..", "../outside", "Artist/../../outside", ".", ""])
+def test_a_climbing_or_empty_rel_is_refused_before_any_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rel: str
+) -> None:
+    """``Path("")`` and ``Path(".")`` both carry ZERO parts (measured), so one
+    refusal answers both; ``..`` is the part pathlib keeps."""
+    root = tmp_path / "music"
+    (root / "Artist").mkdir(parents=True)
+    (tmp_path / "outside").mkdir()
+    calls = _spy_os_open(monkeypatch)
+    with pytest.raises(ValueError):
+        fsutil.open_below(root, Path(rel))
+    assert calls == [], "refused before the root was even opened"
+
+
+def test_an_absolute_rel_is_refused_before_any_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "music"
+    root.mkdir()
+    calls = _spy_os_open(monkeypatch)
+    with pytest.raises(ValueError):
+        fsutil.open_below(root, Path("/etc"))
+    assert calls == []
+
+
+def test_a_deep_path_returns_the_leaf_and_leaks_no_intermediate_fd(tmp_path: Path) -> None:
+    root = tmp_path / "music"
+    leaf = root / "Artist" / "Album" / "Disc 1"
+    leaf.mkdir(parents=True)
+
+    before = _open_fds()
+    fd = fsutil.open_below(root, Path("Artist/Album/Disc 1"))
+    try:
+        assert _ident(fd) == _ident_of(leaf)
+        assert _open_fds() == before + 1, "only the returned fd is still open"
+    finally:
+        os.close(fd)
+    assert _open_fds() == before
+
+
+def test_the_link_between_two_real_components_is_refused_at_the_link(tmp_path: Path) -> None:
+    """The case a leaf-only ``O_NOFOLLOW`` clears.
+
+    Measured: ``os.open("<root>/A/link/C", O_DIRECTORY|O_NOFOLLOW)`` — the flag on
+    the whole path, which only tests the LEAF — SUCCEEDS. Per component it is
+    refused at ``link``, and the OSError names that part.
+    """
+    root = tmp_path / "music"
+    (root / "B" / "C").mkdir(parents=True)
+    (root / "A").mkdir()
+    (root / "A" / "link").symlink_to(Path("..") / "B", target_is_directory=True)
+
+    leaf_only = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(str(root / "A" / "link" / "C"), leaf_only)
+    os.close(fd)  # the weaker check the walk replaces: it opened
+
+    with pytest.raises(OSError) as excinfo:
+        fsutil.open_below(root, Path("A/link/C"))
+    assert excinfo.value.errno == errno.ENOTDIR
+    assert excinfo.value.filename == "link", "refused at the link, not at the leaf"
+
+
+def test_a_nul_in_a_part_refuses_without_leaking_the_walked_fd(tmp_path: Path) -> None:
+    """``os.open`` answers a NUL with ValueError, not OSError — so the fd cleanup
+    on the walk cannot be an ``except OSError``."""
+    root = tmp_path / "music"
+    (root / "Artist").mkdir(parents=True)
+
+    before = _open_fds()
+    with pytest.raises(ValueError):
+        fsutil.open_below(root, Path("Artist/a\x00b"))
+    assert _open_fds() == before

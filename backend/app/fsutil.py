@@ -1,7 +1,7 @@
 """Filesystem predicates, and the one MOVE, shared by callers that must not import
 each other.
 
-Two halves, and the second one is here for a structural reason rather than a
+Three parts, and the second one is here for a structural reason rather than a
 thematic one. :func:`occupied` and :func:`move_no_merge` were ``trash_manage``'s
 until the delete side needed the same move-back: ``trash_manage`` imports
 ``import_session``, which imports ``trash``, so ``trash`` cannot import
@@ -11,7 +11,7 @@ is where a primitive both ends need can live. There is exactly one definition of
 "move a folder onto a path without burying it inside one" and both the restore
 and the delete undo call it.
 
-The first half is about paths that may carry a client-supplied name.
+The first part is about paths that may carry a client-supplied name.
 
 ``pathlib``'s ``Path.exists()`` / ``is_dir()`` only absorb ENOENT/ENOTDIR/
 EBADF/ELOOP; any OTHER OSError propagates — in particular ENAMETOOLONG
@@ -28,6 +28,12 @@ or mount failure would convert a real incident into a silent 404. Same
 swallow-vs-reraise posture as the ``exists()`` guards in
 ``app/artwork/cache.py``, scoped to the failure a request can actually
 cause.
+
+The third is the anchored descent, :func:`open_below`. Anything that ENUMERATES
+through an fd it returns must CLOSE its iterator: ``os.scandir(fd)`` dups the fd
+and the dup SHARES the offset, so one partially consumed iterator left open makes
+every later ``scandir``/``listdir`` on that fd read ``[]`` (measured 2026-09-12,
+twice; two live iterators on one fd interleave and duplicate entries).
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ import errno
 import os
 import shutil
 from pathlib import Path
+from typing import Final
 
 
 def exists(path: Path) -> bool:
@@ -204,3 +211,63 @@ def move_no_merge(src: Path, dest: Path) -> None:
         if exc.errno in DEST_OCCUPIED:
             raise FileExistsError(exc.errno, os.strerror(exc.errno), str(dest)) from exc
         raise
+
+
+#: Every component BELOW the root is opened this way: a link is refused instead of
+#: followed, and a FIFO planted mid-path cannot block the open. Twin spelling:
+#: ``trash_manage._DIR_FLAGS`` (``app/beets/trash_manage.py:1190``). Spelled twice
+#: on purpose — importing it would give this leaf module an ``app.beets`` edge, and
+#: the two must stay identical.
+_BELOW_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+
+#: The ROOT is opened FOLLOWING links: an operator's beets ``directory:`` may be a
+#: symlink and refusing it would refuse the library. Same reading as
+#: ``store_layout.py:723``. Owner ruling 2026-09-12: below the root a bind mount is
+#: the supported spelling for spanning disks, so a link there is refused.
+_ROOT_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK
+
+
+def open_below(root: Path, rel: Path) -> int:
+    """Open ``root/rel`` as a directory fd, refusing a symlink at every part below ``root``.
+
+    The fd-based sibling of ``trash_manage._reaches_through_a_link``
+    (``app/beets/trash_manage.py:1029``): both ask every component, not just the
+    leaf, and the two must read alike — that docstring's rule is that a second,
+    weaker traversal check must not grow. This is the stronger half, because the fd
+    the walk returns IS what the caller writes through, so no component can be
+    re-resolved between the check and the write.
+
+    Measured 2026-09-12: ``O_DIRECTORY|O_NOFOLLOW`` on a symlink answers
+    **ENOTDIR (20)**, not the documented ELOOP — ELOOP (40) needs ``O_NOFOLLOW``
+    WITHOUT ``O_DIRECTORY``. A link to a directory, a link to a file, a dangling
+    link and a plain regular file all answer ENOTDIR, so the errno cannot tell a
+    caller which it met: the answer is "refused", one OSError. Also measured:
+    ``open(root/"A"/"link"/"C")`` with ``O_NOFOLLOW`` on that whole path SUCCEEDS,
+    which is why the walk is per component.
+
+    An absolute ``rel``, a ``..`` part, and a ``rel`` with no parts are refused
+    before any open — ``Path("")`` and ``Path(".")`` both normalise to zero parts,
+    and ``Path("a/./b")`` to ``("a", "b")``, so "." never reaches the loop
+    (measured). Zero parts is refused rather than answering with the root's own fd:
+    the contract is a name BELOW the root. ``ValueError``, not a class of this
+    module, because a caller deriving ``rel`` from ``Path.relative_to`` already
+    catches one for a directory outside the root and both mean the same thing.
+
+    The returned fd is the caller's to close.
+    """
+    parts = rel.parts
+    if rel.is_absolute() or not parts or ".." in parts:
+        raise ValueError(f"not a name below the root: {str(rel)!r}")
+    fd = os.open(root, _ROOT_FLAGS)
+    try:
+        for part in parts:
+            below = os.open(part, _BELOW_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = below
+    except BaseException:
+        # Wider than OSError: a NUL in a part makes ``os.open`` raise ValueError
+        # ("embedded null character in path", measured), and the fd walked so far
+        # would leak. Re-raised unchanged.
+        os.close(fd)
+        raise
+    return fd
