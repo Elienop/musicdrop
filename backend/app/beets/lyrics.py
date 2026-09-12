@@ -26,10 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
-import secrets
-import shutil
 from collections.abc import Callable
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,14 +38,16 @@ from beets.library import Library
 from beets.util.lyrics import INSTRUMENTAL_LYRICS, Lyrics
 from beetsplug._utils.requests import HTTPNotFoundError
 
-from app.beets.library import LibraryHandle, _is_instrumental
+from app.beets.library import LibraryHandle, _is_instrumental, _music_dir
 from app.beets.sidecars import PLAIN_EXT, SIDECAR_EXTS, SYNCED_EXT, sidecar_base
+from app.fsutil import open_below
 from app.models.lyrics import (
     ItemLyricsOutcome,
     ItemLyricsStatus,
     LyricsBackfillStatus,
     LyricsCoverage,
 )
+from app.playlists.atomic import write_atomic_text
 
 _log = logging.getLogger(__name__)
 
@@ -132,90 +131,6 @@ def active_source_names(plugin: Any) -> list[str]:
     return [_backend_name(b) for b in getattr(plugin, "backends", [])]
 
 
-#: Flags for creating the atomic-write temp file, beside the unpredictable name
-#: :func:`_tmp_path` picks. ``O_EXCL`` makes the create fail rather than open
-#: whatever is at that path — a FIFO there made a plain ``open(tmp, "w")`` block
-#: until a reader appeared, forever, on the single-slot backfill worker.
-#: ``O_NOFOLLOW`` refuses a symlink; POSIX makes ``O_CREAT | O_EXCL`` fail EEXIST
-#: on one anyway (measured), so it earns its keep only if ``O_EXCL`` is dropped.
-#: Both guard a path nothing in the music share can aim at WITHOUT GUESSING the
-#: name :func:`_tmp_path` picked; a squatter that did land on it fails the create
-#: and the ``finally`` below clears it (a dangling symlink or a directory
-#: excepted). The
-#: read-side twin is
-#: :func:`_is_marker_sidecar`'s stat guard.
-_TMP_CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-
-
-def _tmp_path(dst: Path) -> Path:
-    """A temp sibling of ``dst`` under a name picked per call, not derived.
-
-    Sidecars are written inside the music library, which this deployment's
-    threat model treats as attacker-writable, and a derived ``.<name>.tmp`` is a
-    path something else can occupy first — measured on the art writer next door:
-    a symlink planted there was followed and ``os.replace`` published the link as
-    the destination. Here the flags above already refused that; the random name
-    is what keeps a squatter from refusing the WRITE instead. A FIFO at the
-    derived path failed the create and then self-healed, because the ``finally``
-    below unlinked it. A DANGLING symlink was the lockout: ``Path.exists()``
-    follows it, so it was never unlinked and every attempt for that track failed
-    EEXIST.
-
-    The name does NOT embed ``dst.name``, so its length does not grow with the
-    destination's: 33 bytes for this writer's ``.lrc``/``.txt`` and this box's
-    7-digit ``pid_max``. Embedding it cost ``len(dst.name) + 30``, which made a
-    sidecar name of 226-250 bytes fail ENAMETOOLONG where the 5-byte
-    ``.<name>.tmp`` had written it. Same naming rule as ``app.playlists.atomic``
-    and ``artist_art._tmp_path``.
-    """
-    return dst.parent / f".{os.getpid()}.{secrets.token_hex(8)}{dst.suffix}.tmp"
-
-
-def _atomic_write_text(dst: Path, text: str) -> None:
-    """Atomic utf-8 write (text mirror of ``artist_art._atomic_write_bytes``):
-    an unpredictable tmp created EXCLUSIVELY in the same dir (:func:`_tmp_path`,
-    :data:`_TMP_CREATE_FLAGS`) -> fsync -> dst mode preserved on rewrite (umask
-    default on first write) -> os.replace -> fsync parent dir.
-
-    Raises ``OSError`` and the caller decides what that means.
-    """
-    tmp = _tmp_path(dst)
-    try:
-        # 0o666 so the first write still takes the umask default, as the mode
-        # test pins; a rewrite has its mode restored by the copymode below.
-        fd = os.open(tmp, _TMP_CREATE_FLAGS, 0o666)
-        try:
-            stream = os.fdopen(fd, "w", encoding="utf-8")
-        except BaseException:  # pragma: no cover - fdopen fails only on a bad fd
-            os.close(fd)
-            raise
-        with stream as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        if dst.exists():
-            shutil.copymode(dst, tmp)  # mode preserved on rewrite; umask default on first write
-        os.replace(tmp, dst)
-        # O_DIRECTORY: a FIFO swapped in here blocks forever without it (measured: 2 s, no error).
-        dir_fd = os.open(dst.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-    finally:
-        # Whatever is at the temp path: ours, unless something guessed the name
-        # this call picked and got there first — in which case the create above
-        # already failed and this unlinks the squatter (excepted: a dangling
-        # symlink, which ``exists()`` reads as absent, and a directory, which
-        # ``unlink`` refuses). That condition is
-        # what keeps the line off paths somebody else put in the music folder.
-        # Its price is that a process KILLED mid-write leaves one dotfile no
-        # later call clears — the residual ``playlists.atomic`` already carries.
-        if tmp.exists():
-            with suppress(OSError):
-                tmp.unlink()
-
-
 def _sidecar_base(item: Any) -> str | None:
     """The track path without its extension, for building a sibling sidecar path.
 
@@ -232,6 +147,9 @@ def _has_sidecar(item: Any) -> bool:
     base = _sidecar_base(item)
     if base is None:
         return False
+    # By NAME, so this gate still READS through a symlinked folder component that
+    # the write below refuses (out of scope, 2026-09-12). Same for
+    # :func:`_sidecars_are_all_markers` and the marker unlink.
     return any(os.path.exists(base + ext) for ext in SIDECAR_EXTS)
 
 
@@ -339,7 +257,30 @@ def _sidecars_are_all_markers(item: Any) -> bool:
     return bool(existing) and all(_is_marker_sidecar(path) for path in existing)
 
 
-def write_lyric_sidecar(item: Any, lyrics: Lyrics) -> str | None:
+def _open_album_dir(directory: Path, root: Path) -> int:
+    """A directory fd for ``directory``, refusing a symlinked component below ``root``.
+
+    Owner ruling 2026-09-12: below the library root a bind mount is the supported
+    spelling for spanning disks, so a symlinked component is refused; the root
+    itself may be reached through a link. :func:`app.fsutil.open_below` opens
+    every part below the root with ``O_NOFOLLOW`` — measured, a symlink answers
+    ENOTDIR and so does a plain file in the way, so the errno cannot say which.
+
+    A track sitting directly IN the root (a flat ``path_formats``) has no part
+    below it, which ``open_below`` refuses by contract; the root is opened here
+    instead, following links the way the shared writer's own parent open does.
+
+    Raises ``OSError`` (something in the way) or ``ValueError`` (``directory`` is
+    outside ``root``). The fd is the caller's to close.
+    """
+    rel = directory.relative_to(root)
+    if not rel.parts:
+        # O_DIRECTORY: a FIFO swapped in here blocks forever without it.
+        return os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    return open_below(root, rel)
+
+
+def write_lyric_sidecar(item: Any, lyrics: Lyrics, *, root: Path) -> str | None:
     """Write a Plex-readable lyric sidecar next to the track; return its path or None.
 
     **Fill gaps only — never clobber.** A track that already has a ``.lrc`` OR a
@@ -369,6 +310,14 @@ def write_lyric_sidecar(item: Any, lyrics: Lyrics) -> str | None:
     only the sidecar, MusicDrop never renders lyric text, and honesty beats
     deletion.
 
+    ``root`` is the library root. The album folder is reached through a
+    descriptor opened per component below it (:func:`_open_album_dir`) and the
+    sidecar is created and published through THAT fd, so no component can be
+    re-resolved between the check and the write. A folder outside the root, or
+    reached through a symlinked component, is refused: None, one log line,
+    nothing written. Measured before the ruling: the write followed such a link
+    and landed outside the library.
+
     ``.lrc`` (timestamped) when the fetched lyrics are synced, else ``.txt``
     (plain, timestamps stripped). Non-destructive (never touches the audio file)
     and best-effort: a write error is logged and swallowed so a batch keeps
@@ -395,10 +344,24 @@ def write_lyric_sidecar(item: Any, lyrics: Lyrics) -> str | None:
         return None
     dst = Path(base + ext)
     try:
-        _atomic_write_text(dst, body + "\n")
+        dir_fd = _open_album_dir(dst.parent, root)
+    except (OSError, ValueError):
+        _log.warning(
+            "lyric sidecar skipped, this folder is not reachable below the library root "
+            "without following a link (bind mounts are the supported spelling): %s",
+            dst.parent,
+        )
+        return None
+    try:
+        # Only ``dst.name`` travels: every name is resolved against the fd the
+        # walk returned. ``mode=None`` keeps a tightened sidecar's mode on a
+        # rewrite and takes the umask default on a first write.
+        write_atomic_text(Path(dst.name), body + "\n", mode=None, dir_fd=dir_fd)
     except OSError:
         _log.warning("lyric sidecar write failed: %s", dst, exc_info=True)
         return None
+    finally:
+        os.close(dir_fd)
     return str(dst)
 
 
@@ -457,7 +420,9 @@ def _store_lyrics(item: Any, lyrics: Lyrics, *, write: bool) -> bool:
     # are non-destructive and are the whole point for Plex).
     written = bool(item.try_write()) if write else False
     item.store()
-    write_lyric_sidecar(item, lyrics)
+    # The root the sidecar must stay below, read from the item's own library
+    # handle — the private surface ``item.store()`` above already requires.
+    write_lyric_sidecar(item, lyrics, root=Path(_music_dir(item._db)))
     return written
 
 
