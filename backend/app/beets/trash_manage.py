@@ -1224,8 +1224,16 @@ class _Remover:
 
         Sorted, so which child is reached first does not depend on the
         directory's internal order.
+
+        The names are read inside a ``with``: an fd ``scandir`` DUPS the
+        descriptor and the dup SHARES its offset, so an iterator that outlives a
+        partial consume makes every later enumeration of that same fd read ``[]``
+        (measured). This one is consumed whole by ``sorted``, so the spelling is
+        the rule and not a fix.
         """
-        for name in sorted(entry.name for entry in os.scandir(dir_fd)):
+        with os.scandir(dir_fd) as entries:
+            names = sorted(entry.name for entry in entries)
+        for name in names:
             clause = self._child(name, dir_fd=dir_fd)
             if clause is not None:
                 return clause
@@ -1392,7 +1400,12 @@ def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) 
     first: OSError | None = None
     fd = open_checked_dir(trash_dir, protected)
     try:
-        for name in sorted(entry.name for entry in os.scandir(fd)):
+        # Inside a ``with``, like ``_Remover.children``: the dup an fd
+        # ``scandir`` makes shares the offset, and every removal below
+        # re-enumerates through this same ``fd``.
+        with os.scandir(fd) as entries:
+            names = sorted(entry.name for entry in entries)
+        for name in names:
             try:
                 refusal = _remove_checked_entry(name, dir_fd=fd, protected=protected)
             except OSError as exc:
