@@ -82,9 +82,17 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   restored backup, a read-only `/data`). That one is asked ahead of every branch of a delete,
   so nothing has moved when it refuses. MusicDrop will not delete an album it cannot record the
   origin of, because the name it would hand that folder in Trash may still be spoken for by a
-  record it cannot see. The third is the Trash folder itself not being reachable or creatable —
-  see `MUSICDROP_TRASH_DIR` below. The message says which of the three it is; fix that folder's
-  permissions or its mount and retry. **Deleting an album** additionally covers the case a stray file used
+  record it cannot see. The third is the Trash folder itself not being reachable, creatable or
+  checkable — see `MUSICDROP_TRASH_DIR` below. The message says which of the three it is; fix
+  that folder's permissions or its mount and retry. Two rules cover the folders on the way to the
+  Trash, and they bite when it ends up inside the music library: one of those folders must NAME
+  the library root — either of its spellings, `directory:` itself or a link to it — or the path
+  is refused; and none of them should be a link *into* the library, because the app follows links
+  above the root, so anyone who can write inside the library can re-point one and take the Trash
+  with it. That second rule is on you rather than on the app. Two blind spots: a library folder
+  bind-mounted to an outside path reads as outside, and `..` is refused outright — so spell the
+  Trash through `directory:`'s own root, without `..`. A bind mount *inside* the library is fine.
+  **Deleting an album** additionally covers the case a stray file used
   to hide: a `.stfolder`, a `lost+found` or an empty leftover directory sitting on a local
   mountpoint whose share has dropped makes the folder look mounted, so before a delete drops
   rows having moved nothing, MusicDrop confirms that at least one of the music *files* the
@@ -224,7 +232,7 @@ A few more knobs are env-only, with defaults that suit most setups:
 
 - `MUSICDROP_INBOX_SETTLE_SECONDS` (default 60) — the quiet window an inbox folder must hold before **Review all** will import it: the inbox is slskd's live output dir, so a folder touched within the last 60 s is skipped (listed as still receiving; a per-row Review overrides) rather than imported half-finished, where the remainder would later re-import as a duplicate.
 - `MUSICDROP_MAX_BODY_BYTES` (default 25 MiB) — the request-body cap: anything larger (an oversized cover upload, a giant playlist import) is refused with a 413 before the body is read.
-- `MUSICDROP_TRASH_DIR` (default `<beets dir>/trash`) — where deleted albums wait, on the same mount as `directory:` (`/music/.trash`). Refused: a Trash that is or contains the music library, the beets data dir, the origin store or another app folder. Inside the music library or the beets data dir is fine — but inside the library every folder on the way to it must be a real directory: a symlinked component (or a file in the way) is refused with a 503 at every delete, and a bind mount is the supported way to put the Trash on another disk. A path that only reaches into the library through a link is refused: a folder on the way must name the root, in either of its spellings. One gap — the check follows `..`, so a bind mount of a library subdirectory at an outside path reads as outside: spell the Trash through `directory:`'s own root, and without `..`.
+- `MUSICDROP_TRASH_DIR` (default `<beets dir>/trash`) — where deleted albums wait, on the same mount as `directory:` (`/music/.trash`). Inside the music library or the beets data dir is fine. Refused, with a 503 at every delete: a Trash that is or contains the music library, the beets data dir, the origin store or another app folder; a `..` anywhere in the path; a folder on the way that is not a real directory once the path is inside the library; a path that reaches into the library without naming its root; and a path the app cannot check at all (a folder on the way it may read but not enter — fix that folder's permissions). A bind mount is the supported way to put the Trash on another disk; how the folders "on the way" are judged, and where that judgement is blind, is under **Delete & Trash** above.
 - `MUSICDROP_TRASH_ORIGINS_DIR` (default `<beets dir>/trash-origins`) — the restore records (see **Backup & restore**); needs a folder of its own: not inside the music library or the Trash, and not on top of either; the default `<beets dir>/trash-origins` is fine.
 - `MUSICDROP_BEETS_DIR` and beets' `directory:` must be separate trees (the shipped `/data` and `/music` are), and `library:` may not sit in the Trash or the origin store — a red row on the offending line in **Settings → Beets**, with Save and Apply refused.
 - `MUSICDROP_LYRICS_BACKFILL_DELAY_SECONDS` (default 0.2) — the courtesy inter-track pause during lyrics fetches (the library-wide backfill and per-album fetches), also used as the inter-artist pause in the artist-image backfill; beets separately rate-limits the lyrics HTTP itself.
