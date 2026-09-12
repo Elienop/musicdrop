@@ -125,12 +125,21 @@ def protected_trees(
     trash_dir: Path,
     origins_dir: Path,
     library_path: Path,
+    trash_ident: tuple[int, int] | None = None,
 ) -> ProtectedTrees:
     """Identify the directories a mover or a remover may not act on.
 
     :func:`protected_entries`, by identity. A path that is not there yet has no
     identity and drops out; it gets one the next time this runs, which is once
     per destructive request.
+
+    ``trash_ident`` is the Trash's identity taken from a descriptor the CALLER
+    already holds — ``store_layout._ensure_trash_root``'s anchored walk — and it
+    replaces the ``stat`` by name this would otherwise take. Measured (security
+    seat M-1): 18 µs separated the two, and a racer who swapped an intermediate
+    component inside that window was followed by this stat and by the mover's own
+    open alike, so the two agreed and the files left the library. ``None`` keeps
+    the by-name stat, for the callers that hold no descriptor.
     """
     entries = protected_entries(
         settings=settings,
@@ -144,11 +153,11 @@ def protected_trees(
     trash: tuple[int, int] | None = None
     seen: list[tuple[tuple[int, int], str, str]] = []
     for path, name, setting in entries:
-        ident = _ident(path)
+        ident = trash_ident if name == _TRASH_NAME and trash_ident is not None else _ident(path)
         if ident is None:
             continue
         if name == _TRASH_NAME:
-            trash = ident  # the same stat the loop already took
+            trash = ident  # the caller's descriptor, or the stat the loop took
         seen.append((ident, name, setting))
         # First writer wins, so the five the rule is about name themselves when a
         # store shares their directory (the default `library:` sits in the beets

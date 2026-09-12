@@ -8,22 +8,30 @@ followed a symlink swapped in at an INTERMEDIATE component of a Trash at
 request then stat'd and opened the relocation through the same link and agreed
 with it.
 
-So the creation moved to ``store_layout.ensure_trash_root``, one line before the
-stat that records the identity, and below the music root it goes through the
-parent's descriptor — the chain the owner's layout ruling leaves
-attacker-writable.
+So the creation moved to ``store_layout._ensure_trash_root``, which hands back
+the identity of the descriptor its own walk reached, and below the music root
+every part is opened and created through its parent's descriptor — the chain the
+owner's layout ruling leaves attacker-writable. Where "below the music root"
+begins is decided by IDENTITY, because the two settings can spell one root two
+ways (security seat H-2).
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.beets.library import LibraryHandle
-from app.beets.protected import ProtectedTrees
+from app.beets.protected import (
+    ProtectedTreeError,
+    ProtectedTrees,
+    open_checked_dir,
+    protected_trees,
+)
 from app.beets.store_layout import StoreLayoutError, checked_protected_trees
 from app.beets.trash import resolve_trash_dir
 from app.config import Settings
@@ -58,8 +66,8 @@ def test_the_default_trash_is_created_and_its_identity_taken(tmp_path: Path) -> 
     """First use of a fresh install: nothing creates the Trash at boot.
 
     The shipped default is ``<beets_dir>/trash``, whose chain is the operator's,
-    so it is created with ``mkdir(parents=True)`` — and the identity the movers
-    compare is the one taken right after.
+    so the walk creates every part of it following links — and the identity the
+    movers compare is ``fstat`` on the descriptor it ends on.
     """
     music = tmp_path / "music"
     music.mkdir()
@@ -156,11 +164,13 @@ def test_a_trash_outside_the_library_is_created_through_the_operators_chain(
 ) -> None:
     """A Trash on another disk, spelled through a link the OPERATOR owns.
 
-    An anchored walk would refuse this, and refusing it would refuse the layout
-    the owner supports — so the arm that is not below the music root keeps
-    ``mkdir(parents=True)``, links and all. ``resolve_trash_dir`` collapses the
-    link, which is why the spelling test cannot find this one below the music
-    root either way.
+    Refusing a link ABOVE the music root would refuse the layout the owner
+    supports, so the walk follows every part until one of them IS the music root
+    — and this chain never is, which the ``..`` climb from its deepest existing
+    part confirms rather than assumes. The link pointing OUTSIDE is not what
+    makes this arm safe (one pointing INSIDE is refused by
+    ``test_a_trash_that_reaches_into_the_library_without_naming_it_is_refused``);
+    what makes it safe is that nothing here is below the root.
     """
     music = tmp_path / "music"
     music.mkdir()
@@ -173,6 +183,39 @@ def test_a_trash_outside_the_library_is_created_through_the_operators_chain(
     assert (other_disk / "deep" / "trash").is_dir(), "created through the operator's own link"
     st = os.stat(trash_dir)
     assert trees.trash == (st.st_dev, st.st_ino)
+
+
+def test_an_unmounted_music_root_is_reported_as_the_music_roots_fault(tmp_path: Path) -> None:
+    """A dropped share is the ``directory:`` setting's fault, not the Trash's.
+
+    Measured 2026-09-12 (security seat L-2, code seat W3) on the arm this
+    replaces: with the README's own ``<M>/.trash`` layout and the share down, the
+    delete route answered "MUSICDROP_TRASH_DIR could not be created … Fix its
+    permissions or its mount", where before this round the operator got "Is the
+    music share mounted?" and a remount as the remedy.
+    """
+    music = tmp_path / "music"  # never created: this is the bare mountpoint gone
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, music / ".trash")
+
+    assert "could not be opened" in str(caught.value)
+    assert "Is the music share mounted?" in str(caught.value)
+    assert not music.exists(), "the music root is not created for the Trash's sake"
+
+
+def test_the_default_trash_is_still_created_when_the_music_root_is_gone(tmp_path: Path) -> None:
+    """The dropped share refuses only the arm that would write into the library.
+
+    The shipped ``<beets_dir>/trash`` is outside it, so Empty Trash on a dropped
+    share still has a Trash to work in — refusing that would be a refusal about a
+    directory the fault cannot reach.
+    """
+    music = tmp_path / "music"
+
+    _trees(tmp_path, music, None)
+
+    assert (tmp_path / "beets" / "trash").is_dir()
 
 
 def test_a_trash_that_cannot_be_created_is_refused_not_skipped(tmp_path: Path) -> None:
@@ -243,3 +286,192 @@ def test_a_relative_trash_setting_below_the_music_root_is_anchored_too(
 
     assert "not reachable below the music library" in str(caught.value)
     assert list(elsewhere.iterdir()) == []
+
+
+def _library_root_with(music: Path) -> None:
+    """Give the music root one entry, so it reads as a mounted share.
+
+    ``checked_protected_trees`` refuses to create anything below a music root
+    that looks unmounted (``require_library_present``), and an EMPTY root is
+    exactly what a dropped NAS/SMB mount leaves behind — so a fixture that wants
+    the creation to happen has to look like a library that is really there.
+    """
+    (music / "An Artist").mkdir(exist_ok=True)
+
+
+def _aliased_root(tmp_path: Path) -> tuple[Path, Path]:
+    """``(the music_dir beets is given, the other spelling of it)``.
+
+    Two settings naming one root through two spellings is a configuration this
+    app invites — ``fsutil.ROOT_FLAGS`` supports a symlinked ``directory:`` —
+    and nothing warns the operator that the spellings have to match.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    _library_root_with(music)
+    os.symlink(music, tmp_path / "srv-music")
+    return music, tmp_path / "srv-music"
+
+
+def _swap_for_a_link(component: Path, target: Path) -> None:
+    """Replace an existing directory with a symlink to ``target``."""
+    os.rename(component, component.parent / f"real-{component.name}")
+    os.symlink(target, component)
+
+
+def test_a_trash_spelled_through_an_alias_of_the_music_root_is_anchored_too(
+    tmp_path: Path,
+) -> None:
+    """H-2: a spelling not lexically below the root that resolves inside it.
+
+    Measured 2026-09-12 (security seat H-2, code seat W1) on the arm this
+    replaces: ``relative_to`` raised, so the anchored walk was skipped and
+    ``mkdir(parents=True)`` followed the attacker's link at ``a`` — round-2 M-3
+    in full, with no race and every later request agreeing with the relocation.
+    """
+    music, alias = _aliased_root(tmp_path)
+    (music / "a").mkdir()
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    _swap_for_a_link(music / "a", elsewhere)
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, alias / "a" / "b" / ".trash")
+
+    assert "not reachable below the music library" in str(caught.value)
+    assert list(elsewhere.iterdir()) == [], "nothing created outside the library"
+
+
+def test_the_alias_spelling_is_created_when_nothing_is_in_the_way(tmp_path: Path) -> None:
+    """The control for the test above: the same spelling, no link planted.
+
+    The refusal has to be about the component and not about the alias, or
+    anchoring the alias spelling would refuse the layout itself.
+    """
+    music, alias = _aliased_root(tmp_path)
+
+    trees, trash_dir = _trees(tmp_path, music, alias / "a" / "b" / ".trash")
+
+    assert (music / "a" / "b" / ".trash").is_dir()
+    st = os.stat(trash_dir)
+    assert trees.trash == (st.st_dev, st.st_ino)
+
+
+def test_a_symlinked_music_root_spelled_through_its_target_is_anchored_too(
+    tmp_path: Path,
+) -> None:
+    """The converse alias: ``directory:`` is the link, the Trash names the target.
+
+    beets hands ``directory:`` back normpath'd but NOT resolved
+    (``library._music_dir``), so the pair is incomparable lexically in this
+    direction too (code seat W1, probe A).
+    """
+    real = tmp_path / "library"
+    real.mkdir()
+    _library_root_with(real)
+    music = tmp_path / "music"
+    os.symlink(real, music)
+    (real / "a").mkdir()
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    _swap_for_a_link(real / "a", elsewhere)
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, real / "a" / "b" / ".trash")
+
+    assert "not reachable below the music library" in str(caught.value)
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_a_symlinked_music_root_is_created_through_when_nothing_is_in_the_way(
+    tmp_path: Path,
+) -> None:
+    """The control for the converse alias."""
+    real = tmp_path / "library"
+    real.mkdir()
+    _library_root_with(real)
+    music = tmp_path / "music"
+    os.symlink(real, music)
+
+    trees, trash_dir = _trees(tmp_path, music, real / "a" / ".trash")
+
+    assert (real / "a" / ".trash").is_dir()
+    st = os.stat(trash_dir)
+    assert trees.trash == (st.st_dev, st.st_ino)
+
+
+def test_a_trash_that_reaches_into_the_library_without_naming_it_is_refused(
+    tmp_path: Path,
+) -> None:
+    """A link the operator owns that lands BELOW the music root.
+
+    The walk never meets the root's identity, so nothing would anchor the parts
+    it then creates inside the library. One spelling is supported, and the
+    refusal names it.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    _library_root_with(music)
+    (music / "a").mkdir()
+    os.symlink(music / "a", tmp_path / "srv-x")
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, tmp_path / "srv-x" / ".trash")
+
+    assert "reaches into the music library without naming it" in str(caught.value)
+    assert "`directory:`" in str(caught.value)
+    assert list((music / "a").iterdir()) == [], "refused before anything was created"
+
+
+def test_a_trash_spelling_that_climbs_is_refused(tmp_path: Path) -> None:
+    """A ``..`` in the configured value names one directory and reads as another.
+
+    ``os.path.normpath`` collapses it lexically and the kernel does not, so a
+    ``..`` that crosses a symlinked component diverges: measured 2026-09-12 (code
+    seat, probe D) the round created a stray ``<M>/b/.trash`` and reported
+    success while the configured Trash stayed absent.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    _library_root_with(music)
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, music / "x" / ".." / ".trash")
+
+    assert "may not contain '..'" in str(caught.value)
+    assert sorted(p.name for p in music.iterdir()) == ["An Artist"]
+
+
+def test_the_identity_the_movers_get_is_the_one_the_walk_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M-1: the identity is ``fstat`` on the walk's descriptor, not a second stat.
+
+    Measured (security seat M-1): the by-name stat ran 18 µs after the creation
+    and a real racer won that window 537 times in 100 876 requests; a won window
+    put that request's files outside the library and pointed ``empty_all``'s
+    ``rmtree`` at a directory of the attacker's choosing. Taking the identity
+    from the descriptor the walk reached means the mover's own open has to land
+    on it or be refused.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    _library_root_with(music)
+    (music / "a").mkdir()
+    elsewhere = tmp_path / "somewhere-else"
+    (elsewhere / "b" / ".trash").mkdir(parents=True)
+
+    def swap_the_component_then_build(**kwargs: Any) -> ProtectedTrees:
+        """The window, won: the swap lands after the creation, before the stat."""
+        _swap_for_a_link(music / "a", elsewhere)
+        return protected_trees(**kwargs)
+
+    monkeypatch.setattr("app.beets.store_layout.protected_trees", swap_the_component_then_build)
+
+    trees, trash_dir = _trees(tmp_path, music, music / "a" / "b" / ".trash")
+
+    walked = os.stat(music / "real-a" / "b" / ".trash")
+    assert trees.trash == (walked.st_dev, walked.st_ino), "the directory the walk created"
+    with pytest.raises(ProtectedTreeError) as caught:
+        open_checked_dir(trash_dir, trees)
+    assert "is not the directory MusicDrop checked" in str(caught.value)

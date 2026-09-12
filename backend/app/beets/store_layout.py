@@ -40,7 +40,7 @@ from app.beets.library import LibraryHandle, _music_dir
 from app.beets.protected import ProtectedTrees, protected_trees
 from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
 from app.config import Settings, app_owned_dirs, export_dir
-from app.fsutil import BELOW_FLAGS, open_root
+from app.fsutil import BELOW_FLAGS, ROOT_FLAGS, open_root
 
 __all__ = [
     "BEETS_SETTING",
@@ -593,7 +593,7 @@ def _refuse_an_unreachable_trash(spelled: Path, exc: OSError) -> StoreLayoutErro
     )
 
 
-def _refuse_an_uncreatable_trash(trash_dir: Path, exc: OSError) -> StoreLayoutError:
+def _refuse_an_uncreatable_trash(spelled: Path, exc: OSError) -> StoreLayoutError:
     """The refusal for a Trash directory that could not be created at all.
 
     A refusal here rather than an absent identity downstream: every mover would
@@ -601,93 +601,273 @@ def _refuse_an_uncreatable_trash(trash_dir: Path, exc: OSError) -> StoreLayoutEr
     not say that the directory is missing or why.
     """
     return StoreLayoutError(
-        f"{TRASH_SETTING} could not be created: {str(trash_dir)!r} ({exc.strerror})."
+        f"{TRASH_SETTING} could not be created: {str(spelled)!r} ({exc.strerror})."
         " Fix its permissions or its mount.",
         headline=f"{TRASH_SETTING} could not be created",
     )
 
 
-def _trash_parts_below_music(music_dir: Path, configured: str) -> Path | None:
-    """The Trash's parts below the music root by SPELLING, or ``None``.
+def _refuse_a_climbing_trash_spelling(configured: str) -> StoreLayoutError:
+    """The refusal for a configured Trash holding a ``..`` part.
 
-    The CONFIGURED value, not the resolved one: ``resolve_trash_dir`` collapses
-    links, so a Trash at ``<M>/a/b/.trash`` whose ``a`` was swapped for a symlink
-    RESOLVES outside the library and reads as "not below it" — exactly the shape
-    the anchored walk exists to refuse (measured, security seat M-3). Empty
-    ``configured`` is the shipped ``<beets_dir>/trash``, which the layout rule
-    keeps out of the library.
+    ``os.path.normpath`` collapses ``..`` lexically and the kernel does not, so a
+    ``..`` that crosses a symlinked component names a different directory than
+    the spelling reads as. Measured 2026-09-12 (code seat, probe D) on the arm
+    this replaces: a configured ``<M>/a/../b/.trash`` with ``a`` swapped for a
+    link created a stray ``<M>/b/.trash`` and reported success while the Trash
+    the rest of the app resolves stayed absent. One refusal instead of two
+    directories.
+    """
+    return StoreLayoutError(
+        f"{TRASH_SETTING} may not contain '..': {configured!r}. Spell the path without it.",
+        headline=f"{TRASH_SETTING} may not contain '..'",
+    )
 
-    ``absolute`` + ``normpath``: a relative setting is cwd-relative (the gotcha
-    ``config.py`` names) and would otherwise never compare, and ``normpath``
-    drops any ``..`` lexically so no part handed to the walk can climb.
+
+def _refuse_a_trash_around_the_music_root(spelled: Path) -> StoreLayoutError:
+    """The refusal for a Trash that lands inside the library without naming it.
+
+    A link the operator owns can point BELOW the music root (``/srv/x ->
+    <M>/a``): the walk never meets the root's identity, so it would create the
+    Trash inside the library through a followed chain, without the anchoring the
+    owner's layout ruling makes necessary there. Refused rather than anchored
+    because one spelling of the root is all the app has to support.
+    """
+    return StoreLayoutError(
+        f"{TRASH_SETTING} reaches into the music library without naming it:"
+        f" {str(spelled)!r}. Spell it through beets' `directory:`.",
+        headline=f"{TRASH_SETTING} reaches into the music library without naming it",
+    )
+
+
+def _refuse_an_unopenable_music_root(music_dir: Path, exc: OSError) -> StoreLayoutError:
+    """The refusal for a Trash below a music root that will not open at all.
+
+    The ROOT and not the Trash: a dropped share answers ENOENT here, and naming
+    ``MUSICDROP_TRASH_DIR`` sends the operator to the wrong setting. Measured
+    2026-09-12 (security seat L-2, code seat W3): on the README's own
+    ``<M>/.trash`` layout with the share down, the delete route answered
+    "MUSICDROP_TRASH_DIR could not be created" where it used to name the mount.
+    """
+    return StoreLayoutError(
+        f"{MUSIC_SETTING} could not be opened: {str(music_dir)!r} ({exc.strerror})."
+        " Is the music share mounted?",
+        config_key=_CONFIG_KEY_OF[MUSIC_SETTING],
+        headline=f"{MUSIC_SETTING} could not be opened",
+    )
+
+
+def _checked_trash_spelling(configured: str, trash_dir: Path) -> Path:
+    """The absolute path the walk descends, one component at a time.
+
+    The CONFIGURED value and not the resolved one: ``resolve_trash_dir``
+    collapses links, so a Trash at ``<M>/a/b/.trash`` whose ``a`` was swapped for
+    a symlink RESOLVES outside the library and would read as "not below it" —
+    exactly the shape the anchored walk exists to refuse (measured, security seat
+    M-3). An empty setting is the shipped ``<beets_dir>/trash``, which has no
+    configured spelling, so the resolved value is walked instead.
+
+    ``absolute`` because a relative setting is cwd-relative (the gotcha
+    ``config.py`` names) and ``normpath`` because ``os.open`` takes one component
+    at a time; a ``..`` is refused rather than collapsed.
+
+    Raises:
+        StoreLayoutError: the configured spelling holds a ``..`` part.
     """
     if not configured:
-        return None
-    spelled = Path(os.path.normpath(Path(configured).absolute()))
-    with contextlib.suppress(ValueError):
-        rel = spelled.relative_to(music_dir)
-        if rel.parts:
-            return rel
-    return None
+        return Path(os.path.normpath(trash_dir.absolute()))
+    if ".." in Path(configured).absolute().parts:
+        raise _refuse_a_climbing_trash_spelling(configured)
+    return Path(os.path.normpath(Path(configured).absolute()))
 
 
-def _create_below(root: Path, rel: Path) -> None:
-    """``mkdir`` every missing part of ``rel`` through its parent's descriptor.
+def _fstat_ident(fd: int) -> tuple[int, int]:
+    """The ``(st_dev, st_ino)`` of whatever ``fd`` is open on."""
+    st = os.fstat(fd)
+    return (st.st_dev, st.st_ino)
 
-    One ``mkdir`` then one ``BELOW_FLAGS`` open per part, so the next part is
-    resolved from the directory this call just made rather than from a name: a
-    part that is a symlink is refused at the open instead of followed.
-    ``fsutil.open_below``'s rule, with the creation folded in.
+
+def _music_root_ident(music_dir: Path, spelled: Path) -> tuple[int, int] | None:
+    """The music root's identity, or ``None`` when it will not open.
+
+    ``open_root`` FOLLOWS a link at the root, because an operator's beets
+    ``directory:`` may be one — so the identity is the directory beets indexes,
+    whichever of its spellings the Trash names.
+
+    Raises:
+        StoreLayoutError: the root will not open and the Trash is spelled below
+            it, which is the dropped share the operator has to hear about. With
+            no identity there is no other evidence than the spelling, which is
+            why this one decision is lexical.
     """
-    fd = open_root(root)
     try:
-        for part in rel.parts:
-            with contextlib.suppress(FileExistsError):
-                os.mkdir(part, dir_fd=fd)
-            try:
-                below = os.open(part, BELOW_FLAGS, dir_fd=fd)
-            except OSError as exc:
-                if exc.errno in (errno.ENOTDIR, errno.ELOOP):
-                    raise _refuse_an_unreachable_trash(root / rel, exc) from exc
-                raise
-            os.close(fd)
-            fd = below
+        fd = open_root(music_dir)
+    except OSError as exc:
+        if _is_spelled_below(spelled, music_dir):
+            raise _refuse_an_unopenable_music_root(music_dir, exc) from exc
+        return None
+    try:
+        return _fstat_ident(fd)
     finally:
         os.close(fd)
 
 
-def _ensure_trash_root(settings: Settings, *, music_dir: Path, trash_dir: Path) -> None:
-    """Create the Trash directory, so the identity taken next describes a real one.
+def _is_spelled_below(spelled: Path, music_dir: Path) -> bool:
+    """Whether ``spelled`` is LEXICALLY below ``music_dir``."""
+    try:
+        return bool(spelled.relative_to(music_dir).parts)
+    except ValueError:
+        return False
 
-    One line before that stat, because a mover handed ``protected.trash is None``
-    has nothing to compare and the arm that created the Trash itself opened it by
-    PATH: measured (security seat M-3), ``mkdir(parents=True)`` plus a leaf-only
-    ``O_NOFOLLOW`` followed a symlink at an INTERMEDIATE component of
-    ``<M>/a/b/.trash``, the files left the library, and every later request
-    stat'd and opened the relocation through the same link and agreed with it.
 
-    Below the music root every part is created through its parent's descriptor,
-    because that chain is attacker-writable in the layout the owner permits (T
-    strictly inside M). Elsewhere — the shipped ``<beets_dir>/trash``, or a Trash
-    on another disk — the chain is the operator's and ``mkdir(parents=True)``
-    creates it, links and all.
+def _reaches_the_music_root(fd: int, root_ident: tuple[int, int]) -> bool:
+    """Whether the directory ``fd`` is open on is the music root or sits below it.
 
-    A real directory a stranger already left at the configured path is accepted
-    either way: that is the attacker owning the Trash's location, which no check
-    here can undo.
+    A ``..`` climb through descriptors, because the question is about the
+    directory the walk really reached and not about its spelling: the chain above
+    the root is followed, so a link there can land inside the library with no
+    component of the spelling naming it. ``/`` is its own parent, which is the
+    stop condition; a chain this process cannot climb answers "no", the same way
+    ``protected._note_walk_error`` treats a directory it cannot read.
+    """
+    here, here_ident = fd, _fstat_ident(fd)
+    if here_ident == root_ident:
+        return True
+    climbed: int | None = None
+    try:
+        while True:
+            try:
+                up = os.open("..", ROOT_FLAGS, dir_fd=here)
+            except OSError:
+                return False
+            up_ident = _fstat_ident(up)
+            if climbed is not None:
+                os.close(climbed)
+            climbed = up
+            if up_ident == root_ident:
+                return True
+            if up_ident == here_ident:
+                return False
+            here, here_ident = up, up_ident
+    finally:
+        if climbed is not None:
+            os.close(climbed)
+
+
+def _step_into(fd: int, part: str, *, below: bool, create: bool, spelled: Path) -> int:
+    """One component of the walk: created when ``create``, then opened from ``fd``.
+
+    ``BELOW_FLAGS`` once the walk is inside the music library, so a link or a file
+    at the part is refused instead of followed; ``ROOT_FLAGS`` above it, which is
+    the operator's own chain (``fsutil.ROOT_FLAGS``).
+    """
+    if create:
+        with contextlib.suppress(FileExistsError):
+            os.mkdir(part, dir_fd=fd)
+    try:
+        return os.open(part, BELOW_FLAGS if below else ROOT_FLAGS, dir_fd=fd)
+    except OSError as exc:
+        if below and exc.errno in (errno.ENOTDIR, errno.ELOOP):
+            raise _refuse_an_unreachable_trash(spelled, exc) from exc
+        raise
+
+
+def _open_the_trash_chain(*, music_dir: Path, spelled: Path, create: bool) -> int:
+    """A descriptor on the Trash, decided by IDENTITY component by component.
+
+    From ``/`` down, one ``os.open`` per part. Above the music root the parts are
+    the OPERATOR's — a symlinked ``directory:``, a ``/srv`` that is a link — so
+    they are opened following links; the moment an opened part's ``(st_dev,
+    st_ino)`` IS the music root's, every further part is opened ``BELOW_FLAGS``
+    and created through its parent's descriptor, because that is the chain the
+    owner's layout ruling leaves attacker-writable.
+
+    Identity and not spelling, measured 2026-09-12 (security seat H-2, code seat
+    W1): the two settings can name one root two ways — a Trash under an ALIAS of
+    ``directory:``, or a ``directory:`` that is a link with the Trash spelled
+    through its target — and a lexical ``relative_to`` then answered "not below
+    the music root" for a Trash that really was inside it, skipping the anchored
+    walk entirely and following the attacker's link.
+
+    What already exists is walked BEFORE anything is created, so a spelling that
+    reaches into the library through a link the walk never identifies is refused
+    with nothing left behind.
+
+    ``create`` is ``False`` for the report's read-only form, which stops at the
+    first part that is not there yet: none of the five paths has to exist.
+
+    The returned fd is the caller's to close.
 
     Raises:
-        StoreLayoutError: the Trash is not reachable below the music root, or it
+        StoreLayoutError: a part below the music root is not a directory, or the
+            spelling reaches into the library without naming it.
+        OSError: any other fault the walk met; the caller words it.
+    """
+    root_ident = _music_root_ident(music_dir, spelled)
+    parts = spelled.parts[1:]
+    fd = os.open("/", ROOT_FLAGS)
+    try:
+        below, walked = False, 0
+        for part in parts:
+            try:
+                opened = _step_into(fd, part, below=below, create=False, spelled=spelled)
+            except FileNotFoundError:
+                break
+            os.close(fd)
+            fd = opened
+            walked += 1
+            if not below and root_ident is not None and _fstat_ident(fd) == root_ident:
+                below = True
+        if not below and root_ident is not None and _reaches_the_music_root(fd, root_ident):
+            raise _refuse_a_trash_around_the_music_root(spelled)
+        if create:
+            for part in parts[walked:]:
+                opened = _step_into(fd, part, below=below, create=True, spelled=spelled)
+                os.close(fd)
+                fd = opened
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _ensure_trash_root(settings: Settings, *, music_dir: Path, trash_dir: Path) -> tuple[int, int]:
+    """Create the Trash directory and answer the identity of what was opened.
+
+    The identity comes from ``fstat`` on the descriptor the walk itself reached,
+    never from a second resolve by name: measured (security seat M-1), the
+    by-name stat ran 18 µs after the creation and a real racer won that window
+    537 times in 100 876 requests, and a won window put that request's files
+    outside the library and pointed ``empty_all``'s ``rmtree`` at a directory of
+    the attacker's choosing. The mover's own open must now land on the directory
+    this walk reached or be refused.
+
+    Created here, one line before the identity is taken, because a mover handed
+    ``protected.trash is None`` has nothing to compare and the arm that created
+    the Trash itself opened it by PATH: measured (security seat M-3),
+    ``mkdir(parents=True)`` plus a leaf-only ``O_NOFOLLOW`` followed a symlink at
+    an INTERMEDIATE component of ``<M>/a/b/.trash``, the files left the library,
+    and every later request stat'd and opened the relocation through the same
+    link and agreed with it.
+
+    A real directory a stranger already left at the configured path is accepted:
+    that is the attacker owning the Trash's location, which no check here can
+    undo.
+
+    Raises:
+        StoreLayoutError: the spelling climbs or reaches into the library without
+            naming it, the Trash is not reachable below the music root, or it
             could not be created.
     """
-    rel = _trash_parts_below_music(music_dir, settings.trash_dir)
+    spelled = _checked_trash_spelling(settings.trash_dir, trash_dir)
     try:
-        if rel is None:
-            trash_dir.mkdir(parents=True, exist_ok=True)
-        else:
-            _create_below(music_dir, rel)
+        fd = _open_the_trash_chain(music_dir=music_dir, spelled=spelled, create=True)
     except OSError as exc:
-        raise _refuse_an_uncreatable_trash(trash_dir, exc) from exc
+        raise _refuse_an_uncreatable_trash(spelled, exc) from exc
+    try:
+        return _fstat_ident(fd)
+    finally:
+        os.close(fd)
 
 
 def checked_protected_trees(
@@ -707,19 +887,23 @@ def checked_protected_trees(
     no mover sees ``protected.trash is None`` and none has to create it by path.
     It is the same directory the movers already ``mkdir`` themselves, and a
     stranger's pre-existing directory at the configured path is accepted either
-    way, so what moves is only WHERE the creation happens.
+    way, so what moves is only WHERE the creation happens. The Trash's identity
+    is that call's ``fstat`` on the descriptor its walk reached, not a second
+    resolve of the same name — the window between the two was winnable (security
+    seat M-1).
 
     Raises:
         StoreLayoutError: the Trash could not be created below the music root.
     """
     music, library = lib_music_and_library(handle.lib)
-    _ensure_trash_root(settings, music_dir=music, trash_dir=trash_dir)
+    trash_ident = _ensure_trash_root(settings, music_dir=music, trash_dir=trash_dir)
     return protected_trees(
         settings=settings,
         music_dir=music,
         beets_dir=handle.beets_dir,
         trash_dir=trash_dir,
         origins_dir=origins_dir,
+        trash_ident=trash_ident,
         library_path=library,
     )
 
