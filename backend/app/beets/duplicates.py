@@ -358,6 +358,14 @@ def resolve_duplicate_group(
     ``Album.remove(delete=False)`` (DB rows dropped, files remain in Trash) —
     exactly ``beet dup --move <trash> --remove`` for albums.
 
+    The ``lib.transaction()`` below is per-CALL and not per-album: a fault on the
+    second loser leaves the FIRST one's rows dropped and its files in Trash with
+    an origin record, and the route answers 500. Measured 2026-09-12 (security
+    seat L-2): album rows ``[1,2,3,4,5]`` became ``[1,3,4,5]``. Recoverable
+    through Restore, which is what the 500's body promises; the per-album
+    transaction is recorded in ``BACKLOG.md`` and pinned by
+    ``test_a_fault_on_the_second_loser_leaves_the_first_one_dropped``.
+
     Binds ``lib.music_dir_context()`` for the whole operation: beets stores
     item paths relative to the library dir and re-expands them to absolute on load
     via a ``ContextVar`` (``beets.context``) set when the ``Library`` is opened.
