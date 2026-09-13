@@ -580,6 +580,33 @@ def write_trash_origin(
         )
 
 
+#: How a record key is opened. ``O_NONBLOCK`` is the TIME bound and the whole
+#: reason the open is here at all (see :func:`_record_text`); no ``O_NOFOLLOW``,
+#: because a link to a real record must still read. Neither flag says the name
+#: IS a regular file — the ``fstat`` on the descriptor decides that, which is
+#: the same division ``lyrics._SIDECAR_READ_FLAGS`` and
+#: ``store_layout._include_source`` already use.
+_RECORD_READ_FLAGS: Final = os.O_RDONLY | os.O_NONBLOCK
+
+
+def _bytes_at_most(fd: int, budget: int) -> bytes | None:
+    """Up to ``budget`` bytes from ``fd``, or ``None`` past it.
+
+    The budget bounds the READ and not ``st_size``, which is a snapshot: every
+    ``/proc`` file reports 0 and ``/proc/kallsyms`` measured 22,227,073 bytes
+    through one. Short reads are expected — ``O_NONBLOCK`` permits them even on
+    a regular file — so it is a loop rather than one ``os.read``.
+    ``store_layout._include_bytes`` is the same shape for the same reason.
+    """
+    buf = b""
+    while len(buf) <= budget:
+        chunk = os.read(fd, budget + 1 - len(buf))
+        if not chunk:
+            return buf
+        buf += chunk
+    return None
+
+
 def _record_text(path: Path, *, consequence: str) -> str | None:
     """The ASCII text at a record's key, or ``None`` when nothing there is ours.
 
@@ -602,24 +629,38 @@ def _record_text(path: Path, *, consequence: str) -> str | None:
     import-restore, and the delete unlinks the file, so a plant self-heals off
     the store the first time an operator touches the entry.
 
-    FOUR refusals and not one, so the gate keeps the diagnosis the bare open
-    used to produce: absent is the ordinary case and stays silent, a name that
-    cannot be examined earns the I/O sentence (a symlink loop at the key is
-    this arm), a name that IS there and is not a regular file earns its own, and
-    one too large to be a record earns a fourth. Every ``stat`` here FOLLOWS
-    links, because the question is what the name RESOLVES to — a link to a real
-    record still reads.
+    **The inode that is checked is the inode that is read, and neither the open
+    nor the read can block.** ``stat`` then ``open`` asked the same NAME twice,
+    which bounded WHAT and HOW MUCH is read and never HOW LONG: measured
+    2026-09-13 (security seat H-1), a write lease (``fcntl F_SETLEASE
+    F_WRLCK``) on a 73-byte regular file at the key passes ``S_ISREG`` and the
+    size pre-filter and then blocks every other ``open`` of it for
+    ``/proc/sys/fs/lease-break-time`` — **45 s**, renewable, with no race to
+    win — and a rename of a FIFO onto the key inside the stat-to-open window won
+    0.90 % of calls at a 10 % duty cycle and blocked for the life of the
+    process. So the name is opened ONCE, with ``O_NONBLOCK`` (the time bound:
+    measured here, the leased key answers EAGAIN in 0.0000 s and a FIFO opens
+    at once), and every later question is asked of that descriptor. No
+    ``O_NOFOLLOW``: the question is what the name RESOLVES to, so a link to a
+    real record still reads.
+
+    FOUR answers from the open and three more from the read. Absent is the
+    ordinary case and stays silent; a dangling link earns the link sentence; an
+    open that fails any other way earns the I/O one (a symlink loop, a socket
+    and a mode-000 file are all this arm, measured); then ``fstat`` refuses a
+    name that is not a regular file, ``st_size`` refuses one too large, the read
+    itself can fail, and a file that grows past the cap mid-read is refused
+    again.
 
     The cap is applied TWICE and the second one is the bound. ``st_size`` is a
     snapshot, not a promise about the read: a procfs file is ``S_ISREG`` with
     ``st_size == 0`` and yields arbitrary content — measured here, a link at the
     key to ``/proc/self/smaps`` stat'd at 0 bytes and read **162,801**, straight
-    past a 64 KiB cap with no race to win — and a swap in the stat-to-read
-    window restored the whole +801 MB. So the ``st_size`` check stays as the
-    cheap pre-filter that costs no syscall (the ``st`` is already in hand) and
-    ``fh.read(cap + 1)`` is what actually bounds the memory. Binary, so the
-    bound is in BYTES rather than in characters of whatever the decode makes of
-    them, and one byte over the cap is enough to refuse.
+    past a 64 KiB cap with no race to win. So the ``st_size`` check stays as the
+    cheap pre-filter that costs no syscall (the ``fstat`` is already in hand)
+    and :func:`_bytes_at_most` is what actually bounds the memory. Bytes off a
+    descriptor, so the bound is in BYTES rather than in characters of whatever
+    the decode makes of them, and one byte over the cap is enough to refuse.
 
     ``consequence`` is the second half of the log line, because the two callers
     leave the operator in different places: one has a Trash row that will now
@@ -636,10 +677,10 @@ def _record_text(path: Path, *, consequence: str) -> str | None:
     ``test_a_non_utf8_folder_name_round_trips_through_the_ascii_record``.
     """
     try:
-        st = os.stat(path)
+        fd = os.open(path, _RECORD_READ_FLAGS)
     except FileNotFoundError:
         # A DANGLING link is PRESENT and still answers ENOENT here, because this
-        # ``stat`` follows it — so without this arm it took the silent one and
+        # ``open`` follows it — so without this arm it took the silent one and
         # the row degraded from an exact restore to an import with no log line
         # at all, which is the one signal ``_warn_unusable`` exists to give
         # (security seat L-2, measured 2026-09-13: ``log=[]``). ``lstat`` is
@@ -651,29 +692,31 @@ def _record_text(path: Path, *, consequence: str) -> str | None:
             _warn_unusable(path, "it is a link to something that is not there", consequence)
         return None  # absent is the ordinary case and stays silent
     except OSError:
-        _warn_unusable(path, "it could not be examined", consequence, exc_info=True)
-        return None
-    if not stat.S_ISREG(st.st_mode):
-        _warn_unusable(path, "it is not a regular file", consequence)
-        return None
-    if st.st_size > _MAX_RECORD_BYTES:
-        _warn_unusable(path, _TOO_LARGE, consequence)
+        # EAGAIN from a write lease lands here, and so do ELOOP, ENXIO and
+        # EACCES — the sentence says what happened and not what the name is,
+        # because the open is the only thing that was asked.
+        _warn_unusable(path, "it could not be opened", consequence, exc_info=True)
         return None
     try:
-        # A directory at the name is refused by ``S_ISREG`` above (it used to
-        # be ``IsADirectoryError`` into the unusable arm, which said the same
-        # thing one arm along).
-        with path.open("rb") as fh:
-            raw = fh.read(_MAX_RECORD_BYTES + 1)
-    except FileNotFoundError:
-        return None  # the ordinary case: no record was ever written
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            # The FIFO, the directory and the device all land here, on the
+            # descriptor that is already open rather than on the name.
+            _warn_unusable(path, "it is not a regular file", consequence)
+            return None
+        if st.st_size > _MAX_RECORD_BYTES:
+            _warn_unusable(path, _TOO_LARGE, consequence)
+            return None
+        raw = _bytes_at_most(fd, _MAX_RECORD_BYTES)
     except OSError:
         _warn_unusable(path, "it could not be read", consequence, exc_info=True)
         return None
-    if len(raw) > _MAX_RECORD_BYTES:
-        # Not the same refusal as the one above, which this one exists because
-        # of: reaching here means the file GREW past the cap, or never had an
-        # ``st_size`` that described it in the first place.
+    finally:
+        os.close(fd)
+    if raw is None:
+        # Not the same refusal as the ``st_size`` one, which this one exists
+        # because of: reaching here means the file GREW past the cap, or never
+        # had an ``st_size`` that described it in the first place.
         _warn_unusable(path, _TOO_LARGE, consequence)
         return None
     try:
