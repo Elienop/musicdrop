@@ -532,6 +532,44 @@ def test_a_file_too_large_to_be_a_record_is_refused_on_its_size(
     assert path.stat().st_size == planted, "refused, not truncated or removed"
 
 
+@pytest.mark.skipif(not Path("/proc/self/smaps").is_file(), reason="no procfs on this box")
+def test_the_cap_bounds_the_read_and_not_the_reported_size(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``st_size`` is a snapshot; the READ is what has to stop.
+
+    The deterministic bypass, no race to win: a ``/proc`` file is ``S_ISREG``
+    and reports ``st_size`` 0, and yields arbitrary content. Measured 2026-09-13
+    (security seat L-1) and re-measured 2026-09-14 here -- a link at the key to
+    ``/proc/self/smaps`` stat'd at 0 bytes, read 162,801, and landed in the
+    parse arm having sailed through a 64 KiB cap. The other half of the same
+    fault needed a race and cost more: with the swap forced inside the
+    stat-to-read window, a 400 MB file restored the whole +801 MB the cap was
+    added to prevent.
+
+    The two assertions on the fixture come first, because this test is
+    worthless if the file it plants no longer clears the cap -- a procfs file's
+    size is the process's own mapping count, so it is a measurement, not a
+    constant. ``app/beets/store_layout.py`` bounds its ``include:`` reads the
+    same way, for the same reason.
+    """
+    origins = _origins(tmp_path)
+    path = origin_file(origins, "Dummy")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to("/proc/self/smaps")
+    assert os.stat(path).st_size <= _MAX_RECORD_BYTES, "the stat has to under-report"
+    with path.open("rb") as fh:
+        assert len(fh.read()) > _MAX_RECORD_BYTES, "and the content has to clear the cap"
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        assert read_trash_origin(origins, "Dummy") is None
+
+    (record,) = caplog.records
+    assert "far too large to be a record" in record.getMessage(), (
+        "the read ran to EOF and the parse arm reported it instead"
+    )
+
+
 def test_a_dangling_link_at_the_record_key_is_logged_and_an_absent_one_is_not(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

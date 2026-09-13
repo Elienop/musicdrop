@@ -26,12 +26,16 @@ buy back with guards:
   gate with it:** "this app owns the directory" is not "nothing can be planted
   there", because an operator can point the store somewhere attacker-writable.
   A FIFO at a record's key hung ``GET /api/trash`` for the life of the process
-  and a 600 MB sparse file at one cost +1199 MB RSS, so
-  :func:`read_trash_origin` now stats before it opens (new) and refuses a file
-  too large to be a record (the old cap, same 64 KB). The symlink refusal did
-  NOT come back: the gate asks what the name RESOLVES to, so a link to a real
-  record still reads. What bounds the reach now is the layout row ``music
-  contains origins``, not the writer claim.
+  and a 600 MB sparse file at one cost +1199 MB RSS, so a record key is now
+  stat'ed before it is opened (new) and a file too large to be a record is
+  refused (the old cap, same 64 KB). The symlink refusal did NOT come back: the
+  gate asks what the name RESOLVES to, so a link to a real record still reads.
+  What bounds the reach now is the layout row ``music contains origins``, not
+  the writer claim. **The gate is ONE function, :func:`_record_text`, because
+  the first version of it reached one of the module's TWO readers:** the
+  delete-side read 200 lines below kept a bare ``read_text`` for a day, and
+  there a FIFO hung every route that takes an entry OUT of Trash, holding
+  ``beets_swap_lock`` after the entry was already destroyed.
 * **beets' source pruning is not blocked.** A file inside the trashed folder
   survives the re-import a failed restore asks for, and beets then refuses to
   prune the directory that still contains it — leaving a husk behind. There is
@@ -83,7 +87,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 from app.playlists.atomic import write_atomic_text
 from app.wire import display_path
@@ -569,6 +573,109 @@ def write_trash_origin(
         )
 
 
+def _record_text(path: Path, *, consequence: str) -> str | None:
+    """The ASCII text at a record's key, or ``None`` when nothing there is ours.
+
+    THE one gate in front of both readers of a record key, and it is one
+    function because they diverged once already. Round 3 put ``stat`` +
+    ``S_ISREG`` + the cap in front of :func:`read_trash_origin` on the premise
+    that *"this app owns the directory" is not "nothing can be planted there"* —
+    an operator can point the store somewhere attacker-writable — and left
+    :func:`_names_a_different_entry`, 200 lines below, reading the same key with
+    a bare ``read_text``. Every route that takes an entry OUT of Trash reaches
+    that one, all of them under ``beets_swap_lock`` and all of them AFTER the
+    irreversible act. Measured 2026-09-13 (security seat H-1, re-measured here):
+    a FIFO at ``<origins>/Album.json`` hung ``empty_one`` past a 6 s deadline
+    with the entry already destroyed, hung ``empty_all`` part-way with nothing
+    reported and the rest of Trash left behind, a 400 MB sparse file cost
+    +801 MB RSS, and a link to ``/dev/zero`` hung at **+46.6 GB** RSS in 6 s.
+
+    ``None`` means "not a record this store can read", which is exactly what
+    both callers already do something sensible with: the read falls back to an
+    import-restore, and the delete unlinks the file, so a plant self-heals off
+    the store the first time an operator touches the entry.
+
+    FOUR refusals and not one, so the gate keeps the diagnosis the bare open
+    used to produce: absent is the ordinary case and stays silent, a name that
+    cannot be examined earns the I/O sentence (a symlink loop at the key is
+    this arm), a name that IS there and is not a regular file earns its own, and
+    one too large to be a record earns a fourth. Every ``stat`` here FOLLOWS
+    links, because the question is what the name RESOLVES to — a link to a real
+    record still reads.
+
+    The cap is applied TWICE and the second one is the bound. ``st_size`` is a
+    snapshot, not a promise about the read: a procfs file is ``S_ISREG`` with
+    ``st_size == 0`` and yields arbitrary content — measured here, a link at the
+    key to ``/proc/self/smaps`` stat'd at 0 bytes and read **162,801**, straight
+    past a 64 KiB cap with no race to win — and a swap in the stat-to-read
+    window restored the whole +801 MB. So the ``st_size`` check stays as the
+    cheap pre-filter that costs no syscall (the ``st`` is already in hand) and
+    ``fh.read(cap + 1)`` is what actually bounds the memory. Binary, so the
+    bound is in BYTES rather than in characters of whatever the decode makes of
+    them, and one byte over the cap is enough to refuse.
+
+    ``consequence`` is the second half of the log line, because the two callers
+    leave the operator in different places: one has a Trash row that will now
+    offer the weaker restore, the other has already removed the entry. The cause
+    is shared; what to do about it is not.
+
+    ``ascii`` on the decode is a TRIPWIRE, not an encoding choice, and NO TEST
+    CAN KILL IT (measured: switching it to "utf-8" leaves the whole suite
+    green). Everything this module writes is pure ASCII by construction, so
+    utf-8 would decode it identically; what ascii adds is that a file carrying a
+    non-ASCII byte — therefore not one of ours, or corrupt — fails loudly into
+    the unusable arm instead of being half-believed. The WRITE side of the same
+    property IS pinned, by
+    ``test_a_non_utf8_folder_name_round_trips_through_the_ascii_record``.
+    """
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        # A DANGLING link is PRESENT and still answers ENOENT here, because this
+        # ``stat`` follows it — so without this arm it took the silent one and
+        # the row degraded from an exact restore to an import with no log line
+        # at all, which is the one signal ``_warn_unusable`` exists to give
+        # (security seat L-2, measured 2026-09-13: ``log=[]``). ``lstat`` is
+        # what sees it. ``os.path.islink`` and not ``Path.is_symlink``, which
+        # re-raises an ``OSError`` outside the handful it ignores (EACCES is
+        # not among them) — this runs inside ``GET /api/trash``, once per
+        # top-level entry, and may not 500 the listing.
+        if os.path.islink(path):
+            _warn_unusable(path, "it is a link to something that is not there", consequence)
+        return None  # absent is the ordinary case and stays silent
+    except OSError:
+        _warn_unusable(path, "it could not be examined", consequence, exc_info=True)
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        _warn_unusable(path, "it is not a regular file", consequence)
+        return None
+    if st.st_size > _MAX_RECORD_BYTES:
+        _warn_unusable(path, _TOO_LARGE, consequence)
+        return None
+    try:
+        # A directory at the name is refused by ``S_ISREG`` above (it used to
+        # be ``IsADirectoryError`` into the unusable arm, which said the same
+        # thing one arm along).
+        with path.open("rb") as fh:
+            raw = fh.read(_MAX_RECORD_BYTES + 1)
+    except FileNotFoundError:
+        return None  # the ordinary case: no record was ever written
+    except OSError:
+        _warn_unusable(path, "it could not be read", consequence, exc_info=True)
+        return None
+    if len(raw) > _MAX_RECORD_BYTES:
+        # Not the same refusal as the one above, which this one exists because
+        # of: reaching here means the file GREW past the cap, or never had an
+        # ``st_size`` that described it in the first place.
+        _warn_unusable(path, _TOO_LARGE, consequence)
+        return None
+    try:
+        return raw.decode("ascii")
+    except ValueError:
+        _warn_unusable(path, _NOT_OUR_JSON, consequence, exc_info=True)
+        return None
+
+
 def read_trash_origin(origins_dir: Path, entry_name: str) -> TrashOrigin | None:
     """The origin recorded for ``entry_name``, or ``None`` when there is none we trust.
 
@@ -609,77 +716,13 @@ def read_trash_origin(origins_dir: Path, entry_name: str) -> TrashOrigin | None:
         path = origin_file(origins_dir, entry_name)
     except ValueError:
         return None  # not a key this store can hold; nothing was ever written
-    # Never OPEN what the name resolves to unless it is a regular file, and ask
-    # with a ``stat``, which does not block where the open would. The comment
-    # here used to say no planted FIFO could be at this path because nothing but
-    # this module writes into the directory; measured 2026-09-13 (security
-    # seat), a FIFO at ``<origins>/<entry>.json`` hung ``GET /api/trash`` for the
-    # life of the process, at this branch's base and its tip alike. What BOUNDS
-    # the reach is not that claim but the layout row ``music contains origins``,
-    # which refuses an origin store inside the library directly and through a
-    # link; what is left is an operator putting the store somewhere else
-    # attacker-writable, plus the recorded bind-mount blindness.
-    #
-    # FOUR answers and not one, so the gate keeps the diagnosis the open used to
-    # produce: absent is the ordinary case and stays silent, a name that cannot
-    # be examined earns the I/O sentence (a symlink loop at the key is this
-    # arm), a name that IS there and is not a regular file earns its own, and
-    # one too large to be a record earns a fourth. FOLLOWS links, because the
-    # question is what the name resolves to.
-    try:
-        st = os.stat(path)
-    except FileNotFoundError:
-        # A DANGLING link is PRESENT and still answers ENOENT here, because this
-        # ``stat`` follows it — so without this arm it took the silent one and
-        # the row degraded from an exact restore to an import with no log line
-        # at all, which is the one signal ``_warn_unusable`` exists to give
-        # (security seat L-2, measured 2026-09-13: ``log=[]``). ``lstat`` is
-        # what sees it. ``os.path.islink`` and not ``Path.is_symlink``, which
-        # re-raises an ``OSError`` outside the handful it ignores (EACCES is
-        # not among them) — this runs inside ``GET /api/trash``, once per
-        # top-level entry, and may not 500 the listing.
-        if os.path.islink(path):
-            _warn_unusable(path, "it is a link to something that is not there")
-        return None  # absent is the ordinary case and stays silent
-    except OSError:
-        _warn_unusable(path, "it could not be examined", exc_info=True)
-        return None
-    if not stat.S_ISREG(st.st_mode):
-        _warn_unusable(path, "it is not a regular file")
-        return None
-    if st.st_size > _MAX_RECORD_BYTES:
-        # The ``st`` is already in hand, so the cap costs no syscall. See
-        # :data:`_MAX_RECORD_BYTES` for the measurement; refused BEFORE the read
-        # rather than after, which is the whole point of it.
-        _warn_unusable(path, "it is far too large to be a record")
+    text = _record_text(path, consequence=_ROW_FALLS_BACK)
+    if text is None:
         return None
     try:
-        # ``UnicodeDecodeError`` and ``json.JSONDecodeError`` are both
-        # ``ValueError`` subclasses, so the two arms below cover read, decode
-        # and parse together. The size cap is above, and it does NOT rest on
-        # "this module is the only writer" — that premise is the one the FIFO
-        # measurement deleted two arms up, and it had a second conclusion
-        # standing on it. What bounds the reach is the same layout row that
-        # bounds the FIFO's, ``music contains origins``. A directory at the name
-        # is refused by the gate above (it was ``IsADirectoryError`` into the
-        # unusable arm before, which said the same thing one arm along).
-        #
-        # ``encoding="ascii"`` here is a TRIPWIRE, and NO TEST CAN KILL IT
-        # (measured: switching it to "utf-8" leaves the whole suite green).
-        # Everything this module writes is pure ASCII by construction, so utf-8
-        # would decode it identically; what ascii adds is that a file carrying a
-        # non-ASCII byte -- which is therefore not one of ours, or is corrupt --
-        # fails loudly into the unusable arm instead of being half-believed. The
-        # WRITE side of the same property IS pinned, by
-        # ``test_a_non_utf8_folder_name_round_trips_through_the_ascii_record``.
-        raw: object = json.loads(path.read_text(encoding="ascii"))
-    except FileNotFoundError:
-        return None  # the ordinary case: no record was ever written
-    except OSError:
-        _warn_unusable(path, "it could not be read", exc_info=True)
-        return None
+        raw: object = json.loads(text)
     except ValueError:
-        _warn_unusable(path, "it is not the ASCII JSON this writes", exc_info=True)
+        _warn_unusable(path, _NOT_OUR_JSON, _ROW_FALLS_BACK, exc_info=True)
         return None
     except RecursionError:
         # Its own arm because it is neither of the two above: ``RecursionError``
@@ -689,20 +732,27 @@ def read_trash_origin(origins_dir: Path, entry_name: str) -> TrashOrigin | None:
         # legal JSON; what it is not is a record, so it earns a sentence of its
         # own rather than borrowing the parse arm's.
         #
-        # The size cap above does NOT make this arm dead code, which is the
-        # first thing to check when a gate grows in front of another: CPython's
-        # C scanner gives up at 9,998 nested arrays — about 20 KB, under a third
-        # of the cap — measured 2026-09-13. What it did do is move the old
-        # 60,000-level test fixture (117 KB) onto the size arm, so that fixture
-        # now asserts which side of the cap it sits on.
-        _warn_unusable(path, "it nests deeper than the JSON parser will go", exc_info=True)
+        # The size cap in :func:`_record_text` does NOT make this arm dead code,
+        # which is the first thing to check when a gate grows in front of
+        # another: CPython's C scanner gives up under 10,000 nested levels
+        # (~20 KB, under a third of the cap), and the exact number SHIFTS with
+        # the call stack — it is measured against the current depth, so it is
+        # not a constant to quote (9,983 from inside a pytest test, measured
+        # 2026-09-13; this comment said a flat 9,998). What the cap did do is
+        # move the old 60,000-level test fixture (117 KB) onto the size arm, so
+        # that fixture now asserts which side of the cap it sits on.
+        _warn_unusable(
+            path, "it nests deeper than the JSON parser will go", _ROW_FALLS_BACK, exc_info=True
+        )
         return None
     if not _names_entry(raw, entry_name):
-        _warn_unusable(path, "it is the record for a different Trash entry")
+        _warn_unusable(path, "it is the record for a different Trash entry", _ROW_FALLS_BACK)
         return None
     record = _parse(raw)
     if record is None:
-        _warn_unusable(path, "its contents are not a record this version can trust")
+        _warn_unusable(
+            path, "its contents are not a record this version can trust", _ROW_FALLS_BACK
+        )
     return record
 
 
@@ -721,7 +771,41 @@ def _names_entry(raw: object, entry_name: str) -> bool:
     return not isinstance(raw, dict) or raw.get("name") == entry_name
 
 
-def _warn_unusable(path: Path, why: str, *, exc_info: bool = False) -> None:
+#: The cause shared by the two refusals that are checked twice — once cheaply on
+#: ``st_size`` and once on what the read actually returned. One string, because
+#: an operator reading the log has no use for the distinction and the second
+#: spelling would only invite the two to drift apart.
+_TOO_LARGE: Final = "it is far too large to be a record"
+
+#: Shared by the decode and the parse: ``UnicodeDecodeError`` and
+#: ``json.JSONDecodeError`` are both ``ValueError``, and they are the same fault
+#: to an operator — the bytes at the key are not what this writes.
+_NOT_OUR_JSON: Final = "it is not the ASCII JSON this writes"
+
+#: :func:`_warn_unusable`'s second half for :func:`read_trash_origin`. The row
+#: is still in Trash and is about to be offered the weaker restore.
+_ROW_FALLS_BACK: Final = (
+    "That folder falls back to a re-import restore, and its Trash row cannot say which of"
+    " the two causes it hit — this line is the difference."
+)
+
+#: :func:`_warn_unusable`'s second half for :func:`_names_a_different_entry`,
+#: which runs AFTER the entry has already been removed. There is no row left to
+#: degrade and nothing for the operator to fix, so the clause above would be
+#: false here.
+#:
+#: It says what the READ did and stops there. "So the file goes too" was the
+#: first spelling and it is a claim about the NEXT statement, which can fail:
+#: ``delete_trash_origin``'s ``unlink`` raises on a directory at the key or a
+#: read-only ``/data``, and it has its own log line for exactly that. Two lines
+#: about one file is fine; one of them being wrong is not.
+_PLANT_GOES_WITH_IT: Final = (
+    "None of it was used, and the entry it was keyed on has already been removed — this"
+    " line is the only trace it was there."
+)
+
+
+def _warn_unusable(path: Path, why: str, consequence: str, *, exc_info: bool = False) -> None:
     """Log that a record file is present but cannot be used.
 
     ``%r`` rather than ``%s`` on the path, and it is MORE load-bearing here than
@@ -730,15 +814,21 @@ def _warn_unusable(path: Path, why: str, *, exc_info: bool = False) -> None:
     reaches this log line through the record's own FILENAME. ``repr`` escapes
     those and lone surrogates too, while leaving ordinary text readable.
 
+    ``consequence`` is required rather than defaulted, because the two callers of
+    :func:`_record_text` leave the operator in different places and a default
+    would quietly give the delete path the read path's sentence — which is FALSE
+    there (no row, no fallback). The CAUSE is shared; what follows from it is
+    not. Still one ``logger.warning`` call, so the module's log-line census is
+    unchanged.
+
     Once per listing per bad record, which is the right frequency: the row is
     showing a misleading note for as long as the file sits there.
     """
     logger.warning(
-        "the Trash origin record at %r is present but unusable: %s. That folder falls back"
-        " to a re-import restore, and its Trash row cannot say which of the two causes it"
-        " hit — this line is the difference.",
+        "the Trash origin record at %r is present but unusable: %s. %s",
         os.fsdecode(path),
         why,
+        consequence,
         exc_info=exc_info,
     )
 
@@ -879,17 +969,30 @@ def _names_a_different_entry(path: Path, entry_name: str) -> bool:
     schema or origin validation: a record for another entry is that entry's to
     lose whether or not THIS version can parse the rest of it.
 
-    The two statements that can fail here are the read and the parse, and the
-    arm below names all three of the exception types they have been measured to
-    raise. It is not a proof that nothing else can: ``json.loads`` reached this
-    module with a fourth (``RecursionError``, on a deeply nested file) that
-    ``except (OSError, ValueError)`` walked straight past, and that escaped out
-    of :func:`delete_trash_origin` after the entry was already gone. The shapes
-    this arm is measured against are listed at that function.
+    The READ goes through :func:`_record_text`, the same gate
+    :func:`read_trash_origin` uses, and it must: this reader had a bare
+    ``read_text`` 200 lines below that one until 2026-09-14, so a FIFO at the
+    key hung every route that takes an entry out of Trash — under
+    ``beets_swap_lock`` and after the irreversible act. The measurements are at
+    :func:`_record_text`. ``None`` from it is a ``False`` here for the reason
+    the paragraph above gives: a file this store cannot read names nobody, so
+    the caller unlinks it and the plant does not outlive the entry.
+
+    What is left to fail here is the PARSE, and the arm below names both
+    exception types it has been measured to raise. It is not a proof that
+    nothing else can: ``json.loads`` reached this module with a
+    ``RecursionError`` on a deeply nested file that ``except ValueError`` walks
+    straight past, and that escaped out of :func:`delete_trash_origin` after the
+    entry was already gone. ``OSError`` is no longer in the list because no
+    statement here raises one — the gate owns the I/O and swallows it. The
+    shapes this arm is measured against are listed at that function.
     """
+    text = _record_text(path, consequence=_PLANT_GOES_WITH_IT)
+    if text is None:
+        return False
     try:
-        raw: object = json.loads(path.read_text(encoding="ascii"))
-    except (OSError, ValueError, RecursionError):
+        raw: object = json.loads(text)
+    except (ValueError, RecursionError):
         return False
     if not isinstance(raw, dict):
         return False

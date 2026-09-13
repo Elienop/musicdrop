@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -356,6 +357,145 @@ def test_an_import_restore_of_the_losing_row_keeps_the_other_entrys_record(
     assert survivor.origin == str(tmp_path / "music" / "Long")
 
 
+# ----- the DELETE side reads the key too, and through the same gate -----
+
+
+def _one_entry_to_empty(tmp_path: Path) -> tuple[Path, Path]:
+    """A Trash holding one recorded entry, and the store beside it."""
+    trash, origins = tmp_path / "trash", tmp_path / "trash-origins"
+    origins.mkdir()
+    (trash / "Album").mkdir(parents=True)
+    (trash / "Album" / "a.flac").write_bytes(b"\x00")
+    write_trash_origin(origins, "Album", origin=str(tmp_path / "music" / "Album"), moved="folder")
+    return trash, origins
+
+
+def test_a_fifo_at_the_key_does_not_hang_the_delete_that_reads_it(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``empty_one`` reads the record key AFTER the entry is already gone.
+
+    ``delete_trash_origin`` asks whose record the file is before unlinking it,
+    and that read had a bare ``read_text`` for a day while the LISTING's read
+    two hundred lines above had a ``stat`` gate. Every route that takes an entry
+    out of Trash reaches this one -- restore, both Empties, and trashing an
+    album -- all of them inside ``beets_swap_lock``. Measured 2026-09-13
+    (security seat H-1) and re-measured 2026-09-14 here: a FIFO at
+    ``<origins>/Album.json`` left ``empty_one`` blocked past a 6 s deadline with
+    the entry ALREADY destroyed, so the lock was held for the life of the
+    process and every later mutating Trash route and both reorganize previews
+    answered 409.
+
+    The plant is unlinked rather than kept: ``None`` from the gate means "not a
+    record this store can read", which names nobody, so the store repairs
+    itself the first time an operator touches the entry.
+
+    Run on a thread with a join deadline, because a plain call would hang this
+    suite instead of failing it.
+    """
+    trash, origins = _one_entry_to_empty(tmp_path)
+    key = origin_file(origins, "Album")
+    key.unlink()
+    os.mkfifo(key)
+    done: list[object] = []
+
+    def run() -> None:
+        done.append(
+            empty_one(
+                str(trash / "Album"),
+                origins_dir=origins,
+                protected=protected_for(trash_dir=trash, origins_dir=origins),
+            ).removed
+        )
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        worker.join(10)
+
+    assert not worker.is_alive(), "the delete is still blocked on the FIFO at the record key"
+    assert done == [1]
+    assert not (trash / "Album").exists()
+    assert not os.path.lexists(key), "the plant outlived the entry it was keyed on"
+    (record,) = caplog.records
+    assert "it is not a regular file" in record.getMessage()
+    assert "Album.json" in record.getMessage()
+
+
+def test_a_file_too_large_to_be_a_record_is_refused_on_the_delete_path_too(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The cap reaches this reader as well, and the sentence is the oracle.
+
+    Separately from the FIFO above, because a partial revert -- one reader
+    getting ``S_ISREG`` back and not the cap -- passes that test and fails this
+    one. The cost this bounds is memory rather than a wedge: measured
+    2026-09-14, a 400 MB sparse file at the key put ``empty_one`` at +801 MB RSS
+    in 150 ms, once per Empty click.
+
+    A literal size, not ``_MAX_RECORD_BYTES + 1``: a fixture computed from the
+    constant follows it and cannot see it move.
+    """
+    trash, origins = _one_entry_to_empty(tmp_path)
+    key = origin_file(origins, "Album")
+    planted = 8 * 1024 * 1024
+    with key.open("wb") as fh:
+        fh.truncate(planted)  # sparse -- no bytes are written and none are read
+    assert _MAX_RECORD_BYTES < planted, "the fixture has to be over the cap"
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        removed = empty_one(
+            str(trash / "Album"),
+            origins_dir=origins,
+            protected=protected_for(trash_dir=trash, origins_dir=origins),
+        ).removed
+
+    assert removed == 1
+    assert not key.exists(), "the plant outlived the entry it was keyed on"
+    (record,) = caplog.records
+    assert "far too large to be a record" in record.getMessage()
+
+
+def test_empty_all_sweeps_past_a_planted_key_instead_of_stopping_on_it(
+    tmp_path: Path,
+) -> None:
+    """The aggravation the per-row test cannot show: the REST of the sweep.
+
+    ``empty_all`` drops each record inside the loop, so a key it blocks on
+    abandons every entry after it and the operator gets no response at all --
+    measured 2026-09-14 with a FIFO at the first entry's key: the folder was
+    removed, the read hung past a 6 s deadline, and ``Beta`` was still in Trash
+    with nothing reported. The count is the oracle, because a sweep that stops
+    half way still removed something.
+
+    Run on a thread with a join deadline, for the reason above.
+    """
+    trash, origins = _one_entry_to_empty(tmp_path)
+    (trash / "Beta").mkdir()
+    (trash / "Beta" / "b.flac").write_bytes(b"\x00")
+    key = origin_file(origins, "Album")  # "Album" sorts first, so it blocks the rest
+    key.unlink()
+    os.mkfifo(key)
+    done: list[object] = []
+
+    def run() -> None:
+        done.append(
+            empty_all(
+                trash,
+                origins_dir=origins,
+                protected=protected_for(trash_dir=trash, origins_dir=origins),
+            ).removed
+        )
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(10)
+
+    assert not worker.is_alive(), "the sweep is still blocked on the FIFO at the first key"
+    assert done == [2], "the sweep stopped at the planted key"
+    assert list(trash.iterdir()) == []
+
+
 # ----- delete_trash_origin swallows what its callers cannot handle -----
 
 
@@ -397,7 +537,15 @@ def test_a_record_that_cannot_be_unlinked_is_logged_and_swallowed(
     with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
         delete_trash_origin(origins, name)  # must return, not raise
 
-    (record,) = caplog.records
+    # TWO lines, and they say different things: the shared record gate refuses
+    # the directory before any read ("not a regular file"), then the ``unlink``
+    # fails and this function reports that. The gate's line deliberately claims
+    # nothing about the unlink -- it used to say "so the file goes too", which
+    # this very fixture falsifies.
+    gate, record = caplog.records
+    assert "it is not a regular file" in gate.getMessage()
+    assert "None of it was used" in gate.getMessage(), "the read side's clause is false here"
+    assert "falls back to a re-import restore" not in gate.getMessage()
     assert "could not remove the Trash origin record" in record.getMessage()
     # Readable, not mangled: the accent survives and only the undecodable byte
     # becomes the placeholder, which is what tells an operator which entry it is.
