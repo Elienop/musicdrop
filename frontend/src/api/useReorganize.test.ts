@@ -55,9 +55,10 @@ describe("useReorganizeStatus", () => {
   });
 });
 
-// The store-layout refusal (503) is the one reorganize failure whose sentence
-// says what to fix — a Trash folder that is not below the music root, named by
-// path. It lands in the same inline slot as every other reorganize error
+// The store-layout refusal (503) is the reorganize failure this round made
+// reachable, and its sentence says what to fix — a Trash folder that is not
+// below the music root, named by path (the 400/401/403 guards reach the same
+// arm with their own sentences). It lands in the same inline slot as every other reorganize error
 // (`ReorganizeControl.onActionError` renders `error.message` verbatim), so the
 // Error's message has to BE the sentence. Pinned whole with `toBe`, never by
 // fragment: a fragment match lets the meaning be reversed with the test green.
