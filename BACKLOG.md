@@ -933,12 +933,17 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   choreography, the 64 KB size cap, the `PATH_MAX` origin-length cap and the
   hostile-character denylist (~230 production lines, ~220 test lines). The NUL check is the
   one member of that denylist kept — it is the only one whose consequence is a 500 rather
-  than a cosmetic one. **Two came back on 2026-09-13, on a different premise:** the
-  `stat`-before-open and a 64 KB cap (the same number), because "this app owns the store
+  than a cosmetic one. **ONE came back on 2026-09-13, on a different premise, and it brought a
+  new gate with it:** the 64 KB cap (the same number), plus a `stat`-before-open the sidecar
+  never had — it is not on the deleted list above. The premise: "this app owns the store
   directory" is not "nothing can be planted there" — an operator can point the store at an
   attacker-writable path, and a FIFO at a record's key hung `GET /api/trash` for the life of the
-  process while a 600 MB sparse file at one cost +1199 MB RSS per top-level entry (security seat,
-  fix round 2 and 3). What bounds the reach now is the layout row `music contains origins`.
+  process while a 600 MB sparse file at one cost +1199 MB RSS in one read, paid once per
+  top-level entry and released between them (security seat, fix round 2 and 3). Round 4 closed
+  the same two on the DELETE side, where the module's other reader had kept a bare `read_text`,
+  and made the cap bound the read rather than only `st_size` — a procfs file is `S_ISREG` with
+  `st_size == 0` and read 162,801 bytes past a 64 KiB cap with no race to win. Both readers now
+  share one gate. What bounds the reach now is the layout row `music contains origins`.
 
   **What the name key costs, and where it is paid.** An entry removed OUTSIDE MusicDrop
   leaves its record, and a later folder taking that name would inherit a stale origin that
@@ -1429,9 +1434,11 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   branch and reads as "the cost is zero": an operator whose Trash is spelled through such a link
   (`ln -s "$MUSIC/../trash-music" /srv/x`) goes from a working Trash to a 503 on every Trash
   route and both reorganize previews. A hop that lands ON the root (the alias spelling, p2) or
-  stays below it is unchanged, and 164 of the 165 store-layout tests that existed before the
-  refusal keep their outcome and their message — the 165th is round 1's own test for the accepted
-  shape, flipped to the refusal and renamed.
+  stays below it is unchanged, and every store-layout test that existed before the refusal keeps
+  its outcome and its message, except round 1's own test for the accepted shape, flipped to the
+  refusal and renamed. The "164 of 165" this used to read was a count over the rounds' own
+  three-file subset, which the sentence never named; collected across all five store-layout test
+  files it is 256 of 257 (code seat, 2026-09-14).
 
 - **`download_image` validates only the FIRST and LAST redirect hop, and issues the
   intermediate requests anyway.** Moved here 2026-08-28 from Deferred minors, where a blind
@@ -2370,10 +2377,11 @@ the condition it names has changed.
   in 0.0000 s on a FIFO (measured) and `fstat` then answers about the inode already held, but
   `Item.from_path` takes a path — so it means reading through `mediafile.MediaFile(<file
   object>)`, supported in the pinned 0.17. That is a change to how every Trash row's tags are
-  read, not a review-round edit, so it is the owner's call. The same window exists on the restore
-  route's own `_holds_media` walk, one step later, and it is a different directory on each of the
-  two arms: on the IMPORT arm — every row with no usable record — the folder beets re-opens is
-  still in TRASH, the attacker-writable side under this model and therefore the cheaper half
+  read, not a review-round edit, so it is the owner's call. The same window exists one step later, on a different
+  directory on each of the two arms — and only the move-back arm's re-opener is the app's own
+  `_holds_media` walk (its sole call site is inside `_restore_to_origin`). On the IMPORT arm —
+  every row with no usable record — the re-opener is BEETS, and the folder it opens is still in
+  TRASH, the attacker-writable side under this model and therefore the cheaper half
   (0.690 ms between the pre-flight's return and the first `Item.from_path`, 12 files, measured
   2026-09-13, security seat L-3), while on the move-back arm it is in the music library one
   rename later. The note here named only the second. A third, strictly harder variant rides

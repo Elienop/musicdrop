@@ -344,15 +344,15 @@ def _is_a_regular_file(path: str) -> bool:
 def _never_returns_from_an_open(path: str) -> bool:
     """Whether ``path`` is a name beets must never be handed to open.
 
-    Each of the three costs one ``run_in_threadpool`` worker for the life of the
-    process — measured 2026-09-13 (security seat M-2, case 8) — but by DIFFERENT
-    mechanisms, and the name of this function over-reaches for one of them: the
-    FIFO blocks in its ``open``, ``/dev/zero`` opens at once and never ends its
-    READ, and a socket blocks nowhere at all — its ``open`` answers ENXIO in
-    about 5 µs (measured 2026-09-13, code seat S1). The socket is refused WITH
-    them because one ``stat`` cannot tell the three apart and refusing all of
-    them is the fail-closed direction, not because it hangs. So: anything the
-    filesystem describes and that is neither a regular file nor a directory.
+    TWO of the three cost one ``run_in_threadpool`` worker for the life of the
+    process, and by different mechanisms: the FIFO blocks in its ``open`` and
+    ``/dev/zero`` opens at once and never ends its READ (measured 2026-09-13,
+    security seat M-2, case 8). The THIRD costs nothing, and the name of this
+    function over-reaches for it: a socket's ``open`` answers ENXIO in about
+    5 µs (measured 2026-09-13, code seat S1). It is refused WITH them because
+    one ``stat`` cannot tell the three apart and refusing all of them is the
+    fail-closed direction, not because it hangs. So: anything the filesystem
+    describes and that is neither a regular file nor a directory.
 
     NOT :func:`_is_a_regular_file`, and the difference is what a failing ``stat``
     means. There, no answer means "skip this name". Here it would mean "refuse
@@ -379,8 +379,14 @@ def _dir_ident(path: str) -> tuple[int, int] | None:
     unstattable directory is not in it yet and IS descended. Harmless, and the
     reason is a permission asymmetry in the app's favour — ``os.scandir`` needs
     read PLUS the search bits ``os.stat`` needs, so a directory ``os.stat``
-    cannot see is one ``os.walk`` lists nothing in (measured 2026-09-13,
-    security seat case f6: a mode-000 subdir, ``None`` and silent).
+    cannot see is one ``os.walk`` lists nothing in.
+
+    The ``None`` arm is reached by ENOENT/EIO/ELOOP or an unsearchable PARENT,
+    never by a blind directory, and this used to cite the opposite (a mode-000
+    subdir answering ``None``). ``os.stat`` needs the search bits of a
+    directory's PARENTS, not permission on the directory itself: measured
+    2026-09-14 as euid 1000, a mode-000 subdir stats fine and keeps a real
+    ident, and only the walk INTO it lists nothing.
 
     Follows links, because the identity that matters is the directory the name
     lands on.
@@ -422,8 +428,9 @@ def _unopenable_name_under(entry: Path) -> str | None:
 
     One ``stat`` per file on a route that is about to run a whole import, walked
     before anything is handed to beets — which cannot be gated from here: its
-    importer opens every file in the folder it is given (``mutagen.wave.WAVE``
-    on a FIFO, ``importer/tasks.py:1141``), and the app's own
+    importer opens every file in the folder it is given that its
+    ``ignore``/hidden globs do not skip (``mutagen.wave.WAVE`` on a FIFO,
+    ``importer/tasks.py:1141``), and on the move-back arm the app's own
     :func:`_holds_media` walk opens them again afterwards.
 
     ``followlinks=True`` because beets' own walk follows them: ``sorted_walk``
@@ -769,9 +776,10 @@ def restore_album(
     makes that sentence true for the endpoint rather than for one of its arms.
 
     The non-regular-file pre-flight sits here for a third version of the same
-    reason: both arms hand the folder to beets, which opens every file in it —
-    or opens the entry itself when the entry is not a directory — and an entry
-    is attacker-writable under the layout rule's own model. It runs before either
+    reason: both arms hand the folder to beets, which opens every file in it
+    that its ``ignore``/hidden globs do not skip — or opens the entry itself
+    when the entry is not a directory — and an entry is attacker-writable under
+    the layout rule's own model. It runs before either
     arm and refuses naming the offending name, or the entry, having moved nothing
     (:class:`TrashEntryUnreadableError`, 503; :func:`_unopenable_refusal` owns
     the two sentences).
@@ -795,7 +803,8 @@ def restore_album(
     refuse_protected_tree(entry, protected, action="moved")
     # Below the two setup guards and above both arms that OPEN files, because
     # that is where the opening starts: beets' importer opens every file in the
-    # folder it is given, and one ``mkfifo`` inside the entry wedged the request
+    # folder it is given that its ``ignore``/hidden globs do not skip, and one
+    # ``mkfifo`` inside the entry wedged the request
     # for the life of the process — measured 2026-09-13 (security seat M-2''),
     # >6 s and still blocked in ``mutagen.wave.WAVE``, one threadpool worker
     # gone per click, the entry listing as a 0-track row with Restore
@@ -1242,12 +1251,14 @@ def _holds_media(folder: Path) -> bool:
     The ``Item.from_path`` here is ungated, and what keeps it bounded is
     :func:`_unopenable_name_under` at the top of :func:`restore_album`: nothing
     under the entry could block an open when the restore was let through. The
-    window between the two is on BOTH arms and it is not the same directory —
-    the move-back arm re-walks the folder one rename later in the library, and
-    the import arm re-walks it where it still stands, in Trash, which is the
-    attacker-writable side under the layout rule's own model and therefore the
-    cheaper half (0.690 ms between the pre-flight's return and the first
-    ``Item.from_path``, 12 files, measured 2026-09-13, security seat L-3).
+    window between the two is on BOTH arms and it is not the same directory, but
+    only ONE of them is this function's — the sole call site is in
+    :func:`_restore_to_origin`, the move-back arm, which re-walks the folder one
+    rename later in the library. On the import arm BEETS is the re-opener, where
+    the folder still stands in Trash, which is the attacker-writable side under
+    the layout rule's own model and therefore the cheaper half (0.690 ms between
+    the pre-flight's return and the first ``Item.from_path``, 12 files, measured
+    2026-09-13, security seat L-3).
     Recorded with the listing's own stat-then-open window under *Accepted
     residuals* rather than gated here, where no test could kill it.
     """

@@ -139,10 +139,17 @@ _NAME_MAX = 255
 #: documented degradation (swallow, log, import-restore), not a fault.
 _MAX_KEY_BYTES = _NAME_MAX - 32
 
-#: The largest a file at a record's key may be and still be read. A record is a
-#: few hundred bytes — one absolute path, one word, one int — so this is four
-#: orders of magnitude of headroom over anything this module writes, and what it
+#: The largest a file at a record's key may be and still be read, and what it
 #: refuses is a file nothing here wrote.
+#:
+#: The headroom, measured 2026-09-14 rather than asserted — this said "four
+#: orders of magnitude", which is wrong by a factor of 25: a real record is
+#: **161 bytes** (one absolute path, one word, one int, one timestamp), so the
+#: cap is about **400x** it, and the LARGEST this module can write — a
+#: near-``PATH_MAX`` origin under a max-length key — is **4,407 bytes**, which
+#: the cap clears by about **15x**. Both figures move with the origin's length,
+#: so they are a shape rather than constants; what matters is that the second
+#: one has an order of magnitude of room and the first has two.
 #:
 #: The sidecar's 64 KB cap was deleted with the sidecar because its premise was
 #: "our write wins the filename". This one has a different premise and the same

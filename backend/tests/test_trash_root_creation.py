@@ -889,13 +889,20 @@ def test_a_long_link_target_is_elided_in_the_middle_of_the_cause(tmp_path: Path)
     # and not on the elision (security seat L-2').
     #
     # 300 and not 400, because this is the only line left that can see
-    # ``_CAUSE_HALF_MAX`` move: the four assertions above compute their
-    # expectation THROUGH ``_elided(...)``, so they follow the constant by
-    # construction. Measured 2026-09-13 (code seat W3) at two ``TMPDIR``
-    # lengths: at 400 a DOUBLED ``_CAUSE_HALF_MAX`` still passes (detail 395 vs
-    # a 429 bound on a 4-char ``TMPDIR``, 597 vs 631 on a 206-char one), at 300
-    # it fails at both, and the shipped 120 keeps 54 characters of slack at
-    # both.
+    # ``_CAUSE_HALF_MAX`` move. The four assertions above compute from the
+    # INPUT, deliberately, which is what kills a broken elision; the ones that
+    # compute THROUGH ``_elided(...)`` and so follow the constant by
+    # construction are the cause assertions in the neighbouring tests.
+    #
+    # Written as the DELTA, not as two absolute pairs. This comment used to
+    # quote "detail 395 vs a 429 bound" and those figures came from a
+    # standalone ``mkdtemp`` probe (spelled path 29 chars), not from this
+    # test's ``tmp_path`` (78): re-measured 2026-09-14 through the test itself,
+    # the pair is 444 vs 478. The delta is what generalises and it is
+    # ``TMPDIR``-independent — the detail runs ``spelled + 246`` at the shipped
+    # 120 and ``spelled + 366`` doubled, so +400 lets the doubled constant
+    # through at every length, +300 fails it at every length, and 120 keeps 54
+    # characters of slack.
     assert len(detail) < len(str(tmp_path / "srv-x" / ".trash")) + 300, detail
 
 
