@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from app.beets.config_editor import _settings
 from app.beets.protected import ProtectedTrees
 from app.beets.trash import resolve_trash_origins_dir
+from app.beets.trash_manage import TrashEntryUnreadableError
 from app.beets.trash_origins import write_trash_origin
 from app.models.trash import EmptyResult
 
@@ -208,6 +209,48 @@ def test_restore_503_when_the_music_share_is_unavailable(
 
     assert r.status_code == 503
     assert (entry / "cover.jpg").exists()
+
+
+def test_restore_503_when_the_entry_holds_a_non_regular_file(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The status the pre-flight's refusal reaches the page as.
+
+    503 and not the blanket 500: the refusal fires before anything leaves Trash
+    and the fix is the operator's, which is the tier the route already gives the
+    dropped share and the protected tree. It also needs no OpenAPI change — the
+    declared 503 reads "the folder was not moved out of Trash; the message says
+    which setup fault refused it", true of this word for word — and the page
+    renders the sentence (``SettingsTrashPage.tsx`` shows
+    ``restore.error.message``, which ``useTrash.ts`` sets from ``detail``).
+
+    The refusal is STUBBED rather than planted as a real FIFO, and that is the
+    measurement talking: with the pre-flight removed, a real plant here leaves
+    the request wedged in the threadpool holding ``app.state.beets_swap_lock``
+    for the rest of the session, and ``test_empty_one_holds_swap_lock_during_removal``
+    and its twin then fail too (measured 2026-09-13, both pass alone under the
+    same mutant). The bounded refusal itself is pinned on the real plant, off the
+    event loop, in ``test_trash_manage.py``; what is left for this seat is the
+    mapping, and a stub cannot wedge anything.
+    """
+    trash = _trash_dir(client)
+    entry = trash / "Dummy"
+    entry.mkdir(parents=True)
+    (entry / "cover.jpg").write_bytes(b"\x00")
+
+    def refuse(*_args: Any, **_kwargs: Any) -> None:
+        raise TrashEntryUnreadableError(
+            "this Trash entry holds '02 wedge.flac', which is not a regular file, so it"
+            " was not restored."
+        )
+
+    monkeypatch.setattr("app.api.trash.restore_album", refuse)
+
+    r = client.post("/api/trash/restore", json={"folder": "Dummy"})
+
+    assert r.status_code == 503
+    assert "02 wedge.flac" in r.json()["detail"]
+    assert (entry / "cover.jpg").exists(), "nothing left Trash"
 
 
 def test_restore_409_when_a_library_job_is_active(

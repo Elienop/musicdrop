@@ -14,6 +14,7 @@ from beets.library import Item, Library
 from app.beets.trash import trash_album
 from app.beets.trash_manage import (
     TrashEmptyPartialError,
+    TrashEntryUnreadableError,
     empty_all,
     empty_one,
     list_trashed_albums,
@@ -627,6 +628,12 @@ def test_a_fifo_named_like_a_track_does_not_hang_the_listing(tmp_path: Path) -> 
     _tagged_flac(trash / "Real Album" / "01 t.flac", artist="A", album="Real", title="T", track=1)
     (trash / "Wedge").mkdir(parents=True)
     os.mkfifo(trash / "Wedge" / "01.flac")
+    # A LINK to the same shape, as one more entry rather than a second test: the
+    # gate asks what the name resolves to, and a mutant widening it to
+    # ``S_ISREG or S_ISLNK`` would hang on this row with the one above green
+    # (code seat S5).
+    (trash / "Linked Wedge").mkdir()
+    (trash / "Linked Wedge" / "01.flac").symlink_to(trash / "Wedge" / "01.flac")
     listed: list[list[Any]] = []
 
     def run() -> None:
@@ -641,7 +648,137 @@ def test_a_fifo_named_like_a_track_does_not_hang_the_listing(tmp_path: Path) -> 
     worker.join(5)
 
     assert not worker.is_alive(), "the listing is still blocked on the FIFO"
-    assert {a.folder: a.track_count for a in listed[0]} == {"Real Album": 1, "Wedge": 0}
+    assert {a.folder: a.track_count for a in listed[0]} == {
+        "Real Album": 1,
+        "Wedge": 0,
+        "Linked Wedge": 0,
+    }
+
+
+@pytest.mark.parametrize("plant", ["fifo", "link-to-fifo"])
+def test_a_non_regular_file_inside_an_entry_refuses_the_restore(tmp_path: Path, plant: str) -> None:
+    """Restore is refused in bounded time, and the folder stays in Trash.
+
+    Measured 2026-09-13 (security seat M-2''), at this branch's base and at
+    round 1's tip alike: ``POST /api/trash/restore`` on an entry holding one
+    ``mkfifo`` never returned (>6 s, blocked in ``mutagen.wave.WAVE`` inside
+    beets' own ``read_item``), parking one ``run_in_threadpool`` worker per
+    click. The entry lists as a 0-track row and the UI keeps Restore enabled
+    there on purpose, so the operator clicks it again.
+
+    Both plants, because the gate asks what the name RESOLVES to: the link is
+    the shape a refusal on ``os.path.islink`` alone would miss. Run on a thread
+    with a join deadline — a plain call would hang this suite instead of
+    failing it.
+    """
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
+    trash = tmp_path / "trash"
+    entry = trash / "2 Brothers - Dreams"
+    _tagged_flac(
+        entry / "01 Dreams.flac", artist="2 Brothers", album="Dreams", title="Dreams", track=1
+    )
+    if plant == "fifo":
+        os.mkfifo(entry / "02 wedge.flac")
+    else:
+        os.mkfifo(tmp_path / "pipe")
+        (entry / "02 wedge.flac").symlink_to(tmp_path / "pipe")
+    raised: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            restore_album(
+                lib,
+                str(entry),
+                trash_dir=trash,
+                origins_dir=origins_for(trash),
+                protected=protected_for(lib),
+            )
+        except BaseException as exc:  # the isinstance below is the oracle
+            raised.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(10)
+
+    assert not worker.is_alive(), "the restore is still blocked on the non-regular file"
+    assert isinstance(raised[0], TrashEntryUnreadableError)
+    assert "'02 wedge.flac'" in str(raised[0]), str(raised[0])
+    assert (entry / "01 Dreams.flac").is_file(), "nothing left Trash"
+    assert not list((tmp_path / "music" / "2 Brothers").glob("*")), "nothing reached the library"
+
+
+def test_a_dangling_link_inside_an_entry_still_restores(tmp_path: Path) -> None:
+    """The control for the gate above: what it may not refuse.
+
+    A dangling link is what an unmounted volume looks like and the listing skips
+    it without an error (the test two below this one). Opening it answers ENOENT
+    at once, so it is not the gate's business — and refusing it would leave an
+    album permanently unrestorable for a name that cannot block anything.
+    """
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
+    trash = tmp_path / "trash"
+    entry = trash / "2 Brothers - Dreams"
+    _tagged_flac(
+        entry / "01 Dreams.flac", artist="2 Brothers", album="Dreams", title="Dreams", track=1
+    )
+    (entry / "02 gone.flac").symlink_to(tmp_path / "nowhere" / "t.flac")
+
+    result = restore_album(
+        lib,
+        str(entry),
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
+        protected=protected_for(lib),
+    )
+
+    assert (result.restored, result.reason) == (True, "restored")
+    assert len(list((tmp_path / "music" / "2 Brothers" / "Dreams").glob("*.flac"))) == 1
+
+
+def test_a_fifo_inside_a_symlinked_subfolder_of_an_entry_refuses_the_restore(
+    tmp_path: Path,
+) -> None:
+    """The pre-flight follows links into subfolders because beets does.
+
+    ``sorted_walk`` sorts a name into ``dirs`` by ``os.path.isdir``, which
+    resolves links (``beets/util/__init__.py:247``), so the importer descends a
+    symlinked subfolder of the entry. A pre-flight that stopped at it would hand
+    beets the pipe inside. The walk is bounded by identity, not by depth: the
+    link back up its own tree below is walked once.
+    """
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
+    trash = tmp_path / "trash"
+    entry = trash / "2 Brothers - Dreams"
+    _tagged_flac(
+        entry / "01 Dreams.flac", artist="2 Brothers", album="Dreams", title="Dreams", track=1
+    )
+    disc2 = tmp_path / "disc2"
+    disc2.mkdir()
+    os.mkfifo(disc2 / "01 wedge.flac")
+    (entry / "Disc 2").symlink_to(disc2, target_is_directory=True)
+    (disc2 / "up").symlink_to(entry, target_is_directory=True)
+    raised: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            restore_album(
+                lib,
+                str(entry),
+                trash_dir=trash,
+                origins_dir=origins_for(trash),
+                protected=protected_for(lib),
+            )
+        except BaseException as exc:  # the isinstance below is the oracle
+            raised.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(10)
+
+    assert not worker.is_alive(), "the walk did not finish"
+    assert isinstance(raised[0], TrashEntryUnreadableError)
+    assert "01 wedge.flac" in str(raised[0]), str(raised[0])
+    assert (entry / "01 Dreams.flac").is_file(), "nothing left Trash"
 
 
 def test_a_link_to_an_audio_file_in_the_trash_still_lists_its_tags(tmp_path: Path) -> None:

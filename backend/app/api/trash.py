@@ -28,6 +28,7 @@ from app.beets.store_layout import (
 )
 from app.beets.trash_manage import (
     TrashEmptyPartialError,
+    TrashEntryUnreadableError,
     empty_all,
     empty_one,
     list_trashed_albums,
@@ -254,6 +255,13 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
         # The same tier for the same reason: restore is a mover, the guard fires
         # before anything leaves Trash, and the fix is the operator's.
         except ProtectedTreeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # The third guard of that tier, and the 503 it reuses is deliberate: the
+        # declared description ("the folder was not moved out of Trash; the
+        # message says which setup fault refused it") is true of it word for
+        # word, so this adds no status and no OpenAPI change. A 409 would have
+        # cost one, since that description enumerates its two causes.
+        except TrashEntryUnreadableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Restore failed: {exc}") from exc
