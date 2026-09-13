@@ -671,6 +671,29 @@ def test_a_relative_link_target_that_climbs_is_walked_as_the_kernel_would(
     assert trees.trash == _ident_of(trash_dir)
 
 
+def test_a_dangling_operator_link_creates_nothing_where_it_pointed(tmp_path: Path) -> None:
+    """The missing part is inside the link's TARGET, not in the spelling.
+
+    The walk now stands in the target's own directory when the ENOENT arrives, so
+    the arm that reads ENOENT as "the rest has to be created" must see the prefix
+    that really exists and not the one the failed hop reached: otherwise the
+    create loop makes the LINK's name inside the target's parent. Refused the way
+    the kernel's own ENOENT was before the walk resolved anything itself.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    holder = tmp_path / "other-disk"
+    holder.mkdir()
+    os.symlink(holder / "missing", tmp_path / "srv-x")
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, tmp_path / "srv-x" / "trash")
+
+    assert "could not be created" in str(caught.value)
+    assert "No such file or directory" in str(caught.value)
+    assert list(holder.iterdir()) == [], "nothing created where the link pointed"
+
+
 def test_forty_links_resolve_and_a_forty_first_is_refused(tmp_path: Path) -> None:
     """The budget is the kernel's own, so no layout that worked loses its Trash.
 
