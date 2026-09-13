@@ -298,6 +298,29 @@ def list_trashed_albums(
     return albums
 
 
+def _is_a_regular_file(path: str) -> bool:
+    """Whether ``path`` is a regular file, or a link to one — the only kind opened.
+
+    ``Item.from_path`` OPENS the file, and opening a FIFO blocks until a writer
+    appears: measured 2026-09-13 (security seat M-2), one ``mkfifo`` named like a
+    track inside the Trash never returned, against 2.4 ms for a regular
+    non-media file in the same place, and each hung call holds a
+    ``run_in_threadpool`` worker for the life of the process. The Trash root is
+    attacker-writable under the layout rule's own model (the recommended layout
+    is ``<M>/.trash``).
+
+    One ``os.stat``, which FOLLOWS links, because the question is what the name
+    resolves to: a link to a regular audio file still reads (the note above
+    describes that row), a link to a FIFO is skipped like a FIFO, and a dangling
+    link or a loop answers here and is skipped. ``stat`` on a FIFO does not
+    block; only opening it does.
+    """
+    try:
+        return stat.S_ISREG(os.stat(path).st_mode)
+    except OSError:
+        return False
+
+
 def _walk_trash_groups(trash_dir: Path) -> dict[str, list[Any]]:
     """Collect audio files under ``trash_dir`` grouped by their top-level entry.
 
@@ -313,6 +336,8 @@ def _walk_trash_groups(trash_dir: Path) -> dict[str, list[Any]]:
     for root, _dirs, files in os.walk(trash_dir):
         for name in files:
             path = os.path.join(root, name)
+            if not _is_a_regular_file(path):
+                continue
             try:
                 item = Item.from_path(os.fsencode(path))
             except Exception:  # non-media file (e.g. cover art): skip

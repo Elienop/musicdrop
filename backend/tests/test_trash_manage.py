@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from beets import config
@@ -606,6 +608,80 @@ def test_empty_all_clears_a_symlinked_entry_without_following_it(tmp_path: Path)
 
     assert list(trash.iterdir()) == []
     assert (elsewhere / "keepme.txt").is_file()
+
+
+def test_a_fifo_named_like_a_track_does_not_hang_the_listing(tmp_path: Path) -> None:
+    """A non-regular entry in Trash is never opened, and the listing returns.
+
+    Measured 2026-09-13 (security seat M-2): ``Item.from_path`` opens every name
+    ``os.walk`` returns, and a FIFO blocks that open until a writer appears — one
+    ``mkfifo`` wedged the request for the life of the process, holding a
+    ``run_in_threadpool`` worker each time the page was reloaded (anyio's default
+    limiter is 40, shared by every threadpool route). The Trash root is
+    attacker-writable under the layout rule's own model.
+
+    Run on a thread with a join deadline, because a plain call would hang this
+    suite instead of failing it.
+    """
+    trash = tmp_path / "trash"
+    _tagged_flac(trash / "Real Album" / "01 t.flac", artist="A", album="Real", title="T", track=1)
+    (trash / "Wedge").mkdir(parents=True)
+    os.mkfifo(trash / "Wedge" / "01.flac")
+    listed: list[list[Any]] = []
+
+    def run() -> None:
+        listed.append(
+            list_trashed_albums(
+                trash, origins_dir=origins_for(trash), music_dir=str(tmp_path / "music")
+            )
+        )
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(5)
+
+    assert not worker.is_alive(), "the listing is still blocked on the FIFO"
+    assert {a.folder: a.track_count for a in listed[0]} == {"Real Album": 1, "Wedge": 0}
+
+
+def test_a_link_to_an_audio_file_in_the_trash_still_lists_its_tags(tmp_path: Path) -> None:
+    """The control for the gate above: what it may not skip.
+
+    ``os.walk`` lists a link among ``files`` and ``Item.from_path`` follows it, so
+    a hand-placed link to a media FILE arrives as a row with real tags (the
+    module's own note, measured 2026-09-02). The gate therefore asks what the
+    name RESOLVES to, not what the link itself is.
+    """
+    trash = tmp_path / "trash"
+    elsewhere = tmp_path / "elsewhere"
+    _tagged_flac(elsewhere / "01 t.flac", artist="Linked", album="Album", title="T", track=1)
+    trash.mkdir()
+    (trash / "linked.flac").symlink_to(elsewhere / "01 t.flac")
+
+    albums = list_trashed_albums(
+        trash, origins_dir=origins_for(trash), music_dir=str(tmp_path / "music")
+    )
+
+    assert [(a.folder, a.album_artist, a.track_count) for a in albums] == [
+        ("linked.flac", "Linked", 1)
+    ]
+
+
+def test_a_dangling_link_among_the_files_is_skipped_without_an_error(tmp_path: Path) -> None:
+    """The other half of following the link: there is nothing at the end of it.
+
+    An unmounted volume is what this looks like. The entry is simply absent from
+    every group, and the real album beside it still lists.
+    """
+    trash = tmp_path / "trash"
+    _tagged_flac(trash / "Real Album" / "01 t.flac", artist="A", album="Real", title="T", track=1)
+    (trash / "Real Album" / "gone.flac").symlink_to(tmp_path / "nowhere" / "t.flac")
+
+    albums = list_trashed_albums(
+        trash, origins_dir=origins_for(trash), music_dir=str(tmp_path / "music")
+    )
+
+    assert [(a.folder, a.track_count) for a in albums] == [("Real Album", 1)]
 
 
 def test_empty_one_removes_a_loose_file(tmp_path: Path) -> None:
