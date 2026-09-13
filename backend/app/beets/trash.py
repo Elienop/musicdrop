@@ -938,6 +938,34 @@ def _st_ident(st: os.stat_result) -> tuple[int, int]:
     return (st.st_dev, st.st_ino)
 
 
+def _is_the_staged_entry(current: os.stat_result, st: os.stat_result) -> bool:
+    """Whether a re-``lstat`` still describes the entry the caller staged.
+
+    Four fields, because an identity is not unique over TIME: a filesystem that
+    allocates inodes from a bitmap hands a freed number out again, so a name
+    unlinked and re-created can match ``(st_dev, st_ino)``. Measured 2026-09-13
+    on ubuntu-latest: a regular file written at a symlink's just-freed number
+    matched, and the unlink took it.
+
+    ``S_IFMT`` comes from the newcomer's OWN mode rather than from the number
+    it was handed, so a regular file at a symlink's number reads as a regular
+    file and this refuses it. ``st_size`` and ``st_mtime_ns`` also catch a
+    rewrite IN PLACE, which keeps the inode; refusing there leaves the source
+    alone and the copy in Trash, the direction that loses nothing.
+
+    Measured 2026-09-13: all four survive the real copy path unchanged on tmpfs
+    and btrfs, for a regular file and for a symlink, so a legitimate unlink
+    still passes. ``st_atime_ns`` is out — the copy READS the source, and a
+    mount that records reads would move it.
+    """
+    return (
+        _st_ident(current) == _st_ident(st)
+        and stat.S_IFMT(current.st_mode) == stat.S_IFMT(st.st_mode)
+        and current.st_size == st.st_size
+        and current.st_mtime_ns == st.st_mtime_ns
+    )
+
+
 def _refuse_a_non_file(name: str, st: os.stat_result) -> None:
     """Refuse anything but a regular file or a symlink, from a staged ``lstat``."""
     if not (stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)):
@@ -970,11 +998,13 @@ def _publish_then_unlink(
     the only entry naming those bytes on disk may still be the one about to go.
 
     There is no unlink-by-fd, so the source is re-lstat'd through ``src_dir_fd``
-    immediately before it: another inode at the name is a file that arrived
-    after the copy, and unlinking it would destroy something that never reached
-    Trash (measured). It is left alone instead — the copy stays in Trash, the
-    newcomer stays on disk — with one line, because the pair then reads as a
-    duplicate. The window is not closed, only narrowed to the two syscalls.
+    immediately before it and compared field by field with what the caller
+    staged (:func:`_is_the_staged_entry`: identity, ``S_IFMT``, size, mtime): a
+    file that arrived after the copy never reached Trash, and unlinking it would
+    destroy it (measured). It is left alone instead — the copy stays in Trash,
+    the newcomer stays on disk — with one line, because the pair then reads as a
+    duplicate. The window is not closed, only narrowed to the two syscalls; an
+    entry that differs in none of the four fields still passes it.
 
     A name that is GONE needs no unlink: somebody else removed it and the copy
     in Trash is the end state this was moving towards.
@@ -991,9 +1021,10 @@ def _publish_then_unlink(
         current = os.stat(name, dir_fd=src_dir_fd, follow_symlinks=False)
     except FileNotFoundError:
         return
-    if _st_ident(current) != _st_ident(st):
+    if not _is_the_staged_entry(current, st):
         logger.warning(
-            "%r was replaced after it was copied to Trash, so it was left in place", name
+            "%r was replaced after it was copied to Trash, so it was left in place",
+            display_path(name),
         )
         return
     os.unlink(name, dir_fd=src_dir_fd)

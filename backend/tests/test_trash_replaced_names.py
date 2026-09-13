@@ -84,11 +84,11 @@ def _replace_with_a_newcomer(target: Path, body: bytes) -> tuple[int, int]:
 
     Built at a SIBLING name while ``target`` still holds its inode, then renamed
     over it. Unlinking first and writing at the one name asks the filesystem for
-    a fresh inode instead, and ext4 and xfs hand back the number just freed: that
-    shape passed here (tmpfs and btrfs reused 0 of 20, measured 2026-09-13) and
-    failed on ubuntu-latest, where the newcomer matched the guard's ``(st_dev,
-    st_ino)`` and was unlinked. Callers assert the two inodes differ, so the
-    premise is read rather than assumed.
+    a fresh inode instead, and one that allocates from a bitmap hands back the
+    number just freed: that shape passed here (tmpfs and btrfs reused 0 of 20,
+    measured 2026-09-13) and failed on ubuntu-latest, where the newcomer matched
+    the guard's ``(st_dev, st_ino)`` and was unlinked. Callers assert the two
+    inodes differ, so the premise is read rather than assumed.
     """
     newcomer = target.with_name(f"{target.name}.uploading")
     newcomer.write_bytes(body)
@@ -260,6 +260,51 @@ def test_a_file_that_replaced_the_source_after_the_copy_is_left_in_place(
     assert record is not None, "what did move is still recorded"
 
 
+@pytest.mark.parametrize("field", ["size", "mtime"])
+def test_a_source_rewritten_in_place_during_the_copy_is_left_in_place(
+    field: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A rewrite IN PLACE keeps the inode, so size and mtime are what see it.
+
+    The copy in Trash holds the bytes that were checked; the source now holds
+    different ones. Leaving it is the end state that loses neither. One case per
+    field, because either one alone would let the other's clause be dropped.
+    """
+    folder = _folder(tmp_path)
+    curated = folder / "artist-poster.png"
+    curated.write_bytes(PNG)
+    staged = curated.lstat()
+    real_copy = shutil.copyfileobj
+
+    def copy_then_rewrite(reader: Any, writer: Any, length: int = 0) -> None:
+        real_copy(reader, writer)
+        # ``utime`` rather than the clock: a filesystem with a coarse mtime could
+        # otherwise give the rewrite the staged value and move both fields at once.
+        if field == "size":
+            curated.write_bytes(PNG + b"MORE")
+            os.utime(curated, ns=(staged.st_atime_ns, staged.st_mtime_ns))
+        else:
+            curated.write_bytes(bytes(len(PNG)))
+            os.utime(curated, ns=(staged.st_atime_ns, staged.st_mtime_ns + 10**9))
+
+    monkeypatch.setattr(os, "rename", _across_a_device_boundary(os.rename))
+    monkeypatch.setattr(shutil, "copyfileobj", copy_then_rewrite)
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash"):
+        dest = _move([curated.name], folder, tmp_path)
+
+    left = curated.lstat()
+    assert left.st_ino == staged.st_ino, "the premise: a rewrite in place keeps the inode"
+    moved_size = left.st_size != staged.st_size
+    moved_mtime = left.st_mtime_ns != staged.st_mtime_ns
+    assert (moved_size, moved_mtime) == (field == "size", field == "mtime"), (
+        f"the premise: {field} alone moved, got size={moved_size} mtime={moved_mtime}"
+    )
+    assert curated.read_bytes() != PNG, "the rewritten source was not unlinked"
+    assert (dest / curated.name).read_bytes() == PNG, "Trash holds the checked bytes"
+    assert "was replaced after it was copied to Trash" in caplog.text
+
+
 def test_a_symlink_that_was_replaced_after_it_was_recreated_is_left_in_place(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -292,6 +337,87 @@ def test_a_symlink_that_was_replaced_after_it_was_recreated_is_left_in_place(
     assert os.readlink(dest / linked.name) == "../elsewhere/wall.png"
     assert not linked.is_symlink()
     assert linked.read_bytes() == b"BRAND-NEW-UPLOAD", "the newcomer was not unlinked"
+
+
+def test_a_newcomer_handed_the_freed_inode_is_refused_by_its_TYPE(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The inode reuse itself, SIMULATED — the filesystems reachable here do not.
+
+    What the runner did (2026-09-13): a regular file written at a symlink's
+    just-freed number matched the guard's ``(st_dev, st_ino)``. tmpfs and btrfs
+    reused 0 of 20 (measured 2026-09-13), so the collision is forged instead —
+    the guard's own re-``lstat`` is wrapped and only its ``st_dev``/``st_ino``
+    overwritten, which is the one thing a real reuse changes. Size and mtime are
+    matched ON DISK, so ``S_IFMT`` is the only field left to refuse it.
+    """
+    folder = _folder(tmp_path)
+    linked = folder / "artist-background.png"
+    linked.symlink_to("../elsewhere/wall.png")
+    staged = linked.lstat()  # the identity the mover stages, unchanged until the swap
+    # A symlink's size is its target's length, so the newcomer is padded to it.
+    newcomer_bytes = b"NEWCOMER".ljust(staged.st_size, b"-")
+    real_symlink, real_stat = os.symlink, os.stat
+    forged: list[os.stat_result] = []
+
+    def recreate_then_swap(src: Any, dst: Any, **kwargs: Any) -> None:
+        real_symlink(src, dst, **kwargs)
+        if "dir_fd" not in kwargs:  # the app's other symlinks, not the copy
+            return
+        sibling = folder / f"{linked.name}.uploading"
+        sibling.write_bytes(newcomer_bytes)
+        os.utime(sibling, ns=(staged.st_atime_ns, staged.st_mtime_ns))
+        os.replace(sibling, linked)
+
+    def stat_as_if_the_number_was_reused(path: Any, **kwargs: Any) -> os.stat_result:
+        """The SIMULATION: the newcomer reported under the symlink's identity."""
+        got = real_stat(path, **kwargs)
+        if not (
+            path == linked.name  # the mover's bare name, not a Path from elsewhere
+            and kwargs.get("dir_fd") is not None
+            and kwargs.get("follow_symlinks") is False
+            and stat.S_ISREG(got.st_mode)  # false at staging time: still a symlink
+        ):
+            return got
+        as_reused = os.stat_result(
+            (
+                got.st_mode,
+                staged.st_ino,
+                staged.st_dev,
+                got.st_nlink,
+                got.st_uid,
+                got.st_gid,
+                got.st_size,
+                int(got.st_atime),
+                int(got.st_mtime),
+                int(got.st_ctime),
+            ),
+            {  # the 10-tuple form rounds to seconds; the guard reads the ns field
+                "st_atime_ns": got.st_atime_ns,
+                "st_mtime_ns": got.st_mtime_ns,
+                "st_ctime_ns": got.st_ctime_ns,
+            },
+        )
+        forged.append(as_reused)
+        return as_reused
+
+    monkeypatch.setattr(os, "rename", _across_a_device_boundary(os.rename))
+    monkeypatch.setattr(os, "symlink", recreate_then_swap)
+    monkeypatch.setattr(os, "stat", stat_as_if_the_number_was_reused)
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash"):
+        dest = _move([linked.name], folder, tmp_path)
+
+    monkeypatch.undo()
+    assert len(forged) == 1, "the guard's re-lstat is the call that got the forgery"
+    current = forged[0]
+    assert (current.st_dev, current.st_ino) == (staged.st_dev, staged.st_ino), "reuse simulated"
+    assert current.st_size == staged.st_size, "size is not what refuses this"
+    assert current.st_mtime_ns == staged.st_mtime_ns, "mtime is not what refuses this"
+    assert stat.S_IFMT(current.st_mode) != stat.S_IFMT(staged.st_mode), "the type is"
+    assert linked.read_bytes() == newcomer_bytes, "the newcomer was not unlinked"
+    assert (dest / linked.name).is_symlink(), "what was checked still reached Trash"
+    assert "was replaced after it was copied to Trash" in caplog.text
 
 
 def test_the_container_is_fsynced_before_the_copied_source_is_unlinked(
