@@ -3113,6 +3113,43 @@ Added by the 2026-08-28 sweeps:
 
 ## Recently shipped
 
+- **Art, lyrics and move-asides are anchored on directory descriptors, and a symlinked folder
+  below the music root is refused — PR #226, squash `6e02fc4` = v0.51.6 (2026-09-13).**
+  Every syscall for a file under the music library — the artist-art writer, the lyric sidecar
+  writer (its reads and its one delete included) and the move-aside that carries a replaced file
+  into Trash — goes through a directory descriptor opened once per folder, with every component
+  below the root opened `O_NOFOLLOW`; a symlinked artist or album folder is refused with one
+  WARNING instead of followed, and the root itself may still be a link (owner ruling 2026-09-12:
+  bind mounts are the supported spelling for spanning disks). One atomic writer
+  (`app/playlists/atomic.py`) replaces five private recipes: an unpredictable
+  `.<pid>.<16 hex><suffix>.tmp` created `O_EXCL|O_NOFOLLOW` and published through `dir_fd`. The
+  Trash root is now created by the code that takes its identity, walked component by component
+  through descriptors, and the identity the movers compare is `fstat` on the descriptor that walk
+  reached — no re-stat by name between the walk and the move. Refused with a 503: a `..` in
+  `MUSICDROP_TRASH_DIR`, a symlinked or non-directory part below the root, a spelling that
+  reaches into the library without naming `directory:`, and a chain the `..` climb cannot finish;
+  a Trash inside the library is created only while the music is really present, so a dropped
+  share gets nothing on its bare mountpoint and blames `directory:` rather than the Trash
+  setting. Settings → Beets runs the same walk read-only, so the page can no longer read healthy
+  while every delete answers 503.
+  The rounds' shape: six slices, then five review rounds (code + security seats), each fix round
+  reviewed on its own diff and the last one prose-and-pins only. The seats moved real ground
+  three times — the jump-in question had to be asked at EVERY component above the root (a link
+  planted below an operator's link had moved the walk out first), an unfinished `..` climb had to
+  refuse rather than read as "outside", and a present-but-unreadable `0o111` music root had to
+  keep anchoring the walk by `stat` where `open_root` answers EACCES.
+  What the CI-red taught: the one failure that appeared only on the runner was inode REUSE. The
+  cross-device move-aside re-lstat'd its destination and compared `(st_dev, st_ino)` alone; on
+  the runner's ext4 a newcomer written at that path got the inode the symlink had just freed, the
+  compare saw no change, and the final unlink took the newcomer. Identity is not enough for a
+  name that was deleted and recreated — the compare now also asks type, size and mtime. A test
+  whose premise is a value the OS chooses (an inode, a temp name) passes locally and is decided
+  by the runner.
+  Residuals recorded rather than fixed: the three folder movers still open the Trash root by
+  path; the import-time folder mover is the one creation site outside the checked creation; a
+  bind mount of a library subdirectory at an outside path reads as outside to the `..` climb; and
+  the link-target shape the branch above this one closes.
+
 - **Reset to auto confirms first and moves the uploaded portrait to Trash; Trash lists
   moved-aside files as their own row — PR #225, squash `9e918e6` = v0.51.5 (2026-09-12).**
   `POST /api/artists/image/reset` sits behind an AlertDialog ("Reset to auto?"); an uploaded
