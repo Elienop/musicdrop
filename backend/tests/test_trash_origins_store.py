@@ -17,12 +17,13 @@ of its own production line before these tests existed:
 * a store the app cannot reach reads as "nothing recorded" and says so in the
   log, which is the one place that residual is visible;
 * a crafted Trash entry name cannot forge a log line. Counted rather than
-  recalled, by walking the module's AST for ``logger.*`` calls at this commit:
-  seven calls, six of which interpolate something, seven ``%r`` placeholders
-  between them. Five of the six are pinned here — the write's warning, the
-  delete's failure, the kept-record refusal (both of its placeholders), the
-  allocator's "could not tell", and the store sweep — and the sixth,
-  ``_warn_unusable``, is pinned in ``test_trash_origin_record.py``
+  recalled, by walking the module's AST for ``logger.*`` calls (re-run
+  2026-09-14): NINE calls, eight of which interpolate something, ten ``%r``
+  placeholders between them. Six of the eight are pinned here against a crafted
+  entry name -- the write's warning, the delete's failure, BOTH kept-record
+  refusals (the payload one and the store-could-not-answer one, two
+  placeholders each), the allocator's "could not tell", and the store sweep. A
+  seventh, ``_warn_unusable``, is pinned in ``test_trash_origin_record.py``
   (``test_an_unusable_record_cannot_forge_a_log_line_through_its_own_filename``).
   The count is a measurement, so re-run the walk rather than trusting this
   sentence after adding a line.
@@ -30,12 +31,16 @@ of its own production line before these tests existed:
 
 from __future__ import annotations
 
+import contextlib
 import errno
+import fcntl
 import hashlib
 import json
 import logging
 import os
 import shutil
+import signal
+import socket
 import threading
 from collections.abc import Iterator
 from pathlib import Path
@@ -355,6 +360,135 @@ def test_an_import_restore_of_the_losing_row_keeps_the_other_entrys_record(
     survivor = read_trash_origin(origins, long_name)
     assert survivor is not None, "a restore of one row destroyed another row's record"
     assert survivor.origin == str(tmp_path / "music" / "Long")
+
+
+@contextlib.contextmanager
+def _write_leased(path: Path) -> Iterator[None]:
+    """Hold a write lease on ``path``: an open of it blocks, or answers EAGAIN.
+
+    The fault of choice for "the store could not answer", because it denies ROOT
+    too — a maintainer running this suite inside the shipped image is root
+    (``Dockerfile`` declares no ``USER``), where a ``chmod 000`` record denies
+    nothing and a chmod-staged test would report green having injected no fault
+    at all. It is also the shape the gate's ``O_NONBLOCK`` exists for: measured
+    2026-09-14, the leased key answers EAGAIN in 0.0000 s while a plain ``open``
+    of it waits for ``/proc/sys/fs/lease-break-time``.
+
+    SIGIO is ignored for the duration: the kernel signals the lease HOLDER to
+    release, this process is both holder and reader, and SIGIO's default action
+    is to terminate.
+    """
+    holder = os.open(path, os.O_RDONLY)
+    previous = signal.signal(signal.SIGIO, signal.SIG_IGN)
+    try:
+        try:
+            fcntl.fcntl(holder, fcntl.F_SETLEASE, fcntl.F_WRLCK)
+        except OSError as exc:  # no CAP_LEASE, or a filesystem without them
+            pytest.skip(f"a write lease could not be taken here: {exc}")
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.fcntl(holder, fcntl.F_SETLEASE, fcntl.F_UNLCK)
+        os.close(holder)
+        signal.signal(signal.SIGIO, previous)
+
+
+@pytest.mark.skipif(not hasattr(fcntl, "F_SETLEASE"), reason="leases are a Linux thing")
+def test_a_record_the_store_cannot_answer_for_is_kept_instead_of_unlinked(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Proof that the bytes are not ours may unlink; "the store could not say" may not.
+
+    ``_record_text``'s ``None`` collapsed four refusals and two of them prove
+    only that the store could not answer. On this shared key that cost the OTHER
+    entry its exact restore: measured 2026-09-13 (security seat M-1) with a
+    mode-000 record, emptying the SHORT row unlinked the file the LONG row —
+    still sitting in Trash — is restored from, and the log line said the entry it
+    was keyed on had already been removed.
+
+    The long row's record is the oracle, twice: it must survive the delete, and
+    it must still READ once the fault is cleared, which is what says the file was
+    kept intact rather than merely present.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    short_name, long_name = _colliding_pair()
+    write_trash_origin(origins, long_name, origin="/music/A/Long", moved="folder")
+    shared = origin_file(origins, long_name)
+    assert shared == origin_file(origins, short_name), "the two names share one record file"
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        with _write_leased(shared):
+            delete_trash_origin(origins, short_name)
+            assert shared.exists(), "a record the store could not read was unlinked"
+
+    survivor = read_trash_origin(origins, long_name)
+    assert survivor is not None, "the other entry's record did not survive intact"
+    assert survivor.origin == "/music/A/Long"
+    cause, kept = caplog.records
+    assert "it could not be opened" in cause.getMessage()
+    assert "None of it was used" in cause.getMessage(), "the read side's clause is false here"
+    assert "kept the Trash origin record" in kept.getMessage()
+    assert "could not say what is in it" in kept.getMessage()
+    assert "names a different Trash entry" not in kept.getMessage(), (
+        "nothing here read a payload, so nothing here can say whose it is"
+    )
+
+
+@pytest.mark.skipif(not hasattr(fcntl, "F_SETLEASE"), reason="leases are a Linux thing")
+def test_keeping_a_record_the_store_cannot_read_cannot_forge_a_log_line(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The second kept-record line's two ``%r`` sites, on the same footing as the first.
+
+    Both values it interpolates carry whatever the album's tags carried, and the
+    entry name reaches the log through the record's own FILENAME.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    key = origin_file(origins, _FORGED_ENTRY_NAME)
+    key.write_text('{"schema": 1, "name": "whoever", "origin": "/music/A"}', encoding="ascii")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        with _write_leased(key):
+            delete_trash_origin(origins, _FORGED_ENTRY_NAME)
+
+    assert key.exists(), "a record the store could not read was unlinked"
+    assert any("kept the Trash origin record" in r.getMessage() for r in caplog.records)
+    _assert_nothing_forged(caplog)
+
+
+@pytest.mark.skipif(
+    len(os.fsencode(str(Path(os.environ.get("TMPDIR", "/tmp")) / "x"))) > 60,
+    reason="an AF_UNIX path is capped near 108 bytes and this TMPDIR is too long",
+)
+def test_a_socket_at_the_key_is_dropped_like_any_other_plant(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """ENXIO at the open is PROOF, not a fault, so the plant still goes.
+
+    ``open`` refuses a socket outright (measured 2026-09-14: ENXIO), so it never
+    reaches the ``fstat`` that answers for a FIFO, a directory or a device. That
+    puts it in the same class as those — the bytes at the key are not this
+    store's — and a plant nothing unlinks would hold its Trash name forever.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    key = origin_file(origins, "Dummy")
+    sock = socket.socket(socket.AF_UNIX)
+    try:
+        sock.bind(str(key))
+    except OSError as exc:  # the path is legal here or the skip above was wrong
+        pytest.fail(f"the socket fixture could not be built: {exc}")
+    try:
+        with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+            delete_trash_origin(origins, "Dummy")
+    finally:
+        sock.close()
+
+    assert not os.path.lexists(key), "the socket outlived the entry it was keyed on"
+    (record,) = caplog.records
+    assert "it does not lead to a file" in record.getMessage()
 
 
 # ----- the DELETE side reads the key too, and through the same gate -----

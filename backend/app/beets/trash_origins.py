@@ -607,8 +607,24 @@ def _bytes_at_most(fd: int, budget: int) -> bytes | None:
     return None
 
 
-def _record_text(path: Path, *, consequence: str) -> str | None:
-    """The ASCII text at a record's key, or ``None`` when nothing there is ours.
+#: Why :func:`_record_text` had no text to give, for a caller whose answer
+#: differs by reason. ``"not-a-record"`` is PROOF the bytes at the key are not
+#: something this module wrote; ``"store-unreachable"`` proves only that the
+#: store could not answer, which a destructive caller may not act on.
+_Refusal = Literal["absent", "not-a-record", "store-unreachable"]
+
+#: The two ``open`` errnos that are proof rather than a fault, because both
+#: answer about the NAME: ELOOP for a symlink loop (measured — a self-pointing
+#: link at a key, which ``Path.exists`` absorbs) and ENXIO for a socket
+#: (measured 2026-09-14, both through this module's own key). Anything else —
+#: EACCES on a mode-000 file, EAGAIN under a write lease, EIO on failing
+#: hardware — says the store could not answer, and the delete side keeps the
+#: file for that.
+_NOT_A_FILE_AT_ALL: Final = frozenset({errno.ELOOP, errno.ENXIO})
+
+
+def _record_text(path: Path, *, consequence: str) -> tuple[str | None, _Refusal | None]:
+    """The ASCII text at a record's key, and why there is none.
 
     THE one gate in front of both readers of a record key, and it is one
     function because they diverged once already. Round 3 put ``stat`` +
@@ -624,10 +640,24 @@ def _record_text(path: Path, *, consequence: str) -> str | None:
     reported and the rest of Trash left behind, a 400 MB sparse file cost
     +801 MB RSS, and a link to ``/dev/zero`` hung at **+46.6 GB** RSS in 6 s.
 
-    ``None`` means "not a record this store can read", which is exactly what
-    both callers already do something sensible with: the read falls back to an
-    import-restore, and the delete unlinks the file, so a plant self-heals off
-    the store the first time an operator touches the entry.
+    ``None`` text means "not a record this store can read", which is exactly
+    what both callers already do something sensible with: the read falls back to
+    an import-restore, and the delete unlinks the file, so a plant self-heals
+    off the store the first time an operator touches the entry.
+
+    **The second element is there because the delete side is destructive.**
+    ``None`` collapsed four refusals, and two of them — an ``open`` that failed
+    for any reason but ENOENT, and a read that failed — prove only that the
+    store could not answer. On the delete path all of them meant ``unlink``, and
+    measured 2026-09-13 (security seat M-1) on a truncated key two entries
+    share: a momentarily unreadable record made an entry STILL IN TRASH lose its
+    exact restore for good, while the log line said the entry it was keyed on
+    had already been removed. So the refusal is classed
+    (:data:`_Refusal`) and :func:`delete_trash_origin` acts only on the
+    proof-shaped ones — the same way :func:`origin_recorded` already refuses
+    rather than answering when the store itself is unreachable (``decisions``
+    28). :func:`read_trash_origin` ignores the class: every reason sends that
+    caller to the same import-restore.
 
     **The inode that is checked is the inode that is read, and neither the open
     nor the read can block.** ``stat`` then ``open`` asked the same NAME twice,
@@ -644,13 +674,13 @@ def _record_text(path: Path, *, consequence: str) -> str | None:
     ``O_NOFOLLOW``: the question is what the name RESOLVES to, so a link to a
     real record still reads.
 
-    FOUR answers from the open and three more from the read. Absent is the
-    ordinary case and stays silent; a dangling link earns the link sentence; an
-    open that fails any other way earns the I/O one (a symlink loop, a socket
-    and a mode-000 file are all this arm, measured); then ``fstat`` refuses a
-    name that is not a regular file, ``st_size`` refuses one too large, the read
-    itself can fail, and a file that grows past the cap mid-read is refused
-    again.
+    FOUR answers from the open and four more from the read. Absent is the
+    ordinary case and stays silent; a dangling link earns the link sentence; a
+    loop or a socket earns "it does not lead to a file"; any other failed open
+    earns the I/O one (a mode-000 file and a leased one are this arm, measured);
+    then ``fstat`` refuses a name that is not a regular file, ``st_size``
+    refuses one too large, the read itself can fail, a file that grew past the
+    cap mid-read is refused again, and a non-ASCII byte fails the decode.
 
     The cap is applied TWICE and the second one is the bound. ``st_size`` is a
     snapshot, not a promise about the read: a procfs file is ``S_ISREG`` with
@@ -690,27 +720,31 @@ def _record_text(path: Path, *, consequence: str) -> str | None:
         # top-level entry, and may not 500 the listing.
         if os.path.islink(path):
             _warn_unusable(path, "it is a link to something that is not there", consequence)
-        return None  # absent is the ordinary case and stays silent
-    except OSError:
-        # EAGAIN from a write lease lands here, and so do ELOOP, ENXIO and
-        # EACCES — the sentence says what happened and not what the name is,
-        # because the open is the only thing that was asked.
+            return None, "not-a-record"
+        return None, "absent"  # absent is the ordinary case and stays silent
+    except OSError as exc:
+        if exc.errno in _NOT_A_FILE_AT_ALL:
+            _warn_unusable(path, "it does not lead to a file", consequence, exc_info=True)
+            return None, "not-a-record"
+        # EAGAIN from a write lease lands here, and so does EACCES — the
+        # sentence says what happened and not what the name is, because the
+        # open is the only thing that was asked.
         _warn_unusable(path, "it could not be opened", consequence, exc_info=True)
-        return None
+        return None, "store-unreachable"
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             # The FIFO, the directory and the device all land here, on the
             # descriptor that is already open rather than on the name.
             _warn_unusable(path, "it is not a regular file", consequence)
-            return None
+            return None, "not-a-record"
         if st.st_size > _MAX_RECORD_BYTES:
             _warn_unusable(path, _TOO_LARGE, consequence)
-            return None
+            return None, "not-a-record"
         raw = _bytes_at_most(fd, _MAX_RECORD_BYTES)
     except OSError:
         _warn_unusable(path, "it could not be read", consequence, exc_info=True)
-        return None
+        return None, "store-unreachable"
     finally:
         os.close(fd)
     if raw is None:
@@ -718,12 +752,12 @@ def _record_text(path: Path, *, consequence: str) -> str | None:
         # because of: reaching here means the file GREW past the cap, or never
         # had an ``st_size`` that described it in the first place.
         _warn_unusable(path, _TOO_LARGE, consequence)
-        return None
+        return None, "not-a-record"
     try:
-        return raw.decode("ascii")
+        return raw.decode("ascii"), None
     except ValueError:
         _warn_unusable(path, _NOT_OUR_JSON, consequence, exc_info=True)
-        return None
+        return None, "not-a-record"
 
 
 def read_trash_origin(origins_dir: Path, entry_name: str) -> TrashOrigin | None:
@@ -766,7 +800,9 @@ def read_trash_origin(origins_dir: Path, entry_name: str) -> TrashOrigin | None:
         path = origin_file(origins_dir, entry_name)
     except ValueError:
         return None  # not a key this store can hold; nothing was ever written
-    text = _record_text(path, consequence=_ROW_FALLS_BACK)
+    # The refusal class is dropped here on purpose: every reason sends this
+    # caller to the same import-restore. Only the delete side reads it.
+    text, _refusal = _record_text(path, consequence=_ROW_FALLS_BACK)
     if text is None:
         return None
     try:
@@ -839,19 +875,21 @@ _ROW_FALLS_BACK: Final = (
     " the two causes it hit — this line is the difference."
 )
 
-#: :func:`_warn_unusable`'s second half for :func:`_names_a_different_entry`,
-#: which runs AFTER the entry has already been removed. There is no row left to
+#: :func:`_warn_unusable`'s second half for :func:`delete_trash_origin`, which
+#: runs AFTER the entry has already been removed. There is no row left to
 #: degrade and nothing for the operator to fix, so the clause above would be
 #: false here.
 #:
-#: It says what the READ did and stops there. "So the file goes too" was the
-#: first spelling and it is a claim about the NEXT statement, which can fail:
-#: ``delete_trash_origin``'s ``unlink`` raises on a directory at the key or a
-#: read-only ``/data``, and it has its own log line for exactly that. Two lines
-#: about one file is fine; one of them being wrong is not.
-_PLANT_GOES_WITH_IT: Final = (
-    "None of it was used, and the entry it was keyed on has already been removed — this"
-    " line is the only trace it was there."
+#: It says what the READ did and stops there, because what happens to the file
+#: NEXT is decided by which refusal this was and can fail either way: one that
+#: proves the bytes are not ours is unlinked (and the ``unlink`` itself raises on
+#: a read-only ``/data``, which has its own line), one the store could not
+#: answer for is kept (which also has its own line). "So the file goes too" was
+#: the first spelling and "this line is the only trace it was there" the second;
+#: both are claims about a statement that had not run yet. Two lines about one
+#: file is fine; one of them being wrong is not.
+_ENTRY_IS_ALREADY_GONE: Final = (
+    "None of it was used, and the entry it was keyed on has already been removed."
 )
 
 
@@ -868,8 +906,9 @@ def _warn_unusable(path: Path, why: str, consequence: str, *, exc_info: bool = F
     :func:`_record_text` leave the operator in different places and a default
     would quietly give the delete path the read path's sentence — which is FALSE
     there (no row, no fallback). The CAUSE is shared; what follows from it is
-    not. Still one ``logger.warning`` call, so the module's log-line census is
-    unchanged.
+    not. Every refusal in this module's gate comes through this ONE
+    ``logger.warning``; the module's own census (nine calls, measured
+    2026-09-14) is in ``tests/test_trash_origins_store.py``.
 
     Once per listing per bad record, which is the right frequency: the row is
     showing a misleading note for as long as the file sits there.
@@ -966,17 +1005,46 @@ def delete_trash_origin(origins_dir: Path, entry_name: str) -> None:
     left ``read_trash_origin(long)`` answering ``None``. So the payload's own
     ``name`` is read first, and a record that names a different entry is kept.
 
-    Everything else still goes: absent, unreadable, unparseable, not an object,
-    or carrying no ``name`` at all. That is deliberate and is what keeps the
-    import arm's "an unreadable record must not be left to be adopted" true —
-    an unreadable record steers nothing but burns its name forever.
+    **The second file it must not take is one the store could not ANSWER for**,
+    which is a different question from "not a record". A refusal that proves the
+    bytes are not ours — not a regular file, over the cap, not ASCII JSON, a
+    loop or a socket at the name — still goes, and that is what keeps the import
+    arm's "an unreadable record must not be left to be adopted" true. A refusal
+    that proves only that the store is not answering — EACCES on the file, a
+    write lease, a failing read — keeps it, because the alternative is the
+    measured data loss at :func:`_record_text`: the other entry's still-listed
+    row losing its exact restore because THIS entry was emptied while the shared
+    key happened to be unopenable. The cost is a name held against a future
+    album until an operator clears the fault (:func:`origin_recorded`), which is
+    litter rather than loss.
+
+    ``empty_all`` carries on past such a key with nothing lost: its entry is
+    already gone and its record stays, so the row it protects is the OTHER one.
+
+    Everything else still goes: absent, unparseable, not an object, or carrying
+    no ``name`` at all.
 
     Failing it is worth a log line, never worth failing a restore that has
     already landed.
     """
     try:
         path = origin_file(origins_dir, entry_name)
-        if _names_a_different_entry(path, entry_name):
+        text, refusal = _record_text(path, consequence=_ENTRY_IS_ALREADY_GONE)
+        if refusal == "store-unreachable":
+            logger.warning(
+                # Separate from the line below because it knows LESS: the other
+                # one has read a payload naming somebody else, this one has read
+                # nothing at all. Saying "the record names a different Trash
+                # entry" here would be a claim about bytes nobody has seen.
+                "kept the Trash origin record at %r instead of dropping it with %r: the"
+                " store could not say what is in it, which is not proof it is not another"
+                " Trash entry's. It holds its name against a future album until the fault"
+                " is cleared. The cause is the line above.",
+                os.fsdecode(path),
+                display_path(entry_name),
+            )
+            return
+        if _names_a_different_entry(text, entry_name):
             logger.warning(
                 # What this line knows is the PAYLOAD, and nothing else. It used
                 # to say the other entry "is still in Trash and still needs it";
@@ -1002,15 +1070,17 @@ def delete_trash_origin(origins_dir: Path, entry_name: str) -> None:
         )
 
 
-def _names_a_different_entry(path: Path, entry_name: str) -> bool:
-    """Whether the file at ``path`` is positively SOME OTHER entry's record.
+def _names_a_different_entry(text: str | None, entry_name: str) -> bool:
+    """Whether ``text`` is positively SOME OTHER entry's record.
 
-    ``True`` only for a payload that reads back, is an object, and names an
-    entry that is not this one. Every "we cannot say whose this is" — no file,
-    unreadable, not ASCII JSON, not an object, no ``name``, a ``name`` that is
-    not a string — answers ``False``, because the caller's alternative is to
-    leave a file the store can never explain on the ``/data`` side, where the
-    allocator burns its name for good and a later entry could adopt it.
+    ``True`` only for a payload that parses, is an object, and names an entry
+    that is not this one. Every "we cannot say whose this is" — no text, not
+    ASCII JSON, not an object, no ``name``, a ``name`` that is not a string —
+    answers ``False``, because the caller's alternative is to leave a file the
+    store can never explain on the ``/data`` side, where the allocator burns its
+    name for good and a later entry could adopt it. The one refusal that does
+    NOT reach here is "the store could not answer": the caller keeps the file on
+    that one, and the reason is at :func:`delete_trash_origin`.
 
     Not :func:`_names_entry`, which answers the READ's question ("may I use this
     for this entry?") and so treats a nameless payload as usable-by-nobody.
@@ -1019,14 +1089,13 @@ def _names_a_different_entry(path: Path, entry_name: str) -> bool:
     schema or origin validation: a record for another entry is that entry's to
     lose whether or not THIS version can parse the rest of it.
 
-    The READ goes through :func:`_record_text`, the same gate
-    :func:`read_trash_origin` uses, and it must: this reader had a bare
-    ``read_text`` 200 lines below that one until 2026-09-14, so a FIFO at the
-    key hung every route that takes an entry out of Trash — under
+    The bytes come from :func:`_record_text`, the same gate
+    :func:`read_trash_origin` reads through, and they must: this reader had a
+    bare ``read_text`` 200 lines below that one until 2026-09-14, so a FIFO at
+    the key hung every route that takes an entry out of Trash — under
     ``beets_swap_lock`` and after the irreversible act. The measurements are at
-    :func:`_record_text`. ``None`` from it is a ``False`` here for the reason
-    the paragraph above gives: a file this store cannot read names nobody, so
-    the caller unlinks it and the plant does not outlive the entry.
+    :func:`_record_text`, which the CALLER now invokes so that it can tell the
+    two kinds of refusal apart; this function sees only the text.
 
     What is left to fail here is the PARSE, and the arm below names both
     exception types it has been measured to raise. It is not a proof that
@@ -1037,7 +1106,6 @@ def _names_a_different_entry(path: Path, entry_name: str) -> bool:
     statement here raises one — the gate owns the I/O and swallows it. The
     shapes this arm is measured against are listed at that function.
     """
-    text = _record_text(path, consequence=_PLANT_GOES_WITH_IT)
     if text is None:
         return False
     try:
