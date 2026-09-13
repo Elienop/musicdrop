@@ -52,6 +52,7 @@ __all__ = [
     "StoreLayoutError",
     "check_store_layout",
     "checked_protected_trees",
+    "checked_reachable_store_dirs",
     "checked_store_dirs",
     "effective_config_paths",
     "layout_check_for_config",
