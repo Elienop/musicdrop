@@ -944,6 +944,26 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   and made the cap bound the read rather than only `st_size` — a procfs file is `S_ISREG` with
   `st_size == 0` and read 162,801 bytes past a 64 KiB cap with no race to win. Both readers now
   share one gate. What bounds the reach now is the layout row `music contains origins`.
+  Round 5 (2026-09-14) reshaped that gate three more times. The `stat`-before-open is GONE, in
+  favour of one `O_RDONLY|O_NONBLOCK` open with `fstat`, the size pre-filter and the bounded read
+  all on that descriptor: a stat gate bounds what and how much is read, never how long, and a
+  write lease on an ordinary 73-byte record at the key blocked any other `open` for 45 s. The
+  delete side then stopped acting on every refusal — "the bytes are not ours" unlinks, "the store
+  could not answer" keeps the file, because on a truncated key two entries share the loss was the
+  OTHER entry's exact restore. And the three parse arms that unlinked in silence now log, so the
+  most ordinary plant there is (a non-JSON ASCII file) leaves a trace. The RSS figure above is one
+  of two measurements of the same ratio: a sparse file costs about twice its size, measured at
+  600 MB → +1199 MB and at 400 MB → +801 MB.
+  **Two residuals from that round.** A NON-EMPTY directory planted at a record's key still burns
+  its Trash name for good: `S_ISREG` refuses it, `unlink` raises `EISDIR`, and the `rmdir` added
+  for the empty case answers `ENOTEMPTY` — a function that runs after the entry is already gone
+  may not start deleting trees it knows nothing about, so `origin_recorded` keeps answering "taken"
+  and later albums land on `<name> (1)`, `(2)`… A key the store cannot ANSWER for (EACCES, a live
+  lease) is kept by design and holds its name the same way until the fault is cleared.
+  **And one decision:** `trash_manage._link_name_under` no longer asks where a symlinked directory
+  points. `realpath`-then-`walk` on the same name leaked a path from outside the entry into the
+  503 in 8.01 % of restores under a flipper (3,162 of 39,486), so every symlinked directory is now
+  named by its link; the cost is precision, not refusals.
 
   **What the name key costs, and where it is paid.** An entry removed OUTSIDE MusicDrop
   leaves its record, and a later folder taking that name would inherit a stale origin that
@@ -2373,11 +2393,24 @@ the condition it names has changed.
   is attacker-writable under the layout rule's own model, which is what makes the window
   reachable rather than theoretical; the precondition is winning it, and it was driven by
   injection rather than by two competing processes, so nothing here measures a win rate.
-  **The fd-shaped option, described and not taken:** `os.open(path, O_RDONLY|O_NONBLOCK)` returns
-  in 0.0000 s on a FIFO (measured) and `fstat` then answers about the inode already held, but
-  `Item.from_path` takes a path — so it means reading through `mediafile.MediaFile(<file
-  object>)`, supported in the pinned 0.17. That is a change to how every Trash row's tags are
-  read, not a review-round edit, so it is the owner's call. The same window exists one step later, on a different
+  **The record reader's copy of this window is CLOSED as of 2026-09-14** (fix round 5, same
+  branch; security seat H-1). `trash_origins._record_text` had the same stat-then-open shape and
+  reached it from `GET /api/trash` and from every delete; it now opens the key ONCE with
+  `O_RDONLY|O_NONBLOCK` and asks `fstat`, the size pre-filter and the bounded read of that
+  descriptor, so the inode checked is the inode read and neither the open nor the read can block.
+  What forced it was not the race but a write lease (`fcntl F_SETLEASE F_WRLCK`) on an ordinary
+  73-byte record, which passes every content gate and blocks any other `open` for
+  `lease-break-time` — 45 s, renewable, no race to win, and 45·K s of `beets_swap_lock` for K
+  leased keys inside one `empty_all`. The FIFO half of it was measured at 0.90 % of calls at a
+  10 % duty cycle. The LISTING's window (this entry) still stands, because its re-opener is
+  `Item.from_path` BY NAME and closing it means reading tags through a file object.
+  **The fd-shaped option: TAKEN for the record reader (2026-09-14), not for the listing.**
+  `os.open(path, O_RDONLY|O_NONBLOCK)` returns in 0.0000 s on a FIFO (measured) and `fstat` then
+  answers about the inode already held, which is what `trash_origins._record_text` now does. Here
+  it is not that cheap: `Item.from_path` takes a PATH, so the same shape means reading tags
+  through `mediafile.MediaFile(<file object>)`, supported in the pinned 0.17. That is a change to
+  how every Trash row's tags are read, not a review-round edit, so it stays the owner's call.
+  **The same window exists one step later**, on a different
   directory on each of the two arms — and only the move-back arm's re-opener is the app's own
   `_holds_media` walk (its sole call site is inside `_restore_to_origin`). On the IMPORT arm —
   every row with no usable record — the re-opener is BEETS, and the folder it opens is still in
