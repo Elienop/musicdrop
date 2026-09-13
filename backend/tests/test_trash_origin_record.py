@@ -493,7 +493,7 @@ def test_a_fifo_at_the_records_own_path_is_never_opened(tmp_path: Path) -> None:
 
 
 def test_a_file_too_large_to_be_a_record_is_refused_on_its_size(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The cap is back, and it does not rest on "this module is the only writer".
 
@@ -508,9 +508,14 @@ def test_a_file_too_large_to_be_a_record_is_refused_on_its_size(
 
     The fixture is 8 MiB rather than that 600 MB: it only has to clear the cap,
     and the measurement belongs beside the constant rather than in a suite every
-    contributor runs. The SENTENCE is the oracle — with the cap removed this
-    file is read whole and earns the parse arm's "not the ASCII JSON this
-    writes" instead.
+    contributor runs.
+
+    TWO oracles, because since 2026-09-14 the cap is checked twice — cheaply on
+    ``st_size`` and then on what ``fh.read(cap + 1)`` returned — and the second
+    arm logs the SAME sentence. So the sentence alone no longer says which fired,
+    and deleting the ``st_size`` check would leave this test green while every
+    oversized plant cost an open and a 64 KiB read. The spy is the half that
+    pins the pre-filter: refused BEFORE the read is the whole point of it.
     """
     origins = _origins(tmp_path)
     path = origin_file(origins, "Dummy")
@@ -523,10 +528,20 @@ def test_a_file_too_large_to_be_a_record_is_refused_on_its_size(
         fh.truncate(planted)  # sparse — no bytes are written and none are read
     assert _MAX_RECORD_BYTES < planted, "the fixture has to be over the cap"
     assert _MAX_RECORD_BYTES > 4096, "and the cap has to clear a real record by orders"
+    # Bound to the real function FIRST, so the spy forwards rather than replaces.
+    opened: list[str] = []
+    real_open = Path.open
+
+    def spy_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        opened.append(str(self))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", spy_open)
 
     with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
         assert read_trash_origin(origins, "Dummy") is None
 
+    assert opened == [], "the oversized plant was opened before it was refused"
     (record,) = caplog.records
     assert "far too large to be a record" in record.getMessage()
     assert path.stat().st_size == planted, "refused, not truncated or removed"
