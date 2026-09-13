@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -449,6 +450,36 @@ def test_read_trash_origin_rejects_a_payload_it_cannot_trust(tmp_path: Path, pay
     origin_file(origins, "Dummy").parent.mkdir(parents=True, exist_ok=True)
     origin_file(origins, "Dummy").write_text(payload, encoding="ascii")
     assert read_trash_origin(origins, "Dummy") is None
+
+
+def test_a_fifo_at_the_records_own_path_is_never_opened(tmp_path: Path) -> None:
+    """The record read answers None rather than blocking on a planted pipe.
+
+    The key is fully derivable — ``<entry name>.json`` — and ``_restore_fields``
+    reads one per top-level entry from inside ``GET /api/trash``. Measured
+    2026-09-13 (security seat), at this branch's base and round 1's tip alike:
+    a FIFO here hung the listing request for the life of the process, holding one
+    ``run_in_threadpool`` worker. What bounds the reach is the layout row
+    ``music contains origins`` and not the comment that used to sit here, which
+    claimed nothing could be planted in an app-owned directory.
+
+    Run on a thread with a join deadline, because a plain call would hang this
+    suite instead of failing it.
+    """
+    origins = _origins(tmp_path)
+    path = origin_file(origins, "Dummy")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(path)
+    answered: list[object] = []
+
+    worker = threading.Thread(
+        target=lambda: answered.append(read_trash_origin(origins, "Dummy")), daemon=True
+    )
+    worker.start()
+    worker.join(10)
+
+    assert not worker.is_alive(), "the record read is still blocked on the FIFO"
+    assert answered == [None]
 
 
 def test_move_back_target_refuses_an_origin_outside_the_library(tmp_path: Path) -> None:
@@ -1277,10 +1308,12 @@ def test_a_present_but_unusable_record_is_logged_and_an_absent_one_is_not(
             "not a record this version can trust",
             id="not-an-object",
         ),
-        # No ``is_file()`` preamble survives, so a directory at the name comes
-        # back as the OSError it really is rather than a hand-written sentence —
-        # the arm is kept to pin that it degrades instead of escaping.
-        pytest.param(lambda p: p.mkdir(), "could not be read", id="a-directory"),
+        # A directory at the name is answered by the regular-file gate, which
+        # reads the mode without opening anything: it used to arrive as the
+        # ``IsADirectoryError`` the open raised, a sentence along ("could not be
+        # read") and one blocking open later. The arm is kept to pin that it
+        # degrades with a cause instead of escaping or going silent.
+        pytest.param(lambda p: p.mkdir(), "it is not a regular file", id="a-directory"),
     ],
 )
 def test_every_unusable_record_names_its_own_cause(

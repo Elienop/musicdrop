@@ -68,6 +68,7 @@ import hashlib
 import json
 import logging
 import os
+import stat
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -580,14 +581,39 @@ def read_trash_origin(origins_dir: Path, entry_name: str) -> TrashOrigin | None:
         path = origin_file(origins_dir, entry_name)
     except ValueError:
         return None  # not a key this store can hold; nothing was ever written
+    # Never OPEN what the name resolves to unless it is a regular file, and ask
+    # with a ``stat``, which does not block where the open would. The comment
+    # here used to say no planted FIFO could be at this path because nothing but
+    # this module writes into the directory; measured 2026-09-13 (security
+    # seat), a FIFO at ``<origins>/<entry>.json`` hung ``GET /api/trash`` for the
+    # life of the process, at this branch's base and its tip alike. What BOUNDS
+    # the reach is not that claim but the layout row ``music contains origins``,
+    # which refuses an origin store inside the library directly and through a
+    # link; what is left is an operator putting the store somewhere else
+    # attacker-writable, plus the recorded bind-mount blindness.
+    #
+    # Three answers and not one, so the gate keeps the diagnosis the open used
+    # to produce: absent is the ordinary case and stays silent, a name that
+    # cannot be examined earns the I/O sentence (a symlink loop at the key is
+    # this arm), and something that IS there and is not a regular file earns its
+    # own. FOLLOWS links, because the question is what the name resolves to.
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return None  # the ordinary case: no record was ever written
+    except OSError:
+        _warn_unusable(path, "it could not be examined", exc_info=True)
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        _warn_unusable(path, "it is not a regular file")
+        return None
     try:
         # ``UnicodeDecodeError`` and ``json.JSONDecodeError`` are both
         # ``ValueError`` subclasses, so the two arms below cover read, decode
-        # and parse together. No ``is_file()`` preamble and no size cap: nothing
-        # but this module writes into this directory, so there is no planted
-        # FIFO to block on and no oversized file to refuse. A directory at the
-        # name raises ``IsADirectoryError``, which is an ``OSError``, so the
-        # unusable arm below still names it.
+        # and parse together. No size cap: this module is the only writer, so
+        # there is no oversized file to refuse. A directory at the name is
+        # refused by the gate above (it was ``IsADirectoryError`` into the
+        # unusable arm before, which said the same thing one arm along).
         #
         # ``encoding="ascii"`` here is a TRIPWIRE, and NO TEST CAN KILL IT
         # (measured: switching it to "utf-8" leaves the whole suite green).
