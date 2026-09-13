@@ -540,21 +540,32 @@ def _unopenable_refusal(unopenable: str) -> str:
     Whole sentences rather than a shared stem with a clause swapped in: this IS
     the message the page shows (``SettingsTrashPage.tsx`` renders the 503 detail
     as the row's whole text, ``text-xs``), so it is held to the owner's app-text
-    ruling — two short sentences, and the round-2 wording's 188 characters and
-    its "would open a pipe or device and never return" clause are both gone (the
-    clause was also false of a socket, which answers ENXIO at once).
+    ruling — two short sentences each, 93 and 128 characters, and the round-2
+    wording's 188 and its "would open a pipe or device and never return" clause
+    are both gone (the clause was also false of a socket, which answers ENXIO at
+    once). Both are pinned as whole strings rather than by fragments, in
+    ``test_a_listed_loose_file_swapped_for_a_fifo_refuses_the_restore`` and
+    ``test_a_non_regular_file_inside_an_entry_refuses_the_restore``: three
+    fragment assertions passed a sentence that said the OPPOSITE of the remedy.
     """
     if unopenable == _THE_ENTRY_ITSELF:
-        # "Remove it from Trash" named nothing clickable, which is the half of
-        # this arm the sentence got wrong: ``_audio_free_entries`` lists an
-        # entry only if it is a link or a directory, so a top-level FIFO or
-        # socket has NO row after a refresh — the operator sees it only on the
-        # stale page that was rendered before the swap. Empty all is the one
-        # route that reaches it, it is never disabled, and it removed the shape
-        # in 0.43 ms (security seat I-2, measured 2026-09-13).
+        # The remedy names the button on the row the operator is looking at.
+        # This sentence only ever renders on the STALE row drawn before the
+        # swap — ``_audio_free_entries`` lists an entry only if it is a link or
+        # a directory, so a top-level FIFO or socket has no row after a refresh
+        # — and that row's own Empty (the trash-can beside Restore, accessible
+        # name "Empty <album>") removes the shape: measured in the browser
+        # 2026-09-14, ``DELETE /api/trash?folder=loose.flac`` on a FIFO answered
+        # 200, the row was gone in 0.21 s and the file gone from disk. The
+        # page's own hedge copy already words it this way
+        # (``SettingsTrashPage.tsx:342``, "Empty removes it permanently"). It
+        # said "Empty all" for a day, on the reasoning that the refreshed page
+        # has no row — true, and beside the point, since the sentence is read on
+        # the page that does. 93 characters, pinned whole by
+        # ``test_a_listed_loose_file_swapped_for_a_fifo_refuses_the_restore``.
         return (
             "This Trash entry is not a folder or a regular file, so it was not restored."
-            " Empty all removes it."
+            " Empty removes it."
         )
     return (
         f"This Trash entry holds {unopenable!r}, which is not a regular file, so it was"

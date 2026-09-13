@@ -773,14 +773,17 @@ def test_a_listed_loose_file_swapped_for_a_fifo_refuses_the_restore(tmp_path: Pa
 
     assert not worker.is_alive(), "the restore is still blocked on the entry itself"
     assert isinstance(raised[0], TrashEntryUnreadableError)
-    detail = str(raised[0])
-    assert detail.startswith("This Trash entry is not a folder or a regular file"), detail
-    assert "holds" not in detail, "the entry IS the thing; it does not hold it"
-    # And the remedy names something clickable. "Remove it from Trash" did not:
-    # ``_audio_free_entries`` lists an entry only if it is a link or a directory,
-    # so this shape has NO row once the page is refreshed -- Empty all is the one
-    # route that reaches it, and it is never disabled (security seat I-2).
-    assert "Empty all" in detail, detail
+    # The WHOLE sentence: three fragments (``startswith``, ``"holds" not in``,
+    # ``"Empty all" in``) all hold for "... Empty all does NOT remove it."
+    # too -- measured 2026-09-14, code seat W4. This is the operator's entire
+    # row text and it is 93 characters, so there is nothing to gain by pinning
+    # it in pieces. The remedy is the row's own Empty rather than Empty all:
+    # this sentence renders on the stale row, whose trash-can answered 200 and
+    # removed the FIFO in 0.21 s (measured in the browser 2026-09-14).
+    assert str(raised[0]) == (
+        "This Trash entry is not a folder or a regular file, so it was not restored."
+        " Empty removes it."
+    )
     assert stat.S_ISFIFO(os.lstat(loose).st_mode), "nothing left Trash"
     assert not list((tmp_path / "music" / "2 Brothers").glob("*")), "nothing reached the library"
 
