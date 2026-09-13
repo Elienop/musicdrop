@@ -444,9 +444,9 @@ def _unopenable_name_under(entry: Path) -> str | None:
     What that following costs is an ORACLE, and it is why the answer is not
     always the offending name: this string goes verbatim into the 503 the page
     renders, so a walk that leaves the entry would report a filename from
-    outside Trash. Anything found below a link that leaves the entry is reported
-    as the LINK instead — :func:`_link_out_of`, which owns the measurement and
-    the reasoning.
+    outside Trash. Anything found below a SYMLINKED directory is reported as the
+    link instead — :func:`_link_name_under`, which owns the measurement and the
+    reasoning, including why it does not ask where the link goes.
 
     It over-refuses in one direction, deliberately: ``sorted_walk`` skips its
     ``ignore`` globs and hidden names, this does not, so a hidden ``.wedge``
@@ -459,7 +459,7 @@ def _unopenable_name_under(entry: Path) -> str | None:
         return _THE_ENTRY_ITSELF
     seen: set[tuple[int, int] | None] = {_dir_ident(str(entry))}
     # Keyed on the directory the walk is IN, not on the offending file, because
-    # the substitution has to survive every level below the escaping link.
+    # the substitution has to survive every level below the link.
     named_instead: dict[str, str] = {}
     for root, dirs, files in os.walk(entry, followlinks=True):
         instead = named_instead.get(root)
@@ -475,22 +475,21 @@ def _unopenable_name_under(entry: Path) -> str | None:
                 continue
             seen.add(ident)
             unvisited.append(name)
-            # The OUTERMOST escaping link wins: once a subtree is outside, the
-            # names below it are all invisible to the operator, including any
-            # further link inside.
-            below = instead if instead is not None else _link_out_of(child, entry)
+            # The OUTERMOST link wins: once a subtree is reached through one,
+            # the names below it may be invisible to the operator, including
+            # any further link inside.
+            below = instead if instead is not None else _link_name_under(child, entry)
             if below is not None:
                 named_instead[child] = below
         dirs[:] = unvisited
     return None
 
 
-def _link_out_of(child: str, entry: Path) -> str | None:
-    """``child``'s own name under ``entry``, if it is a link that LEAVES ``entry``.
+def _link_name_under(child: str, entry: Path) -> str | None:
+    """``child``'s own name under ``entry``, if ``child`` is a symlink at all.
 
-    ``None`` for anything else — a real directory, and a link whose target is
-    still inside the entry (which the operator can see, so its names are theirs
-    already).
+    ``None`` only for a real directory. ONE question — ``os.path.islink`` — and
+    that is the whole predicate.
 
     This exists because the walk above follows links and the refusal names what
     it found. Measured 2026-09-13 (security seat L-2): with
@@ -500,27 +499,30 @@ def _link_out_of(child: str, entry: Path) -> str | None:
     iterable by re-pointing the link. The invariant is that the 503 may name
     only a path the operator can see inside the entry, and ``peek`` is one: it
     is also the remedy, since removing the link is what fixes the restore, and
-    the sentence stays true of it (a link out is not a regular file either).
+    the sentence stays true of it (a link is not a regular file either).
 
-    ``realpath`` on BOTH sides, and it is the right question here rather than
-    the "resolve collapses the attacker's link" trap: what is being asked is not
-    "is this configured path inside a root" but "does what this name lands on
-    sit inside the tree the operator is looking at". A dangling or looping link
-    never reaches this — ``os.walk`` sorts a name into ``dirs`` by
-    ``os.path.isdir``, which is False for both — and ``realpath`` answers
-    without raising for either anyway.
+    **It asked a second question until 2026-09-14, and that question was a
+    TOCTOU.** ``os.path.realpath(child).startswith(realpath(entry) + sep)``
+    answered "this link stays inside, so keep the fuller name", and then
+    ``os.walk`` descended the same NAME one statement later — so re-pointing the
+    link in that window put the walk outside the entry with no substitution
+    recorded. Measured (security seat L-1, flipper between an inside directory
+    and an outside one holding a FIFO): **3,162 of 39,486 restores — 8.01 % —
+    named a path from outside**, with both liveness answers in the result set.
+    Deleting the arm is fail-closed and costs message PRECISION, which is the
+    measured trade: for a link that legitimately stays inside the entry the 503
+    now names the link while the offending file is also reachable by its real
+    relative path, so "remove that name" can take two restores to follow. What
+    it buys is that no answer this function gives can name anything the operator
+    cannot see.
 
-    The ``None`` arm cannot be reached deterministically THROUGH the walk, so it
-    is pinned on this function instead
-    (``test_only_a_link_that_leaves_the_entry_replaces_the_name_it_hides``): a
-    link whose target is inside the entry is an alias for a directory the walk
-    reaches anyway, the walk prunes by identity, and which of the two spellings
-    gets descended is ``os.scandir`` order — the directory's hash order, not a
-    promise. Measured: dropping this arm left every restore test green.
+    Accept behaviour is unchanged — the walk still descends every symlinked
+    subfolder, and only the NAME in a refusal moved
+    (``test_a_symlinked_subfolder_of_regular_files_still_restores`` is the
+    control). A dangling or looping link never reaches this: ``os.walk`` sorts a
+    name into ``dirs`` by ``os.path.isdir``, which is False for both.
     """
     if not os.path.islink(child):
-        return None
-    if os.path.realpath(child).startswith(os.path.realpath(entry) + os.sep):
         return None
     return os.path.relpath(child, entry)
 
