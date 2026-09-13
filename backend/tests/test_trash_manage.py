@@ -778,6 +778,39 @@ def test_a_listed_loose_file_swapped_for_a_fifo_refuses_the_restore(tmp_path: Pa
     assert not list((tmp_path / "music" / "2 Brothers").glob("*")), "nothing reached the library"
 
 
+def test_a_loose_regular_file_entry_still_restores(tmp_path: Path) -> None:
+    """The control for the ENTRY arm: what it may NOT refuse.
+
+    The gate above asks whether the entry is a non-regular, non-directory name.
+    A loose audio file at the top of Trash is the ordinary shape that arm exists
+    for -- it lists as its own row with Restore enabled, which is the very
+    reachability claim the test above opens with -- so the cheaper-looking
+    spelling ``not entry.is_dir()`` refuses a perfectly good FLAC with "this is
+    not a folder or a regular file". Measured 2026-09-14 (code seat W1,
+    re-measured here): that mutant passes all 3,648 tests without this one.
+
+    The contents arm has had its twin since it shipped
+    (``test_a_dangling_link_inside_an_entry_still_restores``, just below); the
+    entry arm went out with only the kill half.
+    """
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
+    trash = tmp_path / "trash"
+    loose = trash / "loose.flac"
+    _tagged_flac(loose, artist="2 Brothers", album="Dreams", title="Dreams", track=1)
+
+    result = restore_album(
+        lib,
+        str(loose),
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
+        protected=protected_for(lib),
+    )
+
+    assert result.restored, result
+    assert not loose.exists(), "the entry never left Trash"
+    assert list((tmp_path / "music" / "2 Brothers").rglob("*.flac")), "it reached the library"
+
+
 def test_a_dangling_link_inside_an_entry_still_restores(tmp_path: Path) -> None:
     """The control for the gate above: what it may not refuse.
 
