@@ -89,7 +89,8 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   the library root — either of its spellings, `directory:` itself or a link to it — or the path
   is refused; and none of them may be a link *into* the library. The app checks that one itself:
   it resolves every link in the path rather than letting the kernel follow it, and refuses the
-  link whose target lands inside the library, naming it and its target. Links pointing anywhere
+  link whose target lands inside the library. The message names the path it refused, and the
+  link and where it points when the walk resolved one. Links pointing anywhere
   else are followed as before, so a Trash on another disk through a link of yours still works.
   One blind spot stays: a library folder bind-mounted to an outside path reads as outside. `..`
   is refused outright — so spell the Trash through `directory:`'s own root, without `..`. A bind

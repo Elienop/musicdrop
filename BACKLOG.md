@@ -1372,7 +1372,11 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   **Trigger.** `MUSICDROP_TRASH_DIR` names a path that reaches inside the music library through
   a bind mount of a library subdirectory. Not the documented layout — compose recommends
   `MUSICDROP_TRASH_DIR=/music/.trash`, which is anchored — and the attacker cannot create the
-  mount: it is an operator misconfiguration that the app then cannot see through.
+  mount: it is an operator misconfiguration that the app then cannot see through. Under it,
+  though, they regain the whole H-1' escape with ONE symlink: `below` never becomes true beneath
+  the mountpoint, so the below-the-root link refusal is off for every component under it, and the
+  Trash relocated to the attacker's own directory with no race and no rename (measured
+  2026-09-13, before this branch and after it alike).
   **Blast radius**, bounded by the row layer, which runs against the RESOLVED destination
   (measured 2026-09-13): the origin store is refused, `/` fails on permissions, and the music
   root itself keeps `below = True` and so keeps the library-presence guard — but the beets data
@@ -1391,12 +1395,15 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   by hop under the same rules, a shared 40-hop budget (the kernel's own, measured), and a refusal
   when the target lands inside the music library — the root itself excepted, which is the alias
   spelling and anchors the walk from there. The measured price was zero layouts: all 144 tests
-  across `test_trash_root_creation.py`, `test_config_store_layout_api.py` and
-  `test_store_layout_use_sites.py` keep their outcome AND their message, including the three the
+  that existed before it across `test_trash_root_creation.py`, `test_config_store_layout_api.py`
+  and `test_store_layout_use_sites.py` keep their outcome AND their message, including the three the
   blanket refusal would have cost (the outside Trash through the operator's link, the alias
   spelling, the search-only ancestor) and the `/tmp`-is-a-link hazard. Cost per destructive
   request, median of 300 walks: unchanged at 0.011 ms and 0.020 ms for the two shipped shapes,
-  0.020 → 0.032 ms for a chain with one link above the root. The shapes closed with it: security
+  0.020 → 0.032 ms for a chain with one link above the root. That per-link cost is linear in the
+  TARGET's component count — re-measured at +12 µs for a 4-deep target and +79 µs for a 12-deep
+  one, ~3 ms for a 40-link chain — and the hop count is operator-controlled only, since a link
+  below the root is refused instead of resolved. The shapes closed with it: security
   seat H-1' A3/A4/A5 (the operator's `/srv/x -> <M>/a` with the attacker owning or creating
   `<M>/a`) and J1–J5 (a link planted below the jump-in point). A link target component is opened
   `O_PATH`, which needs search alone, because that is all the kernel needed to resolve the same
@@ -2299,22 +2306,33 @@ the condition it names has changed.
   it and none sees `trash=None`; the folder-movers entry above still wants the same
   descriptor-shaped fix on its own three paths.
 
-- **The create loop never re-asks whether a component is below the music root, so a part it
-  creates above the root can be swapped for a link inside that window** (2026-09-13, same
-  branch; security seat L-2'). `_open_the_trash_chain` (`app/beets/store_layout.py`) walks the
-  EXISTING prefix asking `_below_the_music_root` per component, then carries that decision into
-  the create loop — measured by tracing the question: the request that creates `srv`, `x` and
-  `.trash` asks 9 times and stops at their parent, the next request (they exist) asks 12. So a
-  racer who wins the `os.mkdir(part, dir_fd=fd)` → `os.open(part, …, dir_fd=fd)` window and
-  leaves a real DIRECTORY below the music root there is not noticed, and the Trash lands inside
-  the library unanchored. Narrowed 2026-09-13 (`hardening/link-targets`): a SYMLINK left in that
-  window is refused if its target reaches into the library, because resolving it is now the step
-  itself rather than a question asked about it — what is left is the real-directory half, plus
-  `before_creating` (the library-presence guard) still being decided before the loop runs.
-  Precondition: write access on the OPERATOR's chain above the music root, which is outside the
-  threat model the layout rule is written for (the attacker's reach is inside the library) — the
-  reason this is a residual and not the bug above it. Not driven as a race, only measured as the
-  asymmetry.
+- **The create loop never re-asks whether a component is below the music root, so a part that
+  acquires the root's identity inside that window is not noticed** (2026-09-13, same branch;
+  security seat L-2', re-measured by the code seat's Q1f and the security seat's Q5).
+  `_open_the_trash_chain` (`app/beets/store_layout.py`) walks the EXISTING prefix asking
+  `_below_the_music_root` per component, then carries that decision into the create loop —
+  measured by tracing the question: the request that creates `srv`, `x` and `.trash` asks 9 times
+  and stops at their parent, the next request (they exist) asks 12.
+  **The reachable input** is a part that becomes the music root by IDENTITY between the
+  `os.mkdir(part, dir_fd=fd)` and the `os.open(part, …, dir_fd=fd)`: the root renamed onto it,
+  bind-mounted there, or its parent renamed into the library. A real directory a racer CREATES
+  at that path is not one — its parent is the descriptor the walk stands on, so it is outside the
+  library — and that half of the old wording is gone.
+  **The measured consequence** (Q1f, with the window driven by wrapping `os.mkdir`): `below`
+  stays false, so a link the attacker planted at a later component is resolved and followed, and
+  the Trash landed at that link's target OUTSIDE the library with the library-presence guard
+  skipped — not merely inside the library unanchored. A symlink left in the window is still
+  refused when its target reaches into the library, because resolving it is the step itself
+  rather than a question asked about it.
+  The other seat measured the inverse and agrees it is not worth a flip: across five shapes,
+  re-asking changed no outcome (a link is decided by `_follow` either way, a `rename` moves the
+  directory OUT of the library, and a bind mount defeats the `..` climb regardless), and the
+  mutant that always asks passes the whole suite — no test pins `ask=not create`.
+  `before_creating` (the library-presence guard) is still decided before the loop runs.
+  Precondition unchanged: write access on the OPERATOR's chain above the music root, which is
+  outside the threat model the layout rule is written for (the attacker's reach is inside the
+  library) — the reason this is a residual and not the bug above it. Not driven as a race, only
+  measured as the asymmetry.
 
 - **The Settings report is silent for "music root absent + Trash spelled below it" while every
   destructive request answers 503** (2026-09-13, same branch; code seat W1, security seat L-4').
