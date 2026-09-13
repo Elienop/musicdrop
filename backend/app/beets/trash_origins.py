@@ -26,16 +26,23 @@ buy back with guards:
   gate with it:** "this app owns the directory" is not "nothing can be planted
   there", because an operator can point the store somewhere attacker-writable.
   A FIFO at a record's key hung ``GET /api/trash`` for the life of the process
-  and a 600 MB sparse file at one cost +1199 MB RSS, so a record key is now
-  stat'ed before it is opened (new) and a file too large to be a record is
-  refused (the old cap, same 64 KB). The symlink refusal did NOT come back: the
-  gate asks what the name RESOLVES to, so a link to a real record still reads.
-  What bounds the reach now is the layout row ``music contains origins``, not
-  the writer claim. **The gate is ONE function, :func:`_record_text`, because
-  the first version of it reached one of the module's TWO readers:** the
-  delete-side read 200 lines below kept a bare ``read_text`` for a day, and
-  there a FIFO hung every route that takes an entry OUT of Trash, holding
-  ``beets_swap_lock`` after the entry was already destroyed.
+  and a sparse file at one cost about TWICE its own size in RSS, so a file too
+  large to be a record is refused (the old cap, same 64 KB) — and the cap bounds
+  the READ and not only ``st_size``, which a procfs file reports as 0 while
+  yielding megabytes. The key is opened ONCE, with ``O_NONBLOCK``, and every
+  other question is asked of that descriptor: a ``stat`` before an ``open``
+  bounded what was read and never how long, and a write lease on an ordinary
+  small file at the key blocked every other ``open`` of it for 45 s. The symlink
+  refusal did NOT come back: the gate asks what the name RESOLVES to, so a link
+  to a real record still reads. What bounds the reach now is the layout row
+  ``music contains origins``, not the writer claim. **The gate is ONE function,
+  :func:`_record_text`, because the first version of it reached one of the
+  module's TWO readers:** the delete-side read 200 lines below kept a bare
+  ``read_text`` for a day, and there a FIFO hung every route that takes an entry
+  OUT of Trash, holding ``beets_swap_lock`` after the entry was already
+  destroyed. It answers that reader with the REASON as well as the text, because
+  that one unlinks: "the bytes are not ours" may, "the store could not answer"
+  may not.
 * **beets' source pruning is not blocked.** A file inside the trashed folder
   survives the re-import a failed restore asks for, and beets then refuses to
   prune the directory that still contains it — leaving a husk behind. There is
@@ -142,22 +149,34 @@ _MAX_KEY_BYTES = _NAME_MAX - 32
 #: The largest a file at a record's key may be and still be read, and what it
 #: refuses is a file nothing here wrote.
 #:
-#: The headroom, measured 2026-09-14 rather than asserted — this said "four
-#: orders of magnitude", which is wrong by a factor of 25: a real record is
-#: **161 bytes** (one absolute path, one word, one int, one timestamp), so the
-#: cap is about **400x** it, and the LARGEST this module can write — a
-#: near-``PATH_MAX`` origin under a max-length key — is **4,407 bytes**, which
-#: the cap clears by about **15x**. Both figures move with the origin's length,
-#: so they are a shape rather than constants; what matters is that the second
-#: one has an order of magnitude of room and the first has two.
+#: The headroom, measured through this module's own writer (2026-09-14) rather
+#: than asserted, because the two earlier attempts at it were both wrong — "four
+#: orders of magnitude", then "an order of magnitude of room" for a figure taken
+#: from an ASCII-only fixture. Three points, all with a 223-byte key:
+#:
+#: * a real record is **163 bytes** (one absolute path, one word, one int, one
+#:   timestamp), which the cap clears by about **400x**;
+#: * an all-ASCII near-``PATH_MAX`` origin makes **4,438 bytes**, about **15x**;
+#: * the LARGEST this module can write is that same origin in UNDECODABLE bytes:
+#:   ``write_trash_origin`` uses ``ensure_ascii=True`` because ``origin`` is an
+#:   ``os.fsdecode`` of a real POSIX path, so each such byte arrives as a lone
+#:   surrogate and is escaped six-for-one to ``\udcXX`` — **24,908 bytes**, which
+#:   the cap clears by **2.6x**. A factor, not an order of magnitude. (A
+#:   2-byte-UTF-8 origin lands on the same number: the escape is per CHARACTER,
+#:   and 4,095 bytes of path is at most 4,095 characters.)
+#:
+#: All three move with the origin's length, so they are a shape rather than
+#: constants; what matters is that the cap clears even the last one.
 #:
 #: The sidecar's 64 KB cap was deleted with the sidecar because its premise was
 #: "our write wins the filename". This one has a different premise and the same
-#: number: measured 2026-09-13 (security seat M-1), a 600 MB SPARSE regular file
-#: at the derivable key cost +1199 MB RSS inside ``GET /api/trash``, once per
-#: top-level entry — ASCII NULs decode, so the bytes plus a one-byte-per-char
-#: ``str`` are both paid in full before ``json.loads`` rejects any of it, and a
-#: sparse file costs the planter nothing to make.
+#: number: a SPARSE regular file at the derivable key costs about **twice its
+#: own size in RSS** inside ``GET /api/trash``, once per top-level entry —
+#: measured at 400 MB → +801 MB here (2026-09-14) and at 600 MB → +1199 MB by
+#: the security seat (M-1, 2026-09-13), which is the same ratio twice. ASCII
+#: NULs decode, so the bytes plus a one-byte-per-char ``str`` are both paid in
+#: full before ``json.loads`` rejects any of it, and a sparse file costs the
+#: planter nothing to make.
 _MAX_RECORD_BYTES = 64 * 1024
 
 #: The cause shared by the two refusals that are checked twice — once cheaply on
@@ -673,7 +692,8 @@ def _record_text(path: Path, *, consequence: str) -> tuple[str | None, _Refusal 
     a FIFO at ``<origins>/Album.json`` hung ``empty_one`` past a 6 s deadline
     with the entry already destroyed, hung ``empty_all`` part-way with nothing
     reported and the rest of Trash left behind, a 400 MB sparse file cost
-    +801 MB RSS, and a link to ``/dev/zero`` hung at **+46.6 GB** RSS in 6 s.
+    +801 MB RSS (twice its size, the ratio :data:`_MAX_RECORD_BYTES` records),
+    and a link to ``/dev/zero`` hung at **+46.6 GB** RSS in 6 s.
 
     ``None`` text means "not a record this store can read", which is exactly
     what both callers already do something sensible with: the read falls back to
