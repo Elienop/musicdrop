@@ -644,7 +644,10 @@ def test_a_file_too_large_to_be_a_record_is_refused_on_its_size(
     assert path.stat().st_size == planted, "refused, not truncated or removed"
 
 
-@pytest.mark.skipif(not Path("/proc/kallsyms").is_file(), reason="no procfs on this box")
+@pytest.mark.skipif(
+    not os.access("/proc/kallsyms", os.R_OK),
+    reason="no readable /proc/kallsyms on this box",
+)
 def test_the_cap_bounds_the_read_and_not_the_reported_size(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -682,17 +685,35 @@ def test_the_cap_bounds_the_read_and_not_the_reported_size(
     with path.open("rb") as fh:
         whole = len(fh.read())
     assert whole > 16 * _MAX_RECORD_BYTES, "and the content has to dwarf the cap"
-    assert not tracemalloc.is_tracing(), "something else owns the tracer"
 
-    tracemalloc.start()
+    # Adapt to whoever owns the tracer rather than asserting nobody does:
+    # ``PYTHONTRACEMALLOC=1`` is the standard way to trace a ``ResourceWarning``
+    # and it made this test fail rather than measure. What is bounded is the
+    # GROWTH over the baseline, which is the same number either way -- an
+    # already-running tracer has ~70 MB of pytest's own allocations in it, and
+    # ``reset_peak`` sets the peak to the current size rather than to zero.
+    already_tracing = tracemalloc.is_tracing()
+    if not already_tracing:
+        tracemalloc.start()
     try:
+        tracemalloc.reset_peak()
+        before, _before_peak = tracemalloc.get_traced_memory()
         with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
             assert read_trash_origin(origins, "Dummy") is None
         _current, peak = tracemalloc.get_traced_memory()
     finally:
-        tracemalloc.stop()
+        if not already_tracing:
+            tracemalloc.stop()
 
-    assert peak < whole // 8, f"the read ran to EOF: peak {peak} of {whole} available"
+    # Bounded on the CAP, not on the fixture: the cap is this module's own
+    # invariant and the kernel's symbol table is not. Measured through this test
+    # 2026-09-14 at the shipped code, the read grows 132,995 bytes against this
+    # bound of 262,144 -- about twice the cap, because the bounded read holds the
+    # old buffer and the new one at each concatenation. The read-to-EOF mutant
+    # grows 44,455,939 through this same assertion: twice the file, for the same
+    # reason.
+    grew = peak - before
+    assert grew < 4 * _MAX_RECORD_BYTES, f"the read ran to EOF: grew {grew} of {whole} available"
     (record,) = caplog.records
     assert "far too large to be a record" in record.getMessage(), (
         "the length check is gone and the parse arm reported it instead"
@@ -728,6 +749,11 @@ def test_a_dangling_link_at_the_record_key_is_logged_and_an_absent_one_is_not(
     (record,) = caplog.records
     assert "it is a link to something that is not there" in record.getMessage()
     assert "Dangling.json" in record.getMessage()
+    # The READ side's second half, which nothing was asserting: measured
+    # 2026-09-14 (code seat S3), giving this side the DELETE side's clause passed
+    # 186 tests. The delete side's half is pinned by its own "falls back not in"
+    # assertions, so the required parameter now has both twins.
+    assert "falls back to a re-import restore" in record.getMessage()
     assert path.is_symlink(), "the link is left for the operator to see"
 
 

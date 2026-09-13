@@ -704,7 +704,14 @@ def test_a_non_regular_file_inside_an_entry_refuses_the_restore(tmp_path: Path, 
 
     assert not worker.is_alive(), "the restore is still blocked on the non-regular file"
     assert isinstance(raised[0], TrashEntryUnreadableError)
-    assert "'02 wedge.flac'" in str(raised[0]), str(raised[0])
+    # The WHOLE sentence, not a fragment: this is the operator's entire row text
+    # (``SettingsTrashPage`` renders the 503 detail as the row, ``text-xs``), and
+    # its remedy half was asserted nowhere -- the two substitution tests check
+    # only the name. Short enough to pin verbatim under the app-text ruling.
+    assert str(raised[0]) == (
+        "This Trash entry holds '02 wedge.flac', which is not a regular file, so it was"
+        " not restored. Remove that name and restore again."
+    )
     assert (entry / "01 Dreams.flac").is_file(), "nothing left Trash"
     assert not list((tmp_path / "music" / "2 Brothers").glob("*")), "nothing reached the library"
 
@@ -960,7 +967,9 @@ def test_a_symlinked_subfolder_of_regular_files_still_restores(tmp_path: Path) -
     assert landed, "nothing reached the library"
 
 
-def test_a_link_out_of_an_entry_cannot_read_back_a_name_behind_it(tmp_path: Path) -> None:
+def test_a_link_out_of_an_entry_cannot_read_back_a_name_two_levels_behind_it(
+    tmp_path: Path,
+) -> None:
     """The 503 may name only a path the operator can see INSIDE the entry.
 
     ``_unopenable_name_under`` walks ``followlinks=True`` and its answer goes
@@ -975,6 +984,15 @@ def test_a_link_out_of_an_entry_cannot_read_back_a_name_behind_it(tmp_path: Path
     ``private-name`` is a FIFO so the walk refuses on it: that is what makes the
     leak reachable at all, and it keeps the shape identical to the oracle.
 
+    The plant sits TWO levels under the link, and that is what makes this test
+    an oracle for the line that carries the substitution down
+    (``below = instead if instead is not None else …``). Measured 2026-09-14
+    (code seat W1): with the FIFO one level under ``peek``, dropping the
+    inheritance passed all 31 restore tests, because a one-level plant is
+    decided by the predicate alone — only a GRANDCHILD reads the inherited
+    value, and the mutant then answered ``'peek/sub/private-name'``. So both
+    names below the link are asserted absent.
+
     Run on a thread with a join deadline; the refusal is what stops the pipe
     reaching beets, so a regression here hangs rather than fails.
     """
@@ -985,8 +1003,8 @@ def test_a_link_out_of_an_entry_cannot_read_back_a_name_behind_it(tmp_path: Path
         entry / "01 Dreams.flac", artist="2 Brothers", album="Dreams", title="Dreams", track=1
     )
     outside = tmp_path / "not-trash"
-    outside.mkdir()
-    os.mkfifo(outside / "private-name")
+    (outside / "sub").mkdir(parents=True)
+    os.mkfifo(outside / "sub" / "private-name")
     (entry / "peek").symlink_to(outside, target_is_directory=True)
     raised: list[BaseException] = []
 
@@ -1010,6 +1028,7 @@ def test_a_link_out_of_an_entry_cannot_read_back_a_name_behind_it(tmp_path: Path
     assert isinstance(raised[0], TrashEntryUnreadableError)
     detail = str(raised[0])
     assert "private-name" not in detail, detail
+    assert "sub" not in detail, "a directory name from outside the entry reached the 503"
     assert "'peek'" in detail, detail
     assert (entry / "01 Dreams.flac").is_file(), "nothing left Trash"
 
