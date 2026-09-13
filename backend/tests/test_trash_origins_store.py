@@ -259,16 +259,24 @@ def test_dropping_the_losing_rows_record_keeps_the_winners(
 
 
 @pytest.mark.parametrize(
-    ("label", "payload"),
+    ("label", "payload", "why"),
     [
-        ("no name at all", '{"schema": 1, "origin": "/music/A", "moved": "folder"}'),
-        ("not an object", '["schema", 1]'),
-        ("not JSON", "{ not json at all"),
-        ("a name that is not a string", '{"schema": 1, "name": 7, "origin": "/music/A"}'),
+        (
+            "no name at all",
+            '{"schema": 1, "origin": "/music/A", "moved": "folder"}',
+            "it does not name a Trash entry",
+        ),
+        ("not an object", '["schema", 1]', "it is not an object"),
+        ("not JSON", "{ not json at all", "it is not the ASCII JSON this writes"),
+        (
+            "a name that is not a string",
+            '{"schema": 1, "name": 7, "origin": "/music/A"}',
+            "it does not name a Trash entry",
+        ),
     ],
 )
-def test_a_record_that_does_not_name_another_entry_is_still_dropped(
-    tmp_path: Path, label: str, payload: str
+def test_a_record_that_does_not_name_another_entry_is_dropped_and_said_so(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, label: str, payload: str, why: str
 ) -> None:
     """Only a positively identified STRANGER survives; every doubt still unlinks.
 
@@ -278,14 +286,28 @@ def test_a_record_that_does_not_name_another_entry_is_still_dropped(
     reads it as occupied) for a file that steers nothing. So "keep what I cannot
     parse" is the wrong safe side here, and the four shapes below are the ones a
     pre-feature record, a truncated write and a hand edit actually produce.
+
+    And each one SAYS so. All four used to return ``False`` in silence, so the
+    easiest plant to make — a plain regular ASCII file at the key that is not
+    JSON — was read, unlinked and never mentioned (measured 2026-09-14, security
+    seat L-2). ``empty_all`` reaches this function with no listing having read
+    the key, so the read side's own warning is not a substitute: this line is
+    the only trace the file was ever there.
     """
     origins = tmp_path / "trash-origins"
     origins.mkdir()
     origin_file(origins, "Dummy").write_text(payload, encoding="ascii")
 
-    delete_trash_origin(origins, "Dummy")
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        delete_trash_origin(origins, "Dummy")
 
     assert not origin_file(origins, "Dummy").exists(), f"{label} must not be left behind"
+    (record,) = caplog.records
+    assert why in record.getMessage(), label
+    assert "None of it was used" in record.getMessage(), "the delete side's clause"
+    assert "falls back to a re-import restore" not in record.getMessage(), (
+        "there is no row left to fall back"
+    )
 
 
 def test_emptying_the_losing_row_keeps_the_other_entrys_record(tmp_path: Path) -> None:

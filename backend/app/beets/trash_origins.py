@@ -1044,7 +1044,9 @@ def delete_trash_origin(origins_dir: Path, entry_name: str) -> None:
                 display_path(entry_name),
             )
             return
-        if _names_a_different_entry(text, entry_name):
+        if _names_a_different_entry(
+            text, entry_name, path=path, consequence=_ENTRY_IS_ALREADY_GONE
+        ):
             logger.warning(
                 # What this line knows is the PAYLOAD, and nothing else. It used
                 # to say the other entry "is still in Trash and still needs it";
@@ -1070,7 +1072,9 @@ def delete_trash_origin(origins_dir: Path, entry_name: str) -> None:
         )
 
 
-def _names_a_different_entry(text: str | None, entry_name: str) -> bool:
+def _names_a_different_entry(
+    text: str | None, entry_name: str, *, path: Path, consequence: str
+) -> bool:
     """Whether ``text`` is positively SOME OTHER entry's record.
 
     ``True`` only for a payload that parses, is an object, and names an entry
@@ -1105,17 +1109,33 @@ def _names_a_different_entry(text: str | None, entry_name: str) -> bool:
     entry was already gone. ``OSError`` is no longer in the list because no
     statement here raises one — the gate owns the I/O and swallows it. The
     shapes this arm is measured against are listed at that function.
+
+    **``path`` and ``consequence`` are here to LOG, not to decide.** These three
+    arms returned ``False`` in silence, so the most ordinary plant there is — a
+    plain regular ASCII file at the key that is not JSON — was read, unlinked and
+    never mentioned (measured 2026-09-14, security seat L-2: ``log: none``).
+    ``read_trash_origin`` logs all three on its own side, but ``empty_all``
+    reaches this one with no listing having happened, and a plant's only trace
+    is the line that says it was there.
     """
     if text is None:
         return False
     try:
         raw: object = json.loads(text)
     except (ValueError, RecursionError):
+        _warn_unusable(path, _NOT_OUR_JSON, consequence, exc_info=True)
         return False
     if not isinstance(raw, dict):
+        _warn_unusable(path, "it is not an object", consequence)
         return False
     name = raw.get("name")
-    return isinstance(name, str) and name != entry_name
+    if not isinstance(name, str):
+        # Every record written before ``name`` existed is this arm, and so is a
+        # hand edit. It is the one of the three that is ORDINARY rather than a
+        # plant, which is why it says what is missing and not what is wrong.
+        _warn_unusable(path, "it does not name a Trash entry", consequence)
+        return False
+    return name != entry_name
 
 
 def clear_trash_origins(origins_dir: Path) -> None:
