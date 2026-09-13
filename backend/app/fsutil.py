@@ -253,10 +253,12 @@ def move_no_merge(src: Path, dest: Path) -> None:
 #: ``O_DIRECTORY`` a FIFO answers ENOTDIR in 6 us, so ``O_NONBLOCK`` is belt and
 #: braces rather than the thing that saves the open). The ONE definition, and
 #: these are all its readers: :func:`open_below`'s walk, the Trash remover's
-#: descent, the move-aside's container open, ``store_layout``'s creation of a
-#: Trash below the music root, and ``protected.open_checked_dir``'s open of the
-#: Trash ROOT — the one place a ROOT is opened ``O_NOFOLLOW``, because that root
-#: is the one directory the app must not reach through a link.
+#: descent, the move-aside's container open, ``store_layout``'s walk of the
+#: Trash's whole spelling — above the music root as well as below, since the
+#: owner's 2026-09-13 ruling, which is why "below the root" no longer describes
+#: every reader — and ``protected.open_checked_dir``'s open of the Trash ROOT,
+#: the one place a ROOT is opened ``O_NOFOLLOW``, because that root is the one
+#: directory the app must not reach through a link.
 BELOW_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
 
 #: The ROOT is opened FOLLOWING links: an operator's beets ``directory:`` may be a
@@ -266,11 +268,12 @@ BELOW_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOC
 #: refused.
 #:
 #: Read directly, and not only through :func:`open_root`, by
-#: ``store_layout._open_the_trash_chain``: every component ABOVE the music root
-#: is the operator's chain and is opened the same way, from its parent's
-#: descriptor — which :func:`open_root` takes no ``dir_fd`` to express. Same
-#: flags, one definition; the three sites are ``/``, each part above the root,
-#: and the ``..`` climb that asks whether a spelling landed inside the library.
+#: ``store_layout._open_the_trash_chain`` for the ``/`` its walk starts at.
+#: Owner ruling 2026-09-13 took the rest: the components ABOVE the music root
+#: are the operator's chain, and since that ruling they are opened
+#: :data:`BELOW_FLAGS` too — a link there is resolved by the walk itself and
+#: refused only when its target lands inside the library, which is stricter than
+#: following it and keeps the layouts that pointed outside.
 ROOT_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK
 
 

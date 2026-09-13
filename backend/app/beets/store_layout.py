@@ -41,6 +41,7 @@ from app.beets.protected import ProtectedTrees, protected_trees
 from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
 from app.config import Settings, app_owned_dirs, export_dir
 from app.fsutil import BELOW_FLAGS, ROOT_FLAGS, open_root
+from app.wire import display_path
 
 __all__ = [
     "BEETS_SETTING",
@@ -630,7 +631,9 @@ def _refuse_a_climbing_trash_spelling(configured: str) -> StoreLayoutError:
     )
 
 
-def _refuse_a_trash_around_the_music_root(spelled: Path) -> StoreLayoutError:
+def _refuse_a_trash_around_the_music_root(
+    spelled: Path, cause: str | None = None
+) -> StoreLayoutError:
     """The refusal for a Trash that lands inside the library without naming it.
 
     A link the operator owns can point BELOW the music root (``/srv/x ->
@@ -638,10 +641,18 @@ def _refuse_a_trash_around_the_music_root(spelled: Path) -> StoreLayoutError:
     Trash inside the library through a followed chain, without the anchoring the
     owner's layout ruling makes necessary there. Refused rather than anchored
     because one spelling of the root is all the app has to support.
+
+    ``cause`` is the link and the target that reached in, when the walk resolved
+    one (``'srv-x' -> '/music/a'``): the offending component is the only part of
+    this the operator can act on, and it is not always the last one in the
+    spelling. The sentence is the same either way, because it is the same fault
+    — which is why this is not a second refusal (owner ruling 2026-09-13 closed
+    the link shape; the message it already had says what happened).
     """
+    detail = f" ({cause})" if cause else ""
     return StoreLayoutError(
         f"{TRASH_SETTING} reaches into the music library without naming it:"
-        f" {str(spelled)!r}. Spell it through beets' `directory:`.",
+        f" {str(spelled)!r}{detail}. Spell it through beets' `directory:`.",
         headline=f"{TRASH_SETTING} reaches into the music library without naming it",
     )
 
@@ -785,10 +796,11 @@ def _reaches_the_music_root(fd: int, root_ident: tuple[int, int], *, spelled: Pa
     measured exception: ``..`` from a MOUNT root crosses to the mountpoint's
     parent, so a bind mount of a library subdirectory at an outside path reads as
     outside the library (security seat M-1, measured 2026-09-12 under ``unshare
-    --map-root-user --mount``; recorded as a residual in ``BACKLOG.md``). The
-    chain above the root is followed, so a link there can land inside the library
-    with no component of the spelling naming it. ``/`` is its own parent, which
-    is the stop condition.
+    --map-root-user --mount``; recorded as a residual in ``BACKLOG.md``). A link
+    in the chain is not a second such exception since 2026-09-13: the walk
+    resolves every one of them itself (:meth:`_Chain._follow`) and asks this
+    about the target, so a link that lands inside the library is refused rather
+    than followed. ``/`` is its own parent, which is the stop condition.
 
     Raises:
         StoreLayoutError: the climb could not be finished, so the answer is
@@ -818,16 +830,17 @@ def _reaches_the_music_root(fd: int, root_ident: tuple[int, int], *, spelled: Pa
             os.close(climbed)
 
 
-def _below_the_music_root(fd: int, root_ident: tuple[int, int], spelled: Path) -> bool:
+def _below_the_music_root(
+    fd: int, root_ident: tuple[int, int], spelled: Path, *, cause: str | None = None
+) -> bool:
     """Whether the walk has reached the music root, refusing if it is INSIDE it.
 
     Asked about every component of the EXISTING prefix the walk stands on while
-    it is still above the root, not once about the leaf: every part above the root
-    is opened following links, so the first link the attacker plants below an
-    operator's jump-in point moves the walk out of the library, and the climb from
-    out there then answers "not inside" correctly. Measured 2026-09-12 (security
-    seat H-1) on the arm this replaces: both requests were accepted, the movers
-    wrote to the attacker's directory and ``empty_all`` enumerated it.
+    it is still above the root, and about the destination of every link the walk
+    resolves — not once about the leaf. Measured 2026-09-12 (security seat H-1)
+    on the arm this replaces, which asked it once: both requests were accepted,
+    the movers wrote to the attacker's directory and ``empty_all`` enumerated it.
+    ``cause`` names the link when the caller is :meth:`_Chain._follow`.
 
     The EXISTING prefix and not every part: a component the create loop creates is
     never asked, which :func:`_open_the_trash_chain` describes as the
@@ -842,26 +855,177 @@ def _below_the_music_root(fd: int, root_ident: tuple[int, int], spelled: Path) -
     if _fstat_ident(fd) == root_ident:
         return True
     if _reaches_the_music_root(fd, root_ident, spelled=spelled):
-        raise _refuse_a_trash_around_the_music_root(spelled)
+        raise _refuse_a_trash_around_the_music_root(spelled, cause)
     return False
 
 
-def _step_into(fd: int, part: str, *, below: bool, create: bool, spelled: Path) -> int:
-    """One component of the walk: created when ``create``, then opened from ``fd``.
+#: The flags each component of a link TARGET is opened with. ``O_PATH`` because
+#: the kernel needed SEARCH alone on the directories it resolved a link through,
+#: and a walk that resolves the same link itself may not need more: measured
+#: 2026-09-13, :data:`~app.fsutil.BELOW_FLAGS` answers EACCES on a ``0o111``
+#: component where these open it, and the two supported layouts that have one —
+#: the search-only ancestor above an outside Trash, a ``0o111`` music root under
+#: an alias — would otherwise be refused. Such a descriptor answers the same
+#: ``(st_dev, st_ino)`` and serves as the ``dir_fd`` of the next ``openat``,
+#: ``readlinkat`` and ``mkdirat`` (measured the same day). ``O_NOFOLLOW`` still
+#: answers ENOTDIR for a link, so a link inside a target is resolved here too.
+#:
+#: ``O_PATH`` is Linux-only, and the walk's ``..`` climb reads the same constant
+#: through :data:`_CLIMB_FLAGS`; see the note there.
+_HOP_FLAGS: Final = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW
 
-    ``BELOW_FLAGS`` once the walk is inside the music library, so a link or a file
-    at the part is refused instead of followed; ``ROOT_FLAGS`` above it, which is
-    the operator's own chain (``fsutil.ROOT_FLAGS``).
+#: How many links one spelling may pass through. 40 is the kernel's own budget:
+#: measured 2026-09-13 on Linux 7.2.4, a chain of 40 links resolves and the 41st
+#: answers ELOOP. Shared across the whole spelling, siblings included, the way
+#: the kernel's is — a chain of 41 is what reaches it, since ``Path.resolve``
+#: follows a long chain happily and refuses only a true LOOP, which the row
+#: layer then words as "could not be resolved" (measured 2026-09-13:
+#: ``RuntimeError('Symlink loop from …')`` from ``resolve_trash_dir``, pinned by
+#: ``test_a_trash_dir_that_stops_resolving_is_a_503_not_a_500``). It is also this walk's
+#: termination, which the kernel's ELOOP used to be.
+_MAX_LINK_HOPS: Final = 40
+
+
+class _Chain:
+    """One descriptor walking the Trash's spelling, resolving links ITSELF.
+
+    Every component is opened ``O_NOFOLLOW``, so the kernel follows nothing; a
+    component that is a link is read with ``os.readlink`` and its target walked
+    hop by hop under these same rules, which is what lets the walk see every
+    directory the kernel would have passed through. Measured 2026-09-12
+    (security seat H-1') on the arm this replaces, which opened the operator's
+    chain following links: with ``/srv/x -> <M>/a`` the kernel landed the walk
+    on the attacker's ``<M>/a`` and no descriptor the walk held was ever inside
+    the library, so the Trash relocated outside it on every request. Owner
+    ruling 2026-09-13 chose this over refusing every link in the path, which
+    would refuse the default Trash wherever a parent such as ``/home`` is a
+    link.
+
+    ``flags`` is what the next component is opened with: :data:`BELOW_FLAGS` for
+    the configured spelling, whose parts this walk reads, creates in and hands
+    on, and :data:`_HOP_FLAGS` inside a link target, where the kernel needed
+    search alone. One descriptor is open per instance, and ``fd`` is always the
+    directory the walk stands on — a failed step leaves it where it was, so the
+    caller's ENOENT arm still sees the prefix that really exists.
     """
-    if create:
-        with contextlib.suppress(FileExistsError):
-            os.mkdir(part, dir_fd=fd)
-    try:
-        return os.open(part, BELOW_FLAGS if below else ROOT_FLAGS, dir_fd=fd)
-    except OSError as exc:
-        if below and exc.errno in (errno.ENOTDIR, errno.ELOOP):
-            raise _refuse_an_unreachable_trash(spelled, exc) from exc
-        raise
+
+    def __init__(
+        self,
+        *,
+        fd: int,
+        flags: int,
+        root_ident: tuple[int, int] | None,
+        spelled: Path,
+        hops: int = 0,
+    ) -> None:
+        self.fd = fd
+        self.flags = flags
+        self.root_ident = root_ident
+        self.spelled = spelled
+        self.below = False
+        self.hops = hops
+
+    def close(self) -> None:
+        """Close the one descriptor this walk holds."""
+        os.close(self.fd)
+
+    def step(self, part: str, *, create: bool = False) -> None:
+        """Move onto ``part``, creating it through the descriptor first when asked.
+
+        Raises:
+            StoreLayoutError: ``part`` is not a directory below the music root,
+                it is a link whose target reaches into the library, or the climb
+                that decides that could not be finished.
+            OSError: any other fault; the caller words it. ENOENT is the caller's
+                "this part is not there yet" arm, and reaches it from inside a
+                link target too — a dangling link answers it the way the kernel
+                did (measured 2026-09-13: ``O_NOFOLLOW`` answers ENOTDIR for a
+                dangling link, and its target's own walk then answers ENOENT).
+        """
+        if create:
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(part, dir_fd=self.fd)
+        try:
+            opened = os.open(part, self.flags, dir_fd=self.fd)
+        except OSError as exc:
+            if exc.errno in (errno.ENOTDIR, errno.ELOOP):
+                if self.below:
+                    raise _refuse_an_unreachable_trash(self.spelled, exc) from exc
+                self._follow(part, exc)
+                return
+            raise
+        self._arrive(opened, ask=not create)
+
+    def _arrive(self, opened: int, *, ask: bool) -> None:
+        """Adopt ``opened`` as where the walk stands, asking the jump-in question.
+
+        ``ask`` is False for a part the create loop just made, which carries the
+        decision rather than re-taking it — the operator-chain race recorded
+        under *Accepted residuals* in ``BACKLOG.md``, and the reason the measured
+        question counts in :func:`_below_the_music_root` are what they are.
+        """
+        os.close(self.fd)
+        self.fd = opened
+        if ask and not self.below and self.root_ident is not None:
+            self.below = _below_the_music_root(self.fd, self.root_ident, self.spelled)
+
+    def _follow(self, part: str, refused: OSError) -> None:
+        """Resolve the link at ``part`` by walking its target, hop by hop.
+
+        The target is walked in a walk of its own, so a fault anywhere in it
+        leaves this one standing where it was. What that walk answers decides
+        three ways: a target that IS the music root is the alias spelling and is
+        anchored from here (``below``); a target below the root is the link into
+        the library this refuses; a target outside stays followed, which is the
+        supported "Trash on another disk through the operator's own link".
+
+        Raises:
+            StoreLayoutError: the target reaches into the music library.
+            OSError: ``part`` is not a link at all — a plain file, re-raising the
+                ENOTDIR it already answered (measured 2026-09-13: ``readlink``
+                answers EINVAL there, and the open's errno cannot tell the two
+                apart); or the target passes through more links than the kernel
+                itself would follow; or any fault its own walk met.
+        """
+        try:
+            target = os.readlink(part, dir_fd=self.fd)
+        except OSError:
+            raise refused from None
+        self.hops += 1
+        if self.hops > _MAX_LINK_HOPS:
+            raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(self.spelled))
+        absolute = target.startswith("/")
+        hops = Path(target).parts[1:] if absolute else Path(target).parts
+        walk = _Chain(
+            fd=os.open("/", _HOP_FLAGS) if absolute else os.dup(self.fd),
+            flags=_HOP_FLAGS,
+            root_ident=self.root_ident,
+            spelled=self.spelled,
+            hops=self.hops,
+        )
+        try:
+            for hop in hops:
+                walk.step(hop)
+            self._decide(walk, cause=f"{display_path(part)!r} -> {display_path(target)!r}")
+            arrived = os.open(".", self.flags, dir_fd=walk.fd)
+        finally:
+            walk.close()
+        os.close(self.fd)
+        self.fd, self.below, self.hops = arrived, walk.below, walk.hops
+
+    def _decide(self, walk: _Chain, *, cause: str) -> None:
+        """Ask a finished target walk whether it ended below the music root.
+
+        Only when it met the root: a target that did not is outside the library
+        by the same climb every other component is judged by, asked already by
+        that walk's own last step. ``..`` inside a target is walked and not
+        refused — ``openat(fd, "..")`` is the kernel's own answer for a
+        descriptor the walk holds — so a target that passes through the library
+        and back out ends outside it, and this is what reads that back off the
+        destination rather than off the path.
+        """
+        if walk.below and self.root_ident is not None:
+            walk.below = _below_the_music_root(walk.fd, self.root_ident, self.spelled, cause=cause)
 
 
 def _open_the_trash_chain(
@@ -869,19 +1033,23 @@ def _open_the_trash_chain(
 ) -> int:
     """A descriptor on the Trash, decided by IDENTITY component by component.
 
-    From ``/`` down, one ``os.open`` per part. Above the music root the parts are
-    the OPERATOR's — a symlinked ``directory:``, a ``/srv`` that is a link — so
-    they are opened following links, and each one is asked
+    From ``/`` down, one ``os.open`` per part, none of them following a link:
+    above the music root the parts are the OPERATOR's — a symlinked
+    ``directory:``, a ``/srv`` that is a link — so a link there is resolved by
+    :class:`_Chain` itself and refused only when its target lands inside the
+    library (owner ruling 2026-09-13). Each part is asked
     :func:`_below_the_music_root` as the walk stands on it; the moment an opened
     part's ``(st_dev, st_ino)`` IS the music root's, every further part of the
-    EXISTING prefix is opened ``BELOW_FLAGS``, and the missing tail is created
-    through its parent's descriptor — an existing part is not created. Those
-    flags below the root because that is the chain the owner's layout ruling
-    leaves attacker-writable. The create loop carries that decision rather than
-    re-taking it, so a part created above the root and swapped for a link to the
-    root inside that window is opened following links — the operator-chain race,
-    recorded under *Accepted residuals* in ``BACKLOG.md`` ("The create loop never
-    re-asks whether a component is below the music root").
+    EXISTING prefix is refused if it is a link at all, and the missing tail is
+    created through its parent's descriptor — an existing part is not created.
+    That stricter rule below the root because that is the chain the owner's
+    layout ruling leaves attacker-writable. The create loop carries the jump-in
+    decision rather than re-taking it, so a part created above the root and
+    swapped inside that window for a real directory below the root is not
+    noticed — the operator-chain race, recorded under *Accepted residuals* in
+    ``BACKLOG.md`` ("The create loop never re-asks whether a component is below
+    the music root"); a link swapped in there IS refused, because resolving it is
+    the step itself and not a question about it.
 
     Identity and not spelling, measured 2026-09-12 (security seat H-2, code seat
     W1): the two settings can name one root two ways — a Trash under an ALIAS of
@@ -905,36 +1073,33 @@ def _open_the_trash_chain(
 
     Raises:
         StoreLayoutError: a part below the music root is not a directory, the
-            spelling reaches into the library without naming it, or a chain the
-            walk could not climb left that question unanswered.
+            spelling reaches into the library without naming it — through a link
+            the walk resolved or otherwise — or a chain the walk could not climb
+            left that question unanswered.
         OSError: any other fault the walk met; the caller words it.
     """
     root_ident = _music_root_ident(music_dir, spelled, creating=before_creating is not None)
     parts = spelled.parts[1:]
-    fd = os.open("/", ROOT_FLAGS)
+    chain = _Chain(
+        fd=os.open("/", ROOT_FLAGS), flags=BELOW_FLAGS, root_ident=root_ident, spelled=spelled
+    )
     try:
-        below, walked = False, 0
+        walked = 0
         for part in parts:
             try:
-                opened = _step_into(fd, part, below=below, create=False, spelled=spelled)
+                chain.step(part)
             except FileNotFoundError:
                 break
-            os.close(fd)
-            fd = opened
             walked += 1
-            if not below and root_ident is not None:
-                below = _below_the_music_root(fd, root_ident, spelled)
         if before_creating is not None:
             missing = parts[walked:]
-            if missing and below:
+            if missing and chain.below:
                 before_creating()
             for part in missing:
-                opened = _step_into(fd, part, below=below, create=True, spelled=spelled)
-                os.close(fd)
-                fd = opened
-        return fd
+                chain.step(part, create=True)
+        return chain.fd
     except BaseException:
-        os.close(fd)
+        chain.close()
         raise
 
 

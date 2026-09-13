@@ -186,6 +186,33 @@ def test_validate_flags_a_file_in_the_operators_chain_outside_the_library(
     assert chain.read_bytes() == b"not a directory", "a report creates nothing"
 
 
+def test_validate_flags_an_attackers_link_at_the_operators_link_target(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The link shape the read-only report has to paint the same way.
+
+    Settings is the only place the operator sees this before a delete does, and
+    the walk it runs creates nothing — so the row and the 503 come from one
+    walk (security seat L-3). The shape is H-1's: the operator spells the Trash
+    through a link of their own and the attacker owns its target
+    (``<M>/a -> elsewhere``), which used to read HEALTHY here exactly when the
+    Trash escaped the library.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    elsewhere = beets_library.beets_dir.parent / "somewhere-else"
+    elsewhere.mkdir()
+    (music / "a").symlink_to(elsewhere)
+    jump_in = beets_library.beets_dir.parent / "srv-x"
+    jump_in.symlink_to(music / "a")
+    monkeypatch.setattr("app.config.settings.trash_dir", str(jump_in / ".trash"))
+
+    rows = _layout_rows(client, _yaml_pointing_at(music))
+
+    assert len(rows) == 1, rows
+    assert "not reachable below the music library" in str(rows[0]["msg"])
+    assert list(elsewhere.iterdir()) == [], "a report creates nothing"
+
+
 @pytest.mark.skipif(os.getuid() == 0, reason="root searches an unsearchable directory anyway")
 def test_validate_flags_a_trash_chain_the_walk_cannot_climb(
     client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch

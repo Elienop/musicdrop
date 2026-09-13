@@ -533,6 +533,166 @@ def test_an_attackers_link_mid_chain_of_a_jump_in_spelling_is_refused(
     assert list(elsewhere.iterdir()) == [], "nothing created outside the library"
 
 
+def test_an_attackers_link_at_the_operators_own_target_is_refused(tmp_path: Path) -> None:
+    """H-1': the operator's link points at a path the ATTACKER owns.
+
+    The escape needs no race and nothing below the jump-in point: the operator
+    spells the Trash through ``<tmp>/srv-x -> <M>/a`` and the attacker makes
+    ``<M>/a`` a link of their own, so the kernel resolved both hops at once and
+    handed the walk a descriptor that was never inside the library. Measured
+    2026-09-12 (security seat H-1', A3/A4) on the arm this replaces: both
+    requests ACCEPTED, the Trash at the attacker's target, two origin records
+    written promising the moves were recoverable, and ``empty_all`` then
+    ``rmtree``d whatever lived there. The walk now reads the operator's link
+    itself, so the attacker's link is met BELOW the music root, where a link is
+    refused rather than followed.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    jump_in = _jump_in_link(tmp_path, music)
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    (elsewhere / "precious").mkdir()
+    (music / "a").rmdir()
+    os.symlink(elsewhere, music / "a")
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, jump_in / ".trash")
+
+    assert "not reachable below the music library" in str(caught.value)
+    assert sorted(p.name for p in elsewhere.iterdir()) == ["precious"], "nothing created outside"
+
+
+def test_an_attackers_link_deeper_in_the_operators_target_is_refused(tmp_path: Path) -> None:
+    """The same shape one component deeper, which the destination alone misses.
+
+    ``<tmp>/srv-x -> <M>/a/b`` with ``a`` a real directory and ``b`` the
+    attacker's link: the refusal has to come from walking the TARGET part by
+    part (security seat H-1', A5 — the cheapest form, since ``b`` need only be
+    created where the operator's spelling names something absent, not swapped).
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    _library_root_with(music)
+    (music / "a").mkdir()
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    os.symlink(elsewhere, music / "a" / "b")
+    os.symlink(music / "a" / "b", tmp_path / "srv-x")
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, tmp_path / "srv-x" / ".trash")
+
+    assert "not reachable below the music library" in str(caught.value)
+    assert list(elsewhere.iterdir()) == [], "nothing created outside the library"
+
+
+def test_the_refusal_names_the_link_and_the_target_it_reaches_through(tmp_path: Path) -> None:
+    """Which component the operator has to re-point, and where it goes.
+
+    The spelled path alone does not say it: the link can be any part of the
+    chain and its target is not in the spelling at all.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    jump_in = _jump_in_link(tmp_path, music)
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, jump_in / ".trash")
+
+    assert f"('srv-x' -> '{music / 'a'}')" in str(caught.value)
+
+
+def test_a_link_to_a_link_outside_the_library_is_followed(tmp_path: Path) -> None:
+    """Why the rule is about the TARGET and not about links as such.
+
+    ``/home -> /var/home`` is the default on Fedora's ostree variants and the
+    shipped Trash is ``<beets_dir>/trash``, so refusing a link anywhere in the
+    path would refuse the DEFAULT layout there (owner ruling 2026-09-13). Two
+    hops, the first of them RELATIVE, because each hop is resolved from the
+    directory holding the link and not from the one the walk started in.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    other_disk = tmp_path / "other-disk"
+    (other_disk / "data").mkdir(parents=True)
+    os.symlink("mid", tmp_path / "srv-x")
+    os.symlink(other_disk, tmp_path / "mid")
+
+    trees, trash_dir = _trees(tmp_path, music, tmp_path / "srv-x" / "data" / "trash")
+
+    assert (other_disk / "data" / "trash").is_dir(), "created through the operator's own links"
+    assert trees.trash == _ident_of(trash_dir)
+
+
+def test_a_link_to_a_link_into_the_library_is_refused_by_the_inner_link(
+    tmp_path: Path,
+) -> None:
+    """The control for the pair above: the second hop is what lands inside.
+
+    The cause names the link that reaches in rather than the one the spelling
+    holds, because that is the one whose target has to change.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    _library_root_with(music)
+    (music / "a").mkdir()
+    os.symlink("mid", tmp_path / "srv-x")
+    os.symlink(music / "a", tmp_path / "mid")
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, tmp_path / "srv-x" / ".trash")
+
+    assert "reaches into the music library without naming it" in str(caught.value)
+    assert f"('mid' -> '{music / 'a'}')" in str(caught.value)
+
+
+def test_a_relative_link_target_that_climbs_is_walked_as_the_kernel_would(
+    tmp_path: Path,
+) -> None:
+    """A ``..`` in a link TARGET, which is not the ``..`` the setting refuses.
+
+    The configured value may not hold one — it is collapsed lexically while the
+    kernel does not collapse it — but a target is the operator's own filesystem,
+    and a relative ``..`` target is a shape distributions ship. ``openat(fd,
+    "..")`` is the kernel's own answer for a descriptor the walk already holds,
+    so the walk asks it rather than refusing the layout.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    other_disk = tmp_path / "other-disk"
+    other_disk.mkdir()
+    (tmp_path / "hold").mkdir()
+    os.symlink("../other-disk", tmp_path / "hold" / "mounted")
+
+    trees, trash_dir = _trees(tmp_path, music, tmp_path / "hold" / "mounted" / "trash")
+
+    assert (other_disk / "trash").is_dir(), "created through the operator's own link"
+    assert trees.trash == _ident_of(trash_dir)
+
+
+def test_forty_links_resolve_and_a_forty_first_is_refused(tmp_path: Path) -> None:
+    """The budget is the kernel's own, so no layout that worked loses its Trash.
+
+    40 and 41 as literals: a boundary read off the constant it is meant to pin
+    would hold at any value.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    (tmp_path / "end").mkdir()
+    os.symlink(tmp_path / "end", tmp_path / "l0")
+    for index in range(1, 41):
+        os.symlink(tmp_path / f"l{index - 1}", tmp_path / f"l{index}")
+
+    trees, trash_dir = _trees(tmp_path, music, tmp_path / "l39" / "trash")  # 40 hops
+    assert trees.trash == _ident_of(trash_dir), "the kernel resolves 40 links, and so does this"
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, tmp_path / "l40" / "trash")  # 41
+
+    assert "Too many levels of symbolic links" in str(caught.value)
+
+
 @pytest.mark.skipif(os.getuid() == 0, reason="root searches an unsearchable directory anyway")
 def test_a_chain_the_walk_cannot_climb_is_refused_rather_than_read_as_outside(
     tmp_path: Path,
