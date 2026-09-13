@@ -4,7 +4,11 @@ import { createElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { client } from "@/api/client";
-import { useReorganizeStatus } from "@/api/useReorganize";
+import {
+  usePreviewReorganize,
+  useReorganizeStatus,
+  useStartReorganize,
+} from "@/api/useReorganize";
 
 vi.mock("@/api/client", () => ({ client: { GET: vi.fn(), POST: vi.fn() } }));
 
@@ -48,5 +52,104 @@ describe("useReorganizeStatus", () => {
       createElement(QueryClientProvider, { client: qc }, children);
     const { result } = renderHook(() => useReorganizeStatus(), { wrapper: w });
     await waitFor(() => expect(result.current.data?.phase).toBe("idle"));
+  });
+});
+
+// The store-layout refusal (503) is the one reorganize failure whose sentence
+// says what to fix — a Trash folder that is not below the music root, named by
+// path. It lands in the same inline slot as every other reorganize error
+// (`ReorganizeControl.onActionError` renders `error.message` verbatim), so the
+// Error's message has to BE the sentence. Pinned whole with `toBe`, never by
+// fragment: a fragment match lets the meaning be reversed with the test green.
+const REFUSAL =
+  "Trash folder is not below the music root: '/tmp/elsewhere'. Point it inside your music folder.";
+
+function wrapper() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client: qc }, children);
+}
+
+/** A failed openapi-fetch result: `error` is the parsed body, `data` undefined. */
+function answer(status: number, error: unknown) {
+  return { data: undefined, error, response: { ok: false, status } };
+}
+
+describe("usePreviewReorganize", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("surfaces the server's refusal sentence on the library preview", async () => {
+    (client.GET as ReturnType<typeof vi.fn>).mockResolvedValue(answer(503, { detail: REFUSAL }));
+    const { result } = renderHook(() => usePreviewReorganize(), { wrapper: wrapper() });
+    result.current.mutate({ scope: "library" });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error?.message).toBe(REFUSAL);
+  });
+
+  it("surfaces the server's refusal sentence on the album preview", async () => {
+    (client.GET as ReturnType<typeof vi.fn>).mockResolvedValue(answer(503, { detail: REFUSAL }));
+    const { result } = renderHook(() => usePreviewReorganize(), { wrapper: wrapper() });
+    result.current.mutate({ scope: "album", albumId: 7 });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error?.message).toBe(REFUSAL);
+  });
+
+  it("keeps its own message when the preview fails with no detail", async () => {
+    (client.GET as ReturnType<typeof vi.fn>).mockResolvedValue(answer(502, undefined));
+    const { result } = renderHook(() => usePreviewReorganize(), { wrapper: wrapper() });
+    result.current.mutate({ scope: "library" });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error?.message).toBe("Failed to build preview");
+  });
+
+  // Arm order: the 404 check stands above the generic one, so a vanished album
+  // still reads as one.
+  it("keeps the not-found message for an album that is gone", async () => {
+    (client.GET as ReturnType<typeof vi.fn>).mockResolvedValue(
+      answer(404, { detail: "No album has that id." }),
+    );
+    const { result } = renderHook(() => usePreviewReorganize(), { wrapper: wrapper() });
+    result.current.mutate({ scope: "album", albumId: 7 });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error?.message).toBe("Album not found");
+  });
+});
+
+describe("useStartReorganize", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("surfaces the server's refusal sentence on the library start", async () => {
+    (client.POST as ReturnType<typeof vi.fn>).mockResolvedValue(answer(503, { detail: REFUSAL }));
+    const { result } = renderHook(() => useStartReorganize(), { wrapper: wrapper() });
+    result.current.mutate({ scope: "library" });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error?.message).toBe(REFUSAL);
+  });
+
+  it("surfaces the server's refusal sentence on the album start", async () => {
+    (client.POST as ReturnType<typeof vi.fn>).mockResolvedValue(answer(503, { detail: REFUSAL }));
+    const { result } = renderHook(() => useStartReorganize(), { wrapper: wrapper() });
+    result.current.mutate({ scope: "album", albumId: 7 });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error?.message).toBe(REFUSAL);
+  });
+
+  it("keeps its own message when the start fails with no detail", async () => {
+    (client.POST as ReturnType<typeof vi.fn>).mockResolvedValue(answer(500, undefined));
+    const { result } = renderHook(() => useStartReorganize(), { wrapper: wrapper() });
+    result.current.mutate({ scope: "library" });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error?.message).toBe("Failed to start reorganize");
+  });
+
+  // Arm order again: a 409 is the busy case, and its remedy is to wait.
+  it("keeps the busy message when the library holds a job", async () => {
+    (client.POST as ReturnType<typeof vi.fn>).mockResolvedValue(
+      answer(409, { detail: "A reorganize is already running." }),
+    );
+    const { result } = renderHook(() => useStartReorganize(), { wrapper: wrapper() });
+    result.current.mutate({ scope: "library" });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error?.message).toBe("A library operation is in progress");
   });
 });
