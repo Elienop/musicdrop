@@ -1407,8 +1407,19 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   seat H-1' A3/A4/A5 (the operator's `/srv/x -> <M>/a` with the attacker owning or creating
   `<M>/a`) and J1–J5 (a link planted below the jump-in point). A link target component is opened
   `O_PATH`, which needs search alone, because that is all the kernel needed to resolve the same
-  link; `..` inside a target is walked, not refused, since `openat(fd, "..")` is the kernel's own
-  answer for a descriptor the walk holds.
+  link; `..` inside a target is walked rather than collapsed, since `openat(fd, "..")` is the
+  kernel's own answer for a descriptor the walk holds — and the walk re-asks where it stands
+  after each such hop.
+  **A `..` hop that LEAVES the library is refused, decided 2026-09-13 on the owner's criterion
+  for this branch** (*"if its safer … do it"*, `decisions.md` #46): re-asking at the hop turned a
+  stale-`below` refusal into an accept for a target that dips into the library and climbs back
+  out, and the directory it climbs into is the library root's PARENT — attacker-writable wherever
+  beets' `directory:` is a subfolder of a writable share, where the link waiting there was then
+  resolved and the Trash created at its target with the library-presence guard skipped (security
+  seat L-1', probes d1/d3). It costs the shapes p1, p3 and c8, all of which the pre-branch code
+  refused too; a hop that lands ON the root (the alias spelling, p2) or stays below it is
+  unchanged, and the 165 store-layout tests that existed before the refusal keep their outcome
+  and their message.
 
 - **`download_image` validates only the FIRST and LAST redirect hop, and issues the
   intermediate requests anyway.** Moved here 2026-08-28 from Deferred minors, where a blind
@@ -2324,7 +2335,7 @@ the condition it names has changed.
   skipped — not merely inside the library unanchored. A symlink left in the window is still
   refused when its target reaches into the library, because resolving it is the step itself
   rather than a question asked about it.
-  The other seat measured the inverse and agrees it is not worth a flip: across five shapes,
+  The other seat measured across five other shapes and agrees it is not worth a flip:
   re-asking changed no outcome (a link is decided by `_follow` either way, a `rename` moves the
   directory OUT of the library, and a bind mount defeats the `..` climb regardless), and the
   mutant that always asks passes the whole suite — no test pins `ask=not create`.
@@ -2333,6 +2344,24 @@ the condition it names has changed.
   outside the threat model the layout rule is written for (the attacker's reach is inside the
   library) — the reason this is a residual and not the bug above it. Not driven as a race, only
   measured as the asymmetry.
+
+- **The Trash listing's non-regular-file gate is a stat before `Item.from_path`'s own open, so
+  the STATIC plant is closed and the race is not** (2026-09-13, on the link-target branch; code
+  seat W2). `trash_manage._is_a_regular_file` stats the name and `Item.from_path` then
+  re-opens it BY NAME, so a planter who swaps a regular file for a FIFO between the two still
+  parks one `run_in_threadpool` worker for the life of the process: measured with the window
+  driven in the gate's own stat, the listing thread was still blocked after 5.0 s. The Trash root
+  is attacker-writable under the layout rule's own model, which is what makes the window
+  reachable rather than theoretical; the precondition is winning it, and it was driven by
+  injection rather than by two competing processes, so nothing here measures a win rate.
+  **The fd-shaped option, described and not taken:** `os.open(path, O_RDONLY|O_NONBLOCK)` returns
+  in 0.0000 s on a FIFO (measured) and `fstat` then answers about the inode already held, but
+  `Item.from_path` takes a path — so it means reading through `mediafile.MediaFile(<file
+  object>)`, supported in the pinned 0.17. That is a change to how every Trash row's tags are
+  read, not a review-round edit, so it is the owner's call. The same window exists on the restore
+  route's own `_holds_media` walk, one move later: the pre-flight that gates the restore
+  (`_unopenable_name_under`) runs on the Trash entry, and the folder it walks afterwards sits in
+  the music library, which the same model treats as attacker-writable.
 
 - **The Settings report is silent for "music root absent + Trash spelled below it" while every
   destructive request answers 503** (2026-09-13, same branch; code seat W1, security seat L-4').
