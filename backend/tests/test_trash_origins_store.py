@@ -45,6 +45,7 @@ from beets.library import Item, Library
 
 from app.beets.trash_manage import empty_all, empty_one, list_trashed_albums, restore_album
 from app.beets.trash_origins import (
+    _MAX_RECORD_BYTES,
     TrashOriginsStoreUnusableError,
     clear_trash_origins,
     delete_trash_origin,
@@ -419,20 +420,31 @@ def test_a_record_that_cannot_be_unlinked_is_logged_and_swallowed(
 def _deeply_nested_json() -> str:
     """A legal-ASCII, legal-JSON file that ``json.loads`` refuses to finish.
 
-    60,000 nested arrays. The depth is not a threshold this suite owns — CPython
-    trips its own C recursion limit long before here — so the premise is
-    asserted rather than assumed: if the parser ever gets deep enough to swallow
-    this, the line below goes red instead of the tests going quietly green.
+    24,000 nested arrays, and the depth now has to fit a window bounded at BOTH
+    ends, so both ends are asserted rather than assumed:
 
-    The trigger is corruption, a hand edit, or a restored backup on the trusted
-    ``/data`` side, not a plant: nothing in ``/music`` can write into this
-    directory (see the module docstring of ``app.beets.trash_origins``). What is
-    new is not that the file is unusable — the store has always had unusable
+    * **Deep enough that the parser gives up.** Not a threshold this suite owns
+      — it is CPython's C scanner limit, not ``sys.getrecursionlimit()`` (1000
+      here, and irrelevant): measured 2026-09-13, the shallowest nest that
+      raises is **9,998** levels. If a build ever swallows this one, the
+      ``pytest.raises`` below goes red instead of the tests going quietly green.
+    * **Small enough that the SIZE cap does not answer first.** ``read_trash_origin``
+      grew a 64 KiB cap on 2026-09-13 (security seat M-1), which sits ABOVE this
+      arm: at the old 60,000 levels this file was 117 KiB and earned "far too
+      large to be a record" instead of the nesting sentence. That did not make
+      the nesting arm dead code — the parser gives up around 20 KB, a third of
+      the cap — but it does mean the fixture has to say where it sits, and the
+      assertion below is that sentence.
+
+    The trigger is corruption, a hand edit, a restored backup, or something
+    planted at the key if the store sits where the operator can be reached; what
+    is new is not that the file is unusable — the store has always had unusable
     shapes — but that reading it raised AFTER the entry was already destroyed.
     """
-    text = "[" * 60_000 + "]" * 60_000
+    text = "[" * 24_000 + "]" * 24_000
     with pytest.raises(RecursionError):
         json.loads(text)
+    assert len(text) < _MAX_RECORD_BYTES, "the size cap would answer before the parser could"
     return text
 
 

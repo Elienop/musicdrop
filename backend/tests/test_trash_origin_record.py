@@ -11,8 +11,17 @@ of tests that used to live in this file — a planted symlink at the record's
 name, a symlinked Trash entry the write escaped through, an oversized file, a
 FIFO, a hostile-character denylist — described an attack surface that only
 existed because the record sat in a directory arriving from the music library.
-They are gone rather than relaxed; see the module docstring of
+Most are gone rather than relaxed; see the module docstring of
 ``app.beets.trash_origins``.
+
+TWO of them came back on 2026-09-13 — the FIFO and the oversized file — on the
+READ side and on a different premise: "this app owns the store directory" is not
+"nothing can be planted there", because an operator can point the store
+somewhere attacker-writable. A dangling link at the key joined them as a third
+case that is new rather than restored. The planted symlink did NOT come back: the
+gate asks what the name RESOLVES to, so a link to a real record still reads. The
+three tests sit together below, after
+``test_read_trash_origin_rejects_a_payload_it_cannot_trust``.
 """
 
 from __future__ import annotations
@@ -54,6 +63,7 @@ from app.beets.trash_manage import (
 )
 from app.beets.trash_origins import (
     _MAX_KEY_BYTES,
+    _MAX_RECORD_BYTES,
     _NAME_MAX,
     TrashOrigin,
     TrashOriginsStoreUnusableError,
@@ -480,6 +490,106 @@ def test_a_fifo_at_the_records_own_path_is_never_opened(tmp_path: Path) -> None:
 
     assert not worker.is_alive(), "the record read is still blocked on the FIFO"
     assert answered == [None]
+
+
+def test_a_file_too_large_to_be_a_record_is_refused_on_its_size(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The cap is back, and it does not rest on "this module is the only writer".
+
+    That premise is the one the FIFO above deleted, and it had a SECOND
+    conclusion standing on it: the same comment block kept "no size cap: this
+    module is the only writer, so there is no oversized file to refuse".
+    Measured 2026-09-13 (security seat M-1): a 600 MB sparse regular file at the
+    derivable key returned ``None`` in 160 ms and cost +1199 MB RSS, once per
+    top-level entry of ``GET /api/trash`` — ASCII NULs decode, so the bytes and
+    a one-byte-per-char ``str`` are both paid in full before ``json.loads``
+    rejects any of it, and a sparse file costs the planter nothing.
+
+    The fixture is 8 MiB rather than that 600 MB: it only has to clear the cap,
+    and the measurement belongs beside the constant rather than in a suite every
+    contributor runs. The SENTENCE is the oracle — with the cap removed this
+    file is read whole and earns the parse arm's "not the ASCII JSON this
+    writes" instead.
+    """
+    origins = _origins(tmp_path)
+    path = origin_file(origins, "Dummy")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # A literal size, NOT ``_MAX_RECORD_BYTES + 1``: a fixture computed from the
+    # constant follows it and cannot see it move. The two bounds below are what
+    # keep the literal oversized and the cap itself honest.
+    planted = 8 * 1024 * 1024
+    with path.open("wb") as fh:
+        fh.truncate(planted)  # sparse — no bytes are written and none are read
+    assert _MAX_RECORD_BYTES < planted, "the fixture has to be over the cap"
+    assert _MAX_RECORD_BYTES > 4096, "and the cap has to clear a real record by orders"
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        assert read_trash_origin(origins, "Dummy") is None
+
+    (record,) = caplog.records
+    assert "far too large to be a record" in record.getMessage()
+    assert path.stat().st_size == planted, "refused, not truncated or removed"
+
+
+def test_a_dangling_link_at_the_record_key_is_logged_and_an_absent_one_is_not(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A key that is PRESENT and unusable, and answers ENOENT anyway.
+
+    The gate's ``os.stat`` FOLLOWS links, so a dangling one raises
+    ``FileNotFoundError`` and took the silent "no record was ever written" arm:
+    the row degraded from an exact restore to an import with no log line at all,
+    which is the one signal this warning exists to give (measured 2026-09-13,
+    security seat L-2 case c5: ``log=[]`` at the base and the tip alike).
+    ``lstat`` is what sees it.
+
+    Both halves in one test, because the PAIRING is the invariant: an arm that
+    warned on every genuinely absent record would pass the first half and then
+    log once per pre-feature row per listing.
+    """
+    origins = _origins(tmp_path)
+    path = origin_file(origins, "Dangling")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(tmp_path / "nowhere.json")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        assert read_trash_origin(origins, "absent") is None
+        assert caplog.records == [], "a record that was never written stays silent"
+        assert read_trash_origin(origins, "Dangling") is None
+
+    (record,) = caplog.records
+    assert "it is a link to something that is not there" in record.getMessage()
+    assert "Dangling.json" in record.getMessage()
+    assert path.is_symlink(), "the link is left for the operator to see"
+
+
+def test_a_link_to_a_real_record_still_reads(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The control for the arm above: what being a link may NOT cost.
+
+    Every gate on this path asks what the name RESOLVES to, not what the link
+    itself is, so a record reached through a link reads exactly like one reached
+    directly and earns no warning (measured 2026-09-13, security seat case c9,
+    identical at the base and the tip). Without this, an arm that refused or
+    logged EVERY symlink at the key would pass the dangling-link test above and
+    silently downgrade a working store to import-restores — which is the very
+    failure that test exists to catch, one spelling over.
+    """
+    origins = _origins(tmp_path)
+    write_trash_origin(origins, "Real", origin=str(tmp_path / "music" / "Real"), moved="folder")
+    real = origin_file(origins, "Real")
+    linked = origin_file(origins, "Linked")
+    os.replace(real, linked)
+    real.symlink_to(linked)
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        record = read_trash_origin(origins, "Real")
+
+    assert record is not None, "a record reached through a link is still a record"
+    assert record.origin == str(tmp_path / "music" / "Real")
+    assert caplog.records == [], "a link that resolves is not an unusable record"
 
 
 def test_move_back_target_refuses_an_origin_outside_the_library(tmp_path: Path) -> None:

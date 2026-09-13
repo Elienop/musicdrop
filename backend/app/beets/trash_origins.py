@@ -21,7 +21,17 @@ buy back with guards:
   truncated). ``<beets_dir>/trash-origins/`` is a directory this app creates and
   owns; nothing in ``/music`` can plant anything in it, so the symlink refusal,
   the ``mkstemp`` choreography, the size cap, the origin-length cap and the
-  hostile-character filter are all gone rather than merely relaxed.
+  hostile-character filter are all gone rather than merely relaxed. **ONE of
+  them came back on 2026-09-13, on a different premise, and it brought a new
+  gate with it:** "this app owns the directory" is not "nothing can be planted
+  there", because an operator can point the store somewhere attacker-writable.
+  A FIFO at a record's key hung ``GET /api/trash`` for the life of the process
+  and a 600 MB sparse file at one cost +1199 MB RSS, so
+  :func:`read_trash_origin` now stats before it opens (new) and refuses a file
+  too large to be a record (the old cap, same 64 KB). The symlink refusal did
+  NOT come back: the gate asks what the name RESOLVES to, so a link to a real
+  record still reads. What bounds the reach now is the layout row ``music
+  contains origins``, not the writer claim.
 * **beets' source pruning is not blocked.** A file inside the trashed folder
   survives the re-import a failed restore asks for, and beets then refuses to
   prune the directory that still contains it — leaving a husk behind. There is
@@ -124,6 +134,20 @@ _NAME_MAX = 255
 #: does not grow with the target. Get this wrong and the failure is the
 #: documented degradation (swallow, log, import-restore), not a fault.
 _MAX_KEY_BYTES = _NAME_MAX - 32
+
+#: The largest a file at a record's key may be and still be read. A record is a
+#: few hundred bytes — one absolute path, one word, one int — so this is four
+#: orders of magnitude of headroom over anything this module writes, and what it
+#: refuses is a file nothing here wrote.
+#:
+#: The sidecar's 64 KB cap was deleted with the sidecar because its premise was
+#: "our write wins the filename". This one has a different premise and the same
+#: number: measured 2026-09-13 (security seat M-1), a 600 MB SPARSE regular file
+#: at the derivable key cost +1199 MB RSS inside ``GET /api/trash``, once per
+#: top-level entry — ASCII NULs decode, so the bytes plus a one-byte-per-char
+#: ``str`` are both paid in full before ``json.loads`` rejects any of it, and a
+#: sparse file costs the planter nothing to make.
+_MAX_RECORD_BYTES = 64 * 1024
 
 
 #: What the mover actually relocated, which is what decides whether a faithful
@@ -549,7 +573,8 @@ def read_trash_origin(origins_dir: Path, entry_name: str) -> TrashOrigin | None:
     """The origin recorded for ``entry_name``, or ``None`` when there is none we trust.
 
     Every rejection collapses to ``None`` — a missing file, an unreadable one, a
-    truncated write, a future schema, a hand-edited payload, one nested past the
+    name that is not a regular file, one too large to be a record, a truncated
+    write, a future schema, a hand-edited payload, one nested past the
     JSON parser's own limit — because the
     caller's answer is the same in all of them: fall back to the import-restore
     that Trash rows have always had. Never a refusal: a record we cannot read
@@ -560,11 +585,14 @@ def read_trash_origin(origins_dir: Path, entry_name: str) -> TrashOrigin | None:
     **The RETURN collapses; the log does not.** An absent record is ordinary —
     every row trashed before this feature shipped has none — while a record that
     is present and unusable means the ``/data`` volume is full, read-only,
-    permission-broken or failing, or that a write was cut short. The Trash row
-    cannot tell them apart (both get ``trash_manage._NO_RECORD_NOTE``), so the
-    WARNING is the only place the difference is visible, and it is MORE
-    diagnostic here than it was for a sidecar: on the trusted side, unusable
-    means hardware or capacity, not a plant.
+    permission-broken or failing, that a write was cut short, or that something
+    nothing here wrote is sitting at the key. The Trash row cannot tell them
+    apart (both get ``trash_manage._NO_RECORD_NOTE``), so the WARNING is the
+    only place the difference is visible. That last cause is the one this
+    docstring used to rule out ("on the trusted side, unusable means hardware or
+    capacity, not a plant"): measured 2026-09-13, a FIFO and a 600 MB sparse
+    file at a derivable key both reached this function, so a plant belongs in
+    the census whenever the store sits somewhere the operator put it.
 
     **A record is only ever read back for the entry it was written for.** The
     payload names its own entry, and a record naming a different one — or naming
@@ -592,27 +620,48 @@ def read_trash_origin(origins_dir: Path, entry_name: str) -> TrashOrigin | None:
     # link; what is left is an operator putting the store somewhere else
     # attacker-writable, plus the recorded bind-mount blindness.
     #
-    # Three answers and not one, so the gate keeps the diagnosis the open used
-    # to produce: absent is the ordinary case and stays silent, a name that
-    # cannot be examined earns the I/O sentence (a symlink loop at the key is
-    # this arm), and something that IS there and is not a regular file earns its
-    # own. FOLLOWS links, because the question is what the name resolves to.
+    # FOUR answers and not one, so the gate keeps the diagnosis the open used to
+    # produce: absent is the ordinary case and stays silent, a name that cannot
+    # be examined earns the I/O sentence (a symlink loop at the key is this
+    # arm), a name that IS there and is not a regular file earns its own, and
+    # one too large to be a record earns a fourth. FOLLOWS links, because the
+    # question is what the name resolves to.
     try:
         st = os.stat(path)
     except FileNotFoundError:
-        return None  # the ordinary case: no record was ever written
+        # A DANGLING link is PRESENT and still answers ENOENT here, because this
+        # ``stat`` follows it — so without this arm it took the silent one and
+        # the row degraded from an exact restore to an import with no log line
+        # at all, which is the one signal ``_warn_unusable`` exists to give
+        # (security seat L-2, measured 2026-09-13: ``log=[]``). ``lstat`` is
+        # what sees it. ``os.path.islink`` and not ``Path.is_symlink``, which
+        # re-raises an ``OSError`` outside the handful it ignores (EACCES is
+        # not among them) — this runs inside ``GET /api/trash``, once per
+        # top-level entry, and may not 500 the listing.
+        if os.path.islink(path):
+            _warn_unusable(path, "it is a link to something that is not there")
+        return None  # absent is the ordinary case and stays silent
     except OSError:
         _warn_unusable(path, "it could not be examined", exc_info=True)
         return None
     if not stat.S_ISREG(st.st_mode):
         _warn_unusable(path, "it is not a regular file")
         return None
+    if st.st_size > _MAX_RECORD_BYTES:
+        # The ``st`` is already in hand, so the cap costs no syscall. See
+        # :data:`_MAX_RECORD_BYTES` for the measurement; refused BEFORE the read
+        # rather than after, which is the whole point of it.
+        _warn_unusable(path, "it is far too large to be a record")
+        return None
     try:
         # ``UnicodeDecodeError`` and ``json.JSONDecodeError`` are both
         # ``ValueError`` subclasses, so the two arms below cover read, decode
-        # and parse together. No size cap: this module is the only writer, so
-        # there is no oversized file to refuse. A directory at the name is
-        # refused by the gate above (it was ``IsADirectoryError`` into the
+        # and parse together. The size cap is above, and it does NOT rest on
+        # "this module is the only writer" — that premise is the one the FIFO
+        # measurement deleted two arms up, and it had a second conclusion
+        # standing on it. What bounds the reach is the same layout row that
+        # bounds the FIFO's, ``music contains origins``. A directory at the name
+        # is refused by the gate above (it was ``IsADirectoryError`` into the
         # unusable arm before, which said the same thing one arm along).
         #
         # ``encoding="ascii"`` here is a TRIPWIRE, and NO TEST CAN KILL IT
@@ -635,10 +684,17 @@ def read_trash_origin(origins_dir: Path, entry_name: str) -> TrashOrigin | None:
     except RecursionError:
         # Its own arm because it is neither of the two above: ``RecursionError``
         # is a ``RuntimeError``, so ``except ValueError`` walks straight past it
-        # and a 60k-deep ``[[[...]]]`` at the key 500s the whole Trash listing
-        # (measured at the previous tip). The file is legal ASCII and legal JSON;
-        # what it is not is a record, so it earns a sentence of its own rather
-        # than borrowing the parse arm's.
+        # and a deeply nested ``[[[...]]]`` at the key 500s the whole Trash
+        # listing (measured at the previous tip). The file is legal ASCII and
+        # legal JSON; what it is not is a record, so it earns a sentence of its
+        # own rather than borrowing the parse arm's.
+        #
+        # The size cap above does NOT make this arm dead code, which is the
+        # first thing to check when a gate grows in front of another: CPython's
+        # C scanner gives up at 9,998 nested arrays — about 20 KB, under a third
+        # of the cap — measured 2026-09-13. What it did do is move the old
+        # 60,000-level test fixture (117 KB) onto the size arm, so that fixture
+        # now asserts which side of the cap it sits on.
         _warn_unusable(path, "it nests deeper than the JSON parser will go", exc_info=True)
         return None
     if not _names_entry(raw, entry_name):
