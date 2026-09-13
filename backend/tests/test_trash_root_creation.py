@@ -708,11 +708,14 @@ def test_a_link_target_that_climbs_back_out_of_the_library_is_refused(
     A target that dips into the library, climbs out with ``..`` and then crosses
     a link OUTSIDE it ends outside — and the directory it climbed into is the
     library root's parent, which the layout rule does not treat as the
-    operator's. It was refused at the base too, but by a stale ``below`` and with
-    the wrong sentence ("not reachable below the music library" about a component
-    that is not below it); round 1 turned that into an accept (security seat L-1
-    probe p1, then L-1'), and the owner's criterion for this branch closed it
-    fail-closed.
+    operator's. At this branch's own feature commit it was refused already, but
+    by a stale ``below`` and with the wrong sentence ("not reachable below the
+    music library" about a component that is not below it); round 1 turned that
+    into an accept (security seat L-1 probe p1, then L-1'), and the owner's
+    criterion for this branch closed it fail-closed. It is NOT refused before
+    the branch: re-measured 2026-09-13 at ``v0.51.6``, the release ``main``
+    was at when the branch started, this shape was ACCEPTED — which is why the
+    decision note in ``BACKLOG.md`` counts it as part of the upgrade cost.
     """
     music = tmp_path / "music"
     music.mkdir()
@@ -883,9 +886,17 @@ def test_a_long_link_target_is_elided_in_the_middle_of_the_cause(tmp_path: Path)
     assert str(deep)[-50:] in detail, "the tail, which names the folder, is kept"
     # Relative to the SPELLED path, which is printed whole and is as long as the
     # machine's ``TMPDIR`` makes it: an absolute bound passes or fails on that
-    # and not on the elision (security seat L-2'). 400 is the prose plus both
-    # halves with margin, and doubling ``_CAUSE_HALF_MAX`` still breaks it.
-    assert len(detail) < len(str(tmp_path / "srv-x" / ".trash")) + 400, detail
+    # and not on the elision (security seat L-2').
+    #
+    # 300 and not 400, because this is the only line left that can see
+    # ``_CAUSE_HALF_MAX`` move: the four assertions above compute their
+    # expectation THROUGH ``_elided(...)``, so they follow the constant by
+    # construction. Measured 2026-09-13 (code seat W3) at two ``TMPDIR``
+    # lengths: at 400 a DOUBLED ``_CAUSE_HALF_MAX`` still passes (detail 395 vs
+    # a 429 bound on a 4-char ``TMPDIR``, 597 vs 631 on a 206-char one), at 300
+    # it fails at both, and the shipped 120 keeps 54 characters of slack at
+    # both.
+    assert len(detail) < len(str(tmp_path / "srv-x" / ".trash")) + 300, detail
 
 
 def test_an_empty_music_root_still_refuses_a_link_that_reaches_into_it(

@@ -933,7 +933,12 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   choreography, the 64 KB size cap, the `PATH_MAX` origin-length cap and the
   hostile-character denylist (~230 production lines, ~220 test lines). The NUL check is the
   one member of that denylist kept — it is the only one whose consequence is a 500 rather
-  than a cosmetic one.
+  than a cosmetic one. **Two came back on 2026-09-13, on a different premise:** the
+  `stat`-before-open and a 64 KB cap (the same number), because "this app owns the store
+  directory" is not "nothing can be planted there" — an operator can point the store at an
+  attacker-writable path, and a FIFO at a record's key hung `GET /api/trash` for the life of the
+  process while a 600 MB sparse file at one cost +1199 MB RSS per top-level entry (security seat,
+  fix round 2 and 3). What bounds the reach now is the layout row `music contains origins`.
 
   **What the name key costs, and where it is paid.** An entry removed OUTSIDE MusicDrop
   leaves its record, and a later folder taking that name would inherit a stale origin that
@@ -1416,10 +1421,17 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   out, and the directory it climbs into is the library root's PARENT — attacker-writable wherever
   beets' `directory:` is a subfolder of a writable share, where the link waiting there was then
   resolved and the Trash created at its target with the library-presence guard skipped (security
-  seat L-1', probes d1/d3). It costs the shapes p1, p3 and c8, all of which the pre-branch code
-  refused too; a hop that lands ON the root (the alias spelling, p2) or stays below it is
-  unchanged, and the 165 store-layout tests that existed before the refusal keep their outcome
-  and their message.
+  seat L-1', probes d1/d3). **Measured cost: six spellings a pre-branch install ACCEPTED are now
+  refused** — p1, p3, c5, c8, e2 and e3, every one where the operator's own link target climbs
+  out of the music library — re-measured 2026-09-13 at `v0.51.6`, the release `main` was at when
+  this branch started, by the security and code seats independently. The note here used to say
+  those shapes "the pre-branch code refused too", which is true only of a commit already ON this
+  branch and reads as "the cost is zero": an operator whose Trash is spelled through such a link
+  (`ln -s "$MUSIC/../trash-music" /srv/x`) goes from a working Trash to a 503 on every Trash
+  route and both reorganize previews. A hop that lands ON the root (the alias spelling, p2) or
+  stays below it is unchanged, and 164 of the 165 store-layout tests that existed before the
+  refusal keep their outcome and their message — the 165th is round 1's own test for the accepted
+  shape, flipped to the refusal and renamed.
 
 - **`download_image` validates only the FIRST and LAST redirect hop, and issues the
   intermediate requests anyway.** Moved here 2026-08-28 from Deferred minors, where a blind
@@ -2359,9 +2371,15 @@ the condition it names has changed.
   `Item.from_path` takes a path — so it means reading through `mediafile.MediaFile(<file
   object>)`, supported in the pinned 0.17. That is a change to how every Trash row's tags are
   read, not a review-round edit, so it is the owner's call. The same window exists on the restore
-  route's own `_holds_media` walk, one move later: the pre-flight that gates the restore
-  (`_unopenable_name_under`) runs on the Trash entry, and the folder it walks afterwards sits in
-  the music library, which the same model treats as attacker-writable.
+  route's own `_holds_media` walk, one step later, and it is a different directory on each of the
+  two arms: on the IMPORT arm — every row with no usable record — the folder beets re-opens is
+  still in TRASH, the attacker-writable side under this model and therefore the cheaper half
+  (0.690 ms between the pre-flight's return and the first `Item.from_path`, 12 files, measured
+  2026-09-13, security seat L-3), while on the move-back arm it is in the music library one
+  rename later. The note here named only the second. A third, strictly harder variant rides
+  along: a directory removed mid-walk whose inode is reused by a sibling prunes that sibling from
+  the pre-flight's `seen` set, and beets then opens it — it needs an `rmdir`/`mkdir` win inside
+  the walk, and the exposure it buys is the same one this window already records.
 
 - **The Settings report is silent for "music root absent + Trash spelled below it" while every
   destructive request answers 503** (2026-09-13, same branch; code seat W1, security seat L-4').

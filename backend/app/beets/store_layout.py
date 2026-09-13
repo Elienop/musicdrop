@@ -712,6 +712,16 @@ def _refuse_a_trash_target_that_climbs_out_of_the_library(
     A hop that lands ON the root, or one that stays below it, is untouched — the
     first is the alias spelling reached by a climb (probe p2) and the second is
     refused by the reach-in sentence at the hop.
+
+    What this sentence costs, stated because it is the fault the operator reads:
+    the hop is judged before the DESTINATION is, so a target that climbs out and
+    comes back in by name (``<M>/../<M>/a``) is refused here, for the detour,
+    where it used to earn the reach-in sentence — measured 2026-09-13 (security
+    seat L-1, probe e1), refused either way with nothing created, and following
+    this sentence's own advice yields ``<M>/a``, which the reach-in arm then
+    refuses for the real reason. One round-trip, and the alternative is asking
+    whether the landing directory still reaches the root, which is a second
+    climb per hop on a path the owner already costed.
     """
     detail = f" ({cause})" if cause else ""
     return StoreLayoutError(
