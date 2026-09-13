@@ -796,6 +796,30 @@ def test_an_attackers_link_below_a_root_reached_by_climbing_is_refused(
     assert list(elsewhere.iterdir()) == [], "nothing created outside the library"
 
 
+def test_a_target_that_climbs_only_back_into_the_library_is_refused_at_the_hop(
+    tmp_path: Path,
+) -> None:
+    """The other half of the re-ask: ``<M>/a/b/..`` lands INSIDE the library.
+
+    The hop is where the answer changes, so the hop is where the refusal comes
+    from — and it names the link the same way the destination check does, or the
+    operator is told a path reaches in without being told through what.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    _library_root_with(music)
+    (music / "a" / "b").mkdir(parents=True)
+    os.symlink(f"{music}/a/b/..", tmp_path / "srv-x")
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, tmp_path / "srv-x" / ".trash")
+
+    detail = str(caught.value)
+    assert "reaches into the music library without naming it" in detail
+    assert f"('srv-x' -> '{music}/a/b/..')" in detail
+    assert sorted(p.name for p in (music / "a").iterdir()) == ["b"], "nothing created inside"
+
+
 def test_a_long_link_target_is_elided_in_the_middle_of_the_cause(tmp_path: Path) -> None:
     """The cause names the link and its target, and the message stays readable.
 
