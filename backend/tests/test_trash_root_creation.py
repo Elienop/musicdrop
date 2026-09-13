@@ -39,7 +39,7 @@ from app.beets.protected import (
     open_checked_dir,
     protected_trees,
 )
-from app.beets.store_layout import StoreLayoutError, checked_protected_trees
+from app.beets.store_layout import StoreLayoutError, _elided, checked_protected_trees
 from app.beets.trash import resolve_trash_dir
 from app.config import Settings
 from tests.conftest import build_library, make_test_handle, origins_for
@@ -603,7 +603,7 @@ def test_the_refusal_names_the_link_and_the_target_it_reaches_through(tmp_path: 
     with pytest.raises(StoreLayoutError) as caught:
         _trees(tmp_path, music, jump_in / ".trash")
 
-    assert f"('srv-x' -> '{music / 'a'}')" in str(caught.value)
+    assert f"('srv-x' -> '{_elided(str(music / 'a'))}')" in str(caught.value)
 
 
 def test_the_unreachable_refusal_names_the_link_it_was_reached_through(
@@ -629,7 +629,7 @@ def test_the_unreachable_refusal_names_the_link_it_was_reached_through(
 
     detail = str(caught.value)
     assert "not reachable below the music library" in detail
-    assert f"reached through 'srv-x' -> '{music / 'a'}'" in detail
+    assert f"reached through 'srv-x' -> '{_elided(str(music / 'a'))}'" in detail
 
 
 def test_a_link_to_a_link_outside_the_library_is_followed(tmp_path: Path) -> None:
@@ -673,7 +673,7 @@ def test_a_link_to_a_link_into_the_library_is_refused_by_the_inner_link(
         _trees(tmp_path, music, tmp_path / "srv-x" / ".trash")
 
     assert "reaches into the music library without naming it" in str(caught.value)
-    assert f"('mid' -> '{music / 'a'}')" in str(caught.value)
+    assert f"('mid' -> '{_elided(str(music / 'a'))}')" in str(caught.value)
 
 
 def test_a_relative_link_target_that_climbs_is_walked_as_the_kernel_would(
@@ -700,16 +700,19 @@ def test_a_relative_link_target_that_climbs_is_walked_as_the_kernel_would(
     assert trees.trash == _ident_of(trash_dir)
 
 
-def test_a_link_target_that_climbs_back_out_of_the_library_is_followed(
+def test_a_link_target_that_climbs_back_out_of_the_library_is_refused(
     tmp_path: Path,
 ) -> None:
-    """``below`` describes the directory the walk stands on NOW, not one it passed.
+    """A ``..`` hop that LEAVES the library is refused at the hop.
 
     A target that dips into the library, climbs out with ``..`` and then crosses
-    a link OUTSIDE it ends outside — and was refused with "not reachable below
-    the music library" about a component that is not below it at all (security
-    seat L-1, probe p1, measured 2026-09-13). The ``..`` hop re-asks the
-    question, so the answer describes where the walk stands.
+    a link OUTSIDE it ends outside — and the directory it climbed into is the
+    library root's parent, which the layout rule does not treat as the
+    operator's. It was refused at the base too, but by a stale ``below`` and with
+    the wrong sentence ("not reachable below the music library" about a component
+    that is not below it); round 1 turned that into an accept (security seat L-1
+    probe p1, then L-1'), and the owner's criterion for this branch closed it
+    fail-closed.
     """
     music = tmp_path / "music"
     music.mkdir()
@@ -720,10 +723,43 @@ def test_a_link_target_that_climbs_back_out_of_the_library_is_followed(
     os.symlink(other_disk, tmp_path / "hold" / "mounted")
     os.symlink(f"{music}/../hold/mounted", tmp_path / "srv-x")
 
-    trees, trash_dir = _trees(tmp_path, music, tmp_path / "srv-x" / "trash")
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, tmp_path / "srv-x" / "trash")
 
-    assert (other_disk / "trash").is_dir(), "created through the operator's own links"
-    assert trees.trash == _ident_of(trash_dir)
+    detail = str(caught.value)
+    assert "climbs out of the music library with '..'" in detail
+    assert f"('srv-x' -> '{_elided(f'{music}/../hold/mounted')}')" in detail
+    assert list(other_disk.iterdir()) == [], "nothing created at the link's target"
+
+
+def test_a_link_target_climbing_out_to_the_roots_parent_cannot_be_diverted_there(
+    tmp_path: Path,
+) -> None:
+    """Why the refusal above is the safer answer: the parent may be hostile.
+
+    The deployment is the one the layout rule is written for with ``directory:``
+    a SUBfolder of a writable share — ``directory: <share>/library``, the share
+    itself attacker-writable. The operator's own target climbs out of the library
+    with ``../..``, and the link waiting there is the attacker's: at the round-1
+    tip the Trash was created at its target beside the attacker's own file, with
+    ``require_library_present`` skipped (security seat L-1', probe d1, measured
+    2026-09-13; refused at the base by a stale ``below``).
+    """
+    share = tmp_path / "share"
+    music = share / "library"
+    music.mkdir(parents=True)
+    _library_root_with(music)
+    attacker_dest = tmp_path / "attacker-dest"
+    attacker_dest.mkdir()
+    (attacker_dest / "precious.txt").write_text("not the Trash's to share")
+    os.symlink(attacker_dest, share / "hop")
+    os.symlink(f"{music}/../../share/hop", tmp_path / "srv-x")
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, tmp_path / "srv-x" / "trash")
+
+    assert "climbs out of the music library with '..'" in str(caught.value)
+    assert [p.name for p in attacker_dest.iterdir()] == ["precious.txt"], "nothing created there"
 
 
 def test_the_same_chain_without_the_dip_into_the_library_is_followed_too(
@@ -816,7 +852,7 @@ def test_a_target_that_climbs_only_back_into_the_library_is_refused_at_the_hop(
 
     detail = str(caught.value)
     assert "reaches into the music library without naming it" in detail
-    assert f"('srv-x' -> '{music}/a/b/..')" in detail
+    assert f"('srv-x' -> '{_elided(f'{music}/a/b/..')}')" in detail
     assert sorted(p.name for p in (music / "a").iterdir()) == ["b"], "nothing created inside"
 
 
@@ -845,7 +881,11 @@ def test_a_long_link_target_is_elided_in_the_middle_of_the_cause(tmp_path: Path)
     assert str(deep) not in detail, "the target is not printed whole"
     assert str(deep)[:50] in detail, "the head, which names the disk, is kept"
     assert str(deep)[-50:] in detail, "the tail, which names the folder, is kept"
-    assert len(detail) < 600, detail
+    # Relative to the SPELLED path, which is printed whole and is as long as the
+    # machine's ``TMPDIR`` makes it: an absolute bound passes or fails on that
+    # and not on the elision (security seat L-2'). 400 is the prose plus both
+    # halves with margin, and doubling ``_CAUSE_HALF_MAX`` still breaks it.
+    assert len(detail) < len(str(tmp_path / "srv-x" / ".trash")) + 400, detail
 
 
 def test_an_empty_music_root_still_refuses_a_link_that_reaches_into_it(

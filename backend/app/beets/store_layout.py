@@ -690,6 +690,37 @@ def _refuse_a_trash_around_the_music_root(
     )
 
 
+def _refuse_a_trash_target_that_climbs_out_of_the_library(
+    spelled: Path, cause: str | None = None
+) -> StoreLayoutError:
+    """The refusal for a link target that goes INTO the library and back out.
+
+    Its own sentence because it is its own fault: the chain is not reaching into
+    the library (that one lands there) and it is not unreachable (the walk
+    finished) — it took a detour THROUGH the library, and what the operator
+    edits is the target that spells the detour.
+
+    Refused rather than followed because the directory a ``..`` hop lands in is
+    the library root's PARENT, which the layout rule does not treat as the
+    operator's: with beets' ``directory:`` a subfolder of a writable share, a
+    link planted there was resolved and the Trash created at its target with
+    ``require_library_present`` skipped (measured 2026-09-13, security seat
+    L-1', probes d1 and d3; refused at the previous tip too, by a ``below`` that
+    was stale rather than by a decision). The owner's criterion for this branch
+    decided it: *"if its safer … do it"* (``decisions.md`` #46).
+
+    A hop that lands ON the root, or one that stays below it, is untouched — the
+    first is the alias spelling reached by a climb (probe p2) and the second is
+    refused by the reach-in sentence at the hop.
+    """
+    detail = f" ({cause})" if cause else ""
+    return StoreLayoutError(
+        f"{TRASH_SETTING} climbs out of the music library with '..':"
+        f" {str(spelled)!r}{detail}. Spell it without the detour through the library.",
+        headline=f"{TRASH_SETTING} climbs out of the music library with '..'",
+    )
+
+
 #: How much of ONE half of a cause is printed. Both halves are paths and the
 #: spelled path is printed beside them, so an un-elided pair doubled the 503:
 #: measured 2026-09-13 (security seat L-2), 1244 characters for a 900-byte link
@@ -889,8 +920,13 @@ def _below_the_music_root(
     """Whether the walk has reached the music root, refusing if it is INSIDE it.
 
     Asked about every component of the EXISTING prefix the walk stands on while
-    it is still above the root, and about the destination of every link the walk
-    resolves — not once about the leaf. Measured 2026-09-12 (security seat H-1)
+    it is still above the root, about the destination of every link the walk
+    resolves, and again after a ``..`` hop inside a target wherever the walk then
+    stands (:meth:`_Chain._arrive`) — not once about the leaf. That third site is
+    the only one that can refuse for LEAVING the library: a hop that turns
+    ``below`` off raises there rather than following what it landed in
+    (:func:`_refuse_a_trash_target_that_climbs_out_of_the_library`).
+    Measured 2026-09-12 (security seat H-1)
     on the arm this replaces, which asked it once: both requests were accepted,
     the movers wrote to the attacker's directory and ``empty_all`` enumerated it.
     ``cause`` names the link when the caller is :meth:`_Chain._follow`.
@@ -1001,8 +1037,8 @@ class _Chain:
 
         Raises:
             StoreLayoutError: ``part`` is not a directory below the music root,
-                it is a link whose target reaches into the library, or the climb
-                that decides that could not be finished.
+                it is a link whose target reaches into the library or climbs back
+                out of it, or the climb that decides that could not be finished.
             OSError: any other fault; the caller words it. ENOENT is the caller's
                 "this part is not there yet" arm, and reaches it from inside a
                 link target too — a dangling link answers it the way the kernel
@@ -1040,13 +1076,26 @@ class _Chain:
         with the not-reachable sentence while ``below`` stayed true (security
         seat L-1, measured 2026-09-13). Only reachable inside a link target — the
         configured spelling may hold no ``..``.
+
+        An OUTWARD crossing is then refused rather than followed: ``below`` was
+        true and the hop made it false, so the walk has just left the library and
+        stands where the layout rule makes no promise (security seat L-1', the
+        owner's criterion in
+        :func:`_refuse_a_trash_target_that_climbs_out_of_the_library`). This is
+        the THIRD place the jump-in question is asked, and the only one that can
+        refuse for leaving.
         """
         os.close(self.fd)
         self.fd = opened
         if ask and (climbed or not self.below) and self.root_ident is not None:
+            was_below = self.below
             self.below = _below_the_music_root(
                 self.fd, self.root_ident, self.spelled, cause=self.cause
             )
+            if was_below and not self.below:
+                raise _refuse_a_trash_target_that_climbs_out_of_the_library(
+                    self.spelled, self.cause
+                )
 
     def _follow(self, part: str, refused: OSError) -> None:
         """Resolve the link at ``part`` by walking its target, hop by hop.
@@ -1056,10 +1105,13 @@ class _Chain:
         three ways: a target that IS the music root is the alias spelling and is
         anchored from here (``below``); a target below the root is the link into
         the library this refuses; a target outside stays followed, which is the
-        supported "Trash on another disk through the operator's own link".
+        supported "Trash on another disk through the operator's own link" — save
+        for one that got outside by climbing there from inside, refused at the
+        hop (:meth:`_arrive`).
 
         Raises:
-            StoreLayoutError: the target reaches into the music library.
+            StoreLayoutError: the target reaches into the music library, or a
+                ``..`` in it climbs back out of the library.
             OSError: ``part`` is not a link at all — a plain file, re-raising the
                 ENOTDIR it already answered (measured 2026-09-13: ``readlink``
                 answers EINVAL there, and the open's errno cannot tell the two
@@ -1098,11 +1150,12 @@ class _Chain:
 
         Asked only when it met the root: a target that did not is outside the
         library by the same climb every other component is judged by, asked
-        already by that walk's own last step. ``..`` inside a target is walked
-        and not refused — ``openat(fd, "..")`` is the kernel's own answer for a
-        descriptor the walk holds — so a target that passes through the library
-        and back out ends outside it, and this is what reads that back off the
-        destination rather than off the path.
+        already by that walk's own last step. ``..`` inside a target is WALKED
+        and not collapsed — ``openat(fd, "..")`` is the kernel's own answer for a
+        descriptor the walk holds — and this reads the destination rather than
+        the path. A hop that leaves the library never reaches here: it is refused
+        at the hop (:meth:`_arrive`), so what this still answers is a target that
+        met the root and ended below it or ON it.
 
         Raises:
             StoreLayoutError: the target ended below the music root, named with
