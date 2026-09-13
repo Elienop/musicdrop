@@ -79,6 +79,24 @@ def _across_a_device_boundary(real_rename: Any) -> Any:
     return rename
 
 
+def _replace_with_a_newcomer(target: Path, body: bytes) -> tuple[int, int]:
+    """Put a NEW entry at ``target``'s name; report ``(target's, newcomer's)`` inode.
+
+    Built at a SIBLING name while ``target`` still holds its inode, then renamed
+    over it. Unlinking first and writing at the one name asks the filesystem for
+    a fresh inode instead, and ext4 and xfs hand back the number just freed: that
+    shape passed here (tmpfs and btrfs reused 0 of 20, measured 2026-09-13) and
+    failed on ubuntu-latest, where the newcomer matched the guard's ``(st_dev,
+    st_ino)`` and was unlinked. Callers assert the two inodes differ, so the
+    premise is read rather than assumed.
+    """
+    newcomer = target.with_name(f"{target.name}.uploading")
+    newcomer.write_bytes(body)
+    inodes = (target.lstat().st_ino, newcomer.lstat().st_ino)
+    os.replace(newcomer, target)
+    return inodes
+
+
 @pytest.mark.parametrize(
     "name",
     ["", ".", "..", "sub/f", "/etc/passwd", f"a{os.sep}b"],
@@ -219,12 +237,12 @@ def test_a_file_that_replaced_the_source_after_the_copy_is_left_in_place(
     curated = folder / "artist-poster.png"
     curated.write_bytes(PNG)
     real_copy = shutil.copyfileobj
+    swapped: list[tuple[int, int]] = []
 
     def copy_then_swap(reader: Any, writer: Any, length: int = 0) -> None:
         real_copy(reader, writer)
         # the window between the copy and the unlink through ``src_dir_fd``
-        curated.unlink()
-        curated.write_bytes(b"BRAND-NEW-UPLOAD")
+        swapped.append(_replace_with_a_newcomer(curated, b"BRAND-NEW-UPLOAD"))
 
     monkeypatch.setattr(os, "rename", _across_a_device_boundary(os.rename))
     monkeypatch.setattr(shutil, "copyfileobj", copy_then_swap)
@@ -232,6 +250,9 @@ def test_a_file_that_replaced_the_source_after_the_copy_is_left_in_place(
     with caplog.at_level(logging.WARNING, logger="app.beets.trash"):
         dest = _move([curated.name], folder, tmp_path)
 
+    assert len(swapped) == 1, "the swap ran once, inside the copy"
+    source_ino, newcomer_ino = swapped[0]  # the source is unchanged since staging
+    assert source_ino != newcomer_ino, "the premise: the newcomer is a different inode"
     assert (dest / curated.name).read_bytes() == PNG, "the checked file reached Trash"
     assert curated.read_bytes() == b"BRAND-NEW-UPLOAD", "the newcomer was not unlinked"
     assert "was replaced after it was copied to Trash" in caplog.text
@@ -252,18 +273,21 @@ def test_a_symlink_that_was_replaced_after_it_was_recreated_is_left_in_place(
     linked = folder / "artist-background.png"
     linked.symlink_to("../elsewhere/wall.png")
     real_symlink = os.symlink
+    swapped: list[tuple[int, int]] = []
 
     def recreate_then_swap(src: Any, dst: Any, **kwargs: Any) -> None:
         real_symlink(src, dst, **kwargs)
         if "dir_fd" in kwargs:  # the copy into the container, not the app's others
-            linked.unlink()
-            linked.write_bytes(b"BRAND-NEW-UPLOAD")
+            swapped.append(_replace_with_a_newcomer(linked, b"BRAND-NEW-UPLOAD"))
 
     monkeypatch.setattr(os, "rename", _across_a_device_boundary(os.rename))
     monkeypatch.setattr(os, "symlink", recreate_then_swap)
 
     dest = _move([linked.name], folder, tmp_path)
 
+    assert len(swapped) == 1, "the swap ran once, inside the copy's symlink call"
+    symlink_ino, newcomer_ino = swapped[0]  # the symlink is unchanged since staging
+    assert symlink_ino != newcomer_ino, "the premise: the newcomer is a different inode"
     assert (dest / linked.name).is_symlink()
     assert os.readlink(dest / linked.name) == "../elsewhere/wall.png"
     assert not linked.is_symlink()
