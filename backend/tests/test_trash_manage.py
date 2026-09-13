@@ -810,6 +810,14 @@ def test_a_fifo_inside_a_symlinked_subfolder_of_an_entry_refuses_the_restore(
     symlinked subfolder of the entry. A pre-flight that stopped at it would hand
     beets the pipe inside. The walk is bounded by identity, not by depth: the
     link back up its own tree below is walked once.
+
+    The refusal names the LINK, not the pipe: this link leaves the entry, and
+    ``'Disc 2/01 wedge.flac'`` was a filename read back out of a directory the
+    operator cannot see (security seat L-2, measured 2026-09-13 — the oracle
+    test below plants the same shape against a private name). Naming ``Disc 2``
+    still proves the descent, because without it there is no refusal at all:
+    the sibling control below pins that a symlinked subfolder holding only
+    regular files restores, so "refuse every link" cannot pass both.
     """
     lib = _with_bystander(_new_library(tmp_path), tmp_path)
     trash = tmp_path / "trash"
@@ -842,7 +850,94 @@ def test_a_fifo_inside_a_symlinked_subfolder_of_an_entry_refuses_the_restore(
 
     assert not worker.is_alive(), "the walk did not finish"
     assert isinstance(raised[0], TrashEntryUnreadableError)
-    assert "01 wedge.flac" in str(raised[0]), str(raised[0])
+    assert "'Disc 2'" in str(raised[0]), str(raised[0])
+    assert "wedge" not in str(raised[0]), "a name from outside the entry reached the 503"
+    assert (entry / "01 Dreams.flac").is_file(), "nothing left Trash"
+
+
+def test_a_symlinked_subfolder_of_regular_files_still_restores(tmp_path: Path) -> None:
+    """The control for the gate above: what following a link may NOT cost.
+
+    The refusal now names the link component rather than the name below it, so
+    "refuse any symlinked subfolder" would pass that test while breaking every
+    entry whose album folder holds a linked disc directory -- a real shape,
+    since ``shutil.move`` preserves links on the way into Trash. The pipe is
+    what refuses, not the link.
+    """
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
+    trash = tmp_path / "trash"
+    entry = trash / "2 Brothers - Dreams"
+    _tagged_flac(
+        entry / "01 Dreams.flac", artist="2 Brothers", album="Dreams", title="Dreams", track=1
+    )
+    disc2 = tmp_path / "disc2"
+    _tagged_flac(disc2 / "02 Dreams.flac", artist="2 Brothers", album="Dreams", title="B", track=2)
+    (entry / "Disc 2").symlink_to(disc2, target_is_directory=True)
+
+    result = restore_album(
+        lib,
+        str(entry),
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
+        protected=protected_for(lib),
+    )
+
+    assert result.restored, result
+    landed = list((tmp_path / "music" / "2 Brothers").glob("**/*.flac"))
+    assert landed, "nothing reached the library"
+
+
+def test_a_link_out_of_an_entry_cannot_read_back_a_name_behind_it(tmp_path: Path) -> None:
+    """The 503 may name only a path the operator can see INSIDE the entry.
+
+    ``_unopenable_name_under`` walks ``followlinks=True`` and its answer goes
+    verbatim into the 503 that ``SettingsTrashPage`` renders as the row's whole
+    text. Measured 2026-09-13 (security seat L-2): with
+    ``<trash>/Album/peek -> /any/dir``, one Restore click came back
+    ``"This Trash entry holds 'peek/private-name'"`` -- the name of the first
+    non-regular file in a directory outside Trash, iterable by re-pointing the
+    link. Someone who can only write into ``/music`` is this branch's own threat
+    model, and ``shutil.move`` carries their link into Trash.
+
+    ``private-name`` is a FIFO so the walk refuses on it: that is what makes the
+    leak reachable at all, and it keeps the shape identical to the oracle.
+
+    Run on a thread with a join deadline; the refusal is what stops the pipe
+    reaching beets, so a regression here hangs rather than fails.
+    """
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
+    trash = tmp_path / "trash"
+    entry = trash / "2 Brothers - Dreams"
+    _tagged_flac(
+        entry / "01 Dreams.flac", artist="2 Brothers", album="Dreams", title="Dreams", track=1
+    )
+    outside = tmp_path / "not-trash"
+    outside.mkdir()
+    os.mkfifo(outside / "private-name")
+    (entry / "peek").symlink_to(outside, target_is_directory=True)
+    raised: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            restore_album(
+                lib,
+                str(entry),
+                trash_dir=trash,
+                origins_dir=origins_for(trash),
+                protected=protected_for(lib),
+            )
+        except BaseException as exc:  # the isinstance below is the oracle
+            raised.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(10)
+
+    assert not worker.is_alive(), "the restore is still blocked on the pipe behind the link"
+    assert isinstance(raised[0], TrashEntryUnreadableError)
+    detail = str(raised[0])
+    assert "private-name" not in detail, detail
+    assert "'peek'" in detail, detail
     assert (entry / "01 Dreams.flac").is_file(), "nothing left Trash"
 
 

@@ -434,6 +434,13 @@ def _unopenable_name_under(entry: Path) -> str | None:
     by depth: each directory is walked once, so a link pointing back up its own
     tree is pruned on the second visit.
 
+    What that following costs is an ORACLE, and it is why the answer is not
+    always the offending name: this string goes verbatim into the 503 the page
+    renders, so a walk that leaves the entry would report a filename from
+    outside Trash. Anything found below a link that leaves the entry is reported
+    as the LINK instead — :func:`_link_out_of`, which owns the measurement and
+    the reasoning.
+
     It over-refuses in one direction, deliberately: ``sorted_walk`` skips its
     ``ignore`` globs and hidden names, this does not, so a hidden ``.wedge``
     FIFO refuses a restore beets would have imported without ever opening it
@@ -444,19 +451,63 @@ def _unopenable_name_under(entry: Path) -> str | None:
     if _never_returns_from_an_open(str(entry)):
         return _THE_ENTRY_ITSELF
     seen: set[tuple[int, int] | None] = {_dir_ident(str(entry))}
+    # Keyed on the directory the walk is IN, not on the offending file, because
+    # the substitution has to survive every level below the escaping link.
+    named_instead: dict[str, str] = {}
     for root, dirs, files in os.walk(entry, followlinks=True):
+        instead = named_instead.get(root)
         for name in files:
             path = os.path.join(root, name)
             if _never_returns_from_an_open(path):
-                return os.path.relpath(path, entry)
+                return instead if instead is not None else os.path.relpath(path, entry)
         unvisited = []
         for name in dirs:
-            ident = _dir_ident(os.path.join(root, name))
-            if ident not in seen:
-                seen.add(ident)
-                unvisited.append(name)
+            child = os.path.join(root, name)
+            ident = _dir_ident(child)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            unvisited.append(name)
+            # The OUTERMOST escaping link wins: once a subtree is outside, the
+            # names below it are all invisible to the operator, including any
+            # further link inside.
+            below = instead if instead is not None else _link_out_of(child, entry)
+            if below is not None:
+                named_instead[child] = below
         dirs[:] = unvisited
     return None
+
+
+def _link_out_of(child: str, entry: Path) -> str | None:
+    """``child``'s own name under ``entry``, if it is a link that LEAVES ``entry``.
+
+    ``None`` for anything else — a real directory, and a link whose target is
+    still inside the entry (which the operator can see, so its names are theirs
+    already).
+
+    This exists because the walk above follows links and the refusal names what
+    it found. Measured 2026-09-13 (security seat L-2): with
+    ``<trash>/Album/peek -> /any/dir``, ``POST /api/trash/restore`` refused with
+    ``"This Trash entry holds 'peek/private-name'"`` — the name of the first
+    non-regular file in a directory OUTSIDE Trash, read back one per click and
+    iterable by re-pointing the link. The invariant is that the 503 may name
+    only a path the operator can see inside the entry, and ``peek`` is one: it
+    is also the remedy, since removing the link is what fixes the restore, and
+    the sentence stays true of it (a link out is not a regular file either).
+
+    ``realpath`` on BOTH sides, and it is the right question here rather than
+    the "resolve collapses the attacker's link" trap: what is being asked is not
+    "is this configured path inside a root" but "does what this name lands on
+    sit inside the tree the operator is looking at". A dangling or looping link
+    never reaches this — ``os.walk`` sorts a name into ``dirs`` by
+    ``os.path.isdir``, which is False for both — and ``realpath`` answers
+    without raising for either anyway.
+    """
+    if not os.path.islink(child):
+        return None
+    if os.path.realpath(child).startswith(os.path.realpath(entry) + os.sep):
+        return None
+    return os.path.relpath(child, entry)
 
 
 def _unopenable_refusal(unopenable: str) -> str:
@@ -477,9 +528,16 @@ def _unopenable_refusal(unopenable: str) -> str:
     clause was also false of a socket, which answers ENXIO at once).
     """
     if unopenable == _THE_ENTRY_ITSELF:
+        # "Remove it from Trash" named nothing clickable, which is the half of
+        # this arm the sentence got wrong: ``_audio_free_entries`` lists an
+        # entry only if it is a link or a directory, so a top-level FIFO or
+        # socket has NO row after a refresh — the operator sees it only on the
+        # stale page that was rendered before the swap. Empty all is the one
+        # route that reaches it, it is never disabled, and it removed the shape
+        # in 0.43 ms (security seat I-2, measured 2026-09-13).
         return (
             "This Trash entry is not a folder or a regular file, so it was not restored."
-            " Remove it from Trash."
+            " Empty all removes it."
         )
     return (
         f"This Trash entry holds {unopenable!r}, which is not a regular file, so it was"
