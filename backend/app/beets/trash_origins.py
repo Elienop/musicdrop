@@ -1063,7 +1063,22 @@ def delete_trash_origin(origins_dir: Path, entry_name: str) -> None:
                 display_path(entry_name),
             )
             return
-        path.unlink(missing_ok=True)
+        try:
+            path.unlink(missing_ok=True)
+        except IsADirectoryError:
+            # A directory at the key is refused by ``_record_text``'s
+            # ``S_ISREG`` and then cannot be unlinked, so before this arm
+            # NOTHING in the app could clear it — and because
+            # :func:`origin_recorded` answers on EXISTENCE, that Trash name was
+            # occupied for good: every later album trashed under it landed on
+            # ``<name> (1)``, ``(2)``… with no exact-restore record, since
+            # ``write_trash_origin``'s ``os.replace`` onto a directory raises
+            # and is swallowed (measured 2026-09-14, security seat L-3).
+            # ``rmdir`` clears an EMPTY one; a non-empty plant raises ENOTEMPTY
+            # into the handler below, which is the honest answer — this function
+            # runs after the entry is already gone and may not start deleting
+            # trees it knows nothing about.
+            path.rmdir()
     except (OSError, ValueError):
         logger.warning(
             "could not remove the Trash origin record for %r",

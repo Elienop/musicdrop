@@ -670,12 +670,15 @@ def test_a_record_that_cannot_be_unlinked_is_logged_and_swallowed(
 
     * ``unlink(missing_ok=True)`` swallows ``FileNotFoundError`` and nothing
       else, so a read-only, full or damaged ``/data`` raises through it. Staged
-      with a DIRECTORY at the record's own name (``EISDIR``) rather than
-      ``chmod``: a maintainer running this suite inside the shipped image is
-      root (``Dockerfile`` declares no ``USER``), and there a read-only
-      directory denies nothing, so a chmod-staged test would report green
-      having executed no failure. ``EISDIR`` denies root too. CI is not the
-      case this guards against — its pytest job runs as ``runner``.
+      with a NON-EMPTY DIRECTORY at the record's own name (``EISDIR``, then
+      ``ENOTEMPTY``) rather than ``chmod``: a maintainer running this suite
+      inside the shipped image is root (``Dockerfile`` declares no ``USER``),
+      and there a read-only directory denies nothing, so a chmod-staged test
+      would report green having executed no failure. Those two errnos deny root
+      too. CI is not the case this guards against — its pytest job runs as
+      ``runner``. Non-empty is load-bearing since 2026-09-14: an EMPTY
+      directory at the key is now removed by the ``rmdir`` arm (the test below
+      this one), so an empty plant would leave nothing to swallow.
     * the handler itself. The entry name is a real filesystem name, so it can be
       non-UTF-8, and the obvious escape spelling
       (``.encode("utf-8", "backslashreplace").decode("ascii")``) raises
@@ -688,7 +691,9 @@ def test_a_record_that_cannot_be_unlinked_is_logged_and_swallowed(
     name = os.fsdecode(b"Caf\xc3\xa9 \xff \x1b[31m\nCRITICAL:app:all clear")
     assert not name.isascii(), "the accent that breaks the naive escape spelling"
     assert "\udcff" in name, "and the undecodable byte that display_path is for"
-    origin_file(origins, name).mkdir()
+    planted = origin_file(origins, name)
+    planted.mkdir()
+    (planted / "something").write_text("not this function's to delete", encoding="ascii")
 
     with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
         delete_trash_origin(origins, name)  # must return, not raise
@@ -716,6 +721,41 @@ def test_a_record_that_cannot_be_unlinked_is_logged_and_swallowed(
     assert "\nCRITICAL" not in caplog.text, "a forged log line reached the log"
     assert "\\x1b" in caplog.text  # escaped, not dropped
     assert "\\n" in caplog.text
+    assert planted.is_dir(), "a directory with something in it is not this function's to delete"
+
+
+def test_an_empty_directory_at_the_key_is_removed_rather_than_burning_the_name(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The control for the swallow above, and the reason its fixture is non-empty.
+
+    ``S_ISREG`` refuses a directory at the key and ``unlink`` cannot remove it,
+    so before the ``rmdir`` arm nothing in the app could ever clear one —
+    measured 2026-09-14 (security seat L-3), including over HTTP (``DELETE
+    /api/albums/{id}`` answered 500 in 0.006 s and the plant survived). The cost
+    is not the 500: ``origin_recorded`` answers on EXISTENCE, so that Trash name
+    stayed occupied and every later album trashed under it landed on ``<name>
+    (1)``, ``(2)``… with no exact-restore record of its own.
+
+    ``origin_recorded`` is the oracle rather than the missing directory, because
+    it is what the allocator asks.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    key = origin_file(origins, "Album")
+    key.mkdir()
+    assert origin_recorded(origins, "Album") is True, "the plant holds the name to begin with"
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        delete_trash_origin(origins, "Album")
+
+    assert origin_recorded(origins, "Album") is False, "the name is still held against an album"
+    assert not key.exists()
+    (gate,) = caplog.records
+    assert "it is not a regular file" in gate.getMessage()
+    assert "could not remove the Trash origin record" not in caplog.text, (
+        "the rmdir succeeded, so there is nothing to report"
+    )
 
 
 # ----- ...including a file the JSON parser gives up on -----
