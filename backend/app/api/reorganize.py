@@ -21,7 +21,7 @@ from app.beets.protected import protected_entries
 from app.beets.reorganize import album_scope_label, plan_reorganize
 from app.beets.store_layout import (
     StoreLayoutError,
-    checked_store_dirs,
+    checked_reachable_store_dirs,
     lib_music_and_library,
 )
 from app.events.emit import emit_library_changed
@@ -78,13 +78,18 @@ def _store(app: object) -> tuple[Path, Path]:
     sweep actually begins (``reorganize_jobs.runner._sweep_orphans``); this one
     is what stops the preview from describing a run that would not be allowed.
 
+    THE reachable form, which runs the anchored walk read-only: the runner's own
+    call CREATES the Trash (``checked_protected_trees``) and refuses a chain that
+    reaches into the library through a link, so without it the preview described
+    a run the sweep then skipped with a warning (security seat M-1).
+
     503 with the refusal's own sentence, the tier the delete paths use for the
     same class of fault. Raised inline so the status stays a literal
     ``tests/test_route_status_declarations.py`` can see.
     """
     handle: LibraryHandle = app.state.beets_library  # type: ignore[attr-defined]  # app duck-typed (object)
     try:
-        return checked_store_dirs(_settings(app), handle)  # type: ignore[arg-type]  # app duck-typed (object)
+        return checked_reachable_store_dirs(_settings(app), handle)  # type: ignore[arg-type]  # app duck-typed (object)
     except StoreLayoutError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

@@ -88,8 +88,11 @@ def test_the_default_trash_is_created_and_its_identity_taken(tmp_path: Path) -> 
     """First use of a fresh install: nothing creates the Trash at boot.
 
     The shipped default is ``<beets_dir>/trash``, whose chain is the operator's,
-    so the walk creates every part of it following links — and the identity the
-    movers compare is ``fstat`` on the descriptor it ends on.
+    so the walk creates every part of it through its parent's descriptor and
+    opens none of them through a link: a link there is resolved by the walk
+    itself and refused only when its target lands inside the library (owner
+    ruling 2026-09-13). The identity the movers compare is ``fstat`` on the
+    descriptor it ends on.
     """
     music = tmp_path / "music"
     music.mkdir()
@@ -492,7 +495,7 @@ def test_an_attackers_link_at_the_leaf_of_a_jump_in_spelling_is_refused(
 
     Measured 2026-09-12 (security seat H-1, J5) on the arm this replaces: the
     jump-in question was asked ONCE, about the descriptor the walk ended on, and
-    every part above the root is opened following links — so the attacker's
+    every part above the root was opened following links — so the attacker's
     ``.trash`` link took the walk outside the library and the climb then answered
     "not inside" correctly. Both requests were ACCEPTED, the movers wrote to the
     attacker's directory, and ``empty_all`` enumerated it.
@@ -603,6 +606,32 @@ def test_the_refusal_names_the_link_and_the_target_it_reaches_through(tmp_path: 
     assert f"('srv-x' -> '{music / 'a'}')" in str(caught.value)
 
 
+def test_the_unreachable_refusal_names_the_link_it_was_reached_through(
+    tmp_path: Path,
+) -> None:
+    """A3/A4: the component in the way is the ATTACKER's and is not in the spelling.
+
+    The operator's own link is the only part of this chain they can re-point, so
+    the refusal names it. Without the cause this sentence named the spelled path
+    and a remedy ("bind mounts") for a fault that is not the operator's
+    (code seat S4, measured 2026-09-13).
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    jump_in = _jump_in_link(tmp_path, music)
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    (music / "a").rmdir()
+    os.symlink(elsewhere, music / "a")
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, jump_in / ".trash")
+
+    detail = str(caught.value)
+    assert "not reachable below the music library" in detail
+    assert f"reached through 'srv-x' -> '{music / 'a'}'" in detail
+
+
 def test_a_link_to_a_link_outside_the_library_is_followed(tmp_path: Path) -> None:
     """Why the rule is about the TARGET and not about links as such.
 
@@ -669,6 +698,153 @@ def test_a_relative_link_target_that_climbs_is_walked_as_the_kernel_would(
 
     assert (other_disk / "trash").is_dir(), "created through the operator's own link"
     assert trees.trash == _ident_of(trash_dir)
+
+
+def test_a_link_target_that_climbs_back_out_of_the_library_is_followed(
+    tmp_path: Path,
+) -> None:
+    """``below`` describes the directory the walk stands on NOW, not one it passed.
+
+    A target that dips into the library, climbs out with ``..`` and then crosses
+    a link OUTSIDE it ends outside — and was refused with "not reachable below
+    the music library" about a component that is not below it at all (security
+    seat L-1, probe p1, measured 2026-09-13). The ``..`` hop re-asks the
+    question, so the answer describes where the walk stands.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    _library_root_with(music)
+    other_disk = tmp_path / "other-disk"
+    other_disk.mkdir()
+    (tmp_path / "hold").mkdir()
+    os.symlink(other_disk, tmp_path / "hold" / "mounted")
+    os.symlink(f"{music}/../hold/mounted", tmp_path / "srv-x")
+
+    trees, trash_dir = _trees(tmp_path, music, tmp_path / "srv-x" / "trash")
+
+    assert (other_disk / "trash").is_dir(), "created through the operator's own links"
+    assert trees.trash == _ident_of(trash_dir)
+
+
+def test_the_same_chain_without_the_dip_into_the_library_is_followed_too(
+    tmp_path: Path,
+) -> None:
+    """The control for the pair: one of these two without the other proves nothing.
+
+    Same two links, same destination, and the target does not pass through the
+    library — accepted before the ``..`` hop was re-asked and after (security
+    seat L-1, probe p1b).
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    _library_root_with(music)
+    other_disk = tmp_path / "other-disk"
+    other_disk.mkdir()
+    (tmp_path / "hold").mkdir()
+    os.symlink(other_disk, tmp_path / "hold" / "mounted")
+    os.symlink(f"{tmp_path}/hold/mounted", tmp_path / "srv-x")
+
+    trees, trash_dir = _trees(tmp_path, music, tmp_path / "srv-x" / "trash")
+
+    assert (other_disk / "trash").is_dir()
+    assert trees.trash == _ident_of(trash_dir)
+
+
+def test_a_link_target_that_climbs_back_to_the_root_is_still_the_root(
+    tmp_path: Path,
+) -> None:
+    """The dangerous direction of the same change: ``<M>/a/..`` IS the music root.
+
+    A re-ask that answered "outside" here would unanchor the alias spelling
+    reached by a climb — the Trash created inside the library with every later
+    component followed (security seat L-1, probe p2).
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    _library_root_with(music)
+    (music / "a").mkdir()
+    os.symlink(f"{music}/a/..", tmp_path / "srv-x")
+
+    trees, trash_dir = _trees(tmp_path, music, tmp_path / "srv-x" / ".trash")
+
+    assert trash_dir == music / ".trash"
+    assert trees.trash == _ident_of(trash_dir)
+
+
+def test_an_attackers_link_below_a_root_reached_by_climbing_is_refused(
+    tmp_path: Path,
+) -> None:
+    """What the anchor is FOR: the component after the climb is inside the library.
+
+    ``<T>/srv-x -> <M>/a/..`` lands the walk on the root, so the attacker's link
+    at ``<M>/b`` is met below it — where a link is refused rather than resolved.
+    The pair above and this one are what a re-ask after ``..`` may not lose.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    _library_root_with(music)
+    (music / "a").mkdir()
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    os.symlink(elsewhere, music / "b")
+    os.symlink(f"{music}/a/..", tmp_path / "srv-x")
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, tmp_path / "srv-x" / "b" / ".trash")
+
+    assert "not reachable below the music library" in str(caught.value)
+    assert list(elsewhere.iterdir()) == [], "nothing created outside the library"
+
+
+def test_a_long_link_target_is_elided_in_the_middle_of_the_cause(tmp_path: Path) -> None:
+    """The cause names the link and its target, and the message stays readable.
+
+    Measured 2026-09-13 (security seat L-2): both halves printed whole made a
+    1244-character 503 for a 900-byte target, worst case about twice
+    ``PATH_MAX``. The head names the disk and the tail the folder, so the MIDDLE
+    is what goes.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    _library_root_with(music)
+    deep = music
+    while len(str(deep)) < 900:
+        deep = deep / ("d" * 60)
+    deep.mkdir(parents=True)
+    os.symlink(deep, tmp_path / "srv-x")
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, tmp_path / "srv-x" / ".trash")
+
+    detail = str(caught.value)
+    assert "reaches into the music library without naming it" in detail
+    assert str(deep) not in detail, "the target is not printed whole"
+    assert str(deep)[:50] in detail, "the head, which names the disk, is kept"
+    assert str(deep)[-50:] in detail, "the tail, which names the folder, is kept"
+    assert len(detail) < 600, detail
+
+
+def test_an_empty_music_root_still_refuses_a_link_that_reaches_into_it(
+    tmp_path: Path,
+) -> None:
+    """The link rule needs the root's IDENTITY, not its contents.
+
+    Both arms of it are gated on ``root_ident``, which is None only for a music
+    root that neither opens nor stats (:class:`_Chain`'s docstring states it). A
+    root that IS there but empty — the dropped share an operator actually hits —
+    still has an identity, so the reach-in link is refused rather than followed
+    (security seat L-4, probe n3c).
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    (music / "a").mkdir()
+    os.symlink(music / "a", tmp_path / "srv-x")
+
+    with pytest.raises(StoreLayoutError) as caught:
+        _trees(tmp_path, music, tmp_path / "srv-x" / ".trash")
+
+    assert "reaches into the music library without naming it" in str(caught.value)
+    assert list((music / "a").iterdir()) == [], "refused before anything was created"
 
 
 def test_a_dangling_operator_link_creates_nothing_where_it_pointed(tmp_path: Path) -> None:

@@ -578,23 +578,55 @@ def checked_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path,
     return trash, origins
 
 
+def checked_reachable_store_dirs(settings: Settings, handle: LibraryHandle) -> tuple[Path, Path]:
+    """The same pair, for a request that READS the Trash and creates nothing.
+
+    The rows :func:`checked_store_dirs` runs are relations between the RESOLVED
+    paths, and the anchored walk is what sees a chain that reaches into the
+    library through a link. Without it a read route answered 200 and listed the
+    entries of the directory the attacker's link named, while every destructive
+    route answered 503 on the same layout — measured 2026-09-13 (security seat
+    M-1), the Trash page's folder names and the tags of every audio file in them.
+    The walk creates nothing here (:func:`_check_trash_is_reachable`), so a
+    listing still costs no ``mkdir``.
+
+    Raises:
+        StoreLayoutError: what the destructive routes would refuse, in the same
+            words; request paths answer 503 with the message.
+    """
+    trash, origins = checked_store_dirs(settings, handle)
+    music, _library = lib_music_and_library(handle.lib)
+    _check_trash_is_reachable(music_dir=music, settings=settings, trash_dir=trash)
+    return trash, origins
+
+
 # The five Trash-chain refusals below carry no ``config_key``: the value at
 # fault is ``MUSICDROP_TRASH_DIR``, which is env-derived and not a
 # ``config.yaml`` key the editor can paint. ``store_layout_report`` reaches them
 # through :func:`_check_trash_is_reachable` and falls back to ``directory:``,
 # which is the line the editor can act from — so this is deliberate rather than
 # an omission to "fix".
-def _refuse_an_unreachable_trash(spelled: Path, exc: OSError) -> StoreLayoutError:
+def _refuse_an_unreachable_trash(
+    spelled: Path, exc: OSError, cause: str | None = None
+) -> StoreLayoutError:
     """The refusal for a Trash path whose own chain below the music root is not
     walkable — a symlinked component, or a file in the way.
 
     Measured: ``O_DIRECTORY|O_NOFOLLOW`` answers ENOTDIR for a link AND for a
     plain file, so the errno cannot say which; the wording matches
     ``lyrics._album_dir_fd``'s for the same ambiguity.
+
+    ``cause`` is the link of the OPERATOR's that took the walk into the library,
+    when the component in the way sits inside a link target
+    (:meth:`_Chain._follow`). Without it this sentence named nothing the operator
+    can act on for the shape the attacker's half makes (code seat S4, measured
+    2026-09-13: the spelled path is theirs, the component in the way is not in
+    it).
     """
+    reached = f", reached through {cause}" if cause else ""
     return StoreLayoutError(
         f"{TRASH_SETTING} is not reachable below the music library:"
-        f" {str(spelled)!r} ({exc.strerror} — a link or a file in the way)."
+        f" {str(spelled)!r} ({exc.strerror} — a link or a file in the way{reached})."
         " Bind mounts are the supported spelling for a folder on another disk.",
         headline=f"{TRASH_SETTING} is not reachable below the music library",
     )
@@ -655,6 +687,26 @@ def _refuse_a_trash_around_the_music_root(
         f" {str(spelled)!r}{detail}. Spell it through beets' `directory:`.",
         headline=f"{TRASH_SETTING} reaches into the music library without naming it",
     )
+
+
+#: How much of ONE half of a cause is printed. Both halves are paths and the
+#: spelled path is printed beside them, so an un-elided pair doubled the 503:
+#: measured 2026-09-13 (security seat L-2), 1244 characters for a 900-byte link
+#: target, worst case about twice ``PATH_MAX``.
+_CAUSE_HALF_MAX: Final = 120
+
+
+def _elided(text: str) -> str:
+    """``text`` with its MIDDLE dropped once it is longer than :data:`_CAUSE_HALF_MAX`.
+
+    The middle and not the tail: the head of a path names the disk and the tail
+    names the folder, and both are what the operator re-points. The configured
+    spelling is left whole wherever it is printed — it is the value they typed.
+    """
+    if len(text) <= _CAUSE_HALF_MAX:
+        return text
+    keep = (_CAUSE_HALF_MAX - 1) // 2
+    return f"{text[:keep]}…{text[-keep:]}"
 
 
 def _refuse_an_uncheckable_trash_chain(spelled: Path, exc: OSError) -> StoreLayoutError:
@@ -907,6 +959,18 @@ class _Chain:
     search alone. One descriptor is open per instance, and ``fd`` is always the
     directory the walk stands on — a failed step leaves it where it was, so the
     caller's ENOENT arm still sees the prefix that really exists.
+
+    ``cause`` is the link this walk is the target of, for the two refusals that
+    name it; ``None`` in the walk over the configured spelling, which the
+    refusals print anyway.
+
+    With ``root_ident`` None — a music root that neither opens nor stats — no
+    component and no target is asked, because there is no identity to compare:
+    measured 2026-09-13 (security seat L-4), a link is then followed and the
+    Trash created at its target. The two adjacent states are not that: a
+    reach-in target under an absent root answers ENOENT, and a bare mountpoint
+    still HAS an identity, so the rule fires there (pinned by
+    ``test_an_empty_music_root_still_refuses_a_link_that_reaches_into_it``).
     """
 
     def __init__(
@@ -917,6 +981,7 @@ class _Chain:
         root_ident: tuple[int, int] | None,
         spelled: Path,
         hops: int = 0,
+        cause: str | None = None,
     ) -> None:
         self.fd = fd
         self.flags = flags
@@ -924,6 +989,7 @@ class _Chain:
         self.spelled = spelled
         self.below = False
         self.hops = hops
+        self.cause = cause
 
     def close(self) -> None:
         """Close the one descriptor this walk holds."""
@@ -950,24 +1016,36 @@ class _Chain:
         except OSError as exc:
             if exc.errno in (errno.ENOTDIR, errno.ELOOP):
                 if self.below:
-                    raise _refuse_an_unreachable_trash(self.spelled, exc) from exc
+                    raise _refuse_an_unreachable_trash(self.spelled, exc, self.cause) from exc
                 self._follow(part, exc)
                 return
             raise
-        self._arrive(opened, ask=not create)
+        self._arrive(opened, ask=not create, climbed=part == "..")
 
-    def _arrive(self, opened: int, *, ask: bool) -> None:
+    def _arrive(self, opened: int, *, ask: bool, climbed: bool = False) -> None:
         """Adopt ``opened`` as where the walk stands, asking the jump-in question.
 
         ``ask`` is False for a part the create loop just made, which carries the
         decision rather than re-taking it — the operator-chain race recorded
         under *Accepted residuals* in ``BACKLOG.md``, and the reason the measured
-        question counts in :func:`_below_the_music_root` are what they are.
+        question counts in :func:`_below_the_music_root` are what they are. No
+        test pins that line: measured 2026-09-13 (code seat Q1f), a mutant that
+        always asks passes the whole suite, and what tells the two apart is a
+        part that acquires the root's IDENTITY inside the create window.
+
+        ``climbed`` re-asks unconditionally, because ``below`` describes the
+        directory the walk stands on NOW and ``..`` moves it: a target that dips
+        into the library and climbs back out ends outside it, and was refused
+        with the not-reachable sentence while ``below`` stayed true (security
+        seat L-1, measured 2026-09-13). Only reachable inside a link target — the
+        configured spelling may hold no ``..``.
         """
         os.close(self.fd)
         self.fd = opened
-        if ask and not self.below and self.root_ident is not None:
-            self.below = _below_the_music_root(self.fd, self.root_ident, self.spelled)
+        if ask and (climbed or not self.below) and self.root_ident is not None:
+            self.below = _below_the_music_root(
+                self.fd, self.root_ident, self.spelled, cause=self.cause
+            )
 
     def _follow(self, part: str, refused: OSError) -> None:
         """Resolve the link at ``part`` by walking its target, hop by hop.
@@ -1002,30 +1080,36 @@ class _Chain:
             root_ident=self.root_ident,
             spelled=self.spelled,
             hops=self.hops,
+            cause=f"{_elided(display_path(part))!r} -> {_elided(display_path(target))!r}",
         )
         try:
             for hop in hops:
                 walk.step(hop)
-            self._decide(walk, cause=f"{display_path(part)!r} -> {display_path(target)!r}")
+            below = self._ended_below_the_music_root(walk)
             arrived = os.open(".", self.flags, dir_fd=walk.fd)
         finally:
             walk.close()
         os.close(self.fd)
-        self.fd, self.below, self.hops = arrived, walk.below, walk.hops
+        self.fd, self.below, self.hops = arrived, below, walk.hops
 
-    def _decide(self, walk: _Chain, *, cause: str) -> None:
-        """Ask a finished target walk whether it ended below the music root.
+    def _ended_below_the_music_root(self, walk: _Chain) -> bool:
+        """Whether a finished target walk ended below the music root.
 
-        Only when it met the root: a target that did not is outside the library
-        by the same climb every other component is judged by, asked already by
-        that walk's own last step. ``..`` inside a target is walked and not
-        refused — ``openat(fd, "..")`` is the kernel's own answer for a
+        Asked only when it met the root: a target that did not is outside the
+        library by the same climb every other component is judged by, asked
+        already by that walk's own last step. ``..`` inside a target is walked
+        and not refused — ``openat(fd, "..")`` is the kernel's own answer for a
         descriptor the walk holds — so a target that passes through the library
         and back out ends outside it, and this is what reads that back off the
         destination rather than off the path.
+
+        Raises:
+            StoreLayoutError: the target ended below the music root, named with
+                the link that reaches in.
         """
         if walk.below and self.root_ident is not None:
-            walk.below = _below_the_music_root(walk.fd, self.root_ident, self.spelled, cause=cause)
+            return _below_the_music_root(walk.fd, self.root_ident, self.spelled, cause=walk.cause)
+        return walk.below
 
 
 def _open_the_trash_chain(
@@ -1044,12 +1128,18 @@ def _open_the_trash_chain(
     created through its parent's descriptor — an existing part is not created.
     That stricter rule below the root because that is the chain the owner's
     layout ruling leaves attacker-writable. The create loop carries the jump-in
-    decision rather than re-taking it, so a part created above the root and
-    swapped inside that window for a real directory below the root is not
-    noticed — the operator-chain race, recorded under *Accepted residuals* in
-    ``BACKLOG.md`` ("The create loop never re-asks whether a component is below
-    the music root"); a link swapped in there IS refused, because resolving it is
-    the step itself and not a question about it.
+    decision rather than re-taking it, so a part that acquires the music root's
+    IDENTITY inside that window — the root renamed onto it, bind-mounted there,
+    or its parent renamed into the library — is not noticed, and a link the
+    attacker planted at a later component is then resolved and followed: measured
+    2026-09-13 (code seat Q1f), the Trash landed at that link's target outside
+    the library with the library-presence guard skipped. The precondition is
+    write access on the OPERATOR's chain above the music root, which is what
+    keeps it a residual — recorded under *Accepted residuals* in ``BACKLOG.md``.
+    A plain ``mkdir`` by a racer cannot reach it: a directory they create at that
+    path has the walk's own descriptor as its parent, so it is outside the
+    library. A link swapped in there IS refused, because resolving it is the step
+    itself and not a question about it.
 
     Identity and not spelling, measured 2026-09-12 (security seat H-2, code seat
     W1): the two settings can name one root two ways — a Trash under an ALIAS of

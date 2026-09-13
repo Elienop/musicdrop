@@ -23,6 +23,7 @@ from app.beets.protected import ProtectedTreeError, ProtectedTrees
 from app.beets.store_layout import (
     StoreLayoutError,
     checked_protected_trees,
+    checked_reachable_store_dirs,
     checked_store_dirs,
 )
 from app.beets.trash_manage import (
@@ -147,14 +148,20 @@ def _store(app: Any, *, protected: bool = False) -> CheckedTrash:
     settings = _settings(app)
     # One arm for both: ``checked_protected_trees`` CREATES the Trash when it is
     # absent, and refuses the same way when it cannot (a link below the music
-    # root, or a chain it cannot write).
+    # root, or a chain it cannot write). The read arm asks the SAME layout
+    # question without creating anything — the rows alone accepted a chain that
+    # reaches into the library through a link, so the listing enumerated the
+    # attacker's directory while every write here answered 503 (security seat
+    # M-1).
     try:
-        trash_dir, origins_dir = checked_store_dirs(settings, handle)
-        trees = (
-            checked_protected_trees(settings, handle, trash_dir=trash_dir, origins_dir=origins_dir)
-            if protected
-            else None
-        )
+        trees = None
+        if protected:
+            trash_dir, origins_dir = checked_store_dirs(settings, handle)
+            trees = checked_protected_trees(
+                settings, handle, trash_dir=trash_dir, origins_dir=origins_dir
+            )
+        else:
+            trash_dir, origins_dir = checked_reachable_store_dirs(settings, handle)
     except StoreLayoutError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     # The same tier, from the guard that refuses to CREATE a Trash inside a
