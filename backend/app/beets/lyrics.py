@@ -24,12 +24,11 @@ as absent). Everything else on disk wins over anything we fetched — see
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
-import secrets
-import shutil
+import stat
 from collections.abc import Callable
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,14 +40,17 @@ from beets.library import Library
 from beets.util.lyrics import INSTRUMENTAL_LYRICS, Lyrics
 from beetsplug._utils.requests import HTTPNotFoundError
 
-from app.beets.library import LibraryHandle, _is_instrumental
+from app.beets.library import LibraryHandle, _is_instrumental, _music_dir
 from app.beets.sidecars import PLAIN_EXT, SIDECAR_EXTS, SYNCED_EXT, sidecar_base
+from app.fsutil import open_below, open_root
 from app.models.lyrics import (
     ItemLyricsOutcome,
     ItemLyricsStatus,
     LyricsBackfillStatus,
     LyricsCoverage,
 )
+from app.playlists.atomic import write_atomic_text
+from app.wire import display_path
 
 _log = logging.getLogger(__name__)
 
@@ -132,90 +134,6 @@ def active_source_names(plugin: Any) -> list[str]:
     return [_backend_name(b) for b in getattr(plugin, "backends", [])]
 
 
-#: Flags for creating the atomic-write temp file, beside the unpredictable name
-#: :func:`_tmp_path` picks. ``O_EXCL`` makes the create fail rather than open
-#: whatever is at that path — a FIFO there made a plain ``open(tmp, "w")`` block
-#: until a reader appeared, forever, on the single-slot backfill worker.
-#: ``O_NOFOLLOW`` refuses a symlink; POSIX makes ``O_CREAT | O_EXCL`` fail EEXIST
-#: on one anyway (measured), so it earns its keep only if ``O_EXCL`` is dropped.
-#: Both guard a path nothing in the music share can aim at WITHOUT GUESSING the
-#: name :func:`_tmp_path` picked; a squatter that did land on it fails the create
-#: and the ``finally`` below clears it (a dangling symlink or a directory
-#: excepted). The
-#: read-side twin is
-#: :func:`_is_marker_sidecar`'s stat guard.
-_TMP_CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-
-
-def _tmp_path(dst: Path) -> Path:
-    """A temp sibling of ``dst`` under a name picked per call, not derived.
-
-    Sidecars are written inside the music library, which this deployment's
-    threat model treats as attacker-writable, and a derived ``.<name>.tmp`` is a
-    path something else can occupy first — measured on the art writer next door:
-    a symlink planted there was followed and ``os.replace`` published the link as
-    the destination. Here the flags above already refused that; the random name
-    is what keeps a squatter from refusing the WRITE instead. A FIFO at the
-    derived path failed the create and then self-healed, because the ``finally``
-    below unlinked it. A DANGLING symlink was the lockout: ``Path.exists()``
-    follows it, so it was never unlinked and every attempt for that track failed
-    EEXIST.
-
-    The name does NOT embed ``dst.name``, so its length does not grow with the
-    destination's: 33 bytes for this writer's ``.lrc``/``.txt`` and this box's
-    7-digit ``pid_max``. Embedding it cost ``len(dst.name) + 30``, which made a
-    sidecar name of 226-250 bytes fail ENAMETOOLONG where the 5-byte
-    ``.<name>.tmp`` had written it. Same naming rule as ``app.playlists.atomic``
-    and ``artist_art._tmp_path``.
-    """
-    return dst.parent / f".{os.getpid()}.{secrets.token_hex(8)}{dst.suffix}.tmp"
-
-
-def _atomic_write_text(dst: Path, text: str) -> None:
-    """Atomic utf-8 write (text mirror of ``artist_art._atomic_write_bytes``):
-    an unpredictable tmp created EXCLUSIVELY in the same dir (:func:`_tmp_path`,
-    :data:`_TMP_CREATE_FLAGS`) -> fsync -> dst mode preserved on rewrite (umask
-    default on first write) -> os.replace -> fsync parent dir.
-
-    Raises ``OSError`` and the caller decides what that means.
-    """
-    tmp = _tmp_path(dst)
-    try:
-        # 0o666 so the first write still takes the umask default, as the mode
-        # test pins; a rewrite has its mode restored by the copymode below.
-        fd = os.open(tmp, _TMP_CREATE_FLAGS, 0o666)
-        try:
-            stream = os.fdopen(fd, "w", encoding="utf-8")
-        except BaseException:  # pragma: no cover - fdopen fails only on a bad fd
-            os.close(fd)
-            raise
-        with stream as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        if dst.exists():
-            shutil.copymode(dst, tmp)  # mode preserved on rewrite; umask default on first write
-        os.replace(tmp, dst)
-        # O_DIRECTORY: a FIFO swapped in here blocks forever without it (measured: 2 s, no error).
-        dir_fd = os.open(dst.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-    finally:
-        # Whatever is at the temp path: ours, unless something guessed the name
-        # this call picked and got there first — in which case the create above
-        # already failed and this unlinks the squatter (excepted: a dangling
-        # symlink, which ``exists()`` reads as absent, and a directory, which
-        # ``unlink`` refuses). That condition is
-        # what keeps the line off paths somebody else put in the music folder.
-        # Its price is that a process KILLED mid-write leaves one dotfile no
-        # later call clears — the residual ``playlists.atomic`` already carries.
-        if tmp.exists():
-            with suppress(OSError):
-                tmp.unlink()
-
-
 def _sidecar_base(item: Any) -> str | None:
     """The track path without its extension, for building a sibling sidecar path.
 
@@ -227,12 +145,55 @@ def _sidecar_base(item: Any) -> str | None:
     return sidecar_base(getattr(item, "path", None))
 
 
-def _has_sidecar(item: Any) -> bool:
-    """Whether a ``.lrc`` or ``.txt`` lyric sidecar already sits next to the track."""
+def _sidecar_present(item: Any) -> bool:
+    """Whether a lyric sidecar sits next to the track, read through the album
+    folder's own descriptor — the same one the write resolves its names against.
+
+    This decides the ``skipped_existing`` early return in
+    :func:`_early_skip_outcome`, so it gates the FETCH: read by NAME it could
+    disagree with the write, and did. A dangling symlink at a sidecar name is
+    absent to ``os.path.exists`` and PRESENT to the descriptor's ``lstat``, so
+    such a track was fetched on every run and never written; a sidecar visible
+    only THROUGH a symlinked album folder was the mirror image, reported as
+    complete on a file the write refuses to touch.
+
+    A folder this cannot open answers False — the fetch then runs (the DB layer
+    still benefits) and :func:`write_lyric_sidecar` logs its own refusal, once.
+    """
     base = _sidecar_base(item)
     if base is None:
         return False
-    return any(os.path.exists(base + ext) for ext in SIDECAR_EXTS)
+    try:
+        dir_fd = _open_album_dir(Path(base).parent, Path(_music_dir(item._db)))
+    except (OSError, ValueError):
+        return False
+    try:
+        return bool(_present_sidecars(base, dir_fd=dir_fd))
+    finally:
+        os.close(dir_fd)
+
+
+def _sidecar_names(base: str) -> list[str]:
+    """The two sidecar names beside this track — the only strings that travel to a
+    syscall once the album folder's descriptor is open."""
+    return [Path(base + ext).name for ext in SIDECAR_EXTS]
+
+
+def _present_sidecars(base: str, *, dir_fd: int) -> list[str]:
+    """The sidecar NAMES that exist in ``dir_fd``, in ``SIDECAR_EXTS`` order.
+
+    ``follow_symlinks=False``, so a symlink at a sidecar name counts as PRESENT:
+    the gap-fill gate then refuses instead of publishing a regular file over it.
+    """
+    return [name for name in _sidecar_names(base) if _exists_at(name, dir_fd=dir_fd)]
+
+
+def _exists_at(name: str, *, dir_fd: int) -> bool:
+    try:
+        os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    return True
 
 
 #: A sidecar larger than this cannot be a bare "[Instrumental]" marker, so it is
@@ -240,43 +201,25 @@ def _has_sidecar(item: Any) -> bool:
 _MARKER_READ_CAP = 4096
 
 
-def _is_marker_sidecar(path: Path) -> bool:
-    """Whether this file's ENTIRE body is beets' "[Instrumental]" marker.
+#: A sidecar is read through the album folder's descriptor: ``O_NOFOLLOW`` so a
+#: symlink at the name is refused rather than read through, and ``O_NONBLOCK`` so
+#: a FIFO planted there cannot park the single-slot backfill worker on the open.
+#: Neither says the file IS regular — the ``fstat`` below decides that.
+_SIDECAR_READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
 
-    The authorship proxy for the one deletion this module still makes. Nothing
-    records who wrote a sidecar, so content decides: a file whose every non-empty
-    line is the marker holds no lyric data and is exactly the artifact legacy
-    flows left behind, while any real lyric text disqualifies the file.
+
+def _is_marker_body(raw: bytes) -> bool:
+    """Whether these bytes are nothing but beets' "[Instrumental]" marker.
 
     Timestamps are stripped line-wise with beets' own ``Lyrics.LRC_TIMESTAMP_PAT``
     (``.venv/lib/python3.12/site-packages/beets/util/lyrics.py:31``) so the
     LRC-timestamped form pre-#122 wrote — ``[00:01.00] [Instrumental]`` — matches
     the constant at that module's line 15 too.
 
-    Everything else is False, i.e. KEEP: real text, a mixed file, an EMPTY file
-    (a vacuous "no line differs" match is how a content guard turns back into a
-    blanket deleter), a file past ``_MARKER_READ_CAP``, undecodable bytes, a
-    non-regular or absent path, or a read error — unknown content may be the
-    user's lyrics. Never raises, and never opens anything but a regular file.
+    False for real text, a mixed file, EMPTY bytes (a vacuous "no line differs"
+    match is how a content guard turns back into a blanket deleter), more than
+    ``_MARKER_READ_CAP`` bytes, and undecodable bytes.
     """
-    try:
-        if not path.is_file():
-            # A cheap stat, and a HARD requirement rather than an optimisation:
-            # opening a FIFO for reading BLOCKS until a writer appears, and the
-            # backfill worker is single-slot — one named pipe at a sidecar path
-            # would park it until the process restarts. A device node, directory
-            # or dangling symlink is likewise never a sidecar, and the ordinary
-            # "no sidecar here" case lands on this line too, silently: it is not
-            # a fault, and a warning would fire twice per item on a library with
-            # none.
-            return False
-        with open(path, "rb") as f:
-            raw = f.read(_MARKER_READ_CAP + 1)
-    except FileNotFoundError:
-        return False  # raced away between the stat and the open — not a fault
-    except OSError:
-        _log.warning("lyric sidecar unreadable, keeping it: %s", path, exc_info=True)
-        return False
     if len(raw) > _MARKER_READ_CAP:
         return False
     try:
@@ -288,58 +231,157 @@ def _is_marker_sidecar(path: Path) -> bool:
     return bool(body) and all(line == INSTRUMENTAL_LYRICS for line in body)
 
 
-def remove_instrumental_marker_sidecars(item: Any) -> list[str]:
+def _is_marker_sidecar_at(name: str, *, dir_fd: int, shown: str) -> bool:
+    """Whether ``name`` in ``dir_fd`` is a file whose ENTIRE body is the marker.
+
+    The authorship proxy for the one deletion this module still makes. Nothing
+    records who wrote a sidecar, so content decides: a file whose every non-empty
+    line is the marker holds no lyric data and is exactly the artifact legacy
+    flows left behind, while any real lyric text disqualifies the file. ``shown``
+    is the path to name in a log line; only ``name`` reaches a syscall.
+
+    Everything it cannot read is False, i.e. KEEP — unknown content may be the
+    user's lyrics. A non-regular file (FIFO, directory, device) is rejected by
+    the ``fstat`` before any read: the open cannot block on it
+    (``_SIDECAR_READ_FLAGS``), and a read would. A refusal is silent — an absent
+    name is the ordinary case and a warning would fire twice per item on a
+    library with no sidecars, and a symlink at the name is a refusal rather than
+    a fault. A real read failure is logged once. Never raises.
+    """
+    try:
+        fd = os.open(name, _SIDECAR_READ_FLAGS, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        # ELOOP is what O_NOFOLLOW answers for a symlink at the name, live or
+        # dangling (measured 2026-09-12; with O_DIRECTORY it would be ENOTDIR).
+        # Silent, the way the stat guard this replaced rejected every
+        # non-regular shape.
+        if exc.errno != errno.ELOOP:
+            _log.warning(
+                "lyric sidecar unreadable, keeping it: %r", display_path(shown), exc_info=True
+            )
+        return False
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return False
+        raw = os.read(fd, _MARKER_READ_CAP + 1)
+    except OSError:
+        _log.warning("lyric sidecar unreadable, keeping it: %r", display_path(shown), exc_info=True)
+        return False
+    finally:
+        os.close(fd)
+    return _is_marker_body(raw)
+
+
+def _remove_marker_sidecars_at(base: str, *, dir_fd: int) -> list[str]:
+    """The marker-guarded unlink, every name resolved against ``dir_fd``."""
+    removed: list[str] = []
+    for ext in SIDECAR_EXTS:
+        shown = base + ext
+        name = Path(shown).name
+        if not _is_marker_sidecar_at(name, dir_fd=dir_fd, shown=shown):
+            continue
+        try:
+            os.unlink(name, dir_fd=dir_fd)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            _log.warning("lyric sidecar removal failed: %r", display_path(shown), exc_info=True)
+            continue
+        removed.append(shown)
+    return removed
+
+
+def remove_instrumental_marker_sidecars(item: Any, *, root: Path) -> list[str]:
     """Delete this track's ``.lrc``/``.txt`` sidecars **that are nothing but the
     "[Instrumental]" marker**; return the paths removed.
 
-    Deliberately not a general deleter. It is scoped twice over: to the two
-    siblings :func:`write_lyric_sidecar` could have written (a scope over NAMES),
-    and to files whose whole content is the marker (:func:`_is_marker_sidecar` —
-    a scope over CONTENT, the only authorship proxy available). A sidecar holding
+    Deliberately not a general deleter. It is scoped three times over: to the
+    album folder's own descriptor (a scope over the FOLDER), to the two siblings
+    :func:`write_lyric_sidecar` could have written (a scope over NAMES), and to
+    files whose whole content is the marker (:func:`_is_marker_sidecar_at` — a
+    scope over CONTENT, the only authorship proxy available). A sidecar holding
     real lyrics is the user's until proven otherwise and is always kept, so no
     caller — present or future — can use this to destroy lyric data.
 
-    A path-less item, a missing sidecar, a non-marker sidecar or an unlink error
-    is a no-op (read/unlink errors logged; a missing or non-marker sidecar is
-    deliberately silent — it is the ordinary case) rather than an error — never
-    raises, and never touches the audio file or a neighbouring track's sidecar.
+    ``root`` is the library root. The read and the unlink both resolve their name
+    against the descriptor :func:`_album_dir_fd` opened part by part below it, so
+    a folder reached through a symlinked component is refused with nothing read
+    and nothing unlinked. Measured before this: the unlink followed such a link
+    and deleted a file outside the library. Anchoring confines the remaining
+    name-level race — a swap between the content read and the unlink — to the
+    album folder itself.
+
+    A path-less item, a refused folder, a missing sidecar, a non-marker sidecar
+    or an unlink error is a no-op (read/unlink errors logged; a missing or
+    non-marker sidecar is deliberately silent — it is the ordinary case) rather
+    than an error: never raises, and never touches the audio file or a
+    neighbouring track's sidecar.
     """
     base = _sidecar_base(item)
     if base is None:
         return []
-    removed: list[str] = []
-    for ext in SIDECAR_EXTS:
-        path = Path(base + ext)
-        if not _is_marker_sidecar(path):
-            continue
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            continue
-        except OSError:
-            _log.warning("lyric sidecar removal failed: %s", path, exc_info=True)
-            continue
-        removed.append(str(path))
-    return removed
+    dir_fd = _album_dir_fd(Path(base).parent, root, refused="lyric sidecars left alone")
+    if dir_fd is None:
+        return []
+    try:
+        return _remove_marker_sidecars_at(base, dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
-def _sidecars_are_all_markers(item: Any) -> bool:
-    """Whether every sidecar beside this track is an "[Instrumental]" marker file.
+def _open_album_dir(directory: Path, root: Path) -> int:
+    """A directory fd for ``directory``, refusing a symlinked component below ``root``.
 
-    False when there are none at all: an empty ``all()`` is vacuously true, and a
-    vacuous match is exactly how a content guard turns back into a blanket
-    deleter. All-or-nothing on purpose — a curated ``.lrc`` next to a marker
-    ``.txt`` is one user's lyric state, and acting on half of it is acting on a
-    guess.
+    Owner ruling 2026-09-12: below the library root a bind mount is the supported
+    spelling for spanning disks, so a symlinked component is refused; the root
+    itself may be reached through a link. :func:`app.fsutil.open_below` opens
+    every part below the root with ``O_NOFOLLOW`` — measured, a symlink answers
+    ENOTDIR and so does a plain file in the way, so the errno cannot say which.
+
+    A track sitting directly IN the root (a flat ``path_formats``) has no part
+    below it, which ``open_below`` refuses by contract; the root is opened here
+    instead, following links the way the shared writer's own parent open does.
+
+    Raises ``OSError`` (something in the way) or ``ValueError`` (``directory`` is
+    outside ``root``). The fd is the caller's to close.
     """
-    base = _sidecar_base(item)
-    if base is None:
-        return False
-    existing = [Path(base + ext) for ext in SIDECAR_EXTS if os.path.exists(base + ext)]
-    return bool(existing) and all(_is_marker_sidecar(path) for path in existing)
+    rel = directory.relative_to(root)
+    if not rel.parts:
+        return open_root(root)
+    return open_below(root, rel)
 
 
-def write_lyric_sidecar(item: Any, lyrics: Lyrics) -> str | None:
+def _album_dir_fd(directory: Path, root: Path, *, refused: str) -> int | None:
+    """:func:`_open_album_dir`'s fd, or None and ONE warning naming the refusal.
+
+    Two causes, two messages: a row that never was under the root (a legacy
+    import, or a ``directory:`` the operator respelled — ``/mnt/music`` vs
+    ``/music``) is not a link problem, and a bind mount would not help it.
+
+    ``%r`` + ``display_path``: a folder name carrying a newline or an ANSI escape
+    forges log lines (measured; the rule is stated at ``api/artists.py:896``).
+    """
+    try:
+        return _open_album_dir(directory, root)
+    except ValueError:
+        _log.warning(
+            "%s, this folder is not under the library root: %r",
+            refused,
+            display_path(str(directory)),
+        )
+    except OSError:
+        _log.warning(
+            "%s, this folder is not reachable without following a link (bind mounts are"
+            " the supported spelling): %r",
+            refused,
+            display_path(str(directory)),
+        )
+    return None
+
+
+def write_lyric_sidecar(item: Any, lyrics: Lyrics, *, root: Path) -> str | None:
     """Write a Plex-readable lyric sidecar next to the track; return its path or None.
 
     **Fill gaps only — never clobber.** A track that already has a ``.lrc`` OR a
@@ -357,7 +399,7 @@ def write_lyric_sidecar(item: Any, lyrics: Lyrics) -> str | None:
 
     The single exception is content-proven and points the other way: when EVERY
     existing sidecar is an "[Instrumental]" marker
-    (:func:`_sidecars_are_all_markers`), the set counts as absent and is cleared
+    (:func:`_is_marker_sidecar_at`), the set counts as absent and is cleared
     before the write. A stale marker agrees with "this track has no lyrics", so
     keeping it while real lyrics arrive would leave Plex serving "[Instrumental]"
     forever. Any non-marker file present — including one half of a mixed pair —
@@ -369,6 +411,17 @@ def write_lyric_sidecar(item: Any, lyrics: Lyrics) -> str | None:
     only the sidecar, MusicDrop never renders lyric text, and honesty beats
     deletion.
 
+    ``root`` is the library root. The album folder's descriptor is opened FIRST,
+    part by part below it (:func:`_album_dir_fd`), and every later syscall —
+    the gap-fill gate's stat, the marker read, the clear's unlink, the create and
+    the publish — resolves a bare NAME against that one fd, so no component can
+    be re-resolved between the check and the act. A folder outside the root, or
+    reached through a symlinked component, is refused: None, one log line, and
+    nothing read, unlinked or written. Measured before the ruling: the write
+    followed such a link and landed outside the library; measured before the
+    descriptor moved first, the clear deleted a sidecar through the link the
+    write then refused.
+
     ``.lrc`` (timestamped) when the fetched lyrics are synced, else ``.txt``
     (plain, timestamps stripped). Non-destructive (never touches the audio file)
     and best-effort: a write error is logged and swallowed so a batch keeps
@@ -377,15 +430,6 @@ def write_lyric_sidecar(item: Any, lyrics: Lyrics) -> str | None:
     base = _sidecar_base(item)
     if base is None:
         return None
-    if _has_sidecar(item):
-        if not _sidecars_are_all_markers(item):
-            return None
-        # Every sidecar here is a stale "[Instrumental]" marker, which AGREES
-        # with "no lyrics" — keeping it would leave Plex showing "[Instrumental]"
-        # for a track we just found lyrics for, the mirror image of the verdict
-        # path that deletes exactly these files. Cleared through the
-        # marker-guarded remover, so this cannot reach anything else.
-        remove_instrumental_marker_sidecars(item)
     if lyrics.synced:
         ext, body = SYNCED_EXT, lyrics.text
     else:
@@ -394,11 +438,51 @@ def write_lyric_sidecar(item: Any, lyrics: Lyrics) -> str | None:
     if not body:
         return None
     dst = Path(base + ext)
-    try:
-        _atomic_write_text(dst, body + "\n")
-    except OSError:
-        _log.warning("lyric sidecar write failed: %s", dst, exc_info=True)
+    dir_fd = _album_dir_fd(dst.parent, root, refused="lyric sidecar skipped")
+    if dir_fd is None:
         return None
+    try:
+        present = _present_sidecars(base, dir_fd=dir_fd)
+        if present:
+            if not all(
+                _is_marker_sidecar_at(name, dir_fd=dir_fd, shown=str(dst.parent / name))
+                for name in present
+            ):
+                # The tag now holds the lyrics and the FILE layer is gap-fill
+                # only, so the existing sidecar wins. One line, because "found"
+                # with nothing written is otherwise invisible — and it fires once
+                # per track, since the filled tag then answers the skip gate.
+                _log.warning(
+                    "lyric sidecar not written, one is already beside the track: %r",
+                    display_path(str(dst)),
+                )
+                return None
+            # Every sidecar here is a stale "[Instrumental]" marker, which AGREES
+            # with "no lyrics" — keeping it would leave Plex showing
+            # "[Instrumental]" for a track we just found lyrics for, the mirror
+            # image of the verdict path that deletes exactly these files. Cleared
+            # through the marker-guarded unlink, so this cannot reach anything
+            # else.
+            _remove_marker_sidecars_at(base, dir_fd=dir_fd)
+        try:
+            # Only ``dst.name`` travels: every name is resolved against the fd the
+            # walk returned. ``mode=None`` takes the umask default, so the sidecar
+            # is as readable as the rest of the library (the Plex process is
+            # another uid). Its preserve-on-rewrite arm is all but unreachable
+            # from here: the gate above only lets a write through when nothing
+            # sits at the name or every sidecar was a marker just unlinked — the
+            # one way a file is still at the name is an unlink that FAILED and
+            # logged (``_remove_marker_sidecars_at``), where preserving that
+            # file's mode is the wanted answer anyway.
+            write_atomic_text(Path(dst.name), body + "\n", mode=None, dir_fd=dir_fd)
+        except (OSError, UnicodeEncodeError):
+            # UnicodeEncodeError (a ValueError): the shared writer's encode is
+            # STRICT, and fetched lyrics can carry a lone surrogate. This
+            # function's contract is that it never raises.
+            _log.warning("lyric sidecar write failed: %r", display_path(str(dst)), exc_info=True)
+            return None
+    finally:
+        os.close(dir_fd)
     return str(dst)
 
 
@@ -430,7 +514,10 @@ def _store_instrumental(item: Any, lyrics: Lyrics) -> None:
     item["lyrics_checked"] = 1
     _set_source_flex(item, lyrics)
     item.store()
-    remove_instrumental_marker_sidecars(item)
+    # The root the markers must stay below, read from the item's own library
+    # handle — the private surface ``item.store()`` above already requires. Kept
+    # off the signature: ``tests/test_browse.py:737`` calls this with an item.
+    remove_instrumental_marker_sidecars(item, root=Path(_music_dir(item._db)))
 
 
 def _store_lyrics(item: Any, lyrics: Lyrics, *, write: bool) -> bool:
@@ -457,7 +544,9 @@ def _store_lyrics(item: Any, lyrics: Lyrics, *, write: bool) -> bool:
     # are non-destructive and are the whole point for Plex).
     written = bool(item.try_write()) if write else False
     item.store()
-    write_lyric_sidecar(item, lyrics)
+    # The root the sidecar must stay below, read from the item's own library
+    # handle — the private surface ``item.store()`` above already requires.
+    write_lyric_sidecar(item, lyrics, root=Path(_music_dir(item._db)))
     return written
 
 
@@ -482,7 +571,7 @@ def _early_skip_outcome(
             item_id=item_id, status="skipped_instrumental", source=None, written=False
         )
     # Already complete: has a lyrics tag AND a Plex sidecar.
-    if not force and item.lyrics and _has_sidecar(item):
+    if not force and item.lyrics and _sidecar_present(item):
         return ItemLyricsOutcome(
             item_id=item_id, status="skipped_existing", source=None, written=False
         )
@@ -553,9 +642,11 @@ def _try_backend(
         return None, False  # this pair/backend simply has nothing
     except requests.exceptions.RequestException as exc:
         # Concise one-liner (str(exc) reads "429 ... Too Many Requests
-        # for url: ...") instead of a per-item traceback flood.
+        # for url: ...") instead of a per-item traceback flood. The label is raw
+        # TAG text, so it goes ``%r``: the same forged-log-line shape a path has
+        # (a newline plus an ANSI escape in a title), measured on the folder name.
         _log.warning(
-            "lyrics fetch failed: %s [%s]: %s",
+            "lyrics fetch failed: %r [%s]: %s",
             _item_label(item),
             _backend_name(backend),
             exc,

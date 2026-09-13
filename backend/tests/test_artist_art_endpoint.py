@@ -135,7 +135,7 @@ def test_a_forced_job_is_handed_a_resolver_for_the_checked_trash_store(
     import app.api.artists as artists_mod
     from app.artist_art_jobs.registry import ArtistArtBackfillRegistry
     from app.beets.artist_art import ArtTrashStore
-    from app.beets.store_layout import checked_store_dirs
+    from app.beets.store_layout import checked_protected_trees, checked_store_dirs
     from app.config import settings
 
     resolvers: list[Any] = []
@@ -152,9 +152,16 @@ def test_a_forced_job_is_handed_a_resolver_for_the_checked_trash_store(
     artists_mod._start(stub_app, reg, edit_lib, force=False, artist=None)
 
     trash_dir, origins_dir = checked_store_dirs(settings, handle)
+    # The identities too: the mover opens the Trash ROOT as the directory this
+    # examined, so a store resolved without them is a store nothing checked.
+    protected = checked_protected_trees(
+        settings, handle, trash_dir=trash_dir, origins_dir=origins_dir
+    )
     forced, unforced = resolvers
     assert unforced is None  # the skip-existing sweep replaces nothing
-    assert forced() == ArtTrashStore(trash_dir=trash_dir, origins_dir=origins_dir)
+    assert forced() == ArtTrashStore(
+        trash_dir=trash_dir, origins_dir=origins_dir, protected=protected
+    )
 
 
 def test_a_refused_store_layout_still_starts_the_job_with_no_store(
@@ -186,3 +193,48 @@ def test_a_refused_store_layout_still_starts_the_job_with_no_store(
     artists_mod._start(stub_app, ArtistArtBackfillRegistry(), edit_lib, force=True, artist="ABBA")
 
     assert resolvers[0]() is None  # started, with nowhere to put a replaced file
+
+
+def test_an_unmounted_library_still_starts_the_job_with_no_store(
+    monkeypatch: pytest.MonkeyPatch,
+    edit_lib: Library,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The second refusal tier at the same seam, and it is a different exception.
+
+    The store's creation refuses to make a Trash inside a library whose music is
+    not there (``LibraryRootUnavailableError``, not a ``StoreLayoutError``).
+    Per-artist like the layout refusal, so the run reports the folders it could
+    not touch instead of raising once per artist. Measured 2026-09-12 (code seat
+    W3, mutant m22): with the class dropped from the ``except`` tuple the whole
+    suite still passed.
+    """
+    import logging
+    from types import SimpleNamespace
+    from typing import Any
+
+    import app.api.artists as artists_mod
+    from app.artist_art_jobs.registry import ArtistArtBackfillRegistry
+    from app.beets.library import LibraryRootUnavailableError
+
+    def unmounted(*_a: object, **_kw: object) -> Any:
+        raise LibraryRootUnavailableError("Library folder is empty. Is the music share mounted?")
+
+    resolvers: list[Any] = []
+    monkeypatch.setattr(artists_mod, "checked_protected_trees", unmounted)
+    monkeypatch.setattr(
+        artists_mod,
+        "start_art_backfill",
+        lambda _reg, _lib, **kw: resolvers.append(kw["resolve_trash"]),
+    )
+    handle = make_test_handle(edit_lib, beets_dir_for(tmp_path))
+    stub_app = SimpleNamespace(state=SimpleNamespace(settings=None, beets_library=handle))
+
+    artists_mod._start(stub_app, ArtistArtBackfillRegistry(), edit_lib, force=True, artist="ABBA")
+
+    with caplog.at_level(logging.WARNING):
+        assert resolvers[0]() is None  # started, with nowhere to put a replaced file
+    assert any("the Trash store is refused" in r.getMessage() for r in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]

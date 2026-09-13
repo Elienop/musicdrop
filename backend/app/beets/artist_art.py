@@ -1,9 +1,17 @@
 """Write artist-poster/-background into the library's $albumartist/ folders for Plex.
 
 All artist-art disk writes live here (rule 3). Mirrors cover.py: bind
-``music_dir_context`` and write via the atomic tmp->rename recipe at 0o644 so
-Plex can read it. Plex's Local Media Assets reads ``artist-poster.<ext>`` +
+``music_dir_context`` and write through the shared atomic recipe
+(``app.playlists.atomic``) at the umask default so Plex can read it (0o644 at
+umask 022). Plex's Local Media Assets reads ``artist-poster.<ext>`` +
 ``artist-background.<ext>`` from the artist folder.
+
+Every syscall that names a file in an artist folder — the listing, the writes,
+the move-aside, and the background probe :func:`has_background` runs on a
+non-forced sweep — goes through a descriptor opened part by part below the
+library root (:func:`_open_folder`), so a folder reached through a symlinked
+component is reported failed instead of written outside the library. One per
+act, not one per folder: the probe opens its own.
 
 Those filenames are also what a person curates by hand, so a ``force`` write
 does not unlink what it replaces: the files it would overwrite go to the app's
@@ -20,20 +28,23 @@ before emptying it.
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 import os
-import secrets
-import shutil
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from beets.dbcore.query import MatchQuery
 
+from app.beets.library import _music_dir
+from app.beets.protected import ProtectedTrees
 from app.beets.trash import safe_container_name, trash_replaced_files
 from app.beets.trash_origins import TrashOriginsStoreUnusableError
+from app.fsutil import open_below
 from app.models.artist_art import ArtistArtOutcome, ArtistArtStatus
+from app.playlists.atomic import write_atomic_bytes
+from app.wire import display_path
 
 _log = logging.getLogger(__name__)
 
@@ -44,11 +55,19 @@ _MIME_EXT = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "im
 
 @dataclass(frozen=True)
 class ArtTrashStore:
-    """Where a replaced poster/background goes. Both halves of the Trash store,
-    taken together because :mod:`app.beets.trash` needs both for every move."""
+    """Where a replaced poster/background goes, and what was checked about it.
+
+    Both halves of the Trash store, taken together because :mod:`app.beets.trash`
+    needs both for every move, plus the identities the layout check examined
+    beside them: the mover opens the Trash ROOT as the directory ``protected``
+    names, so a Trash swapped for a symlink after the check is refused instead of
+    followed. Required rather than defaulted — a store resolved without it would
+    be a store nothing checked.
+    """
 
     trash_dir: Path
     origins_dir: Path
+    protected: ProtectedTrees
 
 
 class ArtTrashRefusedError(Exception):
@@ -66,10 +85,18 @@ class ArtTrashRefusedError(Exception):
 def get_artist_dirs(lib: Any, name: str) -> list[Path]:
     """Distinct $albumartist parent dirs for an artist's non-compilation albums.
 
-    Skips compilations / Various Artists and any album whose parent is the
-    library root (a non-$albumartist/$album layout — don't pollute the root).
+    Skips compilations / Various Artists, any album whose parent is the library
+    root, and any album whose item dir IS the root (a flat ``path_formats``, with
+    the tracks directly in it) — neither the root nor the directory above it is a
+    place to write. Measured before the second half: a flat library reported
+    every artist ``failed`` with a per-folder traceback, having tried to write
+    ABOVE the root; it answers ``no_folder`` now, which the UI already renders.
+
+    The root is ``library._music_dir``'s spelling, which is what
+    :func:`write_artist_art` anchors every write against: two spellings of one
+    path would make a folder inside the library look outside it.
     """
-    lib_root = Path(os.fsdecode(lib.directory))
+    lib_root = Path(_music_dir(lib))
     dirs: set[Path] = set()
     with lib.music_dir_context():
         for album in lib.albums(MatchQuery("albumartist", name)):
@@ -80,96 +107,60 @@ def get_artist_dirs(lib: Any, name: str) -> list[Path]:
             except ValueError:
                 continue  # empty album (no items)
             parent = album_dir.parent
-            if parent == lib_root:
-                continue  # flat layout — refuse to write into the library root
+            if parent == lib_root or album_dir == lib_root:
+                continue  # flat layout — neither the root nor above it
             dirs.add(parent)
     return sorted(dirs)
 
 
-#: Flags for creating the atomic-write temp file, beside the unpredictable name
-#: :func:`_tmp_path` picks. ``O_EXCL`` refuses an existing path instead of
-#: opening it, ``O_NOFOLLOW`` refuses a symlink. Same pair, same reason, as
-#: ``lyrics._TMP_CREATE_FLAGS``.
-_TMP_CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+def _open_folder(root: Path, directory: Path) -> int:
+    """The ONE descriptor every syscall for ``directory`` goes through.
 
+    ``root`` itself is opened FOLLOWING links — an operator's beets
+    ``directory:`` may be one — and every part below it ``O_NOFOLLOW``, so a
+    symlinked artist folder is refused instead of followed: measured before
+    this, a ``music/Artist -> ../outside`` link had the poster written to
+    ``outside/artist-poster.jpg`` and a forced run moved files from OUTSIDE the
+    library into Trash under the link's name. Owner ruling 2026-09-12: a bind
+    mount is the supported spelling for a folder on another disk.
 
-def _tmp_path(dst: Path) -> Path:
-    """A temp sibling of ``dst`` under a name picked per call, not derived.
+    ``relative_to`` raises ``ValueError`` for a folder outside ``root`` — a
+    legacy row, a library whose ``directory:`` moved — which is the same refusal
+    as the walk's, so the caller has one arm.
 
-    This writer's directory is inside the music library, which this
-    deployment's threat model treats as attacker-writable, and a derived
-    ``.<name>.tmp`` is a path something else can occupy first: a symlink planted
-    there was followed by ``open(tmp, "wb")``, and ``os.replace`` then published
-    the link itself as ``dst`` — measured, ``library.db`` overwritten with JPEG
-    bytes while the run reported the file written.
-
-    The name does NOT embed ``dst.name``, so its length does not grow with the
-    destination's — the same shape as ``lyrics._tmp_path``, which needs that
-    because its destination names run to NAME_MAX. Same naming rule as
-    ``app.playlists.atomic``, which also keeps two concurrent writers of one
-    target off a single inode.
+    The fd is the caller's to close. Because it is what the listing, the writes
+    and the move-aside all resolve against, a component cannot be re-pointed
+    between this check and the write.
     """
-    return dst.parent / f".{os.getpid()}.{secrets.token_hex(8)}{dst.suffix}.tmp"
-
-
-def _atomic_write_bytes(dst: Path, data: bytes) -> None:
-    """Atomic write (bytes variant of config_editor.atomic_write): an
-    unpredictable tmp in the same dir (:func:`_tmp_path`) -> fsync -> dst mode
-    preserved on rewrite (umask default on first write) -> os.replace -> fsync
-    parent dir."""
-    tmp = _tmp_path(dst)
-    try:
-        # 0o666 so the first write still takes the umask default, as the mode
-        # test pins; a rewrite has its mode copied from dst below.
-        fd = os.open(tmp, _TMP_CREATE_FLAGS, 0o666)
-        try:
-            stream = os.fdopen(fd, "wb")
-        except BaseException:  # pragma: no cover - fdopen fails only on a bad fd
-            os.close(fd)
-            raise
-        with stream as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        if dst.exists():
-            shutil.copymode(dst, tmp)  # mode preserved on rewrite; umask default on first write
-        os.replace(tmp, dst)
-        # O_DIRECTORY: a FIFO swapped in here blocks forever without it (measured: 2 s, no error).
-        dir_fd = os.open(dst.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-    finally:
-        # Whatever is at the temp path: ours, unless something guessed the name
-        # this call picked and got there first — in which case the create above
-        # already failed and this unlinks the squatter (excepted: a dangling
-        # symlink, which ``exists()`` reads as absent, and a directory, which
-        # ``unlink`` refuses). See ``lyrics``
-        # for the one residual (a process killed mid-write leaves the dotfile).
-        if tmp.exists():
-            with suppress(OSError):
-                tmp.unlink()
+    return open_below(root, directory.relative_to(root))
 
 
 @dataclass(frozen=True)
 class _PendingWrite:
-    """One planned file: where it goes, what goes in it, and what is there now."""
+    """One planned file: its NAME in the folder, what goes in it, what is there now."""
 
-    dst: Path
+    name: str
     data: bytes
-    existing: tuple[Path, ...]
+    existing: tuple[str, ...]
 
 
 def _folder_plan(
-    directory: Path, *, poster: tuple[bytes, str] | None, background: tuple[bytes, str] | None
+    fd: int, *, poster: tuple[bytes, str] | None, background: tuple[bytes, str] | None
 ) -> list[_PendingWrite]:
     """The planned writes for one folder, with the files each one would replace.
 
-    Globbed once per stem, ahead of any write, so the two kinds' replaced files
-    can go to Trash in ONE container — and so nothing is written into a folder
-    whose old files did not make it.
+    Listed once through ``fd``, ahead of any write, so the two kinds' replaced
+    files can go to Trash in ONE container — and so nothing is written into a
+    folder whose old files did not make it.
+
+    ``fnmatchcase`` over the names, which is the case-sensitive twin of the
+    ``glob`` this replaces; the names are what every later syscall passes, so
+    the plan cannot name a file in another directory.
     """
+    # Closed before the writes: an fd scandir dups the fd and the dup shares its
+    # offset, so an open iterator makes a later enumeration read [] (measured).
+    with os.scandir(fd) as entries:
+        names = sorted(entry.name for entry in entries)
     plan: list[_PendingWrite] = []
     for stem, asset in ((_POSTER, poster), (_BACKGROUND, background)):
         if asset is None:
@@ -177,9 +168,9 @@ def _folder_plan(
         data, mime = asset
         plan.append(
             _PendingWrite(
-                dst=directory / f"{stem}{_MIME_EXT.get(mime, '.jpg')}",
+                name=f"{stem}{_MIME_EXT.get(mime, '.jpg')}",
                 data=data,
-                existing=tuple(sorted(directory.glob(f"{stem}.*"))),
+                existing=tuple(n for n in names if fnmatch.fnmatchcase(n, f"{stem}.*")),
             )
         )
     return plan
@@ -196,7 +187,18 @@ def _container_name(directory: Path) -> str:
     return safe_container_name(directory.name, " - artist art")
 
 
-def _move_aside(directory: Path, replaced: list[Path], *, trash: ArtTrashStore | None) -> None:
+#: One wording for every move-aside refusal, so the count of files and the
+#: folder read the same whether a store was resolved at all or the mover
+#: refused. ``%r`` + ``display_path``: a folder name carrying a newline and an
+#: ANSI escape forges log lines (the rule is stated at ``api/artists.py``).
+_MOVE_ASIDE_REFUSED = (
+    "artist art was not written to %r: the %d file(s) it would replace could not be moved to Trash"
+)
+
+
+def _move_aside(
+    directory: Path, replaced: list[str], *, fd: int, trash: ArtTrashStore | None
+) -> None:
     """Move this folder's replaced poster/background files to Trash, or refuse.
 
     One Trash entry per artist FOLDER per run, holding both kinds: the origin
@@ -204,30 +206,36 @@ def _move_aside(directory: Path, replaced: list[Path], *, trash: ArtTrashStore |
     so a single entry for the whole Apply could name only one of them. Both
     files of one folder in one entry keeps the Trash page to one row per folder
     touched.
+
+    ``replaced`` are names in the folder ``fd`` is open on, the same descriptor
+    the writes use, so the files moved aside are the ones the plan read.
+
+    Every refusal is logged HERE, once, and :func:`write_artist_art` logs none
+    of them again: both arms raise ``ArtTrashRefusedError``, and a second record
+    up there made a refused folder cost two warnings and two tracebacks.
     """
     if trash is None:
+        _log.warning(_MOVE_ASIDE_REFUSED, display_path(str(directory)), len(replaced))
         raise ArtTrashRefusedError("no Trash store was resolved for this run")
     try:
         trash_replaced_files(
             replaced,
+            src_dir_fd=fd,
             container_name=_container_name(directory),
             origin=directory,
             trash_dir=trash.trash_dir,
             origins_dir=trash.origins_dir,
+            protected=trash.protected,
         )
     except (OSError, TrashOriginsStoreUnusableError) as exc:
         _log.warning(
-            "artist art was not written to %r: the %d file(s) it would replace could not"
-            " be moved to Trash",
-            str(directory),
-            len(replaced),
-            exc_info=True,
+            _MOVE_ASIDE_REFUSED, display_path(str(directory)), len(replaced), exc_info=True
         )
         raise ArtTrashRefusedError(str(exc)) from exc
 
 
 def _write_folder(
-    directory: Path, plan: list[_PendingWrite], *, force: bool, trash: ArtTrashStore | None
+    directory: Path, plan: list[_PendingWrite], *, fd: int, force: bool, trash: ArtTrashStore | None
 ) -> tuple[int, bool]:
     """Write one folder's planned files; returns ``(written, failed)``.
 
@@ -239,20 +247,32 @@ def _write_folder(
     folder's second file can fail after its first has already landed, and a
     count lost at that point would report an artist whose art was replaced as
     having written nothing.
+
+    ``mode=None`` takes the umask default, which is what the 0o666 create this
+    writer used to run did (0o644 at umask 022). Its preserve-on-rewrite arm is
+    unreachable from here: a file at the target name matches the plan's own
+    ``{stem}.*`` and has just been moved aside, so every write is a create.
+    ``dir_fd`` is :func:`_open_folder`'s descriptor, so the shared writer opens
+    no path of its own.
     """
     if force:
         replaced = [old for pending in plan for old in pending.existing]
         if replaced:
-            _move_aside(directory, replaced, trash=trash)
+            _move_aside(directory, replaced, fd=fd, trash=trash)
     written = 0
     failed = False
     for pending in plan:
         if pending.existing and not force:
             continue  # skip-existing
         try:
-            _atomic_write_bytes(pending.dst, pending.data)
+            write_atomic_bytes(Path(pending.name), pending.data, mode=None, dir_fd=fd)
         except OSError:
-            _log.warning("artist art was not written to %r", str(pending.dst), exc_info=True)
+            _log.warning(
+                "artist art was not written to %r in %r",
+                pending.name,
+                display_path(str(directory)),
+                exc_info=True,
+            )
             failed = True
         else:
             written += 1
@@ -267,8 +287,32 @@ def has_background(lib: Any, name: str) -> bool:
     when the write would be a no-op anyway: the skip-existing gate in
     :func:`_write_folder` is per-folder, so the fetch is only wasted when ALL
     folders already have the file.
-    False when any folder lacks it (the fetch is still needed to fill that one)."""
-    return all(any(d.glob(f"{_BACKGROUND}.*")) for d in get_artist_dirs(lib, name))
+    False when any folder lacks it (the fetch is still needed to fill that one).
+
+    Listed through the same descriptor the writer uses (:func:`_open_folder`), so
+    this read cannot answer for a folder reached through a symlinked component
+    that the write would refuse — measured, it used to answer True for one. A
+    folder that cannot be opened counts as LACKING the file, so the fetch still
+    runs for it and the writer reports the refusal."""
+    root = Path(_music_dir(lib))
+    return all(_folder_has_background(root, d) for d in get_artist_dirs(lib, name))
+
+
+def _folder_has_background(root: Path, directory: Path) -> bool:
+    """Whether ``directory`` holds an ``artist-background.*``, read through its own
+    descriptor. ``fnmatchcase`` over the bare names, the same match the writer's
+    plan makes (case-sensitive — pinned)."""
+    try:
+        fd = _open_folder(root, directory)
+    except (OSError, ValueError):
+        return False
+    try:
+        # Inside the ``with``: an fd scandir dups the fd and the dup SHARES its
+        # offset, so an iterator left open makes a later enumeration read [].
+        with os.scandir(fd) as entries:
+            return any(fnmatch.fnmatchcase(entry.name, f"{_BACKGROUND}.*") for entry in entries)
+    finally:
+        os.close(fd)
 
 
 def write_artist_art(
@@ -293,7 +337,13 @@ def write_artist_art(
     ``written`` counts the files that landed and ``status`` is ``failed`` as
     soon as one did not, so a run that replaced some art and then failed reports
     both halves instead of one.
+
+    A folder this cannot reach by name below the library root — a symlinked
+    component, a file in the way, a row pointing outside the root — is reported
+    ``failed`` with one log line and nothing written or moved. Neither the
+    ``ValueError`` nor the ``OSError`` that answers it leaves this function.
     """
+    root = Path(_music_dir(lib))
     dirs = get_artist_dirs(lib, name)
     if not dirs:
         return ArtistArtOutcome(artist=name, status="no_folder", written=0, dirs=0)
@@ -303,17 +353,45 @@ def write_artist_art(
     failed = False
     for directory in dirs:
         try:
+            fd = _open_folder(root, directory)
+        except (OSError, ValueError):
+            # One line, and it names the folder: the two causes are a symlinked
+            # or unreachable component and a folder outside the root, and the
+            # errno cannot tell a link from a file in the way (measured).
+            _log.warning(
+                "artist art was not written to %r: it is not reachable by name below the"
+                " library root — use a bind mount for a folder on another disk",
+                display_path(str(directory)),
+                exc_info=True,
+            )
+            failed = True
+            continue
+        try:
             wrote, folder_failed = _write_folder(
                 directory,
-                _folder_plan(directory, poster=poster, background=background),
+                _folder_plan(fd, poster=poster, background=background),
+                fd=fd,
                 force=force,
                 trash=trash,
             )
-        except (OSError, ArtTrashRefusedError):
+        except ArtTrashRefusedError:
+            # ``_move_aside`` logged this folder, with the traceback when there
+            # was one. A record here too made a refused folder cost two warnings
+            # and two tracebacks.
+            failed = True
+        except OSError:
+            # The arms around this one log; this one reported ``failed`` with no
+            # reason at all, and it is the arm a ``_folder_plan`` listing failure
+            # takes. The traceback is the reason.
+            _log.warning(
+                "artist art was not written to %r", display_path(str(directory)), exc_info=True
+            )
             failed = True
         else:
             written += wrote
             failed = failed or folder_failed
+        finally:
+            os.close(fd)
     status: ArtistArtStatus
     if failed:
         status = "failed"

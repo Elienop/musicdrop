@@ -145,15 +145,24 @@ def _store(app: Any, *, protected: bool = False) -> CheckedTrash:
     """
     handle: LibraryHandle = app.state.beets_library
     settings = _settings(app)
+    # One arm for both: ``checked_protected_trees`` CREATES the Trash when it is
+    # absent, and refuses the same way when it cannot (a link below the music
+    # root, or a chain it cannot write).
     try:
         trash_dir, origins_dir = checked_store_dirs(settings, handle)
+        trees = (
+            checked_protected_trees(settings, handle, trash_dir=trash_dir, origins_dir=origins_dir)
+            if protected
+            else None
+        )
     except StoreLayoutError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    trees = (
-        checked_protected_trees(settings, handle, trash_dir=trash_dir, origins_dir=origins_dir)
-        if protected
-        else None
-    )
+    # The same tier, from the guard that refuses to CREATE a Trash inside a
+    # library whose music is not there: a directory left on a bare mountpoint
+    # defeats the cheap mounted-check for every later caller (security seat
+    # H-1). Its own sentence, which is the one the README documents.
+    except LibraryRootUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return CheckedTrash(handle, trash_dir, origins_dir, trees)
 
 

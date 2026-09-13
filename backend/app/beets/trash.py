@@ -38,7 +38,7 @@ import shutil
 import stat
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from beets.library import Library
 from beets.util import bytestring_path
@@ -52,7 +52,9 @@ from app.beets.library import (
     require_library_root,
 )
 from app.beets.protected import (
+    ProtectedTreeError,
     ProtectedTrees,
+    open_checked_dir,
     refuse_a_held_store,
     refuse_protected_tree,
 )
@@ -65,7 +67,7 @@ from app.beets.trash_origins import (
     write_trash_origin,
 )
 from app.config import Settings
-from app.fsutil import exists, move_no_merge
+from app.fsutil import BELOW_FLAGS, exists, fsync_dir, move_no_merge
 from app.wire import PLACEHOLDER, display_path
 
 logger = logging.getLogger(__name__)
@@ -925,86 +927,398 @@ def trash_folder(
     return dest
 
 
+#: The copy the EXDEV arm creates in the container. ``O_EXCL`` refuses a name
+#: that is already taken instead of writing into it, ``O_NOFOLLOW`` refuses a
+#: symlink planted at it.
+_COPY_CREATE_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+
+
+def _st_ident(st: os.stat_result) -> tuple[int, int]:
+    """``(st_dev, st_ino)`` — the twin of ``trash_manage._ident``."""
+    return (st.st_dev, st.st_ino)
+
+
+def _is_the_staged_entry(current: os.stat_result, st: os.stat_result) -> bool:
+    """Whether a re-``lstat`` still describes the entry the caller staged.
+
+    Four fields, because an identity is not unique over TIME: a filesystem that
+    allocates inodes from a bitmap hands a freed number out again, so a name
+    unlinked and re-created can match ``(st_dev, st_ino)``. Measured 2026-09-13
+    on ubuntu-latest: a regular file written at a symlink's just-freed number
+    matched, and the unlink took it.
+
+    ``S_IFMT`` comes from the newcomer's OWN mode rather than from the number
+    it was handed, so a regular file at a symlink's number reads as a regular
+    file and this refuses it. ``st_size`` and ``st_mtime_ns`` also catch a
+    rewrite IN PLACE, which keeps the inode; refusing there leaves the source
+    alone and the copy in Trash, the direction that loses nothing.
+
+    Measured 2026-09-13: all four survive the real copy path unchanged on tmpfs
+    and btrfs, for a regular file and for a symlink, so a legitimate unlink
+    still passes. ``st_atime_ns`` is out — the copy READS the source, and a
+    mount that records reads would move it.
+    """
+    return (
+        _st_ident(current) == _st_ident(st)
+        and stat.S_IFMT(current.st_mode) == stat.S_IFMT(st.st_mode)
+        and current.st_size == st.st_size
+        and current.st_mtime_ns == st.st_mtime_ns
+    )
+
+
+def _refuse_a_non_file(name: str, st: os.stat_result) -> None:
+    """Refuse anything but a regular file or a symlink, from a staged ``lstat``."""
+    if not (stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)):
+        raise OSError(errno.EINVAL, "not a regular file or a symlink", name)
+
+
+def _refuse_a_non_bare_name(name: str) -> None:
+    """Refuse a name that is not a bare entry of the source directory.
+
+    What the anchoring rests on, so it is a syscall-free check rather than a
+    sentence in a docstring. POSIX ignores a ``dir_fd`` for an ABSOLUTE name:
+    ``os.rename(name, name, src_dir_fd=, dst_dir_fd=)`` renamed the file onto
+    itself and REPORTED success — measured, ``moved`` counted it and the origin
+    record was written for a container that got nothing. ``../library.db``
+    un-anchored both ends and left the file loose at the Trash ROOT. A separator
+    anchors only the FIRST component: ``os.stat("sub/f", dir_fd=,
+    follow_symlinks=False)`` reached a file outside the descriptor through a
+    symlinked ``sub``.
+    """
+    if not name or name in (".", "..") or "/" in name or os.sep in name:
+        raise OSError(errno.EINVAL, "not a bare entry name", name)
+
+
+def _publish_then_unlink(
+    name: str, *, src_dir_fd: int, dst_dir_fd: int, st: os.stat_result
+) -> None:
+    """Make the container's new entry durable, then drop the original.
+
+    ``fsync`` on the CONTAINER's descriptor first, because until that returns
+    the only entry naming those bytes on disk may still be the one about to go.
+
+    There is no unlink-by-fd, so the source is re-lstat'd through ``src_dir_fd``
+    immediately before it and compared field by field with what the caller
+    staged (:func:`_is_the_staged_entry`: identity, ``S_IFMT``, size, mtime): a
+    file that arrived after the copy never reached Trash, and unlinking it would
+    destroy it (measured). It is left alone instead — the copy stays in Trash,
+    the newcomer stays on disk — with one line, because the pair then reads as a
+    duplicate. The window is not closed, only narrowed to the two syscalls; an
+    entry that differs in none of the four fields still passes it.
+
+    A name that is GONE needs no unlink: somebody else removed it and the copy
+    in Trash is the end state this was moving towards.
+
+    A filesystem that cannot fsync a DIRECTORY at all is not a failed move —
+    FUSE and network mounts, which is exactly why this arm runs — so
+    ``fsutil.fsync_dir`` swallows those two errnos, and only for an fd that IS a
+    directory: measured, propagating one turned a completed move into a refusal
+    with the file in two places, and EINVAL alone would also have swallowed a
+    descriptor number a socket had taken over.
+    """
+    fsync_dir(dst_dir_fd)
+    try:
+        current = os.stat(name, dir_fd=src_dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if not _is_the_staged_entry(current, st):
+        logger.warning(
+            "%r was replaced after it was copied to Trash, so it was left in place",
+            display_path(name),
+        )
+        return
+    os.unlink(name, dir_fd=src_dir_fd)
+
+
+def _copy_between_fds(name: str, *, src_dir_fd: int, dst_dir_fd: int, st: os.stat_result) -> None:
+    """Copy ``name`` from one directory descriptor to the other, then unlink it.
+
+    The EXDEV arm, which the Docker default takes for every move: Trash lives on
+    ``/data`` and the library on ``/music``. Every name here is resolved against
+    one of the two descriptors, so no component is re-read from a path.
+
+    A symlink is recreated from its own target rather than copied through. A
+    regular file is opened ``O_NOFOLLOW`` and its ``fstat`` compared with the
+    identity the caller lstat'd: another inode at the name means the source
+    changed after the check, and the copy is refused. A rewrite IN PLACE is not
+    another inode, so a copy can carry post-check bytes with the pre-check mode
+    and mtime — the check says the name still means that file, not that the file
+    did not change.
+
+    The source goes LAST, through :func:`_publish_then_unlink`: what that
+    ordering covers is a CRASH (the original is still where it was), and what it
+    does not is a SWAP in the window, which is why the unlink re-reads the name.
+    """
+    if stat.S_ISLNK(st.st_mode):
+        os.symlink(os.readlink(name, dir_fd=src_dir_fd), name, dir_fd=dst_dir_fd)
+        _publish_then_unlink(name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, st=st)
+        return
+    src_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=src_dir_fd)
+    try:
+        if _st_ident(os.fstat(src_fd)) != _st_ident(st):
+            raise OSError(errno.EINVAL, "the file changed after it was checked", name)
+        mode = stat.S_IMODE(st.st_mode)
+        with os.fdopen(src_fd, "rb", closefd=False) as reader:
+            dst_fd = os.open(name, _COPY_CREATE_FLAGS, mode, dir_fd=dst_dir_fd)
+            with os.fdopen(dst_fd, "wb") as writer:
+                shutil.copyfileobj(reader, writer)
+                writer.flush()
+                os.fsync(writer.fileno())
+                # Mode and mtime through the copy's OWN fd: a name would be one
+                # more re-resolution, and the pair is what a user reads the file
+                # back by.
+                os.fchmod(writer.fileno(), mode)
+                os.utime(writer.fileno(), ns=(st.st_atime_ns, st.st_mtime_ns))
+    finally:
+        os.close(src_fd)
+    _publish_then_unlink(name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, st=st)
+
+
+def _move_between_fds(name: str, *, src_dir_fd: int, dst_dir_fd: int, st: os.stat_result) -> None:
+    """Move ``name`` between two directory descriptors, or refuse.
+
+    ``os.rename`` first, and the lstat through ``dst_dir_fd`` after it is what
+    decides whether what arrived may stay: it must be the same ``(st_dev,
+    st_ino)`` the caller staged AND still a regular file or a symlink, or it is
+    renamed back and the call refuses. Both of the measured swaps that reach
+    here fail it — a directory renamed onto a guarded name, which used to be
+    moved whole (the guard's lstat precedes the move by ~0.1 ms), and a
+    different regular file, which used to be accepted with the record naming the
+    one that was checked.
+
+    The type is re-asked because an identity is not unique over TIME: ext4 and
+    xfs allocate inodes from a bitmap and hand a freed number out again, so a
+    match can be a directory that took the number of the file this staged —
+    measured, with the clause removed, staging a directory's own identity
+    relocated the whole tree into the container.
+
+    EXDEV — a Trash dir on another filesystem — falls back to a copy through the
+    same two descriptors.
+    """
+    try:
+        os.rename(name, name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        _copy_between_fds(name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, st=st)
+        return
+    landed = os.stat(name, dir_fd=dst_dir_fd, follow_symlinks=False)
+    if _st_ident(landed) == _st_ident(st) and (
+        stat.S_ISREG(landed.st_mode) or stat.S_ISLNK(landed.st_mode)
+    ):
+        return
+    # Put back, and the call refuses either way. Suppressed because the source
+    # name can be occupied again by then: the entry then stays in the container,
+    # where the caller's ``moved == 0`` cleanup meets it.
+    with contextlib.suppress(OSError):
+        os.rename(name, name, src_dir_fd=dst_dir_fd, dst_dir_fd=src_dir_fd)
+    raise OSError(errno.EINVAL, "the file changed after it was checked", name)
+
+
+def _discard_own_container(name: str, *, fd: int, trash_fd: int) -> None:
+    """Remove the container this call created, while it is still that directory.
+
+    Reached when nothing moved. ``rmdir`` alone refused a container holding a
+    part-copied file and left a Trash row no origin record names, and
+    ``shutil.rmtree`` cannot do it through a descriptor: ``rmtree(".",
+    dir_fd=fd)`` answers EINVAL (measured) and ``rmtree(name, dir_fd=trash_fd)``
+    re-resolves the name.
+
+    The children go through ``fd``, the directory the ``mkdir`` claimed, and the
+    ``rmdir`` runs only while ``name`` still means that same directory —
+    ``trash_manage._Remover._directory``'s shape. A DIRECTORY among the children
+    is left alone: ``unlink`` refuses one, so a stranger's tree renamed in is
+    never removed and the ``rmdir`` then answers ENOTEMPTY.
+    """
+    claimed = os.fstat(fd)
+    # Closed before the unlink loop: an fd scandir DUPS the fd and the dup
+    # SHARES its offset, so one iterator left open makes every later enumeration
+    # of that fd read [] (measured).
+    with os.scandir(fd) as entries:
+        children = [entry.name for entry in entries]
+    for child in children:
+        with contextlib.suppress(OSError):
+            os.unlink(child, dir_fd=fd)
+    with contextlib.suppress(OSError):
+        if _st_ident(os.stat(name, dir_fd=trash_fd, follow_symlinks=False)) == _st_ident(claimed):
+            os.rmdir(name, dir_fd=trash_fd)
+
+
+def _root_refusal_strerror(protected: ProtectedTrees) -> str:
+    """Which of ``open_checked_dir``'s three refusals this was, without its path.
+
+    Read off the same ``protected`` the refusal was decided from — the alias and
+    the absent identity are both tested BEFORE the open, so this is the cause
+    rather than a guess. One strerror for all three used to tell an operator
+    whose Trash is bind-mounted onto another MusicDrop directory that something
+    had raced (security seat L-5).
+    """
+    if protected.trash is None:
+        return "the Trash directory could not be examined when it was checked"
+    if protected.trash_alias is not None:
+        return "the Trash directory is the same folder as another MusicDrop directory"
+    return "the Trash directory changed after it was checked"
+
+
+def _open_checked_trash_root(trash_dir: Path, protected: ProtectedTrees) -> int:
+    """A descriptor on the Trash ROOT: the directory the layout check examined.
+
+    ``store_layout`` refuses a Trash that IS or CONTAINS the music library and
+    permits one strictly INSIDE it (the owner's ruling — deletes become same-disk
+    renames). In that layout the Trash's parent is attacker-writable, so opening
+    the root by path followed a symlink swapped in after ``checked_store_dirs``:
+    measured, the container and the file landed in a directory of the attacker's
+    choosing while the checked Trash stayed empty and the origin record named an
+    entry that does not exist. ``open_checked_dir`` compares the identity
+    ``store_layout._ensure_trash_root`` took by ``fstat`` on the descriptor its
+    own anchored walk reached — never a second resolve by name, whose 18 µs
+    window a racer won 537 times in 100 876 requests (security seat M-1). The
+    descriptor this returns is the one ``trash_manage.empty_all`` enumerates
+    through, so a symlinked Trash root is refused by both or by neither.
+
+    This is the mover's ONLY open of the root, and it never creates: the Trash is
+    created where its identity is taken (``store_layout._ensure_trash_root``),
+    which either returns one or raises. So ``protected.trash is None`` now means
+    a set built without that walk — no request path builds one, and it is still
+    REFUSED rather than skipped, for the caller this module cannot see. The arm
+    that used to create the root here is what let a symlinked intermediate
+    component relocate the Trash for good (security seat M-3). A stranger's
+    directory that predates the creation is accepted, as it was before: that is
+    the attacker owning the Trash's location, which no check here can undo.
+
+    The chained ``ProtectedTreeError``'s own sentence ends "Nothing was removed"
+    — the remover's wording, since the message is shared with it
+    (``tests/test_trash_api.py`` pins that string); it reaches a mover's log
+    through ``__cause__`` only.
+
+    Raises:
+        OSError: the Trash is not the directory that was checked. An ``OSError``
+            rather than ``ProtectedTreeError`` because both callers already have
+            one arm for it, and because the reset endpoint relays ``strerror``
+            to keep the configured path off the wire while that exception spells
+            it in full.
+    """
+    try:
+        return open_checked_dir(trash_dir, protected)
+    except ProtectedTreeError as exc:
+        raise OSError(errno.EINVAL, _root_refusal_strerror(protected), str(trash_dir)) from exc
+
+
 def trash_replaced_files(
-    files: Sequence[Path],
+    names: Sequence[str],
     *,
+    src_dir_fd: int,
     container_name: str,
     origin: Path,
     trash_dir: Path,
     origins_dir: Path,
+    protected: ProtectedTrees,
 ) -> Path:
     """Move loose files the app is about to REPLACE into their own Trash container.
 
     For a write that would otherwise overwrite or unlink a file a person put
     there by hand — the artist-art writer's ``artist-poster.*`` /
-    ``artist-background.*``. The files go into one collision-free container
-    directly under ``trash_dir`` (a loose file at the Trash ROOT that
-    ``Item.from_path`` cannot read is listed by neither half of
+    ``artist-background.*``, the uploaded artist portrait. The files go into one
+    collision-free container directly under ``trash_dir`` (a loose file at the
+    Trash ROOT that ``Item.from_path`` cannot read is listed by neither half of
     ``trash_manage.list_trashed_albums``; a container directory is listed by
     ``_audio_free_entries`` as a zero-track row, so it has an Empty affordance
     - the page renders no Restore for this shape - and Empty-all counts it).
+
+    ``names`` are bare entry names in the directory ``src_dir_fd`` is open on,
+    and that descriptor is the only way the sources are reached: the caller
+    opened it, so a component swapped for a symlink afterwards cannot move what
+    this reads. BARE is enforced, not assumed — :func:`_refuse_a_non_bare_name`
+    refuses an absolute name, ``.``, ``..``, and any separator before a stat is
+    taken, because a violation did not fail here: it reported success. Both
+    callers pass what a ``scandir`` of that descriptor (or ``Path.name``) gave
+    them. Non-empty ``names`` is the caller's job.
 
     Recorded ``moved="files"``, which is what the listing turns into
     ``restore_mode="by_hand"``: the container is not the folder these files came
     from, so moving it back would put a directory where two files were, and an
     import of art has nothing to import. Restoring them is a hand copy out of
-    Trash, and the record is what names the folder to copy them into.
+    Trash, and the record is what names the folder to copy them into. The record
+    goes by PATH, not through a descriptor: a layout ROW keeps the origins store
+    out of the music library, so its parent is not attacker-writable. The Trash
+    ROOT has no such row — one strictly inside the library is allowed — so it is
+    NOT opened by path: :func:`_open_checked_trash_root` opens the identity the
+    layout check examined, and everything below it is a name resolved from that
+    descriptor.
 
-    No ``ProtectedTrees`` argument: every entry is lstat'd first and anything
-    that is not a regular file or a symlink is refused. That guard runs over all
-    of ``files`` BEFORE ``require_usable_store``, the allocator and the mkdir, so
-    the first lstat precedes the first move by ~0.1 ms (measured) — a directory
-    renamed onto a guarded name inside that window is moved whole. A rename
-    needs write on the source's parent, so only trees already inside the library
-    can be renamed in; accepted as a window, not a guarantee. Non-empty
-    ``files`` is the caller's job.
+    ``protected`` is what carries that identity. The entries themselves need no
+    tree guard: each is lstat'd through ``src_dir_fd`` first and anything that is
+    not a regular file or a symlink is refused, and :func:`_move_between_fds`
+    confirms through the CONTAINER's descriptor what each rename landed.
+
+    Two claims on the container name, because one is not enough:
+    ``os.mkdir(dest.name, dir_fd=trash_fd)`` refuses anything that predates it
+    (EEXIST), and the ``os.open`` + emptiness probe under it refuse a stranger's
+    EMPTY directory renamed onto the name in between — ``rename`` REPLACES an
+    empty directory (measured), so the claim alone does not hold the name. A
+    non-empty one is somebody's content: refused, and nothing in it is touched.
 
     Raises:
         TrashOriginsStoreUnusableError: the origin store cannot be used.
-        OSError: an entry is not a regular file or a symlink, or a move failed.
-            Whatever had already moved keeps its record; a container that got
-            nothing is removed again, with anything a part-copied move left in it.
+        OSError: a name is not a bare entry, the Trash root is not the
+            directory that was checked, an entry is not a regular file or a
+            symlink, the container name was taken, or a move failed. Whatever
+            had already moved keeps its record; a container that got nothing is
+            removed again, with anything a part-copied move left in it.
     """
-    for src in files:
-        mode = src.lstat().st_mode
-        if not (stat.S_ISREG(mode) or stat.S_ISLNK(mode)):
-            raise OSError(errno.EINVAL, "not a regular file or a symlink", str(src))
+    for name in names:
+        _refuse_a_non_bare_name(name)  # ahead of the stats: "sub/f" stats OUTSIDE
+    staged = [(name, os.stat(name, dir_fd=src_dir_fd, follow_symlinks=False)) for name in names]
+    for name, st in staged:
+        _refuse_a_non_file(name, st)
     require_usable_store(origins_dir)
-    trash_dir.mkdir(parents=True, exist_ok=True)
-    dest = _unique_trash_dest(trash_dir, origins_dir, container_name)
-    # No ``exist_ok``: the allocator found the name free, this is the claim on
-    # it. A directory that arrived in between raises here, before any move; one
-    # renamed in after the claim is the window the ``rmtree`` comment names.
-    dest.mkdir()
-    moved = 0
+    trash_fd = _open_checked_trash_root(trash_dir, protected)
     try:
-        for src in files:
-            shutil.move(str(src), str(dest / src.name))
-            moved += 1
+        # After the root open, so a refused Trash is not allocated in. The
+        # allocator still reads by path and answers a CANDIDATE; what claims it
+        # is the ``mkdir`` below, inside the checked directory. ``dest.name`` is
+        # a name that descriptor resolves — ``_one_trash_level`` made it a
+        # single separator- and NUL-free level.
+        dest = _unique_trash_dest(trash_dir, origins_dir, container_name)
+        os.mkdir(dest.name, dir_fd=trash_fd)
+        # An open that fails leaves the claimed directory behind rather than
+        # removing it: with no fd there is no identity to check, and an empty
+        # container in Trash is litter where removing a stranger's would not be.
+        fd = os.open(dest.name, BELOW_FLAGS, dir_fd=trash_fd)
+        try:
+            # Closed before anything else touches ``fd`` (the scandir dup shares
+            # the offset — see ``_discard_own_container``).
+            with os.scandir(fd) as entries:
+                stranger = next(entries, None) is not None
+            if stranger:
+                raise OSError(errno.ENOTEMPTY, "the container name was taken", str(dest))
+            moved = 0
+            try:
+                for name, st in staged:
+                    _move_between_fds(name, src_dir_fd=src_dir_fd, dst_dir_fd=fd, st=st)
+                    moved += 1
+            finally:
+                # The record is written for a PARTIAL move too: the files that
+                # did land are in Trash whatever the caller does next, and a
+                # container with no record reads as "predates origin records"
+                # instead of naming the folder it came out of. Nothing moved
+                # means nothing to say — and an empty container would sit in the
+                # Trash page forever.
+                if moved:
+                    # ``origin`` is recorded unchecked, and ``moved="files"`` is
+                    # what makes that safe: ``trash_origins.move_back_target``
+                    # returns None on any record that is not ``moved="folder"``,
+                    # before it reaches its lexical containment test, so no path
+                    # here ever steers a rename.
+                    _record_origin(
+                        origins_dir, dest, origin=os.path.abspath(str(origin)), moved="files"
+                    )
+                else:
+                    _discard_own_container(dest.name, fd=fd, trash_fd=trash_fd)
+        finally:
+            os.close(fd)
     finally:
-        # The record is written for a PARTIAL move too: the files that did land
-        # are in Trash whatever the caller does next, and a container with no
-        # record reads as "predates origin records" instead of naming the folder
-        # it came out of. Nothing moved means nothing to say — and an empty
-        # container would sit in the Trash page forever.
-        if moved:
-            # ``origin`` is recorded unchecked, and ``moved="files"`` is what
-            # makes that safe: ``trash_origins.move_back_target`` returns None on
-            # any record that is not ``moved="folder"``, before it reaches its
-            # lexical containment test, so no path here ever steers a rename.
-            _record_origin(origins_dir, dest, origin=os.path.abspath(str(origin)), moved="files")
-        else:
-            # Removed with its contents, not by ``rmdir``: a cross-filesystem
-            # ``shutil.move`` is a copy that can die mid-write, leaving a
-            # part-copied file here with ``moved == 0``. ``rmdir`` refuses a
-            # non-empty dir, which left a container in Trash that no origin
-            # record names. The ``mkdir`` above claims the name against
-            # anything that PREDATES it; a directory renamed onto the name
-            # AFTER that claim (window mkdir -> first move, ~5 us measured) is
-            # what this removes, and ``shutil.move`` follows a symlink swapped
-            # in there. ``rmtree`` itself refuses a symlink at ``dest``.
-            with contextlib.suppress(OSError):
-                shutil.rmtree(dest)
+        os.close(trash_fd)
     return dest
 
 

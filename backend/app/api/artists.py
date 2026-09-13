@@ -1,4 +1,5 @@
 import logging
+import os
 from functools import partial
 from pathlib import Path
 from typing import Annotated, Final, Literal, cast
@@ -44,15 +45,20 @@ from app.beets import library as beets_library
 from app.beets.artist_art import ArtTrashStore
 from app.beets.config_editor import _swap_lock
 from app.beets.delete import delete_artist_op
-from app.beets.library import LibraryHandle, list_artists
+from app.beets.library import LibraryHandle, LibraryRootUnavailableError, list_artists
 from app.beets.rename import apply_artist_rename_op, preview_artist_rename_op
-from app.beets.store_layout import StoreLayoutError, checked_store_dirs
+from app.beets.store_layout import (
+    StoreLayoutError,
+    checked_protected_trees,
+    checked_store_dirs,
+)
 from app.beets.trash import safe_container_name, trash_replaced_files
 from app.beets.trash_origins import TrashOriginsStoreUnusableError
 from app.config import Settings, resolve_artist_image_cache_dir
 from app.config import settings as _module_settings
 from app.etag import size_scoped_etag
 from app.events.emit import emit_art_changed, emit_library_changed
+from app.fsutil import open_root
 from app.library_busy import raise_if_library_busy, raise_if_swap_lock_held
 from app.models.artist import (
     Artist,
@@ -828,14 +834,27 @@ def _trash_override_files(files: list[Path], name: str, store: ArtTrashStore) ->
     ``safe_container_name``: "AC/DC" would otherwise nest it out of the Trash
     page. The origin recorded is the cache dir the files were in — read off the
     files themselves rather than resolved a second time.
+
+    The mover takes NAMES against a directory descriptor, so the cache dir is
+    opened once here and the two files are passed by name. FOLLOWING links,
+    unlike the library-side caller: this is an app-owned directory the operator
+    may legitimately place through a symlink, and it is not the surface the
+    anchoring exists for.
     """
-    trash_replaced_files(
-        files,
-        container_name=safe_container_name(name, " - artist image"),
-        origin=files[0].parent,
-        trash_dir=store.trash_dir,
-        origins_dir=store.origins_dir,
-    )
+    cache_dir = files[0].parent
+    dir_fd = open_root(cache_dir)
+    try:
+        trash_replaced_files(
+            [file.name for file in files],
+            src_dir_fd=dir_fd,
+            container_name=safe_container_name(name, " - artist image"),
+            origin=cache_dir,
+            trash_dir=store.trash_dir,
+            origins_dir=store.origins_dir,
+            protected=store.protected,
+        )
+    finally:
+        os.close(dir_fd)
 
 
 #: The 503 when the move into Trash fails. "The reset stopped" rather than
@@ -871,6 +890,11 @@ async def _move_override_to_trash(
     try:
         store = await run_in_threadpool(_checked_art_trash_store, handle, settings)
     except StoreLayoutError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    # The same tier: the store check refuses to create a Trash inside a library
+    # whose music is not there (security seat H-1), and the override is still
+    # served rather than unlinked.
+    except LibraryRootUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     try:
         await run_in_threadpool(_trash_override_files, files, name, store)
@@ -1099,13 +1123,19 @@ def _checked_art_trash_store(handle: LibraryHandle, settings: Settings) -> ArtTr
     turn a refused store into a 503 with the store's own sentence: it is about
     to move a file the user uploaded, and unlinking it instead is the data loss
     the whole move-aside exists to stop. Blocking (``resolve`` + the layout
-    walk's stats).
+    walk's stats + a stat per app-owned directory).
+
+    The identities go with the pair: the mover opens the Trash ROOT as the
+    directory this examined, so the two must come from one moment.
 
     Raises:
         StoreLayoutError: refused, or a path would not resolve.
     """
     trash_dir, origins_dir = checked_store_dirs(settings, handle)
-    return ArtTrashStore(trash_dir=trash_dir, origins_dir=origins_dir)
+    protected = checked_protected_trees(
+        settings, handle, trash_dir=trash_dir, origins_dir=origins_dir
+    )
+    return ArtTrashStore(trash_dir=trash_dir, origins_dir=origins_dir, protected=protected)
 
 
 def _art_trash_store(app: object, settings: Settings) -> ArtTrashStore | None:
@@ -1128,7 +1158,10 @@ def _art_trash_store(app: object, settings: Settings) -> ArtTrashStore | None:
         return None
     try:
         return _checked_art_trash_store(handle, settings)
-    except StoreLayoutError:
+    except (StoreLayoutError, LibraryRootUnavailableError):
+        # Both refusals mean the same thing here — there is no store to move a
+        # replaced file into — and both are per-artist, so a sweep reports the
+        # folders it could not touch rather than failing the job.
         _log.warning(
             "artist art: the Trash store is refused, so a forced write will not replace"
             " any existing file",

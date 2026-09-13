@@ -25,6 +25,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.beets.library import LibraryHandle
+from app.config import Settings
 from tests.conftest import beets_dir_for, build_library, make_test_handle
 
 
@@ -291,6 +292,178 @@ def test_the_duplicates_resolve_route_refuses_after_the_swap(
 
     assert r.status_code == 503, r.text
     assert "No copies have been moved." in r.json()["detail"]
+
+
+def test_the_duplicates_resolve_route_refuses_a_symlinked_part_below_the_music_root(
+    client: TestClient,
+    beets_library: LibraryHandle,
+    trash_inside_music: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CREATION is what this route used to skip.
+
+    It ran ``checked_store_dirs`` alone, and ``resolve_duplicate_group``'s own
+    ``mkdir(parents=True, exist_ok=True)`` then made the Trash through whatever
+    was in the way (code seat W2). The layout rows cannot catch it: they compare
+    RESOLVED paths, and a Trash reached through a link below the music root
+    resolves outside the library, which no row refuses.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    (music / "a").symlink_to(elsewhere)
+    monkeypatch.setattr("app.config.settings.trash_dir", str(music / "a" / "b" / ".trash"))
+
+    r = client.post(
+        "/api/duplicates/resolve",
+        json={"mode": "strict", "keep_album_id": 1, "remove_album_ids": [2]},
+    )
+
+    assert r.status_code == 503, r.text
+    assert "not reachable below the music library" in r.json()["detail"]
+    assert "No copies have been moved." in r.json()["detail"]
+    assert list(elsewhere.iterdir()) == [], "nothing created outside the library"
+
+
+def test_the_orphan_sweep_refuses_a_symlinked_part_below_the_music_root(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The sweep's own creation, for the same reason.
+
+    It built a bare ``protected_trees`` and handed the set to ``trash_folder``,
+    which creates the Trash by path (code seat W2) — so this phase was the one
+    place a symlinked component below the music root was still followed. Same
+    WARNING-and-skip as the layout arm above it.
+    """
+    from app.reorganize_jobs.registry import ReorganizeRegistry
+    from app.reorganize_jobs.runner import _sweep_orphans
+
+    music = tmp_path / "music"
+    (music / "Old Artist").mkdir(parents=True)
+    (music / "Old Artist" / "poster.jpg").write_bytes(b"\x00")
+    beets_dir = beets_dir_for(tmp_path)
+    handle = make_test_handle(build_library(str(beets_dir / "library.db"), str(music)), beets_dir)
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    (music / "a").symlink_to(elsewhere)
+    origins = tmp_path / "records"  # out of the library, or the store's own rule fires
+    origins.mkdir(parents=True)
+    reg = ReorganizeRegistry()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+
+    with caplog.at_level(logging.WARNING):
+        stopped = _sweep_orphans(
+            reg,
+            handle,
+            scope="library",
+            music_dir=music,
+            trash_dir=music / "a" / "b" / ".trash",
+            trash_origins_dir=origins,
+            vacated=[],
+            ignore_dirs=(),
+            protected_dirs=(),
+            settings=Settings(trash_dir=str(music / "a" / "b" / ".trash")),
+        )
+
+    assert stopped is False
+    assert reg.state().orphans_trashed == 0
+    assert (music / "Old Artist" / "poster.jpg").is_file()
+    assert list(elsewhere.iterdir()) == [], "nothing created outside the library"
+    assert any("the store layout is refused" in r.getMessage() for r in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]
+
+
+def test_the_duplicates_resolve_route_answers_503_when_the_library_looks_unmounted(
+    client: TestClient,
+    beets_library: LibraryHandle,
+    trash_inside_music: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The creation's presence guard reaches this route as a 503, not a 500.
+
+    ``checked_protected_trees`` raises ``LibraryRootUnavailableError``, which is
+    not a ``StoreLayoutError``: without its own arm the exception escapes the
+    route, and no handler is registered for it (``app/wire.py``), so the one
+    fault the operator most needs named — "the share is down" — would be a 500 on
+    a route whose statuses ``tests/test_route_status_declarations.py`` reads from
+    literals. Measured 2026-09-12 (code seat W3, mutant m20): with the arm
+    deleted the whole suite still passed.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    shutil.rmtree(music / "Artist A")  # the share dropped: the rows stay, the files go
+    monkeypatch.setattr("app.config.settings.trash_dir", str(music / "gone" / ".trash"))
+
+    r = client.post(
+        "/api/duplicates/resolve",
+        json={"mode": "strict", "keep_album_id": 1, "remove_album_ids": [2]},
+    )
+
+    assert r.status_code == 503, r.text
+    assert "none of the music files the library names are in it" in r.json()["detail"]
+    assert "No copies have been moved." in r.json()["detail"]
+    assert not (music / "gone").exists(), "nothing created inside a library that is not there"
+
+
+def test_the_orphan_sweep_skips_when_the_library_looks_unmounted(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The sweep's own arm for the same guard: WARNING and skip, job intact.
+
+    Its two siblings above (a refused layout, an unusable origin store) skip for
+    the same reason — failing the job costs the run its ``.m3u8`` re-export tail
+    for a fault about the Trash. Measured 2026-09-12 (code seat W3, mutant m21):
+    with the arm deleted the exception reaches ``sweep``'s blanket handler, which
+    calls ``reg.fail``, and the whole suite still passed.
+    """
+    import os
+
+    from beets.library import Item
+
+    from app.reorganize_jobs.registry import ReorganizeRegistry
+    from app.reorganize_jobs.runner import _sweep_orphans
+
+    music = tmp_path / "music"
+    husk = music / "Old Artist"
+    husk.mkdir(parents=True)
+    (husk / "poster.jpg").write_bytes(b"\x00")
+    beets_dir = beets_dir_for(tmp_path)
+    lib = build_library(str(beets_dir / "library.db"), str(music))
+    album = music / "Artist" / "Album"
+    album.mkdir(parents=True)
+    track = album / "01 Track.mp3"
+    track.write_bytes(b"\x00" * 64)
+    lib.add(Item(path=os.fsencode(str(track)), title="T", artist="Artist", album="Album", mtime=1))
+    shutil.rmtree(music / "Artist")  # present mountpoint, the named file gone
+    trash = music / "gone" / ".trash"
+    origins = tmp_path / "records"  # out of the library, or the store's own rule fires
+    origins.mkdir()
+    reg = ReorganizeRegistry()
+    reg.start(scope="library", artist=None, album_id=None, scope_label="library")
+
+    with caplog.at_level(logging.WARNING):
+        stopped = _sweep_orphans(
+            reg,
+            make_test_handle(lib, beets_dir),
+            scope="library",
+            music_dir=music,
+            trash_dir=trash,
+            trash_origins_dir=origins,
+            vacated=[],
+            ignore_dirs=(),
+            protected_dirs=(),
+            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins)),
+        )
+
+    assert stopped is False
+    assert reg.state().failures == [], "a fault about the Trash does not fail the run"
+    assert reg.state().orphans_trashed == 0
+    assert (husk / "poster.jpg").is_file(), "the husk stays in the library"
+    assert not (music / "gone").exists(), "nothing created inside a library that is not there"
+    assert any("the music library is not there" in r.getMessage() for r in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]
 
 
 # --------------------------------------------------------------------------

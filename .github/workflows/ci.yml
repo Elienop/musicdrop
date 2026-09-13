@@ -66,6 +66,12 @@ jobs:
         run: uv run mypy
 
       - name: Pytest
+        env:
+          # tests/test_trash_replaced_xdev.py needs two filesystems (Trash on
+          # /dev/shm, the library on /tmp) to make os.rename raise EXDEV itself.
+          # This turns "no second filesystem" from a skip into a failure, so the
+          # only real cross-device coverage cannot go quietly green here.
+          MUSICDROP_REQUIRE_XDEV: "1"
         run: uv run pytest
 
   frontend:

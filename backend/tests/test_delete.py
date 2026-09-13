@@ -287,14 +287,25 @@ def test_delete_artist_op_503_root_unavailable(duplicates_lib: Library, tmp_path
 # dropped, so the one fact known on every path is the one the 503 states.
 
 
-def _store_fault_req(lib: Library, tmp_path: Path, trash: Path) -> object:
-    """A stub request whose settings point the ops at ``trash``'s sibling store."""
+def _store_fault_req(
+    lib: Library, tmp_path: Path, trash: Path, *, origins: Path | None = None
+) -> object:
+    """A stub request whose settings point the ops at ``trash``'s sibling store.
+
+    ``origins`` overrides that sibling, which a Trash INSIDE the music library
+    needs: the layout rule refuses an origin store under the music root, and it
+    runs first, so the sibling default would answer a different refusal than the
+    test is about.
+    """
     handle = make_test_handle(lib, beets_dir_for(tmp_path))
 
     class _App:
         state = SimpleNamespace(
             beets_library=handle,
-            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins_for(trash))),
+            settings=Settings(
+                trash_dir=str(trash),
+                trash_origins_dir=str(origins if origins is not None else origins_for(trash)),
+            ),
         )
 
     class _Req:
@@ -401,7 +412,10 @@ def test_delete_op_503_when_the_origin_store_cannot_be_used(
     assert len(list(duplicates_lib.albums())) == total_before
     assert duplicates_lib.get_album(album_id) is not None
     assert os.path.isdir(folder), "the album's files are still where the library says"
-    assert not trash.exists(), "no Trash name was allocated and no Trash dir created"
+    # The Trash ROOT exists — the request's own IDENTITY check creates it
+    # (``checked_protected_trees``; the layout walk creates nothing) — and
+    # nothing was allocated in it.
+    assert list(trash.iterdir()) == [], "no Trash name was allocated"
     if shape == "file":
         assert origins.read_bytes() == b"not a directory", "the store is as it was"
     else:
@@ -872,9 +886,9 @@ def test_delete_artist_partial_counts_moves_not_row_drops(
     assert "3 of 4" in message  # three albums' rows are gone, and it says so
     assert "moved to Trash" not in message  # but not one file was
     assert "Permission denied" in message  # the real cause still names itself
-    # The physical fact the wording has to match: there is no Trash folder at
-    # all, so a line telling the user to look in it points at nothing.
-    assert not trash.exists()
+    # The physical fact the wording has to match: the Trash folder holds
+    # nothing, so a line telling the user to look in it points at nothing.
+    assert list(trash.iterdir()) == []
     assert detail["recovery"] == _LOOK_IN_TRASH
     assert len([a for a in lib.albums() if a.albumartist == _GHOST_ARTIST]) == 1
 
@@ -1076,8 +1090,8 @@ def test_delete_artist_500_on_the_FIRST_album_does_not_promise_trash(
     assert "Permission denied" in detail["message"]  # the cause is still relayed
     assert "recoverable in the Trash folder" not in detail["recovery"]
     assert detail["recovery"] == _LOOK_IN_TRASH
-    # The disk agrees with the sentence: there is no Trash folder to look in.
-    assert not trash.exists()
+    # The disk agrees with the sentence: the Trash folder holds nothing.
+    assert list(trash.iterdir()) == []
     assert len([a for a in duplicates_lib.albums() if a.albumartist == "Radiohead"]) == 2
 
 
@@ -1569,7 +1583,7 @@ def test_the_delete_routes_500_description_does_not_deny_its_own_body(
     detail = ei.value.detail
     assert isinstance(detail, dict)
     assert detail["recovery"] == _LOOK_IN_TRASH
-    assert not trash.exists()  # nothing moved here, and the body promises nothing
+    assert list(trash.iterdir()) == []  # nothing moved, and the body promises nothing
 
     description = app.openapi()["paths"][path]["delete"]["responses"]["500"]["description"]
     assert "recoverable in the Trash folder" not in description, (
@@ -1691,3 +1705,71 @@ def test_the_delete_routes_503_description_does_not_deny_a_share_that_dropped_mi
     # what is known (no rows are gone) and what is not (go and look).
     assert promise in description
     assert "check there before retrying" in description
+
+
+def test_delete_op_503_when_the_library_looks_unmounted_before_the_trash_is_made(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    """The op's store check refuses to put a Trash on a bare mountpoint.
+
+    Measured 2026-09-12 (security seat H-1): the creation ran ahead of every
+    presence guard, so a destructive request on a dropped share left a directory
+    in the music root that defeated the cheap mounted-check permanently, and the
+    next disk sync dropped every row. The op reached
+    ``require_library_root`` only AFTER this helper, so the refusal is new here.
+    """
+    music = Path(duplicates_lib.directory.decode())
+    for child in music.iterdir():  # the share drops; the mountpoint stays
+        shutil.rmtree(child)
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = _require_id(album.id)
+    req = _store_fault_req(
+        duplicates_lib, tmp_path, music / "a" / ".trash", origins=tmp_path / "origins"
+    )
+    coro = delete_album_op(req, album_id)  # type: ignore[arg-type]  # duck-typed stub
+
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(coro)
+
+    assert ei.value.status_code == 503
+    detail = ei.value.detail
+    assert isinstance(detail, str)
+    assert "Is the music share mounted?" in detail
+    assert detail.endswith("Nothing has been deleted.")
+    assert list(music.iterdir()) == [], "nothing created on the bare mountpoint"
+    assert duplicates_lib.get_album(album_id) is not None
+
+
+@pytest.mark.skipif(os.getuid() == 0, reason="root writes a read-only directory anyway")
+def test_delete_op_503_when_the_trash_dir_cannot_be_created(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    """The op's own store check CREATES the Trash, so its refusal is a 503 here.
+
+    ``checked_protected_trees`` creates the directory one line before it takes
+    the identity the mover compares (``store_layout._ensure_trash_root``); it
+    used to be called outside this helper's ``except StoreLayoutError`` arm, so
+    an uncreatable Trash answered 500 with no "nothing has been deleted".
+    """
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o500)
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    album_id = _require_id(album.id)
+    req = _store_fault_req(duplicates_lib, tmp_path, locked / "trash")
+    # Created outside the block (nothing runs until asyncio.run drives it), so
+    # the raises body holds the one call that can throw.
+    coro = delete_album_op(req, album_id)  # type: ignore[arg-type]  # duck-typed stub
+
+    try:
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(coro)
+    finally:
+        locked.chmod(0o700)
+
+    assert ei.value.status_code == 503
+    detail = ei.value.detail
+    assert isinstance(detail, str)
+    assert "could not be created" in detail
+    assert detail.endswith("Nothing has been deleted.")
+    assert duplicates_lib.get_album(album_id) is not None

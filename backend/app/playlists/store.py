@@ -22,7 +22,6 @@ import hashlib
 import json
 import logging
 import math
-import os
 import re
 import threading
 import uuid
@@ -36,7 +35,7 @@ from pydantic import BaseModel, model_validator
 from app.config import PLAYLISTS_STORE, settings, store_dir
 from app.models.playlist import PendingTrack
 from app.models.plex import PlexTargetState
-from app.playlists.atomic import write_atomic_text
+from app.playlists.atomic import write_atomic_bytes, write_atomic_text
 
 
 def get_playlists_dir() -> Path:
@@ -196,34 +195,15 @@ def artwork_path(playlists_dir: Path, playlist_id: str, format: str) -> Path:
 
 
 def _write_artwork_atomic(path: Path, data: bytes) -> None:
-    """Crash-safe write of the raw art bytes — the binary sibling of the shared
-    ``write_atomic_text`` recipe (tmp -> fsync -> chmod -> replace -> parent
-    fsync), owner-only ``0o600`` to match the store's atomic-write posture."""
-    mode = 0o600
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.parent / f".{path.name}.tmp"
-    try:
-        # Create the tempfile with the final mode up front (os.open honours
-        # umask, so the following chmod pins the exact bits).
-        fd = os.open(tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, mode)
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(tmp, mode)
-        os.replace(tmp, path)
-        # O_DIRECTORY: a FIFO swapped in here blocks forever without it (measured: 2 s, no error).
-        dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+    """Crash-safe write of the raw art bytes through the shared sink, owner-only
+    ``0o600`` to match the store's atomic-write posture.
+
+    Was a second copy of the recipe with a temp at ``.<name>.tmp`` and no
+    ``O_EXCL``/``O_NOFOLLOW``: measured, the create followed a symlink planted
+    at that precomputable name, so the link's target took the art bytes and
+    0o600 and ``os.replace`` published the LINK as the artwork.
+    """
+    write_atomic_bytes(path, data, mode=0o600)
 
 
 def create_playlist(

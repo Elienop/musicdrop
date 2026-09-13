@@ -15,7 +15,7 @@ from app.api.artists import get_artist_image_cache, get_artist_image_service
 from app.artwork.cache import ArtistImageCache
 from app.beets.artist_art import ArtTrashStore
 from app.main import app
-from tests.conftest import beets_dir_for, make_test_handle
+from tests.conftest import beets_dir_for, make_test_handle, protected_for
 
 
 class _RecordingBroker:
@@ -76,7 +76,13 @@ def art_client(
     # stub handle below cannot satisfy the real resolver (it needs a beets
     # library). What lands in this store is pinned in
     # tests/test_artist_image_reset_to_trash.py; here it only has to work.
-    store = ArtTrashStore(trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins")
+    trash = tmp_path / "trash"
+    trash.mkdir()  # created before the identity is taken, as the resolver does
+    store = ArtTrashStore(
+        trash_dir=trash,
+        origins_dir=tmp_path / "trash-origins",
+        protected=protected_for(trash_dir=trash, origins_dir=tmp_path / "trash-origins"),
+    )
     monkeypatch.setattr(artists_mod, "_checked_art_trash_store", lambda *_a, **_kw: store)
     broker = _RecordingBroker()
     app.state.event_broker = broker

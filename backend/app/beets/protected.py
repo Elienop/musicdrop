@@ -8,9 +8,9 @@ remove the beets dir. The identity question is asked again where a tree is moved
 or removed, against the ``(st_dev, st_ino)`` of every DIRECTORY in it: one stat
 per directory in the tree it walks.
 
-A leaf module — ``app.config`` and nothing else of this app's — so the movers,
-the remover and ``store_layout`` can all reach it. Residuals live in one place,
-the BACKLOG entry for this slice.
+A leaf module — ``app.config``, ``app.fsutil`` and nothing else of this app's,
+both leaves themselves — so the movers, the remover and ``store_layout`` can all
+reach it. Residuals live in one place, the BACKLOG entry for this slice.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Final, Literal
 
 from app.config import Settings, app_owned_dirs, export_dir
+from app.fsutil import BELOW_FLAGS
 
 logger = logging.getLogger(__name__)
 
@@ -124,12 +125,21 @@ def protected_trees(
     trash_dir: Path,
     origins_dir: Path,
     library_path: Path,
+    trash_ident: tuple[int, int] | None = None,
 ) -> ProtectedTrees:
     """Identify the directories a mover or a remover may not act on.
 
     :func:`protected_entries`, by identity. A path that is not there yet has no
     identity and drops out; it gets one the next time this runs, which is once
     per destructive request.
+
+    ``trash_ident`` is the Trash's identity taken from a descriptor the CALLER
+    already holds — ``store_layout._ensure_trash_root``'s anchored walk — and it
+    replaces the ``stat`` by name this would otherwise take. Measured (security
+    seat M-1): 18 µs separated the two, and a racer who swapped an intermediate
+    component inside that window was followed by this stat and by the mover's own
+    open alike, so the two agreed and the files left the library. ``None`` keeps
+    the by-name stat, for the callers that hold no descriptor.
     """
     entries = protected_entries(
         settings=settings,
@@ -143,11 +153,11 @@ def protected_trees(
     trash: tuple[int, int] | None = None
     seen: list[tuple[tuple[int, int], str, str]] = []
     for path, name, setting in entries:
-        ident = _ident(path)
+        ident = trash_ident if name == _TRASH_NAME and trash_ident is not None else _ident(path)
         if ident is None:
             continue
         if name == _TRASH_NAME:
-            trash = ident  # the same stat the loop already took
+            trash = ident  # the caller's descriptor, or the stat the loop took
         seen.append((ident, name, setting))
         # First writer wins, so the five the rule is about name themselves when a
         # store shares their directory (the default `library:` sits in the beets
@@ -283,11 +293,16 @@ def open_checked_dir(path: Path, protected: ProtectedTrees) -> int:
     identity is the Trash's own rather than one of the app's other directories,
     which is what a bind mount aliases and every spelled row allows.
 
-    The caller enumerates through this descriptor, so a swap of the Trash ROOT
-    after the open changes nothing it reads. Each ENTRY name resolves anew inside
-    it: that identity is ``trash_manage._remove_checked_entry``'s to pin, and
+    The caller acts through this descriptor — the remover enumerates, the
+    move-aside creates its container under it — so a swap of the Trash ROOT
+    after the open reaches neither. Each ENTRY name resolves anew inside it:
+    that identity is ``trash_manage._remove_checked_entry``'s to pin, and
     measured, a rename onto an entry's name after this returns was enough to
     delete the tree it named.
+
+    The refusals say "Nothing was removed", which is the remover's wording and
+    is pinned as a string by ``tests/test_trash_api.py``; a MOVER surfaces them
+    as its own ``OSError`` and keeps this exception only as ``__cause__``.
     """
     expected = protected.trash
     if expected is None:
@@ -302,7 +317,7 @@ def open_checked_dir(path: Path, protected: ProtectedTrees) -> int:
             " Nothing was removed."
         )
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        fd = os.open(path, BELOW_FLAGS)
     except OSError as exc:
         raise ProtectedTreeError(
             f"Refused: {str(path)!r} is not the directory MusicDrop checked"

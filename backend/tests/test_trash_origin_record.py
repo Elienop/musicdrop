@@ -2199,11 +2199,12 @@ def test_an_entry_name_too_long_for_a_json_suffix_still_gets_its_record(tmp_path
     cannot, forever (a retry can never succeed). The failure would be swallowed
     and the row would degrade to an import-restore with no hint why.
 
-    The real budget is TIGHTER than ``NAME_MAX`` and this test is what found
-    that: the shared atomic writer creates ``.<name>.<pid>.<16 hex>.tmp`` beside
-    the target, so a record filename truncated to exactly 255 bytes still raised
-    ENAMETOOLONG on the TEMP file and the record was lost with a perfectly legal
-    target name. Hence :data:`_MAX_KEY_BYTES`.
+    This test is what found the tighter budget, back when the shared atomic
+    writer created ``.<name>.<pid>.<16 hex>.tmp`` beside the target: a record
+    filename truncated to exactly 255 bytes still raised ENAMETOOLONG on the
+    TEMP file and the record was lost with a perfectly legal target name. The
+    temp no longer embeds the target's name, so :data:`_MAX_KEY_BYTES` is a
+    COMPATIBILITY constant — the keys already on disk are truncated to it.
 
     The bound is pinned in BOTH directions, because a test that derived its
     inputs from the constant would move with it and prove only self-consistency:
@@ -2212,6 +2213,7 @@ def test_an_entry_name_too_long_for_a_json_suffix_still_gets_its_record(tmp_path
     """
     assert _NAME_MAX == 255
     assert _NAME_MAX <= os.pathconf(str(tmp_path), "PC_NAME_MAX")
+    assert _MAX_KEY_BYTES == 223  # frozen: existing record filenames are truncated to it
     origins = tmp_path / "trash-origins"
     origins.mkdir()
     name = "L" * 251  # 251 + len(".json") = 256
@@ -2380,9 +2382,11 @@ def test_a_name_that_only_the_temp_file_overflows_still_gets_its_record(tmp_path
 
     A 240-byte entry name makes a 245-byte ``<name>.json`` — a filename the
     kernel accepts, so a threshold of ``NAME_MAX`` looks correct and every test
-    at 251+ bytes still passes. The ATOMIC write then fails anyway, because
-    ``write_atomic_bytes`` puts ``.<name>.<pid>.<16 hex>.tmp`` beside the target,
-    and the record is silently lost with a perfectly legal target name.
+    at 251+ bytes still passes. The ATOMIC write failed anyway while its temp
+    embedded the target (``.<name>.<pid>.<16 hex>.tmp``), and the record was
+    silently lost with a perfectly legal target name. That temp shape is gone;
+    240 bytes is still over the 223-byte cap, so the truncate branch this test
+    covers still runs, and the cap is now held for on-disk compatibility.
 
     Both halves: the plain spelling really would be accepted as a filename (so
     the threshold cannot be justified by ``NAME_MAX``), and the record really

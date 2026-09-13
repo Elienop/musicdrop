@@ -180,7 +180,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   parked — check that first: if it cannot, this is unreachable rather than a bug.
 
 - ~~**`/browse`'s facet checkboxes get 20×24 of the new 24×24 tap target**~~ — **CLOSED
-  2026-09-11** (on `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at merge; vault
+  2026-09-11** (on `fix/phone-width-rows-and-hit-areas`, PR #221, squash `a053ffc` = v0.51.2; vault
   decisions 40 — the ruling names the primitive and says every caller inherits it, so a call
   site that defeats it is inside the ruling). **Measured cost: none.**
   The remedy is NOT the `-ml-1 pl-1` recorded below, which costs 4px of every facet label
@@ -1137,7 +1137,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 - ~~**"Reset to auto" in the artist-image panel deletes a hand-uploaded portrait with no
   confirm, and nothing refetches it.**~~ — **CLOSED 2026-09-11** (on
-  `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`; PR + squash sha cited at merge).
+  `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`, PR #225, squash `9e918e6` =
+  v0.51.5).
   Reset is behind an AlertDialog in the Save-art shape — "Reset to auto?", and a description
   that warns an uploaded or pasted image moves to Trash — and the POST is sent from the
   dialog's action alone, held open until it settles. The endpoint moves the `*.override` pair
@@ -1152,7 +1153,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   README said of exactly those files "which nothing refetches".)
 
 - ~~**The Trash row for an art container reads as an album.**~~ — **CLOSED 2026-09-11** (on
-  `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`; PR + squash sha cited at merge).
+  `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`, PR #225, squash `9e918e6` =
+  v0.51.5).
   The wire says it now: `trash_replaced_files` records `moved="files"`, `_restore_fields` maps
   that to a fifth `restore_mode` — `by_hand`, with `_MOVED_ASIDE_NOTE` and the origin — and
   `restore_album` short-circuits such an entry to `could_not_restore` without running an
@@ -1182,8 +1184,20 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   sanitizer's `origin_file` key rules are re-read first: the container name is client-derived
   for the artist-image caller.
 
-- **A write killed mid-flight leaves a `.<pid>.<16 hex>.<ext>.tmp` dotfile nothing clears.**
-  (Found 2026-09-11 on `fix/art-apply-keeps-hand-placed-art`.) The derived `.<name>.tmp` was
+- ~~**A write killed mid-flight leaves a `.<pid>.<16 hex>.<ext>.tmp` dotfile nothing clears.**~~ —
+  **CLOSED 2026-09-12** (on `fix/descriptor-anchored-library-writes`; PR + squash sha cited at
+  merge). One sink does it for every writer: `write_atomic_bytes` / `write_atomic_text`
+  (`app/playlists/atomic.py`) sweep the target's own directory on each write, unlinking only
+  regular files whose name matches this writer's shape (`_TMP_NAME_RE`,
+  `.<pid>.<16 hex><suffix>.tmp`), never following a link, and only when `st_mtime` is older than
+  `_STALE_TMP_AGE_S` (3600 s). The art and lyrics writers' private recipes are deleted and both
+  call the sink. Measured cost, tmpfs, one 8-byte write: 0.020 ms into an empty directory,
+  1.385 ms into one holding 10 000 files (~0.14 µs per entry). Mutants that each fail
+  `test_the_sweep_removes_only_this_writers_own_stale_temps`: dropping the age gate, widening
+  the regex to `^\..*\.tmp$`, dropping the `S_ISREG` check, and statting with
+  `follow_symlinks=True`. Residual recorded below: old-shape leftovers and `artwork/cache.py`'s
+  own temps are never swept.
+  (Original finding, 2026-09-11 on `fix/art-apply-keeps-hand-placed-art`.) The derived `.<name>.tmp` was
   cleared by the next write of the same file; the unpredictable name that replaced it (art
   and lyrics writers) is not, so a process killed between the create and the `os.replace`
   leaves one dotfile per kill in the artist folder or beside the track. One per kill,
@@ -1192,8 +1206,49 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   older than a job could run — bounded to the pattern, never a bare glob. `playlists.atomic`
   carries the same residual.
 
-- **The move-aside and both library writers act on NAMES after checking them — three measured
-  windows that only descriptor anchoring closes.** (Found 2026-09-11 by the security seat on
+- ~~**The move-aside and both library writers act on NAMES after checking them — three measured
+  windows that only descriptor anchoring closes.**~~ — **CLOSED 2026-09-12** (on
+  `fix/descriptor-anchored-library-writes`; PR + squash sha cited at merge), by the fix shape the
+  entry named. All three windows are held by descriptors, so the "Until then the docstrings say
+  'window', not 'cannot'" clause below is retired for these three. The READ and DELETE halves
+  followed in the same branch's fix round: the security seat measured the lyrics marker delete
+  running by path — a symlinked album folder had its sidecar deleted through the link before the
+  anchored open was reached, and the content gate lost 17 111 of 67 479 atomic-retarget races — so
+  `_present_sidecars`, the marker read, the clear and `artist_art.has_background` now resolve
+  names against the same descriptor as the write (0 of 55 911 after). The last by-NAME reader went
+  with the fix round: `_has_sidecar` decided the `skipped_existing` early return, which skips the
+  FETCH rather than feeding a count, and it disagreed with the write in both directions (a dangling
+  link at a sidecar name re-fetched that track every run and never wrote it). `_sidecar_present`
+  asks through the album folder's descriptor instead. What still acts by name is `get_artist_dirs`,
+  which compares spellings.
+  (1) `trash_replaced_files(names, *, src_dir_fd, …)` takes bare names in the caller's own
+  descriptor and every `rename` goes `src_dir_fd=` → `dst_dir_fd=`; what arrived is lstat'd
+  through the CONTAINER's fd and renamed back if it is not a regular file or a symlink. Mutant:
+  neutering that lstat fails `test_a_directory_swapped_onto_a_guarded_name_is_put_back_and_refused`.
+  (2) The container is claimed twice — `os.mkdir(dest.name, dir_fd=trash_fd)` refuses anything
+  that predates it, and an `os.open` plus an emptiness probe under it refuses a stranger's EMPTY
+  directory renamed onto the name (`rename` replaces an empty directory, measured). The
+  `moved == 0` arm unlinks its own children through its own fd and `rmdir`s only while the name
+  still resolves to the inode it claimed; no `shutil.rmtree` (`rmtree(".", dir_fd=fd)` answers
+  EINVAL, measured). Mutant: inverting the probe fails
+  `test_a_stranger_that_takes_the_claimed_name_is_refused_and_not_emptied`.
+  (3) `fsutil.open_below(root, rel)` opens EVERY component below the root
+  `O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_NONBLOCK` and the art and lyrics writers create, publish and
+  fsync through the fd it returns. Measured: the errno is **ENOTDIR**, not the documented ELOOP
+  (ELOOP needs the absence of `O_DIRECTORY`), and a leaf-only `O_NOFOLLOW` on the whole path
+  SUCCEEDS through a mid-path link — which is why the check is per component. Baseline before
+  this branch, measured: both writers wrote outside the library through the link
+  (`outside/artist-poster.jpg`, `outside/Album/01 t.lrc`). Now art answers `status="failed"` and
+  lyrics `None`, each with one WARNING naming the folder; the root itself may still be a link
+  (owner ruling 2026-09-12, `decisions.md` #45 — bind mounts are the supported spelling for
+  spanning disks). Mutant: dropping `O_NOFOLLOW` from `BELOW_FLAGS` fails
+  `test_a_symlinked_component_below_the_root_is_refused`.
+  The EXDEV fallback the entry asked for is a descriptor copy carrying mode and `st_mtime_ns`,
+  recreating a symlink from its own target and unlinking the source last, and it is now covered by
+  a REAL cross-device move (`tests/test_trash_replaced_xdev.py`: Trash on `/dev/shm`, library on
+  `/tmp`, the kernel's own EXDEV asserted; `MUSICDROP_REQUIRE_XDEV=1` in CI turns a
+  same-filesystem skip into a failure).
+  (Original finding, 2026-09-11 by the security seat on
   `fix/art-apply-keeps-hand-placed-art`; all Low, none exploitable for privilege.)
   (1) `trash_replaced_files` lstat-guards every file, then runs `require_usable_store`, the
   allocator and the container `mkdir` before the first `shutil.move` — first lstat to first
@@ -1218,8 +1273,22 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   descriptor stays on the directory the check saw whatever the name does afterwards. Until
   then the docstrings say "window", not "cannot".
 
-- **Three writers still use the derived `.<name>.tmp` shape the art and lyrics writers
-  left.** (Found 2026-09-11.) `beets/config_editor.py:391` (config.yaml),
+- ~~**Three writers still use the derived `.<name>.tmp` shape the art and lyrics writers
+  left.**~~ — **CLOSED 2026-09-12** (on `fix/descriptor-anchored-library-writes`; PR + squash sha
+  cited at merge). All three now call the shared sink and hold no recipe of their own, so the
+  line citations below are stale: `config_editor.atomic_write` dumps the YAML and delegates
+  (`beets/config_editor.py:374`, `mode=None`), `ArtistImageToggle.set_enabled` is one call
+  (`artwork/toggle.py:44`, `mode=None`), `_write_artwork_atomic` is one call
+  (`playlists/store.py:206`, `mode=0o600`). Each got a test that plants a symlink at its OLD
+  derived name and asserts the link's target is untouched; measured on the old body, the write
+  followed the link and `os.replace` published the LINK as the destination (playlists store: the
+  JPEG bytes landed in `secret.txt`, which then took the `0o600` chmod, and the served artwork
+  became a symlink to it). Mutant per writer: restoring the old derived-name body fails that
+  test. Two behaviour changes came with the sink — the toggle file is now fsync'd (its own fd and
+  the parent's; before, neither) and keeps a tightened mode across a flip, and all three inherit
+  the stale-temp sweep. None passes `dir_fd=`: none of the three is under the library root, so
+  the ruling does not reach them — residual recorded below.
+  (Original finding, 2026-09-11.) `beets/config_editor.py:391` (config.yaml),
   `artwork/toggle.py:40` (the art-write toggle file), `playlists/store.py:204` (playlist
   artwork under the playlists store). A symlink planted at the derived name is followed and
   then published as the destination — measured on the art writer before this branch. All
@@ -1227,6 +1296,142 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   library, so a planter would already own what it could steer: lower reach, same remedy
   (`artist_art._tmp_path`: random fixed-length name, `O_EXCL|O_NOFOLLOW`) when each file is
   next touched.
+
+- **The reset endpoint's cache-dir `os.open` failing between `override_files` and the move is
+  untested.** (Found 2026-09-12 on `fix/descriptor-anchored-library-writes`.)
+  `artists._trash_override_files:824` opens the artist-image cache dir at `:840` (following links,
+  since it is app-owned) and hands `trash_replaced_files` the two bare names; an `os.open` that
+  fails there lands on the same 503 arm as a refused origin store, and no test drives it, so
+  that arm's body and "nothing moved" claim are unverified for this cause. Cheap: patch `os.open`
+  to raise for that one directory and assert the 503 detail plus the override pair still on disk.
+
+- **The three folder movers work by PATH at BOTH ends, so the swapped-root window closed for the
+  move-aside is still open on the album and husk delete paths — and their source side is
+  un-anchored too.** (Found 2026-09-12 on `fix/descriptor-anchored-library-writes` by the fix
+  round; security seat M-1, corrected and widened by its round-2 seat.) `trash_album`,
+  `trash_album_folder` and `trash_folder` (`app/beets/trash.py`) each `mkdir` the Trash and work by
+  path — `_unique_trash_dest` probes the candidate name with `exists()`, then `shutil.move`
+  (`trash_album` relocates per item with beets' `Album.move`). `trash_album_folder` and
+  `trash_folder` receive `ProtectedTrees` and use it for the SOURCE guard, not for the root open;
+  `trash_album` does not receive it at all, so plumbing it through its three call sites — one of
+  them the import session — is part of the work. Those `mkdir`s are now no-ops on every path a
+  request reaches: `checked_protected_trees` creates the Trash through the anchored walk first, at
+  the delete ops, the three Trash routes, the artist-art store, duplicates' resolve and the orphan
+  sweep. The ONE site where they still create it is the import session's post-import cleanup
+  (`import_session.py:1774`), which runs `check_store_layout` and then `trash_album`, and holds no
+  `LibraryHandle` to hand `checked_protected_trees` — giving it one, or a handle-free form of that
+  call, is the rest of this item.
+  Three measured facts the next reader needs:
+  (1) **The destination.** Measured on the move-aside before its fix: `music/.trash` swapped for a
+  symlink after `checked_store_dirs` put the container in `somewhere-else/` with the origin record
+  naming an entry that does not exist. Same shape here, larger blast radius — a whole album tree,
+  the library rows dropped in the same call, and a Restore with nothing to act on.
+  (2) **The cheap half is an EDIT, not a rewrite.** `os.rename(name, name, src_dir_fd=,
+  dst_dir_fd=)` relocates a whole directory tree in ONE syscall and answers EXDEV cross-device —
+  the errno `fsutil.move_no_merge` already branches on (measured, seat probe `probe_q4c`). The
+  exposed layout, Trash INSIDE the music library, is the same filesystem by definition, so the
+  rename covers precisely the attacker-reachable case; only the cross-device whole-tree COPY is a
+  rewrite.
+  (3) **The source side is un-anchored too**, so a fix that anchors only the destination leaves it
+  open: measured (`probe_q4b`), a symlinked component ABOVE the folder made `trash_folder`
+  relocate a directory from OUTSIDE the music library into Trash. Reachability is a TOCTOU rather
+  than a plain escape (`os.walk` does not follow links, so the sweep will not ENUMERATE through
+  one) — the swap goes between the enumeration and the move.
+  The shape that fixes every mover at once, destination and source: **the checked resolve hands
+  back an open fd** rather than a path, so nothing downstream re-resolves either end. That is the
+  same shape the Trash-root residual below wants, and what `empty_all` already relies on.
+  Precondition is unchanged — write on the Trash's parent, i.e. a Trash configured inside the music
+  library.
+
+- **A duplicate resolve that faults part-way drops the earlier albums' rows and keeps the
+  rest.** (Found 2026-09-12 on `fix/descriptor-anchored-library-writes`; security seat L-2,
+  pre-existing.) `resolve_duplicate_group` (`app/beets/duplicates.py`) wraps its loop in one
+  `with lib.transaction():`, which reads as atomic and is not: with the second loser's
+  `trash_album` raising, measured album rows `[1,2,3,4,5]` became `[1,3,4,5]` — the first
+  loser's rows dropped, its files under Trash with an origin record, album 3 untouched, HTTP
+  500. Recoverable, and the 500's body already says so ("Moved copies are recoverable in the
+  Trash folder"), so this is a clarity-of-state bug rather than a loss. The real behaviour is
+  now pinned (`test_a_fault_on_the_second_loser_leaves_the_first_one_dropped`) and the
+  docstring says it. The option not taken: give each album its own transaction, so the state
+  after a fault is per-album rather than ambiguous — it does NOT make the call atomic (the
+  earlier album stays dropped either way), it only stops the ambiguity, which is why it was
+  recorded instead of shipped. Whoever takes it should decide what the response should then
+  say about the albums that DID move.
+
+- **A symlink or a bind mount in the Trash's configured chain relocates the Trash outside the
+  music library, and this branch's per-component refusal closes neither shape.** (Found
+  2026-09-12, folded together and re-measured 2026-09-13, on
+  `fix/descriptor-anchored-library-writes`; security seats M-1 and H-1'.)
+  `store_layout._below_the_music_root` and `_reaches_the_music_root`
+  (`app/beets/store_layout.py`) ask whether the directory the walk REACHED is inside the music
+  library, by climbing `..` through descriptors. Two ways that question answers "outside" for a
+  path that really is inside:
+  (a) **the link's target, one component up.** The question is asked about each component's FINAL
+  resolution, so with the operator's `/srv/x -> <M>/a` an attacker who owns `<M>/a` — or, when
+  the operator's target does not exist yet, who merely CREATES it as a symlink, no race and no
+  rename — moves the whole walk out of the library before any descriptor it holds is inside it.
+  Measured on this branch's tip: both requests ACCEPTED, `trash_dir` at the attacker's target,
+  the mover writing there, two origin records written, and the Settings report CLEAN exactly when
+  the escape arms (it refuses the same spelling while unattacked). One symlink plus the
+  operator's own Empty Trash then recursively deletes whatever lives at that path: `empty_all`
+  answered `removed=1` and a pre-existing `victim-parent/b/.trash/precious/taxes.pdf` was gone,
+  with nothing staged by the probe.
+  (b) **a bind mount.** From a MOUNT root, `..` crosses to the mountpoint's parent, so a bind
+  mount of `<M>/a` at an outside path is never recognised as being inside the library: measured
+  under `unshare --map-root-user --mount`, `_reaches_the_music_root(leaf)` answered False and two
+  requests in a row put the Trash at that outside path, with `empty_all` enumerating it.
+  **Trigger.** `MUSICDROP_TRASH_DIR` names a path that reaches inside the music library through
+  something the app follows — a symlink above the root (a) or a bind mount of a library
+  subdirectory (b) — plus, for (a), the attacker write access inside the library that the whole
+  layout rule exists for. A correctly spelled Trash is not reachable this way: the attacker
+  cannot plant above the music root. Not the documented layout either — compose recommends
+  `MUSICDROP_TRASH_DIR=/music/.trash`, which is anchored.
+  **Blast radius**, bounded by the row layer, which runs against the RESOLVED destination
+  (measured 2026-09-13): the origin store is refused, `/` fails on permissions, and the music
+  root itself keeps `below = True` and so keeps the library-presence guard — but the beets data
+  dir and an arbitrary outside directory were both ACCEPTED, i.e. anywhere the app's uid can
+  `mkdir`. What the app then does there: writes deleted albums and moved-aside art, keeps origin
+  records that promise the moves are recoverable, and `rmtree`s the contents on Empty Trash.
+  **Cause.** The chain above the music root is the OPERATOR's, so the walk follows links there
+  (`ROOT_FLAGS`), and the only question asked about a component is where it ENDS UP — never what
+  it IS.
+  The options, with 2026-09-13 costs:
+  (1) accept, as now — honest, closes nothing. The unattacked spelling is still refused, so the
+  operator sees a 503 and a Settings row right up until the attacker arms it.
+  (2) refuse ANY symlink in the configured chain (`BELOW_FLAGS` at every component, and the
+  ENOTDIR/ELOOP refusal no longer gated on `below`). Closes BOTH shapes. Measured price on this
+  branch's tip: full suite `13 failed, 3589 passed` against a `5 failed` baseline in the same
+  scratch copy = **8 real failures**, and every one of the eight is a test this branch itself
+  added. Five are refusal-message changes (the two jump-in refusals, the unreadable-root arm, the
+  reaches-into-the-library refusal and the file-in-the-chain report row — all still refused, with
+  "is not reachable below the music library" instead). **Three are layouts this branch supports
+  today, lost**: a Trash outside the library reached through the operator's own link
+  (`test_a_trash_outside_the_library_is_created_through_the_operators_chain`), the alias spelling
+  (`test_the_alias_spelling_is_created_when_nothing_is_in_the_way`), and the search-only ancestor
+  (`test_a_search_only_ancestor_above_the_trash_is_climbed_not_refused`) — the layout the
+  `O_PATH` climb was chosen to keep. Four of the eight came from the branch's last round: the two
+  jump-in refusals, the unreadable-root arm and that search-only-ancestor test. The hazard stands
+  too: with `TMPDIR` on a symlink a further test failed because the Trash ran through a link
+  nobody configured, and `/tmp`, `/var`, a home dir or a Docker host path being a link would
+  refuse the Trash. The refusal itself is at least actionable — it names the configured path and
+  says bind mounts are the supported spelling for a folder on another disk.
+  (3) parse `/proc/self/mountinfo` and refuse a spelling that traverses a mount whose root is
+  inside the music library — closes (b) ONLY. It is a mount check and (a) is a link, so picking
+  it as "the precise one" leaves the bigger shape open. Linux-only (which this app is), ~20 lines
+  plus a parser to keep correct. Described, not measured.
+  (4) check each link's TARGET instead of its resolution: while the walk is still above the root,
+  `os.readlink(part, dir_fd=fd)` for a component that is a link, and refuse a target that
+  resolves inside the music root other than the root itself. Closes (a), not (b). Attractive
+  because the attacker can only plant inside the library, so "target inside the library" is
+  exactly the set that hands them control, and none of the four supported layouts has such a
+  target — reasoned from those four fixtures, never written or run. Needs a link budget and care
+  with relative targets.
+  **One owner question:** *should `MUSICDROP_TRASH_DIR` be required to be spelled with no symlink
+  in its path?* Yes = option 2: both shapes closed, three supported layouts and five refusal
+  messages to re-write, and the `/tmp`-is-a-link hazard accepted. No = (3) or (4) for one shape
+  each, or (1) with the gap documented, which is where the branch leaves it (README's
+  `MUSICDROP_TRASH_DIR` bullet, the Delete & Trash paragraph and `_reaches_the_music_root`'s
+  docstring all name it).
 
 - **`download_image` validates only the FIRST and LAST redirect hop, and issues the
   intermediate requests anyway.** Moved here 2026-08-28 from Deferred minors, where a blind
@@ -1902,7 +2107,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   25px is real but it is not the badge, and there is no overlap for a tap to be inert against.
   What the 25px actually is, is below.
   **The "Adjacent, NOT fixed" title-at-0px material above is CLOSED 2026-09-11** — on
-  `fix/phone-width-rows-and-hit-areas` (PR + squash sha cited at merge), vault decisions 39:
+  `fix/phone-width-rows-and-hit-areas` (PR #221, squash `a053ffc` = v0.51.2), vault decisions 39:
   below 28rem of ROW the bank row's action group takes its own line under the row, so the text
   column keeps the ~169px the group was taking. Re-measured over the same 201 widths with the
   scrollbar present: the title is **23.02px at 320** (0 before) and never 0 at any width, on a
@@ -1973,7 +2178,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   defect decisions 42 settled on `/duplicates`.
 
 - ~~**A bank row's `Open` button is SLICED by the list's own `overflow-hidden`**~~ — **CLOSED
-  2026-09-11** (on `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at merge; vault
+  2026-09-11** (on `fix/phone-width-rows-and-hit-areas`, PR #221, squash `a053ffc` = v0.51.2; vault
   decisions 39): the button is on its own line under the row below 28rem, where the slice
   happened, so the list's `overflow-hidden` has nothing to cut. Measured over the same 201
   widths: **0 controls clipped at any width** on all five bank rows, against 24.78px of the
@@ -1991,7 +2196,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   owner's.
 
 - ~~**A BANK ROW's stacked meta line is cut mid-word with no ellipsis**~~ — **CLOSED
-  2026-09-11** (on `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at merge; vault
+  2026-09-11** (on `fix/phone-width-rows-and-hit-areas`, PR #221, squash `a053ffc` = v0.51.2; vault
   decisions 39), and NOT by the rejected `truncate`, which is still rejected for the reason
   below. **The title is scoped to the bank row deliberately** (2026-09-11: it read
   "`AlbumRow`'s stacked meta line", a component-wide claim its own body then contradicted).
@@ -2057,6 +2262,94 @@ Nothing in this section is a task. Each item was decided, with its reasoning, an
 because a recorded decision is what stops the question being reopened from scratch. Do not
 scan here for something to pick up — scan *Open bugs / hardening*. Revisit an item only if
 the condition it names has changed.
+
+- **The three app-owned writers are deliberately NOT descriptor-anchored** (2026-09-12,
+  `fix/descriptor-anchored-library-writes`). `config.yaml`, the two artist-image toggle files and
+  playlist artwork are written under the beets data dir and the playlists store, not below the
+  music root, so owner ruling #45 (refuse a symlinked component below the library root) does not
+  reach them and there is no root for `open_below` to descend from: a symlinked component of the
+  beets or data directory is still followed, exactly as before. What they did get is the shared
+  sink's unpredictable `O_EXCL|O_NOFOLLOW` temp. Nothing pins the placement — a future caller
+  that put one of these files inside the library would get the unanchored write with no failing
+  test.
+
+- **Old-shape and artwork-cache temp leftovers are never swept** (2026-09-12, same branch). The
+  sweep is bounded to this writer's own shape (`.<pid>.<16 hex><suffix>.tmp`); a leftover
+  `.<name>.<pid>.<hex>.tmp` from the previous recipe and `app/artwork/cache.py`'s own
+  name-embedding temps do not match it, deliberately — the regex cannot tell them from a target,
+  and a bare `.*.tmp` glob would unlink files this app never wrote. They stay until someone
+  removes them by hand. `artwork/cache.py` keeps its own writer on purpose.
+
+- ~~**`os.fsync` of a directory has no behavioural pin**~~ — **CLOSED 2026-09-12** by the same
+  branch's second fix round, as a side effect of the ENOTSUP swallow: both directory fsyncs go
+  through `fsutil.fsync_dir`, and the test that a patched `os.fsync` answering **EIO** still raises
+  fails if the call is deleted. What is still unpinned is DURABILITY — a lost directory entry needs
+  a crash harness to observe — so the pin says the syscall happens, not that it works. (The
+  cross-device copy's missing container fsync, first recorded here, was added in the first fix
+  round: `_publish_then_unlink` fsyncs the container's descriptor before the source is unlinked,
+  pinned by the order of the two syscalls' inodes.)
+
+- **A row whose folder is outside the library root BY SPELLING is now refused, for art and for
+  lyric sidecars** (2026-09-12, same branch — a behaviour change, accepted). `Path.relative_to` is
+  spelling-based and `_music_dir` normalises without resolving links, so a legacy row imported as
+  `/mnt/music/…` while `directory:` reads `/music/…` gets `status="failed"` / no sidecar and one
+  WARNING where it used to be written. `get_artist_dirs` compares by spelling too — it reads
+  `album.item_dir()` against the root, and the fix round also skips an album whose item dir IS the
+  root, so a flat `path_formats` library answers `no_folder` instead of `failed` (measured: before
+  the branch that layout wrote the poster ABOVE the root). It does not require containment: the
+  writers' refusal answers that. The remedy for a genuinely mis-spelled library is to fix
+  `directory:` or re-import, not to loosen the check.
+
+- **The cross-device copy's final unlink is by NAME, and cannot be otherwise** (2026-09-12, same
+  branch; security seat L-1). There is no unlink-by-fd, so `_publish_then_unlink` re-lstat's the
+  source through its descriptor and skips the unlink on an identity mismatch, with one WARNING: a
+  swap inside those two syscalls leaves the copy in Trash and the newcomer on disk — never an
+  unlink of a file that did not reach Trash. Measured before the narrowing, the newcomer was
+  unlinked without reaching Trash. (The bare-name residual that used to sit here is closed: both
+  seats measured an absolute name renaming the file onto itself and REPORTING SUCCESS, so
+  `_refuse_a_non_bare_name` now runs ahead of the staging stats.)
+
+- **CLOSED 2026-09-12 — the window between the Trash's creation and the stat that identified
+  it** (same branch, closed by its third fix round). It was titled "two microseconds" and
+  measured **18 µs** (median; p99 22), and the record named only the shape that fails safe. What
+  it actually bought, measured by the security seat: a real racer won it **537 times in 100 876
+  requests (0.53 %)**, and a won window put that request's files outside the music library and
+  pointed `empty_all`'s `rmtree` at a directory of the attacker's choosing — an escalation from
+  "write inside the music library" to "recursive delete anywhere the app user can write", for one
+  request per win. A forced artist-art sweep asks once per artist, so ~5 expected wins per
+  thousand artists. The DEFAULT `<beets_dir>/trash` layout was the no-gain case throughout (that
+  chain is the operator's, and the layout rule keeps the beets dir out of the library).
+  `_ensure_trash_root` now returns `fstat` on the descriptor its own anchored walk reached and
+  `protected_trees` takes it as `trash_ident=`, so there is no second resolution by name to race:
+  the mover's own open must land on the directory the walk reached or be refused
+  (`tests/test_trash_root_creation.py::test_the_identity_the_movers_get_is_the_one_the_walk_opened`).
+  One residual, accepted and unchanged: a real directory a stranger LEFT at the configured path is
+  adopted, and no check here can undo that — a party who owns the Trash's location owns it
+  whoever creates the directory. `checked_protected_trees` creates the Trash, so no mover creates
+  it and none sees `trash=None`; the folder-movers entry above still wants the same
+  descriptor-shaped fix on its own three paths.
+
+- **The create loop never re-asks whether a component is below the music root, so a part it
+  creates above the root can be swapped for a link inside that window** (2026-09-13, same
+  branch; security seat L-2'). `_open_the_trash_chain` (`app/beets/store_layout.py`) walks the
+  EXISTING prefix asking `_below_the_music_root` per component, then carries that decision into
+  the create loop — measured by tracing the question: the request that creates `srv`, `x` and
+  `.trash` asks 9 times and stops at their parent, the next request (they exist) asks 12. So a
+  racer who wins the `os.mkdir(part, dir_fd=fd)` → `os.open(part, ROOT_FLAGS, dir_fd=fd)` window
+  and leaves a symlink there is followed, and the Trash lands at its target unanchored.
+  Precondition: write access on the OPERATOR's chain above the music root, which is outside the
+  threat model the layout rule is written for (the attacker's reach is inside the library) — the
+  reason this is a residual and not the bug above it. Not driven as a race, only measured as the
+  asymmetry.
+
+- **The Settings report is silent for "music root absent + Trash spelled below it" while every
+  destructive request answers 503** (2026-09-13, same branch; code seat W1, security seat L-4').
+  Deliberate: the row used to fire for a `directory:` that is simply not there yet, which blocked
+  Save for an edit that named no path (`test_validate_paints_no_row_for_a_directory_that_is_not_there_yet`
+  pins the silence; `test_an_unmounted_music_root_is_reported_as_the_music_roots_fault` pins the
+  refusal). Cost: a dropped share gives the operator no pre-delete signal, and the first thing
+  they see is a 503 on their next delete. An ADVISORY row — not a blocking one, which is what
+  made Save unsavable — is the shape not taken; it was out of the fix round's scope.
 
 - **The artist-image reset answers 409 while the beets swap lock is held, rather than waiting
   for it** (2026-09-12, `fix/reset-to-auto-confirms-and-moved-aside-trash-rows`). The reset is
@@ -2650,7 +2943,7 @@ the condition it names has changed.
   `ArtistImageEditPanel.tsx:278`.
 
   ~~**Two selection controls do NOT pass**~~ — **CLOSED 2026-09-11** (on
-  `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at merge; vault decisions 40).
+  `fix/phone-width-rows-and-hit-areas`, PR #221, squash `a053ffc` = v0.51.2; vault decisions 40).
   (The blank line above is load-bearing: without it markdown lazy-continuation pulls this
   closure into the `SegmentedControl` bullet's own paragraph, so that OPEN entry reads as
   closed. Not struck — `~~` is inline and cannot reach backwards over the bullet.)
@@ -2846,13 +3139,34 @@ Added by the 2026-08-28 sweeps:
 
 ## Recently shipped
 
+- **Reset to auto confirms first and moves the uploaded portrait to Trash; Trash lists
+  moved-aside files as their own row — PR #225, squash `9e918e6` = v0.51.5 (2026-09-12).**
+  `POST /api/artists/image/reset` sits behind an AlertDialog ("Reset to auto?"); an uploaded
+  or pasted override moves into a Trash entry with a `files` origin record before the
+  automatic slot is cleared, so no path unlinks a person's upload. The move and the clear run
+  under the beets swap lock: 409 while the lock is held (the lock half of the library-busy
+  check, `raise_if_swap_lock_held`) or while the art sweep runs, the sweep gate asked again
+  with the lock held; 503 saying the reset stopped when a move fails part-way, with the OS
+  strerror and no server path. Trash rows for `moved="files"` entries read "Files moved
+  aside." with the folder they were at and Empty as the only action; the header no longer
+  promises a restore location; container names built from tags share the display-name
+  neutraliser (`_one_trash_level`: separators, NUL, U+FFFD, leading dots).
+  Cleanup the rounds forced: `ArtistImageCache.clear_override` deleted (no production caller),
+  the reset route's OpenAPI description cut to one sentence, six universals ("and nothing
+  else", "nothing sweeps it") corrected and pinned, the lock re-check pinned on lock STATE per
+  read rather than a read count.
+  Closes the struck Reset-to-auto entry and the struck art-container-row entry above.
+  Recorded and not fixed: the filler's ungated auto-slot write, the mid-move upload bound
+  (never lost), the cover route's 500 on an unparseable track, and the descriptor anchoring
+  this branch takes up.
+
 - **Save art confirms first and moves replaced art to Trash — PR #224, squash `a8b08d5` =
   v0.51.4 (2026-09-11).** `POST /api/artists/art/apply` sits behind an AlertDialog that names
   what it writes and says existing files move to Trash first, and the start request carries a
   10 s bound so a stalled start cannot latch the dialog open.
   The `artist-poster.*`/`artist-background.*` a forced write replaces go into one Trash entry
-  per artist folder (`<folder> - artist art`, origin record `moved="items"` — this branch
-  renames that shape to `moved="files"`), claimed by a bare
+  per artist folder (`<folder> - artist art`, origin record `moved="items"`, renamed to
+  `moved="files"` by PR #225), claimed by a bare
   `mkdir` so a directory that arrived after the allocator looked raises before any move;
   nothing is written into a folder whose old files did not all move aside, and
   `write_artist_art` reports `failed` as soon as one write or move-aside errored while
@@ -2867,7 +3181,7 @@ Added by the 2026-08-28 sweeps:
   measured, no error).
   Closes the struck Save-art entry and the struck partial-`status` entry above. Recorded and
   not fixed: the two descriptor-anchoring windows (the per-artist store check, and the
-  container claim to the first move), the Reset-to-auto gap this branch is closing, the
+  container claim to the first move), the Reset-to-auto gap (closed by PR #225), the
   moved-aside Trash row's wording, the `.<pid>.<16 hex>.<ext>.tmp` dotfile a killed write
   leaves, and the three derived-name writers left untouched — each under its own entry or
   inside the closure it came from.

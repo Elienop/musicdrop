@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 import pytest
 from beets.library import Library
@@ -54,6 +55,87 @@ def test_resolve_moves_losers_to_trash_and_drops_from_db(
         assert os.path.isdir(moved.trash_path)
     # The group is no longer a duplicate (only the keeper remains).
     assert find_duplicate_albums(duplicates_lib, mode=DuplicateMode.strict).group_count == 0
+
+
+def _a_strict_group_of_three(tmp_path: Path) -> Library:
+    """One strict group with TWO losers, so a fault has a first album behind it.
+
+    ``duplicates_lib``'s strict group is a pair, which cannot show what a
+    mid-loop fault leaves: there is no earlier album to leave dropped.
+    """
+    from beets.library import Item
+
+    from tests.conftest import build_library
+
+    music = tmp_path / "music"
+    lib = build_library(str(tmp_path / "library.db"), str(music))
+    for folder in ("Album", "Album (copy)", "Album (copy 2)"):
+        base = music / "Artist A" / folder
+        base.mkdir(parents=True)
+        items = []
+        for i in (1, 2):
+            f = base / f"{i:02d} Track {i}.mp3"
+            f.write_bytes(b"\x00")
+            it = Item(
+                album="Album", albumartist="Artist A", artist="Artist A", title=f"T{i}", track=i
+            )
+            it.path = os.fsencode(str(f))
+            items.append(it)
+        al = lib.add_album(items)
+        al["mb_albumid"] = "mb-x"
+        al.store()
+    return lib
+
+
+def test_a_fault_on_the_second_loser_leaves_the_first_one_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The transaction is per-CALL, not per-album (security seat L-2).
+
+    Measured 2026-09-13 on THIS fixture, with the second ``trash_album`` raising:
+    album rows ``[1,2,3]`` became ``[1,3]`` and item rows ``[1..6]`` became
+    ``[1,2,5,6]`` — the first loser's rows stay dropped, its files are in Trash
+    (``Artist A - Album``) with an origin record, and the route answers 500. The
+    security seat measured the same shape as ``[1,2,3,4,5] → [1,3,4,5]`` on a
+    five-album library, which is the list ``duplicates.py`` quotes.
+    Pre-existing, and recoverable through Restore, which is what the response
+    body already promises. Pinned rather than redesigned; the per-album
+    transaction is recorded in ``BACKLOG.md``.
+    """
+    from app.beets.trash import trash_album as real_trash_album
+
+    lib = _a_strict_group_of_three(tmp_path)
+    trash = tmp_path / "trash"
+    origins = origins_for(trash)
+    group = _strict_group(lib)
+    keep = group.suggested_keeper_id
+    losers = sorted(m.id for m in group.members if m.id != keep)
+    calls: list[int] = []
+
+    def flaky(lib_: Library, album: Any, **kw: Any) -> str:
+        calls.append(int(album.id))
+        if len(calls) == 2:
+            raise OSError(13, "Permission denied")
+        return real_trash_album(lib_, album, **kw)
+
+    monkeypatch.setattr("app.beets.duplicates.trash_album", flaky)
+
+    with pytest.raises(OSError):
+        resolve_duplicate_group(
+            lib,
+            mode=DuplicateMode.strict,
+            keep_album_id=keep,
+            remove_album_ids=losers,
+            trash_dir=trash,
+            origins_dir=origins,
+        )
+
+    assert calls == losers, "both were attempted, in the order the client asked for"
+    assert lib.get_album(losers[0]) is None, "the first loser's rows are gone and stay gone"
+    assert lib.get_album(losers[1]) is not None
+    assert lib.get_album(keep) is not None
+    assert (trash / "Artist A - Album").is_dir(), "the first loser's files really are in Trash"
+    assert list(origins.glob("*.json")), "and its move left the record Restore needs"
 
 
 def test_resolve_rejects_stale_group(duplicates_lib: Library, tmp_path: Path) -> None:

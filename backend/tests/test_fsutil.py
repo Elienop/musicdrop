@@ -5,12 +5,20 @@ Contract: a name-shaped failure (kernel: "File name too long") answers as
 "does not exist" so unknown-name refusal paths work; EVERY other OSError is
 re-raised — swallowing a permission or mount failure would turn a real
 incident into a silent 404.
+
+Plus :func:`app.fsutil.open_below`: the descent from the music root that refuses
+a symlinked component below it, and the errno the kernel actually answers; and
+:func:`app.fsutil.fsync_dir`, whose swallow is scoped to fds that really are
+directories because EINVAL means two different things.
 """
 
 from __future__ import annotations
 
 import errno
+import os
+import socket
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -89,3 +97,216 @@ def test_a_symlink_to_an_empty_directory_is_occupied(tmp_path: Path) -> None:
 
     assert fsutil.occupied(link) is True, "following it would leave the music library"
     assert fsutil.occupied(target) is False, "...while the empty directory itself is free"
+
+
+def _ident(fd: int) -> tuple[int, int]:
+    st = os.fstat(fd)
+    return (st.st_dev, st.st_ino)
+
+
+def _ident_of(path: Path) -> tuple[int, int]:
+    st = os.stat(path)
+    return (st.st_dev, st.st_ino)
+
+
+def _open_fds() -> int:
+    return len(os.listdir("/proc/self/fd"))
+
+
+def _spy_os_open(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Record every ``os.open`` path and pass it through, so a refusal that did
+    not happen is visible as an fd the walk really opened."""
+    calls: list[object] = []
+    real_open = os.open
+
+    def spy(*args: Any, **kwargs: Any) -> int:  # widened: os.open is overloaded
+        calls.append(args[0])
+        return int(real_open(*args, **kwargs))
+
+    monkeypatch.setattr(os, "open", spy)
+    return calls
+
+
+def test_a_symlinked_component_below_the_root_is_refused(tmp_path: Path) -> None:
+    """The errno is MEASURED, not taken from ``open(2)``.
+
+    ``O_DIRECTORY|O_NOFOLLOW`` on a symlink answers ENOTDIR (20) here, not the
+    documented ELOOP — ELOOP needs ``O_NOFOLLOW`` without ``O_DIRECTORY``.
+    """
+    root = tmp_path / "music"
+    (root / "Real").mkdir(parents=True)
+    (tmp_path / "outside").mkdir()
+    (root / "Link").symlink_to(tmp_path / "outside", target_is_directory=True)
+
+    before = _open_fds()
+    with pytest.raises(OSError) as excinfo:
+        fsutil.open_below(root, Path("Link"))
+    assert excinfo.value.errno == errno.ENOTDIR
+    assert _open_fds() == before, "the root fd the walk opened is closed on the refusal"
+
+    fd = fsutil.open_below(root, Path("Real"))  # control: the real sibling opens
+    try:
+        assert _ident(fd) == _ident_of(root / "Real")
+    finally:
+        os.close(fd)
+
+
+def test_a_symlinked_root_is_followed(tmp_path: Path) -> None:
+    """An operator's beets ``directory:`` may be a link; only parts BELOW it are refused."""
+    real = tmp_path / "elsewhere"
+    (real / "Artist").mkdir(parents=True)
+    root = tmp_path / "music"
+    root.symlink_to(real, target_is_directory=True)
+
+    fd = fsutil.open_below(root, Path("Artist"))
+    try:
+        assert _ident(fd) == _ident_of(real / "Artist")
+    finally:
+        os.close(fd)
+
+
+def test_open_root_follows_a_link_at_the_root(tmp_path: Path) -> None:
+    """The one spelling of the root open the anchored callers share. An
+    operator's beets ``directory:`` may be a link, so this one FOLLOWS."""
+    real = tmp_path / "elsewhere"
+    real.mkdir()
+    root = tmp_path / "music"
+    root.symlink_to(real, target_is_directory=True)
+
+    fd = fsutil.open_root(root)
+    try:
+        assert _ident(fd) == _ident_of(real)
+    finally:
+        os.close(fd)
+
+
+def test_open_root_refuses_a_fifo_instead_of_blocking_on_it(tmp_path: Path) -> None:
+    """``O_DIRECTORY`` is mandatory, not tidy: measured, a FIFO at the root
+    answers ENOTDIR with it and BLOCKS the open for as long as no writer appears
+    without it. This test completing at all is the no-hang half."""
+    root = tmp_path / "music"
+    os.mkfifo(root)
+
+    with pytest.raises(OSError) as err:
+        fsutil.open_root(root)
+
+    assert err.value.errno == errno.ENOTDIR
+
+
+@pytest.mark.parametrize("rel", ["..", "../outside", "Artist/../../outside", ".", ""])
+def test_a_climbing_or_empty_rel_is_refused_before_any_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rel: str
+) -> None:
+    """``Path("")`` and ``Path(".")`` both carry ZERO parts (measured), so one
+    refusal answers both; ``..`` is the part pathlib keeps."""
+    root = tmp_path / "music"
+    (root / "Artist").mkdir(parents=True)
+    (tmp_path / "outside").mkdir()
+    calls = _spy_os_open(monkeypatch)
+    with pytest.raises(ValueError):
+        fsutil.open_below(root, Path(rel))
+    assert calls == [], "refused before the root was even opened"
+
+
+def test_an_absolute_rel_is_refused_before_any_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "music"
+    root.mkdir()
+    calls = _spy_os_open(monkeypatch)
+    with pytest.raises(ValueError):
+        fsutil.open_below(root, Path("/etc"))
+    assert calls == []
+
+
+def test_a_deep_path_returns_the_leaf_and_leaks_no_intermediate_fd(tmp_path: Path) -> None:
+    root = tmp_path / "music"
+    leaf = root / "Artist" / "Album" / "Disc 1"
+    leaf.mkdir(parents=True)
+
+    before = _open_fds()
+    fd = fsutil.open_below(root, Path("Artist/Album/Disc 1"))
+    try:
+        assert _ident(fd) == _ident_of(leaf)
+        assert _open_fds() == before + 1, "only the returned fd is still open"
+    finally:
+        os.close(fd)
+    assert _open_fds() == before
+
+
+def test_the_link_between_two_real_components_is_refused_at_the_link(tmp_path: Path) -> None:
+    """The case a leaf-only ``O_NOFOLLOW`` clears.
+
+    Measured: ``os.open("<root>/A/link/C", O_DIRECTORY|O_NOFOLLOW)`` — the flag on
+    the whole path, which only tests the LEAF — SUCCEEDS. Per component it is
+    refused at ``link``, and the OSError names that part.
+    """
+    root = tmp_path / "music"
+    (root / "B" / "C").mkdir(parents=True)
+    (root / "A").mkdir()
+    (root / "A" / "link").symlink_to(Path("..") / "B", target_is_directory=True)
+
+    leaf_only = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(str(root / "A" / "link" / "C"), leaf_only)
+    os.close(fd)  # the weaker check the walk replaces: it opened
+
+    with pytest.raises(OSError) as excinfo:
+        fsutil.open_below(root, Path("A/link/C"))
+    assert excinfo.value.errno == errno.ENOTDIR
+    assert excinfo.value.filename == "link", "refused at the link, not at the leaf"
+
+
+def test_a_nul_in_a_part_refuses_without_leaking_the_walked_fd(tmp_path: Path) -> None:
+    """``os.open`` answers a NUL with ValueError, not OSError — so the fd cleanup
+    on the walk cannot be an ``except OSError``."""
+    root = tmp_path / "music"
+    (root / "Artist").mkdir(parents=True)
+
+    before = _open_fds()
+    with pytest.raises(ValueError):
+        fsutil.open_below(root, Path("Artist/a\x00b"))
+    assert _open_fds() == before
+
+
+def test_fsync_dir_raises_for_an_fd_that_is_not_a_directory() -> None:
+    """EINVAL is also what a descriptor NUMBER answers once a socket owns it.
+
+    Real syscalls, no patching: measured 2026-09-12 on this box, ``os.fsync`` on
+    a unix socket and on a pipe read end both answer errno 22 — the errno the
+    swallow exists for — while a merely CLOSED fd answers EBADF. So "the fd is
+    not open any more" was never masked, but a reused NUMBER was (security seat
+    L-1), and a use-after-close in either writer would have passed silently.
+    """
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    fd = sock.fileno()
+    try:
+        with pytest.raises(OSError) as caught:
+            fsutil.fsync_dir(fd)
+    finally:
+        sock.close()
+
+    assert caught.value.errno == errno.EINVAL
+
+
+def test_fsync_dir_swallows_einval_for_a_real_directory(tmp_path: Path) -> None:
+    """The other half: a DIRECTORY answering EINVAL is a filesystem that cannot.
+
+    Measured on this box, again with no patching: a directory fsync on procfs
+    and on sysfs answers errno 22 (``/proc/self`` and ``/sys``), where ``/tmp``
+    answers OK. ``/proc/self`` is the fixture because it is the shape the swallow
+    is for, and ``tmp_path`` is the control that takes the no-error path.
+    """
+    for directory in ("/proc/self", str(tmp_path)):
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            if directory == "/proc/self":
+                # The premise, asserted rather than assumed: on a kernel whose
+                # procfs fsync SUCCEEDS this test would pass without exercising
+                # the swallow at all, and a mutant that dropped it would survive
+                # there (code seat suggestion 3).
+                with pytest.raises(OSError) as direct:
+                    os.fsync(fd)
+                assert direct.value.errno == errno.EINVAL
+            fsutil.fsync_dir(fd)
+        finally:
+            os.close(fd)

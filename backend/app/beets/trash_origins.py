@@ -111,16 +111,17 @@ _SCHEMA = 1
 #: swallow-and-degrade every other write failure takes.
 _NAME_MAX = 255
 
-#: Bytes the shared atomic writer adds to the target name WHILE writing, which
-#: is the real limit a record filename has to fit under. ``write_atomic_bytes``
-#: creates ``.<name>.<pid>.<16 hex>.tmp`` beside the target, so the decoration is
-#: ``1 + 1 + len(str(pid)) + 1 + 16 + 4`` = 23 + the pid's digits; Linux caps
-#: ``pid_max`` at 4194304 (7 digits), giving 30. Rounded to 32 for slack.
-#: Measured the hard way: a 251-byte entry name produced a 256-byte ``.json``
-#: (caught) and, once truncated to exactly 255, a 285-byte TEMP name that still
-#: raised ENAMETOOLONG — the record was silently lost with the target name
-#: legal. Get this wrong and the failure is the documented degradation
-#: (swallow, log, import-restore), not a fault.
+#: The limit a record filename has to fit under: 223 bytes, kept for
+#: COMPATIBILITY with the keys already on disk, which ``origin_file`` truncated
+#: to exactly this (changing it renames existing records out of reach).
+#: It no longer describes the writer's temp file. It did once:
+#: ``write_atomic_bytes`` created ``.<name>.<pid>.<16 hex>.tmp``, costing
+#: ``len(name) + 30``, and a 251-byte entry name produced a 256-byte ``.json``
+#: (caught) then, truncated to exactly 255, a 285-byte TEMP name that still
+#: raised ENAMETOOLONG — the record silently lost with the target name legal.
+#: The temp is now ``.<pid>.<16 hex><suffix>.tmp``: a constant 33 bytes that
+#: does not grow with the target. Get this wrong and the failure is the
+#: documented degradation (swallow, log, import-restore), not a fault.
 _MAX_KEY_BYTES = _NAME_MAX - 32
 
 
@@ -185,8 +186,11 @@ def origin_file(origins_dir: Path, entry_name: str) -> Path:
     is a silent, permanent loss of the exact restore for exactly the longest
     album folders. Such a name gets a truncated head plus a digest of the WHOLE
     name instead — deterministic, so the reader recomputes the same key. The
-    budget is :data:`_MAX_KEY_BYTES`, not ``NAME_MAX``, because the atomic write
-    needs room for its own temp name.
+    budget is :data:`_MAX_KEY_BYTES`, not ``NAME_MAX``, and it stays there for
+    COMPATIBILITY with the keys already on disk: this function truncated them to
+    exactly that, and widening it renames existing records out of reach. The
+    temp-name reason the constant used to carry is gone — the writer's temp no
+    longer grows with the target (see :data:`_MAX_KEY_BYTES`).
 
     **The truncated key is not injective, and not by 2^64 either.** The recipe is
     in BYTES, exactly as the cut above is: for any long name ``N2`` the SHORT

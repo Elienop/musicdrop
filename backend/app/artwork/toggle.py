@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from app.playlists.atomic import write_atomic_text
+
 
 class ArtistImageToggle:
     def __init__(self, path: Path | str, *, default: bool) -> None:
@@ -35,11 +37,11 @@ class ArtistImageToggle:
     def set_enabled(self, value: bool) -> bool:
         """Persist + update the in-memory flag; returns the new value."""
         self._enabled = value
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        # tmp-then-rename: never reuse the YAML-specific atomic_write.
-        tmp = self._path.parent / f".{self._path.name}.tmp"
-        tmp.write_text(json.dumps({"enabled": value}), encoding="utf-8")
-        tmp.replace(self._path)
+        # The shared atomic writer, not the YAML-specific atomic_write: it
+        # creates the parents and picks an unguessable temp, so a symlink at the
+        # old derived ".<name>.tmp" is no longer followed and published as this
+        # file. mode=None keeps a tightened mode; new: the write is fsync'd.
+        write_atomic_text(self._path, json.dumps({"enabled": value}), mode=None)
         return value
 
 

@@ -120,6 +120,136 @@ def test_validate_accepts_the_directory_the_library_already_uses(
     assert r.json()["errors"] == []
 
 
+def test_validate_flags_a_symlinked_component_below_the_music_root(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rows say WHERE the Trash may sit; this says whether it can be REACHED.
+
+    Measured 2026-09-12 (security seat L-3): the report ran the rows only and the
+    reachability walk lived at the three destructive call sites, so a Trash below
+    the music root through a symlinked component painted a healthy Settings page
+    while every delete, restore and Empty-Trash answered 503.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    holder = music / "a"
+    holder.mkdir()
+    elsewhere = beets_library.beets_dir.parent / "somewhere-else"
+    elsewhere.mkdir()
+    holder.rmdir()
+    holder.symlink_to(elsewhere)
+    monkeypatch.setattr("app.config.settings.trash_dir", str(music / "a" / "b" / ".trash"))
+
+    rows = _layout_rows(client, _yaml_pointing_at(music))
+
+    assert len(rows) == 1, rows
+    assert "not reachable below the music library" in str(rows[0]["msg"])
+    assert list(elsewhere.iterdir()) == [], "a report creates nothing"
+
+
+def test_validate_accepts_a_trash_below_the_music_root_that_is_reachable(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control: the same nested layout with real directories all the way.
+
+    A Trash strictly inside the music library is allowed on purpose, and its
+    parts do not have to exist yet — the walk stops at the first one that is
+    absent without a row.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    monkeypatch.setattr("app.config.settings.trash_dir", str(music / "a" / "b" / ".trash"))
+
+    assert _layout_rows(client, _yaml_pointing_at(music)) == []
+    assert not (music / "a").exists(), "a report creates nothing"
+
+
+def test_validate_flags_a_file_in_the_operators_chain_outside_the_library(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The last shape the report read HEALTHY while every delete answered 503.
+
+    Measured 2026-09-12: an EACCES or a symlink loop anywhere in the Trash's
+    chain is refused by the rows' own resolve first, but a plain FILE in the
+    operator's chain ABOVE the music root reached the reachability walk and
+    painted nothing — the walk returned on the OSError. The wording is the
+    destructive routes' own, because that is the answer the next delete gives.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    chain = beets_library.beets_dir.parent / "chain"
+    chain.write_bytes(b"not a directory")
+    monkeypatch.setattr("app.config.settings.trash_dir", str(chain / "trash"))
+
+    rows = _layout_rows(client, _yaml_pointing_at(music))
+
+    assert len(rows) == 1, rows
+    assert "could not be created" in str(rows[0]["msg"])
+    assert "Not a directory" in str(rows[0]["msg"])
+    assert chain.read_bytes() == b"not a directory", "a report creates nothing"
+
+
+@pytest.mark.skipif(os.getuid() == 0, reason="root searches an unsearchable directory anyway")
+def test_validate_flags_a_trash_chain_the_walk_cannot_climb(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fail-closed climb's REPORT arm: a row here, and Save refused with it.
+
+    The refusal was pinned only where a delete meets it
+    (``test_a_chain_the_walk_cannot_climb_is_refused_rather_than_read_as_outside``),
+    and this path reaches it through its own read-only walk — so the arm that
+    reads "cannot answer" as "outside the library" could come back on the report
+    alone and Settings would read healthy again, which is the shape security seat
+    L-3 was about. Measured 2026-09-13: mode ``0o400`` is readable, so the walk
+    opens the Trash, and not searchable, so the ``..`` climb out of it answers
+    EACCES. The control is the document itself — the same YAML saves with 200 in
+    ``test_save_still_writes_an_acceptable_document``.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    unsearchable = beets_library.beets_dir.parent / "srv-trash"
+    unsearchable.mkdir()
+    os.chmod(unsearchable, 0o400)
+    monkeypatch.setattr("app.config.settings.trash_dir", str(unsearchable))
+    config_path = beets_library.config_path
+    before = config_path.read_bytes()
+
+    try:
+        rows = _layout_rows(client, _yaml_pointing_at(music))
+        saved = client.post(
+            "/api/config/save",
+            json={"yaml_text": _yaml_pointing_at(music), "base_sha256": _sha(config_path)},
+        )
+    finally:
+        os.chmod(unsearchable, 0o700)  # or the tmp_path teardown cannot clean up
+
+    assert len(rows) == 1, rows
+    assert rows[0]["loc"] == "directory"
+    assert "could not be checked against the music library" in str(rows[0]["msg"])
+    assert saved.status_code == 422, saved.text
+    refusals = [d for d in saved.json()["detail"] if d["type"] == "store_layout"]
+    assert len(refusals) == 1, saved.json()
+    assert "could not be checked against the music library" in str(refusals[0]["msg"])
+    assert config_path.read_bytes() == before, "a refused Save writes nothing"
+
+
+def test_validate_paints_no_row_for_a_directory_that_is_not_there_yet(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """W1: the read-only report inherited the destructive path's mount refusal.
+
+    Measured 2026-09-12 (code seat W1): a candidate ``directory:`` that does not
+    exist, with the Trash spelled below it, painted "could not be opened … Is the
+    music share mounted?" — and ``config_editor.save`` turns a row into a 422
+    while the editor disables Save on any row, so a typo'd or not-yet-created
+    ``directory:`` blocked EVERY beets-config save (plugins, naming, import).
+    The rows are deliberately silent for a path that is not there yet; the
+    destructive path keeps the refusal
+    (``test_an_unmounted_music_root_is_reported_as_the_music_roots_fault``).
+    """
+    candidate = beets_library.beets_dir.parent / "newmusic"  # never created
+    monkeypatch.setattr("app.config.settings.trash_dir", str(candidate / ".trash"))
+
+    assert _layout_rows(client, _yaml_pointing_at(candidate)) == []
+    assert not candidate.exists(), "a report creates nothing"
+
+
 def test_validate_flags_a_directory_that_would_sit_under_trash(
     client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:

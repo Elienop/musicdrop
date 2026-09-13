@@ -19,6 +19,7 @@ from app.artwork.service import ArtistImageService
 from app.beets.artist_art import ArtTrashStore
 from app.config import settings as app_settings
 from app.main import app
+from tests.conftest import protected_for
 
 PNG = Path(__file__).parent / "fixtures" / "cover.png"
 
@@ -60,8 +61,19 @@ def art_trash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ArtTrashStore:
     ``checked_store_dirs``, which needs a real beets library and a beets dir.
     ``tests/test_artist_image_reset_to_trash.py`` is the file that resolves the
     real pair through the endpoint and asserts what lands in it.
+
+    The Trash dir is created before the identity is taken, which is what the real
+    resolver does one line before it (``store_layout._ensure_trash_root``): a
+    store built over an absent Trash carries ``trash=None`` and every mover
+    refuses it.
     """
-    store = ArtTrashStore(trash_dir=tmp_path / "trash", origins_dir=tmp_path / "trash-origins")
+    trash = tmp_path / "trash"
+    trash.mkdir()
+    store = ArtTrashStore(
+        trash_dir=trash,
+        origins_dir=tmp_path / "trash-origins",
+        protected=protected_for(trash_dir=trash, origins_dir=tmp_path / "trash-origins"),
+    )
     monkeypatch.setattr(artists_mod, "_checked_art_trash_store", lambda *_a, **_kw: store)
     return store
 

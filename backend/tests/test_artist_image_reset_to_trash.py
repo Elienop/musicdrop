@@ -14,9 +14,9 @@ from __future__ import annotations
 import asyncio
 import errno
 import os
-import shutil
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -33,12 +33,12 @@ from app.api.artists import (
 )
 from app.artwork.cache import ArtistImageCache, CachedImage
 from app.beets.artist_art import ArtTrashStore
-from app.beets.library import LibraryHandle
+from app.beets.library import LibraryHandle, LibraryRootUnavailableError
 from app.beets.store_layout import StoreLayoutError, checked_store_dirs
 from app.beets.trash_origins import read_trash_origin
 from app.config import settings as app_settings
 from app.main import app
-from tests.conftest import beets_dir_for, make_test_handle
+from tests.conftest import beets_dir_for, make_test_handle, protected_for
 
 PNG = (Path(__file__).parent / "fixtures" / "cover.png").read_bytes()
 RESET = "/api/artists/image/reset"
@@ -196,6 +196,40 @@ def test_a_refused_store_answers_503_with_its_sentence_and_resets_nothing(
     ]
 
 
+def test_an_unmounted_library_answers_503_and_keeps_the_upload(
+    client: TestClient,
+    cache: ArtistImageCache,
+    cache_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The store's OTHER refusal tier, and it is a different exception class.
+
+    The store's creation refuses to make a Trash inside a library whose music is
+    not there, which is a ``LibraryRootUnavailableError`` rather than a
+    ``StoreLayoutError``. Measured 2026-09-12 (code seat W3, mutant m23): with
+    that arm deleted the whole suite still passed, and the route would answer 500
+    on a request that is about to move a file the user uploaded.
+    """
+    cache.write_override("ABBA", PNG, "image/png")
+
+    def unmounted(*_a: object, **_kw: object) -> object:
+        raise LibraryRootUnavailableError("Library folder is empty. Is the music share mounted?")
+
+    monkeypatch.setattr(artists_mod, "_checked_art_trash_store", unmounted)
+
+    resp = client.post(RESET, params={"name": "ABBA"})
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Library folder is empty. Is the music share mounted?"
+    served = cache.get("ABBA")
+    assert isinstance(served, CachedImage)
+    assert served.data == PNG  # still the portrait the user uploaded
+    assert sorted(p.name.split(".", 1)[1] for p in cache_dir.iterdir()) == [
+        "override",
+        "override.mime",
+    ]
+
+
 @pytest.mark.skipif(os.getuid() == 0, reason="root writes a read-only directory anyway")
 def test_a_store_the_mover_cannot_write_answers_503_and_keeps_the_upload(
     client: TestClient, cache: ArtistImageCache, store: tuple[Path, Path]
@@ -203,8 +237,10 @@ def test_a_store_the_mover_cannot_write_answers_503_and_keeps_the_upload(
     """The other half of the refusal: the layout is fine and the store is not.
 
     A read-only origins dir is the fault ``require_usable_store`` refuses on,
-    and it is refused BEFORE the Trash dir is created — so the 503 names the
-    cause and the override is still where it was.
+    and it is refused before anything is allocated in the Trash — so the 503
+    names the cause and the override is still where it was. The Trash ROOT is
+    there either way: this request's own layout check created it before it took
+    the identity the mover compares.
     """
     trash_dir, origins_dir = store
     origins_dir.mkdir(parents=True)
@@ -218,7 +254,7 @@ def test_a_store_the_mover_cannot_write_answers_503_and_keeps_the_upload(
 
     assert resp.status_code == 503
     assert resp.json()["detail"].startswith(MOVE_FAILED)
-    assert not trash_dir.exists()
+    assert list(trash_dir.iterdir()) == []
     served = cache.get("ABBA")
     assert isinstance(served, CachedImage)
     assert served.data == PNG
@@ -290,24 +326,28 @@ def test_a_move_that_fails_part_way_says_the_reset_stopped_not_that_nothing_move
     trash_dir, origins_dir = store
     cache.store_positive("ABBA", b"auto bytes", "image/png")
     cache.write_override("ABBA", PNG, "image/png")
-    real_move = shutil.move
+    real_rename = os.rename
     moves = 0
 
-    def fail_on_the_second(src: str, dst: str) -> str:
+    def fail_on_the_second(*args: Any, **kwargs: Any) -> None:
         nonlocal moves
+        if "dst_dir_fd" not in kwargs:  # the mover's own move, not the app's others
+            real_rename(*args, **kwargs)
+            return
         moves += 1
         if moves == 2:
-            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC), dst)
-        return str(real_move(src, dst))
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC), str(args[1]))
+        real_rename(*args, **kwargs)
 
-    # ``shutil`` is one shared module object, so patching it here is what the
-    # mover sees. (Reaching through ``app.beets.trash.shutil`` fails mypy
-    # strict: the module does not explicitly export the name.)
-    monkeypatch.setattr(shutil, "move", fail_on_the_second)
+    # ``os`` is one shared module object, so patching it here is what the mover
+    # sees. (Reaching through ``app.beets.trash.os`` fails mypy strict: the
+    # module does not explicitly export the name.)
+    monkeypatch.setattr(os, "rename", fail_on_the_second)
 
     resp = client.post(RESET, params={"name": "ABBA"})
 
     assert resp.status_code == 503
+    assert moves == 2, "the mover's own renames were not the ones spied on"
     assert resp.json()["detail"] == f"{MOVE_FAILED} No space left on device"
     entry = trash_dir / "ABBA - artist image"
     (image,) = list(entry.glob("*.override"))
@@ -327,7 +367,7 @@ def test_a_move_that_fails_part_way_says_the_reset_stopped_not_that_nothing_move
     # ``override_files`` is keyed on the bytes, which are in Trash already. No
     # reset removes the orphan sidecar; it stays until the next upload's
     # ``write_override`` overwrites it or a rename purges the key.
-    monkeypatch.setattr(shutil, "move", real_move)
+    monkeypatch.setattr(os, "rename", real_rename)
     retry = client.post(RESET, params={"name": "ABBA"})
     assert retry.status_code == 200
     assert retry.json() == {"ok": True, "cleared_override": False, "cleared_auto": True}
@@ -349,17 +389,68 @@ def test_the_503_carries_the_oserrors_strerror_and_no_server_path(
     trash_dir, _origins = store
     cache.write_override("ABBA", PNG, "image/png")
 
-    def refuse(src: str, dst: str) -> str:
-        raise OSError(errno.EACCES, os.strerror(errno.EACCES), dst)
+    real_rename = os.rename
+    refused: list[bool] = []
 
-    monkeypatch.setattr(shutil, "move", refuse)
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        if "dst_dir_fd" not in kwargs:
+            real_rename(*args, **kwargs)
+            return
+        refused.append(True)
+        raise OSError(errno.EACCES, os.strerror(errno.EACCES), str(args[1]))
+
+    monkeypatch.setattr(os, "rename", refuse)
+
+    resp = client.post(RESET, params={"name": "ABBA"})
+
+    assert resp.status_code == 503
+    assert refused, "the mover's own rename was not the one spied on"
+    detail = resp.json()["detail"]
+    assert detail == f"{MOVE_FAILED} Permission denied"
+    assert str(trash_dir) not in detail
+
+
+def test_a_trash_root_swapped_after_the_check_answers_503_and_keeps_the_upload(
+    client: TestClient,
+    cache: ArtistImageCache,
+    store: tuple[Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Trash root the mover opens is the directory THIS request examined.
+
+    ``checked_store_dirs`` resolves a path and ``checked_protected_trees``
+    stats it; the swap goes in between that pair and the move, which is the
+    window a party who can write the Trash's parent has. Measured before the
+    identity compare: the container and the portrait landed in
+    ``somewhere-else`` and the origin record named an entry that does not exist.
+    """
+    trash_dir, _origins = store
+    trash_dir.mkdir(parents=True)  # there at check time, so it HAS an identity
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    cache.write_override("ABBA", PNG, "image/png")
+    real_store = artists_mod._checked_art_trash_store
+
+    def check_then_swap(handle: LibraryHandle, settings: Any) -> ArtTrashStore:
+        checked = real_store(handle, settings)
+        os.rename(checked.trash_dir, tmp_path / "real-trash")
+        os.symlink(elsewhere, checked.trash_dir)
+        return checked
+
+    monkeypatch.setattr(artists_mod, "_checked_art_trash_store", check_then_swap)
 
     resp = client.post(RESET, params={"name": "ABBA"})
 
     assert resp.status_code == 503
     detail = resp.json()["detail"]
-    assert detail == f"{MOVE_FAILED} Permission denied"
+    assert detail == f"{MOVE_FAILED} the Trash directory changed after it was checked"
     assert str(trash_dir) not in detail
+    assert list(elsewhere.iterdir()) == [], "nothing landed outside the checked Trash"
+    assert list((tmp_path / "real-trash").iterdir()) == []
+    served = cache.get("ABBA")
+    assert isinstance(served, CachedImage)
+    assert served.data == PNG, "the upload is still served, nothing was reset"
 
 
 def test_the_move_and_the_clear_run_under_the_beets_swap_lock(
@@ -515,3 +606,45 @@ def test_an_upload_that_lands_after_the_move_survives_the_reset(
     # The OLD pair is the one in Trash, alone.
     (image,) = list((trash_dir / "ABBA - artist image").glob("*.override"))
     assert image.read_bytes() == PNG
+
+
+def test_a_trash_aliased_onto_another_store_answers_503_with_its_own_cause(
+    client: TestClient,
+    cache: ArtistImageCache,
+    store: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bind-mount alias arm reaches the wire as itself (security seat L-5).
+
+    ``open_checked_dir`` refuses three different things and the mover relayed one
+    sentence for all of them, so an operator whose Trash is bind-mounted onto
+    another MusicDrop directory was told the directory had changed under the
+    request. The layout rule refuses the two SPELLINGS being equal, so a real
+    bind mount is the only way to reach this — and the identity set one produces
+    is what this fixture builds.
+    """
+    trash_dir, _origins = store
+    cache.write_override("ABBA", PNG, "image/png")
+    real_store = artists_mod._checked_art_trash_store
+
+    def aliased(handle: LibraryHandle, settings: Any) -> ArtTrashStore:
+        resolved = real_store(handle, settings)
+        return ArtTrashStore(
+            trash_dir=resolved.trash_dir,
+            origins_dir=resolved.origins_dir,
+            # One inode, two of the app's names for it: what a bind mount does.
+            protected=protected_for(trash_dir=resolved.trash_dir, origins_dir=resolved.trash_dir),
+        )
+
+    monkeypatch.setattr(artists_mod, "_checked_art_trash_store", aliased)
+
+    resp = client.post(RESET, params={"name": "ABBA"})
+
+    assert resp.status_code == 503
+    detail = resp.json()["detail"]
+    assert detail == (
+        f"{MOVE_FAILED} the Trash directory is the same folder as another MusicDrop directory"
+    )
+    assert str(trash_dir) not in detail
+    assert list(trash_dir.iterdir()) == [], "nothing moved"
+    assert isinstance(cache.get("ABBA"), CachedImage), "the upload is still served"

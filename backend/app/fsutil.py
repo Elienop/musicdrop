@@ -1,7 +1,7 @@
 """Filesystem predicates, and the one MOVE, shared by callers that must not import
 each other.
 
-Two halves, and the second one is here for a structural reason rather than a
+Three parts, and the second one is here for a structural reason rather than a
 thematic one. :func:`occupied` and :func:`move_no_merge` were ``trash_manage``'s
 until the delete side needed the same move-back: ``trash_manage`` imports
 ``import_session``, which imports ``trash``, so ``trash`` cannot import
@@ -11,7 +11,7 @@ is where a primitive both ends need can live. There is exactly one definition of
 "move a folder onto a path without burying it inside one" and both the restore
 and the delete undo call it.
 
-The first half is about paths that may carry a client-supplied name.
+The first part is about paths that may carry a client-supplied name.
 
 ``pathlib``'s ``Path.exists()`` / ``is_dir()`` only absorb ENOENT/ENOTDIR/
 EBADF/ELOOP; any OTHER OSError propagates — in particular ENAMETOOLONG
@@ -28,6 +28,14 @@ or mount failure would convert a real incident into a silent 404. Same
 swallow-vs-reraise posture as the ``exists()`` guards in
 ``app/artwork/cache.py``, scoped to the failure a request can actually
 cause.
+
+The third is the anchored descent, :func:`open_root` + :func:`open_below` — the
+one spelling of "open the root, following links" and of "walk every part below it
+refusing one". Anything that ENUMERATES
+through an fd it returns must CLOSE its iterator: ``os.scandir(fd)`` dups the fd
+and the dup SHARES the offset, so one partially consumed iterator left open makes
+every later ``scandir``/``listdir`` on that fd read ``[]`` (measured 2026-09-12,
+twice; two live iterators on one fd interleave and duplicate entries).
 """
 
 from __future__ import annotations
@@ -36,7 +44,9 @@ import contextlib
 import errno
 import os
 import shutil
+import stat
 from pathlib import Path
+from typing import Final
 
 
 def exists(path: Path) -> bool:
@@ -65,6 +75,38 @@ def is_dir(path: Path) -> bool:
 #: while the source is a directory answers ENOTDIR. All three mean the same thing
 #: here, and none of them moved anything.
 DEST_OCCUPIED = frozenset({errno.EEXIST, errno.ENOTEMPTY, errno.ENOTDIR})
+
+
+#: What a filesystem answers when it cannot fsync a DIRECTORY at all. Both
+#: measured on this box, 2026-09-12: ENOTSUP from the patched-``os.fsync`` pair
+#: the two tests drive, EINVAL from a real directory fsync on procfs and on
+#: sysfs (``errno=22`` for ``/proc/self`` and ``/sys``, OK for ``/tmp``).
+#: EROFS is deliberately NOT here: ``fsync(2)`` documents it in the same clause,
+#: but a filesystem that went read-only between the publish and this call is a
+#: fault worth raising, not a filesystem that never could.
+CANNOT_FSYNC_A_DIR: Final = frozenset({errno.ENOTSUP, errno.EINVAL})
+
+
+def fsync_dir(dir_fd: int) -> None:
+    """Force a directory's own entries durable, unless it cannot be fsynced.
+
+    Both callers run this AFTER the entry they care about is published, so the
+    fsync is a durability extra rather than a correctness precondition: a
+    filesystem that answers ENOTSUP/EINVAL for it turned a completed write into
+    a refusal (security seat L-6). Every other errno is a fault and raises.
+
+    The swallow is paired with "and the fd really is a directory", because EINVAL
+    is also what a descriptor NUMBER answers once something else owns it —
+    measured, a closed-then-reused number held by a socket or a pipe answers
+    errno 22, while a merely closed one answers EBADF and still raises (security
+    seat L-1). Without the pairing, a use-after-close in either writer would pass
+    silently instead of surfacing.
+    """
+    try:
+        os.fsync(dir_fd)
+    except OSError as exc:
+        if exc.errno not in CANNOT_FSYNC_A_DIR or not stat.S_ISDIR(os.fstat(dir_fd).st_mode):
+            raise
 
 
 def occupied(path: Path) -> bool:
@@ -204,3 +246,94 @@ def move_no_merge(src: Path, dest: Path) -> None:
         if exc.errno in DEST_OCCUPIED:
             raise FileExistsError(exc.errno, os.strerror(exc.errno), str(dest)) from exc
         raise
+
+
+#: Every component BELOW the root is opened this way: a link is refused instead of
+#: followed, and a FIFO planted mid-path cannot block the open (measured: with
+#: ``O_DIRECTORY`` a FIFO answers ENOTDIR in 6 us, so ``O_NONBLOCK`` is belt and
+#: braces rather than the thing that saves the open). The ONE definition, and
+#: these are all its readers: :func:`open_below`'s walk, the Trash remover's
+#: descent, the move-aside's container open, ``store_layout``'s creation of a
+#: Trash below the music root, and ``protected.open_checked_dir``'s open of the
+#: Trash ROOT — the one place a ROOT is opened ``O_NOFOLLOW``, because that root
+#: is the one directory the app must not reach through a link.
+BELOW_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+
+#: The ROOT is opened FOLLOWING links: an operator's beets ``directory:`` may be a
+#: symlink and refusing it would refuse the library. Same reading as
+#: ``store_layout._music_root_ident``. Owner ruling 2026-09-12: below the root a
+#: bind mount is the supported spelling for spanning disks, so a link there is
+#: refused.
+#:
+#: Read directly, and not only through :func:`open_root`, by
+#: ``store_layout._open_the_trash_chain``: every component ABOVE the music root
+#: is the operator's chain and is opened the same way, from its parent's
+#: descriptor — which :func:`open_root` takes no ``dir_fd`` to express. Same
+#: flags, one definition; the three sites are ``/``, each part above the root,
+#: and the ``..`` climb that asks whether a spelling landed inside the library.
+ROOT_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK
+
+
+def open_root(root: Path) -> int:
+    """Open ``root`` itself as a directory fd, FOLLOWING a link at it.
+
+    The one spelling every anchored caller with a PATH shares, so no hand-written
+    copy can drift from it. Its readers: :func:`open_below`'s walk, the lyrics
+    writer's flat-library root, the artist-image cache dir, the shared atomic
+    writer's own parent open, and ``store_layout``'s stat of the music root. A
+    caller opening from a descriptor passes :data:`ROOT_FLAGS` itself, because
+    this takes no ``dir_fd`` — ``store_layout._open_the_trash_chain`` is the one
+    that does.
+    ``O_DIRECTORY`` is mandatory rather than tidy: measured 2026-09-12, a FIFO at
+    ``root`` answers ENOTDIR with it and BLOCKS the open for as long as no writer
+    appears without it.
+
+    The returned fd is the caller's to close.
+    """
+    return os.open(root, ROOT_FLAGS)
+
+
+def open_below(root: Path, rel: Path) -> int:
+    """Open ``root/rel`` as a directory fd, refusing a symlink at every part below ``root``.
+
+    The fd-based sibling of ``trash_manage._reaches_through_a_link``
+    (``app/beets/trash_manage.py:1029``): both ask every component, not just the
+    leaf, and the two must read alike — that docstring's rule is that a second,
+    weaker traversal check must not grow. This is the stronger half, because the fd
+    the walk returns IS what the caller writes through, so no component can be
+    re-resolved between the check and the write.
+
+    Measured 2026-09-12: ``O_DIRECTORY|O_NOFOLLOW`` on a symlink answers
+    **ENOTDIR (20)**, not the documented ELOOP — ELOOP (40) needs ``O_NOFOLLOW``
+    WITHOUT ``O_DIRECTORY``. A link to a directory, a link to a file, a dangling
+    link and a plain regular file all answer ENOTDIR, so the errno cannot tell a
+    caller which it met: the answer is "refused", one OSError. Also measured:
+    ``open(root/"A"/"link"/"C")`` with ``O_NOFOLLOW`` on that whole path SUCCEEDS,
+    which is why the walk is per component.
+
+    An absolute ``rel``, a ``..`` part, and a ``rel`` with no parts are refused
+    before any open — ``Path("")`` and ``Path(".")`` both normalise to zero parts,
+    and ``Path("a/./b")`` to ``("a", "b")``, so "." never reaches the loop
+    (measured). Zero parts is refused rather than answering with the root's own fd:
+    the contract is a name BELOW the root. ``ValueError``, not a class of this
+    module, because a caller deriving ``rel`` from ``Path.relative_to`` already
+    catches one for a directory outside the root and both mean the same thing.
+
+    The returned fd is the caller's to close.
+    """
+    parts = rel.parts
+    if rel.is_absolute() or not parts or ".." in parts:
+        raise ValueError(f"not a name below the root: {str(rel)!r}")
+    fd = open_root(root)
+    try:
+        for part in parts:
+            below = os.open(part, BELOW_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = below
+    except BaseException:
+        # Wider than OSError: a NUL in a part makes ``os.open`` raise ValueError
+        # ("embedded null character in path", measured), and the fd walked so far
+        # would leak. Re-raised unchanged.
+        os.close(fd)
+        raise
+    return fd
