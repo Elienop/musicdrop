@@ -16,6 +16,7 @@ from app.beets.trash import trash_album
 from app.beets.trash_manage import (
     TrashEmptyPartialError,
     TrashEntryUnreadableError,
+    _link_out_of,
     empty_all,
     empty_one,
     list_trashed_albums,
@@ -858,6 +859,33 @@ def test_a_fifo_inside_a_symlinked_subfolder_of_an_entry_refuses_the_restore(
     assert "'Disc 2'" in str(raised[0]), str(raised[0])
     assert "wedge" not in str(raised[0]), "a name from outside the entry reached the 503"
     assert (entry / "01 Dreams.flac").is_file(), "nothing left Trash"
+
+
+def test_only_a_link_that_leaves_the_entry_replaces_the_name_it_hides(tmp_path: Path) -> None:
+    """The containment half of the substitution, asked of the predicate directly.
+
+    It cannot be asked through the walk. A link whose target is INSIDE the entry
+    is an alias for a directory the walk reaches anyway, and the walk prunes by
+    identity — so exactly one of the two spellings is descended, and which one
+    depends on the order ``os.scandir`` hands back, which is the directory's
+    hash order rather than a promise (measured here: the link came first in six
+    of six trials on this filesystem, which is precisely the kind of premise
+    that changes on another one). Dropping the containment check therefore left
+    every restore test green.
+
+    So the predicate is pinned instead, with all three answers it has: a link
+    out (substitute), a link that stays in (do not — the operator can see those
+    names and the fuller one is the better message), and a real directory.
+    """
+    entry = tmp_path / "Album"
+    (entry / "inside").mkdir(parents=True)
+    (tmp_path / "outside").mkdir()
+    (entry / "stays").symlink_to(entry / "inside", target_is_directory=True)
+    (entry / "leaves").symlink_to(tmp_path / "outside", target_is_directory=True)
+
+    assert _link_out_of(str(entry / "leaves"), entry) == "leaves"
+    assert _link_out_of(str(entry / "stays"), entry) is None
+    assert _link_out_of(str(entry / "inside"), entry) is None, "a real directory is not a link"
 
 
 def test_a_symlinked_subfolder_of_regular_files_still_restores(tmp_path: Path) -> None:

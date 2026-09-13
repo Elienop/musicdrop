@@ -32,6 +32,7 @@ import logging
 import os
 import shutil
 import threading
+import tracemalloc
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -547,7 +548,7 @@ def test_a_file_too_large_to_be_a_record_is_refused_on_its_size(
     assert path.stat().st_size == planted, "refused, not truncated or removed"
 
 
-@pytest.mark.skipif(not Path("/proc/self/smaps").is_file(), reason="no procfs on this box")
+@pytest.mark.skipif(not Path("/proc/kallsyms").is_file(), reason="no procfs on this box")
 def test_the_cap_bounds_the_read_and_not_the_reported_size(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -560,28 +561,45 @@ def test_the_cap_bounds_the_read_and_not_the_reported_size(
     parse arm having sailed through a 64 KiB cap. The other half of the same
     fault needed a race and cost more: with the swap forced inside the
     stat-to-read window, a 400 MB file restored the whole +801 MB the cap was
-    added to prevent.
+    added to prevent. ``app/beets/store_layout.py`` bounds its ``include:``
+    reads the same way, for the same reason.
 
-    The two assertions on the fixture come first, because this test is
-    worthless if the file it plants no longer clears the cap -- a procfs file's
-    size is the process's own mapping count, so it is a measurement, not a
-    constant. ``app/beets/store_layout.py`` bounds its ``include:`` reads the
-    same way, for the same reason.
+    ``kallsyms`` and not ``smaps``: a process's ``smaps`` is its own mapping
+    count, and in a bare interpreter here it measured **43,380 bytes** -- UNDER
+    the cap, so the fixture would have stopped being a bypass depending on who
+    imported what. ``kallsyms`` is world-readable at 22,227,073 bytes with
+    ``st_size`` 0. The two fixture assertions come first anyway: this test is
+    worthless if what it plants no longer dwarfs the cap.
+
+    TWO oracles, because the two halves of the bound are separately killable and
+    the sentence alone sees only one of them. Reading to EOF and then refusing
+    on ``len`` logs the SAME sentence -- measured, that mutant survived the whole
+    origin-record suite -- so the peak allocation is what says the read stopped.
+    The sentence is the other half: bounding the read and dropping the length
+    check reads 64 KiB of legal ASCII and reports the parse arm instead.
     """
     origins = _origins(tmp_path)
     path = origin_file(origins, "Dummy")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.symlink_to("/proc/self/smaps")
+    path.symlink_to("/proc/kallsyms")
     assert os.stat(path).st_size <= _MAX_RECORD_BYTES, "the stat has to under-report"
     with path.open("rb") as fh:
-        assert len(fh.read()) > _MAX_RECORD_BYTES, "and the content has to clear the cap"
+        whole = len(fh.read())
+    assert whole > 16 * _MAX_RECORD_BYTES, "and the content has to dwarf the cap"
+    assert not tracemalloc.is_tracing(), "something else owns the tracer"
 
-    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
-        assert read_trash_origin(origins, "Dummy") is None
+    tracemalloc.start()
+    try:
+        with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+            assert read_trash_origin(origins, "Dummy") is None
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
 
+    assert peak < whole // 8, f"the read ran to EOF: peak {peak} of {whole} available"
     (record,) = caplog.records
     assert "far too large to be a record" in record.getMessage(), (
-        "the read ran to EOF and the parse arm reported it instead"
+        "the length check is gone and the parse arm reported it instead"
     )
 
 

@@ -502,6 +502,14 @@ def _link_out_of(child: str, entry: Path) -> str | None:
     never reaches this — ``os.walk`` sorts a name into ``dirs`` by
     ``os.path.isdir``, which is False for both — and ``realpath`` answers
     without raising for either anyway.
+
+    The ``None`` arm cannot be reached deterministically THROUGH the walk, so it
+    is pinned on this function instead
+    (``test_only_a_link_that_leaves_the_entry_replaces_the_name_it_hides``): a
+    link whose target is inside the entry is an alias for a directory the walk
+    reaches anyway, the walk prunes by identity, and which of the two spellings
+    gets descended is ``os.scandir`` order — the directory's hash order, not a
+    promise. Measured: dropping this arm left every restore test green.
     """
     if not os.path.islink(child):
         return None
