@@ -160,6 +160,41 @@ _MAX_KEY_BYTES = _NAME_MAX - 32
 #: sparse file costs the planter nothing to make.
 _MAX_RECORD_BYTES = 64 * 1024
 
+#: The cause shared by the two refusals that are checked twice — once cheaply on
+#: ``st_size`` and once on what the read actually returned. One string, because
+#: an operator reading the log has no use for the distinction and the second
+#: spelling would only invite the two to drift apart.
+_TOO_LARGE: Final = "it is far too large to be a record"
+
+#: Shared by the decode and the parse: ``UnicodeDecodeError`` and
+#: ``json.JSONDecodeError`` are both ``ValueError``, and they are the same fault
+#: to an operator — the bytes at the key are not what this writes.
+_NOT_OUR_JSON: Final = "it is not the ASCII JSON this writes"
+
+#: :func:`_warn_unusable`'s second half for :func:`read_trash_origin`. The row
+#: is still in Trash and is about to be offered the weaker restore.
+_ROW_FALLS_BACK: Final = (
+    "That folder falls back to a re-import restore, and its Trash row cannot say which of"
+    " the two causes it hit — this line is the difference."
+)
+
+#: :func:`_warn_unusable`'s second half for :func:`delete_trash_origin`, which
+#: runs AFTER the entry has already been removed. There is no row left to
+#: degrade and nothing for the operator to fix, so the clause above would be
+#: false here.
+#:
+#: It says what the READ did and stops there, because what happens to the file
+#: NEXT is decided by which refusal this was and can fail either way: one that
+#: proves the bytes are not ours is unlinked (and the ``unlink`` itself raises on
+#: a read-only ``/data``, which has its own line), one the store could not
+#: answer for is kept (which also has its own line). "So the file goes too" was
+#: the first spelling and "this line is the only trace it was there" the second;
+#: both are claims about a statement that had not run yet. Two lines about one
+#: file is fine; one of them being wrong is not.
+_ENTRY_IS_ALREADY_GONE: Final = (
+    "None of it was used, and the entry it was keyed on has already been removed."
+)
+
 
 #: What the mover actually relocated, which is what decides whether a faithful
 #: move-back is even possible:
@@ -719,31 +754,35 @@ def _record_text(path: Path, *, consequence: str) -> tuple[str | None, _Refusal 
         # not among them) — this runs inside ``GET /api/trash``, once per
         # top-level entry, and may not 500 the listing.
         if os.path.islink(path):
-            _warn_unusable(path, "it is a link to something that is not there", consequence)
+            _warn_unusable(
+                path, "it is a link to something that is not there", consequence=consequence
+            )
             return None, "not-a-record"
         return None, "absent"  # absent is the ordinary case and stays silent
     except OSError as exc:
         if exc.errno in _NOT_A_FILE_AT_ALL:
-            _warn_unusable(path, "it does not lead to a file", consequence, exc_info=True)
+            _warn_unusable(
+                path, "it does not lead to a file", consequence=consequence, exc_info=True
+            )
             return None, "not-a-record"
         # EAGAIN from a write lease lands here, and so does EACCES — the
         # sentence says what happened and not what the name is, because the
         # open is the only thing that was asked.
-        _warn_unusable(path, "it could not be opened", consequence, exc_info=True)
+        _warn_unusable(path, "it could not be opened", consequence=consequence, exc_info=True)
         return None, "store-unreachable"
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             # The FIFO, the directory and the device all land here, on the
             # descriptor that is already open rather than on the name.
-            _warn_unusable(path, "it is not a regular file", consequence)
+            _warn_unusable(path, "it is not a regular file", consequence=consequence)
             return None, "not-a-record"
         if st.st_size > _MAX_RECORD_BYTES:
-            _warn_unusable(path, _TOO_LARGE, consequence)
+            _warn_unusable(path, _TOO_LARGE, consequence=consequence)
             return None, "not-a-record"
         raw = _bytes_at_most(fd, _MAX_RECORD_BYTES)
     except OSError:
-        _warn_unusable(path, "it could not be read", consequence, exc_info=True)
+        _warn_unusable(path, "it could not be read", consequence=consequence, exc_info=True)
         return None, "store-unreachable"
     finally:
         os.close(fd)
@@ -751,12 +790,12 @@ def _record_text(path: Path, *, consequence: str) -> tuple[str | None, _Refusal 
         # Not the same refusal as the ``st_size`` one, which this one exists
         # because of: reaching here means the file GREW past the cap, or never
         # had an ``st_size`` that described it in the first place.
-        _warn_unusable(path, _TOO_LARGE, consequence)
+        _warn_unusable(path, _TOO_LARGE, consequence=consequence)
         return None, "not-a-record"
     try:
         return raw.decode("ascii"), None
     except ValueError:
-        _warn_unusable(path, _NOT_OUR_JSON, consequence, exc_info=True)
+        _warn_unusable(path, _NOT_OUR_JSON, consequence=consequence, exc_info=True)
         return None, "not-a-record"
 
 
@@ -808,7 +847,7 @@ def read_trash_origin(origins_dir: Path, entry_name: str) -> TrashOrigin | None:
     try:
         raw: object = json.loads(text)
     except ValueError:
-        _warn_unusable(path, _NOT_OUR_JSON, _ROW_FALLS_BACK, exc_info=True)
+        _warn_unusable(path, _NOT_OUR_JSON, consequence=_ROW_FALLS_BACK, exc_info=True)
         return None
     except RecursionError:
         # Its own arm because it is neither of the two above: ``RecursionError``
@@ -828,16 +867,23 @@ def read_trash_origin(origins_dir: Path, entry_name: str) -> TrashOrigin | None:
         # move the old 60,000-level test fixture (117 KB) onto the size arm, so
         # that fixture now asserts which side of the cap it sits on.
         _warn_unusable(
-            path, "it nests deeper than the JSON parser will go", _ROW_FALLS_BACK, exc_info=True
+            path,
+            "it nests deeper than the JSON parser will go",
+            consequence=_ROW_FALLS_BACK,
+            exc_info=True,
         )
         return None
     if not _names_entry(raw, entry_name):
-        _warn_unusable(path, "it is the record for a different Trash entry", _ROW_FALLS_BACK)
+        _warn_unusable(
+            path, "it is the record for a different Trash entry", consequence=_ROW_FALLS_BACK
+        )
         return None
     record = _parse(raw)
     if record is None:
         _warn_unusable(
-            path, "its contents are not a record this version can trust", _ROW_FALLS_BACK
+            path,
+            "its contents are not a record this version can trust",
+            consequence=_ROW_FALLS_BACK,
         )
     return record
 
@@ -857,43 +903,7 @@ def _names_entry(raw: object, entry_name: str) -> bool:
     return not isinstance(raw, dict) or raw.get("name") == entry_name
 
 
-#: The cause shared by the two refusals that are checked twice — once cheaply on
-#: ``st_size`` and once on what the read actually returned. One string, because
-#: an operator reading the log has no use for the distinction and the second
-#: spelling would only invite the two to drift apart.
-_TOO_LARGE: Final = "it is far too large to be a record"
-
-#: Shared by the decode and the parse: ``UnicodeDecodeError`` and
-#: ``json.JSONDecodeError`` are both ``ValueError``, and they are the same fault
-#: to an operator — the bytes at the key are not what this writes.
-_NOT_OUR_JSON: Final = "it is not the ASCII JSON this writes"
-
-#: :func:`_warn_unusable`'s second half for :func:`read_trash_origin`. The row
-#: is still in Trash and is about to be offered the weaker restore.
-_ROW_FALLS_BACK: Final = (
-    "That folder falls back to a re-import restore, and its Trash row cannot say which of"
-    " the two causes it hit — this line is the difference."
-)
-
-#: :func:`_warn_unusable`'s second half for :func:`delete_trash_origin`, which
-#: runs AFTER the entry has already been removed. There is no row left to
-#: degrade and nothing for the operator to fix, so the clause above would be
-#: false here.
-#:
-#: It says what the READ did and stops there, because what happens to the file
-#: NEXT is decided by which refusal this was and can fail either way: one that
-#: proves the bytes are not ours is unlinked (and the ``unlink`` itself raises on
-#: a read-only ``/data``, which has its own line), one the store could not
-#: answer for is kept (which also has its own line). "So the file goes too" was
-#: the first spelling and "this line is the only trace it was there" the second;
-#: both are claims about a statement that had not run yet. Two lines about one
-#: file is fine; one of them being wrong is not.
-_ENTRY_IS_ALREADY_GONE: Final = (
-    "None of it was used, and the entry it was keyed on has already been removed."
-)
-
-
-def _warn_unusable(path: Path, why: str, consequence: str, *, exc_info: bool = False) -> None:
+def _warn_unusable(path: Path, why: str, *, consequence: str, exc_info: bool = False) -> None:
     """Log that a record file is present but cannot be used.
 
     ``%r`` rather than ``%s`` on the path, and it is MORE load-bearing here than
@@ -1138,17 +1148,17 @@ def _names_a_different_entry(
     try:
         raw: object = json.loads(text)
     except (ValueError, RecursionError):
-        _warn_unusable(path, _NOT_OUR_JSON, consequence, exc_info=True)
+        _warn_unusable(path, _NOT_OUR_JSON, consequence=consequence, exc_info=True)
         return False
     if not isinstance(raw, dict):
-        _warn_unusable(path, "it is not an object", consequence)
+        _warn_unusable(path, "it is not an object", consequence=consequence)
         return False
     name = raw.get("name")
     if not isinstance(name, str):
         # Every record written before ``name`` existed is this arm, and so is a
         # hand edit. It is the one of the three that is ORDINARY rather than a
         # plant, which is why it says what is missing and not what is wrong.
-        _warn_unusable(path, "it does not name a Trash entry", consequence)
+        _warn_unusable(path, "it does not name a Trash entry", consequence=consequence)
         return False
     return name != entry_name
 
