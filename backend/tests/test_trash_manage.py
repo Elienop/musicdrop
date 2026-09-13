@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import threading
 from collections.abc import Iterator
 from pathlib import Path
@@ -704,6 +705,70 @@ def test_a_non_regular_file_inside_an_entry_refuses_the_restore(tmp_path: Path, 
     assert isinstance(raised[0], TrashEntryUnreadableError)
     assert "'02 wedge.flac'" in str(raised[0]), str(raised[0])
     assert (entry / "01 Dreams.flac").is_file(), "nothing left Trash"
+    assert not list((tmp_path / "music" / "2 Brothers").glob("*")), "nothing reached the library"
+
+
+def test_a_listed_loose_file_swapped_for_a_fifo_refuses_the_restore(tmp_path: Path) -> None:
+    """The entry ITSELF is asked about, not only the names under it.
+
+    ``os.walk`` on a name that is not a directory yields nothing, so the
+    pre-flight's walk answered ``None`` for a Trash entry that IS a pipe — and
+    beets opens a non-directory toppath DIRECTLY rather than walking it (``if
+    not os.path.isdir(syspath(self.toppath)): yield [self.toppath],
+    [self.toppath]``, ``beets/importer/tasks.py:1041``). Measured 2026-09-13
+    (security seat H-1 probes p1/p3, code seat CRITICAL): ``POST
+    /api/trash/restore`` never returned, and one wedge held ``beets_swap_lock``
+    for the life of the process — every mutating Trash route and reorganize
+    answered 409 afterwards.
+
+    The listing runs FIRST because it is the reachability claim: a loose regular
+    audio file at the top of Trash lists as its own row with Restore enabled, so
+    the whole listing-to-click interval is the window and no race has to be won.
+    ``resolve_trash_child`` does not close it either — it refuses a link and an
+    absent child, and a FIFO is neither.
+
+    The sentence asserted is the entry-itself one: an entry that IS the pipe does
+    not "hold" it, and it is not a folder either.
+
+    Run on a thread with a join deadline; a plain call would hang this suite
+    instead of failing it.
+    """
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
+    trash = tmp_path / "trash"
+    loose = trash / "loose.flac"
+    _tagged_flac(loose, artist="2 Brothers", album="Dreams", title="Dreams", track=1)
+
+    listed = list_trashed_albums(
+        trash, origins_dir=origins_for(trash), music_dir=str(tmp_path / "music")
+    )
+    assert [a.folder for a in listed] == ["loose.flac"], "the row the operator clicks"
+
+    loose.unlink()
+    os.mkfifo(loose)
+    raised: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            restore_album(
+                lib,
+                str(loose),
+                trash_dir=trash,
+                origins_dir=origins_for(trash),
+                protected=protected_for(lib),
+            )
+        except BaseException as exc:  # the isinstance below is the oracle
+            raised.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(10)
+
+    assert not worker.is_alive(), "the restore is still blocked on the entry itself"
+    assert isinstance(raised[0], TrashEntryUnreadableError)
+    detail = str(raised[0])
+    assert detail.startswith("This Trash entry is not a folder or a regular file"), detail
+    assert "holds" not in detail, "the entry IS the thing; it does not hold it"
+    assert stat.S_ISFIFO(os.lstat(loose).st_mode), "nothing left Trash"
     assert not list((tmp_path / "music" / "2 Brothers").glob("*")), "nothing reached the library"
 
 

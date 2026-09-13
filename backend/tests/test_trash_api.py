@@ -240,7 +240,7 @@ def test_restore_503_when_the_entry_holds_a_non_regular_file(
 
     def refuse(*_args: Any, **_kwargs: Any) -> None:
         raise TrashEntryUnreadableError(
-            "this Trash entry holds '02 wedge.flac', which is not a regular file, so it"
+            "This Trash entry holds '02 wedge.flac', which is not a regular file, so it"
             " was not restored."
         )
 
