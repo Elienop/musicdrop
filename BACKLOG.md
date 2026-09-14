@@ -952,8 +952,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   opened whatever a link at the key led to, a device included, before `fstat` refused it. A name
   that stats as anything but a regular file is refused unopened; the descriptor must be the inode
   the `stat` saw, and a different one is kept on the delete side (the store's own `os.replace`
-  makes one). The swap window is narrowed, not closed: a link to a device swapped in after the
-  `stat` is still opened before the `fstat` refuses it. The
+  makes one). The DEVICE-OPEN window is narrowed, not closed: a link to a device swapped in after
+  the `stat` is still opened before the `fstat` refuses it. The
   delete side then stopped acting on every refusal — "the bytes are not ours" unlinks, "the store
   could not answer" keeps the file, because on a truncated key two entries share the loss was the
   OTHER entry's exact restore. And the three parse arms that unlinked in silence now log, so the
@@ -966,9 +966,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   may not start deleting trees it knows nothing about, so `origin_recorded` keeps answering "taken"
   and later albums land on `<name> (1)`, `(2)`… A key the store cannot ANSWER for (EACCES, a live
   lease) is kept by design and holds its name the same way until the fault is cleared. So a
-  planter who can cause that fault (a lease, a mode-000 key as non-root, a non-empty directory)
-  keeps a plant and burns that Trash name for as long as it lasts: the accepted cost of keeping
-  rather than risking another entry's record (security seat I-1, 2026-09-14).
+  planter who can cause that fault (a lease, a mode-000 key as non-root) keeps a plant and burns
+  that Trash name for as long as it lasts: the accepted cost of keeping rather than risking another entry's record (security seat I-1, 2026-09-14).
   **And one decision:** `trash_manage._link_name_under` no longer asks where a symlinked directory
   points. `realpath`-then-`walk` on the same name leaked a path from outside the entry into the
   503 in 8.01 % of restores under a flipper (3,162 of 39,486), so every symlinked directory is now
@@ -2402,14 +2401,16 @@ the condition it names has changed.
   is attacker-writable under the layout rule's own model, which is what makes the window
   reachable rather than theoretical; the precondition is winning it, and it was driven by
   injection rather than by two competing processes, so nothing here measures a win rate.
-  **The record reader's copy of this window is CLOSED as of 2026-09-14** (fix round 5, same
-  branch; security seat H-1). `trash_origins._record_text` had the same stat-then-open shape and
-  reached it from `GET /api/trash` and from every delete; it now opens the key ONCE with
+  **The record reader's copy of this BLOCKED-OPEN window is CLOSED as of 2026-09-14** (fix
+  round 5, same branch; security seat H-1). `trash_origins._record_text` had the same
+  stat-then-open shape and reached it from `GET /api/trash` and from every delete; it now opens
+  the key ONCE with
   `O_RDONLY|O_NONBLOCK` and asks `fstat`, the size pre-filter and the bounded read of that
   descriptor, so the inode checked is the inode read. `O_NONBLOCK` closes an OPEN parked by a
   FIFO, a device or a lease; open(2) does not apply it to a read from a regular file, so a read
   on stuck storage still waits. Round 6 put a `stat` in front that refuses a non-regular name
-  unopened and requires the descriptor to be the inode it saw.
+  unopened and requires the descriptor to be the inode it saw; the DEVICE-OPEN window that
+  leaves (a device opened after that `stat`) is a different one, recorded under round 6 above.
   What forced it was not the race but a write lease (`fcntl F_SETLEASE F_WRLCK`) on an ordinary
   73-byte record, which passes every content gate and blocks any other `open` for
   `lease-break-time` — 45 s, renewable, no race to win, and 45·K s of `beets_swap_lock` for K

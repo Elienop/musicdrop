@@ -766,8 +766,8 @@ def _record_text(path: Path, *, consequence: str) -> tuple[str | None, _Refusal 
     2026-09-14, it returned in 6 µs under the same write lease. The ``fstat``
     stays the authority. A different ``(st_dev, st_ino)`` means the name was
     replaced between the two calls, which :func:`write_trash_origin`'s own
-    ``os.replace`` also does, so that is ``"store-unreachable"``. The window is
-    narrowed, not closed: a link to a device swapped onto the key after the
+    ``os.replace`` also does, so that is ``"store-unreachable"``. The device-open
+    window is narrowed, not closed: a link to a device swapped onto the key after the
     ``stat`` is opened before the ``fstat`` refuses it. No ``O_NOFOLLOW``: the
     question is what the name RESOLVES to, so a link to a real record still
     reads.
