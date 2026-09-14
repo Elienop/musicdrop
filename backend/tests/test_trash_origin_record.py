@@ -465,7 +465,7 @@ def test_read_trash_origin_rejects_a_payload_it_cannot_trust(tmp_path: Path, pay
     assert read_trash_origin(origins, "Dummy") is None
 
 
-def test_a_fifo_at_the_records_own_path_is_never_opened(tmp_path: Path) -> None:
+def test_a_fifo_at_the_records_own_path_cannot_block_the_read(tmp_path: Path) -> None:
     """The record read answers None rather than blocking on a planted pipe.
 
     The key is fully derivable — ``<entry name>.json`` — and ``_restore_fields``
@@ -493,6 +493,51 @@ def test_a_fifo_at_the_records_own_path_is_never_opened(tmp_path: Path) -> None:
 
     assert not worker.is_alive(), "the record read is still blocked on the FIFO"
     assert answered == [None]
+
+
+@pytest.mark.parametrize("plant", ["a link to /dev/null", "a FIFO", "an empty directory"])
+def test_a_name_that_stats_as_not_a_regular_file_is_refused_without_an_open(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch, plant: str
+) -> None:
+    """Opening a device can do something by itself, so the NAME's type is asked first.
+
+    Round 5 opened the key with ``O_NONBLOCK`` and refused on ``fstat``, which
+    kept a FIFO and a lease from parking the open and still OPENED whatever a
+    link at the key led to. A ``stat`` waits on neither (measured 2026-09-14: 6
+    µs under a write lease), so both readers refuse these before any open.
+
+    The spy has a positive arm: a real record's key is opened once, so an empty
+    answer for the plant is not a spy that stopped seeing opens.
+    """
+    origins = _origins(tmp_path)
+    key = origin_file(origins, "Dummy")
+    key.parent.mkdir(parents=True, exist_ok=True)
+    if plant == "a link to /dev/null":
+        key.symlink_to("/dev/null")
+    elif plant == "a FIFO":
+        os.mkfifo(key)
+    else:
+        key.mkdir()
+    write_trash_origin(origins, "Real", origin=str(tmp_path / "music" / "Real"), moved="folder")
+    opened: list[str] = []
+    real_open = os.open
+
+    def spy_open(path: Any, *args: Any, **kwargs: Any) -> int:
+        opened.append(os.fsdecode(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", spy_open)
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        assert read_trash_origin(origins, "Dummy") is None
+        delete_trash_origin(origins, "Dummy")
+        assert read_trash_origin(origins, "Real") is not None
+
+    assert str(key) not in opened, f"{plant} was opened before it was refused"
+    assert opened.count(str(origin_file(origins, "Real"))) == 1, "the spy stopped seeing opens"
+    assert not os.path.lexists(key), f"{plant} outlived the entry it was keyed on"
+    read_side, delete_side = caplog.records
+    assert "it is not a regular file" in read_side.getMessage()
+    assert "it is not a regular file" in delete_side.getMessage()
 
 
 @pytest.mark.skipif(not hasattr(fcntl, "F_SETLEASE"), reason="leases are a Linux thing")

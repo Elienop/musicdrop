@@ -41,9 +41,11 @@ import os
 import shutil
 import signal
 import socket
+import stat
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from beets import config
@@ -480,37 +482,151 @@ def test_keeping_a_record_the_store_cannot_read_cannot_forge_a_log_line(
     _assert_nothing_forged(caplog)
 
 
-@pytest.mark.skipif(
-    len(os.fsencode(str(Path(os.environ.get("TMPDIR", "/tmp")) / "x"))) > 60,
-    reason="an AF_UNIX path is capped near 108 bytes and this TMPDIR is too long",
-)
+#: The longest path ``socket.bind`` takes for AF_UNIX here, in bytes: ``sun_path``
+#: is 108 (unix(7)) and a 108-byte path raised "AF_UNIX path too long" while a
+#: 107-byte one bound (measured 2026-09-14).
+_AF_UNIX_PATH_BYTES = 107
+
+
+def _bind_or_skip(sock: socket.socket, key: Path) -> None:
+    """Bind ``sock`` at ``key``, skipping only when ``key`` is too long to be a socket.
+
+    Measured on the key itself: pytest's ``tmp_path`` adds its own directories
+    and part of the test's name below ``TMPDIR``, so a bound on ``TMPDIR``
+    failed at a 49-byte one (code seat W4).
+    """
+    length = len(os.fsencode(str(key)))
+    if length > _AF_UNIX_PATH_BYTES:
+        pytest.skip(f"the key is {length} bytes; an AF_UNIX path takes {_AF_UNIX_PATH_BYTES}")
+    sock.bind(str(key))
+
+
 def test_a_socket_at_the_key_is_dropped_like_any_other_plant(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """ENXIO at the open is PROOF, not a fault, so the plant still goes.
+    """A socket stats as a socket, so it is refused on its name and still goes.
 
-    ``open`` refuses a socket outright (measured 2026-09-14: ENXIO), so it never
-    reaches the ``fstat`` that answers for a FIFO, a directory or a device. That
-    puts it in the same class as those — the bytes at the key are not this
-    store's — and a plant nothing unlinks would hold its Trash name forever.
+    That puts it in the same class as a FIFO, a directory or a device: the bytes
+    at the key are not this store's, and a plant nothing unlinks would hold its
+    Trash name forever.
     """
     origins = tmp_path / "trash-origins"
     origins.mkdir()
     key = origin_file(origins, "Dummy")
-    sock = socket.socket(socket.AF_UNIX)
-    try:
-        sock.bind(str(key))
-    except OSError as exc:  # the path is legal here or the skip above was wrong
-        pytest.fail(f"the socket fixture could not be built: {exc}")
-    try:
+    with socket.socket(socket.AF_UNIX) as sock:
+        _bind_or_skip(sock, key)
         with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
             delete_trash_origin(origins, "Dummy")
-    finally:
-        sock.close()
+
+    assert not os.path.lexists(key), "the socket outlived the entry it was keyed on"
+    (record,) = caplog.records
+    assert "it is not a regular file" in record.getMessage()
+
+
+def _before_the_first_open_of(
+    monkeypatch: pytest.MonkeyPatch, key: Path, change: Callable[[], None]
+) -> None:
+    """Run ``change`` once, between the gate's ``stat`` of ``key`` and its ``open``."""
+    real_open = os.open
+    pending = [change]
+
+    def spy_open(path: Any, *args: Any, **kwargs: Any) -> int:
+        if pending and os.fsdecode(path) == str(key):
+            pending.pop()()
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", spy_open)
+
+
+def test_a_socket_swapped_onto_the_key_after_its_stat_is_still_dropped(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENXIO from the open is PROOF, not a fault.
+
+    A socket already at the key is refused by the ``stat``, so the open meets
+    one only when the name changes in between. It still answers about the NAME
+    (a socket is not a file at all), which is why it is not the "store could not
+    answer" class that keeps the file.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    key = origin_file(origins, "Dummy")
+    key.write_text("{}", encoding="ascii")
+    with socket.socket(socket.AF_UNIX) as sock:
+
+        def plant() -> None:
+            key.unlink()
+            _bind_or_skip(sock, key)
+
+        _before_the_first_open_of(monkeypatch, key, plant)
+        with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+            delete_trash_origin(origins, "Dummy")
 
     assert not os.path.lexists(key), "the socket outlived the entry it was keyed on"
     (record,) = caplog.records
     assert "it does not lead to a file" in record.getMessage()
+
+
+def test_a_record_replaced_between_its_stat_and_its_open_is_kept(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A different inode behind the name is a swap, and a swap is not proof.
+
+    ``write_trash_origin`` rewrites a record with ``os.replace``, which is a new
+    inode behind the same name, so the delete keeps what it met. The payload
+    swapped in names this very entry: the identity check is the only thing that
+    refuses it, and without the check it is read and unlinked.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    write_trash_origin(origins, "Dummy", origin="/music/A", moved="folder")
+    key = origin_file(origins, "Dummy")
+    payload = key.read_text(encoding="ascii")
+
+    def rewrite() -> None:
+        staged = origins / "staged.tmp"
+        staged.write_text(payload, encoding="ascii")
+        os.replace(staged, key)
+
+    _before_the_first_open_of(monkeypatch, key, rewrite)
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        delete_trash_origin(origins, "Dummy")
+
+    assert key.exists(), "a record replaced in the window was unlinked"
+    cause, kept = caplog.records
+    assert "it was replaced while it was being opened" in cause.getMessage()
+    assert "could not say what is" in kept.getMessage()
+
+
+def test_a_descriptor_that_is_not_a_regular_file_is_refused_when_the_stat_agreed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``fstat`` still decides the type, for the one case the ``stat`` cannot.
+
+    A matching ``(st_dev, st_ino)`` with a different type is a reused inode
+    number. That cannot be forced on demand, so ``os.stat`` is made to report the
+    FIFO at the key as a regular file with its own identity, which is what a
+    reuse looks like from inside the gate.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    key = origin_file(origins, "Dummy")
+    os.mkfifo(key)
+    real_stat = os.stat
+
+    def stat_as_regular(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        found = real_stat(path, *args, **kwargs)
+        if os.fsdecode(path) != str(key):
+            return found
+        return os.stat_result((stat.S_IFREG | 0o644, *tuple(found)[1:]))
+
+    monkeypatch.setattr(os, "stat", stat_as_regular)
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        delete_trash_origin(origins, "Dummy")
+
+    assert not os.path.lexists(key), "the FIFO outlived the entry it was keyed on"
+    (record,) = caplog.records
+    assert "it is not a regular file" in record.getMessage()
 
 
 # ----- the DELETE side reads the key too, and through the same gate -----

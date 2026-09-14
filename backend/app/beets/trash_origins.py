@@ -29,10 +29,12 @@ buy back with guards:
   and a sparse file at one cost about TWICE its own size in RSS, so a file too
   large to be a record is refused (the old cap, same 64 KB) — and the cap bounds
   the READ and not only ``st_size``, which a procfs file reports as 0 while
-  yielding megabytes. The key is opened ONCE, with ``O_NONBLOCK``, and every
-  other question is asked of that descriptor: a ``stat`` before an ``open``
-  bounded what was read and never how long, and a write lease on an ordinary
-  small file at the key blocked every other ``open`` of it for 45 s. The symlink
+  yielding megabytes. A ``stat`` refuses anything but a regular file without
+  opening it, then the key is opened ONCE, with ``O_NONBLOCK``, and every other
+  question is asked of that descriptor, which must be the inode the ``stat``
+  saw: a ``stat`` and a plain ``open`` bounded what was read and never how
+  long, and a write lease on an ordinary small file at the key blocked every
+  other ``open`` of it for 45 s. The symlink
   refusal did NOT come back: the gate asks what the name RESOLVES to, so a link
   to a real record still reads. What bounds the reach now is the layout row
   ``music contains origins``, not the writer claim. **The gate is ONE function,
@@ -637,9 +639,9 @@ def write_trash_origin(
 #: How a record key is opened. ``O_NONBLOCK`` is the TIME bound and the whole
 #: reason the open is here at all (see :func:`_record_text`); no ``O_NOFOLLOW``,
 #: because a link to a real record must still read. Neither flag says the name
-#: IS a regular file — the ``fstat`` on the descriptor decides that, which is
-#: the same division ``lyrics._SIDECAR_READ_FLAGS`` and
-#: ``store_layout._include_source`` already use.
+#: IS a regular file: a ``stat`` refuses anything else before the open, and the
+#: ``fstat`` on the descriptor decides it, which is the division
+#: ``lyrics._SIDECAR_READ_FLAGS`` and ``store_layout._include_source`` use.
 _RECORD_READ_FLAGS: Final = os.O_RDONLY | os.O_NONBLOCK
 
 
@@ -667,14 +669,54 @@ def _bytes_at_most(fd: int, budget: int) -> bytes | None:
 #: store could not answer, which a destructive caller may not act on.
 _Refusal = Literal["absent", "not-a-record", "store-unreachable"]
 
-#: The two ``open`` errnos that are proof rather than a fault, because both
-#: answer about the NAME: ELOOP for a symlink loop (measured — a self-pointing
-#: link at a key, which ``Path.exists`` absorbs) and ENXIO for a socket
-#: (measured 2026-09-14, both through this module's own key). Anything else —
-#: EACCES on a mode-000 file, EAGAIN under a write lease, EIO on failing
-#: hardware — says the store could not answer, and the delete side keeps the
-#: file for that.
+#: The two lookup errnos that are proof rather than a fault, because both
+#: answer about the NAME: ELOOP for a symlink loop (the ``stat`` raises it — a
+#: self-pointing link at a key, which ``Path.exists`` absorbs) and ENXIO for a
+#: socket, which the ``open`` raises (measured 2026-09-14, through this module's
+#: own key). A socket already at the key stats as one and is refused before the
+#: open, so ENXIO needs one swapped in between. Anything else — EACCES on a
+#: mode-000 file, EAGAIN under a write lease, EIO on failing hardware — says
+#: the store could not answer, and the delete side keeps the file for that.
 _NOT_A_FILE_AT_ALL: Final = frozenset({errno.ELOOP, errno.ENXIO})
+
+#: The type refusal, asked of the NAME before any open and of the descriptor
+#: after it. The same fact either way, so one sentence.
+_NOT_A_REGULAR_FILE: Final = "it is not a regular file"
+
+#: The ``fstat`` found a different inode from the one the ``stat`` saw.
+_REPLACED_WHILE_OPENED: Final = "it was replaced while it was being opened"
+
+
+def _unusable_lookup(path: Path, exc: OSError, *, step: str, consequence: str) -> _Refusal:
+    """Log and class a ``stat`` or an ``open`` of a record key that raised.
+
+    Shared because the ``open`` asks the ``stat``'s question about the same name
+    again, and meets the same answers when the name changes between the two.
+    ``step`` says which call it was, because the log line says what was asked.
+    """
+    if isinstance(exc, FileNotFoundError):
+        # A DANGLING link is PRESENT and still answers ENOENT, because both
+        # calls follow it — so without this arm it took the silent one and the
+        # row degraded from an exact restore to an import with no log line at
+        # all, which is the one signal ``_warn_unusable`` exists to give
+        # (security seat L-2, measured 2026-09-13: ``log=[]``). ``lstat`` is
+        # what sees it. ``os.path.islink`` and not ``Path.is_symlink``, which
+        # re-raises an ``OSError`` outside the handful it ignores (EACCES is
+        # not among them) — this runs inside ``GET /api/trash``, once per
+        # top-level entry, and may not 500 the listing.
+        if os.path.islink(path):
+            _warn_unusable(
+                path, "it is a link to something that is not there", consequence=consequence
+            )
+            return "not-a-record"
+        return "absent"  # absent is the ordinary case and stays silent
+    if exc.errno in _NOT_A_FILE_AT_ALL:
+        _warn_unusable(path, "it does not lead to a file", consequence=consequence, exc_info=True)
+        return "not-a-record"
+    # EAGAIN from a write lease reaches here from the open, and ENOTDIR from a
+    # store path that is a regular file reaches here from the stat.
+    _warn_unusable(path, f"it could not be {step}", consequence=consequence, exc_info=True)
+    return "store-unreachable"
 
 
 def _record_text(path: Path, *, consequence: str) -> tuple[str | None, _Refusal | None]:
@@ -701,9 +743,9 @@ def _record_text(path: Path, *, consequence: str) -> tuple[str | None, _Refusal 
     off the store the first time an operator touches the entry.
 
     **The second element is there because the delete side is destructive.**
-    ``None`` collapsed four refusals, and two of them — an ``open`` that failed
-    for any reason but ENOENT, and a read that failed — prove only that the
-    store could not answer. On the delete path all of them meant ``unlink``, and
+    ``None`` collapsed four refusals, and two of them — a lookup that failed for
+    any reason but ENOENT, ELOOP or ENXIO, and a read that failed — prove only
+    that the store could not answer. On the delete path all of them meant ``unlink``, and
     measured 2026-09-13 (security seat M-1) on a truncated key two entries
     share: a momentarily unreadable record made an entry STILL IN TRASH lose its
     exact restore for good, while the log line said the entry it was keyed on
@@ -714,28 +756,44 @@ def _record_text(path: Path, *, consequence: str) -> tuple[str | None, _Refusal 
     28). :func:`read_trash_origin` ignores the class: every reason sends that
     caller to the same import-restore.
 
-    **The inode that is checked is the inode that is read, and neither the open
-    nor the read can block.** ``stat`` then ``open`` asked the same NAME twice,
-    which bounded WHAT and HOW MUCH is read and never HOW LONG: measured
+    **The name's type is asked before it is opened, and the descriptor must be
+    the inode that answered.** A ``stat`` and then a plain ``open`` of the same
+    NAME bounded WHAT and HOW MUCH is read and never HOW LONG: measured
     2026-09-13 (security seat H-1), a write lease (``fcntl F_SETLEASE
     F_WRLCK``) on a 73-byte regular file at the key passes ``S_ISREG`` and the
     size pre-filter and then blocks every other ``open`` of it for
     ``/proc/sys/fs/lease-break-time`` — **45 s**, renewable, with no race to
     win — and a rename of a FIFO onto the key inside the stat-to-open window won
     0.90 % of calls at a 10 % duty cycle and blocked for the life of the
-    process. So the name is opened ONCE, with ``O_NONBLOCK`` (the time bound:
-    measured here, the leased key answers EAGAIN in 0.0000 s and a FIFO opens
-    at once), and every later question is asked of that descriptor. No
-    ``O_NOFOLLOW``: the question is what the name RESOLVES to, so a link to a
-    real record still reads.
+    process. So the open carries ``O_NONBLOCK`` (measured here, the leased key
+    answers EAGAIN in 0.0000 s and a FIFO opens at once), and every later
+    question is asked of that descriptor. What the flag closes is an OPEN
+    parked by a FIFO, a device or a lease: open(2) does not apply it to a read
+    from a regular file, so a read on stuck storage still waits.
 
-    FOUR answers from the open and four more from the read. Absent is the
-    ordinary case and stays silent; a dangling link earns the link sentence; a
-    loop or a socket earns "it does not lead to a file"; any other failed open
-    earns the I/O one (a mode-000 file and a leased one are this arm, measured);
-    then ``fstat`` refuses a name that is not a regular file, ``st_size``
-    refuses one too large, the read itself can fail, a file that grew past the
-    cap mid-read is refused again, and a non-ASCII byte fails the decode.
+    The ``stat`` stays in front, and all it decides is whether to open at all.
+    Opening a device can do something by itself, so a name that stats as
+    anything but a regular file — a link to ``/dev/null`` included — is refused
+    unopened, as proof: ``"not-a-record"``, the class the ``fstat`` gave the
+    same shapes, because none of them is a file this module writes. The
+    ``stat`` gives back nothing the ``O_NONBLOCK`` open bought: measured
+    2026-09-14, it returned in 6 µs under the same write lease. The ``fstat``
+    stays the authority. A different ``(st_dev, st_ino)`` means the name was
+    replaced between the two calls, which :func:`write_trash_origin`'s own
+    ``os.replace`` also does, so that is ``"store-unreachable"``. The window is
+    narrowed, not closed: a link to a device swapped onto the key after the
+    ``stat`` is opened before the ``fstat`` refuses it. No ``O_NOFOLLOW``: the
+    question is what the name RESOLVES to, so a link to a real record still
+    reads.
+
+    Both lookups answer through :func:`_unusable_lookup`, three warning sites:
+    absent is the ordinary case and stays silent; a dangling link earns the link
+    sentence; a loop, or a socket swapped in after the ``stat``, earns "it does
+    not lead to a file"; anything else earns "it could not be looked up" or "it
+    could not be opened" (a leased key is the open's, measured). Seven warning
+    sites follow here: a name that is not a regular file, a different inode, a
+    descriptor that is not a regular file, an ``st_size`` too large, a failed
+    read, a file that grew past the cap mid-read, and a non-ASCII byte.
 
     The cap is applied TWICE and the second one is the bound. ``st_size`` is a
     snapshot, not a promise about the read: a procfs file is ``S_ISREG`` with
@@ -762,40 +820,29 @@ def _record_text(path: Path, *, consequence: str) -> tuple[str | None, _Refusal 
     ``test_a_non_utf8_folder_name_round_trips_through_the_ascii_record``.
     """
     try:
-        fd = os.open(path, _RECORD_READ_FLAGS)
-    except FileNotFoundError:
-        # A DANGLING link is PRESENT and still answers ENOENT here, because this
-        # ``open`` follows it — so without this arm it took the silent one and
-        # the row degraded from an exact restore to an import with no log line
-        # at all, which is the one signal ``_warn_unusable`` exists to give
-        # (security seat L-2, measured 2026-09-13: ``log=[]``). ``lstat`` is
-        # what sees it. ``os.path.islink`` and not ``Path.is_symlink``, which
-        # re-raises an ``OSError`` outside the handful it ignores (EACCES is
-        # not among them) — this runs inside ``GET /api/trash``, once per
-        # top-level entry, and may not 500 the listing.
-        if os.path.islink(path):
-            _warn_unusable(
-                path, "it is a link to something that is not there", consequence=consequence
-            )
-            return None, "not-a-record"
-        return None, "absent"  # absent is the ordinary case and stays silent
+        named = os.stat(path)
     except OSError as exc:
-        if exc.errno in _NOT_A_FILE_AT_ALL:
-            _warn_unusable(
-                path, "it does not lead to a file", consequence=consequence, exc_info=True
-            )
-            return None, "not-a-record"
-        # EAGAIN from a write lease lands here, and so does EACCES — the
-        # sentence says what happened and not what the name is, because the
-        # open is the only thing that was asked.
-        _warn_unusable(path, "it could not be opened", consequence=consequence, exc_info=True)
-        return None, "store-unreachable"
+        return None, _unusable_lookup(path, exc, step="looked up", consequence=consequence)
+    if not stat.S_ISREG(named.st_mode):
+        # Refused on the NAME, so nothing opens it: a FIFO, a socket, a
+        # directory, a device, or a link to any of them.
+        _warn_unusable(path, _NOT_A_REGULAR_FILE, consequence=consequence)
+        return None, "not-a-record"
+    try:
+        fd = os.open(path, _RECORD_READ_FLAGS)
+    except OSError as exc:
+        return None, _unusable_lookup(path, exc, step="opened", consequence=consequence)
     try:
         st = os.fstat(fd)
+        if (st.st_dev, st.st_ino) != (named.st_dev, named.st_ino):
+            # Not proof: ``write_trash_origin``'s own ``os.replace`` of a record
+            # being rewritten changes the inode behind the name the same way.
+            _warn_unusable(path, _REPLACED_WHILE_OPENED, consequence=consequence)
+            return None, "store-unreachable"
         if not stat.S_ISREG(st.st_mode):
-            # The FIFO, the directory and the device all land here, on the
-            # descriptor that is already open rather than on the name.
-            _warn_unusable(path, "it is not a regular file", consequence=consequence)
+            # Reached only when the inode NUMBER matches and the type does not,
+            # which is a reused inode rather than the file the ``stat`` saw.
+            _warn_unusable(path, _NOT_A_REGULAR_FILE, consequence=consequence)
             return None, "not-a-record"
         if st.st_size > _MAX_RECORD_BYTES:
             _warn_unusable(path, _TOO_LARGE, consequence=consequence)
