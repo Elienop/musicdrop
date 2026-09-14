@@ -36,6 +36,11 @@ through an fd it returns must CLOSE its iterator: ``os.scandir(fd)`` dups the fd
 and the dup SHARES the offset, so one partially consumed iterator left open makes
 every later ``scandir``/``listdir`` on that fd read ``[]`` (measured 2026-09-12,
 twice; two live iterators on one fd interleave and duplicate entries).
+
+And :func:`bytes_at_most`, the bounded read, here for the move's reason:
+``trash_origins`` and ``store_layout`` both read through it, and ``store_layout``
+imports ``trash``, which imports ``trash_origins``, so one copy cannot live in
+either of them. They carried two identical copies until 2026-09-14.
 """
 
 from __future__ import annotations
@@ -107,6 +112,25 @@ def fsync_dir(dir_fd: int) -> None:
     except OSError as exc:
         if exc.errno not in CANNOT_FSYNC_A_DIR or not stat.S_ISDIR(os.fstat(dir_fd).st_mode):
             raise
+
+
+def bytes_at_most(fd: int, budget: int) -> bytes | None:
+    """Up to ``budget`` bytes from ``fd``, or ``None`` past it.
+
+    The budget bounds the READ, not ``st_size``: every ``/proc`` file reports
+    size 0, and ``/proc/kallsyms`` reads about 22 MB through one. A loop
+    rather than one ``os.read`` because procfs answers in short reads: measured
+    2026-09-14, the first three ``os.read(fd, 65537)`` of ``/proc/kallsyms``
+    returned 4,050, 4,094 and 4,063 bytes with and without ``O_NONBLOCK``, while
+    a 65,536-byte regular file returned whole in one.
+    """
+    buf = b""
+    while len(buf) <= budget:
+        chunk = os.read(fd, budget + 1 - len(buf))
+        if not chunk:
+            return buf
+        buf += chunk
+    return None
 
 
 def occupied(path: Path) -> bool:

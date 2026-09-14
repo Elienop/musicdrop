@@ -40,7 +40,7 @@ from app.beets.library import LibraryHandle, _music_dir, require_library_present
 from app.beets.protected import ProtectedTrees, protected_trees
 from app.beets.trash import resolve_trash_dir, resolve_trash_origins_dir
 from app.config import Settings, app_owned_dirs, export_dir
-from app.fsutil import BELOW_FLAGS, ROOT_FLAGS, open_root
+from app.fsutil import BELOW_FLAGS, ROOT_FLAGS, bytes_at_most, open_root
 from app.wire import display_path
 
 __all__ = [
@@ -1503,21 +1503,6 @@ def _winning_source(cfg: confuse.Configuration, key: str) -> str | None:
     return None
 
 
-def _include_bytes(fd: int, budget: int) -> bytes | None:
-    """Up to ``budget`` bytes from ``fd``, or ``None`` past it.
-
-    The budget bounds the READ, not ``st_size``: every ``/proc`` file reports
-    size 0 and ``/proc/kallsyms`` measured 22 MiB through a 1 MiB stat check.
-    """
-    buf = b""
-    while len(buf) <= budget:
-        chunk = os.read(fd, budget + 1 - len(buf))
-        if not chunk:
-            return buf
-        buf += chunk
-    return None
-
-
 def _include_source(target: str, budget: int) -> tuple[confuse.ConfigSource, int]:
     """One ``include:`` entry, read through ONE descriptor. With its size.
 
@@ -1546,7 +1531,7 @@ def _include_source(target: str, budget: int) -> tuple[confuse.ConfigSource, int
             # narrow on purpose — a directory, a socket and ``/dev/null`` are
             # shapes beets survives, and refusing those was the collateral.
             raise _unreadable_include(f"{target!r} is a FIFO; beets would block on it")
-        buf = _include_bytes(fd, budget)
+        buf = bytes_at_most(fd, budget)
     except BlockingIOError as exc:
         raise _unreadable_include(f"{target!r} had nothing to read") from exc
     except OSError as exc:

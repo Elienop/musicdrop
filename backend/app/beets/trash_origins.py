@@ -98,6 +98,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, Literal
 
+from app.fsutil import bytes_at_most
 from app.playlists.atomic import write_atomic_text
 from app.wire import display_path
 
@@ -645,24 +646,6 @@ def write_trash_origin(
 _RECORD_READ_FLAGS: Final = os.O_RDONLY | os.O_NONBLOCK
 
 
-def _bytes_at_most(fd: int, budget: int) -> bytes | None:
-    """Up to ``budget`` bytes from ``fd``, or ``None`` past it.
-
-    The budget bounds the READ and not ``st_size``, which is a snapshot: every
-    ``/proc`` file reports 0 and ``/proc/kallsyms`` measured 22,227,073 bytes
-    through one. Short reads are expected — ``O_NONBLOCK`` permits them even on
-    a regular file — so it is a loop rather than one ``os.read``.
-    ``store_layout._include_bytes`` is the same shape for the same reason.
-    """
-    buf = b""
-    while len(buf) <= budget:
-        chunk = os.read(fd, budget + 1 - len(buf))
-        if not chunk:
-            return buf
-        buf += chunk
-    return None
-
-
 #: Why :func:`_record_text` had no text to give, for a caller whose answer
 #: differs by reason. ``"not-a-record"`` is PROOF the bytes at the key are not
 #: something this module wrote; ``"store-unreachable"`` proves only that the
@@ -801,7 +784,7 @@ def _record_text(path: Path, *, consequence: str) -> tuple[str | None, _Refusal 
     key to ``/proc/self/smaps`` stat'd at 0 bytes and read **162,801**, straight
     past a 64 KiB cap with no race to win. So the ``st_size`` check stays as the
     cheap pre-filter that costs no syscall (the ``fstat`` is already in hand)
-    and :func:`_bytes_at_most` is what actually bounds the memory. Bytes off a
+    and :func:`bytes_at_most` is what actually bounds the memory. Bytes off a
     descriptor, so the bound is in BYTES rather than in characters of whatever
     the decode makes of them, and one byte over the cap is enough to refuse.
 
@@ -847,7 +830,7 @@ def _record_text(path: Path, *, consequence: str) -> tuple[str | None, _Refusal 
         if st.st_size > _MAX_RECORD_BYTES:
             _warn_unusable(path, _TOO_LARGE, consequence=consequence)
             return None, "not-a-record"
-        raw = _bytes_at_most(fd, _MAX_RECORD_BYTES)
+        raw = bytes_at_most(fd, _MAX_RECORD_BYTES)
     except OSError:
         _warn_unusable(path, "it could not be read", consequence=consequence, exc_info=True)
         return None, "store-unreachable"
