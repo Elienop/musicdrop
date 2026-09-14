@@ -126,7 +126,7 @@ entry carries a dated correction block where the pass changed it._
    - Not yet: a browse picker (a folder-listing route is a new ability to read the filesystem).
 8. **Docs: `docker-compose.yml` and README show split `/music` + `/inbox` mounts** (2026-09-14).
    rename(2) and link(2) return EXDEV across two mount points even of the same filesystem
-   (`man 2 rename`), so two bind mounts make an import move a copy-then-delete (beets'
+   (`man 2 rename`, `man 2 link`), so two bind mounts make an import move a copy-then-delete (beets'
    `util.move`, and MusicDrop's own moves) and a hardlink fail, even on one dataset. One parent
    mount fixes that only when it holds one filesystem: separate ZFS datasets behind it still copy
    (TRaSH Guides: one dataset with subfolders). Say that instead of implying the split is the
@@ -1438,19 +1438,20 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   Precondition is unchanged — write on the Trash's parent, i.e. a Trash configured inside the music
   library.
 
-- **Boot accepts a Trash chain the Trash routes then refuse** (2026-09-13, PR #227; code seat
-  W3, fix round 1; Apply half corrected 2026-09-14). The lifespan in `main.py` calls
-  `checked_store_dirs`, which runs the layout rows on RESOLVED paths and not the anchored walk;
-  the read routes (`checked_reachable_store_dirs`) and the writes (`checked_protected_trees`) add
-  the walk. Measured on the operator-link shape (`/srv/x -> <M>/a`, `<M>/a` attacker-owned):
+- **Boot accepts a Trash chain the Trash routes then refuse** (2026-09-13, PR #227; code seat W3,
+  fix round 1; Apply half corrected 2026-09-14). The lifespan in `main.py` calls
+  `checked_store_dirs`, which runs the layout rows on RESOLVED paths and not the anchored walk; the
+  read routes (`checked_reachable_store_dirs`) and the writes (`checked_protected_trees`) add the
+  walk. Measured on the operator-link shape (`/srv/x -> <M>/a`, `<M>/a` attacker-owned):
   `checked_store_dirs` ACCEPTED, `checked_reachable_store_dirs` REFUSED. So the container comes up
-  healthy and hands the import registry that pair, which the post-import Replace cleanup checks
-  with the rows only (the folder-movers entry above), while the Trash page, the reorganize
-  previews and deletes answer 503. Apply does not accept it: step 2b
-  (`config_editor.on_disk_layout_error` → `store_layout.layout_check_for_config`) runs the walk
-  and answers 422 (measured by the branch review 2026-09-14). Step 4b's backstop checks the rows
-  only, and meets a refused chain only if the chain changes between steps 2b and 4b. The signal
-  that exists: Settings → Beets runs the same read-only walk and paints the refusal on
+  healthy and hands the import registry that pair, which the post-import Replace cleanup checks with
+  the rows only (the folder-movers entry above), while the Trash page, the reorganize previews and
+  deletes answer 503. Apply does not accept it: step 2b (`config_editor.on_disk_layout_error` →
+  `store_layout.layout_check_for_config`) runs the walk and answers 422 (the walk's refusal measured
+  by the branch review 2026-09-14; the 422 read in `config_editor`). Step 4b's backstop checks the
+  rows only, and meets a refused chain only if the chain changes between steps 2b and 4b, or if step
+  2b reads `directory:` differently from what beets loads (an `include:` shape, a beets upgrade).
+  The signal that exists: Settings → Beets runs the same read-only walk and paints the refusal on
   `directory:`. Left for the owner: refusing at boot is a behaviour change.
 
 - **Restore's declared 503 says "setup fault" for a refusal that is not one** (2026-09-13,
