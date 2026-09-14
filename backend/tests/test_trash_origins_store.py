@@ -629,6 +629,101 @@ def test_a_descriptor_that_is_not_a_regular_file_is_refused_when_the_stat_agreed
     assert "it is not a regular file" in record.getMessage()
 
 
+@pytest.mark.parametrize(
+    ("plant", "why"),
+    [
+        ("a dangling link", "it is a link to something that is not there"),
+        ("a non-ASCII byte", "it is not the ASCII JSON this writes"),
+        pytest.param(
+            "a link to /proc/kallsyms",
+            "it is far too large to be a record",
+            marks=pytest.mark.skipif(
+                not os.access("/proc/kallsyms", os.R_OK),
+                reason="no readable /proc/kallsyms on this box",
+            ),
+        ),
+    ],
+)
+def test_a_proof_refusal_unlinks_the_plant_on_the_delete_side(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, plant: str, why: str
+) -> None:
+    """The refusal CLASS decides unlink or keep, so each proof site needs its own delete.
+
+    Flipping the class to "store-unreachable" at the dangling-link site, the
+    grew-past-the-cap site or the decode site left 168 tests green (code seat W1):
+    each such plant would have been kept for good. The key being gone is what the
+    proof class does. ``kallsyms`` stats at 0 bytes and reads past the cap, so it
+    is the read bound's site and not the ``st_size`` one.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    key = origin_file(origins, "Dummy")
+    if plant == "a dangling link":
+        key.symlink_to(origins / "nowhere.json")
+    elif plant == "a non-ASCII byte":
+        key.write_bytes(b'{"name": "Dummy", "x": "\xe9"}')
+    else:
+        key.symlink_to("/proc/kallsyms")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        delete_trash_origin(origins, "Dummy")
+
+    assert not os.path.lexists(key), f"{plant} outlived the entry it was keyed on"
+    (record,) = caplog.records
+    assert why in record.getMessage()
+
+
+@pytest.mark.parametrize(
+    ("fault", "why"),
+    [
+        ("a read that fails with EIO", "it could not be read"),
+        ("a store path that is a regular file", "it could not be looked up"),
+    ],
+)
+def test_a_store_fault_leaves_the_key_alone_and_says_so_twice(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    fault: str,
+    why: str,
+) -> None:
+    """The "store-unreachable" sites a lease does not reach, each with both log lines.
+
+    A read that raised had no test at all: classing it as proof, or deleting its
+    log line, left 168 tests green (code seat W1). EIO is injected at ``os.read``
+    because failing storage cannot be staged, and a mode-000 file is readable by
+    root. A store path that is a regular file fails the ``stat`` with ENOTDIR, and
+    nothing is behind it, which is why the kept line may not claim a record is
+    there (code seat S4).
+    """
+    origins = tmp_path / "trash-origins"
+    if fault == "a read that fails with EIO":
+        origins.mkdir()
+        write_trash_origin(origins, "Dummy", origin="/music/A", moved="folder")
+
+        def failing_read(fd: int, length: int) -> bytes:
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+
+        monkeypatch.setattr(os, "read", failing_read)
+    else:
+        origins.write_text("not a directory", encoding="ascii")
+    key = origin_file(origins, "Dummy")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        delete_trash_origin(origins, "Dummy")
+    monkeypatch.undo()
+
+    if fault == "a read that fails with EIO":
+        assert key.exists(), "a record the store could not read was unlinked"
+    else:
+        assert origins.read_text(encoding="ascii") == "not a directory"
+    cause, kept = caplog.records
+    assert why in cause.getMessage()
+    assert "None of it was used" in cause.getMessage()
+    assert "left whatever is at" in kept.getMessage()
+    assert "If a record is there" in kept.getMessage()
+
+
 # ----- the DELETE side reads the key too, and through the same gate -----
 
 

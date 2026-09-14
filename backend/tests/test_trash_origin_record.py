@@ -2344,12 +2344,17 @@ def test_a_configured_origins_dir_overrides_the_default(tmp_path: Path) -> None:
 # ----- every exit from Trash takes the record with it -----
 
 
-def test_empty_one_removes_the_origin_record(tmp_path: Path) -> None:
+def test_empty_one_removes_the_origin_record(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """Invariant 5b, which the sidecar got for free from ``rmtree``.
 
     Keyed on the entry NAME in a directory of its own, this is a rule instead:
     a record outliving its entry is litter at best, and the name it holds is one
     the allocator will then refuse to hand out again.
+
+    Silent, too: this is the control for the delete side's log lines. A warning
+    added in front of the healthy answer left 168 tests green (code seat W2).
     """
     husk = tmp_path / "music" / "Old Name"
     husk.mkdir(parents=True)
@@ -2362,15 +2367,15 @@ def test_empty_one_removes_the_origin_record(tmp_path: Path) -> None:
     )
     assert read_trash_origin(_origins(tmp_path), dest.name) is not None
 
-    assert (
-        empty_one(
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        removed = empty_one(
             str(dest),
             origins_dir=_origins(tmp_path),
             protected=protected_for(trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)),
         ).removed
-        == 1
-    )
 
+    assert removed == 1
+    assert caplog.records == [], "dropping an entry's own valid record logged something"
     assert not dest.exists()
     assert read_trash_origin(_origins(tmp_path), dest.name) is None
 
