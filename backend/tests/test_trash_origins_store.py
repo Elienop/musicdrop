@@ -574,6 +574,10 @@ def test_a_descriptor_that_is_not_a_regular_file_is_refused_when_the_stat_agreed
     number. That cannot be forced on demand, so ``os.stat`` is made to report the
     FIFO at the key as a regular file with its own identity, which is what a
     reuse looks like from inside the gate.
+
+    Run on a thread with a join deadline: that FIFO really is opened here, so
+    without ``O_NONBLOCK`` the open blocks, and a plain call would hang this suite
+    instead of failing it.
     """
     origins = tmp_path / "trash-origins"
     origins.mkdir()
@@ -588,9 +592,12 @@ def test_a_descriptor_that_is_not_a_regular_file_is_refused_when_the_stat_agreed
         return os.stat_result((stat.S_IFREG | 0o644, *tuple(found)[1:]))
 
     monkeypatch.setattr(os, "stat", stat_as_regular)
+    worker = threading.Thread(target=delete_trash_origin, args=(origins, "Dummy"), daemon=True)
     with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
-        delete_trash_origin(origins, "Dummy")
+        worker.start()
+        worker.join(10)
 
+    assert not worker.is_alive(), "the delete is still blocked opening the FIFO"
     assert not os.path.lexists(key), "the FIFO outlived the entry it was keyed on"
     (record,) = caplog.records
     assert "it is not a regular file" in record.getMessage()
