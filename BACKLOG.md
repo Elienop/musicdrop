@@ -89,19 +89,48 @@ entry carries a dated correction block where the pass changed it._
    import path has no sidecar call (reorganize and tag-edit moves carry them through
    `sidecars.move_sidecars`). Recommended, not decided: on beets' per-track
    `item_moved`/`item_copied` events (both carry source and destination), carry sidecars with
-   `move_sidecars` plus a copy variant, tidying empty folders up to the import root, not the
-   library root. Waits on the move/copy/hardlink question under *Open questions*.
-7. **Add from folder: saved "Download folders"** (owner question 2026-09-14; not started). The
-   path is a free-text field today. Recommended: a Download folders setting under Settings →
-   Integrations (named folders saved server-side, the slskd inbox listed automatically) and
-   quick-pick buttons on Add from folder that fill the path field. Not yet: a browse picker (a
-   folder-listing route is a new ability to read the filesystem), or a yubal integration (its jobs
-   carry no output path and live in memory, per yubal's source read 2026-09-14).
+   `move_sidecars` plus copy and hardlink variants (beets also sends `item_hardlinked`), tidying
+   empty folders up to the import root, not the library root. Sidecars follow their track's
+   operation (vault `decisions` #51), so this lands with item 7.
+7. **Download providers** (owner ruling 2026-09-14, vault `decisions` #51; not started). Replaces
+   the saved "Download folders" idea; Add from folder's path is a free-text field today.
+   - **Operation.** Imports MOVE by default: an atomic rename when the download folder and the
+     library are one mount of one filesystem; otherwise beets' `util.move` copies then deletes. A
+     per-provider HARDLINK toggle serves sources whose files must stay (seeding; downloaders that
+     skip a track whose file exists — yubal, and deemix under its default `DONT_OVERWRITE`), and
+     falls back to COPY when the link fails.
+   - **A provider holds** a name, a kind (slskd, or a plain folder), the folder MusicDrop reads,
+     the operation and, only when the source reports its own container paths (slskd today), that
+     reported root (today's `downloads_prefix`).
+   - **Beyond beets.** beets picks move, copy, link, then hardlink, in that order, and ships
+     `copy: yes` (2.13.1, `importer/stages.py`, `config_default.yaml`), so a hardlink import needs
+     `move: no`, `copy: no`, `hardlink: yes`; the per-import `operation` (`default`, `move`,
+     `copy`) sets only move and copy. MusicDrop adds: a hardlink arm in `run_import_worker`'s
+     snapshot/restore beside that override (it already restores `hardlink`); a probe with a real
+     `os.link` into the library, because `util.hardlink` raises on EXDEV with no fallback and two
+     bind mounts of one filesystem share `st_dev`; the in-library guard (`is_in_library_source`,
+     refusing copy today) covering hardlink; and a note that `write: yes` changes a hardlinked
+     downloader's own file (mutagen opens it `rb+`) — acceptable for non-torrent sources, as *arr
+     only documents it.
+   - **Reference.** Lidarr v3.1.0 applies "Use Hardlinks instead of Copy" only on its copy path,
+     as hardlink-else-copy (`TrackFileMovingService`, `DiskTransferService`), and keeps Remote
+     Path Mappings per client host.
+   - **yubal** (source read at tag v0.10.0). Completion is pushed only as a job `updated` event
+     with status `completed` on `/api/jobs/sse`: no webhook (the README roadmap lists one), no
+     auth. The Job drops the folder it wrote (`SyncResult.destination`); jobs live in memory,
+     capped at 200; one playlist job spans many album folders; dedup is file existence, so a move
+     re-downloads. Feasible under per-source signals (the 2026-06-08 scope cut dropped the
+     settle-timer folder watcher): on a completed job, one bounded scan of the yubal folder for
+     album folders changed since the job started, imported by hardlink. Upstream, copying
+     `destination` onto the Job would remove the scan.
+   - Not yet: a browse picker (a folder-listing route is a new ability to read the filesystem).
 8. **Docs: `docker-compose.yml` and README show split `/music` + `/inbox` mounts** (2026-09-14).
-   A single parent mount makes an import move a rename only when downloads and the library are one
-   filesystem (one ZFS dataset); across two, beets falls back to copy-then-delete on EXDEV
-   (`beets/util/__init__.py`, `move`), and so do MusicDrop's own moves. Say that instead of
-   implying the split is the recommended shape.
+   rename(2) and link(2) return EXDEV across two mount points even of the same filesystem
+   (`man 2 rename`), so two bind mounts make an import move a copy-then-delete (beets'
+   `util.move`, and MusicDrop's own moves) and a hardlink fail, even on one dataset. One parent
+   mount fixes that only when it holds one filesystem: separate ZFS datasets behind it still copy
+   (TRaSH Guides: one dataset with subfolders). Say that instead of implying the split is the
+   recommended shape.
 
 The 40 banked #143 Plex review Minors stay fully adjudicated (2026-08-25, every item
 re-verified against v0.44.0): 12 shipped as the triage fix slice (see Recently shipped), 12
@@ -1409,18 +1438,20 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   Precondition is unchanged — write on the Trash's parent, i.e. a Trash configured inside the music
   library.
 
-- **Boot and Apply's backstop accept a Trash chain the Trash routes then refuse** (2026-09-13,
-  PR #227; code seat W3, fix round 1). The lifespan in `main.py` and Apply's step 4b in
-  `config_editor` call `checked_store_dirs`, which runs the layout rows on RESOLVED paths and not
-  the anchored walk; the read routes (`checked_reachable_store_dirs`) and the writes
-  (`checked_protected_trees`) add the walk. Measured by that seat on the operator-link shape
-  (`/srv/x -> <M>/a`, `<M>/a` attacker-owned): `checked_store_dirs` ACCEPTED,
-  `checked_reachable_store_dirs` REFUSED. So the container comes up healthy and then the Trash
-  page, the reorganize previews and deletes answer 503; Apply succeeds and hands the import
-  registry that pair, which the post-import Replace cleanup checks with the rows only (the
-  folder-movers entry above). The signal that exists: Settings → Beets runs the walk read-only
-  (`store_layout.layout_check_for_config`) and paints the refusal on `directory:`. Left for the
-  owner: refusing at boot or Apply is a behaviour change. Not re-measured in this pass.
+- **Boot accepts a Trash chain the Trash routes then refuse** (2026-09-13, PR #227; code seat
+  W3, fix round 1; Apply half corrected 2026-09-14). The lifespan in `main.py` calls
+  `checked_store_dirs`, which runs the layout rows on RESOLVED paths and not the anchored walk;
+  the read routes (`checked_reachable_store_dirs`) and the writes (`checked_protected_trees`) add
+  the walk. Measured on the operator-link shape (`/srv/x -> <M>/a`, `<M>/a` attacker-owned):
+  `checked_store_dirs` ACCEPTED, `checked_reachable_store_dirs` REFUSED. So the container comes up
+  healthy and hands the import registry that pair, which the post-import Replace cleanup checks
+  with the rows only (the folder-movers entry above), while the Trash page, the reorganize
+  previews and deletes answer 503. Apply does not accept it: step 2b
+  (`config_editor.on_disk_layout_error` → `store_layout.layout_check_for_config`) runs the walk
+  and answers 422 (measured by the branch review 2026-09-14). Step 4b's backstop checks the rows
+  only, and meets a refused chain only if the chain changes between steps 2b and 4b. The signal
+  that exists: Settings → Beets runs the same read-only walk and paints the refusal on
+  `directory:`. Left for the owner: refusing at boot is a behaviour change.
 
 - **Restore's declared 503 says "setup fault" for a refusal that is not one** (2026-09-13,
   PR #227; code seat Suggestion 3, fix round 2). `_TRASH_LIBRARY_UNAVAILABLE_RESPONSE` in
@@ -1452,8 +1483,27 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `removed=2`, Trash empty. With only such an entry left the listing is empty, so the page says
   "Trash is empty" and hides Empty all (rendered only when `albums.length > 0`; code read), and
   Restore's refusal for an entry that is itself a pipe says "Empty removes it" about a row a
-  refresh takes away. Fix shape (seat's, unverified): one `lstat` in `_audio_free_entries`'
-  predicate to give it a zero-track row.
+  refresh takes away. The regular-file version is already described in code, not here: a loose
+  file at the Trash root that `Item.from_path` cannot read (a stray sidecar) is skipped by
+  `_walk_trash_groups` and is neither a directory nor a link, so it "is listed by neither half"
+  (`_audio_free_entries`' docstring, `trash.trash_replaced_files`'). Fix shape (seat's, not run):
+  one `lstat` in `_audio_free_entries`' predicate, listing any non-hidden top-level entry not
+  already grouped as a zero-track row, covers both (code read).
+
+- **The slskd webhook's remap strips its prefix as text, so a Downloads path outside it imports
+  nothing and reports no failure** (2026-09-14, providers research). `slskd.service.remap_to_inbox`
+  uses `str.removeprefix`. Measured 2026-09-14 with prefix `/app/downloads`: `/app/downloads2/X` →
+  `<inbox>/2/X`, and `/elsewhere/X` (not under the prefix) → `<inbox>/elsewhere/X`;
+  `acquisition.inbox.contain(..., strict=True)` accepted both, and accepts a folder that does not
+  exist (`Path.resolve()` is non-strict). The webhook then answers `queued`:
+  `coalesce_album_root` returns a non-disc folder unchanged, `enqueue` passes (the ledger's `seen`
+  is False for a folder it cannot stat), and the drain move-imports the missing path. Measured
+  here with a real `BeetsImportRunner` (move, unattended) on a missing inbox folder: `on_finish`,
+  no error. So the job ends `done` with nothing set aside, and the queue records `imported` and
+  marks the ledger with an empty identity (code read). If a folder does exist at the remapped
+  path, that one is imported instead. Why now: after a mount change, a Downloads path that no
+  longer matches fails silently. Fix shape: match whole path segments, and refuse a path outside
+  the prefix with one log line naming both paths.
 
 - **A duplicate resolve that faults part-way drops the earlier albums' rows and keeps the
   rest.** (Found 2026-09-12 on `fix/descriptor-anchored-library-writes`; security seat L-2,
@@ -2953,13 +3003,6 @@ the condition it names has changed.
 
 ## Open questions
 
-- **Move, copy or hardlink for yubal imports?** (owner, 2026-09-14.) yubal skips a track whose
-  file is still at its output path (per its source, read 2026-09-14), so a move import makes its
-  next sync download the track again, and copy doubles disk use. beets has `hardlink:`, but the
-  per-import `operation` offers `default`, `move` and `copy` (`models/import_models.py`), so a
-  hardlink import today means `hardlink: yes` in beets' config plus `default`. The sidecar carry
-  under *Next up* needs this answer.
-
 - **Should duplicates resolve / resolve-all gain 503 parity with the delete routes?**
   (#189, owner call.) Both currently keep their established structured-500 absorb shape
   with the honest root-unavailable message embedded — consistent with their other
@@ -3337,7 +3380,8 @@ Added by the 2026-08-28 sweeps:
   `decisions.md` #46). The refusal names the link and where it points. `GET /api/trash` and the
   reorganize preview take `checked_reachable_store_dirs` and answer 503 where they used to list
   wherever the path resolved. A FIFO, socket or device in Trash is skipped by the listing,
-  refused by Restore (503 naming the file) and refused unopened by the origin-record reader,
+  refused by Restore (a 503 naming the file inside the entry, or saying the entry itself is not a
+  folder or a regular file) and refused unopened by the origin-record reader,
   which reads one `O_NONBLOCK` descriptor capped at 64 KiB; the delete side unlinks a plant only
   on proof it is not a record.
   Behaviour changes: an operator link into the library is refused on every route; Empty on an
@@ -3348,9 +3392,10 @@ Added by the 2026-08-28 sweeps:
   route, the Trash page included, with a 503 naming the link; spell it without the detour. Six
   such spellings the pre-branch code accepted now refuse; a target that lands on the root or
   stays below it is unchanged.
-  Recorded, not fixed: the bind-mount half of the Trash chain, boot and Apply's backstop, the
-  listing's stat-then-open window, the record reader's device-open window, and a non-empty
-  directory at a record key.
+  Recorded, not fixed: the bind-mount half of the Trash chain, boot accepting a chain the routes
+  refuse, the create loop carrying its below-the-root decision rather than re-asking per created
+  part, the listing's stat-then-open window, the record reader's device-open window, and a
+  non-empty directory at a record key.
 
 - **Art, lyrics and move-asides are anchored on directory descriptors, and a symlinked folder
   below the music root is refused — PR #226, squash `6e02fc4` = v0.51.6 (2026-09-13).**
