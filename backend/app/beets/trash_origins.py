@@ -827,8 +827,11 @@ def _record_text(path: Path, *, consequence: str) -> tuple[str | None, _Refusal 
             _warn_unusable(path, _REPLACED_WHILE_OPENED, consequence=consequence)
             return None, "store-unreachable"
         if not stat.S_ISREG(st.st_mode):
-            # Reached only when the inode NUMBER matches and the type does not,
-            # which is a reused inode rather than the file the ``stat`` saw.
+            # AFTER the identity, and the order is a class: a FIFO renamed onto
+            # the key after the ``stat`` is kept here as a swap, and asked the
+            # type first it was unlinked as proof (code seat MX4, pinned by
+            # ``test_a_record_replaced_between_its_stat_and_its_open_is_kept``).
+            # Here the identity matched and the type did not: a reused inode.
             _warn_unusable(path, _NOT_A_REGULAR_FILE, consequence=consequence)
             return None, "not-a-record"
         if st.st_size > _MAX_RECORD_BYTES:

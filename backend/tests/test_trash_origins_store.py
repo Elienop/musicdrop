@@ -534,32 +534,85 @@ def test_a_socket_swapped_onto_the_key_after_its_stat_is_still_dropped(
     assert "it does not lead to a file" in record.getMessage()
 
 
+def _rename_a_rewritten_record_on(monkeypatch: pytest.MonkeyPatch, key: Path) -> None:
+    payload = key.read_text(encoding="ascii")
+
+    def rewrite() -> None:
+        staged = key.with_name("staged.tmp")
+        staged.write_text(payload, encoding="ascii")
+        os.replace(staged, key)
+
+    _before_the_first_open_of(monkeypatch, key, rewrite)
+
+
+def _rename_a_fifo_on(monkeypatch: pytest.MonkeyPatch, key: Path) -> None:
+    def swap() -> None:
+        # Made under its own name while the record is still linked: an unlink
+        # then ``mkfifo`` at the key can reuse the record's inode number on ext4
+        # (code seat), which the identity check cannot see.
+        staged = key.with_name("staged.fifo")
+        os.mkfifo(staged)
+        os.replace(staged, key)
+
+    _before_the_first_open_of(monkeypatch, key, swap)
+
+
+def _stat_the_key_on_another_device(monkeypatch: pytest.MonkeyPatch, key: Path) -> None:
+    real_stat = os.stat
+
+    def stat_elsewhere(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        found = real_stat(path, *args, **kwargs)
+        if os.fsdecode(path) != str(key):
+            return found
+        fields = list(tuple(found))
+        fields[stat.ST_DEV] += 1
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(os, "stat", stat_elsewhere)
+
+
+@pytest.mark.parametrize(
+    "replace",
+    [
+        pytest.param(_rename_a_rewritten_record_on, id="a-rewritten-record"),
+        pytest.param(_rename_a_fifo_on, id="a-fifo"),
+        pytest.param(_stat_the_key_on_another_device, id="the-same-inode-number-on-another-device"),
+    ],
+)
 def test_a_record_replaced_between_its_stat_and_its_open_is_kept(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    replace: Callable[[pytest.MonkeyPatch, Path], None],
 ) -> None:
-    """A different inode behind the name is a swap, and a swap is not proof.
+    """A different ``(st_dev, st_ino)`` behind the name is a swap, and a swap is not proof.
 
     ``write_trash_origin`` rewrites a record with ``os.replace``, which is a new
-    inode behind the same name, so the delete keeps what it met. The payload
-    swapped in names this very entry: the identity check is the only thing that
-    refuses it, and without the check it is read and unlinked.
+    inode behind the same name, so the delete keeps what it met. Each case pins
+    one part of the identity check, measured by mutating it (fix round 7):
+
+    * the rewritten record names this very entry, so without the check it is
+      read and unlinked;
+    * the FIFO pins the ORDER: with the type asked before the identity, it is
+      classed as proof and unlinked (MX4);
+    * the other device differs in ``st_dev`` only, so comparing ``st_ino``
+      alone reads and unlinks it (MX3).
+
+    On a thread with a join deadline, because the FIFO really is opened.
     """
     origins = tmp_path / "trash-origins"
     origins.mkdir()
     write_trash_origin(origins, "Dummy", origin="/music/A", moved="folder")
     key = origin_file(origins, "Dummy")
-    payload = key.read_text(encoding="ascii")
+    replace(monkeypatch, key)
 
-    def rewrite() -> None:
-        staged = origins / "staged.tmp"
-        staged.write_text(payload, encoding="ascii")
-        os.replace(staged, key)
-
-    _before_the_first_open_of(monkeypatch, key, rewrite)
+    worker = threading.Thread(target=delete_trash_origin, args=(origins, "Dummy"), daemon=True)
     with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
-        delete_trash_origin(origins, "Dummy")
+        worker.start()
+        worker.join(10)
 
-    assert key.exists(), "a record replaced in the window was unlinked"
+    assert not worker.is_alive(), "the delete is still blocked opening the key"
+    assert os.path.lexists(key), "a record replaced in the window was unlinked"
     cause, kept = caplog.records
     assert "it was replaced while it was being opened" in cause.getMessage()
     assert "could not say what is" in kept.getMessage()
