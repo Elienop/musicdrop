@@ -34,8 +34,11 @@ touches ``BEETSDIR``.
 """
 
 import base64
+import contextlib
+import fcntl
 import hashlib
 import os
+import signal
 import socket
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -204,6 +207,38 @@ def _resolve_hosts_public(monkeypatch: pytest.MonkeyPatch) -> None:
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
 
     monkeypatch.setattr(socket, "getaddrinfo", fake)
+
+
+@contextlib.contextmanager
+def write_leased(path: Path) -> Iterator[None]:
+    """Hold a write lease on ``path``, or skip: an open of it blocks, or answers EAGAIN.
+
+    The fault of choice for "the store could not answer", because it denies ROOT
+    too — a maintainer running this suite inside the shipped image is root
+    (``Dockerfile`` declares no ``USER``), where a ``chmod 000`` file denies
+    nothing and a chmod-staged test would report green having injected no fault.
+    Measured 2026-09-14: the leased key answers an ``O_NONBLOCK`` open with
+    EAGAIN in 0.0000 s, while a plain ``open`` of it waits for
+    ``/proc/sys/fs/lease-break-time``.
+
+    SIGIO is ignored for the duration: the kernel signals the lease HOLDER to
+    release, a test is both holder and reader, and SIGIO's default action is to
+    terminate. The release is suppressed because ``F_UNLCK`` with no lease held
+    raises EAGAIN, which turned the skip into an error (code seat W3).
+    """
+    holder = os.open(path, os.O_RDONLY)
+    previous = signal.signal(signal.SIGIO, signal.SIG_IGN)
+    try:
+        try:
+            fcntl.fcntl(holder, fcntl.F_SETLEASE, fcntl.F_WRLCK)
+        except OSError as exc:  # no CAP_LEASE, or a filesystem without them
+            pytest.skip(f"a write lease could not be taken here: {exc}")
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.fcntl(holder, fcntl.F_SETLEASE, fcntl.F_UNLCK)
+        os.close(holder)
+        signal.signal(signal.SIGIO, previous)
 
 
 def origins_for(trash_dir: Path) -> Path:

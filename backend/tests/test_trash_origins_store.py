@@ -31,7 +31,6 @@ of its own production line before these tests existed:
 
 from __future__ import annotations
 
-import contextlib
 import errno
 import fcntl
 import hashlib
@@ -39,7 +38,6 @@ import json
 import logging
 import os
 import shutil
-import signal
 import socket
 import stat
 import threading
@@ -63,7 +61,7 @@ from app.beets.trash_origins import (
     require_usable_store,
     write_trash_origin,
 )
-from tests.conftest import build_library, protected_for
+from tests.conftest import build_library, protected_for, write_leased
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
 
@@ -386,37 +384,6 @@ def test_an_import_restore_of_the_losing_row_keeps_the_other_entrys_record(
     assert survivor.origin == str(tmp_path / "music" / "Long")
 
 
-@contextlib.contextmanager
-def _write_leased(path: Path) -> Iterator[None]:
-    """Hold a write lease on ``path``: an open of it blocks, or answers EAGAIN.
-
-    The fault of choice for "the store could not answer", because it denies ROOT
-    too — a maintainer running this suite inside the shipped image is root
-    (``Dockerfile`` declares no ``USER``), where a ``chmod 000`` record denies
-    nothing and a chmod-staged test would report green having injected no fault
-    at all. It is also the shape the gate's ``O_NONBLOCK`` exists for: measured
-    2026-09-14, the leased key answers EAGAIN in 0.0000 s while a plain ``open``
-    of it waits for ``/proc/sys/fs/lease-break-time``.
-
-    SIGIO is ignored for the duration: the kernel signals the lease HOLDER to
-    release, this process is both holder and reader, and SIGIO's default action
-    is to terminate.
-    """
-    holder = os.open(path, os.O_RDONLY)
-    previous = signal.signal(signal.SIGIO, signal.SIG_IGN)
-    try:
-        try:
-            fcntl.fcntl(holder, fcntl.F_SETLEASE, fcntl.F_WRLCK)
-        except OSError as exc:  # no CAP_LEASE, or a filesystem without them
-            pytest.skip(f"a write lease could not be taken here: {exc}")
-        yield
-    finally:
-        with contextlib.suppress(OSError):
-            fcntl.fcntl(holder, fcntl.F_SETLEASE, fcntl.F_UNLCK)
-        os.close(holder)
-        signal.signal(signal.SIGIO, previous)
-
-
 @pytest.mark.skipif(not hasattr(fcntl, "F_SETLEASE"), reason="leases are a Linux thing")
 def test_a_record_the_store_cannot_answer_for_is_kept_instead_of_unlinked(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -442,7 +409,7 @@ def test_a_record_the_store_cannot_answer_for_is_kept_instead_of_unlinked(
     assert shared == origin_file(origins, short_name), "the two names share one record file"
 
     with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
-        with _write_leased(shared):
+        with write_leased(shared):
             delete_trash_origin(origins, short_name)
             assert shared.exists(), "a record the store could not read was unlinked"
 
@@ -474,7 +441,7 @@ def test_keeping_a_record_the_store_cannot_read_cannot_forge_a_log_line(
     key.write_text('{"schema": 1, "name": "whoever", "origin": "/music/A"}', encoding="ascii")
 
     with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
-        with _write_leased(key):
+        with write_leased(key):
             delete_trash_origin(origins, _FORGED_ENTRY_NAME)
 
     assert key.exists(), "a record the store could not read was unlinked"

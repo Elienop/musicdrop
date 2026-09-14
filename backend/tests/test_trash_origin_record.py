@@ -32,7 +32,6 @@ import json
 import logging
 import os
 import shutil
-import signal
 import threading
 import tracemalloc
 from collections.abc import Callable, Iterator
@@ -87,6 +86,7 @@ from tests.conftest import (
     make_test_handle,
     origins_for,
     protected_for,
+    write_leased,
 )
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
@@ -569,28 +569,18 @@ def test_a_write_lease_on_the_record_key_cannot_park_the_reader(
     path.parent.mkdir(parents=True, exist_ok=True)
     write_trash_origin(origins, "Leased", origin=str(tmp_path / "music" / "Leased"), moved="folder")
     assert path.stat().st_size < _MAX_RECORD_BYTES, "the plant has to pass every content gate"
-    holder = os.open(path, os.O_RDONLY)
-    previous = signal.signal(signal.SIGIO, signal.SIG_IGN)
-    try:
-        try:
-            fcntl.fcntl(holder, fcntl.F_SETLEASE, fcntl.F_WRLCK)
-        except OSError as exc:  # no CAP_LEASE, or a filesystem without them
-            pytest.skip(f"a write lease could not be taken here: {exc}")
-        answered: list[object] = []
-        worker = threading.Thread(
-            target=lambda: answered.append(read_trash_origin(origins, "Leased")), daemon=True
-        )
+    answered: list[object] = []
+    worker = threading.Thread(
+        target=lambda: answered.append(read_trash_origin(origins, "Leased")), daemon=True
+    )
+    with write_leased(path):
         with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
             worker.start()
             worker.join(10)
-        # Read BEFORE the lease is released below: a thread still blocked in the
-        # open finishes the moment it goes, so an assertion after the release
-        # would race the mutant it exists to catch.
+        # Read BEFORE the lease is released: a thread still blocked in the open
+        # finishes the moment it goes, so an assertion after the release would
+        # race the mutant it exists to catch.
         blocked = worker.is_alive()
-    finally:
-        fcntl.fcntl(holder, fcntl.F_SETLEASE, fcntl.F_UNLCK)
-        os.close(holder)
-        signal.signal(signal.SIGIO, previous)
 
     assert not blocked, "the record read is still parked on the leased key"
     assert answered == [None], "a key that cannot be opened is not a record"
@@ -681,9 +671,9 @@ def test_a_file_too_large_to_be_a_record_is_refused_on_its_size(
     with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
         assert read_trash_origin(origins, "Dummy") is None
         assert read_from == [], "the oversized plant was read before it was refused"
-        assert read_trash_origin(origins, "Real") is not None, "the spy stopped seeing reads"
+        assert read_trash_origin(origins, "Real") is not None, "a record under the cap reads"
 
-    assert set(read_from) == {str(real_key)}, "a record under the cap is read, a plant is not"
+    assert set(read_from) == {str(real_key)}, "the spy stopped seeing reads"
     (record,) = caplog.records
     assert "far too large to be a record" in record.getMessage()
     assert path.stat().st_size == planted, "refused, not truncated or removed"
