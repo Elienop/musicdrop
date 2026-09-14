@@ -648,3 +648,111 @@ def test_a_refused_reorganize_start_does_not_claim_the_job_slot(
     # the delete removes the album this path names.
     assert client.post(path).status_code == 200, client.get("/api/reorganize/status").text
     assert client.delete("/api/albums/1").status_code != 409
+
+
+@pytest.fixture
+def trash_through_a_link_into_the_library(
+    client: TestClient,
+    beets_library: LibraryHandle,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> Path:
+    """A3: the operator spells the Trash through their own link; the attacker owns its target.
+
+    ``<T>/srv-x -> <M>/a`` is the operator's half, above the music root and out
+    of the attacker's reach; ``<M>/a -> <T>/attacker`` is theirs, inside the
+    library, where the owner's layout ruling leaves write access. The kernel
+    resolves both at once, so the Trash lands wherever they point.
+
+    Returns the entry staged in that directory, so a route that removed it and a
+    route that refused are told apart by what is left on disk rather than by the
+    status alone.
+    """
+    music = Path(beets_library.lib.directory.decode())
+    (music / "An Artist").mkdir()  # the share looks mounted
+    attacker = tmp_path / "attacker"
+    staged = attacker / ".trash" / "Q3 2026 payroll"
+    staged.mkdir(parents=True)
+    (staged / "sheet.pdf").write_bytes(b"\x00")
+    (music / "a").symlink_to(attacker)
+    (tmp_path / "srv-x").symlink_to(music / "a")
+    monkeypatch.setattr("app.config.settings.trash_dir", str(tmp_path / "srv-x" / ".trash"))
+    monkeypatch.setattr("app.config.settings.trash_origins_dir", str(tmp_path / "records"))
+    return staged
+
+
+def test_empty_all_refuses_a_trash_reached_through_a_link_into_the_library(
+    client: TestClient, trash_through_a_link_into_the_library: Path
+) -> None:
+    """The branch's headline change, at the HTTP boundary.
+
+    Measured 2026-09-13 (security seat, M-1's evidence block): on the arm this
+    replaces, this route answered 200 and the staged entry was gone — the kernel
+    resolved both links at once and handed the walk a descriptor that was never
+    inside the library.
+    """
+    r = client.delete("/api/trash/all")
+
+    assert r.status_code == 503, r.text
+    assert "MUSICDROP_TRASH_DIR" in r.json()["detail"]
+    assert (trash_through_a_link_into_the_library / "sheet.pdf").is_file()
+
+
+def test_listing_the_trash_refuses_the_layout_the_destructive_routes_refuse(
+    client: TestClient, trash_through_a_link_into_the_library: Path, tmp_path: Path
+) -> None:
+    """Every Trash route asks the same layout question; the read route creates nothing.
+
+    Measured 2026-09-13 (security seat M-1): the rows are relations between the
+    RESOLVED paths, so this layout listed the attacker's directory — folder names
+    on the wire and a tag read per audio file — while every write answered 503.
+    """
+    r = client.get("/api/trash")
+
+    assert r.status_code == 503, r.text
+    assert "MUSICDROP_TRASH_DIR" in r.json()["detail"]
+    # The read path asks the walk that creates nothing: no mkdir anywhere in the
+    # chain, and none at the attacker's target either.
+    assert sorted(p.name for p in (tmp_path / "attacker").iterdir()) == [".trash"]
+    assert not (tmp_path / "records").exists()
+
+
+def test_the_reorganize_preview_refuses_that_layout_too(
+    client: TestClient, trash_through_a_link_into_the_library: Path
+) -> None:
+    """The preview's own docstring promises it describes no run the sweep would refuse.
+
+    The sweep creates the Trash through the anchored walk on its own thread, so
+    it skips this layout with a warning — a preview that accepted it offered
+    husks to a run that then moved none of them.
+    """
+    r = client.get("/api/reorganize/preview")
+
+    assert r.status_code == 503, r.text
+    assert "MUSICDROP_TRASH_DIR" in r.json()["detail"]
+
+
+def test_the_same_spelling_is_served_when_the_link_stays_outside_the_library(
+    client: TestClient,
+    beets_library: LibraryHandle,
+    trash_through_a_link_into_the_library: Path,
+    tmp_path: Path,
+) -> None:
+    """The control on the same fixture: the refusal is about the TARGET, not the link.
+
+    Re-pointed straight at the same directory — one link, no component inside the
+    library — all three routes serve it: the supported "Trash on another disk
+    through the operator's own link".
+    """
+    music = Path(beets_library.lib.directory.decode())
+    (music / "a").unlink()
+    (tmp_path / "srv-x").unlink()
+    (tmp_path / "srv-x").symlink_to(tmp_path / "attacker")
+
+    listing = client.get("/api/trash")
+
+    assert listing.status_code == 200, listing.text
+    assert [a["folder"] for a in listing.json()["albums"]] == ["Q3 2026 payroll"]
+    assert client.get("/api/reorganize/preview").status_code == 200
+    assert client.delete("/api/trash/all").status_code == 200
+    assert not trash_through_a_link_into_the_library.exists()

@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { components } from "./schema";
 import { client } from "./client";
-import { unwrap } from "./lib";
+import { detailMessage, unwrap } from "./lib";
 
 export type ReorganizePlan = components["schemas"]["ReorganizePlan"];
 export type ReorganizeMove = components["schemas"]["ReorganizeMove"];
@@ -43,23 +43,30 @@ export function useReorganizeStatus() {
   });
 }
 
+/** All four preview/start calls can answer 503 with a store-layout refusal
+ * whose sentence says what to fix, so the generic arm prefers the body's
+ * `detail` (`ReorganizeControl.onActionError` renders the message verbatim) and
+ * keeps its literal only for a bodyless failure. The 404/409 arms keep their
+ * own copy: the server's text there adds nothing the user can act on. */
 export function usePreviewReorganize() {
   return useMutation<ReorganizePlan, Error, ReorganizeScope>({
     mutationFn: async (s): Promise<ReorganizePlan> => {
       if (s.scope === "album") {
-        const { data, response } = await client.GET(
+        const { data, error, response } = await client.GET(
           "/api/albums/{album_id}/reorganize/preview",
           { params: { path: { album_id: s.albumId } } },
         );
         if (response.status === 404) throw new Error("Album not found");
-        if (!response.ok || !data) throw new Error("Failed to build preview");
+        if (!response.ok || !data)
+          throw new Error(detailMessage(error) ?? "Failed to build preview");
         return data;
       }
       const query = s.scope === "artist" ? { artist: s.artist } : {};
-      const { data, response } = await client.GET("/api/reorganize/preview", {
+      const { data, error, response } = await client.GET("/api/reorganize/preview", {
         params: { query },
       });
-      if (!response.ok || !data) throw new Error("Failed to build preview");
+      if (!response.ok || !data)
+        throw new Error(detailMessage(error) ?? "Failed to build preview");
       return data;
     },
   });
@@ -70,19 +77,23 @@ export function useStartReorganize() {
   return useMutation<ReorganizeBackfillStatus, Error, ReorganizeScope>({
     mutationFn: async (s): Promise<ReorganizeBackfillStatus> => {
       if (s.scope === "album") {
-        const { data, response } = await client.POST(
+        const { data, error, response } = await client.POST(
           "/api/albums/{album_id}/reorganize",
           { params: { path: { album_id: s.albumId } } },
         );
         if (response.status === 409) throw new Error("A library operation is in progress");
         if (response.status === 404) throw new Error("Album not found");
-        if (!response.ok || !data) throw new Error("Failed to start reorganize");
+        if (!response.ok || !data)
+          throw new Error(detailMessage(error) ?? "Failed to start reorganize");
         return data;
       }
       const query = s.scope === "artist" ? { artist: s.artist } : {};
-      const { data, response } = await client.POST("/api/reorganize", { params: { query } });
+      const { data, error, response } = await client.POST("/api/reorganize", {
+        params: { query },
+      });
       if (response.status === 409) throw new Error("A library operation is in progress");
-      if (!response.ok || !data) throw new Error("Failed to start reorganize");
+      if (!response.ok || !data)
+        throw new Error(detailMessage(error) ?? "Failed to start reorganize");
       return data;
     },
     onSuccess: () => void qc.invalidateQueries({ queryKey: REORGANIZE_STATUS_KEY }),

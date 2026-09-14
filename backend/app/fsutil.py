@@ -36,6 +36,12 @@ through an fd it returns must CLOSE its iterator: ``os.scandir(fd)`` dups the fd
 and the dup SHARES the offset, so one partially consumed iterator left open makes
 every later ``scandir``/``listdir`` on that fd read ``[]`` (measured 2026-09-12,
 twice; two live iterators on one fd interleave and duplicate entries).
+
+And :func:`bytes_at_most`, the bounded read that ``trash_origins`` and
+``store_layout`` both use. No cycle forces it here: importing ``trash_origins``
+alone loads neither ``trash`` nor ``store_layout`` (measured 2026-09-14). It is
+here so the include reader does not depend on a Trash module for a read. They
+carried two identical copies until 2026-09-14.
 """
 
 from __future__ import annotations
@@ -107,6 +113,25 @@ def fsync_dir(dir_fd: int) -> None:
     except OSError as exc:
         if exc.errno not in CANNOT_FSYNC_A_DIR or not stat.S_ISDIR(os.fstat(dir_fd).st_mode):
             raise
+
+
+def bytes_at_most(fd: int, budget: int) -> bytes | None:
+    """Up to ``budget`` bytes from ``fd``, or ``None`` past it.
+
+    The budget bounds the READ, not ``st_size``: a procfs file can report size
+    0 and still read about 22 MB, as ``/proc/kallsyms`` does. A loop
+    rather than one ``os.read`` because procfs answers in short reads: measured
+    2026-09-14, the first three ``os.read(fd, 65537)`` of ``/proc/kallsyms``
+    returned 4,050, 4,094 and 4,063 bytes with and without ``O_NONBLOCK``, while
+    a 65,536-byte regular file returned whole in one.
+    """
+    buf = b""
+    while len(buf) <= budget:
+        chunk = os.read(fd, budget + 1 - len(buf))
+        if not chunk:
+            return buf
+        buf += chunk
+    return None
 
 
 def occupied(path: Path) -> bool:
@@ -253,10 +278,12 @@ def move_no_merge(src: Path, dest: Path) -> None:
 #: ``O_DIRECTORY`` a FIFO answers ENOTDIR in 6 us, so ``O_NONBLOCK`` is belt and
 #: braces rather than the thing that saves the open). The ONE definition, and
 #: these are all its readers: :func:`open_below`'s walk, the Trash remover's
-#: descent, the move-aside's container open, ``store_layout``'s creation of a
-#: Trash below the music root, and ``protected.open_checked_dir``'s open of the
-#: Trash ROOT — the one place a ROOT is opened ``O_NOFOLLOW``, because that root
-#: is the one directory the app must not reach through a link.
+#: descent, the move-aside's container open, ``store_layout``'s walk of the
+#: Trash's whole spelling — above the music root as well as below, since the
+#: owner's 2026-09-13 ruling, which is why "below the root" no longer describes
+#: every reader — and ``protected.open_checked_dir``'s open of the Trash ROOT,
+#: the one place a ROOT is opened ``O_NOFOLLOW``, because that root is the one
+#: directory the app must not reach through a link.
 BELOW_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
 
 #: The ROOT is opened FOLLOWING links: an operator's beets ``directory:`` may be a
@@ -266,11 +293,12 @@ BELOW_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOC
 #: refused.
 #:
 #: Read directly, and not only through :func:`open_root`, by
-#: ``store_layout._open_the_trash_chain``: every component ABOVE the music root
-#: is the operator's chain and is opened the same way, from its parent's
-#: descriptor — which :func:`open_root` takes no ``dir_fd`` to express. Same
-#: flags, one definition; the three sites are ``/``, each part above the root,
-#: and the ``..`` climb that asks whether a spelling landed inside the library.
+#: ``store_layout._open_the_trash_chain`` for the ``/`` its walk starts at.
+#: Owner ruling 2026-09-13 took the rest: the components ABOVE the music root
+#: are the operator's chain, and since that ruling they are opened
+#: :data:`BELOW_FLAGS` too — a link there is resolved by the walk itself and
+#: refused only when its target lands inside the library, which is stricter than
+#: following it and keeps the layouts that pointed outside.
 ROOT_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK
 
 
@@ -296,12 +324,12 @@ def open_root(root: Path) -> int:
 def open_below(root: Path, rel: Path) -> int:
     """Open ``root/rel`` as a directory fd, refusing a symlink at every part below ``root``.
 
-    The fd-based sibling of ``trash_manage._reaches_through_a_link``
-    (``app/beets/trash_manage.py:1029``): both ask every component, not just the
-    leaf, and the two must read alike — that docstring's rule is that a second,
-    weaker traversal check must not grow. This is the stronger half, because the fd
-    the walk returns IS what the caller writes through, so no component can be
-    re-resolved between the check and the write.
+    The fd-based sibling of ``trash_manage._reaches_through_a_link``: both ask
+    every component, not just the leaf, and the two must read alike — that
+    docstring's rule is that a second, weaker traversal check must not grow. This
+    is the stronger half, because the fd the walk returns IS what the caller
+    writes through, so no component can be re-resolved between the check and the
+    write.
 
     Measured 2026-09-12: ``O_DIRECTORY|O_NOFOLLOW`` on a symlink answers
     **ENOTDIR (20)**, not the documented ELOOP — ELOOP (40) needs ``O_NOFOLLOW``

@@ -100,6 +100,18 @@ class TrashRestoreIncompleteError(Exception):
     """
 
 
+class TrashEntryUnreadableError(Exception):
+    """A Trash entry holds something no importer may open, so it was not restored.
+
+    Its own class because its answer is the operator's and not the user's story
+    about their files: nothing moved, nothing was handed to beets, and the fix is
+    to remove the offending name. The API answers it 503, beside the other two
+    refusals that fire before anything leaves Trash; the message is USER-facing
+    (the Trash page renders the ``detail``) and names the offending entry
+    relative to the folder, which is the only part of it the person can act on.
+    """
+
+
 #: Shown for a row with no record we can use. Decision 2 of the owner's ruling:
 #: such a row must say why it cannot be put back, not quietly restore somewhere
 #: else.
@@ -298,6 +310,302 @@ def list_trashed_albums(
     return albums
 
 
+def _is_a_regular_file(path: str) -> bool:
+    """Whether ``path`` is a regular file, or a link to one — the only kind opened.
+
+    ``Item.from_path`` OPENS the file, and opening a FIFO blocks until a writer
+    appears: measured 2026-09-13 (security seat M-2), one ``mkfifo`` named like a
+    track inside the Trash never returned, against 2.4 ms for a regular
+    non-media file in the same place, and each hung call holds a
+    ``run_in_threadpool`` worker for the life of the process. The Trash root is
+    attacker-writable under the layout rule's own model (the recommended layout
+    is ``<M>/.trash``).
+
+    One ``os.stat``, which FOLLOWS links, because the question is what the name
+    resolves to: a link to a regular audio file still reads (the note above
+    describes that row), a link to a FIFO is skipped like a FIFO, and a dangling
+    link or a loop answers here and is skipped. ``stat`` on a FIFO does not
+    block; only opening it does. It also closes a shape the family above does not
+    name: a link to ``/dev/zero`` is an unbounded READ rather than a blocking
+    open, and never returned either (security seat, case 8).
+
+    This stat and ``Item.from_path``'s own open are TWO syscalls on the same
+    name, so a planter who swaps a regular file for a FIFO between them still
+    parks one worker: the static plant is closed, the race is not. Measured
+    2026-09-13 (code seat W2) by driving the window in this stat. Recorded under
+    *Accepted residuals* in ``BACKLOG.md`` with the fd-shaped option.
+    """
+    try:
+        return stat.S_ISREG(os.stat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _never_returns_from_an_open(path: str) -> bool:
+    """Whether ``path`` is a name beets must never be handed to open.
+
+    TWO of the three cost one ``run_in_threadpool`` worker for the life of the
+    process, and by different mechanisms: the FIFO blocks in its ``open`` and
+    ``/dev/zero`` opens at once and never ends its READ (measured 2026-09-13,
+    security seat M-2, case 8). The THIRD costs nothing, and the name of this
+    function over-reaches for it: a socket's ``open`` answers ENXIO in about
+    5 µs (measured 2026-09-13, code seat S1). It is refused WITH them because
+    one ``stat`` cannot tell the three apart and refusing all of them is the
+    fail-closed direction, not because it hangs. So: anything the filesystem
+    describes and that is neither a regular file nor a directory.
+
+    NOT :func:`_is_a_regular_file`, and the difference is what a failing ``stat``
+    means. There, no answer means "skip this name". Here it would mean "refuse
+    the whole restore", and the shapes that fail a ``stat`` are ordinary in a
+    trashed folder: a dangling link is what an unmounted volume looks like
+    (``test_a_dangling_link_among_the_files_is_skipped_without_an_error``), and a
+    link loop answers instantly. beets opens those and is told no, which costs a
+    syscall — so they are not this predicate's business.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    return not stat.S_ISREG(st.st_mode) and not stat.S_ISDIR(st.st_mode)
+
+
+def _dir_ident(path: str) -> tuple[int, int] | None:
+    """The identity of a directory the walk is about to descend, or None.
+
+    ``None`` collapses every directory this process cannot stat onto ONE
+    sentinel, so at most one of them is entered per walk and the rest are pruned
+    as already-seen. Not "do not descend it", which is what this said and is
+    off by one: ``seen`` is seeded with the entry's own ident, so the FIRST
+    unstattable directory is not in it yet and IS descended. Harmless, and the
+    reason is a permission asymmetry in the app's favour — ``os.scandir`` needs
+    read PLUS the search bits ``os.stat`` needs, so a directory ``os.stat``
+    cannot see is one ``os.walk`` lists nothing in.
+
+    The ``None`` arm is reached by ENOENT/EIO/ELOOP or an unsearchable PARENT,
+    never by a blind directory, and this used to cite the opposite (a mode-000
+    subdir answering ``None``). ``os.stat`` needs the search bits of a
+    directory's PARENTS, not permission on the directory itself: measured
+    2026-09-14 as euid 1000, a mode-000 subdir stats fine and keeps a real
+    ident, and only the walk INTO it lists nothing.
+
+    Follows links, because the identity that matters is the directory the name
+    lands on.
+    """
+    try:
+        return _ident(os.stat(path))
+    except OSError:
+        return None
+
+
+#: :func:`_unopenable_name_under`'s answer when the ENTRY is the offending name.
+#: ``os.path.relpath``'s own spelling for "this path", and not a value any name
+#: BELOW the entry can produce (``relpath`` answers ``"."`` only for the entry
+#: itself). Compared rather than the entry's NAME, which a file inside the entry
+#: can legally share (``<trash>/Album/Album``).
+_THE_ENTRY_ITSELF: Final = "."
+
+
+def _unopenable_name_under(entry: Path) -> str | None:
+    """The first name under or AT ``entry`` that must not be opened, relative to it.
+
+    ``entry`` ITSELF is asked before the walk, because the walk cannot see it:
+    ``os.walk`` on a name that is not a directory yields nothing, so this
+    answered ``None`` for a Trash entry that IS a pipe — and beets opens a
+    non-directory toppath DIRECTLY rather than walking it (``if not
+    os.path.isdir(syspath(self.toppath)): yield [self.toppath],
+    [self.toppath]``, ``beets/importer/tasks.py:1041``), straight into
+    ``read_item`` → ``Item.from_path`` → ``mutagen``. Measured 2026-09-13
+    (security seat H-1, code seat CRITICAL): ``POST /api/trash/restore`` on such
+    an entry never returned and held ``beets_swap_lock`` for the life of the
+    process, 409ing every mutating Trash route and reorganize. It is UI-reachable
+    with no race — a loose regular audio file at the top of Trash lists as its
+    own row with Restore enabled, so swapping that file for a FIFO leaves the
+    whole listing-to-click interval as the window. ``resolve_trash_child`` does
+    not stop it either: it refuses a link and an absent child, and a FIFO is
+    neither. The answer is :data:`_THE_ENTRY_ITSELF` and not a name, because the
+    sentence that reads right for this arm is about the entry rather than about
+    something the entry holds.
+
+    One ``stat`` per file on a route that is about to run a whole import, walked
+    before anything is handed to beets — which cannot be gated from here: its
+    importer opens every file in the folder it is given that its
+    ``ignore``/hidden globs do not skip (``mutagen.wave.WAVE`` on a FIFO,
+    ``importer/tasks.py:1141``), and on the move-back arm the app's own
+    :func:`_holds_media` walk opens them again afterwards.
+
+    ``followlinks=True`` because beets' own walk follows them: ``sorted_walk``
+    sorts a name into ``dirs`` by ``os.path.isdir``, which resolves links
+    (``beets/util/__init__.py:247``), so a symlinked subfolder inside the entry
+    IS descended by the importer — a pre-flight that stopped at it would leave
+    the pipe in it to open. The loop that buys is closed by identity rather than
+    by depth: each directory is walked once, so a link pointing back up its own
+    tree is pruned on the second visit.
+
+    What that following costs is an ORACLE, and it is why the answer is not
+    always the offending name: this string goes verbatim into the 503 the page
+    renders, so a walk that leaves the entry would report a filename from
+    outside Trash. Anything found below a SYMLINKED directory is reported as the
+    link instead — :func:`_link_name_under`, which owns the measurement and the
+    reasoning, including why it does not ask where the link goes.
+
+    It over-refuses in one direction, deliberately: ``sorted_walk`` skips its
+    ``ignore`` globs and hidden names, this does not, so a hidden ``.wedge``
+    FIFO refuses a restore beets would have imported without ever opening it
+    (measured 2026-09-13, security seat case a4b). That asymmetry is a strict
+    SUPERSET of what beets opens, which is the safe direction; mirroring beets'
+    globs instead would couple this gate to a beets config key.
+    """
+    if _never_returns_from_an_open(str(entry)):
+        return _THE_ENTRY_ITSELF
+    return _first_unopenable_below(entry)
+
+
+def _first_unopenable_below(entry: Path) -> str | None:
+    """The walk below ``entry``: its first unopenable name, as a refusal may name it."""
+    seen: set[tuple[int, int] | None] = {_dir_ident(str(entry))}
+    # Keyed on the directory the walk is IN, not on the offending file, because
+    # the substitution has to survive every level below the link.
+    named_instead: dict[str, str] = {}
+    for root, dirs, files in os.walk(entry, followlinks=True):
+        instead = named_instead.get(root)
+        found = _first_unopenable_file(root, files)
+        if found is not None:
+            return instead if instead is not None else os.path.relpath(found, entry)
+        dirs[:] = _descend_once_naming_links(
+            root, dirs, entry, seen=seen, instead=instead, named_instead=named_instead
+        )
+    return None
+
+
+def _first_unopenable_file(root: str, files: list[str]) -> str | None:
+    """The path of the first of ``files`` in ``root`` that must not be opened."""
+    for name in files:
+        path = os.path.join(root, name)
+        if _never_returns_from_an_open(path):
+            return path
+    return None
+
+
+def _descend_once_naming_links(
+    root: str,
+    dirs: list[str],
+    entry: Path,
+    *,
+    seen: set[tuple[int, int] | None],
+    instead: str | None,
+    named_instead: dict[str, str],
+) -> list[str]:
+    """The subdirectories of ``root`` not walked yet, each linked one recorded by its link.
+
+    One visit per directory identity is what closes a link that points back up
+    its own tree. ``named_instead`` gains the name a refusal below each
+    symlinked subdirectory may use instead of the offending file's own.
+    """
+    unvisited = []
+    for name in dirs:
+        child = os.path.join(root, name)
+        ident = _dir_ident(child)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        unvisited.append(name)
+        # The OUTERMOST link wins: once a subtree is reached through one,
+        # the names below it may be invisible to the operator, including
+        # any further link inside.
+        below = instead if instead is not None else _link_name_under(child, entry)
+        if below is not None:
+            named_instead[child] = below
+    return unvisited
+
+
+def _link_name_under(child: str, entry: Path) -> str | None:
+    """``child``'s own name under ``entry``, if ``child`` is a symlink at all.
+
+    ``None`` only for a real directory. ONE question — ``os.path.islink`` — and
+    that is the whole predicate.
+
+    This exists because the walk above follows links and the refusal names what
+    it found. Measured 2026-09-13 (security seat L-2): with
+    ``<trash>/Album/peek -> /any/dir``, ``POST /api/trash/restore`` refused with
+    ``"This Trash entry holds 'peek/private-name'"`` — the name of the first
+    non-regular file in a directory OUTSIDE Trash, read back one per click and
+    iterable by re-pointing the link. The invariant is that the 503 may name
+    only a path the operator can see inside the entry, and ``peek`` is one: it
+    is also the remedy, since removing the link is what fixes the restore, and
+    the sentence stays true of it (a link is not a regular file either).
+
+    **It asked a second question until 2026-09-14, and that question was a
+    TOCTOU.** ``os.path.realpath(child).startswith(realpath(entry) + sep)``
+    answered "this link stays inside, so keep the fuller name", and then
+    ``os.walk`` descended the same NAME one statement later — so re-pointing the
+    link in that window put the walk outside the entry with no substitution
+    recorded. Measured (security seat L-1, flipper between an inside directory
+    and an outside one holding a FIFO): **3,162 of 39,486 restores — 8.01 % —
+    named a path from outside**, with both liveness answers in the result set.
+    Deleting the arm is fail-closed and costs message PRECISION, which is the
+    measured trade: for a link that legitimately stays inside the entry the 503
+    now names the link while the offending file is also reachable by its real
+    relative path, so "remove that name" can take two restores to follow. What
+    it buys is that no answer this function gives can name anything the operator
+    cannot see.
+
+    Accept behaviour is unchanged — the walk still descends every symlinked
+    subfolder, and only the NAME in a refusal moved
+    (``test_a_symlinked_subfolder_of_regular_files_still_restores`` is the
+    control). A dangling or looping link never reaches this: ``os.walk`` sorts a
+    name into ``dirs`` by ``os.path.isdir``, which is False for both.
+    """
+    if not os.path.islink(child):
+        return None
+    return os.path.relpath(child, entry)
+
+
+def _unopenable_refusal(unopenable: str) -> str:
+    """The 503's sentence for what :func:`_unopenable_name_under` answered.
+
+    TWO sentences and two arms, because the entry BEING a pipe is not the entry
+    holding one and the remedy differs: there is no name inside to remove and
+    nothing left to restore, so "remove that name and restore again" would send
+    the operator in a circle. The first arm says "not a folder or a regular
+    file" rather than "not a regular file", which is what the shared sentence
+    said and reads wrong about an entry that is normally a FOLDER.
+
+    Whole sentences rather than a shared stem with a clause swapped in: this IS
+    the message the page shows (``SettingsTrashPage.tsx`` renders the 503 detail
+    as the row's whole text, ``text-xs``), so it is held to the owner's app-text
+    ruling — two short sentences each, 93 and 128 characters, and the round-2
+    wording's 188 and its "would open a pipe or device and never return" clause
+    are both gone (the clause was also false of a socket, which answers ENXIO at
+    once). Both are pinned as whole strings rather than by fragments, in
+    ``test_a_listed_loose_file_swapped_for_a_fifo_refuses_the_restore`` and
+    ``test_a_non_regular_file_inside_an_entry_refuses_the_restore``: three
+    fragment assertions passed a sentence that said the OPPOSITE of the remedy.
+    """
+    if unopenable == _THE_ENTRY_ITSELF:
+        # The remedy names the button on the row the operator is looking at.
+        # This sentence only ever renders on the STALE row drawn before the
+        # swap — ``_audio_free_entries`` lists an entry only if it is a link or
+        # a directory, so a top-level FIFO or socket has no row after a refresh
+        # — and that row's own Empty (the trash-can beside Restore, accessible
+        # name "Empty <album>") removes the shape: measured in the browser
+        # 2026-09-14, ``DELETE /api/trash?folder=loose.flac`` on a FIFO answered
+        # 200, the row was gone in 0.21 s and the file gone from disk. The
+        # page's own hedge copy already words it this way
+        # (``SettingsTrashPage.tsx:342``, "Empty removes it permanently"). It
+        # said "Empty all" for a day, on the reasoning that the refreshed page
+        # has no row — true, and beside the point, since the sentence is read on
+        # the page that does. 93 characters, pinned whole by
+        # ``test_a_listed_loose_file_swapped_for_a_fifo_refuses_the_restore``.
+        return (
+            "This Trash entry is not a folder or a regular file, so it was not restored."
+            " Empty removes it."
+        )
+    return (
+        f"This Trash entry holds {unopenable!r}, which is not a regular file, so it was"
+        " not restored. Remove that name and restore again."
+    )
+
+
 def _walk_trash_groups(trash_dir: Path) -> dict[str, list[Any]]:
     """Collect audio files under ``trash_dir`` grouped by their top-level entry.
 
@@ -313,6 +621,8 @@ def _walk_trash_groups(trash_dir: Path) -> dict[str, list[Any]]:
     for root, _dirs, files in os.walk(trash_dir):
         for name in files:
             path = os.path.join(root, name)
+            if not _is_a_regular_file(path):
+                continue
             try:
                 item = Item.from_path(os.fsencode(path))
             except Exception:  # non-media file (e.g. cover art): skip
@@ -446,7 +756,8 @@ def _audio_free_entries(
                     year=None,
                     # Zero means "nothing here produced a readable media Item",
                     # NOT "no audio": _walk_trash_groups skips every file
-                    # ``Item.from_path`` raises on, while beets' own discovery
+                    # ``Item.from_path`` raises on and every file that is not a
+                    # regular file (``_is_a_regular_file``), while beets' own discovery
                     # takes every non-ignored file in the folder as a candidate
                     # (``albums_in_dir``, importer/tasks.py:1184-1216, no
                     # extension or media filter). So a folder listed at 0 tracks
@@ -510,6 +821,15 @@ def restore_album(
     Trash", and README says the same. One guard at the entry point is what
     makes that sentence true for the endpoint rather than for one of its arms.
 
+    The non-regular-file pre-flight sits here for a third version of the same
+    reason: both arms hand the folder to beets, which opens every file in it
+    that its ``ignore``/hidden globs do not skip — or opens the entry itself
+    when the entry is not a directory — and an entry is attacker-writable under
+    the layout rule's own model. It runs before either
+    arm and refuses naming the offending name, or the entry, having moved nothing
+    (:class:`TrashEntryUnreadableError`, 503; :func:`_unopenable_refusal` owns
+    the two sentences).
+
     ``protected`` is asked here for the same reason: restore is a MOVER, and
     both arms relocate the whole entry out of Trash. On a Trash that is the host
     parent of a bind-mounted music library, a stale record named ``music`` sent
@@ -527,6 +847,27 @@ def restore_album(
         return RestoreResult(restored=False, reason="could_not_restore")
     require_library_present(lib)
     refuse_protected_tree(entry, protected, action="moved")
+    # Below the two setup guards and above both arms that OPEN files, because
+    # that is where the opening starts: beets' importer opens every file in the
+    # folder it is given that its ``ignore``/hidden globs do not skip, and one
+    # ``mkfifo`` inside the entry wedged the request
+    # for the life of the process — measured 2026-09-13 (security seat M-2''),
+    # >6 s and still blocked in ``mutagen.wave.WAVE``, one threadpool worker
+    # gone per click, the entry listing as a 0-track row with Restore
+    # deliberately enabled. The move-back arm needs it too: it renames the entry
+    # into the library FIRST and imports it there, so an ungated restore carries
+    # the pipe into ``/music`` before it hangs on it.
+    #
+    # It is NOT the whole of what the restore opens, which is what this comment
+    # used to claim: the position bounds what beets opens, not what the two
+    # guards above see. ``require_library_present`` and ``refuse_protected_tree``
+    # ask about the layout and answer in bounded time whatever the entry is, so
+    # the ordering costs nothing — and the gate below now covers the entry itself
+    # as well as its contents (security seat H-1 / code seat CRITICAL, probes
+    # p1/p3, which falsified the sentence that stood here).
+    unopenable = _unopenable_name_under(entry)
+    if unopenable is not None:
+        raise TrashEntryUnreadableError(_unopenable_refusal(unopenable))
     origin = move_back_target(record, music_dir=_music_dir(lib))
     if origin is None:
         result = _restore_by_import(
@@ -536,19 +877,19 @@ def restore_album(
             # A record that is no longer about anything: beets has moved the
             # files out from under it. Left in place it outlives its subject —
             # and because the key is the entry NAME, a later folder taking that
-            # name would inherit it. Called unconditionally, deliberately: an
-            # UNREADABLE record also reaches here (``read_trash_origin``
-            # collapses it to ``None``) and it is exactly the file that must not
-            # be left to be adopted. In the sidecar design it rode out inside the
-            # folder and was inert either way; on the /data side it survives
-            # forever.
+            # name would inherit it. Called unconditionally, deliberately: a file
+            # at the key that is not a record of ours also reaches here
+            # (``read_trash_origin`` collapses it to ``None``), and that is a file
+            # that must not be left to be adopted. In the sidecar design it rode
+            # out inside the folder and was inert either way; on the /data side it
+            # survives forever.
             #
-            # Unconditional HERE is not unconditional on disk: ``None`` also
-            # covers the one case where the file at this entry's key belongs to
-            # a DIFFERENT entry (two long names can share one record file), and
-            # ``delete_trash_origin`` keeps that one — it reads the payload's own
-            # ``name`` before unlinking. Its docstring owns that exception; this
-            # call site deliberately does not repeat the test.
+            # Unconditional HERE is not unconditional on disk. ``None`` also
+            # covers two files ``delete_trash_origin`` keeps: a record naming a
+            # DIFFERENT entry (two long names can share one record file), and one
+            # the store could not answer for (a lease, EACCES, a failing read),
+            # which it keeps and logs with the cause. Its docstring owns both; this
+            # call site deliberately does not repeat the tests.
             delete_trash_origin(origins_dir, entry.name)
         return result
     return _restore_to_origin(lib, entry, origin, trash_dir=trash_dir, origins_dir=origins_dir)
@@ -952,6 +1293,20 @@ def _holds_media(folder: Path) -> bool:
     The same probe the listing's track count uses, asked of a restored folder to
     tell "there was nothing to import" apart from "the import failed". Stops at
     the first hit.
+
+    The ``Item.from_path`` here is ungated, and what keeps it bounded is
+    :func:`_unopenable_name_under` at the top of :func:`restore_album`: nothing
+    under the entry could block an open when the restore was let through. The
+    window between the two is on BOTH arms and it is not the same directory, but
+    only ONE of them is this function's — the sole call site is in
+    :func:`_restore_to_origin`, the move-back arm, which re-walks the folder one
+    rename later in the library. On the import arm BEETS is the re-opener, where
+    the folder still stands in Trash, which is the attacker-writable side under
+    the layout rule's own model and therefore the cheaper half (0.690 ms between
+    the pre-flight's return and the first ``Item.from_path``, 12 files, measured
+    2026-09-13, security seat L-3).
+    Recorded with the listing's own stat-then-open window under *Accepted
+    residuals* rather than gated here, where no test could kill it.
     """
     for root, _dirs, files in os.walk(folder):
         for name in files:
@@ -1118,9 +1473,10 @@ def empty_one(folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees) 
 
     Its OWN record goes with it, strictly AFTER: a failed ``rmtree`` raises out
     of here, and losing the record for an entry still in Trash would downgrade
-    its row to an import-restore. A record naming a DIFFERENT entry stays — two
-    long names can share one truncated key, and ``delete_trash_origin`` reads the
-    payload's own ``name`` first.
+    its row to an import-restore. Two files at the key stay, both decided inside
+    ``delete_trash_origin``: a record naming a DIFFERENT entry (two long names
+    can share one truncated key, so it reads the payload's own ``name`` first),
+    and one the store could not answer for, which is kept with its cause logged.
 
     Raises :class:`~app.beets.protected.ProtectedTreeError` (503) when the entry
     is or holds one of the app's own directories by inode, when the name stopped

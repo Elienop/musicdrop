@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
+import threading
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from beets import config
@@ -12,6 +15,8 @@ from beets.library import Item, Library
 from app.beets.trash import trash_album
 from app.beets.trash_manage import (
     TrashEmptyPartialError,
+    TrashEntryUnreadableError,
+    _link_name_under,
     empty_all,
     empty_one,
     list_trashed_albums,
@@ -606,6 +611,469 @@ def test_empty_all_clears_a_symlinked_entry_without_following_it(tmp_path: Path)
 
     assert list(trash.iterdir()) == []
     assert (elsewhere / "keepme.txt").is_file()
+
+
+def test_a_fifo_named_like_a_track_does_not_hang_the_listing(tmp_path: Path) -> None:
+    """A non-regular entry in Trash is never opened, and the listing returns.
+
+    Measured 2026-09-13 (security seat M-2): ``Item.from_path`` opens every name
+    ``os.walk`` returns, and a FIFO blocks that open until a writer appears — one
+    ``mkfifo`` wedged the request for the life of the process, holding a
+    ``run_in_threadpool`` worker each time the page was reloaded (anyio's default
+    limiter is 40, shared by every threadpool route). The Trash root is
+    attacker-writable under the layout rule's own model.
+
+    Run on a thread with a join deadline, because a plain call would hang this
+    suite instead of failing it.
+    """
+    trash = tmp_path / "trash"
+    _tagged_flac(trash / "Real Album" / "01 t.flac", artist="A", album="Real", title="T", track=1)
+    (trash / "Wedge").mkdir(parents=True)
+    os.mkfifo(trash / "Wedge" / "01.flac")
+    # A LINK to the same shape, as one more entry rather than a second test: the
+    # gate asks what the name resolves to, and a mutant widening it to
+    # ``S_ISREG or S_ISLNK`` would hang on this row with the one above green
+    # (code seat S5).
+    (trash / "Linked Wedge").mkdir()
+    (trash / "Linked Wedge" / "01.flac").symlink_to(trash / "Wedge" / "01.flac")
+    listed: list[list[Any]] = []
+
+    def run() -> None:
+        listed.append(
+            list_trashed_albums(
+                trash, origins_dir=origins_for(trash), music_dir=str(tmp_path / "music")
+            )
+        )
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(5)
+
+    assert not worker.is_alive(), "the listing is still blocked on the FIFO"
+    assert {a.folder: a.track_count for a in listed[0]} == {
+        "Real Album": 1,
+        "Wedge": 0,
+        "Linked Wedge": 0,
+    }
+
+
+@pytest.mark.parametrize("plant", ["fifo", "link-to-fifo"])
+def test_a_non_regular_file_inside_an_entry_refuses_the_restore(tmp_path: Path, plant: str) -> None:
+    """Restore is refused in bounded time, and the folder stays in Trash.
+
+    Measured 2026-09-13 (security seat M-2''), at this branch's base and at
+    round 1's tip alike: ``POST /api/trash/restore`` on an entry holding one
+    ``mkfifo`` never returned (>6 s, blocked in ``mutagen.wave.WAVE`` inside
+    beets' own ``read_item``), parking one ``run_in_threadpool`` worker per
+    click. The entry lists as a 0-track row and the UI keeps Restore enabled
+    there on purpose, so the operator clicks it again.
+
+    Both plants, because the gate asks what the name RESOLVES to: the link is
+    the shape a refusal on ``os.path.islink`` alone would miss. Run on a thread
+    with a join deadline — a plain call would hang this suite instead of
+    failing it.
+    """
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
+    trash = tmp_path / "trash"
+    entry = trash / "2 Brothers - Dreams"
+    _tagged_flac(
+        entry / "01 Dreams.flac", artist="2 Brothers", album="Dreams", title="Dreams", track=1
+    )
+    if plant == "fifo":
+        os.mkfifo(entry / "02 wedge.flac")
+    else:
+        os.mkfifo(tmp_path / "pipe")
+        (entry / "02 wedge.flac").symlink_to(tmp_path / "pipe")
+    raised: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            restore_album(
+                lib,
+                str(entry),
+                trash_dir=trash,
+                origins_dir=origins_for(trash),
+                protected=protected_for(lib),
+            )
+        except BaseException as exc:  # the isinstance below is the oracle
+            raised.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(10)
+
+    assert not worker.is_alive(), "the restore is still blocked on the non-regular file"
+    assert isinstance(raised[0], TrashEntryUnreadableError)
+    # The WHOLE sentence, not a fragment: this is the operator's entire row text
+    # (``SettingsTrashPage`` renders the 503 detail as the row, ``text-xs``), and
+    # its remedy half was asserted nowhere -- the two substitution tests check
+    # only the name. Short enough to pin verbatim under the app-text ruling.
+    assert str(raised[0]) == (
+        "This Trash entry holds '02 wedge.flac', which is not a regular file, so it was"
+        " not restored. Remove that name and restore again."
+    )
+    assert (entry / "01 Dreams.flac").is_file(), "nothing left Trash"
+    assert not list((tmp_path / "music" / "2 Brothers").glob("*")), "nothing reached the library"
+
+
+def test_a_listed_loose_file_swapped_for_a_fifo_refuses_the_restore(tmp_path: Path) -> None:
+    """The entry ITSELF is asked about, not only the names under it.
+
+    ``os.walk`` on a name that is not a directory yields nothing, so the
+    pre-flight's walk answered ``None`` for a Trash entry that IS a pipe — and
+    beets opens a non-directory toppath DIRECTLY rather than walking it (``if
+    not os.path.isdir(syspath(self.toppath)): yield [self.toppath],
+    [self.toppath]``, ``beets/importer/tasks.py:1041``). Measured 2026-09-13
+    (security seat H-1 probes p1/p3, code seat CRITICAL): ``POST
+    /api/trash/restore`` never returned, and one wedge held ``beets_swap_lock``
+    for the life of the process — every mutating Trash route and reorganize
+    answered 409 afterwards.
+
+    The listing runs FIRST because it is the reachability claim: a loose regular
+    audio file at the top of Trash lists as its own row with Restore enabled, so
+    the whole listing-to-click interval is the window and no race has to be won.
+    ``resolve_trash_child`` does not close it either — it refuses a link and an
+    absent child, and a FIFO is neither.
+
+    The sentence asserted is the entry-itself one: an entry that IS the pipe does
+    not "hold" it, and it is not a folder either.
+
+    Run on a thread with a join deadline; a plain call would hang this suite
+    instead of failing it.
+    """
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
+    trash = tmp_path / "trash"
+    loose = trash / "loose.flac"
+    _tagged_flac(loose, artist="2 Brothers", album="Dreams", title="Dreams", track=1)
+
+    listed = list_trashed_albums(
+        trash, origins_dir=origins_for(trash), music_dir=str(tmp_path / "music")
+    )
+    assert [a.folder for a in listed] == ["loose.flac"], "the row the operator clicks"
+
+    loose.unlink()
+    os.mkfifo(loose)
+    raised: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            restore_album(
+                lib,
+                str(loose),
+                trash_dir=trash,
+                origins_dir=origins_for(trash),
+                protected=protected_for(lib),
+            )
+        except BaseException as exc:  # the isinstance below is the oracle
+            raised.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(10)
+
+    assert not worker.is_alive(), "the restore is still blocked on the entry itself"
+    assert isinstance(raised[0], TrashEntryUnreadableError)
+    # The WHOLE sentence: three fragments (``startswith``, ``"holds" not in``,
+    # ``"Empty all" in``) all hold for "... Empty all does NOT remove it."
+    # too -- measured 2026-09-14, code seat W4. This is the operator's entire
+    # row text and it is 93 characters, so there is nothing to gain by pinning
+    # it in pieces. The remedy is the row's own Empty rather than Empty all:
+    # this sentence renders on the stale row, whose trash-can answered 200 and
+    # removed the FIFO in 0.21 s (measured in the browser 2026-09-14).
+    assert str(raised[0]) == (
+        "This Trash entry is not a folder or a regular file, so it was not restored."
+        " Empty removes it."
+    )
+    assert stat.S_ISFIFO(os.lstat(loose).st_mode), "nothing left Trash"
+    assert not list((tmp_path / "music" / "2 Brothers").glob("*")), "nothing reached the library"
+
+
+def test_a_loose_regular_file_entry_still_restores(tmp_path: Path) -> None:
+    """The control for the ENTRY arm: what it may NOT refuse.
+
+    The gate above asks whether the entry is a non-regular, non-directory name.
+    A loose audio file at the top of Trash is the ordinary shape that arm exists
+    for -- it lists as its own row with Restore enabled, which is the very
+    reachability claim the test above opens with -- so the cheaper-looking
+    spelling ``not entry.is_dir()`` refuses a perfectly good FLAC with "this is
+    not a folder or a regular file". Measured 2026-09-14 (code seat W1,
+    re-measured here): that mutant passes all 3,648 tests without this one.
+
+    The contents arm has had its twin since it shipped
+    (``test_a_dangling_link_inside_an_entry_still_restores``, just below); the
+    entry arm went out with only the kill half.
+    """
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
+    trash = tmp_path / "trash"
+    loose = trash / "loose.flac"
+    _tagged_flac(loose, artist="2 Brothers", album="Dreams", title="Dreams", track=1)
+
+    result = restore_album(
+        lib,
+        str(loose),
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
+        protected=protected_for(lib),
+    )
+
+    assert result.restored, result
+    assert not loose.exists(), "the entry never left Trash"
+    assert list((tmp_path / "music" / "2 Brothers").rglob("*.flac")), "it reached the library"
+
+
+def test_a_dangling_link_inside_an_entry_still_restores(tmp_path: Path) -> None:
+    """The control for the gate above: what it may not refuse.
+
+    A dangling link is what an unmounted volume looks like and the listing skips
+    it without an error (the test two below this one). Opening it answers ENOENT
+    at once, so it is not the gate's business — and refusing it would leave an
+    album permanently unrestorable for a name that cannot block anything.
+    """
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
+    trash = tmp_path / "trash"
+    entry = trash / "2 Brothers - Dreams"
+    _tagged_flac(
+        entry / "01 Dreams.flac", artist="2 Brothers", album="Dreams", title="Dreams", track=1
+    )
+    (entry / "02 gone.flac").symlink_to(tmp_path / "nowhere" / "t.flac")
+
+    result = restore_album(
+        lib,
+        str(entry),
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
+        protected=protected_for(lib),
+    )
+
+    assert (result.restored, result.reason) == (True, "restored")
+    assert len(list((tmp_path / "music" / "2 Brothers" / "Dreams").glob("*.flac"))) == 1
+
+
+def test_a_fifo_inside_a_symlinked_subfolder_of_an_entry_refuses_the_restore(
+    tmp_path: Path,
+) -> None:
+    """The pre-flight follows links into subfolders because beets does.
+
+    ``sorted_walk`` sorts a name into ``dirs`` by ``os.path.isdir``, which
+    resolves links (``beets/util/__init__.py:247``), so the importer descends a
+    symlinked subfolder of the entry. A pre-flight that stopped at it would hand
+    beets the pipe inside. The walk is bounded by identity, not by depth: the
+    link back up its own tree below is walked once.
+
+    The refusal names the LINK, not the pipe: this link leaves the entry, and
+    ``'Disc 2/01 wedge.flac'`` was a filename read back out of a directory the
+    operator cannot see (security seat L-2, measured 2026-09-13 — the oracle
+    test below plants the same shape against a private name). Naming ``Disc 2``
+    still proves the descent, because without it there is no refusal at all:
+    the sibling control below pins that a symlinked subfolder holding only
+    regular files restores, so "refuse every link" cannot pass both.
+    """
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
+    trash = tmp_path / "trash"
+    entry = trash / "2 Brothers - Dreams"
+    _tagged_flac(
+        entry / "01 Dreams.flac", artist="2 Brothers", album="Dreams", title="Dreams", track=1
+    )
+    disc2 = tmp_path / "disc2"
+    disc2.mkdir()
+    os.mkfifo(disc2 / "01 wedge.flac")
+    (entry / "Disc 2").symlink_to(disc2, target_is_directory=True)
+    (disc2 / "up").symlink_to(entry, target_is_directory=True)
+    raised: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            restore_album(
+                lib,
+                str(entry),
+                trash_dir=trash,
+                origins_dir=origins_for(trash),
+                protected=protected_for(lib),
+            )
+        except BaseException as exc:  # the isinstance below is the oracle
+            raised.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(10)
+
+    assert not worker.is_alive(), "the walk did not finish"
+    assert isinstance(raised[0], TrashEntryUnreadableError)
+    assert "'Disc 2'" in str(raised[0]), str(raised[0])
+    assert "wedge" not in str(raised[0]), "a name from outside the entry reached the 503"
+    assert (entry / "01 Dreams.flac").is_file(), "nothing left Trash"
+
+
+def test_every_symlinked_directory_is_named_by_its_link_and_a_real_one_is_not(
+    tmp_path: Path,
+) -> None:
+    """The substitution's predicate, asked directly, because the walk cannot ask it.
+
+    A link whose target is INSIDE the entry is an alias for a directory the walk
+    reaches anyway, and the walk prunes by identity — so exactly one of the two
+    spellings is descended, and which one depends on ``os.scandir`` order, i.e.
+    the directory's hash order rather than a promise. Whatever this function
+    answers for that shape is therefore unreachable through
+    ``_unopenable_name_under``, so it is pinned here.
+
+    The middle answer CHANGED on 2026-09-14. It used to be ``None`` for a link
+    that stays inside, decided by ``realpath`` on both sides — and that question
+    was resolved one statement before ``os.walk`` descended the same name, so a
+    re-point in the window leaked an outside path into the 503 in 8.01 % of
+    restores (security seat L-1, measured over 39,486 calls). The arm is gone:
+    ``islink`` is the whole predicate, every symlinked directory is named by its
+    link, and the cost is that "remove that name" can take two restores for a
+    link that was inside all along.
+    """
+    entry = tmp_path / "Album"
+    (entry / "inside").mkdir(parents=True)
+    (tmp_path / "outside").mkdir()
+    (entry / "stays").symlink_to(entry / "inside", target_is_directory=True)
+    (entry / "leaves").symlink_to(tmp_path / "outside", target_is_directory=True)
+
+    assert _link_name_under(str(entry / "leaves"), entry) == "leaves"
+    assert _link_name_under(str(entry / "stays"), entry) == "stays", (
+        "where a link goes is not asked, because the answer can change after it is"
+    )
+    assert _link_name_under(str(entry / "inside"), entry) is None, "a real directory is not a link"
+
+
+def test_a_symlinked_subfolder_of_regular_files_still_restores(tmp_path: Path) -> None:
+    """The control for the gate above: what following a link may NOT cost.
+
+    The refusal now names the link component rather than the name below it, so
+    "refuse any symlinked subfolder" would pass that test while breaking every
+    entry whose album folder holds a linked disc directory -- a real shape,
+    since ``shutil.move`` preserves links on the way into Trash. The pipe is
+    what refuses, not the link.
+    """
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
+    trash = tmp_path / "trash"
+    entry = trash / "2 Brothers - Dreams"
+    _tagged_flac(
+        entry / "01 Dreams.flac", artist="2 Brothers", album="Dreams", title="Dreams", track=1
+    )
+    disc2 = tmp_path / "disc2"
+    _tagged_flac(disc2 / "02 Dreams.flac", artist="2 Brothers", album="Dreams", title="B", track=2)
+    (entry / "Disc 2").symlink_to(disc2, target_is_directory=True)
+
+    result = restore_album(
+        lib,
+        str(entry),
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
+        protected=protected_for(lib),
+    )
+
+    assert result.restored, result
+    landed = list((tmp_path / "music" / "2 Brothers").glob("**/*.flac"))
+    assert landed, "nothing reached the library"
+
+
+def test_a_link_out_of_an_entry_cannot_read_back_a_name_two_levels_behind_it(
+    tmp_path: Path,
+) -> None:
+    """The 503 may name only a path the operator can see INSIDE the entry.
+
+    ``_unopenable_name_under`` walks ``followlinks=True`` and its answer goes
+    verbatim into the 503 that ``SettingsTrashPage`` renders as the row's whole
+    text. Measured 2026-09-13 (security seat L-2): with
+    ``<trash>/Album/peek -> /any/dir``, one Restore click came back
+    ``"This Trash entry holds 'peek/private-name'"`` -- the name of the first
+    non-regular file in a directory outside Trash, iterable by re-pointing the
+    link. Someone who can only write into ``/music`` is this branch's own threat
+    model, and ``shutil.move`` carries their link into Trash.
+
+    ``private-name`` is a FIFO so the walk refuses on it: that is what makes the
+    leak reachable at all, and it keeps the shape identical to the oracle.
+
+    The plant sits TWO levels under the link, and that is what makes this test
+    an oracle for the line that carries the substitution down
+    (``below = instead if instead is not None else …``). Measured 2026-09-14
+    (code seat W1): with the FIFO one level under ``peek``, dropping the
+    inheritance passed all 31 restore tests, because a one-level plant is
+    decided by the predicate alone — only a GRANDCHILD reads the inherited
+    value, and the mutant then answered ``'peek/sub/private-name'``. So both
+    names below the link are asserted absent.
+
+    Run on a thread with a join deadline; the refusal is what stops the pipe
+    reaching beets, so a regression here hangs rather than fails.
+    """
+    lib = _with_bystander(_new_library(tmp_path), tmp_path)
+    trash = tmp_path / "trash"
+    entry = trash / "2 Brothers - Dreams"
+    _tagged_flac(
+        entry / "01 Dreams.flac", artist="2 Brothers", album="Dreams", title="Dreams", track=1
+    )
+    outside = tmp_path / "not-trash"
+    (outside / "sub").mkdir(parents=True)
+    os.mkfifo(outside / "sub" / "private-name")
+    (entry / "peek").symlink_to(outside, target_is_directory=True)
+    raised: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            restore_album(
+                lib,
+                str(entry),
+                trash_dir=trash,
+                origins_dir=origins_for(trash),
+                protected=protected_for(lib),
+            )
+        except BaseException as exc:  # the isinstance below is the oracle
+            raised.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(10)
+
+    assert not worker.is_alive(), "the restore is still blocked on the pipe behind the link"
+    assert isinstance(raised[0], TrashEntryUnreadableError)
+    detail = str(raised[0])
+    assert "private-name" not in detail, detail
+    assert "sub" not in detail, "a directory name from outside the entry reached the 503"
+    assert "'peek'" in detail, detail
+    assert (entry / "01 Dreams.flac").is_file(), "nothing left Trash"
+
+
+def test_a_link_to_an_audio_file_in_the_trash_still_lists_its_tags(tmp_path: Path) -> None:
+    """The control for the gate above: what it may not skip.
+
+    ``os.walk`` lists a link among ``files`` and ``Item.from_path`` follows it, so
+    a hand-placed link to a media FILE arrives as a row with real tags (the
+    module's own note, measured 2026-09-02). The gate therefore asks what the
+    name RESOLVES to, not what the link itself is.
+    """
+    trash = tmp_path / "trash"
+    elsewhere = tmp_path / "elsewhere"
+    _tagged_flac(elsewhere / "01 t.flac", artist="Linked", album="Album", title="T", track=1)
+    trash.mkdir()
+    (trash / "linked.flac").symlink_to(elsewhere / "01 t.flac")
+
+    albums = list_trashed_albums(
+        trash, origins_dir=origins_for(trash), music_dir=str(tmp_path / "music")
+    )
+
+    assert [(a.folder, a.album_artist, a.track_count) for a in albums] == [
+        ("linked.flac", "Linked", 1)
+    ]
+
+
+def test_a_dangling_link_among_the_files_is_skipped_without_an_error(tmp_path: Path) -> None:
+    """The other half of following the link: there is nothing at the end of it.
+
+    An unmounted volume is what this looks like. The entry is simply absent from
+    every group, and the real album beside it still lists.
+    """
+    trash = tmp_path / "trash"
+    _tagged_flac(trash / "Real Album" / "01 t.flac", artist="A", album="Real", title="T", track=1)
+    (trash / "Real Album" / "gone.flac").symlink_to(tmp_path / "nowhere" / "t.flac")
+
+    albums = list_trashed_albums(
+        trash, origins_dir=origins_for(trash), music_dir=str(tmp_path / "music")
+    )
+
+    assert [(a.folder, a.track_count) for a in albums] == [("Real Album", 1)]
 
 
 def test_empty_one_removes_a_loose_file(tmp_path: Path) -> None:

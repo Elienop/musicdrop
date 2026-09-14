@@ -11,17 +11,29 @@ of tests that used to live in this file — a planted symlink at the record's
 name, a symlinked Trash entry the write escaped through, an oversized file, a
 FIFO, a hostile-character denylist — described an attack surface that only
 existed because the record sat in a directory arriving from the music library.
-They are gone rather than relaxed; see the module docstring of
+Most are gone rather than relaxed; see the module docstring of
 ``app.beets.trash_origins``.
+
+TWO of them came back on 2026-09-13 — the FIFO and the oversized file — on the
+READ side and on a different premise: "this app owns the store directory" is not
+"nothing can be planted there", because an operator can point the store
+somewhere attacker-writable. A dangling link at the key joined them as a third
+case that is new rather than restored. The planted symlink did NOT come back: the
+gate asks what the name RESOLVES to, so a link to a real record still reads. The
+three tests sit together below, after
+``test_read_trash_origin_rejects_a_payload_it_cannot_trust``.
 """
 
 from __future__ import annotations
 
 import errno
+import fcntl
 import json
 import logging
 import os
 import shutil
+import threading
+import tracemalloc
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,6 +65,7 @@ from app.beets.trash_manage import (
 )
 from app.beets.trash_origins import (
     _MAX_KEY_BYTES,
+    _MAX_RECORD_BYTES,
     _NAME_MAX,
     TrashOrigin,
     TrashOriginsStoreUnusableError,
@@ -73,6 +86,7 @@ from tests.conftest import (
     make_test_handle,
     origins_for,
     protected_for,
+    write_leased,
 )
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
@@ -307,8 +321,8 @@ def test_write_trash_origin_swallows_a_failing_write(tmp_path: Path, name: str) 
     other), so anything escaping here keeps the library rows while the files are
     already in Trash — and on the whole-folder path it would now also trip the
     move-back the row drop is wrapped in, undoing a delete because its
-    bookkeeping failed. Named rather than cited by line: the two line numbers
-    this used to give (``trash.py:231`` and ``:418``) were both stale.
+    bookkeeping failed. Named rather than cited by line, because the line cites
+    this used to give into ``trash.py`` went stale.
 
     Parametrised over the NAME because the failure handler interpolates it, and
     an ASCII fixture exercises the swallow without ever exercising the handler's
@@ -449,6 +463,361 @@ def test_read_trash_origin_rejects_a_payload_it_cannot_trust(tmp_path: Path, pay
     origin_file(origins, "Dummy").parent.mkdir(parents=True, exist_ok=True)
     origin_file(origins, "Dummy").write_text(payload, encoding="ascii")
     assert read_trash_origin(origins, "Dummy") is None
+
+
+def test_a_fifo_at_the_records_own_path_cannot_block_the_read(tmp_path: Path) -> None:
+    """The record read answers None rather than blocking on a planted pipe.
+
+    The key is fully derivable — ``<entry name>.json`` — and ``_restore_fields``
+    reads one per top-level entry from inside ``GET /api/trash``. Measured
+    2026-09-13 (security seat), at this branch's base and round 1's tip alike:
+    a FIFO here hung the listing request for the life of the process, holding one
+    ``run_in_threadpool`` worker. What bounds the reach is the layout row
+    ``music contains origins`` and not the comment that used to sit here, which
+    claimed nothing could be planted in an app-owned directory.
+
+    Run on a thread with a join deadline, because a plain call would hang this
+    suite instead of failing it.
+    """
+    origins = _origins(tmp_path)
+    path = origin_file(origins, "Dummy")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(path)
+    answered: list[object] = []
+
+    worker = threading.Thread(
+        target=lambda: answered.append(read_trash_origin(origins, "Dummy")), daemon=True
+    )
+    worker.start()
+    worker.join(10)
+
+    assert not worker.is_alive(), "the record read is still blocked on the FIFO"
+    assert answered == [None]
+
+
+@pytest.mark.parametrize("plant", ["a link to /dev/null", "a FIFO", "an empty directory"])
+def test_a_name_that_stats_as_not_a_regular_file_is_refused_without_an_open(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch, plant: str
+) -> None:
+    """Opening a device can do something by itself, so the NAME's type is asked first.
+
+    Round 5 opened the key with ``O_NONBLOCK`` and refused on ``fstat``, which
+    kept a FIFO and a lease from parking the open and still OPENED whatever a
+    link at the key led to. A ``stat`` waits on neither (measured 2026-09-14: 6
+    µs under a write lease), so both readers refuse these before any open.
+
+    The spy has a positive arm: a real record's key is opened once, so an empty
+    answer for the plant is not a spy that stopped seeing opens.
+    """
+    origins = _origins(tmp_path)
+    key = origin_file(origins, "Dummy")
+    key.parent.mkdir(parents=True, exist_ok=True)
+    if plant == "a link to /dev/null":
+        key.symlink_to("/dev/null")
+    elif plant == "a FIFO":
+        os.mkfifo(key)
+    else:
+        key.mkdir()
+    write_trash_origin(origins, "Real", origin=str(tmp_path / "music" / "Real"), moved="folder")
+    opened: list[str] = []
+    real_open = os.open
+
+    def spy_open(path: Any, *args: Any, **kwargs: Any) -> int:
+        opened.append(os.fsdecode(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", spy_open)
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        assert read_trash_origin(origins, "Dummy") is None
+        delete_trash_origin(origins, "Dummy")
+        assert read_trash_origin(origins, "Real") is not None
+
+    assert str(key) not in opened, f"{plant} was opened before it was refused"
+    assert opened.count(str(origin_file(origins, "Real"))) == 1, "the spy stopped seeing opens"
+    assert not os.path.lexists(key), f"{plant} outlived the entry it was keyed on"
+    read_side, delete_side = caplog.records
+    assert "it is not a regular file" in read_side.getMessage()
+    assert "it is not a regular file" in delete_side.getMessage()
+
+
+@pytest.mark.skipif(not hasattr(fcntl, "F_SETLEASE"), reason="leases are a Linux thing")
+def test_a_write_lease_on_the_record_key_cannot_park_the_reader(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A plant that passes every CONTENT gate and blocks the open anyway.
+
+    ``stat`` + ``S_ISREG`` + ``st_size`` bound what is read and how much, never
+    how long. Measured 2026-09-13 (security seat H-1) and re-measured here: a
+    write lease on an ordinary small regular file at the key blocks every other
+    ``open`` of it for ``/proc/sys/fs/lease-break-time`` — 45 on this box — with
+    no race to win and nothing to win it against, and the holder can renew it.
+    ``empty_all`` reads one key per entry inside ``beets_swap_lock``, so K
+    leased keys were 45·K seconds of the app-wide lock.
+
+    ``O_NONBLOCK`` is the whole fix and this is its oracle: measured here, the
+    leased key answers EAGAIN in 0.0000 s. The record under it is valid, so
+    nothing else in the gate can refuse it -- drop the flag and the read blocks
+    past the join deadline below.
+
+    SIGIO is ignored for the duration because the kernel signals the LEASE
+    HOLDER to release, and this process is both — the default action for SIGIO
+    is to terminate (the security seat measured exit 157 = 128 + 29 on a probe
+    that did not ignore it, which reads exactly like a clean pass).
+    """
+    origins = _origins(tmp_path)
+    path = origin_file(origins, "Leased")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_trash_origin(origins, "Leased", origin=str(tmp_path / "music" / "Leased"), moved="folder")
+    assert path.stat().st_size < _MAX_RECORD_BYTES, "the plant has to pass every content gate"
+    answered: list[object] = []
+    worker = threading.Thread(
+        target=lambda: answered.append(read_trash_origin(origins, "Leased")), daemon=True
+    )
+    with write_leased(path):
+        with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+            worker.start()
+            worker.join(10)
+        # Read BEFORE the lease is released: a thread still blocked in the open
+        # finishes the moment it goes, so an assertion after the release would
+        # race the mutant it exists to catch.
+        blocked = worker.is_alive()
+
+    assert not blocked, "the record read is still parked on the leased key"
+    assert answered == [None], "a key that cannot be opened is not a record"
+    (record,) = caplog.records
+    assert "it could not be opened" in record.getMessage()
+    assert path.stat().st_size > 0, "refused, not truncated or removed"
+
+
+def test_a_file_too_large_to_be_a_record_is_refused_on_its_size(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap is back, and it does not rest on "this module is the only writer".
+
+    That premise is the one the FIFO above deleted, and it had a SECOND
+    conclusion standing on it: the same comment block kept "no size cap: this
+    module is the only writer, so there is no oversized file to refuse".
+    Measured 2026-09-13 (security seat M-1): a 600 MB sparse regular file at the
+    derivable key returned ``None`` in 160 ms and cost +1199 MB RSS, once per
+    top-level entry of ``GET /api/trash`` — ASCII NULs decode, so the bytes and
+    a one-byte-per-char ``str`` are both paid in full before ``json.loads``
+    rejects any of it, and a sparse file costs the planter nothing.
+
+    The fixture is 8 MiB rather than that 600 MB: it only has to clear the cap,
+    and the measurement belongs beside the constant rather than in a suite every
+    contributor runs.
+
+    TWO oracles, because since 2026-09-14 the cap is checked twice — cheaply on
+    ``st_size`` and then on what the bounded read returned — and the second arm
+    logs the SAME sentence. So the sentence alone no longer says which fired,
+    and deleting the ``st_size`` check would leave this test green while every
+    oversized plant cost a 64 KiB read. The spy is the half that pins the
+    pre-filter: not one byte is read off a plant this size.
+
+    It spies on ``os.read`` and has a POSITIVE arm, both because the shape it
+    used to have — ``Path.open`` with ``assert opened == []`` — was true for two
+    reasons at once. Measured 2026-09-14 (code seat W3), routing the read
+    through builtin ``open()`` with the ``st_size`` check deleted passed 113
+    tests. The gate is fd-shaped since, so the plant IS opened — one
+    ``os.open``, then ``fstat`` and ``st_size`` on the descriptor — and the open
+    cannot be the oracle at all any more. The read is. The second read below is
+    what fails if the spy stops seeing them.
+    """
+    origins = _origins(tmp_path)
+    path = origin_file(origins, "Dummy")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # A literal size, NOT ``_MAX_RECORD_BYTES + 1``: a fixture computed from the
+    # constant follows it and cannot see it move. The two bounds below are what
+    # keep the literal oversized and the cap itself honest.
+    planted = 8 * 1024 * 1024
+    with path.open("wb") as fh:
+        fh.truncate(planted)  # sparse — no bytes are written and none are read
+    assert _MAX_RECORD_BYTES < planted, "the fixture has to be over the cap"
+    assert _MAX_RECORD_BYTES > 4096, "and the cap has to clear a real record by orders"
+    # Written BEFORE the spies go on: the writer opens a temp in this same
+    # directory, which would land in the lists the assertions below read.
+    write_trash_origin(origins, "Real", origin=str(tmp_path / "music" / "Real"), moved="folder")
+    real_key = origin_file(origins, "Real")
+    # Bound to the real functions FIRST, so the spies forward rather than
+    # replace. Three of them, because a descriptor number is REUSED: without
+    # the ``close`` arm the plant's fd is handed straight back for the real
+    # record and its reads are attributed to the plant.
+    keys: dict[int, str] = {}
+    read_from: list[str] = []
+    real_open, real_read, real_close = os.open, os.read, os.close
+
+    def spy_open(path: Any, *args: Any, **kwargs: Any) -> int:
+        fd = real_open(path, *args, **kwargs)
+        # Only this store's own keys: pytest, logging and the import machinery
+        # open files of their own inside the window.
+        shown = os.fsdecode(path)
+        if shown.startswith(str(origins)):
+            keys[fd] = shown
+        return fd
+
+    def spy_read(fd: int, length: int) -> bytes:
+        if fd in keys:
+            read_from.append(keys[fd])
+        return real_read(fd, length)
+
+    def spy_close(fd: int) -> None:
+        keys.pop(fd, None)
+        real_close(fd)
+
+    monkeypatch.setattr(os, "open", spy_open)
+    monkeypatch.setattr(os, "read", spy_read)
+    monkeypatch.setattr(os, "close", spy_close)
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        assert read_trash_origin(origins, "Dummy") is None
+        assert read_from == [], "the oversized plant was read before it was refused"
+        assert read_trash_origin(origins, "Real") is not None, "a record under the cap reads"
+
+    assert set(read_from) == {str(real_key)}, "the spy stopped seeing reads"
+    (record,) = caplog.records
+    assert "far too large to be a record" in record.getMessage()
+    assert path.stat().st_size == planted, "refused, not truncated or removed"
+
+
+@pytest.mark.skipif(
+    not os.access("/proc/kallsyms", os.R_OK),
+    reason="no readable /proc/kallsyms on this box",
+)
+def test_the_cap_bounds_the_read_and_not_the_reported_size(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``st_size`` is a snapshot; the READ is what has to stop.
+
+    The deterministic bypass, no race to win: a ``/proc`` file is ``S_ISREG``
+    and reports ``st_size`` 0, and yields arbitrary content. Measured 2026-09-13
+    (security seat L-1) and re-measured 2026-09-14 here -- a link at the key to
+    ``/proc/self/smaps`` stat'd at 0 bytes, read 162,801, and landed in the
+    parse arm having sailed through a 64 KiB cap. The other half of the same
+    fault needed a race and cost more: with the swap forced inside the
+    stat-to-read window, a 400 MB file restored the whole +801 MB the cap was
+    added to prevent. ``app/beets/store_layout.py`` bounds its ``include:``
+    reads the same way, for the same reason.
+
+    ``kallsyms`` and not ``smaps``: a process's ``smaps`` is its own mapping
+    count, and in a bare interpreter here it measured **43,380 bytes** -- UNDER
+    the cap, so the fixture would have stopped being a bypass depending on who
+    imported what. ``kallsyms`` is world-readable at about 22 MB (it moves with
+    the kernel) with ``st_size`` 0. The two fixture assertions come first anyway: this test is
+    worthless if what it plants no longer dwarfs the cap.
+
+    TWO oracles, because the two halves of the bound are separately killable and
+    the sentence alone sees only one of them. Reading to EOF and then refusing
+    on ``len`` logs the SAME sentence -- measured, that mutant survived the whole
+    origin-record suite -- so the peak allocation is what says the read stopped.
+    The sentence is the other half: bounding the read and dropping the length
+    check reads 64 KiB of legal ASCII and reports the parse arm instead.
+    """
+    origins = _origins(tmp_path)
+    path = origin_file(origins, "Dummy")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to("/proc/kallsyms")
+    assert os.stat(path).st_size <= _MAX_RECORD_BYTES, "the stat has to under-report"
+    with path.open("rb") as fh:
+        whole = len(fh.read())
+    assert whole > 16 * _MAX_RECORD_BYTES, "and the content has to dwarf the cap"
+
+    # Adapt to whoever owns the tracer rather than asserting nobody does:
+    # ``PYTHONTRACEMALLOC=1`` is the standard way to trace a ``ResourceWarning``
+    # and it made this test fail rather than measure. What is bounded is the
+    # GROWTH over the baseline, which is the same number either way -- an
+    # already-running tracer has ~70 MB of pytest's own allocations in it, and
+    # ``reset_peak`` sets the peak to the current size rather than to zero.
+    already_tracing = tracemalloc.is_tracing()
+    if not already_tracing:
+        tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        before, _before_peak = tracemalloc.get_traced_memory()
+        with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+            assert read_trash_origin(origins, "Dummy") is None
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        if not already_tracing:
+            tracemalloc.stop()
+
+    # Bounded on the CAP, not on the fixture: the cap is this module's own
+    # invariant and the kernel's symbol table is not. Measured through this test
+    # 2026-09-14, the shipped read grows about 133 KB against this bound of
+    # 262,144 bytes -- about twice the cap, because the bounded read holds the old
+    # buffer and the new one at each concatenation. The read-to-EOF mutant grows
+    # about 44 MB through this same assertion: twice the file, for the same
+    # reason. Both move with the kernel, so they are shapes and not figures.
+    grew = peak - before
+    assert grew < 4 * _MAX_RECORD_BYTES, f"the read ran to EOF: grew {grew} of {whole} available"
+    (record,) = caplog.records
+    assert "far too large to be a record" in record.getMessage(), (
+        "the length check is gone and the parse arm reported it instead"
+    )
+
+
+def test_a_dangling_link_at_the_record_key_is_logged_and_an_absent_one_is_not(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A key that is PRESENT and unusable, and answers ENOENT anyway.
+
+    The gate's ``os.stat`` FOLLOWS links, so a dangling one raises
+    ``FileNotFoundError`` and took the silent "no record was ever written" arm:
+    the row degraded from an exact restore to an import with no log line at all,
+    which is the one signal this warning exists to give (measured 2026-09-13,
+    security seat L-2 case c5: ``log=[]`` at the base and the tip alike).
+    ``lstat`` is what sees it.
+
+    Both halves in one test, because the PAIRING is the invariant: an arm that
+    warned on every genuinely absent record would pass the first half and then
+    log once per pre-feature row per listing.
+    """
+    origins = _origins(tmp_path)
+    path = origin_file(origins, "Dangling")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(tmp_path / "nowhere.json")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        assert read_trash_origin(origins, "absent") is None
+        assert caplog.records == [], "a record that was never written stays silent"
+        assert read_trash_origin(origins, "Dangling") is None
+
+    (record,) = caplog.records
+    assert "it is a link to something that is not there" in record.getMessage()
+    assert "Dangling.json" in record.getMessage()
+    # The READ side's second half, which nothing was asserting: measured
+    # 2026-09-14 (code seat S3), giving this side the DELETE side's clause passed
+    # 186 tests. The delete side's half is pinned by its own "falls back not in"
+    # assertions, so the required parameter now has both twins.
+    assert "falls back to a re-import restore" in record.getMessage()
+    assert path.is_symlink(), "the link is left for the operator to see"
+
+
+def test_a_link_to_a_real_record_still_reads(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The control for the arm above: what being a link may NOT cost.
+
+    Every gate on this path asks what the name RESOLVES to, not what the link
+    itself is, so a record reached through a link reads exactly like one reached
+    directly and earns no warning (measured 2026-09-13, security seat case c9,
+    identical at the base and the tip). Without this, an arm that refused or
+    logged EVERY symlink at the key would pass the dangling-link test above and
+    silently downgrade a working store to import-restores — which is the very
+    failure that test exists to catch, one spelling over.
+    """
+    origins = _origins(tmp_path)
+    write_trash_origin(origins, "Real", origin=str(tmp_path / "music" / "Real"), moved="folder")
+    real = origin_file(origins, "Real")
+    linked = origin_file(origins, "Linked")
+    os.replace(real, linked)
+    real.symlink_to(linked)
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        record = read_trash_origin(origins, "Real")
+
+    assert record is not None, "a record reached through a link is still a record"
+    assert record.origin == str(tmp_path / "music" / "Real")
+    assert caplog.records == [], "a link that resolves is not an unusable record"
 
 
 def test_move_back_target_refuses_an_origin_outside_the_library(tmp_path: Path) -> None:
@@ -1277,10 +1646,12 @@ def test_a_present_but_unusable_record_is_logged_and_an_absent_one_is_not(
             "not a record this version can trust",
             id="not-an-object",
         ),
-        # No ``is_file()`` preamble survives, so a directory at the name comes
-        # back as the OSError it really is rather than a hand-written sentence —
-        # the arm is kept to pin that it degrades instead of escaping.
-        pytest.param(lambda p: p.mkdir(), "could not be read", id="a-directory"),
+        # A directory at the name is answered by the regular-file gate, which
+        # reads the mode without opening anything: it used to arrive as the
+        # ``IsADirectoryError`` the open raised, a sentence along ("could not be
+        # read") and one blocking open later. The arm is kept to pin that it
+        # degrades with a cause instead of escaping or going silent.
+        pytest.param(lambda p: p.mkdir(), "it is not a regular file", id="a-directory"),
     ],
 )
 def test_every_unusable_record_names_its_own_cause(
@@ -1963,12 +2334,17 @@ def test_a_configured_origins_dir_overrides_the_default(tmp_path: Path) -> None:
 # ----- every exit from Trash takes the record with it -----
 
 
-def test_empty_one_removes_the_origin_record(tmp_path: Path) -> None:
+def test_empty_one_removes_the_origin_record(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """Invariant 5b, which the sidecar got for free from ``rmtree``.
 
     Keyed on the entry NAME in a directory of its own, this is a rule instead:
     a record outliving its entry is litter at best, and the name it holds is one
     the allocator will then refuse to hand out again.
+
+    Silent, too: this is the control for the delete side's log lines. A warning
+    added in front of the healthy answer left 168 tests green (code seat W2).
     """
     husk = tmp_path / "music" / "Old Name"
     husk.mkdir(parents=True)
@@ -1981,15 +2357,15 @@ def test_empty_one_removes_the_origin_record(tmp_path: Path) -> None:
     )
     assert read_trash_origin(_origins(tmp_path), dest.name) is not None
 
-    assert (
-        empty_one(
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        removed = empty_one(
             str(dest),
             origins_dir=_origins(tmp_path),
             protected=protected_for(trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)),
         ).removed
-        == 1
-    )
 
+    assert removed == 1
+    assert caplog.records == [], "dropping an entry's own valid record logged something"
     assert not dest.exists()
     assert read_trash_origin(_origins(tmp_path), dest.name) is None
 

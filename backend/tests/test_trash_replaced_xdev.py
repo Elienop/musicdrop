@@ -2,7 +2,7 @@
 
 Every other test of the EXDEV arm forces the errno: ``tests/test_artist_art_write.py``
 wraps ``os.rename`` to raise it for the ``dst_dir_fd`` spelling, and
-``tests/test_trash_origin_record.py:1739``
+``tests/test_trash_origin_record.py``
 (``test_a_part_way_cross_filesystem_move_says_the_folder_may_be_in_both``) and
 ``tests/test_trash_restore_failure_arms.py``, whose module docstring (``:21``)
 says why that branch needs its own coverage, do the same for the folder movers.

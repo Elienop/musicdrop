@@ -17,12 +17,13 @@ of its own production line before these tests existed:
 * a store the app cannot reach reads as "nothing recorded" and says so in the
   log, which is the one place that residual is visible;
 * a crafted Trash entry name cannot forge a log line. Counted rather than
-  recalled, by walking the module's AST for ``logger.*`` calls at this commit:
-  seven calls, six of which interpolate something, seven ``%r`` placeholders
-  between them. Five of the six are pinned here — the write's warning, the
-  delete's failure, the kept-record refusal (both of its placeholders), the
-  allocator's "could not tell", and the store sweep — and the sixth,
-  ``_warn_unusable``, is pinned in ``test_trash_origin_record.py``
+  recalled, by walking the module's AST for ``logger.*`` calls (re-run
+  2026-09-14): NINE calls, eight of which interpolate something, ten ``%r``
+  placeholders between them. Six of the eight are pinned here against a crafted
+  entry name -- the write's warning, the delete's failure, BOTH kept-record
+  refusals (the payload one and the store-could-not-answer one, two
+  placeholders each), the allocator's "could not tell", and the store sweep. A
+  seventh, ``_warn_unusable``, is pinned in ``test_trash_origin_record.py``
   (``test_an_unusable_record_cannot_forge_a_log_line_through_its_own_filename``).
   The count is a measurement, so re-run the walk rather than trusting this
   sentence after adding a line.
@@ -31,13 +32,18 @@ of its own production line before these tests existed:
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import json
 import logging
 import os
 import shutil
-from collections.abc import Iterator
+import socket
+import stat
+import threading
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from beets import config
@@ -45,6 +51,7 @@ from beets.library import Item, Library
 
 from app.beets.trash_manage import empty_all, empty_one, list_trashed_albums, restore_album
 from app.beets.trash_origins import (
+    _MAX_RECORD_BYTES,
     TrashOriginsStoreUnusableError,
     clear_trash_origins,
     delete_trash_origin,
@@ -54,7 +61,7 @@ from app.beets.trash_origins import (
     require_usable_store,
     write_trash_origin,
 )
-from tests.conftest import build_library, protected_for
+from tests.conftest import build_library, protected_for, write_leased
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
 
@@ -252,16 +259,24 @@ def test_dropping_the_losing_rows_record_keeps_the_winners(
 
 
 @pytest.mark.parametrize(
-    ("label", "payload"),
+    ("label", "payload", "why"),
     [
-        ("no name at all", '{"schema": 1, "origin": "/music/A", "moved": "folder"}'),
-        ("not an object", '["schema", 1]'),
-        ("not JSON", "{ not json at all"),
-        ("a name that is not a string", '{"schema": 1, "name": 7, "origin": "/music/A"}'),
+        (
+            "no name at all",
+            '{"schema": 1, "origin": "/music/A", "moved": "folder"}',
+            "it does not name a Trash entry",
+        ),
+        ("not an object", '["schema", 1]', "it is not an object"),
+        ("not JSON", "{ not json at all", "it is not the ASCII JSON this writes"),
+        (
+            "a name that is not a string",
+            '{"schema": 1, "name": 7, "origin": "/music/A"}',
+            "it does not name a Trash entry",
+        ),
     ],
 )
-def test_a_record_that_does_not_name_another_entry_is_still_dropped(
-    tmp_path: Path, label: str, payload: str
+def test_a_record_that_does_not_name_another_entry_is_dropped_and_said_so(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, label: str, payload: str, why: str
 ) -> None:
     """Only a positively identified STRANGER survives; every doubt still unlinks.
 
@@ -271,14 +286,28 @@ def test_a_record_that_does_not_name_another_entry_is_still_dropped(
     reads it as occupied) for a file that steers nothing. So "keep what I cannot
     parse" is the wrong safe side here, and the four shapes below are the ones a
     pre-feature record, a truncated write and a hand edit actually produce.
+
+    And each one SAYS so. All four used to return ``False`` in silence, so the
+    easiest plant to make — a plain regular ASCII file at the key that is not
+    JSON — was read, unlinked and never mentioned (measured 2026-09-14, security
+    seat L-2). ``empty_all`` reaches this function with no listing having read
+    the key, so the read side's own warning is not a substitute: this line is
+    the only trace the file was ever there.
     """
     origins = tmp_path / "trash-origins"
     origins.mkdir()
     origin_file(origins, "Dummy").write_text(payload, encoding="ascii")
 
-    delete_trash_origin(origins, "Dummy")
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        delete_trash_origin(origins, "Dummy")
 
     assert not origin_file(origins, "Dummy").exists(), f"{label} must not be left behind"
+    (record,) = caplog.records
+    assert why in record.getMessage(), label
+    assert "None of it was used" in record.getMessage(), "the delete side's clause"
+    assert "falls back to a re-import restore" not in record.getMessage(), (
+        "there is no row left to fall back"
+    )
 
 
 def test_emptying_the_losing_row_keeps_the_other_entrys_record(tmp_path: Path) -> None:
@@ -355,6 +384,525 @@ def test_an_import_restore_of_the_losing_row_keeps_the_other_entrys_record(
     assert survivor.origin == str(tmp_path / "music" / "Long")
 
 
+@pytest.mark.skipif(not hasattr(fcntl, "F_SETLEASE"), reason="leases are a Linux thing")
+def test_a_record_the_store_cannot_answer_for_is_kept_instead_of_unlinked(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Proof that the bytes are not ours may unlink; "the store could not say" may not.
+
+    ``_record_text``'s ``None`` collapsed four refusals and two of them prove
+    only that the store could not answer. On this shared key that cost the OTHER
+    entry its exact restore: measured 2026-09-13 (security seat M-1) with a
+    mode-000 record, emptying the SHORT row unlinked the file the LONG row —
+    still sitting in Trash — is restored from, and the log line said the entry it
+    was keyed on had already been removed.
+
+    The long row's record is the oracle, twice: it must survive the delete, and
+    it must still READ once the fault is cleared, which is what says the file was
+    kept intact rather than merely present.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    short_name, long_name = _colliding_pair()
+    write_trash_origin(origins, long_name, origin="/music/A/Long", moved="folder")
+    shared = origin_file(origins, long_name)
+    assert shared == origin_file(origins, short_name), "the two names share one record file"
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        with write_leased(shared):
+            delete_trash_origin(origins, short_name)
+            assert shared.exists(), "a record the store could not read was unlinked"
+
+    survivor = read_trash_origin(origins, long_name)
+    assert survivor is not None, "the other entry's record did not survive intact"
+    assert survivor.origin == "/music/A/Long"
+    cause, kept = caplog.records
+    assert "it could not be opened" in cause.getMessage()
+    assert "None of it was used" in cause.getMessage(), "the read side's clause is false here"
+    assert "left whatever is at" in kept.getMessage()
+    assert "could not say what is there" in kept.getMessage()
+    assert "names a different Trash entry" not in kept.getMessage(), (
+        "nothing here read a payload, so nothing here can say whose it is"
+    )
+
+
+@pytest.mark.skipif(not hasattr(fcntl, "F_SETLEASE"), reason="leases are a Linux thing")
+def test_keeping_a_record_the_store_cannot_read_cannot_forge_a_log_line(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The second kept-record line's two ``%r`` sites, on the same footing as the first.
+
+    Both values it interpolates carry whatever the album's tags carried, and the
+    entry name reaches the log through the record's own FILENAME.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    key = origin_file(origins, _FORGED_ENTRY_NAME)
+    key.write_text('{"schema": 1, "name": "whoever", "origin": "/music/A"}', encoding="ascii")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        with write_leased(key):
+            delete_trash_origin(origins, _FORGED_ENTRY_NAME)
+
+    assert key.exists(), "a record the store could not read was unlinked"
+    assert any("left whatever is at" in r.getMessage() for r in caplog.records)
+    _assert_nothing_forged(caplog)
+
+
+#: The longest path ``socket.bind`` takes for AF_UNIX here, in bytes: ``sun_path``
+#: is 108 (unix(7)) and a 108-byte path raised "AF_UNIX path too long" while a
+#: 107-byte one bound (measured 2026-09-14).
+_AF_UNIX_PATH_BYTES = 107
+
+
+def _bind_or_skip(sock: socket.socket, key: Path) -> None:
+    """Bind ``sock`` at ``key``, skipping only when ``key`` is too long to be a socket.
+
+    Measured on the key itself: pytest's ``tmp_path`` adds its own directories
+    and part of the test's name below ``TMPDIR``, so a bound on ``TMPDIR``
+    failed at a 49-byte one (code seat W4).
+    """
+    length = len(os.fsencode(str(key)))
+    if length > _AF_UNIX_PATH_BYTES:
+        pytest.skip(f"the key is {length} bytes; an AF_UNIX path takes {_AF_UNIX_PATH_BYTES}")
+    sock.bind(str(key))
+
+
+def test_a_socket_at_the_key_is_dropped_like_any_other_plant(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A socket stats as a socket, so it is refused on its name and still goes.
+
+    That puts it in the same class as a FIFO, a directory or a device: the bytes
+    at the key are not this store's, and a plant nothing unlinks would hold its
+    Trash name forever.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    key = origin_file(origins, "Dummy")
+    with socket.socket(socket.AF_UNIX) as sock:
+        _bind_or_skip(sock, key)
+        with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+            delete_trash_origin(origins, "Dummy")
+
+    assert not os.path.lexists(key), "the socket outlived the entry it was keyed on"
+    (record,) = caplog.records
+    assert "it is not a regular file" in record.getMessage()
+
+
+def _before_the_first_open_of(
+    monkeypatch: pytest.MonkeyPatch, key: Path, change: Callable[[], None]
+) -> None:
+    """Run ``change`` once, between the gate's ``stat`` of ``key`` and its ``open``."""
+    real_open = os.open
+    pending = [change]
+
+    def spy_open(path: Any, *args: Any, **kwargs: Any) -> int:
+        if pending and os.fsdecode(path) == str(key):
+            pending.pop()()
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", spy_open)
+
+
+def test_a_socket_swapped_onto_the_key_after_its_stat_is_still_dropped(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENXIO from the open is PROOF, not a fault.
+
+    A socket already at the key is refused by the ``stat``, so the open meets
+    one only when the name changes in between. It still answers about the NAME
+    (a socket is not a file at all), which is why it is not the "store could not
+    answer" class that keeps the file.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    key = origin_file(origins, "Dummy")
+    key.write_text("{}", encoding="ascii")
+    with socket.socket(socket.AF_UNIX) as sock:
+
+        def plant() -> None:
+            key.unlink()
+            _bind_or_skip(sock, key)
+
+        _before_the_first_open_of(monkeypatch, key, plant)
+        with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+            delete_trash_origin(origins, "Dummy")
+
+    assert not os.path.lexists(key), "the socket outlived the entry it was keyed on"
+    (record,) = caplog.records
+    assert "it does not lead to a file" in record.getMessage()
+
+
+def _rename_a_rewritten_record_on(monkeypatch: pytest.MonkeyPatch, key: Path) -> None:
+    payload = key.read_text(encoding="ascii")
+
+    def rewrite() -> None:
+        staged = key.with_name("staged.tmp")
+        staged.write_text(payload, encoding="ascii")
+        os.replace(staged, key)
+
+    _before_the_first_open_of(monkeypatch, key, rewrite)
+
+
+def _rename_a_fifo_on(monkeypatch: pytest.MonkeyPatch, key: Path) -> None:
+    def swap() -> None:
+        # Made under its own name while the record is still linked: an unlink
+        # then ``mkfifo`` at the key can reuse the record's inode number on ext4
+        # (code seat), which the identity check cannot see.
+        staged = key.with_name("staged.fifo")
+        os.mkfifo(staged)
+        os.replace(staged, key)
+
+    _before_the_first_open_of(monkeypatch, key, swap)
+
+
+def _stat_the_key_on_another_device(monkeypatch: pytest.MonkeyPatch, key: Path) -> None:
+    real_stat = os.stat
+
+    def stat_elsewhere(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        found = real_stat(path, *args, **kwargs)
+        if os.fsdecode(path) != str(key):
+            return found
+        fields = list(tuple(found))
+        fields[stat.ST_DEV] += 1
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(os, "stat", stat_elsewhere)
+
+
+def _delete_with_a_deadline(origins: Path, name: str) -> None:
+    """``delete_trash_origin`` on a thread, failing on a hang or on a raise.
+
+    A raise on the thread otherwise reaches pytest only as a warning (measured
+    on pytest 9.1.1: the test passed), so the thread records that it returned.
+    """
+    finished: list[bool] = []
+
+    def run() -> None:
+        delete_trash_origin(origins, name)
+        finished.append(True)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive(), "the delete is still blocked opening the key"
+    assert finished == [True], "the delete raised on its thread"
+
+
+@pytest.mark.parametrize(
+    "replace",
+    [
+        pytest.param(_rename_a_rewritten_record_on, id="a-rewritten-record"),
+        pytest.param(_rename_a_fifo_on, id="a-fifo"),
+        pytest.param(_stat_the_key_on_another_device, id="the-same-inode-number-on-another-device"),
+    ],
+)
+def test_a_record_replaced_between_its_stat_and_its_open_is_kept(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    replace: Callable[[pytest.MonkeyPatch, Path], None],
+) -> None:
+    """A different ``(st_dev, st_ino)`` behind the name is a swap, and a swap is not proof.
+
+    ``write_trash_origin`` rewrites a record with ``os.replace``, which is a new
+    inode behind the same name, so the delete keeps what it met. What each case
+    catches, measured by mutating the check (fix round 7):
+
+    * the rewritten record names this very entry, so without the check it is
+      read and unlinked;
+    * the FIFO pins the ORDER: with the type asked before the identity, it is
+      classed as proof and unlinked (MX4);
+    * the other device differs in ``st_dev`` only, so comparing ``st_ino``
+      alone reads and unlinks it (MX3).
+
+    On a thread with a join deadline, because the FIFO really is opened.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    write_trash_origin(origins, "Dummy", origin="/music/A", moved="folder")
+    key = origin_file(origins, "Dummy")
+    replace(monkeypatch, key)
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        _delete_with_a_deadline(origins, "Dummy")
+
+    assert os.path.lexists(key), "a record replaced in the window was unlinked"
+    cause, kept = caplog.records
+    assert "it was replaced while it was being opened" in cause.getMessage()
+    assert "could not say what is" in kept.getMessage()
+
+
+def test_a_descriptor_that_is_not_a_regular_file_is_refused_when_the_stat_agreed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``fstat`` still decides the type, for the one case the ``stat`` cannot.
+
+    A matching ``(st_dev, st_ino)`` with a different type is a reused inode
+    number. That cannot be forced on demand, so ``os.stat`` is made to report the
+    FIFO at the key as a regular file with its own identity, which is what a
+    reuse looks like from inside the gate.
+
+    Run on a thread with a join deadline: that FIFO really is opened here, so
+    without ``O_NONBLOCK`` the open blocks, and a plain call would hang this suite
+    instead of failing it.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    key = origin_file(origins, "Dummy")
+    os.mkfifo(key)
+    real_stat = os.stat
+
+    def stat_as_regular(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        found = real_stat(path, *args, **kwargs)
+        if os.fsdecode(path) != str(key):
+            return found
+        return os.stat_result((stat.S_IFREG | 0o644, *tuple(found)[1:]))
+
+    monkeypatch.setattr(os, "stat", stat_as_regular)
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        _delete_with_a_deadline(origins, "Dummy")
+
+    assert not os.path.lexists(key), "the FIFO outlived the entry it was keyed on"
+    (record,) = caplog.records
+    assert "it is not a regular file" in record.getMessage()
+
+
+@pytest.mark.parametrize(
+    ("plant", "why"),
+    [
+        ("a dangling link", "it is a link to something that is not there"),
+        ("a non-ASCII byte", "it is not the ASCII JSON this writes"),
+        pytest.param(
+            "a link to /proc/kallsyms",
+            "it is far too large to be a record",
+            marks=pytest.mark.skipif(
+                not os.access("/proc/kallsyms", os.R_OK),
+                reason="no readable /proc/kallsyms on this box",
+            ),
+        ),
+    ],
+)
+def test_a_proof_refusal_unlinks_the_plant_on_the_delete_side(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, plant: str, why: str
+) -> None:
+    """The refusal CLASS decides unlink or keep, so each proof site needs its own delete.
+
+    Flipping the class to "store-unreachable" at the dangling-link site, the
+    grew-past-the-cap site or the decode site left 168 tests green (code seat W1):
+    each such plant would have been kept for good. The key being gone is what the
+    proof class does. ``kallsyms`` stats at 0 bytes and reads past the cap, so it
+    is the read bound's site and not the ``st_size`` one.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    key = origin_file(origins, "Dummy")
+    if plant == "a dangling link":
+        key.symlink_to(origins / "nowhere.json")
+    elif plant == "a non-ASCII byte":
+        key.write_bytes(b'{"name": "Dummy", "x": "\xe9"}')
+    else:
+        key.symlink_to("/proc/kallsyms")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        delete_trash_origin(origins, "Dummy")
+
+    assert not os.path.lexists(key), f"{plant} outlived the entry it was keyed on"
+    (record,) = caplog.records
+    assert why in record.getMessage()
+
+
+@pytest.mark.parametrize(
+    ("fault", "why"),
+    [
+        ("a read that fails with EIO", "it could not be read"),
+        ("a store path that is a regular file", "it could not be looked up"),
+    ],
+)
+def test_a_store_fault_leaves_the_key_alone_and_says_so_twice(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    fault: str,
+    why: str,
+) -> None:
+    """The "store-unreachable" sites a lease does not reach, each with both log lines.
+
+    A read that raised had no test at all: classing it as proof, or deleting its
+    log line, left 168 tests green (code seat W1). EIO is injected at ``os.read``
+    because failing storage cannot be staged, and a mode-000 file is readable by
+    root. A store path that is a regular file fails the ``stat`` with ENOTDIR, and
+    nothing is behind it, which is why the kept line may not claim a record is
+    there (code seat S4).
+    """
+    origins = tmp_path / "trash-origins"
+    if fault == "a read that fails with EIO":
+        origins.mkdir()
+        write_trash_origin(origins, "Dummy", origin="/music/A", moved="folder")
+
+        def failing_read(fd: int, length: int) -> bytes:
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+
+        monkeypatch.setattr(os, "read", failing_read)
+    else:
+        origins.write_text("not a directory", encoding="ascii")
+    key = origin_file(origins, "Dummy")
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        delete_trash_origin(origins, "Dummy")
+    monkeypatch.undo()
+
+    if fault == "a read that fails with EIO":
+        assert key.exists(), "a record the store could not read was unlinked"
+    else:
+        assert origins.read_text(encoding="ascii") == "not a directory"
+    cause, kept = caplog.records
+    assert why in cause.getMessage()
+    assert "None of it was used" in cause.getMessage()
+    assert "left whatever is at" in kept.getMessage()
+    assert "If a record is there" in kept.getMessage()
+
+
+# ----- the DELETE side reads the key too, and through the same gate -----
+
+
+def _one_entry_to_empty(tmp_path: Path) -> tuple[Path, Path]:
+    """A Trash holding one recorded entry, and the store beside it."""
+    trash, origins = tmp_path / "trash", tmp_path / "trash-origins"
+    origins.mkdir()
+    (trash / "Album").mkdir(parents=True)
+    (trash / "Album" / "a.flac").write_bytes(b"\x00")
+    write_trash_origin(origins, "Album", origin=str(tmp_path / "music" / "Album"), moved="folder")
+    return trash, origins
+
+
+def test_a_fifo_at_the_key_does_not_hang_the_delete_that_reads_it(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``empty_one`` reads the record key AFTER the entry is already gone.
+
+    ``delete_trash_origin`` asks whose record the file is before unlinking it,
+    and that read had a bare ``read_text`` for a day while the LISTING's read
+    two hundred lines above had a ``stat`` gate. Every route that takes an entry
+    out of Trash reaches this one -- restore, both Empties, and trashing an
+    album -- all of them inside ``beets_swap_lock``. Measured 2026-09-13
+    (security seat H-1) and re-measured 2026-09-14 here: a FIFO at
+    ``<origins>/Album.json`` left ``empty_one`` blocked past a 6 s deadline with
+    the entry ALREADY destroyed, so the lock was held for the life of the
+    process and every later mutating Trash route and both reorganize previews
+    answered 409.
+
+    The plant is unlinked rather than kept: ``None`` from the gate means "not a
+    record this store can read", which names nobody, so the store repairs
+    itself the first time an operator touches the entry.
+
+    Run on a thread with a join deadline, because a plain call would hang this
+    suite instead of failing it.
+    """
+    trash, origins = _one_entry_to_empty(tmp_path)
+    key = origin_file(origins, "Album")
+    key.unlink()
+    os.mkfifo(key)
+    done: list[object] = []
+
+    def run() -> None:
+        done.append(
+            empty_one(
+                str(trash / "Album"),
+                origins_dir=origins,
+                protected=protected_for(trash_dir=trash, origins_dir=origins),
+            ).removed
+        )
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        worker.join(10)
+
+    assert not worker.is_alive(), "the delete is still blocked on the FIFO at the record key"
+    assert done == [1]
+    assert not (trash / "Album").exists()
+    assert not os.path.lexists(key), "the plant outlived the entry it was keyed on"
+    (record,) = caplog.records
+    assert "it is not a regular file" in record.getMessage()
+    assert "Album.json" in record.getMessage()
+
+
+def test_a_file_too_large_to_be_a_record_is_refused_on_the_delete_path_too(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The cap reaches this reader as well, and the sentence is the oracle.
+
+    Separately from the FIFO above, because a partial revert -- one reader
+    getting ``S_ISREG`` back and not the cap -- passes that test and fails this
+    one. The cost this bounds is memory rather than a wedge: measured
+    2026-09-14, a 400 MB sparse file at the key put ``empty_one`` at +801 MB RSS
+    in 150 ms, once per Empty click.
+
+    A literal size, not ``_MAX_RECORD_BYTES + 1``: a fixture computed from the
+    constant follows it and cannot see it move.
+    """
+    trash, origins = _one_entry_to_empty(tmp_path)
+    key = origin_file(origins, "Album")
+    planted = 8 * 1024 * 1024
+    with key.open("wb") as fh:
+        fh.truncate(planted)  # sparse -- no bytes are written and none are read
+    assert _MAX_RECORD_BYTES < planted, "the fixture has to be over the cap"
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        removed = empty_one(
+            str(trash / "Album"),
+            origins_dir=origins,
+            protected=protected_for(trash_dir=trash, origins_dir=origins),
+        ).removed
+
+    assert removed == 1
+    assert not key.exists(), "the plant outlived the entry it was keyed on"
+    (record,) = caplog.records
+    assert "far too large to be a record" in record.getMessage()
+
+
+def test_empty_all_sweeps_past_a_planted_key_instead_of_stopping_on_it(
+    tmp_path: Path,
+) -> None:
+    """The aggravation the per-row test cannot show: the REST of the sweep.
+
+    ``empty_all`` drops each record inside the loop, so a key it blocks on
+    abandons every entry after it and the operator gets no response at all --
+    measured 2026-09-14 with a FIFO at the first entry's key: the folder was
+    removed, the read hung past a 6 s deadline, and ``Beta`` was still in Trash
+    with nothing reported. The count is the oracle, because a sweep that stops
+    half way still removed something.
+
+    Run on a thread with a join deadline, for the reason above.
+    """
+    trash, origins = _one_entry_to_empty(tmp_path)
+    (trash / "Beta").mkdir()
+    (trash / "Beta" / "b.flac").write_bytes(b"\x00")
+    key = origin_file(origins, "Album")  # "Album" sorts first, so it blocks the rest
+    key.unlink()
+    os.mkfifo(key)
+    done: list[object] = []
+
+    def run() -> None:
+        done.append(
+            empty_all(
+                trash,
+                origins_dir=origins,
+                protected=protected_for(trash_dir=trash, origins_dir=origins),
+            ).removed
+        )
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(10)
+
+    assert not worker.is_alive(), "the sweep is still blocked on the FIFO at the first key"
+    assert done == [2], "the sweep stopped at the planted key"
+    assert list(trash.iterdir()) == []
+
+
 # ----- delete_trash_origin swallows what its callers cannot handle -----
 
 
@@ -373,12 +921,15 @@ def test_a_record_that_cannot_be_unlinked_is_logged_and_swallowed(
 
     * ``unlink(missing_ok=True)`` swallows ``FileNotFoundError`` and nothing
       else, so a read-only, full or damaged ``/data`` raises through it. Staged
-      with a DIRECTORY at the record's own name (``EISDIR``) rather than
-      ``chmod``: a maintainer running this suite inside the shipped image is
-      root (``Dockerfile`` declares no ``USER``), and there a read-only
-      directory denies nothing, so a chmod-staged test would report green
-      having executed no failure. ``EISDIR`` denies root too. CI is not the
-      case this guards against — its pytest job runs as ``runner``.
+      with a NON-EMPTY DIRECTORY at the record's own name (``EISDIR``, then
+      ``ENOTEMPTY``) rather than ``chmod``: a maintainer running this suite
+      inside the shipped image is root (``Dockerfile`` declares no ``USER``),
+      and there a read-only directory denies nothing, so a chmod-staged test
+      would report green having executed no failure. Those two errnos deny root
+      too. CI is not the case this guards against — its pytest job runs as
+      ``runner``. Non-empty is load-bearing since 2026-09-14: an EMPTY
+      directory at the key is now removed by the ``rmdir`` arm (the test below
+      this one), so an empty plant would leave nothing to swallow.
     * the handler itself. The entry name is a real filesystem name, so it can be
       non-UTF-8, and the obvious escape spelling
       (``.encode("utf-8", "backslashreplace").decode("ascii")``) raises
@@ -391,12 +942,22 @@ def test_a_record_that_cannot_be_unlinked_is_logged_and_swallowed(
     name = os.fsdecode(b"Caf\xc3\xa9 \xff \x1b[31m\nCRITICAL:app:all clear")
     assert not name.isascii(), "the accent that breaks the naive escape spelling"
     assert "\udcff" in name, "and the undecodable byte that display_path is for"
-    origin_file(origins, name).mkdir()
+    planted = origin_file(origins, name)
+    planted.mkdir()
+    (planted / "something").write_text("not this function's to delete", encoding="ascii")
 
     with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
         delete_trash_origin(origins, name)  # must return, not raise
 
-    (record,) = caplog.records
+    # TWO lines, and they say different things: the shared record gate refuses
+    # the directory before any read ("not a regular file"), then the ``unlink``
+    # fails and this function reports that. The gate's line deliberately claims
+    # nothing about the unlink -- it used to say "so the file goes too", which
+    # this very fixture falsifies.
+    gate, record = caplog.records
+    assert "it is not a regular file" in gate.getMessage()
+    assert "None of it was used" in gate.getMessage(), "the read side's clause is false here"
+    assert "falls back to a re-import restore" not in gate.getMessage()
     assert "could not remove the Trash origin record" in record.getMessage()
     # Readable, not mangled: the accent survives and only the undecodable byte
     # becomes the placeholder, which is what tells an operator which entry it is.
@@ -411,6 +972,41 @@ def test_a_record_that_cannot_be_unlinked_is_logged_and_swallowed(
     assert "\nCRITICAL" not in caplog.text, "a forged log line reached the log"
     assert "\\x1b" in caplog.text  # escaped, not dropped
     assert "\\n" in caplog.text
+    assert planted.is_dir(), "a directory with something in it is not this function's to delete"
+
+
+def test_an_empty_directory_at_the_key_is_removed_rather_than_burning_the_name(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The control for the swallow above, and the reason its fixture is non-empty.
+
+    ``S_ISREG`` refuses a directory at the key and ``unlink`` cannot remove it,
+    so before the ``rmdir`` arm nothing in the app could ever clear one —
+    measured 2026-09-14 (security seat L-3), including over HTTP (``DELETE
+    /api/albums/{id}`` answered 500 in 0.006 s and the plant survived). The cost
+    is not the 500: ``origin_recorded`` answers on EXISTENCE, so that Trash name
+    stayed occupied and every later album trashed under it landed on ``<name>
+    (1)``, ``(2)``… with no exact-restore record of its own.
+
+    ``origin_recorded`` is the oracle rather than the missing directory, because
+    it is what the allocator asks.
+    """
+    origins = tmp_path / "trash-origins"
+    origins.mkdir()
+    key = origin_file(origins, "Album")
+    key.mkdir()
+    assert origin_recorded(origins, "Album") is True, "the plant holds the name to begin with"
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
+        delete_trash_origin(origins, "Album")
+
+    assert origin_recorded(origins, "Album") is False, "the name is still held against an album"
+    assert not key.exists()
+    (gate,) = caplog.records
+    assert "it is not a regular file" in gate.getMessage()
+    assert "could not remove the Trash origin record" not in caplog.text, (
+        "the rmdir succeeded, so there is nothing to report"
+    )
 
 
 # ----- ...including a file the JSON parser gives up on -----
@@ -419,20 +1015,31 @@ def test_a_record_that_cannot_be_unlinked_is_logged_and_swallowed(
 def _deeply_nested_json() -> str:
     """A legal-ASCII, legal-JSON file that ``json.loads`` refuses to finish.
 
-    60,000 nested arrays. The depth is not a threshold this suite owns — CPython
-    trips its own C recursion limit long before here — so the premise is
-    asserted rather than assumed: if the parser ever gets deep enough to swallow
-    this, the line below goes red instead of the tests going quietly green.
+    24,000 nested arrays, and the depth now has to fit a window bounded at BOTH
+    ends, so both ends are asserted rather than assumed:
 
-    The trigger is corruption, a hand edit, or a restored backup on the trusted
-    ``/data`` side, not a plant: nothing in ``/music`` can write into this
-    directory (see the module docstring of ``app.beets.trash_origins``). What is
-    new is not that the file is unusable — the store has always had unusable
+    * **Deep enough that the parser gives up.** Not a threshold this suite owns
+      — it is CPython's C scanner limit, not ``sys.getrecursionlimit()`` (1000
+      here, and irrelevant): measured 2026-09-13, the shallowest nest that
+      raises is **9,998** levels. If a build ever swallows this one, the
+      ``pytest.raises`` below goes red instead of the tests going quietly green.
+    * **Small enough that the SIZE cap does not answer first.** ``read_trash_origin``
+      grew a 64 KiB cap on 2026-09-13 (security seat M-1), which sits ABOVE this
+      arm: at the old 60,000 levels this file was 117 KiB and earned "far too
+      large to be a record" instead of the nesting sentence. That did not make
+      the nesting arm dead code — the parser gives up around 20 KB, a third of
+      the cap — but it does mean the fixture has to say where it sits, and the
+      assertion below is that sentence.
+
+    The trigger is corruption, a hand edit, a restored backup, or something
+    planted at the key if the store sits where the operator can be reached; what
+    is new is not that the file is unusable — the store has always had unusable
     shapes — but that reading it raised AFTER the entry was already destroyed.
     """
-    text = "[" * 60_000 + "]" * 60_000
+    text = "[" * 24_000 + "]" * 24_000
     with pytest.raises(RecursionError):
         json.loads(text)
+    assert len(text) < _MAX_RECORD_BYTES, "the size cap would answer before the parser could"
     return text
 
 
