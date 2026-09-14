@@ -944,10 +944,16 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   and made the cap bound the read rather than only `st_size` — a procfs file is `S_ISREG` with
   `st_size == 0` and read 162,801 bytes past a 64 KiB cap with no race to win. Both readers now
   share one gate. What bounds the reach now is the layout row `music contains origins`.
-  Round 5 (2026-09-14) reshaped that gate three more times. The `stat`-before-open is GONE, in
+  Round 5 (2026-09-14) reshaped that gate three more times. The `stat`-only gate is GONE, in
   favour of one `O_RDONLY|O_NONBLOCK` open with `fstat`, the size pre-filter and the bounded read
   all on that descriptor: a stat gate bounds what and how much is read, never how long, and a
-  write lease on an ordinary 73-byte record at the key blocked any other `open` for 45 s. The
+  write lease on an ordinary 73-byte record at the key blocked any other `open` for 45 s. Round 6
+  put a `stat` back IN FRONT of that open, deciding only whether to open at all, because round 5
+  opened whatever a link at the key led to, a device included, before `fstat` refused it. A name
+  that stats as anything but a regular file is refused unopened; the descriptor must be the inode
+  the `stat` saw, and a different one is kept on the delete side (the store's own `os.replace`
+  makes one). The swap window is narrowed, not closed: a link to a device swapped in after the
+  `stat` is still opened before the `fstat` refuses it. The
   delete side then stopped acting on every refusal — "the bytes are not ours" unlinks, "the store
   could not answer" keeps the file, because on a truncated key two entries share the loss was the
   OTHER entry's exact restore. And the three parse arms that unlinked in silence now log, so the
@@ -959,7 +965,10 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   for the empty case answers `ENOTEMPTY` — a function that runs after the entry is already gone
   may not start deleting trees it knows nothing about, so `origin_recorded` keeps answering "taken"
   and later albums land on `<name> (1)`, `(2)`… A key the store cannot ANSWER for (EACCES, a live
-  lease) is kept by design and holds its name the same way until the fault is cleared.
+  lease) is kept by design and holds its name the same way until the fault is cleared. So a
+  planter who can cause that fault (a lease, a mode-000 key as non-root, a non-empty directory)
+  keeps a plant and burns that Trash name for as long as it lasts: the accepted cost of keeping
+  rather than risking another entry's record (security seat I-1, 2026-09-14).
   **And one decision:** `trash_manage._link_name_under` no longer asks where a symlinked directory
   points. `realpath`-then-`walk` on the same name leaked a path from outside the entry into the
   503 in 8.01 % of restores under a flipper (3,162 of 39,486), so every symlinked directory is now
@@ -2397,7 +2406,10 @@ the condition it names has changed.
   branch; security seat H-1). `trash_origins._record_text` had the same stat-then-open shape and
   reached it from `GET /api/trash` and from every delete; it now opens the key ONCE with
   `O_RDONLY|O_NONBLOCK` and asks `fstat`, the size pre-filter and the bounded read of that
-  descriptor, so the inode checked is the inode read and neither the open nor the read can block.
+  descriptor, so the inode checked is the inode read. `O_NONBLOCK` closes an OPEN parked by a
+  FIFO, a device or a lease; open(2) does not apply it to a read from a regular file, so a read
+  on stuck storage still waits. Round 6 put a `stat` in front that refuses a non-regular name
+  unopened and requires the descriptor to be the inode it saw.
   What forced it was not the race but a write lease (`fcntl F_SETLEASE F_WRLCK`) on an ordinary
   73-byte record, which passes every content gate and blocks any other `open` for
   `lease-break-time` — 45 s, renewable, no race to win, and 45·K s of `beets_swap_lock` for K
