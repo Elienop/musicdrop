@@ -571,6 +571,25 @@ def _stat_the_key_on_another_device(monkeypatch: pytest.MonkeyPatch, key: Path) 
     monkeypatch.setattr(os, "stat", stat_elsewhere)
 
 
+def _delete_with_a_deadline(origins: Path, name: str) -> None:
+    """``delete_trash_origin`` on a thread, failing on a hang or on a raise.
+
+    A raise on the thread otherwise reaches pytest only as a warning (measured
+    on pytest 9.1.1: the test passed), so the thread records that it returned.
+    """
+    finished: list[bool] = []
+
+    def run() -> None:
+        delete_trash_origin(origins, name)
+        finished.append(True)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive(), "the delete is still blocked opening the key"
+    assert finished == [True], "the delete raised on its thread"
+
+
 @pytest.mark.parametrize(
     "replace",
     [
@@ -588,8 +607,8 @@ def test_a_record_replaced_between_its_stat_and_its_open_is_kept(
     """A different ``(st_dev, st_ino)`` behind the name is a swap, and a swap is not proof.
 
     ``write_trash_origin`` rewrites a record with ``os.replace``, which is a new
-    inode behind the same name, so the delete keeps what it met. Each case pins
-    one part of the identity check, measured by mutating it (fix round 7):
+    inode behind the same name, so the delete keeps what it met. What each case
+    catches, measured by mutating the check (fix round 7):
 
     * the rewritten record names this very entry, so without the check it is
       read and unlinked;
@@ -606,12 +625,9 @@ def test_a_record_replaced_between_its_stat_and_its_open_is_kept(
     key = origin_file(origins, "Dummy")
     replace(monkeypatch, key)
 
-    worker = threading.Thread(target=delete_trash_origin, args=(origins, "Dummy"), daemon=True)
     with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
-        worker.start()
-        worker.join(10)
+        _delete_with_a_deadline(origins, "Dummy")
 
-    assert not worker.is_alive(), "the delete is still blocked opening the key"
     assert os.path.lexists(key), "a record replaced in the window was unlinked"
     cause, kept = caplog.records
     assert "it was replaced while it was being opened" in cause.getMessage()
@@ -645,12 +661,9 @@ def test_a_descriptor_that_is_not_a_regular_file_is_refused_when_the_stat_agreed
         return os.stat_result((stat.S_IFREG | 0o644, *tuple(found)[1:]))
 
     monkeypatch.setattr(os, "stat", stat_as_regular)
-    worker = threading.Thread(target=delete_trash_origin, args=(origins, "Dummy"), daemon=True)
     with caplog.at_level(logging.WARNING, logger="app.beets.trash_origins"):
-        worker.start()
-        worker.join(10)
+        _delete_with_a_deadline(origins, "Dummy")
 
-    assert not worker.is_alive(), "the delete is still blocked opening the FIFO"
     assert not os.path.lexists(key), "the FIFO outlived the entry it was keyed on"
     (record,) = caplog.records
     assert "it is not a regular file" in record.getMessage()
