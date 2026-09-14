@@ -452,8 +452,8 @@ def test_a_record_the_store_cannot_answer_for_is_kept_instead_of_unlinked(
     cause, kept = caplog.records
     assert "it could not be opened" in cause.getMessage()
     assert "None of it was used" in cause.getMessage(), "the read side's clause is false here"
-    assert "kept the Trash origin record" in kept.getMessage()
-    assert "could not say what is in it" in kept.getMessage()
+    assert "left whatever is at" in kept.getMessage()
+    assert "could not say what is there" in kept.getMessage()
     assert "names a different Trash entry" not in kept.getMessage(), (
         "nothing here read a payload, so nothing here can say whose it is"
     )
@@ -478,7 +478,7 @@ def test_keeping_a_record_the_store_cannot_read_cannot_forge_a_log_line(
             delete_trash_origin(origins, _FORGED_ENTRY_NAME)
 
     assert key.exists(), "a record the store could not read was unlinked"
-    assert any("kept the Trash origin record" in r.getMessage() for r in caplog.records)
+    assert any("left whatever is at" in r.getMessage() for r in caplog.records)
     _assert_nothing_forged(caplog)
 
 

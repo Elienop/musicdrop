@@ -1113,10 +1113,12 @@ def delete_trash_origin(origins_dir: Path, entry_name: str) -> None:
                 # one has read a payload naming somebody else, this one has read
                 # nothing at all. Saying "the record names a different Trash
                 # entry" here would be a claim about bytes nobody has seen.
-                "kept the Trash origin record at %r instead of dropping it with %r: the"
-                " store could not say what is in it, which is not proof it is not another"
-                " Trash entry's. It holds its name against a future album until the fault"
-                " is cleared. The cause is the line above.",
+                # "Whatever is at", not "the record": with the store path itself a
+                # regular file the lookup fails ENOTDIR and nothing is there at all.
+                "left whatever is at %r in place instead of dropping it with %r: the store"
+                " could not say what is there, which is not proof it is not another Trash"
+                " entry's record. If a record is there, it holds its name against a future"
+                " album until the fault is cleared. The cause is the line above.",
                 os.fsdecode(path),
                 display_path(entry_name),
             )
