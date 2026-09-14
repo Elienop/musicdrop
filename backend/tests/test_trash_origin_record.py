@@ -321,8 +321,8 @@ def test_write_trash_origin_swallows_a_failing_write(tmp_path: Path, name: str) 
     other), so anything escaping here keeps the library rows while the files are
     already in Trash — and on the whole-folder path it would now also trip the
     move-back the row drop is wrapped in, undoing a delete because its
-    bookkeeping failed. Named rather than cited by line: the two line numbers
-    this used to give (``trash.py:231`` and ``:418``) were both stale.
+    bookkeeping failed. Named rather than cited by line, because the line cites
+    this used to give into ``trash.py`` went stale.
 
     Parametrised over the NAME because the failure handler interpolates it, and
     an ASCII fixture exercises the swallow without ever exercising the handler's

@@ -37,10 +37,11 @@ and the dup SHARES the offset, so one partially consumed iterator left open make
 every later ``scandir``/``listdir`` on that fd read ``[]`` (measured 2026-09-12,
 twice; two live iterators on one fd interleave and duplicate entries).
 
-And :func:`bytes_at_most`, the bounded read, here for the move's reason:
-``trash_origins`` and ``store_layout`` both read through it, and ``store_layout``
-imports ``trash``, which imports ``trash_origins``, so one copy cannot live in
-either of them. They carried two identical copies until 2026-09-14.
+And :func:`bytes_at_most`, the bounded read that ``trash_origins`` and
+``store_layout`` both use. No cycle forces it here: importing ``trash_origins``
+alone loads neither ``trash`` nor ``store_layout`` (measured 2026-09-14). It is
+here so the include reader does not depend on a Trash module for a read. They
+carried two identical copies until 2026-09-14.
 """
 
 from __future__ import annotations
@@ -117,8 +118,8 @@ def fsync_dir(dir_fd: int) -> None:
 def bytes_at_most(fd: int, budget: int) -> bytes | None:
     """Up to ``budget`` bytes from ``fd``, or ``None`` past it.
 
-    The budget bounds the READ, not ``st_size``: every ``/proc`` file reports
-    size 0, and ``/proc/kallsyms`` reads about 22 MB through one. A loop
+    The budget bounds the READ, not ``st_size``: a procfs file can report size
+    0 and still read about 22 MB, as ``/proc/kallsyms`` does. A loop
     rather than one ``os.read`` because procfs answers in short reads: measured
     2026-09-14, the first three ``os.read(fd, 65537)`` of ``/proc/kallsyms``
     returned 4,050, 4,094 and 4,063 bytes with and without ``O_NONBLOCK``, while
@@ -323,12 +324,12 @@ def open_root(root: Path) -> int:
 def open_below(root: Path, rel: Path) -> int:
     """Open ``root/rel`` as a directory fd, refusing a symlink at every part below ``root``.
 
-    The fd-based sibling of ``trash_manage._reaches_through_a_link``
-    (``app/beets/trash_manage.py:1029``): both ask every component, not just the
-    leaf, and the two must read alike — that docstring's rule is that a second,
-    weaker traversal check must not grow. This is the stronger half, because the fd
-    the walk returns IS what the caller writes through, so no component can be
-    re-resolved between the check and the write.
+    The fd-based sibling of ``trash_manage._reaches_through_a_link``: both ask
+    every component, not just the leaf, and the two must read alike — that
+    docstring's rule is that a second, weaker traversal check must not grow. This
+    is the stronger half, because the fd the walk returns IS what the caller
+    writes through, so no component can be re-resolved between the check and the
+    write.
 
     Measured 2026-09-12: ``O_DIRECTORY|O_NOFOLLOW`` on a symlink answers
     **ENOTDIR (20)**, not the documented ELOOP — ELOOP (40) needs ``O_NOFOLLOW``
