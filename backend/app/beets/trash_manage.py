@@ -457,32 +457,65 @@ def _unopenable_name_under(entry: Path) -> str | None:
     """
     if _never_returns_from_an_open(str(entry)):
         return _THE_ENTRY_ITSELF
+    return _first_unopenable_below(entry)
+
+
+def _first_unopenable_below(entry: Path) -> str | None:
+    """The walk below ``entry``: its first unopenable name, as a refusal may name it."""
     seen: set[tuple[int, int] | None] = {_dir_ident(str(entry))}
     # Keyed on the directory the walk is IN, not on the offending file, because
     # the substitution has to survive every level below the link.
     named_instead: dict[str, str] = {}
     for root, dirs, files in os.walk(entry, followlinks=True):
         instead = named_instead.get(root)
-        for name in files:
-            path = os.path.join(root, name)
-            if _never_returns_from_an_open(path):
-                return instead if instead is not None else os.path.relpath(path, entry)
-        unvisited = []
-        for name in dirs:
-            child = os.path.join(root, name)
-            ident = _dir_ident(child)
-            if ident in seen:
-                continue
-            seen.add(ident)
-            unvisited.append(name)
-            # The OUTERMOST link wins: once a subtree is reached through one,
-            # the names below it may be invisible to the operator, including
-            # any further link inside.
-            below = instead if instead is not None else _link_name_under(child, entry)
-            if below is not None:
-                named_instead[child] = below
-        dirs[:] = unvisited
+        found = _first_unopenable_file(root, files)
+        if found is not None:
+            return instead if instead is not None else os.path.relpath(found, entry)
+        dirs[:] = _descend_once_naming_links(
+            root, dirs, entry, seen=seen, instead=instead, named_instead=named_instead
+        )
     return None
+
+
+def _first_unopenable_file(root: str, files: list[str]) -> str | None:
+    """The path of the first of ``files`` in ``root`` that must not be opened."""
+    for name in files:
+        path = os.path.join(root, name)
+        if _never_returns_from_an_open(path):
+            return path
+    return None
+
+
+def _descend_once_naming_links(
+    root: str,
+    dirs: list[str],
+    entry: Path,
+    *,
+    seen: set[tuple[int, int] | None],
+    instead: str | None,
+    named_instead: dict[str, str],
+) -> list[str]:
+    """The subdirectories of ``root`` not walked yet, each linked one recorded by its link.
+
+    One visit per directory identity is what closes a link that points back up
+    its own tree. ``named_instead`` gains the name a refusal below each
+    symlinked subdirectory may use instead of the offending file's own.
+    """
+    unvisited = []
+    for name in dirs:
+        child = os.path.join(root, name)
+        ident = _dir_ident(child)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        unvisited.append(name)
+        # The OUTERMOST link wins: once a subtree is reached through one,
+        # the names below it may be invisible to the operator, including
+        # any further link inside.
+        below = instead if instead is not None else _link_name_under(child, entry)
+        if below is not None:
+            named_instead[child] = below
+    return unvisited
 
 
 def _link_name_under(child: str, entry: Path) -> str | None:
