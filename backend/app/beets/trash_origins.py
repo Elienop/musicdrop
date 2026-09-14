@@ -153,24 +153,23 @@ _MAX_KEY_BYTES = _NAME_MAX - 32
 #: refuses is a file nothing here wrote.
 #:
 #: The headroom, measured through this module's own writer (2026-09-14) rather
-#: than asserted, because three earlier attempts at it were wrong, the last one
-#: by taking a 19-byte name's record for a 223-byte key's and 4,094 ``é``
-#: CHARACTERS for 4,095 bytes. Every row has a 218-byte entry name, which keys to
-#: a 223-byte file, and gives the origin in bytes and in characters:
+#: than asserted, because four earlier attempts at it were wrong. Every row has a
+#: 255-byte (``NAME_MAX``) entry name, keyed to a 223-byte file, ``moved`` at its
+#: longest value, and gives each input in bytes and in characters:
 #:
-#: * a real 23-byte, 23-character origin makes **361 bytes**, about **181x**
-#:   under the cap;
-#: * a 4,095-byte, 4,095-character ASCII origin makes **4,433 bytes**, about
-#:   **15x**;
-#: * a 4,095-byte, 2,048-character origin of ``é`` makes **12,621 bytes**, about
-#:   **5.2x**;
-#: * the LARGEST this module can write is a 4,095-byte, 4,095-character origin
-#:   of UNDECODABLE bytes: ``write_trash_origin`` uses ``ensure_ascii=True``
-#:   because ``origin`` is an ``os.fsdecode`` of a real POSIX path, so each such
-#:   byte arrives as a lone surrogate and is escaped six-for-one to ``\udcXX`` —
-#:   **24,903 bytes**, which the cap clears by **2.6x**. A factor, not an order
-#:   of magnitude. ``é`` reaches the same size only at 4,095 characters, which is
-#:   8,189 bytes and longer than ``PATH_MAX``.
+#: * a 255-character ASCII name and a real 23-byte, 23-character origin make
+#:   **398 bytes**, about **165x** under the cap;
+#: * that name and a 4,095-byte, 4,095-character ASCII origin make
+#:   **4,470 bytes**, about **15x**;
+#: * that name and a 4,095-byte, 2,048-character origin of ``é`` make
+#:   **12,658 bytes**, about **5.2x**;
+#: * the LARGEST: a 255-character name and a 4,095-byte (``PATH_MAX`` less its
+#:   NUL), 4,095-character origin, every byte but the leading ``/`` UNDECODABLE.
+#:   ``os.fsdecode`` makes each a lone surrogate and ``ensure_ascii=True`` writes
+#:   it as the six bytes ``\udcXX``, in BOTH fields: **26,215 bytes**, which the
+#:   cap clears by **2.5x**. Six is the most any origin byte became when every
+#:   value but NUL and ``/`` was swept through the writer (a control byte ties;
+#:   UTF-8 peaks at three), and a real path's own ``/`` separators shrink it.
 #:
 #: All four move with the name's and the origin's length, so they are a shape
 #: rather than constants; what matters is that the cap clears the last one.
