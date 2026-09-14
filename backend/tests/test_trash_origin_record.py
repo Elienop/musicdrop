@@ -701,8 +701,8 @@ def test_the_cap_bounds_the_read_and_not_the_reported_size(
     ``kallsyms`` and not ``smaps``: a process's ``smaps`` is its own mapping
     count, and in a bare interpreter here it measured **43,380 bytes** -- UNDER
     the cap, so the fixture would have stopped being a bypass depending on who
-    imported what. ``kallsyms`` is world-readable at 22,227,073 bytes with
-    ``st_size`` 0. The two fixture assertions come first anyway: this test is
+    imported what. ``kallsyms`` is world-readable at about 22 MB (it moves with
+    the kernel) with ``st_size`` 0. The two fixture assertions come first anyway: this test is
     worthless if what it plants no longer dwarfs the cap.
 
     TWO oracles, because the two halves of the bound are separately killable and
@@ -742,11 +742,11 @@ def test_the_cap_bounds_the_read_and_not_the_reported_size(
 
     # Bounded on the CAP, not on the fixture: the cap is this module's own
     # invariant and the kernel's symbol table is not. Measured through this test
-    # 2026-09-14 at the shipped code, the read grows 132,995 bytes against this
-    # bound of 262,144 -- about twice the cap, because the bounded read holds the
-    # old buffer and the new one at each concatenation. The read-to-EOF mutant
-    # grows 44,455,939 through this same assertion: twice the file, for the same
-    # reason.
+    # 2026-09-14, the shipped read grows about 133 KB against this bound of
+    # 262,144 bytes -- about twice the cap, because the bounded read holds the old
+    # buffer and the new one at each concatenation. The read-to-EOF mutant grows
+    # about 44 MB through this same assertion: twice the file, for the same
+    # reason. Both move with the kernel, so they are shapes and not figures.
     grew = peak - before
     assert grew < 4 * _MAX_RECORD_BYTES, f"the read ran to EOF: grew {grew} of {whole} available"
     (record,) = caplog.records

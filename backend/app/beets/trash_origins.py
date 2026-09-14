@@ -153,23 +153,27 @@ _MAX_KEY_BYTES = _NAME_MAX - 32
 #: refuses is a file nothing here wrote.
 #:
 #: The headroom, measured through this module's own writer (2026-09-14) rather
-#: than asserted, because the two earlier attempts at it were both wrong — "four
-#: orders of magnitude", then "an order of magnitude of room" for a figure taken
-#: from an ASCII-only fixture. Three points, all with a 223-byte key:
+#: than asserted, because three earlier attempts at it were wrong, the last one
+#: by taking a 19-byte name's record for a 223-byte key's and 4,094 ``é``
+#: CHARACTERS for 4,095 bytes. Every row has a 218-byte entry name, which keys to
+#: a 223-byte file, and gives the origin in bytes and in characters:
 #:
-#: * a real record is **163 bytes** (one absolute path, one word, one int, one
-#:   timestamp), which the cap clears by about **400x**;
-#: * an all-ASCII near-``PATH_MAX`` origin makes **4,438 bytes**, about **15x**;
-#: * the LARGEST this module can write is that same origin in UNDECODABLE bytes:
-#:   ``write_trash_origin`` uses ``ensure_ascii=True`` because ``origin`` is an
-#:   ``os.fsdecode`` of a real POSIX path, so each such byte arrives as a lone
-#:   surrogate and is escaped six-for-one to ``\udcXX`` — **24,908 bytes**, which
-#:   the cap clears by **2.6x**. A factor, not an order of magnitude. (A
-#:   2-byte-UTF-8 origin lands on the same number: the escape is per CHARACTER,
-#:   and 4,095 bytes of path is at most 4,095 characters.)
+#: * a real 23-byte, 23-character origin makes **361 bytes**, about **181x**
+#:   under the cap;
+#: * a 4,095-byte, 4,095-character ASCII origin makes **4,433 bytes**, about
+#:   **15x**;
+#: * a 4,095-byte, 2,048-character origin of ``é`` makes **12,621 bytes**, about
+#:   **5.2x**;
+#: * the LARGEST this module can write is a 4,095-byte, 4,095-character origin
+#:   of UNDECODABLE bytes: ``write_trash_origin`` uses ``ensure_ascii=True``
+#:   because ``origin`` is an ``os.fsdecode`` of a real POSIX path, so each such
+#:   byte arrives as a lone surrogate and is escaped six-for-one to ``\udcXX`` —
+#:   **24,903 bytes**, which the cap clears by **2.6x**. A factor, not an order
+#:   of magnitude. ``é`` reaches the same size only at 4,095 characters, which is
+#:   8,189 bytes and longer than ``PATH_MAX``.
 #:
-#: All three move with the origin's length, so they are a shape rather than
-#: constants; what matters is that the cap clears even the last one.
+#: All four move with the name's and the origin's length, so they are a shape
+#: rather than constants; what matters is that the cap clears the last one.
 #:
 #: The sidecar's 64 KB cap was deleted with the sidecar because its premise was
 #: "our write wins the filename". This one has a different premise and the same
@@ -1033,16 +1037,17 @@ def delete_trash_origin(origins_dir: Path, entry_name: str) -> None:
     caller runs this AFTER irreversible work — the folder has been moved back
     into the library, emptied, or stranded by a failed undo — so an exception
     escaping here turns an operation that fully SUCCEEDED into a bare 500.
-    Caught: ``OSError`` and ``ValueError`` from the key and the unlink, in the
-    handler below; and ``OSError``, ``ValueError`` and ``RecursionError`` from
-    the payload read, inside :func:`_names_a_different_entry`. That last one is
-    in the list because it was NOT: at the previous tip
-    a 60k-deep ``[[[...]]]`` at the key escaped ``empty_one`` with the folder
-    already rmtree'd, and aborted ``empty_all`` part-way (measured: 1 of 2
-    entries destroyed, the sweep abandoned past its own ``except OSError``).
-    The file shapes this has been measured against are listed in
-    ``tests/test_trash_origins_store.py``; a shape nobody has tried is a shape
-    nobody has measured.
+    Caught: ``OSError`` and ``ValueError`` from the key, the ``unlink`` and the
+    ``rmdir`` (ENOTEMPTY from a non-empty directory at the key), in the handler
+    below; every ``OSError`` from reading the key, inside :func:`_record_text`;
+    and ``ValueError`` and ``RecursionError`` from the parse, inside
+    :func:`_names_a_different_entry`. The ``RecursionError`` is in the list
+    because it was NOT: at an earlier tip a 60k-deep ``[[[...]]]`` at the key
+    escaped ``empty_one`` with the folder already rmtree'd, and aborted
+    ``empty_all`` part-way (measured: 1 of 2 entries destroyed, the sweep
+    abandoned past its own ``except OSError``). The file shapes this has been
+    measured against are listed in ``tests/test_trash_origins_store.py``; a
+    shape nobody has tried is a shape nobody has measured.
 
     Owed by every path that takes an entry OUT of Trash — a landed restore, a
     move-back, a failed undo that stranded the folder in the library, and both
@@ -1068,10 +1073,10 @@ def delete_trash_origin(origins_dir: Path, entry_name: str) -> None:
     **The second file it must not take is one the store could not ANSWER for**,
     which is a different question from "not a record". A refusal that proves the
     bytes are not ours — not a regular file, over the cap, not ASCII JSON, a
-    loop or a socket at the name — still goes, and that is what keeps the import
-    arm's "an unreadable record must not be left to be adopted" true. A refusal
-    that proves only that the store is not answering — EACCES on the file, a
-    write lease, a failing read — keeps it, because the alternative is the
+    dangling link, a loop or a socket at the name — still goes. A refusal that
+    proves only that the store is not answering — EACCES on the file, a write
+    lease, a failing read, a name replaced between its ``stat`` and its ``open``
+    — keeps it, because the alternative is the
     measured data loss at :func:`_record_text`: the other entry's still-listed
     row losing its exact restore because THIS entry was emptied while the shared
     key happened to be unopenable. The cost is a name held against a future

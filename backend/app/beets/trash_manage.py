@@ -844,19 +844,19 @@ def restore_album(
             # A record that is no longer about anything: beets has moved the
             # files out from under it. Left in place it outlives its subject —
             # and because the key is the entry NAME, a later folder taking that
-            # name would inherit it. Called unconditionally, deliberately: an
-            # UNREADABLE record also reaches here (``read_trash_origin``
-            # collapses it to ``None``) and it is exactly the file that must not
-            # be left to be adopted. In the sidecar design it rode out inside the
-            # folder and was inert either way; on the /data side it survives
-            # forever.
+            # name would inherit it. Called unconditionally, deliberately: a file
+            # at the key that is not a record of ours also reaches here
+            # (``read_trash_origin`` collapses it to ``None``), and that is a file
+            # that must not be left to be adopted. In the sidecar design it rode
+            # out inside the folder and was inert either way; on the /data side it
+            # survives forever.
             #
-            # Unconditional HERE is not unconditional on disk: ``None`` also
-            # covers the one case where the file at this entry's key belongs to
-            # a DIFFERENT entry (two long names can share one record file), and
-            # ``delete_trash_origin`` keeps that one — it reads the payload's own
-            # ``name`` before unlinking. Its docstring owns that exception; this
-            # call site deliberately does not repeat the test.
+            # Unconditional HERE is not unconditional on disk. ``None`` also
+            # covers two files ``delete_trash_origin`` keeps: a record naming a
+            # DIFFERENT entry (two long names can share one record file), and one
+            # the store could not answer for (a lease, EACCES, a failing read),
+            # which it keeps and logs with the cause. Its docstring owns both; this
+            # call site deliberately does not repeat the tests.
             delete_trash_origin(origins_dir, entry.name)
         return result
     return _restore_to_origin(lib, entry, origin, trash_dir=trash_dir, origins_dir=origins_dir)
@@ -1440,9 +1440,10 @@ def empty_one(folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees) 
 
     Its OWN record goes with it, strictly AFTER: a failed ``rmtree`` raises out
     of here, and losing the record for an entry still in Trash would downgrade
-    its row to an import-restore. A record naming a DIFFERENT entry stays — two
-    long names can share one truncated key, and ``delete_trash_origin`` reads the
-    payload's own ``name`` first.
+    its row to an import-restore. Two files at the key stay, both decided inside
+    ``delete_trash_origin``: a record naming a DIFFERENT entry (two long names
+    can share one truncated key, so it reads the payload's own ``name`` first),
+    and one the store could not answer for, which is kept with its cause logged.
 
     Raises :class:`~app.beets.protected.ProtectedTreeError` (503) when the entry
     is or holds one of the app's own directories by inode, when the name stopped
