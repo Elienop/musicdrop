@@ -399,6 +399,13 @@ def test_the_resolved_file_operation_is_logged(caplog: Any) -> None:
     sits. The EXPLICIT arm can: the force turns ``hardlink`` into ``copy``, so
     a line read above ``config.set`` logs the user's operation instead of the
     one beets actually ran, which is the whole point of the record.
+
+    The logger is ``uvicorn.error``, not this module's own, and the test
+    asserts it there on purpose: under the Dockerfile CMD uvicorn's
+    LOGGING_CONFIG leaves app-namespace loggers at WARNING, so the same call on
+    ``app.beets.import_session`` emits NOTHING in the shipped container
+    (measured: effective level 30, ``isEnabledFor(INFO)`` False).
+    ``main._boot_log`` documents the same trap for the same reason.
     """
     import logging
 
@@ -407,13 +414,13 @@ def test_the_resolved_file_operation_is_logged(caplog: Any) -> None:
     config["import"]["hardlink"] = True  # the user's config
 
     # default arm: the user's own operation is what beets will run
-    with caplog.at_level(logging.INFO, logger="app.beets.import_session"):
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
         run_import_worker(_RecordingSession())  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
     assert "import file operation: hardlink" in caplog.text
 
     # explicit arm: the force wins, and the line must report the force
     caplog.clear()
-    with caplog.at_level(logging.INFO, logger="app.beets.import_session"):
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
         run_import_worker(_RecordingSession(), move=False)  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
     assert "import file operation: copy" in caplog.text
     assert "hardlink" not in caplog.text, "logged the user's flag, not the forced one"
@@ -445,3 +452,34 @@ def test_a_non_bool_copy_is_refused_before_anything_is_filed() -> None:
 
     assert session.seen == {}  # the pipeline never started
     assert config["import"]["copy"].get() == 1  # nothing was forced or restored over it
+
+
+def test_the_lock_covers_the_post_run_trash_pass(monkeypatch: Any) -> None:
+    """The lock is held for the WHOLE call, not just the config mutation.
+
+    ``_trash_replaced_albums`` runs after the ``finally`` has already restored
+    the config, so narrowing the lock to the config region looks free — it was
+    tried and reverted. That pass moves albums and drops rows through the same
+    ``Library`` handle, and a Trash restore reaches ``run_import_worker`` on a
+    request thread through the check-then-act window ``library_busy`` documents
+    against itself. Releasing early lets that restore start a second import
+    while the first is still writing. The import job slot cannot stop it —
+    ``on_finish`` runs only after this function returns — and in that window the
+    restore already HOLDS the swap lock, so the swap lock serialises nothing.
+    This lock is the only thing left.
+
+    Mutant this kills: moving ``_config_force_lock()`` off the outer ``with``
+    and around the config region alone.
+    """
+    from app.beets import import_session as mod
+
+    seen: dict[str, bool] = {}
+
+    def _probe(session: object) -> None:
+        seen["locked_during_trash_pass"] = mod._CONFIG_FORCE_LOCK.locked()
+
+    monkeypatch.setattr(mod, "_trash_replaced_albums", _probe)
+    mod.run_import_worker(_RecordingSession())  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
+
+    assert seen["locked_during_trash_pass"] is True
+    assert not mod._CONFIG_FORCE_LOCK.locked()  # and released on the way out

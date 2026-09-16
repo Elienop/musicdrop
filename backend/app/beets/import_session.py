@@ -75,6 +75,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Operator-facing records go to ``uvicorn.error``, not this module's logger:
+#: under the Dockerfile CMD uvicorn's LOGGING_CONFIG leaves app-namespace
+#: loggers at WARNING, so an app-namespace INFO record is dropped entirely
+#: and never reaches ``docker logs`` (``main._boot_log`` documents the same
+#: trap). ``logger`` keeps the warnings/exceptions, which do get through.
+operator_logger = logging.getLogger("uvicorn.error")
+
 
 class ImportConfigBusyError(RuntimeError):
     """Another import owns the process-global beets import config right now."""
@@ -1504,8 +1511,21 @@ class WebImportSession(ImportSession):
             return candidates[0]
 
 
-# Serialises the force/restore of the process-global beets config in
-# ``run_import_worker`` -- and NOTHING else. Without it two overlapping calls
+# "One import owns beets right now." Held for the WHOLE of
+# ``run_import_worker``, the post-run Trash pass included -- deliberately wider
+# than the config mutation it is named for, and it must NOT be narrowed to just
+# that. Narrowing it was tried and reverted: ``_trash_replaced_albums`` moves
+# albums and drops rows through the same ``Library`` handle after the config has
+# already been restored, so releasing between ``run()`` and that pass lets a
+# Trash restore -- which reaches ``run_import_worker`` on a request thread
+# through the check-then-act window ``library_busy`` documents against itself --
+# start a second import while the first is still writing. The import job slot
+# refuses any LATER request (``on_finish`` runs after this function returns), so
+# that window is the only way in, and in it the restore is already HOLDING the
+# swap lock, which therefore serialises nothing. This lock is the only thing
+# left.
+#
+# Without it two overlapping calls
 # interleave: the second snapshots the first's FORCED values and its finally
 # writes them in as the user's, permanently rewriting the live global -- and
 # beets re-reads that global late (``ImportTask.finalize`` -> ``cleanup`` at
@@ -1649,7 +1669,7 @@ def run_import_worker(
     # library stops resolving the day the music dir moves. Both callers are
     # covered here: the job runner AND trash_manage.restore_album, which calls
     # this directly. Nesting is safe (beets binds via a ContextVar token).
-    with session.lib.music_dir_context():
+    with session.lib.music_dir_context(), _config_force_lock():
         # Above the snapshots, with the other early exits: anything assigned
         # before a raise leaks into the process-global beets config, because the
         # finally that restores it never runs.
@@ -1755,19 +1775,22 @@ def run_import_worker(
         # the life of the process. A single set is byte-identical in effect
         # (keys absent from the dict still fall through to the user's config)
         # and leaves no mixed state for a concurrent reader to observe.
-        with _config_force_lock():
-            config.set({"threaded": False, "import": forced})
-            try:
-                # The only record of what beets did to the user's files. Logged
-                # after the force and before ``run()``, where it reads exactly
-                # what beets' ``set_config`` is about to resolve -- and the only
-                # signal a user gets that an inbox import overrode their
-                # ``hardlink: yes``, since that override is per-request and no
-                # config advisory can carry it.
-                logger.info("import file operation: %s", configured_file_operation())
-                session.run()
-            finally:
-                config.set({"threaded": orig_threaded, "import": orig_import})
+        config.set({"threaded": False, "import": forced})
+        try:
+            # The only record of what beets did to the user's files, and the
+            # only signal a user gets that an inbox import overrode their
+            # ``hardlink: yes`` (that override is per-request, so no config
+            # advisory can carry it). On ``uvicorn.error`` for the reason
+            # ``main._boot_log`` documents: under the Dockerfile CMD an
+            # app-namespace INFO record is dropped entirely (uvicorn's
+            # LOGGING_CONFIG leaves the app logger at WARNING), so this line
+            # emitted nothing in the shipped container. Read after the force
+            # and before ``run()``, where it reports what beets will actually
+            # resolve rather than what the user asked for.
+            operator_logger.info("import file operation: %s", configured_file_operation())
+            session.run()
+        finally:
+            config.set({"threaded": orig_threaded, "import": orig_import})
         # The album is in the library the moment session.run() returns; a failure
         # moving a Replace-superseded copy to Trash must annotate, not invalidate.
         # Reporting a committed import as failed would re-trigger duplicate
@@ -1876,4 +1899,4 @@ def _reexport_replaced_playlists(session: WebImportSession, dropped_item_ids: se
     except Exception:
         logger.exception("post-import .m3u8 re-export failed after a Replace")
     else:
-        logger.info("Replace collateral: re-exported %d playlist .m3u8 file(s)", count)
+        operator_logger.info("Replace collateral: re-exported %d playlist .m3u8 file(s)", count)

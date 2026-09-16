@@ -43,6 +43,13 @@ from app.models.import_models import DuplicateAction, ExistingAlbum, ImportOptio
 
 logger = logging.getLogger(__name__)
 
+#: Operator-facing records go to ``uvicorn.error``, not this module's logger:
+#: under the Dockerfile CMD uvicorn's LOGGING_CONFIG leaves app-namespace
+#: loggers at WARNING, so an app-namespace INFO record is dropped entirely
+#: and never reaches ``docker logs`` (``main._boot_log`` documents the same
+#: trap). ``logger`` keeps the warnings/exceptions, which do get through.
+operator_logger = logging.getLogger("uvicorn.error")
+
 _STALE_CHANGED_ERROR = (
     "the folder changed since it was banked - nothing was imported; re-sweep or remove the row"
 )
@@ -381,7 +388,7 @@ class BankApplyRunner:
             return False
         surviving = surviving_duplicate_album_ids(self._library(), prompt.existing)
         if not surviving:
-            logger.info(
+            operator_logger.info(
                 "bank apply skip_new: none of the %d banked library copies survive for %s; "
                 "letting the import run",
                 len(prompt.existing),
@@ -427,7 +434,7 @@ class BankApplyRunner:
         surviving = surviving_duplicate_album_ids(self._library(), prompt.existing)
         if surviving:
             return False
-        logger.info(
+        operator_logger.info(
             "bank apply replace: none of the %d banked library copies survive for %s; "
             "the import will land a copy that replaces nothing",
             len(prompt.existing),

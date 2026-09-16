@@ -24,6 +24,13 @@ from app.beets.library import LibraryHandle, close_library
 
 logger = logging.getLogger(__name__)
 
+#: Operator-facing records go to ``uvicorn.error``, not this module's logger:
+#: under the Dockerfile CMD uvicorn's LOGGING_CONFIG leaves app-namespace
+#: loggers at WARNING, so an app-namespace INFO record is dropped entirely
+#: and never reaches ``docker logs`` (``main._boot_log`` documents the same
+#: trap). ``logger`` keeps the warnings/exceptions, which do get through.
+operator_logger = logging.getLogger("uvicorn.error")
+
 
 def setup_beets(beets_dir: str, *, container_music_default: bool = False) -> LibraryHandle:
     """Open a beets Library under ``beets_dir``, honoring its config.yaml.
@@ -53,7 +60,7 @@ def setup_beets(beets_dir: str, *, container_music_default: bool = False) -> Lib
             # dev-relative ../music default would point inside the volume.
             text = text.replace("directory: ../music", "directory: /music", 1)
         cfg_path.write_text(text, encoding="utf-8")
-        logger.info("Copied starter config to %s", cfg_path)
+        operator_logger.info("Copied starter config to %s", cfg_path)
 
     os.environ["BEETSDIR"] = str(beets_dir_path)
 
