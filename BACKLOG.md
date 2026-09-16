@@ -94,11 +94,18 @@ entry carries a dated correction block where the pass changed it._
    operation (vault `decisions` #51), so this lands with item 7.
 7. **Download providers** (owner ruling 2026-09-14, vault `decisions` #51; not started). Replaces
    the saved "Download folders" idea; Add from folder's path is a free-text field today.
-   - **Operation.** Imports MOVE by default: an atomic rename when the download folder and the
-     library are one mount of one filesystem; otherwise beets' `util.move` copies then deletes. A
-     per-provider HARDLINK toggle serves sources whose files must stay (seeding; downloaders that
-     skip a track whose file exists — yubal, and deemix under its default `DONT_OVERWRITE`), and
-     falls back to COPY when the link fails.
+   - **Operation.** ONE GLOBAL SETTING, not a per-provider mode — owner ruling 2026-09-15
+     (`decisions` #53): *"instead of branching this into each provider it will be a use it or not
+     setting"*. Off writes `move: yes`, on writes `hardlink: yes`, into beets' own `import:` keys;
+     the app adds no per-import choice. Hardlink serves sources whose files must stay (seeding;
+     downloaders that skip a track whose file exists — yubal, and deemix under its default
+     `DONT_OVERWRITE`), and falls back to COPY when the link fails. While it is on, no download
+     folder empties itself, and the setting's own text must say so. NOT BUILT YET: nothing in
+     `app/models/`, `app/api/` or the frontend references `hardlink` (verified), so today the user
+     edits `import:` by hand in Settings -> Beets, which is the same keys with a worse face.
+     slskd's auto-import keeps MOVING until branch 2 — the inbox routes and the drain send
+     `operation="move"`, overriding the global switch by design, and `config_editor`'s
+     link/hardlink/reflink advisory is where that is currently disclosed.
    - **A provider holds** a name, a kind (slskd, or a plain folder), the folder MusicDrop reads,
      the operation and, only when the source reports its own container paths (slskd today), that
      reported root (today's `downloads_prefix`).
@@ -120,9 +127,12 @@ entry carries a dated correction block where the pass changed it._
      `import.delete` off on every import path, because it is the only hard `unlink` beets performs
      on the app's behalf — `ImportTask.cleanup` calls `util.remove(old_path, False)`
      (`importer/tasks.py:332`): no Trash, no origin record, no undo, triggered by a config value
-     with no UI affordance. That pin is not a refusal of the capability. If per-provider source
-     removal is wanted, the shape is a provider toggle that moves the source to MusicDrop's
-     **Trash** — visible, reversible, consistent with delete/replace — not honouring the beets key.
+     with no UI affordance. That pin is not a refusal of the capability. If source
+     removal is ever wanted, the shape follows #53 — ONE global setting, not a per-provider
+     mode — and it moves the source to MusicDrop's **Trash**: visible, reversible, consistent
+     with delete/replace, rather than honouring the beets key. The global hardlink/move switch
+     never selects `copy` + `delete` anyway (off is `move`, on is `hardlink`), so the pin removes
+     a route the design does not use.
      `copy` + `delete` is also a strictly worse move: a mid-album copy failure can leave a partial
      album filed *and* the originals gone, because `cleanup`'s "only delete what was copied" guard
      (`tasks.py:328-331`) only covers the items that made it.
