@@ -284,3 +284,57 @@ def test_the_config_force_region_is_serialised() -> None:
 
     assert session.seen["lock_was_free"] is False
     assert not _CONFIG_FORCE_LOCK.locked()  # released on the way out
+
+
+def test_an_exception_inside_the_run_restores_every_key_and_frees_the_lock() -> None:
+    """The ``finally`` is the only thing standing between a failed import and a
+    permanently rewritten global. Every key the worker forces is set to a
+    NON-default user value first, so a restore that wrote defaults instead of
+    the snapshot would be visible; ``resume``/``reflink`` are set to their
+    non-bool spellings because those are the two the snapshot reads verbatim.
+
+    The lock is asserted free afterwards for the same reason: a `with` that
+    leaked it would wedge every later import, and the failure would look like a
+    hang rather than a raise.
+
+    Mutant this kills: turning the ``try/finally`` into a bare call.
+    """
+    import pytest
+
+    from app.beets.import_session import _CONFIG_FORCE_LOCK, run_import_worker
+
+    user: dict[str, Any] = {
+        "duplicate_action": "skip",
+        "autotag": False,
+        "singletons": True,
+        "incremental": True,
+        "resume": "ask",  # bool OR "ask"
+        "search_ids": ["mbid-from-the-user"],
+        "move": True,
+        "copy": False,
+        "link": True,
+        "hardlink": True,
+        "reflink": "auto",  # bool OR "auto"
+        "delete": True,
+    }
+    for key, value in user.items():
+        config["import"][key] = value
+    config["threaded"] = True
+
+    class _Boom(_RecordingSession):
+        def run(self) -> None:
+            super().run()
+            raise RuntimeError("the pipeline died mid-import")
+
+    session = _Boom()
+    with pytest.raises(RuntimeError, match="died mid-import"):
+        run_import_worker(session)  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
+
+    # the force was in effect when it died...
+    assert session.seen["duplicate_action"] == "ask"
+    assert session.seen["delete"] is False
+    # ...and every user value came back verbatim anyway
+    for key, value in user.items():
+        assert config["import"][key].get() == value, key
+    assert config["threaded"].get(bool) is True
+    assert not _CONFIG_FORCE_LOCK.locked()
