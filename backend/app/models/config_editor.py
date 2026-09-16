@@ -17,7 +17,15 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Annotated, Final, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+)
 
 
 def loc_to_dot_sep(loc: tuple[str | int, ...]) -> str:
@@ -151,6 +159,24 @@ class ImportSection(BaseModel):
     objection to redefining an inherited method's type."""
 
     model_config = ConfigDict(extra="ignore")
+
+    @field_validator("copy", "move", "delete", "link", "hardlink", "reflink", mode="before")
+    @classmethod
+    def _reject_quoted_bool(cls, value: object, info: ValidationInfo) -> object:
+        """A QUOTED boolean is the one value the editor must not accept.
+
+        Pydantic's lax bool reads ``'no'``/``'off'``/``'false'``/``'0'`` as
+        False. beets does not: it tests these flags with a bare ``if`` on the
+        raw view, and a non-empty string is always truthy — so ``move: 'no'``
+        saved clean here, fired no advisory, and handed the user a MOVE they
+        believed they had turned off. Unquoted ``no`` parses to a real bool in
+        ruamel and never reaches this, so only the quoted spelling is refused.
+
+        ``reflink`` keeps ``"auto"``, which is a real beets value.
+        """
+        if isinstance(value, str) and not (info.field_name == "reflink" and value == "auto"):
+            raise ValueError(f"must be a bool: write {value} without the quotes")
+        return value
 
     copy: bool = True  # type: ignore[assignment]  # beets YAML key; shadows BaseModel.copy()
     move: bool = False

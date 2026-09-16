@@ -483,3 +483,37 @@ def test_the_lock_covers_the_post_run_trash_pass(monkeypatch: Any) -> None:
 
     assert seen["locked_during_trash_pass"] is True
     assert not mod._CONFIG_FORCE_LOCK.locked()  # and released on the way out
+
+
+def test_the_force_and_restore_cost_two_config_sources_not_two_per_key() -> None:
+    """confuse never removes a source. ``config[view][key] = v`` is
+    ``RootView.set``, which does ``sources.insert(0, ...)``, so the natural
+    per-key shape appended one permanent overlay PER KEY PER IMPORT — measured
+    17-23 per import before this changed, against 2 after, and the cost lands
+    on every read of a key no overlay sets plus every "Effective config"
+    flatten, for the life of the process (measured: 1.5 us -> 434 us and
+    0.8 ms -> 129 ms at 500 imports' worth of stack).
+
+    Nothing else would notice a refactor back to the per-key form, which is why
+    this counts instead of asserting values. Exactly 2: one force, one restore.
+    ``_RecordingSession.run`` does not call beets' ``set_config``, so the count
+    here is the app's own contribution with the engine's excluded.
+
+    Two imports, not one, because the cost that matters is the PER-IMPORT one:
+    a flat 2 each is the property, and the first read of a cold ``LazyConfig``
+    materialises ``config_default.yaml`` and adds 2 one-time sources of its own
+    (measured: first call delta 4, every later call 2). Warming it first keeps
+    this measuring the app instead of confuse's lazy init.
+
+    Mutant this kills: either ``config.set({...})`` expanded to a per-key loop.
+    """
+    from app.beets.import_session import run_import_worker
+
+    config["import"]["copy"].get()  # materialise the lazy config, once
+    before = len(config.sources)
+
+    run_import_worker(_RecordingSession())  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
+    assert len(config.sources) - before == 2, "one force + one restore"
+
+    run_import_worker(_RecordingSession())  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
+    assert len(config.sources) - before == 4, "2 per import, flat — not 2 per KEY"

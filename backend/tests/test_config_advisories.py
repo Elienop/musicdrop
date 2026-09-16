@@ -227,3 +227,35 @@ def test_invalid_value_yields_no_advisory_because_errors_owns_it() -> None:
 def test_one_invalid_value_does_not_mute_the_other_rules() -> None:
     advisories = _advise("import:\n  autotag: maybe\n  singletons: yes\n")
     assert _keys(advisories) == {"import.singletons"}
+
+
+def test_a_quoted_boolean_is_refused_because_beets_reads_it_as_true() -> None:
+    """The one divergence that moves files against the user's intent.
+
+    Pydantic's lax bool reads ``'no'`` as False; beets tests these flags with a
+    bare ``if`` on the raw view, where any non-empty string is truthy. So
+    ``move: 'no'`` used to save clean, fire no advisory, and give the user a
+    MOVE they believed they had turned off. Measured divergence before the fix:
+    ``'no'``, ``'off'``, ``'false'``, ``'0'`` — editor False, beets True.
+
+    Unquoted ``no`` parses to a real bool in ruamel and never reaches the
+    validator, so ordinary configs are untouched; this refuses the quoted
+    spelling only, and says how to fix it.
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    from app.models.config_editor import ImportSection
+
+    for spelling in ("no", "off", "false", "0", "yes", "on", "1"):
+        with pytest.raises(ValidationError, match="without the quotes"):
+            ImportSection(move=spelling)  # type: ignore[arg-type]  # the point is the refusal
+
+    # real booleans, and reflink's one real string, still pass
+    assert ImportSection(move=True).move is True
+    assert ImportSection(move=False).move is False
+    assert ImportSection(reflink="auto").reflink == "auto"
+    # ...and a quoted reflink is refused too: beets' as_choice would kill the
+    # import at set_config, before any file operation.
+    with pytest.raises(ValidationError, match="without the quotes"):
+        ImportSection(reflink="yes")  # type: ignore[arg-type]  # the point is the refusal
