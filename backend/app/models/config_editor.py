@@ -300,13 +300,19 @@ def _incremental_advisory(section: ImportSection) -> str | None:
 
 
 def _delete_advisory(section: ImportSection) -> str | None:
+    # The predicate stays ``section.delete`` alone, not "delete AND copy": under
+    # ``{hardlink: yes, delete: yes}`` beets clears ``delete`` itself, so the
+    # value would not have destroyed anything there — but it is still inert in
+    # the app, which is what the user needs told. Only the CAUSAL clause is
+    # qualified with "with copy on"; an earlier wording stated it flatly and was
+    # wrong for every non-copy config.
     if not section.delete:
         return None
     return (
-        "MusicDrop forces import.delete off on every import it runs: beets keeps it"
-        " alive whenever copy does, so it would remove your downloads after filing"
-        " them. This value has no effect in the app — `beet import` from the command"
-        " line still honours it."
+        "MusicDrop forces import.delete off on every import it runs: with copy on,"
+        " beets would remove your downloads after filing them. To move a download into"
+        " the library instead, set import.move. This value has no effect in the app —"
+        " `beet import` from the command line still honours it."
     )
 
 

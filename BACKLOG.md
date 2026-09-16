@@ -126,6 +126,17 @@ entry carries a dated correction block where the pass changed it._
      `copy` + `delete` is also a strictly worse move: a mid-album copy failure can leave a partial
      album filed *and* the originals gone, because `cleanup`'s "only delete what was copied" guard
      (`tasks.py:328-331`) only covers the items that made it.
+   - **KNOWN LIMIT — a raced config Apply drops the pin and re-shadows the new config.** Every
+     forced `import.*` key is an overlay on a mutable process global, not an invariant.
+     `reset_beets_globals` calls `beets.config.clear()` (`app/beets/setup.py:133`), so an Apply
+     that wins the documented TOCTOU (`app/beets/config_editor.py:799-812`, gated on
+     `library_job_active()` outside the swap lock) drops the forced source mid-import — and the
+     import's `finally` then inserts its PRE-Apply snapshot on top of the freshly reloaded
+     config, re-shadowing 12 just-applied keys for the life of the process. Acceptable for a
+     single-user self-host and not a data-loss path (the import config lock now 409s the
+     reachable races), but it means "never deletes a source" is "never, outside that race".
+     Closing it properly means asserting the value where beets READS it rather than where we
+     write it, which is a design change, not a patch.
    - **Upgrade note owed in the release.** A user running `copy: yes, delete: yes` today has
      manual imports of a plain folder silently removing the source; after the pin they keep it, so
      that folder stops self-emptying. Inbox/slskd paths are unaffected (they send

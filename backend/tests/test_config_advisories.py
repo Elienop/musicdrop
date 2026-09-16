@@ -154,6 +154,10 @@ def test_delete_advisory_names_the_download_it_would_remove() -> None:
     assert advisory.key == "import.delete"
     assert "downloads" in advisory.message
     assert "no effect in the app" in advisory.message
+    # It must also name what to do instead. Without this the advisory reads as a
+    # refusal of the capability, when the capability is `import.move` and the app
+    # honours it end to end.
+    assert "import.move" in advisory.message
 
 
 def test_delete_false_yields_no_advisory() -> None:
