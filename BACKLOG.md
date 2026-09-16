@@ -126,6 +126,20 @@ entry carries a dated correction block where the pass changed it._
      `copy` + `delete` is also a strictly worse move: a mid-album copy failure can leave a partial
      album filed *and* the originals gone, because `cleanup`'s "only delete what was copied" guard
      (`tasks.py:328-331`) only covers the items that made it.
+   - **DEFERRED — the in-place footgun has no pre-import warning.** A config with every file
+     operation off (`copy: no, move: no`) makes beets import IN PLACE, and MusicDrop's editor
+     makes that two keystrokes. Measured on a default import: library rows point *into the
+     download folder* (`same_inode_as_download: [True, True]`, not symlinks), so the library
+     depends on files outside the music root and every feature that moves, reorganises, trashes
+     or deletes an album then operates on a path outside it. `link: yes` is the same class from
+     the other side (a symlink in the library whose target is the download); `hardlink: yes`
+     shares the inode, so a tag write through the library rewrites the download too — which is
+     what would bite a seeding user. Surfaced today only by the per-import `file operation` log
+     line. It gets NO config advisory on purpose: every rule on that surface is "MusicDrop
+     overrides this, the CLI still honours it", and in-place is beets' own behaviour with no
+     escape hatch to name — and the rule loop validates one key at a time, so a predicate over
+     five flags reads four defaults (it fired on `copy: no, hardlink: yes`, a hardlink import).
+     The warning belongs in the import panel, where the user can act on it.
    - **KNOWN LIMIT — a raced config Apply drops the pin and re-shadows the new config.** Every
      forced `import.*` key is an overlay on a mutable process global, not an invariant.
      `reset_beets_globals` calls `beets.config.clear()` (`app/beets/setup.py:133`), so an Apply

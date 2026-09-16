@@ -316,6 +316,35 @@ def _delete_advisory(section: ImportSection) -> str | None:
     )
 
 
+def _always_moves_advisory(key: str) -> Callable[[ImportSection], str | None]:
+    """The rule for a filing flag that an inbox import overrides.
+
+    One message, three keys, because the loop validates one key at a time — so
+    a single rule reading all three would see two defaults. Keyed per flag also
+    means the advisory names the setting the user actually typed.
+
+    This is the quieter half of the ``delete`` surprise, and it lands on exactly
+    the user the "keep downloads" work exists for: someone who sets
+    ``hardlink: yes`` because they seed their downloads gets a MOVE out of the
+    inbox when they click Import on an inbox row, and their file leaves the
+    seeding folder. It is honoured on a manual import, "Review now", a sweep and
+    a bank apply — verified — so the message says where it applies, not that it
+    is ignored.
+    """
+
+    def rule(section: ImportSection) -> str | None:
+        if not getattr(section, key):
+            return None
+        return (
+            f"MusicDrop honours import.{key} on a manual import, a sweep and a bank apply."
+            " Inbox imports and Trash restore always move, so it does not apply there —"
+            " a download filed from the inbox leaves the inbox. `beet import` from the"
+            " command line always honours it."
+        )
+
+    return rule
+
+
 #: The advisory rules, in the order they are reported. Each entry is a key under
 #: ``import:`` plus a predicate over the parsed section that returns the message
 #: or ``None``.
@@ -328,13 +357,13 @@ def _delete_advisory(section: ImportSection) -> str | None:
 #: ``incremental`` excepted: it is honoured on the default review path and
 #: forced only for sweep/bank-apply runs, which is what its advisory says).
 #:
-#: ``link``/``hardlink``/``reflink`` are modeled but carry NO advisory: they are
-#: pinned only when a caller names an operation, which a manual import never
-#: does. The inbox routes DO (``api/acquisition.py`` sends ``operation="move"``
-#: at both entry points, and so does the background drain), so an inbox import
-#: overrides them — reported through ``run_import_worker``'s per-import
-#: ``file operation`` log line rather than a config advisory, because that
-#: override is per-REQUEST, not a property of the saved config. Nor does
+#: ``link``/``hardlink``/``reflink`` are HONOURED on a manual import, a sweep
+#: and a bank apply, and overridden by the inbox routes and Trash restore, which
+#: name ``operation="move"``. Their advisory says which is which rather than
+#: claiming they are ignored: the surprise it exists for is a seeding user whose
+#: ``hardlink: yes`` does not survive an inbox import. It is worded per-key and
+#: per-PATH, not "MusicDrop overrides this", because the override is a property
+#: of the request rather than of the saved config. Nor does
 #: a config with every file operation off, which beets imports in place: the
 #: rules here are all "MusicDrop overrides this, the CLI still honours it", and
 #: in-place is beets' own behaviour with no escape hatch to name. What each
@@ -345,6 +374,9 @@ _IMPORT_ADVISORY_RULES: Final[tuple[tuple[str, Callable[[ImportSection], str | N
     ("singletons", _singletons_advisory),
     ("incremental", _incremental_advisory),
     ("delete", _delete_advisory),
+    ("link", _always_moves_advisory("link")),
+    ("hardlink", _always_moves_advisory("hardlink")),
+    ("reflink", _always_moves_advisory("reflink")),
 )
 
 

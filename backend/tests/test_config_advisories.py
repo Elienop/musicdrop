@@ -124,9 +124,10 @@ def test_every_advisory_names_the_cli_escape_hatch() -> None:
     """
     advisories = _advise(
         "import:\n  autotag: no\n  duplicate_action: skip\n  singletons: yes\n"
-        "  incremental: yes\n  delete: yes\n"
+        "  incremental: yes\n  delete: yes\n  link: yes\n  hardlink: yes\n"
+        "  reflink: auto\n"
     )
-    assert len(advisories) == 5
+    assert len(advisories) == 8
     for advisory in advisories:
         assert "beet import" in advisory.message, advisory.key
 
@@ -134,7 +135,8 @@ def test_every_advisory_names_the_cli_escape_hatch() -> None:
 def test_every_rule_fires_together_in_a_stable_order() -> None:
     advisories = _advise(
         "import:\n  delete: yes\n  incremental: yes\n  singletons: yes\n"
-        "  duplicate_action: merge\n  autotag: no\n"
+        "  duplicate_action: merge\n  autotag: no\n  reflink: auto\n"
+        "  hardlink: yes\n  link: yes\n"
     )
     assert [a.key for a in advisories] == [
         "import.autotag",
@@ -142,6 +144,9 @@ def test_every_rule_fires_together_in_a_stable_order() -> None:
         "import.singletons",
         "import.incremental",
         "import.delete",
+        "import.link",
+        "import.hardlink",
+        "import.reflink",
     ]
 
 
@@ -263,3 +268,29 @@ def test_a_quoted_boolean_is_refused_because_beets_reads_it_as_true() -> None:
     # import at set_config, before any file operation.
     with pytest.raises(ValidationError, match="without the quotes"):
         ImportSection(reflink="yes")  # type: ignore[arg-type]  # the point is the refusal
+
+
+def test_a_filing_flag_advisory_says_where_it_applies_not_that_it_is_ignored() -> None:
+    """The quieter half of the `delete` surprise, and it lands on exactly the
+    user the keep-downloads work exists for.
+
+    `hardlink`/`link`/`reflink` ARE honoured on a manual import, a sweep and a
+    bank apply — verified on disk. They are overridden by the inbox routes and
+    Trash restore, which send `operation="move"`. So someone who sets
+    `hardlink: yes` because they seed their downloads gets a move out of the
+    inbox when they click Import on an inbox row, and nothing told them. The
+    message names both halves rather than claiming the flag is ignored.
+    """
+    for key in ("link", "hardlink"):
+        (advisory,) = _advise(f"import:\n  {key}: yes\n")
+        assert advisory.key == f"import.{key}"
+        assert f"import.{key}" in advisory.message  # names the setting they typed
+        assert "manual import" in advisory.message  # ...where it DOES apply
+        assert "Inbox imports" in advisory.message  # ...and where it does not
+
+    # reflink's own real value counts as set
+    (advisory,) = _advise("import:\n  reflink: auto\n")
+    assert advisory.key == "import.reflink"
+
+    # and an explicit off is not an opinion to contradict
+    assert _advise("import:\n  hardlink: no\n") == []
