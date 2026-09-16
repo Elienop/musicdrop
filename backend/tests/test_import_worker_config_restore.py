@@ -55,6 +55,8 @@ class _RecordingSession:
         self.seen["duplicate_action"] = imp["duplicate_action"].get()
         self.seen["autotag"] = imp["autotag"].get(bool)
         self.seen["singletons"] = imp["singletons"].get(bool)
+        for flag in ("move", "copy", "link", "hardlink", "reflink", "delete"):
+            self.seen[flag] = imp[flag].get()
 
 
 def test_worker_restores_duplicate_action_and_threaded() -> None:
@@ -125,3 +127,57 @@ def test_in_library_copy_refusal_mutates_nothing(tmp_path: Path) -> None:
     assert session.seen == {}  # the pipeline never started
     assert config["threaded"].get(bool) is True
     assert config["import"]["duplicate_action"].get() == "skip"
+
+
+def test_explicit_copy_pins_every_file_flag_and_never_deletes() -> None:
+    """An explicit COPY must reach beets as a copy and nothing else.
+
+    beets resolves move > link > hardlink > reflink > copy, each arm clearing
+    the others, and keeps ``delete`` alive whenever copy is on
+    (beets/importer/session.py:118-138). The worker used to set only
+    move/copy, so under these user flags beets picked HARDLINK for a run the
+    app called a copy, and ``delete: yes`` turned that copy into a move -
+    removing the user's download. Every flag is pinned for the run and every
+    one is restored after it."""
+    from app.beets.import_session import run_import_worker
+
+    config["import"]["hardlink"] = True  # the user's config
+    config["import"]["link"] = True
+    config["import"]["reflink"] = True
+    config["import"]["delete"] = True
+
+    session = _RecordingSession()
+    run_import_worker(session, move=False)  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
+
+    # what beets sees at pipeline start: a copy, and only a copy
+    assert session.seen["copy"] is True
+    assert session.seen["move"] is False
+    assert session.seen["link"] is False
+    assert session.seen["hardlink"] is False
+    assert session.seen["reflink"] is False
+    assert session.seen["delete"] is False
+
+    # ...and every user value restored afterwards
+    assert config["import"]["hardlink"].get(bool) is True
+    assert config["import"]["link"].get(bool) is True
+    assert config["import"]["reflink"].get() is True
+    assert config["import"]["delete"].get(bool) is True
+
+
+def test_explicit_move_pins_every_file_flag() -> None:
+    """The move half of the same rule: an explicit MOVE must not leave the
+    user's link/hardlink/reflink flags standing. beets clears them itself when
+    ``move`` wins its precedence chain, so this pins the app's own intent
+    rather than relying on that ordering staying as it is."""
+    from app.beets.import_session import run_import_worker
+
+    config["import"]["hardlink"] = True  # the user's config
+
+    session = _RecordingSession()
+    run_import_worker(session, move=True)  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
+
+    assert session.seen["move"] is True
+    assert session.seen["copy"] is False
+    assert session.seen["hardlink"] is False
+    assert session.seen["delete"] is False
+    assert config["import"]["hardlink"].get(bool) is True

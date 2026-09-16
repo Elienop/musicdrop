@@ -1644,6 +1644,7 @@ def run_import_worker(
         orig_link = config["import"]["link"].get(bool)
         orig_hardlink = config["import"]["hardlink"].get(bool)
         orig_reflink = config["import"]["reflink"].get()  # bool OR "auto" - restore verbatim
+        orig_delete = config["import"]["delete"].get(bool)
         config["threaded"] = False
         config["import"]["duplicate_action"] = "ask"
         config["import"]["autotag"] = True
@@ -1659,8 +1660,17 @@ def run_import_worker(
             config["import"]["hardlink"] = False
             config["import"]["reflink"] = False
         elif move is not None:
+            # beets resolves move > link > hardlink > reflink > copy, each arm
+            # clearing the others, and keeps ``delete`` alive whenever copy is on
+            # (beets/importer/session.py:118-138). Setting only move/copy left the
+            # user's flags standing: an explicit COPY hardlinked under
+            # ``hardlink: yes`` and removed the source under ``delete: yes``.
             config["import"]["move"] = move
             config["import"]["copy"] = not move
+            config["import"]["link"] = False
+            config["import"]["hardlink"] = False
+            config["import"]["reflink"] = False
+            config["import"]["delete"] = False
         if sweep:
             config["import"]["incremental"] = True
             config["import"]["resume"] = False
@@ -1683,6 +1693,7 @@ def run_import_worker(
             config["import"]["link"] = orig_link
             config["import"]["hardlink"] = orig_hardlink
             config["import"]["reflink"] = orig_reflink
+            config["import"]["delete"] = orig_delete
         # The album is in the library the moment session.run() returns; a failure
         # moving a Replace-superseded copy to Trash must annotate, not invalidate.
         # Reporting a committed import as failed would re-trigger duplicate
