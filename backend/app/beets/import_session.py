@@ -15,6 +15,8 @@ import logging
 import os
 import queue
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
@@ -72,6 +74,10 @@ if TYPE_CHECKING:
     from beets.importer.tasks import ImportTask
 
 logger = logging.getLogger(__name__)
+
+
+class ImportConfigBusyError(RuntimeError):
+    """Another import owns the process-global beets import config right now."""
 
 
 class InLibraryCopyError(ValueError):
@@ -1498,17 +1504,41 @@ class WebImportSession(ImportSession):
             return candidates[0]
 
 
-# Serialises the snapshot/force/restore of the process-global beets config in
-# ``run_import_worker``. Without it two overlapping calls interleave: the second
-# snapshots the first's FORCED values and its finally writes them in as the
-# user's, permanently rewriting the live global — and beets re-reads that global
-# late (``ImportTask.finalize`` -> ``cleanup`` at ``importer/tasks.py:307-311``),
-# so an explicit MOVE can reach finalize reading another run's copy+delete.
-# A plain Lock, not RLock, for the reason ``library_busy._CLAIM_LOCK`` gives:
-# ``run_import_worker`` is never called from inside itself (the two callers are
-# the job runner and trash_manage restore), so a nested acquire is a bug and
-# should deadlock loudly rather than corrupt the config silently.
+# Serialises the force/restore of the process-global beets config in
+# ``run_import_worker`` -- and NOTHING else. Without it two overlapping calls
+# interleave: the second snapshots the first's FORCED values and its finally
+# writes them in as the user's, permanently rewriting the live global -- and
+# beets re-reads that global late (``ImportTask.finalize`` -> ``cleanup`` at
+# ``importer/tasks.py:307-311``), so an explicit MOVE can reach finalize
+# reading another run's copy+delete.
 _CONFIG_FORCE_LOCK = threading.Lock()
+
+#: A contended acquire REFUSES rather than waits, because an attended import
+#: holds this for the length of a human review: ``run()`` does not return until
+#: the browser answers, and ``park`` ends in an untimed ``slot.reply.get()``
+#: (:meth:`ImportBridge.park`). The other caller is the Trash restore, which
+#: arrives on a request thread while holding the swap lock
+#: (``api/trash.py`` -> ``trash_manage._restore_by_import``), so a blocking
+#: acquire there would 409 every library-mutating route for the length of
+#: someone's review, with nothing naming the cause. The window it needs is the
+#: check-then-act one ``library_busy`` documents against itself.
+#:
+#: This is also what makes a plain ``Lock`` (not ``RLock``) defensible: the
+#: comment used to say a nested acquire "should deadlock loudly", but a daemon
+#: worker blocked in ``acquire()`` is silent -- no traceback, no log, the job
+#: just never finishes. Only a timeout is loud.
+_CONFIG_FORCE_TIMEOUT_S = 5.0
+
+
+@contextmanager
+def _config_force_lock() -> Iterator[None]:
+    """Hold :data:`_CONFIG_FORCE_LOCK`, or refuse."""
+    if not _CONFIG_FORCE_LOCK.acquire(timeout=_CONFIG_FORCE_TIMEOUT_S):
+        raise ImportConfigBusyError("another import is in progress; try again when it finishes")
+    try:
+        yield
+    finally:
+        _CONFIG_FORCE_LOCK.release()
 
 
 def run_import_worker(
@@ -1580,11 +1610,16 @@ def run_import_worker(
     taghistory then skips every folder a previous sweep finished OR banked
     (SKIPped tasks are recorded too: ``incremental_skip_later`` stays at
     beets' default ``no``, so the bank is the sole re-entry path for banked
-    folders. ``resume`` off EXPLICITLY — beets' incremental/resume exclusion
-    in ``set_config`` is dead code in 2.11 (``want_resume`` reads the global
-    ``config["resume"]``, not the excluded copy), so without this every task
-    writes resume progress and an aborted sweep re-enters the resume path on
-    the next run. ``singletons`` off (forced unconditionally now — see the
+    folders. ``resume`` off EXPLICITLY — beets 2.13.1 already excludes it when
+    ``incremental`` is on (``importer/session.py:100-101``), and that exclusion
+    is LIVE: ``want_resume`` at ``:140`` reads ``set_config``'s *parameter*,
+    which is ``config["import"]``, not the module global. (An earlier note here
+    claimed the opposite. It cannot have been true of any version —
+    ``config_default.yaml`` has no top-level ``resume``, so a global read would
+    raise ``NotFoundError`` on every import.) Setting it ourselves is therefore
+    redundant today and kept anyway, so the behaviour does not depend on that
+    coupling surviving a bump: without it an aborted sweep would re-enter the
+    resume path on the next run. ``singletons`` off (forced unconditionally now — see the
     ``Forces`` paragraph above) — a ``singletons: yes`` user config
     would route every file through choose_item -> SKIP and history-mark it
     done WITHOUT a bank row (silent loss); album-shaped tasks are the only
@@ -1614,7 +1649,7 @@ def run_import_worker(
     # library stops resolving the day the music dir moves. Both callers are
     # covered here: the job runner AND trash_manage.restore_album, which calls
     # this directly. Nesting is safe (beets binds via a ContextVar token).
-    with session.lib.music_dir_context(), _CONFIG_FORCE_LOCK:
+    with session.lib.music_dir_context():
         # Above the snapshots, with the other early exits: anything assigned
         # before a raise leaks into the process-global beets config, because the
         # finally that restores it never runs.
@@ -1647,11 +1682,14 @@ def run_import_worker(
                 )
             move = True
         # Every value read verbatim, so the restore below cannot coerce one:
-        # ``resume`` is bool OR "ask", ``reflink`` bool OR "auto", and
-        # ``.get(bool)`` VALIDATES rather than coerces (``delete: 1`` raises
-        # ConfigTypeError), which would kill the import on a config beets
-        # itself accepts. The set is a strict superset of the 8 keys beets'
-        # own ``set_config`` writes and never restores.
+        # ``resume`` is bool OR "ask", ``reflink`` bool OR "auto", plus a
+        # ``search_ids`` list. ``.get(bool)`` VALIDATES rather than coerces
+        # (``delete: 1`` raises ConfigTypeError), so snapshotting through it
+        # turned a non-bool in the USER's config into OUR failure. beets reads
+        # these with ``.get(bool)`` itself (``importer/tasks.py:307-311``), so a
+        # non-bool is beets' error to raise, not a value to smuggle past it.
+        # The set is a strict superset of the 8 keys beets' own ``set_config``
+        # writes and never restores.
         orig_threaded = config["threaded"].get()
         orig_import = {
             key: config["import"][key].get()
@@ -1670,6 +1708,14 @@ def run_import_worker(
                 "delete",
             )
         }
+        # Fail before the force, not inside beets' finalize. ``copy`` and
+        # ``move`` are the only file flags a default import leaves to the user,
+        # and beets reads both with ``.get(bool)`` at
+        # ``importer/tasks.py:307-311`` -- which runs AFTER ``manipulate_files``
+        # has already filed the album. Without this, ``copy: 1`` in a
+        # hand-edited config files the album and then fails the job.
+        for validated in ("copy", "move"):
+            config["import"][validated].get(bool)
         forced: dict[str, object] = {
             "duplicate_action": "ask",
             "autotag": True,
@@ -1709,15 +1755,19 @@ def run_import_worker(
         # the life of the process. A single set is byte-identical in effect
         # (keys absent from the dict still fall through to the user's config)
         # and leaves no mixed state for a concurrent reader to observe.
-        config.set({"threaded": False, "import": forced})
-        try:
-            # The only record of what beets did to the user's files. Logged
-            # after the force and before ``run()``, where it reads exactly what
-            # beets' own ``set_config`` is about to resolve.
-            logger.info("import file operation: %s", configured_file_operation())
-            session.run()
-        finally:
-            config.set({"threaded": orig_threaded, "import": orig_import})
+        with _config_force_lock():
+            config.set({"threaded": False, "import": forced})
+            try:
+                # The only record of what beets did to the user's files. Logged
+                # after the force and before ``run()``, where it reads exactly
+                # what beets' ``set_config`` is about to resolve -- and the only
+                # signal a user gets that an inbox import overrode their
+                # ``hardlink: yes``, since that override is per-request and no
+                # config advisory can carry it.
+                logger.info("import file operation: %s", configured_file_operation())
+                session.run()
+            finally:
+                config.set({"threaded": orig_threaded, "import": orig_import})
         # The album is in the library the moment session.run() returns; a failure
         # moving a Replace-superseded copy to Trash must annotate, not invalidate.
         # Reporting a committed import as failed would re-trigger duplicate

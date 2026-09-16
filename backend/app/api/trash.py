@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 
 from app.beets.config_editor import _settings, _swap_lock
+from app.beets.import_session import ImportConfigBusyError
 from app.beets.library import LibraryHandle, LibraryRootUnavailableError, _music_dir
 from app.beets.protected import ProtectedTreeError, ProtectedTrees
 from app.beets.store_layout import (
@@ -263,6 +264,16 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
         # cost one, since that description enumerates its two causes.
         except TrashEntryUnreadableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # 409, not 503: this is the "a library operation is in progress" cause
+        # the declared conflict description already names, and it is transient
+        # in the caller's own terms -- an import owns the beets import config
+        # until its review finishes. Reaching it needs the check-then-act
+        # window ``library_busy`` documents against itself; before the refusal
+        # existed this thread blocked here for the length of that review while
+        # holding the swap lock, 409-ing every library route with no cause
+        # given. Adds no status and no OpenAPI change.
+        except ImportConfigBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Restore failed: {exc}") from exc
 

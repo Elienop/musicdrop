@@ -116,6 +116,20 @@ entry carries a dated correction block where the pass changed it._
      refusing copy today) covering hardlink; and a note that `write: yes` changes a hardlinked
      downloader's own file (mutagen opens it `rb+`) — acceptable for non-torrent sources, as *arr
      only documents it.
+   - **Removing the source is a FIRST-CLASS feature, not `import.delete`.** MusicDrop forces
+     `import.delete` off on every import path, because it is the only hard `unlink` beets performs
+     on the app's behalf — `ImportTask.cleanup` calls `util.remove(old_path, False)`
+     (`importer/tasks.py:332`): no Trash, no origin record, no undo, triggered by a config value
+     with no UI affordance. That pin is not a refusal of the capability. If per-provider source
+     removal is wanted, the shape is a provider toggle that moves the source to MusicDrop's
+     **Trash** — visible, reversible, consistent with delete/replace — not honouring the beets key.
+     `copy` + `delete` is also a strictly worse move: a mid-album copy failure can leave a partial
+     album filed *and* the originals gone, because `cleanup`'s "only delete what was copied" guard
+     (`tasks.py:328-331`) only covers the items that made it.
+   - **Upgrade note owed in the release.** A user running `copy: yes, delete: yes` today has
+     manual imports of a plain folder silently removing the source; after the pin they keep it, so
+     that folder stops self-emptying. Inbox/slskd paths are unaffected (they send
+     `operation="move"`). Name `move` as the supported alternative.
    - **Reference.** Lidarr v3.1.0 applies "Use Hardlinks instead of Copy" only on its copy path,
      as hardlink-else-copy (`TrackFileMovingService`, `DiskTransferService`), and keeps Remote
      Path Mappings per client host.

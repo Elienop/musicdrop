@@ -338,3 +338,110 @@ def test_an_exception_inside_the_run_restores_every_key_and_frees_the_lock() -> 
         assert config["import"][key].get() == value, key
     assert config["threaded"].get(bool) is True
     assert not _CONFIG_FORCE_LOCK.locked()
+
+
+def test_a_contended_config_lock_refuses_instead_of_waiting() -> None:
+    """An attended import holds the lock for the length of a HUMAN review:
+    ``run()`` does not return until the browser answers, and ``park`` ends in an
+    untimed ``slot.reply.get()``. The other caller is the Trash restore, which
+    arrives on a request thread while holding the swap lock — so a blocking
+    acquire there would 409 every library-mutating route for as long as someone
+    leaves the review tab open, with nothing naming the cause.
+
+    So a contended acquire is a BOUNDED wait and then a refusal — not an
+    instant refusal, which is the distinction this test pins on both sides. The
+    grace is deliberate: two legitimate sequential imports can contend for a
+    moment as one finishes, and failing those would be worse than waiting.
+    What must never happen is waiting on a human.
+
+    The timeout is monkeypatched down so the suite does not sleep for the real
+    one; it is read inside ``_config_force_lock`` at call time.
+
+    Two mutants this kills: ``acquire(timeout=...)`` → ``acquire()``, which
+    never returns (caught by the outer bound, via pytest-timeout or a hung
+    run); and ``acquire(timeout=...)`` → ``acquire(blocking=False)``, which
+    refuses instantly and is caught by the lower bound.
+    """
+    import time
+
+    import pytest
+
+    from app.beets import import_session as mod
+    from app.beets.import_session import ImportConfigBusyError, run_import_worker
+
+    grace = 0.05
+    original = mod._CONFIG_FORCE_TIMEOUT_S
+    mod._CONFIG_FORCE_TIMEOUT_S = grace
+    session = _RecordingSession()
+    assert mod._CONFIG_FORCE_LOCK.acquire(timeout=1), "lock should be free at test start"
+    started = time.monotonic()
+    try:
+        with pytest.raises(ImportConfigBusyError, match="another import is in progress"):
+            run_import_worker(session)  # type: ignore[arg-type]  # minimal stand-in; refused before .run()
+    finally:
+        mod._CONFIG_FORCE_LOCK.release()
+        mod._CONFIG_FORCE_TIMEOUT_S = original
+    elapsed = time.monotonic() - started
+    assert session.seen == {}, "the pipeline must not have started"
+    assert elapsed >= grace, f"refused in {elapsed:.3f}s — the grace period is not being used"
+    assert elapsed < grace + 2, f"waited {elapsed:.2f}s — that is a wait, not a bounded one"
+
+
+def test_the_resolved_file_operation_is_logged(caplog: Any) -> None:
+    """The log line is the only record of what beets did to the user's files —
+    and, since the config editor's own comment now points at it, the only signal
+    a user gets that an inbox import overrode their ``hardlink: yes``. That
+    makes it load-bearing for a documented promise, so it gets a reader.
+
+    Two arms, because one alone proves less than it looks. On the DEFAULT arm a
+    user ``hardlink: yes`` reads the same before and after the force — the arm
+    leaves the filing flags alone — so that case cannot pin where the line
+    sits. The EXPLICIT arm can: the force turns ``hardlink`` into ``copy``, so
+    a line read above ``config.set`` logs the user's operation instead of the
+    one beets actually ran, which is the whole point of the record.
+    """
+    import logging
+
+    from app.beets.import_session import run_import_worker
+
+    config["import"]["hardlink"] = True  # the user's config
+
+    # default arm: the user's own operation is what beets will run
+    with caplog.at_level(logging.INFO, logger="app.beets.import_session"):
+        run_import_worker(_RecordingSession())  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
+    assert "import file operation: hardlink" in caplog.text
+
+    # explicit arm: the force wins, and the line must report the force
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="app.beets.import_session"):
+        run_import_worker(_RecordingSession(), move=False)  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
+    assert "import file operation: copy" in caplog.text
+    assert "hardlink" not in caplog.text, "logged the user's flag, not the forced one"
+
+
+def test_a_non_bool_copy_is_refused_before_anything_is_filed() -> None:
+    """``copy`` and ``move`` are the only file flags a default import leaves to
+    the user's config, and beets reads both with ``.get(bool)`` — at
+    ``importer/tasks.py:307-311``, inside ``finalize``, which runs AFTER
+    ``manipulate_files`` has already filed the album. So a hand-edited
+    ``copy: 1`` (YAML parses bare ``1`` as int, and confuse's bool template
+    validates rather than coerces) used to file the album and THEN fail the job.
+
+    Reading them above the first mutation puts the raise back where the other
+    early exits are: nothing forced, nothing filed, nothing to restore.
+
+    Mutant this kills: deleting the two-key validating loop.
+    """
+    import pytest
+    from confuse import ConfigTypeError
+
+    from app.beets.import_session import run_import_worker
+
+    config["import"]["copy"] = 1  # hand-edited config.yaml; Settings would coerce it
+
+    session = _RecordingSession()
+    with pytest.raises(ConfigTypeError, match="must be a bool"):
+        run_import_worker(session)  # type: ignore[arg-type]  # minimal stand-in; raises before .run()
+
+    assert session.seen == {}  # the pipeline never started
+    assert config["import"]["copy"].get() == 1  # nothing was forced or restored over it

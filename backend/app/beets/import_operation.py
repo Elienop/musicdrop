@@ -18,6 +18,9 @@ from typing import Literal
 from beets import config
 
 FileOperation = Literal["move", "copy", "link", "hardlink", "reflink", "reflink_auto", "in_place"]
+#: ``hardlink`` has no production caller yet — the hardlink arm is still a
+#: BACKLOG item (download providers). Declared here so ``file_flags`` needs
+#: no change when it lands, and exercised by the parametrized test.
 ForcedOperation = Literal["move", "copy", "hardlink", "in_place"]
 
 _FILE_FLAGS = ("move", "copy", "link", "hardlink", "reflink")

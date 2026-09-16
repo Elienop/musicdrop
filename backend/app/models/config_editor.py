@@ -297,8 +297,12 @@ def _delete_advisory(section: ImportSection) -> str | None:
 #: forced only for sweep/bank-apply runs, which is what its advisory says).
 #:
 #: ``link``/``hardlink``/``reflink`` are modeled but carry NO advisory: they are
-#: pinned only when a caller names an operation, and every UI path is a default
-#: import, so on the path a user actually takes the app honours them. Nor does
+#: pinned only when a caller names an operation, which a manual import never
+#: does. The inbox routes DO (``api/acquisition.py`` sends ``operation="move"``
+#: at both entry points, and so does the background drain), so an inbox import
+#: overrides them — reported through ``run_import_worker``'s per-import
+#: ``file operation`` log line rather than a config advisory, because that
+#: override is per-REQUEST, not a property of the saved config. Nor does
 #: a config with every file operation off, which beets imports in place: the
 #: rules here are all "MusicDrop overrides this, the CLI still honours it", and
 #: in-place is beets' own behaviour with no escape hatch to name. What each
