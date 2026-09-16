@@ -102,11 +102,15 @@ entry carries a dated correction block where the pass changed it._
    - **A provider holds** a name, a kind (slskd, or a plain folder), the folder MusicDrop reads,
      the operation and, only when the source reports its own container paths (slskd today), that
      reported root (today's `downloads_prefix`).
-   - **Beyond beets.** beets picks move, copy, link, then hardlink, in that order, and ships
-     `copy: yes` (2.13.1, `importer/stages.py`, `config_default.yaml`), so a hardlink import needs
-     `move: no`, `copy: no`, `hardlink: yes`; the per-import `operation` (`default`, `move`,
-     `copy`) sets only move and copy. MusicDrop adds: a hardlink arm in `run_import_worker`'s
-     snapshot/restore beside that override (it already restores `hardlink`); a probe with a real
+   - **Beyond beets.** beets resolves the flags TWICE and the orders differ: `set_config` keeps
+     one of move > link > hardlink > reflink, each clearing `copy` (`importer/session.py:114-138`),
+     and the files stage then takes `copy` if it survived, telling `reflink: auto` apart from
+     `reflink` (`importer/stages.py:278-291`). It ships `copy: yes` (2.13.1,
+     `config_default.yaml`), so a hardlink import needs `move: no`, `copy: no`, `hardlink: yes`.
+     An explicit per-import `operation` (`move`, `copy`) now pins all five file flags plus
+     `delete`, and `delete` is pinned off on every path including `default` — so a hardlink
+     provider can no longer have its source removed. MusicDrop still adds: a hardlink arm in
+     `run_import_worker`'s force/restore beside that override; a probe with a real
      `os.link` into the library, because `util.hardlink` raises on EXDEV with no fallback and two
      bind mounts of one filesystem share `st_dev`; the in-library guard (`is_in_library_source`,
      refusing copy today) covering hardlink; and a note that `write: yes` changes a hardlinked

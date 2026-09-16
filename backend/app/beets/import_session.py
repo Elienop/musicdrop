@@ -38,7 +38,7 @@ from app.beets.import_mapping import (
     map_album_match,
     map_candidate_options,
 )
-from app.beets.import_operation import file_flags
+from app.beets.import_operation import configured_file_operation, file_flags
 from app.beets.library import _require_id, duplicate_albums_still_present
 from app.beets.merge_preview import build_merge_preview
 from app.beets.release_identity import release_identity
@@ -1498,6 +1498,19 @@ class WebImportSession(ImportSession):
             return candidates[0]
 
 
+# Serialises the snapshot/force/restore of the process-global beets config in
+# ``run_import_worker``. Without it two overlapping calls interleave: the second
+# snapshots the first's FORCED values and its finally writes them in as the
+# user's, permanently rewriting the live global — and beets re-reads that global
+# late (``ImportTask.finalize`` -> ``cleanup`` at ``importer/tasks.py:307-311``),
+# so an explicit MOVE can reach finalize reading another run's copy+delete.
+# A plain Lock, not RLock, for the reason ``library_busy._CLAIM_LOCK`` gives:
+# ``run_import_worker`` is never called from inside itself (the two callers are
+# the job runner and trash_manage restore), so a nested acquire is a bug and
+# should deadlock loudly rather than corrupt the config silently.
+_CONFIG_FORCE_LOCK = threading.Lock()
+
+
 def run_import_worker(
     session: WebImportSession,
     *,
@@ -1601,7 +1614,7 @@ def run_import_worker(
     # library stops resolving the day the music dir moves. Both callers are
     # covered here: the job runner AND trash_manage.restore_album, which calls
     # this directly. Nesting is safe (beets binds via a ContextVar token).
-    with session.lib.music_dir_context():
+    with session.lib.music_dir_context(), _CONFIG_FORCE_LOCK:
         # Above the snapshots, with the other early exits: anything assigned
         # before a raise leaks into the process-global beets config, because the
         # finally that restores it never runs.
@@ -1612,8 +1625,6 @@ def run_import_worker(
         # last early exit, and anything assigned above a raise leaks into the
         # process-global beets config (and the "Effective config" panel, which
         # flattens the live global) because the finally never runs.
-        orig_threaded = config["threaded"].get()
-        orig_duplicate_action = config["import"]["duplicate_action"].get()
         # In-library sources MUST move (same-dataset rename; samefile no-op):
         # with a fresh DB, copy-mode would duplicate any file whose computed
         # destination differs from its current path. Explicit copy is refused;
@@ -1635,62 +1646,78 @@ def run_import_worker(
                     "copy-mode would duplicate the files. Use move instead."
                 )
             move = True
-        orig_move = config["import"]["move"].get(bool)
-        orig_copy = config["import"]["copy"].get(bool)
-        orig_incremental = config["import"]["incremental"].get(bool)
-        orig_resume = config["import"]["resume"].get()  # bool OR "ask" - restore verbatim
-        orig_singletons = config["import"]["singletons"].get(bool)
-        orig_search_ids = config["import"]["search_ids"].get()  # restore verbatim
-        orig_autotag = config["import"]["autotag"].get(bool)
-        orig_link = config["import"]["link"].get(bool)
-        orig_hardlink = config["import"]["hardlink"].get(bool)
-        orig_reflink = config["import"]["reflink"].get()  # bool OR "auto" - restore verbatim
-        orig_delete = config["import"]["delete"].get(bool)
-        config["threaded"] = False
-        config["import"]["duplicate_action"] = "ask"
-        config["import"]["autotag"] = True
-        # Hoisted OUT of the sweep/directive branches: a DEFAULT review import
-        # (no sweep, no directive) must be album-shaped too — under a
-        # ``singletons: yes`` user config it previously skipped every album
-        # while recording import history.
-        config["import"]["singletons"] = False
+        # Every value read verbatim, so the restore below cannot coerce one:
+        # ``resume`` is bool OR "ask", ``reflink`` bool OR "auto", and
+        # ``.get(bool)`` VALIDATES rather than coerces (``delete: 1`` raises
+        # ConfigTypeError), which would kill the import on a config beets
+        # itself accepts. The set is a strict superset of the 8 keys beets'
+        # own ``set_config`` writes and never restores.
+        orig_threaded = config["threaded"].get()
+        orig_import = {
+            key: config["import"][key].get()
+            for key in (
+                "duplicate_action",
+                "autotag",
+                "singletons",
+                "incremental",
+                "resume",
+                "search_ids",
+                "move",
+                "copy",
+                "link",
+                "hardlink",
+                "reflink",
+                "delete",
+            )
+        }
+        forced: dict[str, object] = {
+            "duplicate_action": "ask",
+            "autotag": True,
+            # Hoisted OUT of the sweep/directive branches: a DEFAULT review
+            # import (no sweep, no directive) must be album-shaped too — under a
+            # ``singletons: yes`` user config it previously skipped every album
+            # while recording import history.
+            "singletons": False,
+            # MusicDrop never destroys a source, on ANY path. beets keeps
+            # ``delete`` alive whenever ``copy`` survives
+            # (``importer/session.py:136-138``) and then removes the originals
+            # (``importer/tasks.py:326-333``), so a default import under a user
+            # ``delete: yes`` is a move wearing the word "copy" and the download
+            # is gone. Every UI path is a default import, so this is the arm
+            # that matters; ``config_editor`` advises the user it is ignored.
+            "delete": False,
+        }
+        # The five filing flags are pinned only when a caller NAMES an
+        # operation: copy-vs-move is the user's filing preference, and a
+        # default import leaves it to their config. An explicit request gets
+        # all five, because a user ``hardlink: yes`` beats a lone ``copy: yes``.
         if in_place:
-            config["import"]["move"] = False
-            config["import"]["copy"] = False
-            config["import"]["link"] = False
-            config["import"]["hardlink"] = False
-            config["import"]["reflink"] = False
+            forced.update(file_flags("in_place"))
         elif move is not None:
-            # beets resolves move > link > hardlink > reflink > copy, each arm
-            # clearing the others, and keeps ``delete`` alive whenever copy is on
-            # (beets/importer/session.py:118-138). Setting only move/copy left the
-            # user's flags standing: an explicit COPY hardlinked under
-            # ``hardlink: yes`` and removed the source under ``delete: yes``.
-            for flag, value in file_flags("move" if move else "copy").items():
-                config["import"][flag] = value
+            forced.update(file_flags("move" if move else "copy"))
         if sweep:
-            config["import"]["incremental"] = True
-            config["import"]["resume"] = False
+            forced["incremental"] = True
+            forced["resume"] = False
         if directive is not None:
-            config["import"]["incremental"] = False
-            config["import"]["resume"] = False
-            config["import"]["search_ids"] = [directive.search_id] if directive.search_id else []
+            forced["incremental"] = False
+            forced["resume"] = False
+            forced["search_ids"] = [directive.search_id] if directive.search_id else []
+        # ONE source per phase, not one per key: ``config[...][k] = v`` is
+        # ``RootView.set``, which inserts a source that is never removed, so the
+        # old per-key shape appended ~2N permanent overlays per import and made
+        # every unoverlaid read and every "Effective config" flatten slower for
+        # the life of the process. A single set is byte-identical in effect
+        # (keys absent from the dict still fall through to the user's config)
+        # and leaves no mixed state for a concurrent reader to observe.
+        config.set({"threaded": False, "import": forced})
         try:
+            # The only record of what beets did to the user's files. Logged
+            # after the force and before ``run()``, where it reads exactly what
+            # beets' own ``set_config`` is about to resolve.
+            logger.info("import file operation: %s", configured_file_operation())
             session.run()
         finally:
-            config["threaded"] = orig_threaded
-            config["import"]["duplicate_action"] = orig_duplicate_action
-            config["import"]["move"] = orig_move
-            config["import"]["copy"] = orig_copy
-            config["import"]["incremental"] = orig_incremental
-            config["import"]["resume"] = orig_resume
-            config["import"]["singletons"] = orig_singletons
-            config["import"]["search_ids"] = orig_search_ids
-            config["import"]["autotag"] = orig_autotag
-            config["import"]["link"] = orig_link
-            config["import"]["hardlink"] = orig_hardlink
-            config["import"]["reflink"] = orig_reflink
-            config["import"]["delete"] = orig_delete
+            config.set({"threaded": orig_threaded, "import": orig_import})
         # The album is in the library the moment session.run() returns; a failure
         # moving a Replace-superseded copy to Trash must annotate, not invalidate.
         # Reporting a committed import as failed would re-trigger duplicate

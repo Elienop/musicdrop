@@ -3,11 +3,12 @@
 beets 2.13.1 resolves the flags in two places. ``ImportSession.set_config`` keeps
 one of move > link > hardlink > reflink, each clearing ``copy``, and clears
 ``delete`` unless ``copy`` survives (``importer/session.py:114-138``). The files
-stage then takes ``copy`` when it is left (``importer/stages.py:278-291``), and a
-copy with ``delete`` removes the originals (``importer/tasks.py:326-333``), which
-is a move. ``tests/test_import_operation.py`` compares :func:`file_operation`
-with ``set_config`` for every combination, so a beets bump that changes the order
-fails there.
+stage then takes ``copy`` when it is left, and tells reflink apart from
+``reflink: auto`` (``importer/stages.py:278-291``); a copy with ``delete``
+removes the originals (``importer/tasks.py:326-333``), which is a move.
+``tests/test_import_operation.py`` compares :func:`file_operation` with
+``set_config`` for every combination and asserts the ``delete`` clear directly,
+so a beets bump that changes either fails there.
 """
 
 from __future__ import annotations
@@ -16,8 +17,8 @@ from typing import Literal
 
 from beets import config
 
-FileOperation = Literal["move", "copy", "link", "hardlink", "reflink", "in_place"]
-ForcedOperation = Literal["move", "copy", "hardlink"]
+FileOperation = Literal["move", "copy", "link", "hardlink", "reflink", "reflink_auto", "in_place"]
+ForcedOperation = Literal["move", "copy", "hardlink", "in_place"]
 
 _FILE_FLAGS = ("move", "copy", "link", "hardlink", "reflink")
 
@@ -31,7 +32,12 @@ def file_operation(
     reflink: bool | str | None,
     delete: bool,
 ) -> FileOperation:
-    """The operation beets runs for these ``import`` flags."""
+    """The operation beets runs for these ``import`` flags.
+
+    ``reflink_auto`` is its own answer because beets treats it as its own
+    operation: ``REFLINK_AUTO`` copies when the filesystem cannot reflink,
+    where ``REFLINK`` raises (``util/__init__.py:596-609``).
+    """
     if move:
         return "move"
     if link:
@@ -39,7 +45,7 @@ def file_operation(
     if hardlink:
         return "hardlink"
     if reflink:
-        return "reflink"
+        return "reflink_auto" if reflink == "auto" else "reflink"
     if copy:
         return "move" if delete else "copy"
     return "in_place"
@@ -48,7 +54,8 @@ def file_operation(
 def configured_file_operation() -> FileOperation:
     """:func:`file_operation` of the live ``config["import"]``.
 
-    Truthiness, not ``get(bool)``: ``set_config`` tests each flag with ``if``.
+    Truthiness, not ``get(bool)``: ``set_config`` tests each flag with ``if``,
+    and ``delete: 1`` must not raise where beets would simply accept it.
     """
     imp = config["import"]
     return file_operation(
@@ -64,7 +71,8 @@ def configured_file_operation() -> FileOperation:
 def file_flags(op: ForcedOperation) -> dict[str, bool]:
     """The five file flags with only ``op`` on, plus ``delete`` off.
 
-    All five, because a user ``hardlink: yes`` beats a lone ``copy: yes``; ``delete``
-    off, because a copy with ``delete`` removes the download.
+    All five, because a user ``hardlink: yes`` beats a lone ``copy: yes``.
+    ``in_place`` turns all five off. ``delete`` is off in every case: a copy
+    with ``delete`` removes the download.
     """
     return {**{flag: flag == op for flag in _FILE_FLAGS}, "delete": False}

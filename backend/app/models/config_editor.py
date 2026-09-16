@@ -159,6 +159,13 @@ class ImportSection(BaseModel):
     singletons: bool = False
     incremental: bool = False
     duplicate_action: Literal["skip", "keep", "remove", "merge", "ask"] = "ask"
+    # The four file keys the editor used to drop on the floor. Unmodeled, a
+    # ``delete: yes`` typed here saved clean, fired no advisory, and removed the
+    # user's downloads on the next import. Defaults are beets' own.
+    delete: bool = False
+    link: bool = False
+    hardlink: bool = False
+    reflink: bool | Literal["auto"] = False
 
 
 class MatchSection(BaseModel):
@@ -266,6 +273,17 @@ def _incremental_advisory(section: ImportSection) -> str | None:
     )
 
 
+def _delete_advisory(section: ImportSection) -> str | None:
+    if not section.delete:
+        return None
+    return (
+        "MusicDrop forces import.delete off on every import it runs: beets keeps it"
+        " alive whenever copy does, so it would remove your downloads after filing"
+        " them. This value has no effect in the app — `beet import` from the command"
+        " line still honours it."
+    )
+
+
 #: The advisory rules, in the order they are reported. Each entry is a key under
 #: ``import:`` plus a predicate over the parsed section that returns the message
 #: or ``None``.
@@ -277,11 +295,20 @@ def _incremental_advisory(section: ImportSection) -> str | None:
 #: snapshots, forces and restores these keys around every session —
 #: ``incremental`` excepted: it is honoured on the default review path and
 #: forced only for sweep/bank-apply runs, which is what its advisory says).
+#:
+#: ``link``/``hardlink``/``reflink`` are modeled but carry NO advisory: they are
+#: pinned only when a caller names an operation, and every UI path is a default
+#: import, so on the path a user actually takes the app honours them. Nor does
+#: a config with every file operation off, which beets imports in place: the
+#: rules here are all "MusicDrop overrides this, the CLI still honours it", and
+#: in-place is beets' own behaviour with no escape hatch to name. What each
+#: import actually resolved to is LOGGED by ``run_import_worker`` instead.
 _IMPORT_ADVISORY_RULES: Final[tuple[tuple[str, Callable[[ImportSection], str | None]], ...]] = (
     ("autotag", _autotag_advisory),
     ("duplicate_action", _duplicate_action_advisory),
     ("singletons", _singletons_advisory),
     ("incremental", _incremental_advisory),
+    ("delete", _delete_advisory),
 )
 
 

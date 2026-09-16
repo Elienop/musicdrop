@@ -37,14 +37,22 @@ class _BindOnlyLib:
 class _RecordingSession:
     """The bare slice of WebImportSession that ``run_import_worker`` touches.
 
-    Empty ``paths`` -> the in-library guard no-ops; ``_trash_dir=None`` ->
-    the post-run trash pass returns early. ``run()`` records the config
-    values the pipeline would see."""
+    Empty ``paths`` -> the in-library guard no-ops. ``run()`` records the
+    config values the pipeline would see.
+
+    BOTH trash attributes are needed, not just ``_trash_dir``: the post-run
+    pass reads ``_trash_origins_dir`` on the same line, BEFORE the
+    ``_replace_album_ids`` gate, so a stand-in carrying only one raised an
+    AttributeError that ``run_import_worker``'s broad ``except Exception``
+    logged and swallowed. Every test here passed anyway, which is why the
+    omission survived — the docstring claimed an early return the pass never
+    reached."""
 
     lib: ClassVar[Any] = _BindOnlyLib()
     paths: ClassVar[list[bytes]] = []
     _replace_album_ids: ClassVar[set[int]] = set()
     _trash_dir = None
+    _trash_origins_dir = None
 
     def __init__(self) -> None:
         self.seen: dict[str, Any] = {}
@@ -181,3 +189,98 @@ def test_explicit_move_pins_every_file_flag() -> None:
     assert session.seen["hardlink"] is False
     assert session.seen["delete"] is False
     assert config["import"]["hardlink"].get(bool) is True
+
+
+def test_default_operation_pins_delete_off_and_leaves_filing_to_the_user() -> None:
+    """The arm every UI path takes, and the one the flag-pinning commit missed.
+
+    No UI request names an operation (a manual import and "Review now" send no
+    options, the sweep and bank apply send ``operation: "default"``), so
+    ``move=None`` is the real import path. Its five filing flags are the user's
+    to choose — copy vs move vs hardlink is a filing preference — but
+    ``delete`` is not a filing choice, it is a destroy-the-source choice: beets
+    keeps it alive whenever copy survives and then removes the originals, so a
+    "copy" under ``delete: yes`` silently moved the user's download into the
+    library. MusicDrop never destroys a source, so ``delete`` is pinned off
+    here too, and the user's own value is handed back afterwards.
+
+    This is the only test that reaches the central pin: on the two explicit
+    arms ``file_flags`` pins ``delete`` as well, so dropping ``"delete": False``
+    from ``forced`` turns THIS test red and leaves those two green.
+    """
+    from app.beets.import_session import run_import_worker
+
+    config["import"]["hardlink"] = True  # the user's config
+    config["import"]["reflink"] = "auto"
+    config["import"]["delete"] = True
+
+    session = _RecordingSession()
+    run_import_worker(session)  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
+
+    # the destructive flag is ours to pin...
+    assert session.seen["delete"] is False
+    # ...and the filing flags stay the user's on this path
+    assert session.seen["hardlink"] is True
+    assert session.seen["reflink"] == "auto"
+
+    # every user value restored verbatim, "auto" included
+    assert config["import"]["hardlink"].get(bool) is True
+    assert config["import"]["reflink"].get() == "auto"
+    assert config["import"]["delete"].get(bool) is True
+
+
+def test_in_place_pins_every_file_flag_and_never_deletes() -> None:
+    """The restore path (``trash_manage._restore_by_import``) files nothing and
+    must destroy nothing. It is safe today only because beets clears ``delete``
+    when ``copy`` is off — the exact upstream coupling the explicit arm pins
+    rather than relying on, so this arm pins it too.
+
+    A state assertion, not a mutant-killer, and the distinction is measured:
+    ``delete`` is pinned TWICE on this path (once centrally in ``forced``, once
+    by ``file_flags``), so no single-line mutant reaches it — dropping either
+    one alone leaves these assertions green, and only removing both turns this
+    test red. It is here to pin the guarantee, not a line.
+    """
+    from app.beets.import_session import run_import_worker
+
+    config["import"]["copy"] = True  # the user's config
+    config["import"]["hardlink"] = True
+    config["import"]["delete"] = True
+
+    session = _RecordingSession()
+    run_import_worker(session, in_place=True)  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
+
+    for flag in ("move", "copy", "link", "hardlink", "reflink", "delete"):
+        assert session.seen[flag] is False, flag
+    assert config["import"]["delete"].get(bool) is True  # restored
+
+
+def test_the_config_force_region_is_serialised() -> None:
+    """The snapshot/force/restore block mutates a process-global with a plain
+    try/finally, so two overlapping calls interleave: the second snapshots the
+    first's FORCED values and its finally writes them in as the user's,
+    permanently rewriting the live global. Worse, beets re-reads that global
+    late (``ImportTask.finalize`` -> ``cleanup``), so an explicit MOVE can
+    reach finalize reading another run's copy+delete and remove a source.
+
+    Asserted from inside ``run()`` — the one point that is provably within the
+    region — by trying to take the lock without blocking. A thread test would
+    pin the same invariant by racing for it; this pins it deterministically.
+
+    Mutant this kills: dropping ``_CONFIG_FORCE_LOCK`` from the ``with``.
+    """
+    from app.beets.import_session import _CONFIG_FORCE_LOCK, run_import_worker
+
+    class _LockProbe(_RecordingSession):
+        def run(self) -> None:
+            super().run()
+            got = _CONFIG_FORCE_LOCK.acquire(blocking=False)
+            if got:
+                _CONFIG_FORCE_LOCK.release()
+            self.seen["lock_was_free"] = got
+
+    session = _LockProbe()
+    run_import_worker(session)  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
+
+    assert session.seen["lock_was_free"] is False
+    assert not _CONFIG_FORCE_LOCK.locked()  # released on the way out

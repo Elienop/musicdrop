@@ -115,25 +115,49 @@ def test_incremental_false_yields_no_advisory() -> None:
 
 
 def test_every_advisory_names_the_cli_escape_hatch() -> None:
-    """None of these keys is globally inert — it is beets' own config file."""
+    """None of these keys is globally inert — it is beets' own config file.
+
+    This is also the reason ``link``/``hardlink``/``reflink`` and an all-off
+    (in-place) config get no rule: the shape of every rule here is "MusicDrop
+    overrides this, the CLI still honours it", and those are either honoured by
+    the app or are beets' own behaviour with nothing to escape to.
+    """
     advisories = _advise(
-        "import:\n  autotag: no\n  duplicate_action: skip\n  singletons: yes\n  incremental: yes\n"
+        "import:\n  autotag: no\n  duplicate_action: skip\n  singletons: yes\n"
+        "  incremental: yes\n  delete: yes\n"
     )
-    assert len(advisories) == 4
+    assert len(advisories) == 5
     for advisory in advisories:
         assert "beet import" in advisory.message, advisory.key
 
 
-def test_all_four_rules_fire_together_in_a_stable_order() -> None:
+def test_every_rule_fires_together_in_a_stable_order() -> None:
     advisories = _advise(
-        "import:\n  incremental: yes\n  singletons: yes\n  duplicate_action: merge\n  autotag: no\n"
+        "import:\n  delete: yes\n  incremental: yes\n  singletons: yes\n"
+        "  duplicate_action: merge\n  autotag: no\n"
     )
     assert [a.key for a in advisories] == [
         "import.autotag",
         "import.duplicate_action",
         "import.singletons",
         "import.incremental",
+        "import.delete",
     ]
+
+
+def test_delete_advisory_names_the_download_it_would_remove() -> None:
+    """The destructive one. beets keeps ``delete`` alive whenever ``copy``
+    survives, so before this was forced off a default import under
+    ``delete: yes`` filed the album and then removed the download — silently,
+    because the editor did not model the key and no rule mentioned it."""
+    (advisory,) = _advise("import:\n  delete: yes\n")
+    assert advisory.key == "import.delete"
+    assert "downloads" in advisory.message
+    assert "no effect in the app" in advisory.message
+
+
+def test_delete_false_yields_no_advisory() -> None:
+    assert _advise("import:\n  delete: no\n") == []
 
 
 def test_config_omitting_the_keys_yields_no_advisories() -> None:
@@ -157,6 +181,13 @@ def test_import_section_defaults_match_what_musicdrop_forces() -> None:
     assert defaults.duplicate_action == "ask"
     assert defaults.singletons is False
     assert defaults.incremental is False
+    assert defaults.delete is False
+    # Modeled so a bad value is an error instead of a silently dropped key,
+    # but NOT forced on the default import path, which is every path the UI
+    # takes — so these three are beets' defaults, not MusicDrop's forces.
+    assert defaults.link is False
+    assert defaults.hardlink is False
+    assert defaults.reflink is False
 
 
 def test_absent_import_section_yields_no_advisories() -> None:

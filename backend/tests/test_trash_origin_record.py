@@ -1177,6 +1177,8 @@ def test_in_place_and_move_are_mutually_exclusive_and_leak_no_config(tmp_path: P
     # raise may have been assigned yet.
     config["import"]["link"] = True
     config["import"]["hardlink"] = True
+    config["import"]["reflink"] = "auto"
+    config["import"]["delete"] = True
     lib = _seeded_library(tmp_path, folder="Weird Folder")
     session = WebImportSession(
         lib,
@@ -1195,6 +1197,8 @@ def test_in_place_and_move_are_mutually_exclusive_and_leak_no_config(tmp_path: P
     assert config["import"]["move"].get(bool) is False
     assert config["import"]["link"].get(bool) is True
     assert config["import"]["hardlink"].get(bool) is True
+    assert config["import"]["reflink"].get() == "auto"
+    assert config["import"]["delete"].get(bool) is True
 
 
 def test_a_landed_in_place_restore_hands_the_link_flags_back(tmp_path: Path) -> None:
