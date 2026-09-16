@@ -1,0 +1,70 @@
+"""The file operation beets' import config resolves to, and the flags that force one.
+
+beets 2.13.1 resolves the flags in two places. ``ImportSession.set_config`` keeps
+one of move > link > hardlink > reflink, each clearing ``copy``, and clears
+``delete`` unless ``copy`` survives (``importer/session.py:114-138``). The files
+stage then takes ``copy`` when it is left (``importer/stages.py:278-291``), and a
+copy with ``delete`` removes the originals (``importer/tasks.py:326-333``), which
+is a move. ``tests/test_import_operation.py`` compares :func:`file_operation`
+with ``set_config`` for every combination, so a beets bump that changes the order
+fails there.
+"""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from beets import config
+
+FileOperation = Literal["move", "copy", "link", "hardlink", "reflink", "in_place"]
+ForcedOperation = Literal["move", "copy", "hardlink"]
+
+_FILE_FLAGS = ("move", "copy", "link", "hardlink", "reflink")
+
+
+def file_operation(
+    *,
+    move: bool,
+    copy: bool,
+    link: bool,
+    hardlink: bool,
+    reflink: bool | str | None,
+    delete: bool,
+) -> FileOperation:
+    """The operation beets runs for these ``import`` flags."""
+    if move:
+        return "move"
+    if link:
+        return "link"
+    if hardlink:
+        return "hardlink"
+    if reflink:
+        return "reflink"
+    if copy:
+        return "move" if delete else "copy"
+    return "in_place"
+
+
+def configured_file_operation() -> FileOperation:
+    """:func:`file_operation` of the live ``config["import"]``.
+
+    Truthiness, not ``get(bool)``: ``set_config`` tests each flag with ``if``.
+    """
+    imp = config["import"]
+    return file_operation(
+        move=bool(imp["move"]),
+        copy=bool(imp["copy"]),
+        link=bool(imp["link"]),
+        hardlink=bool(imp["hardlink"]),
+        reflink=imp["reflink"].get(),
+        delete=bool(imp["delete"]),
+    )
+
+
+def file_flags(op: ForcedOperation) -> dict[str, bool]:
+    """The five file flags with only ``op`` on, plus ``delete`` off.
+
+    All five, because a user ``hardlink: yes`` beats a lone ``copy: yes``; ``delete``
+    off, because a copy with ``delete`` removes the download.
+    """
+    return {**{flag: flag == op for flag in _FILE_FLAGS}, "delete": False}

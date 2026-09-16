@@ -38,6 +38,7 @@ from app.beets.import_mapping import (
     map_album_match,
     map_candidate_options,
 )
+from app.beets.import_operation import file_flags
 from app.beets.library import _require_id, duplicate_albums_still_present
 from app.beets.merge_preview import build_merge_preview
 from app.beets.release_identity import release_identity
@@ -1665,12 +1666,8 @@ def run_import_worker(
             # (beets/importer/session.py:118-138). Setting only move/copy left the
             # user's flags standing: an explicit COPY hardlinked under
             # ``hardlink: yes`` and removed the source under ``delete: yes``.
-            config["import"]["move"] = move
-            config["import"]["copy"] = not move
-            config["import"]["link"] = False
-            config["import"]["hardlink"] = False
-            config["import"]["reflink"] = False
-            config["import"]["delete"] = False
+            for flag, value in file_flags("move" if move else "copy").items():
+                config["import"][flag] = value
         if sweep:
             config["import"]["incremental"] = True
             config["import"]["resume"] = False
