@@ -43,9 +43,10 @@ from fastapi import Request
 from app.beets.library import _album_genre, _genre_values, _require_id
 
 # An edit that renames a file performs the SAME move reorganize does, under a
-# different trigger — so it reuses reorganize's divert prediction and its sidecar
-# carry rather than growing second copies that would drift apart.
-from app.beets.reorganize import art_preflight, carry_sidecars, collisions_by_dest
+# different trigger — so it reuses reorganize's divert prediction and the shared
+# sidecar carry rather than growing second copies that would drift apart.
+from app.beets.reorganize import art_preflight, collisions_by_dest
+from app.beets.sidecars import carry_sidecars
 from app.models.edit import (
     AlbumDiffSide,
     AlbumEditPreview,

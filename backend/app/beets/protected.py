@@ -266,22 +266,23 @@ def refuse_protected_tree(root: str | Path, protected: ProtectedTrees, *, action
         raise protected_tree_error(root, hit[1], action)
 
 
-def is_one_of_ours(
-    root: str | Path, protected: ProtectedTrees, *, dir_fd: int | None = None
-) -> bool:
+def is_one_of_ours(root: str | Path, protected: ProtectedTrees) -> bool:
     """Whether ``root`` IS one of the app's own directories. Never raises.
 
     :func:`_match`'s first arm without the walk: the identity question only, so
     it costs one ``stat`` and says nothing about what the tree CONTAINS. For a
     caller that must act either way and only wants to know afterwards — the
-    per-item delete asks it before the move, because beets prunes an emptied
-    album folder and its ancestors, which took the inbox and the folder above it
+    per-item delete asks it about every directory beets' prune can reach, before
+    the move, because that prune took the inbox and the folder above it
     (measured).
+
+    Takes no ``dir_fd``, unlike the two above: its caller walks a chain of
+    absolute paths upward and has no descriptor on any of them.
 
     False for a symlink and for a non-directory, same as :func:`protected_match`:
     the callers act on the name in front of them.
     """
-    st = _own_stat(str(root), dir_fd)
+    st = _own_stat(str(root), None)
     if st is None or not stat.S_ISDIR(st.st_mode):
         return False
     return (st.st_dev, st.st_ino) in protected.ids

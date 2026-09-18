@@ -14,6 +14,11 @@ spelled ``Art/ALB/…`` do not prefix-match the root ``Art/Alb``, so it answers
 ``dangling_rows = 2``. ``delete_album`` asks each item where IT lives, so the
 loss is unreachable rather than guarded.
 
+For ROWS. A cover BOTH twins track is one real file at one path, and
+``Album.move`` carries ``album.artpath`` — so deleting either twin still takes
+the other's cover: ``TWIN ART EXISTS False``, measured the same for the released
+mover. Printed here as a characterization line, not a pin on a fix.
+
 Needs a mount namespace AND a casefolding tmpfs, so it cannot run in-process.
 Prints ``CASE-INSENSITIVE False`` when the kernel or tmpfs will not give one,
 which is what lets the caller skip honestly instead of passing on a control.
@@ -103,6 +108,15 @@ real_dirs = {os.path.dirname(os.fsdecode(i.path)) for a in lib.albums() for i in
 print("SPELLINGS", len(real_dirs))
 print("ONE REAL FOLDER", (music / "Art" / "Alb").samefile(music / "Art" / "ALB"))
 
+# ONE cover file, tracked by both albums under their own spelling of the folder.
+cover = music / "Art" / "Alb" / "cover.jpg"
+cover.write_bytes(b"\xff\xd8\xffcover")
+for album in lib.albums():
+    album.artpath = os.fsencode(str(music / "Art" / album.album / "cover.jpg"))
+    album.store()
+arts = [os.fsdecode(a.artpath) for a in lib.albums() if a.artpath]
+print("ONE REAL COVER", len(arts) == 2 and os.path.samefile(arts[0], arts[1]))
+
 target = next(a for a in lib.albums() if a.album == "Alb")
 target_id = target.id
 twin_album_id = twin.album_id
@@ -128,3 +142,7 @@ print("ROWS LEFT", len(rows))
 print("DANGLING ROWS", len(dangling))
 print("TWIN ALBUM LISTED", lib.get_album(int(twin_album_id)) is not None)
 print("TARGET IN TRASH", len(list(trash.rglob("*.mp3"))))
+# The half the per-item fix does NOT close: one file, two artpaths.
+twin_album = lib.get_album(int(twin_album_id))
+twin_art = os.fsdecode(twin_album.artpath) if twin_album and twin_album.artpath else ""
+print("TWIN ART EXISTS", bool(twin_art) and os.path.exists(twin_art))

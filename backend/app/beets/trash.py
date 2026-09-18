@@ -345,13 +345,21 @@ def trash_album(
     """
     require_library_root(lib)
     require_usable_store(origins_dir)
-    trash_dir.mkdir(parents=True, exist_ok=True)
-    container = _unique_trash_dest(trash_dir, origins_dir, _trash_container_name(album))
-    container.mkdir(parents=True, exist_ok=True)
     # BEFORE the move: ``Album.move`` rewrites every item's stored path, so this
     # is the last moment the album's own folder can be read off the rows.
     pre_move_items = list(album.items())
-    source_root = _album_root(lib, pre_move_items) if pre_move_items else ""
+    if not pre_move_items:
+        # No item rows means no files to relocate, so making a container would
+        # leave an empty Trash entry with no origin record — measured, it lists
+        # as a 0-track row, and ``delete._reached_trash`` read its path as
+        # "moved". Answering ``trash_dir`` says "nothing reached Trash" to every
+        # caller. Behind both guards above, because this arm DROPS A ROW.
+        album.remove(delete=False)
+        return str(trash_dir)
+    trash_dir.mkdir(parents=True, exist_ok=True)
+    container = _unique_trash_dest(trash_dir, origins_dir, _trash_container_name(album))
+    container.mkdir(parents=True, exist_ok=True)
+    source_root = _album_root(lib, pre_move_items)
     # Keyed by item id, which the move does not change — the only handle that
     # survives ``Album.move`` rewriting every path, since the post-move objects
     # come from a fresh query.
@@ -369,11 +377,12 @@ def trash_album(
     if len(moved) != len(items):
         _require_move_happened(lib, album, container, items=items, moved=moved)
     if moved_audio is not None:
-        # AFTER the post-condition: a mover that refused reports no pairs, so a
-        # caller carrying sidecars cannot move them off an album still in place.
-        moved_audio.extend(
-            (was_at[it.id], _abs_path(lib, it.path)) for it in moved if it.id in was_at
-        )
+        # What protects a caller carrying sidecars off an album still in place is
+        # the RAISE above, not this line's position: a refusal never returns, so
+        # the pairs are never read. Measured — moving this above the
+        # post-condition changes no test. Placed here because reading `moved`
+        # after it has been validated is the simpler thing to explain.
+        moved_audio.extend((was_at[it.id], _abs_path(lib, it.path)) for it in moved)
     # ``moved[0]``, not ``items[0]``: with a skipped first item the latter still
     # points into the music dir, so the returned "Trash folder" would name the
     # place the album was never moved from.

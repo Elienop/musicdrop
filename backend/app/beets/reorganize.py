@@ -8,12 +8,14 @@ relocates files + art and prunes the vacated dirs. Every op binds
 ``lib.music_dir_context()`` because beets stores DB paths relative to the library
 dir and converts them both ways via a ContextVar a worker thread does not inherit.
 
-Three of the helpers here are the move-hygiene contract for the WHOLE app, not
+Two of the helpers here are the move-hygiene contract for the WHOLE app, not
 just this feature: ``collisions_by_dest`` (would beets divert this move to a
-``.N`` sibling?), ``art_preflight`` (would beets silently rename the album art?)
-and ``carry_sidecars`` (lyrics follow their audio). ``app/beets/edit.py`` imports
-all three, because a tag edit that renames a file performs the same move under a
-different trigger, and a second copy of any of them would drift out of agreement.
+``.N`` sibling?) and ``art_preflight`` (would beets silently rename the album
+art?). ``app/beets/edit.py`` imports both, because a tag edit that renames a file
+performs the same move under a different trigger, and a second copy of either
+would drift out of agreement. The third used to be ``carry_sidecars``; it moved
+to ``app/beets/sidecars.py`` when Delete became per-file and needed it too, and
+both this module and ``edit.py`` now import it from there.
 """
 
 from __future__ import annotations
@@ -24,12 +26,11 @@ import os
 from pathlib import Path
 from typing import Any, NamedTuple
 
-import beets
-from beets.util import FilesystemError, MoveOperation, prune_dirs, samefile, syspath
+from beets.util import FilesystemError, MoveOperation, samefile, syspath
 
 from app.beets.library import LibraryHandle, _abs_path
 from app.beets.orphans import _in_walk_spelling, _under, find_orphan_folders
-from app.beets.sidecars import move_sidecars
+from app.beets.sidecars import carry_sidecars
 from app.models.reorganize import (
     OrphanFolder,
     ReorganizeCollision,
@@ -374,35 +375,6 @@ def _verify_moves(pending: list[tuple[int, bytes, bytes]], after: dict[int, byte
                 "; check this album's folder for what is holding that name"
             )
     return problems
-
-
-def carry_sidecars(lib: Any, old_path: bytes, new_path: bytes) -> None:
-    """Move ONE relocated item's lyric sidecars to its new location, then re-prune.
-
-    beets moves audio + album art and nothing else, so MusicDrop's own
-    ``.lrc``/``.txt`` sidecars (the files Plex actually reads) stay in the vacated
-    folder — which the post-run orphan sweep then classifies as an audio-empty
-    husk and moves to Trash, losing the lyrics while the job reports success. The
-    same stranding happens on an in-place rename, where there is no husk at all
-    and the sidecar simply stops matching its track.
-
-    Keyed off the ACTUAL landing path rather than the computed destination, so a
-    collision-diverted ``.1`` file keeps its lyrics.
-
-    The re-prune is not cosmetic: beets prunes the vacated dir DURING the move,
-    while the sidecars are still sitting in it, so that prune is a no-op and the
-    now-empty dir would outlive every future sweep (``find_orphan_folders``
-    deliberately ignores empty dirs). Pruning again with beets' own arguments
-    makes the on-disk result identical to a sidecar-free move. Never raises: the
-    audio has already moved and the unit's outcome must stay truthful about it.
-    """
-    if not move_sidecars(old_path, new_path):
-        return
-    directory = os.path.dirname(old_path)
-    try:
-        prune_dirs(directory, lib.directory, clutter=beets.config["clutter"].as_str_seq())
-    except OSError:
-        _log.warning("pruning vacated dir failed: %r", directory, exc_info=True)
 
 
 def _carry_sidecars(

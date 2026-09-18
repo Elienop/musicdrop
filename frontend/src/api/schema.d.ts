@@ -2964,9 +2964,10 @@ export interface components {
          * @description Outcome of a reversible delete: how many albums went to Trash + where.
          *
          *     ``trashed_albums`` is 1 for a single-album delete, N for an artist (every
-         *     album of theirs). ``trash_path`` is where the files went — a location inside
-         *     the Trash folder when any moved, and the album's own folder or the Trash root
-         *     when an album had nothing left to move.
+         *     album of theirs). ``trash_path`` is where to look: the album's own folder
+         *     inside Trash for an album delete (its source folder when it had nothing left
+         *     to move), and always the Trash root for an artist delete, whose albums each
+         *     get a container of their own.
          */
         DeleteResult: {
             /** Trashed Albums */
