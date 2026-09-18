@@ -193,6 +193,27 @@ entry carries a dated correction block where the pass changed it._
        ends, and a failed delete is swallowed.
      - **Touch targets.** `Button size="sm"` is 32px and the frontend has no coarse-pointer
        floor — a primitive-level decision, not a call-site override.
+   - **An import that stops part-way is noticed, not repaired — BUILT 2026-09-19 on
+     `feat/import-keep-downloads`.** beets writes the rows before it places the files
+     (`importer/stages.py`: `task.add` in `user_query`, placement last), so a stop during
+     placement leaves rows naming the download folder — every row, when a hardlink across
+     filesystems fails on the first track. `AlbumDetail.folder_outside_library` names one such
+     folder and the album page says so. Importing that folder again finishes it, measured for a
+     stop after one track and before any, under `copy` and `hardlink`
+     (`test_re_importing_a_stopped_folder_and_answering_replace_finishes_it`): with a track placed
+     the duplicate question fires and Replace finishes it; with none placed beets asks nothing —
+     every row names a file the task is importing, so `find_duplicates` excludes the album and
+     `remove_replaced` absorbs the rows.
+     The field is a fact, not a cause: an `in_place` import, an edited `directory:` and rows left
+     in a Trash outside the music folder read the same, which is why the sentence offers the
+     import conditionally. beets' `PathQuery` cannot ask it — the library root normalises to `.`
+     and matches nothing (2.13.1) — so the read reuses `_inside_library`, the mirror of beets' own
+     `Item.try_sync` guard. It reads no disk.
+     OWNER'S CALLS: the failed run's panel does not point at the half album (its row reads "did
+     not land" with no link, because the session reported no album id before it died); the
+     notice has no "import this folder" control (`ImportAgainButton` already starts an import
+     from a known path, and `/import` takes no `?path=`); the list pages carry no marker, so the
+     album is noticed only when opened.
      - **`aria-disabled:opacity-50` is copied onto ~20 buttons.** The pending recipe
        (`aria-disabled`, click swallowed) has no dim of its own, so each site adds the class,
        and a pending button keeps its hover fill. Lifting both into `buttonVariants` beside
