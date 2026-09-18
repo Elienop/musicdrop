@@ -15,7 +15,7 @@ function Loc() {
   return <div data-testid="loc">{useLocation().pathname}</div>;
 }
 
-function renderAction() {
+function renderAction(albumCount = 3) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -27,7 +27,7 @@ function renderAction() {
             path="/artists/:name"
             element={
               <>
-                <DeleteArtistAction name="Daft Punk" albumCount={3} />
+                <DeleteArtistAction name="Daft Punk" albumCount={albumCount} />
                 <Loc />
               </>
             }
@@ -39,8 +39,32 @@ function renderAction() {
   );
 }
 
+/** The confirm body, pinned WHOLE — see the twin in DeleteAlbumAction.test.tsx
+ * for why a fragment is not enough. The copy this replaced claimed the artist's
+ * FOLDERS move and that everything stays recoverable in Trash; neither is true
+ * of what Delete does. */
+function body(count: number, plural: string): string {
+  return (
+    `Tracks, cover art, and lyrics from ${count} album${plural} by Daft Punk ` +
+    "move to Trash and leave your library. Other files in those folders stay " +
+    "where they are. Plex shows them as unavailable until a rescan."
+  );
+}
+
 describe("DeleteArtistAction", () => {
   beforeEach(() => vi.restoreAllMocks());
+
+  it.each([
+    [3, "s"],
+    [1, ""],
+  ])(
+    "says what Delete actually moves for %i album(s), promising no more recovery",
+    async (count, plural) => {
+      renderAction(count);
+      await userEvent.click(screen.getByRole("button", { name: /delete artist/i }));
+      expect(await screen.findByText(body(count, plural))).toBeInTheDocument();
+    },
+  );
 
   it("confirms, deletes by name (query param), then navigates to the roster", async () => {
     const del = vi
@@ -50,7 +74,7 @@ describe("DeleteArtistAction", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /delete artist/i }));
     // Count + name surface in the confirm copy.
-    expect(await screen.findByText(/all 3 albums by/i)).toBeInTheDocument();
+    expect(await screen.findByText(body(3, "s"))).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /move to trash/i }));
 
     await waitFor(() =>

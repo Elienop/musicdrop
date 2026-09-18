@@ -17,8 +17,9 @@ function deleteErrorMessage(error: unknown): string {
   return "Delete failed";
 }
 
-/** Move a whole album (its folder + DB rows) to Trash. On success the album is
- * gone library-wide, so blow the cache to refetch every roster/grid/stat. */
+/** Move an album's tracks, cover and lyrics to Trash and drop its DB rows.
+ * On success the album is gone library-wide, so blow the cache to refetch every
+ * roster/grid/stat. */
 export function useDeleteAlbum() {
   const qc = useQueryClient();
   return useMutation<DeleteResult, Error, number>({

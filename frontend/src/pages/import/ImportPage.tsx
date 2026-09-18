@@ -32,6 +32,7 @@ import {
   Review as ReviewIcon,
   Spinner,
   Success,
+  Warning,
 } from "@/components/icons";
 import { AlbumRow } from "@/components/system/AlbumRow";
 import { EmptyState } from "@/components/system/EmptyState";
@@ -911,10 +912,50 @@ function feedRowAction(
   return undefined;
 }
 
+/** The row's own problem line: why a Replace the user asked for imported
+ * nothing (`ImportAlbumSummary.note`, up to three short sentences from the
+ * backend). Null on every other row.
+ *
+ * The page's dialect for a row-level problem is SettingsTrashPage's
+ * `RestoreOutlook` warning arm (`SettingsTrashPage.tsx:211-247`): an amber
+ * `Warning` glyph beside `text-muted-foreground text-xs`, with the WORDS
+ * carrying the meaning so the colour is never the only signal — amber, not
+ * destructive, because this is the server's considered answer about the row and
+ * not a request that failed (the same split that page states). What is dropped
+ * from that shape is its bold run-in label: there it classifies a mode the note
+ * cannot state ("Exact restore."), whereas these notes already carry their own
+ * verdict — all but the stale-consent one end in "Nothing was imported.", which
+ * is exactly what a run-in label would have said, twice.
+ *
+ * `min-w-0` on the inner span is load-bearing, not tidiness — it is a flex item
+ * of the <p>, so it takes its floor from its longest unbreakable token; the note
+ * is prose today, but this is the class that keeps a phone from panning
+ * sideways if a path ever reaches it. Same reasoning at
+ * `SettingsTrashPage.tsx:220-227`, where it was measured.
+ *
+ * No `role`/live region: the feed is polled list content read in order with its
+ * row, and the page already owns one `role="status"` for the run.
+ *
+ * `col-start-1 row-start-2` because the wrapper is a grid whenever this line
+ * renders — see the placement note in {@link FeedRow}. */
+function ReplaceNote({ note }: Readonly<{ note: string }>) {
+  return (
+    <p className="text-muted-foreground col-start-1 row-start-2 mx-4 mb-3 flex min-w-0 items-start gap-1.5 text-xs">
+      <Warning className="text-warning mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+      <span className="min-w-0">{note}</span>
+    </p>
+  );
+}
+
 /** One feed row on the shared AlbumRow. An `applied` album shows its library
  * cover and its title links to `/albums/{id}` (when the worker reported the
  * id); `skipped`/`decided` rows are calm; `needs_review` / parked-duplicate
- * rows are highlighted and offer Review / Resolve, threading the run origin. */
+ * rows are highlighted and offer Review / Resolve, threading the run origin.
+ *
+ * A row can also carry a `note` — a refused Replace. Its status is untouched by
+ * it, so mid-run such a row's badge reads the calm "Decided" and the note is the
+ * only thing on screen saying the Replace imported nothing; at job end the
+ * badge turns destructive ("Didn't land") and the note says why. */
 function FeedRow({
   album,
   jobId,
@@ -939,6 +980,7 @@ function FeedRow({
   const action = readOnly
     ? undefined
     : feedRowAction(album.status, album.index, jobId, origin);
+  const note = album.note ?? null;
   return (
     // Highlight stays with the caller (AlbumRow contract).
     //
@@ -965,10 +1007,18 @@ function FeedRow({
     // A grid, like both /review rows: `items-center` then centres each item
     // in its OWN row track, so the dropped line cannot re-centre anything
     // above it.
+    //
+    // A note takes the same second row, and takes the grid for the same reason:
+    // as a plain block sibling it would be a second line inside the row's box,
+    // which re-centres every `items-center` neighbour beside it. The note and
+    // the action never share row 2 — the backend attaches a note to a row it has
+    // already DECIDED (`registry._drain_locked` leaves the status alone), and
+    // `feedRowAction` only returns a button for a row still parked. If that ever
+    // stops being true, one of the two has to move off `row-start-2`.
     <div
       className={cn(
         (needsReview || needsDup) && "bg-primary/5",
-        action !== undefined &&
+        (action !== undefined || note !== null) &&
           "@container/feedrow grid grid-cols-[minmax(0,1fr)_auto] items-center",
       )}
     >
@@ -991,6 +1041,9 @@ function FeedRow({
         href={linked ? `/albums/${albumId}` : undefined}
         hrefState={linked ? origin : undefined}
       />
+      {/* Before the action in the DOM, so a screen reader meets the row, then
+          why it refused, then whatever is left to do about it. */}
+      {note !== null && <ReplaceNote note={note} />}
       {action !== undefined && (
         // Not AlbumRow's `action` slot: from inside it the button cannot take
         // a line of its own without growing AlbumRow's box. `-ml-1` gives back

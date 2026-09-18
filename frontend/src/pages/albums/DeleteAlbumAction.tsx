@@ -18,11 +18,13 @@ import {
 } from "@/components/ui/alert-dialog";
 
 /**
- * Trash action for a whole album: confirm -> move the album's entire folder
- * (tracks + art + lyric sidecars) to Trash + drop it -> navigate to the artist
- * page (this album is gone). Destructive but reversible. The Action button
- * preventDefaults so the dialog stays open showing "Moving…" until the move
- * resolves, then closes on success.
+ * Trash action for one album: confirm -> move the album's tracks, cover art and
+ * MusicDrop's lyric files to Trash + drop the album from the library -> navigate
+ * to the artist page (this album is gone). Anything else in the folder is left
+ * alone, and the folder itself survives while something is still in it, so the
+ * body must not promise the whole folder — Restore re-imports the tracks rather
+ * than putting them back. The Action button preventDefaults so the dialog stays
+ * open showing "Moving…" until the move resolves, then closes on success.
  */
 export function DeleteAlbumAction({ album }: Readonly<{ album: AlbumDetail }>) {
   const navigate = useNavigate();
@@ -48,9 +50,9 @@ export function DeleteAlbumAction({ album }: Readonly<{ album: AlbumDetail }>) {
         <AlertDialogHeader>
           <AlertDialogTitle>Move this album to Trash?</AlertDialogTitle>
           <AlertDialogDescription>
-            The whole album folder (tracks, cover art, and the lyric sidecars)
-            is moved to the Trash folder and removed from your library. It stays
-            recoverable in Trash; Plex shows it as unavailable until a rescan.
+            Tracks, cover art, and lyrics move to Trash and leave your library.
+            Other files in the folder stay where they are. Plex shows it as
+            unavailable until a rescan.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {del.isError && (

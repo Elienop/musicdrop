@@ -711,6 +711,126 @@ describe("ImportPage — live feed", () => {
     ]);
   });
 
+  // A Replace the user asked for that imported NOTHING. The backend attaches
+  // its reason to the row's `note` and leaves the row's status alone
+  // (`registry._drain_locked`), so mid-run the badge still reads the calm
+  // "Decided" — the note is the only thing on screen saying the Replace
+  // refused, which is why a row that carries one may never render without it.
+  const REFUSED_NOTE =
+    "Replace moved 1 of 2 old copies to Trash, then failed. Nothing was imported.";
+
+  /** The decided row that note belongs to. `note` is left OFF by default so the
+   * absence case below is the same row minus one field. */
+  function refusedRow(
+    overrides: Partial<ImportAlbumSummary> = {},
+  ): ImportAlbumSummary {
+    return {
+      index: 0,
+      folder: "/music/incoming/Radiohead - OK Computer",
+      artist: "Radiohead",
+      album: "OK Computer",
+      recommendation: "strong",
+      confidence: 99,
+      status: "decided",
+      album_id: null,
+      did_not_land: false,
+      ...overrides,
+    };
+  }
+
+  test.each([
+    // Mid-run: the badge cannot express the refusal at all (the backend only
+    // sets did_not_land on a terminal job), so this is the whole message.
+    ["while the job runs", "reviewing", false, 0, "Decided"],
+    // At job end the badge turns destructive and the note says why.
+    ["once the job is terminal", "done", true, 1, "Didn’t land"],
+  ] as const)(
+    "a refused Replace says so on its own row %s",
+    async (_case, phase, didNotLand, notLanded, badge) => {
+      server.use(
+        http.get(JOB_URL, () =>
+          HttpResponse.json(
+            makeJob({
+              phase,
+              progress: {
+                applied: 0,
+                needs_review: 0,
+                skipped: 0,
+                not_landed: notLanded,
+                already_known: 0,
+              },
+              albums: [
+                refusedRow({ note: REFUSED_NOTE, did_not_land: didNotLand }),
+              ],
+            }),
+          ),
+        ),
+      );
+      renderAt("/import?job=job-1");
+
+      // The backend's whole sentence, rendered verbatim — the FE never branches
+      // on which of the five reasons arrived.
+      const text = await screen.findByText(REFUSED_NOTE);
+      const line = text.closest("p");
+      expect(line).not.toBeNull();
+      // The badge ladder is untouched by the note: it reads exactly what the
+      // status/flag alone would have made it read.
+      expect(screen.getByText(badge)).toBeInTheDocument();
+      // In reading order with the row, and a grid item of the row WRAPPER —
+      // from inside AlbumRow's box a second line re-centres every `items-center`
+      // sibling beside it.
+      const wrapper = text.closest("li")?.firstElementChild;
+      expect(line?.parentElement).toBe(wrapper);
+      expect(wrapper?.firstElementChild?.nextElementSibling).toBe(line);
+      expect(wrapper?.className.split(/\s+/)).toContain("grid");
+      expect(wrapper?.className.split(/\s+/)).toContain(
+        "grid-cols-[minmax(0,1fr)_auto]",
+      );
+      // Both axes: CSS grid places definite-position items BEFORE auto-placed
+      // ones, so without the column the note takes (row 1, col 1) and shoves the
+      // row body a track right.
+      for (const token of ["col-start-1", "row-start-2"]) {
+        expect(line?.className.split(/\s+/)).toContain(token);
+      }
+      // Not colour alone: the glyph is decorative and amber, and the accessible
+      // content of the line is the sentence itself.
+      const glyph = line?.querySelector("svg");
+      expect(glyph).toHaveAttribute("aria-hidden", "true");
+      expect(glyph?.getAttribute("class")?.split(/\s+/)).toContain("text-warning");
+      expect(line).toHaveTextContent(REFUSED_NOTE);
+    },
+  );
+
+  test("a row with no note gains no line, and keeps the plain box", async () => {
+    // The same decided row minus the note. Asserting only "the sentence is
+    // absent" would pass on an empty line rendered unconditionally, so the
+    // oracle is the row's shape: AlbumRow and nothing else.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            progress: {
+              applied: 0,
+              needs_review: 0,
+              skipped: 0,
+              not_landed: 0,
+              already_known: 0,
+            },
+            albums: [refusedRow()],
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Decided")).toBeInTheDocument();
+    expect(screen.queryByText(REFUSED_NOTE)).toBeNull();
+    const wrapper = screen.getByRole("listitem").firstElementChild;
+    expect(wrapper?.children).toHaveLength(1);
+    expect(wrapper?.className.split(/\s+/)).not.toContain("grid");
+    expect(wrapper?.className.split(/\s+/)).not.toContain("@container/feedrow");
+  });
+
   test("the live cue surfaces a parked duplicate to resolve", async () => {
     server.use(
       http.get(JOB_URL, () =>

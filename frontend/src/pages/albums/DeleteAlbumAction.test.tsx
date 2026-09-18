@@ -47,8 +47,26 @@ function renderAction() {
   );
 }
 
+/** The confirm body, pinned WHOLE. Every clause is a claim about what Delete
+ * does, and the copy this replaced was false on two of them — it promised the
+ * whole album folder and a recoverable copy in Trash, where the move takes the
+ * tracks, the cover and MusicDrop's lyric files only, leaves anything else in
+ * the folder alone, and Restore re-IMPORTS the tracks. A fragment match would
+ * pass again on the next such promise; this only passes on the sentence that
+ * was checked against the behaviour. */
+const BODY =
+  "Tracks, cover art, and lyrics move to Trash and leave your library. " +
+  "Other files in the folder stay where they are. Plex shows it as unavailable " +
+  "until a rescan.";
+
 describe("DeleteAlbumAction", () => {
   beforeEach(() => vi.restoreAllMocks());
+
+  it("says what Delete actually moves, and promises no more recovery than that", async () => {
+    renderAction();
+    await userEvent.click(screen.getByRole("button", { name: /delete album/i }));
+    expect(await screen.findByText(BODY)).toBeInTheDocument();
+  });
 
   it("confirms, deletes the album, then navigates to the artist", async () => {
     const del = vi
