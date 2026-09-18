@@ -309,7 +309,10 @@ entry carries a dated correction block where the pass changed it._
      it off the app's own folders (inbox, Trash, playlists) for the length of the move, so
      Delete never removes one and never creates a directory (putting a pruned folder back was
      measured to create it on a dropped share's bare mountpoint, after which the mount check
-     passed). Open:
+     passed). The whole-folder album mover (`trash_album_folder`, its undo,
+     `TrashRowsNotRemovedError`, `TrashDeleteIncompleteError`) is REMOVED; entries further
+     down that name it describe released versions. Restore still reads the `moved="folder"`
+     records those versions wrote. Open:
      - **Restore brings back the audio only — owner's call.** Delete then Restore re-imports
        the tracks; the cover and the `.lrc` files stay in Trash, the origin record is consumed
        and a 0-track row remains (measured; the lyric half is pinned, the cover half is not).
@@ -2050,7 +2053,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   i.e. it removes a flat library's presence check rather than correcting it.
   Regression: `test_library_presence_sampling.py::test_a_flat_layout_does_not_sample_the_music_root_against_itself`
   (the predicate, with the flatness of the fixture asserted from `Item.destination()`) and
-  `test_trash.py::test_trash_album_folder_refuses_a_dropped_flat_share_masked_by_a_stray`
+  `test_trash.py::test_trash_album_refuses_a_dropped_flat_share_masked_by_a_stray`
   (end to end, so the ghost arm is what is proven guarded). Both were mutation-tested by
   restoring `dirname` + `isdir`.
 
@@ -2120,6 +2123,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   both states: `test_trash.py::test_trash_album_folder_puts_the_folder_back_when_the_rows_will_not_go`
   (the DB shape) and `::test_the_move_back_says_nothing_about_rows_a_listener_already_took`
   (the listener shape, where the album row is measured gone and its 14 item rows remain).
+  *(Both tests, the undo and the two exceptions went with the whole-folder album mover when
+  this branch removed it — see "Delete moves an album's own files to Trash" under Next up.)*
   **RESIDUAL 2 — the per-item mover `trash_album` gets no undo** (duplicates resolve, import
   Replace, and the shared-folder fallback of the front-door delete). A raise at its own
   `album.remove` still leaves an album the library LISTS whose item rows point inside the
