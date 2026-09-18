@@ -1687,3 +1687,54 @@ def test_awaiting_decision_clears_when_a_duplicate_decision_beats_its_prompt() -
     assert state.phase is ImportPhase.reviewing  # still active: not the terminal gate answering
     assert state.awaiting_decision is False
     assert reg.state("dup-beaten").awaiting_decision is False  # ...and it does not stick
+
+
+# --- already_known + path on the job state -----------------------------------
+
+
+def test_already_known_is_reported_for_a_manual_job_and_never_counted_as_skipped() -> None:
+    """``already_known`` is read from the bridge for EVERY job, not just a
+    sweep: a review import of a folder beets' history holds is the case the
+    "Import them again" retry exists for, and it is a manual job.
+
+    It cannot double-count ``skipped``: beets' task factory consults its
+    history BEFORE any session hook fires, so a history-skipped folder emits no
+    outcome and this drain has no row to count.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="known-job", bridge=ImportBridge(), origin="manual")
+    reg._job = job  # white-box: install in the single slot (established pattern)
+    job.bridge.note_known_skip()
+    job.bridge.note_known_skip()
+
+    state = reg.state("known-job")
+    assert state.progress.already_known == 2
+    assert state.progress.skipped == 0
+    assert state.albums == []
+    assert state.sweep is None  # not a sweep: the counter is on progress
+
+
+def test_a_single_folder_start_reports_its_path_and_a_multi_folder_start_does_not() -> None:
+    """The Import page re-posts this folder (with ``incremental: false``) after
+    a reload, so the job has to carry it. A multi-folder start has no single
+    folder to name — the inbox hands its settled folders over individually
+    rather than importing their shared parent.
+    """
+    reg = ImportJobRegistry(runner=FakeImportRunner(applied=[]))
+    job_id = reg.start("/downloads/Radiohead - OK Computer")
+    _poll(lambda: reg.state(job_id).phase, lambda p: p is ImportPhase.done)
+    assert reg.state(job_id).path == "/downloads/Radiohead - OK Computer"
+
+    reg = ImportJobRegistry(runner=FakeImportRunner(applied=[]))
+    job_id = reg.start(["/downloads/one", "/downloads/two"])
+    _poll(lambda: reg.state(job_id).phase, lambda p: p is ImportPhase.done)
+    assert reg.state(job_id).path is None
+
+    # A one-element LIST is still one folder (the inbox's single-row Review).
+    reg = ImportJobRegistry(runner=FakeImportRunner(applied=[]))
+    job_id = reg.start(["/downloads/one"])
+    _poll(lambda: reg.state(job_id).phase, lambda p: p is ImportPhase.done)
+    assert reg.state(job_id).path == "/downloads/one"

@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -29,7 +29,7 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
   return {
     job_id: "job-1",
     phase: "reviewing",
-    progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
+    progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0, already_known: 0 },
     albums: [
       {
         index: 0,
@@ -73,7 +73,7 @@ function sweepJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
   return {
     job_id: "s1",
     phase: "scanning",
-    progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+    progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
     albums: [],
     error: null,
     origin: "sweep",
@@ -353,7 +353,7 @@ describe("ImportPage — live feed", () => {
       http.get(JOB_URL, () =>
         HttpResponse.json(
           makeJob({
-            progress: { applied: 2, needs_review: 1, skipped: 0, not_landed: 0 },
+            progress: { applied: 2, needs_review: 1, skipped: 0, not_landed: 0, already_known: 0 },
             albums: [
               {
                 index: 0,
@@ -410,7 +410,7 @@ describe("ImportPage — live feed", () => {
         HttpResponse.json(
           makeJob({
             phase: "done",
-            progress: { applied: 2, needs_review: 0, skipped: 0, not_landed: 0 },
+            progress: { applied: 2, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
             albums: [
               {
                 index: 0,
@@ -457,7 +457,7 @@ describe("ImportPage — live feed", () => {
       http.get(JOB_URL, () =>
         HttpResponse.json(
           makeJob({
-            progress: { applied: 2, needs_review: 1, skipped: 0, not_landed: 0 },
+            progress: { applied: 2, needs_review: 1, skipped: 0, not_landed: 0, already_known: 0 },
             albums: [
               {
                 index: 0,
@@ -524,7 +524,7 @@ describe("ImportPage — live feed", () => {
             // index 0 becomes a duplicate awaiting resolution. Keep `progress`
             // internally consistent with the single duplicate row (the default
             // makeJob progress disagrees: it claims an applied + a needs_review).
-            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
             albums: [
               {
                 index: 0,
@@ -630,7 +630,7 @@ describe("ImportPage — live feed", () => {
       http.get(JOB_URL, () =>
         HttpResponse.json(
           makeJob({
-            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
             albums: [
               {
                 index: 0,
@@ -674,7 +674,7 @@ describe("ImportPage — live feed", () => {
         HttpResponse.json(
           makeJob({
             phase: "scanning",
-            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
             albums: [],
           }),
         ),
@@ -691,7 +691,7 @@ describe("ImportPage — live feed", () => {
         HttpResponse.json(
           makeJob({
             phase: "scanning",
-            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
             albums: [],
             elapsed_seconds: ELAPSED_AFTER_S - 1,
           }),
@@ -712,7 +712,7 @@ describe("ImportPage — live feed", () => {
         HttpResponse.json(
           makeJob({
             phase: "scanning",
-            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
             albums: [],
             elapsed_seconds: 132,
           }),
@@ -767,7 +767,7 @@ describe("ImportPage — live feed", () => {
         HttpResponse.json(
           makeJob({
             phase: "reviewing",
-            progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0 },
+            progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
             albums: [
               {
                 index: 0,
@@ -869,7 +869,7 @@ describe("ImportPage — live feed", () => {
         HttpResponse.json(
           makeJob({
             phase: "scanning",
-            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
             albums: [],
             awaiting_decision: true,
           }),
@@ -894,7 +894,7 @@ describe("ImportPage — live feed", () => {
             makeJob({
               phase: "reviewing",
               origin: "inbox",
-              progress: { applied: 1, needs_review: 0, skipped: 1, not_landed: 0 },
+              progress: { applied: 1, needs_review: 0, skipped: 1, not_landed: 0, already_known: 0 },
               albums: [
                 {
                   index: 0,
@@ -928,7 +928,7 @@ describe("ImportPage — live feed", () => {
         HttpResponse.json(
           makeJob({
             phase: "reviewing",
-            progress: { applied: 1, needs_review: 1, skipped: 1, not_landed: 0 },
+            progress: { applied: 1, needs_review: 1, skipped: 1, not_landed: 0, already_known: 0 },
           }),
         ),
       ),
@@ -1003,7 +1003,7 @@ describe("ImportPage — terminal states", () => {
         HttpResponse.json(
           makeJob({
             phase: "done",
-            progress: { applied: 2, needs_review: 0, skipped: 1, not_landed: 0 },
+            progress: { applied: 2, needs_review: 0, skipped: 1, not_landed: 0, already_known: 0 },
             albums: [],
             elapsed_seconds: 840,
           }),
@@ -1025,7 +1025,7 @@ describe("ImportPage — terminal states", () => {
         HttpResponse.json(
           makeJob({
             phase: "done",
-            progress: { applied: 2, needs_review: 0, skipped: 1, not_landed: 0 },
+            progress: { applied: 2, needs_review: 0, skipped: 1, not_landed: 0, already_known: 0 },
             albums: [],
             elapsed_seconds: ELAPSED_AFTER_S - 1,
           }),
@@ -1045,7 +1045,7 @@ describe("ImportPage — terminal states", () => {
         HttpResponse.json(
           makeJob({
             phase: "done",
-            progress: { applied: 1, needs_review: 0, skipped: 1, not_landed: 0 },
+            progress: { applied: 1, needs_review: 0, skipped: 1, not_landed: 0, already_known: 0 },
             albums: [
               {
                 index: 0,
@@ -1096,7 +1096,7 @@ describe("ImportPage — terminal states", () => {
         HttpResponse.json(
           makeJob({
             phase: "done",
-            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 1 },
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 1, already_known: 0 },
             albums: [
               {
                 index: 0,
@@ -1138,7 +1138,7 @@ describe("ImportPage — terminal states", () => {
         HttpResponse.json(
           makeJob({
             phase: "done",
-            progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0 },
+            progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
             albums: [
               {
                 index: 0,
@@ -1171,7 +1171,7 @@ describe("ImportPage — terminal states", () => {
         HttpResponse.json(
           makeJob({
             phase: "done",
-            progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0 },
+            progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
           }),
         ),
       ),
@@ -1353,7 +1353,7 @@ describe("ImportPage — terminal states", () => {
             phase: "failed",
             error: "lookup exploded",
             elapsed_seconds: 2412,
-            progress: { applied: 200, needs_review: 1, skipped: 3, not_landed: 2 },
+            progress: { applied: 200, needs_review: 1, skipped: 3, not_landed: 2, already_known: 0 },
             // makeJob's rows are applied + needs_review only, so the Resolve
             // assertion below never reached its branch — it passed with
             // `readOnly` deleted. A parked duplicate is what renders that link.
@@ -1414,7 +1414,7 @@ describe("ImportPage — terminal states", () => {
             error: "the session died",
             origin: "inbox",
             set_aside: 5,
-            progress: { applied: 2, needs_review: 5, skipped: 0, not_landed: 0 },
+            progress: { applied: 2, needs_review: 5, skipped: 0, not_landed: 0, already_known: 0 },
           }),
         ),
       ),
@@ -1437,7 +1437,7 @@ describe("ImportPage — terminal states", () => {
           makeJob({
             phase: "failed",
             error: "the session died",
-            progress: { applied: 2, needs_review: 0, skipped: 1, not_landed: 0 },
+            progress: { applied: 2, needs_review: 0, skipped: 1, not_landed: 0, already_known: 0 },
           }),
         ),
       ),
@@ -1458,7 +1458,7 @@ describe("ImportPage — terminal states", () => {
             phase: "failed",
             error: "the session died",
             albums: [],
-            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 5 },
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 5, already_known: 0 },
           }),
         ),
       ),
@@ -1482,7 +1482,7 @@ describe("ImportPage — terminal states", () => {
             phase: "failed",
             error: "lookup exploded",
             albums: [],
-            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
           }),
         ),
       ),
@@ -1505,7 +1505,7 @@ describe("ImportPage — terminal states", () => {
           makeJob({
             phase: "failed",
             error: "the session died",
-            progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
+            progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0, already_known: 0 },
             // The PENDING row is the OLDER one here, so the pin and newest-first
             // disagree — with both the same way round the test proves nothing.
             albums: [
@@ -1649,6 +1649,283 @@ describe("ImportPage — terminal states", () => {
   });
 });
 
+describe("ImportPage — already known folders", () => {
+  const RETRY_JOB_URL = `${window.location.origin}/api/import/job-2`;
+
+  /** A finished review run that did nothing but skip folders beets' import
+   * history already has — the keep-downloads dead end `incremental: false`
+   * (beets' `-I`) exists for. `path` is the folder the run was started with. */
+  function knownOnlyJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
+    return makeJob({
+      phase: "done",
+      progress: {
+        applied: 0,
+        needs_review: 0,
+        skipped: 0,
+        not_landed: 0,
+        already_known: 2,
+      },
+      albums: [],
+      path: "/music/incoming/Boards of Canada",
+      ...overrides,
+    });
+  }
+
+  test("the finished counts line and the announcement both name the history skips", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          knownOnlyJob({
+            progress: {
+              applied: 1,
+              needs_review: 0,
+              skipped: 0,
+              not_landed: 0,
+              already_known: 2,
+            },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(
+      await screen.findByText("1 album imported · 0 skipped · 2 already known"),
+    ).toBeInTheDocument();
+    // Same word in both channels — the sweep tile's "Already known".
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Import complete. Imported 1, skipped 0. 2 already known.",
+    );
+  });
+
+  test("a run with no history skips gains no clause, in either channel", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          knownOnlyJob({
+            progress: {
+              applied: 2,
+              needs_review: 0,
+              skipped: 1,
+              not_landed: 0,
+              already_known: 0,
+            },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(
+      await screen.findByText("2 albums imported · 1 skipped"),
+    ).toBeInTheDocument();
+    // Covers the announcer too: it is text in the document, sr-only or not.
+    expect(screen.queryByText(/already known/i)).not.toBeInTheDocument();
+  });
+
+  test("a failed run whose only news is a history skip still says so", async () => {
+    // The panel's line and the failed announcement gate on the same number, so
+    // the one live region cannot report a count the panel never shows.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          knownOnlyJob({ phase: "failed", error: "disk full" }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Import failed")).toBeInTheDocument();
+    expect(screen.getByText("2 already known")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "The import failed. 2 already known.",
+    );
+  });
+
+  test("Import them again posts incremental false for the run's folder and moves into the new job", async () => {
+    let seenBody: unknown = null;
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(knownOnlyJob())),
+      http.post(IMPORT_URL, async ({ request }) => {
+        seenBody = await request.json();
+        return HttpResponse.json({ job_id: "job-2" }, { status: 202 });
+      }),
+      http.get(RETRY_JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({ job_id: "job-2", phase: "scanning", albums: [] }),
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderAt("/import?job=job-1");
+
+    await user.click(
+      await screen.findByRole("button", { name: /import them again/i }),
+    );
+
+    // The new job drives the page — the same `?job=` hand-off a fresh start
+    // makes, so the finished panel is gone.
+    expect(await screen.findByText(/scanning your folder/i)).toBeInTheDocument();
+    expect(seenBody).toEqual({
+      path: "/music/incoming/Boards of Canada",
+      options: {
+        operation: "default",
+        unattended: false,
+        sweep: false,
+        incremental: false,
+      },
+    });
+  });
+
+  test("while the re-import is starting the button is disabled and says so", async () => {
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(knownOnlyJob())),
+      http.post(IMPORT_URL, async () => {
+        await delay("infinite");
+        return HttpResponse.json({ job_id: "job-2" }, { status: 202 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt("/import?job=job-1");
+
+    await user.click(
+      await screen.findByRole("button", { name: /import them again/i }),
+    );
+    expect(
+      await screen.findByRole("button", { name: /starting/i }),
+    ).toBeDisabled();
+  });
+
+  test("a 409 keeps the panel and names the running import — no Resume this panel lacks", async () => {
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(knownOnlyJob())),
+      http.post(IMPORT_URL, () =>
+        HttpResponse.json(
+          { detail: "An import is already running" },
+          { status: 409 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderAt("/import?job=job-1");
+
+    await user.click(
+      await screen.findByRole("button", { name: /import them again/i }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "An import is already running; try again when it finishes.",
+    );
+    // Not a dead end: the panel stays and the button is live for a retry.
+    expect(
+      screen.getByRole("button", { name: /import them again/i }),
+    ).toBeEnabled();
+  });
+
+  test("a 422 shows the backend's own reason", async () => {
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(knownOnlyJob())),
+      http.post(IMPORT_URL, () =>
+        HttpResponse.json(
+          { detail: "that folder is inside your library" },
+          { status: 422 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderAt("/import?job=job-1");
+
+    await user.click(
+      await screen.findByRole("button", { name: /import them again/i }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "that folder is inside your library",
+    );
+  });
+
+  // Offered ONLY for a review run that did nothing but skip known folders.
+  // A mixed run has a better next step — the album's own folder (design note
+  // 13) — and re-importing the parent would re-offer what just landed.
+  test.each([
+    [
+      "a mixed run",
+      {
+        progress: {
+          applied: 1,
+          needs_review: 0,
+          skipped: 0,
+          not_landed: 0,
+          already_known: 2,
+        },
+      },
+    ],
+    [
+      "a run that skipped an album on its own merits",
+      {
+        progress: {
+          applied: 0,
+          needs_review: 0,
+          skipped: 1,
+          not_landed: 0,
+          already_known: 2,
+        },
+      },
+    ],
+    [
+      "a run with no history skips",
+      {
+        progress: {
+          applied: 0,
+          needs_review: 0,
+          skipped: 0,
+          not_landed: 0,
+          already_known: 0,
+        },
+      },
+    ],
+    ["a multi-folder start (no single path)", { path: null }],
+    ["an unattended inbox run", { origin: "inbox" as const }],
+  ] as const)("no Import them again for %s", async (_case, overrides) => {
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(knownOnlyJob(overrides))),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Import finished")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /import them again/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("a finished sweep offers no Import them again", async () => {
+    // Its own panel: a sweep is routed before the done branch, so this pins the
+    // routing rather than the button's own origin term (the inbox case above
+    // pins that). A sweep re-run is how a sweep gets past its own history.
+    server.use(
+      http.get(SWEEP_JOB_URL, () =>
+        HttpResponse.json(
+          sweepJob({
+            phase: "done",
+            path: "/music/incoming",
+            progress: {
+              applied: 0,
+              needs_review: 0,
+              skipped: 0,
+              not_landed: 0,
+              already_known: 3,
+            },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=s1");
+
+    expect(await screen.findByText("Sweep finished")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /import them again/i }),
+    ).not.toBeInTheDocument();
+  });
+});
+
 describe("ImportPage — sweep & bank", () => {
   beforeEach(() => {
     // Entry-screen tests poll the active-import probe; default to idle.
@@ -1697,7 +1974,7 @@ describe("ImportPage — sweep & bank", () => {
         HttpResponse.json(
           makeJob({
             phase: "scanning",
-            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+            progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
             albums: [],
           }),
         ),

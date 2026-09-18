@@ -172,7 +172,14 @@ def test_import_options_round_trips() -> None:
     from app.models.import_models import ImportOptions
 
     o = ImportOptions.model_validate({"operation": "move", "unattended": True})
-    assert o.model_dump() == {"operation": "move", "unattended": True, "sweep": False}
+    assert o.model_dump() == {
+        "operation": "move",
+        "unattended": True,
+        "sweep": False,
+        # None, not False: "no per-run opinion" is what leaves the history
+        # decision to the worker's resolved file operation.
+        "incremental": None,
+    }
 
 
 def test_import_origin_values() -> None:

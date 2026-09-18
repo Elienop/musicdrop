@@ -26,6 +26,7 @@ from app.beets.import_operation import (
     configured_file_operation,
     file_flags,
     file_operation,
+    forced_file_operation,
 )
 
 _REFLINK_VALUES: tuple[bool | str | None, ...] = (False, True, "auto", None)
@@ -113,3 +114,47 @@ def test_file_flags_turn_on_one_flag_and_delete_off(op: ForcedOperation) -> None
         "delete": False,
     }
     assert file_operation(**flags) == op
+
+
+# --- forced_file_operation: the operation a run will ACTUALLY resolve to -----
+
+
+def test_forced_file_operation_lets_the_overlay_win_over_the_config() -> None:
+    """The keys a caller is about to force win; the rest fall through.
+
+    This is what makes "the run keeps the files" answerable BEFORE the overlay
+    is installed — the import worker needs the answer while it is still
+    building the dict it will install, and a second ``config.set`` to ask
+    afterwards would double the confuse sources every import costs.
+    """
+    config["import"]["hardlink"] = True  # the user's config: keep downloads
+    assert configured_file_operation() == "hardlink"
+
+    # An inbox import forces a move over that: the download does NOT survive.
+    assert forced_file_operation(file_flags("move")) == "move"
+    # A Trash restore files nothing at all.
+    assert forced_file_operation(file_flags("in_place")) == "in_place"
+    # An empty overlay is the user's own config, unchanged.
+    assert forced_file_operation({}) == "hardlink"
+
+
+def test_forced_file_operation_keeps_reflink_auto_distinguishable() -> None:
+    """``reflink: auto`` is its own operation (it copies where the filesystem
+    cannot clone), so the string has to survive the merge rather than being
+    read as a bool."""
+    config["import"]["reflink"] = "auto"
+    config["import"]["copy"] = False
+    assert forced_file_operation({}) == "reflink_auto"
+    assert forced_file_operation({"reflink": "auto"}) == "reflink_auto"
+    assert forced_file_operation({"reflink": True}) == "reflink"
+    assert forced_file_operation({"reflink": False, "copy": True}) == "copy"
+
+
+def test_forced_file_operation_reads_the_forced_delete_not_the_users() -> None:
+    """A copy with ``delete`` is a move (beets removes the originals), but
+    MusicDrop forces ``delete`` off on every run — so the merged answer for a
+    ``copy: yes, delete: yes`` config is a copy, which is what beets will do."""
+    config["import"]["copy"] = True
+    config["import"]["delete"] = True
+    assert configured_file_operation() == "move"  # the user's config alone
+    assert forced_file_operation({"delete": False}) == "copy"  # what the run does

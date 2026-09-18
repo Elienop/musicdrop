@@ -56,12 +56,16 @@ export function announceMessage(args: {
     return sweepMessage(data.sweep, data.phase) + clause;
   }
   if (done) {
-    const { applied, skipped, not_landed } = data.progress;
+    const { applied, skipped, not_landed, already_known } = data.progress;
     // The done PANEL has always shown the lost count and the failed
     // announcement gained it; this channel was the one place it went missing.
+    // `already_known` is in none of the three buckets either — beets skips
+    // those folders before tagging, so they reach no outcome record — and the
+    // panel's counts line names them, so this channel must too.
     return (
       `Import complete. Imported ${applied}, skipped ${skipped}.` +
       notLandedClause(not_landed) +
+      knownClause(already_known) +
       clause
     );
   }
@@ -132,7 +136,7 @@ function sweepMessage(sweep: SweepStatus, phase: ImportJobState["phase"]): strin
     return `Sweeping. ${sweepCounts(sweep)}`;
   }
   // Spoken once, and a claim about the whole run — so every category it holds.
-  const counts = sweepCounts(sweep) + knownClause(sweep);
+  const counts = sweepCounts(sweep) + knownClause(sweep.skipped_known);
   return sweep.paused ? `Sweep paused. ${counts}` : `Sweep complete. ${counts}`;
 }
 
@@ -145,11 +149,15 @@ function sweepCounts(sweep: SweepStatus): string {
   return `Processed ${sweep.processed}, imported ${sweep.auto_applied}, banked ${sweep.banked}.`;
 }
 
-/** The fourth tile's number, for the announcements spoken once. Folders skipped
+/** The history-skip clause, for the announcements spoken once. Folders skipped
  * before tagging never reach `processed`, so a re-run that skipped twenty and
- * then crashed reported nothing while a tile read 20. */
-function knownClause(sweep: SweepStatus): string {
-  return sweep.skipped_known > 0 ? ` ${sweep.skipped_known} already known.` : "";
+ * then crashed reported nothing while a tile read 20.
+ *
+ * Takes the count, not a job: a sweep passes `sweep.skipped_known` (its fourth
+ * tile) and every other origin passes `progress.already_known`. One word for
+ * one concept — the done panel's counts line uses the same one. */
+function knownClause(count: number): string {
+  return count > 0 ? ` ${count} already known.` : "";
 }
 
 /** A failed sweep's counters, empty when it did nothing at all.
@@ -159,9 +167,9 @@ function knownClause(sweep: SweepStatus): string {
  * sweep keeps the unconditional triple: zeros there mean "not yet", but on a
  * terminal panel they are a claim about the whole run. */
 function failedSweepCounts(sweep: SweepStatus): string {
-  const known = knownClause(sweep).trimStart();
+  const known = knownClause(sweep.skipped_known).trimStart();
   if (sweep.processed + sweep.auto_applied + sweep.banked === 0) return known;
-  return sweepCounts(sweep) + knownClause(sweep);
+  return sweepCounts(sweep) + knownClause(sweep.skipped_known);
 }
 
 /** The lost-album clause both terminal announcements owe. `not_landed` is only
@@ -186,6 +194,10 @@ function notLandedClause(notLanded: number): string {
  * ignoring `skipped_known` said only "The sweep failed." for a re-run that
  * skipped twenty known folders, while a tile read 20.
  *
+ * `already_known` is gated on itself too, through {@link knownClause}: those
+ * folders are skipped before tagging, so they reach no outcome record and none
+ * of the three counters holds them.
+ *
  * `set_aside` gets a clause because it is in NONE of the three buckets: the
  * server's `_is_imported` and `_is_skipped` both refuse a `needs_review` /
  * `needs_dup_resolution` row, and it never landed either. Without it a crashed
@@ -198,10 +210,11 @@ function failedMessage(data: ImportJobState): string {
     const counts = failedSweepCounts(sweep);
     return counts === "" ? "The sweep failed." : `The sweep failed. ${counts}`;
   }
-  const { applied, skipped, not_landed } = data.progress;
+  const { applied, skipped, not_landed, already_known } = data.progress;
   let m = "The import failed.";
   if (applied + skipped > 0) m += ` Imported ${applied}, skipped ${skipped}.`;
   m += notLandedClause(not_landed);
+  m += knownClause(already_known);
   if (data.set_aside > 0) {
     m += ` ${data.set_aside} album${data.set_aside === 1 ? "" : "s"} set aside.`;
   }

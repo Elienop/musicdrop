@@ -1007,12 +1007,17 @@ function folderName(folder: string): string {
  *
  * Owns up to albums that were decided/applied but never landed in the library
  * (the session died before beets ran task.add). `not_landed` is only ever
- * nonzero on a terminal job, so the clause drops out of a clean run. */
+ * nonzero on a terminal job, so the clause drops out of a clean run.
+ *
+ * `already_known` is the run's history skips — beets skips those folders before
+ * tagging, so they reach no outcome record and `skipped` does not hold them.
+ * "Already known" is the sweep tile's word for the same number. */
 function countsLine(progress: ImportProgress): string {
-  const { applied, skipped, not_landed } = progress;
+  const { applied, skipped, not_landed, already_known } = progress;
   return (
     `${applied} ${applied === 1 ? "album" : "albums"} imported${SEGMENT_SEP}${skipped} skipped` +
-    (not_landed > 0 ? `${SEGMENT_SEP}${not_landed} didn't land` : "")
+    (not_landed > 0 ? `${SEGMENT_SEP}${not_landed} didn't land` : "") +
+    (already_known > 0 ? `${SEGMENT_SEP}${already_known} already known` : "")
   );
 }
 
@@ -1022,17 +1027,115 @@ function countsLine(progress: ImportProgress): string {
  * that landed and skipped nothing but lost five albums opened on
  * "0 albums imported · 0 skipped", exactly the noise the early-crash branch
  * exists to avoid. {@link JobDone} keeps the unconditional pair — a finished run
- * has landed/skipped counts worth stating even at zero. */
+ * has landed/skipped counts worth stating even at zero.
+ *
+ * So the two trailing counts are gated on themselves here, the same shape the
+ * failed ANNOUNCEMENT uses (`importStatus.ts` `failedMessage`): a run whose only
+ * news is a history skip says it, rather than being announced a number the panel
+ * never shows. */
 function failedCountsLine(progress: ImportProgress): string | null {
-  const { applied, skipped, not_landed } = progress;
+  const { applied, skipped, not_landed, already_known } = progress;
   if (applied + skipped > 0) return countsLine(progress);
-  return not_landed > 0 ? `${not_landed} didn't land` : null;
+  const rest = [
+    not_landed > 0 ? `${not_landed} didn't land` : null,
+    already_known > 0 ? `${already_known} already known` : null,
+  ].filter((part) => part !== null);
+  return rest.length > 0 ? rest.join(SEGMENT_SEP) : null;
+}
+
+/** The folder a finished run can offer again, or null when it cannot.
+ *
+ * Only a run that did nothing BUT skip known folders: with `keep downloads` on,
+ * MusicDrop turns beets' import history on for runs that leave the files in
+ * place, so re-adding a kept folder skips every album it already imported. That
+ * dead-ends a folder whose album has since left the library, and the way past it
+ * is beets' own `-I` ({@link ImportAgainButton}).
+ *
+ * `applied + skipped == 0` is the "nothing but" half: in a mixed run the user
+ * picks the album's own folder instead (design note 13), so offering the parent
+ * here would re-import what just landed.
+ *
+ * `origin === "manual"` is the review-run half — the only origin this button's
+ * attended re-run matches. `path` is null for a multi-folder start (the inbox
+ * hands over several toppaths), and a sweep never reaches this panel. */
+function importAgainPath(state: ImportJobState): string | null {
+  const { applied, skipped, already_known } = state.progress;
+  if (state.origin !== "manual" || state.path == null) return null;
+  if (applied + skipped > 0 || already_known === 0) return null;
+  return state.path;
+}
+
+/** The one sentence a failed re-import can take: a running import names the
+ * conflict, a rejected start carries the server's own reason, anything else is
+ * the generic failure. No "use Resume above" here — this panel has no resume
+ * banner, and a sentence must name a control the screen actually has. */
+function importAgainError(error: unknown, isError: boolean): string | null {
+  if (error instanceof ImportConflictError) {
+    return "An import is already running; try again when it finishes.";
+  }
+  if (error instanceof ImportStartRejectedError) {
+    return error.message;
+  }
+  return isError ? "Couldn’t start. Try again." : null;
+}
+
+/** Re-import the run's folder past beets' import history (`incremental: false`
+ * is beets' `-I`). Moves into the new job the way the entry screen does — the
+ * URL's `?job=` is the only run pointer — so this panel is replaced by the live
+ * feed. A failure keeps the panel and says why; without that the button would
+ * dead-end on the one error it is most likely to hit (the import slot). */
+function ImportAgainButton({ path }: Readonly<{ path: string }>) {
+  const [, setSearchParams] = useSearchParams();
+  const start = useStartImport();
+  const failure = importAgainError(start.error, start.isError);
+  return (
+    <div className="flex flex-col items-center gap-2">
+      {failure !== null && (
+        <p className="text-destructive text-sm" role="alert">
+          {failure}
+        </p>
+      )}
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={start.isPending}
+        onClick={() =>
+          start.mutate(
+            {
+              path,
+              // All four fields: the generated ImportOptions marks defaulted
+              // ones required. Everything but `incremental` is the manual
+              // default this run already used.
+              options: {
+                operation: "default",
+                unattended: false,
+                sweep: false,
+                incremental: false,
+              },
+            },
+            { onSuccess: (data) => setSearchParams({ job: data.job_id }) },
+          )
+        }
+      >
+        {start.isPending ? (
+          <>
+            <Spinner className="animate-spin" aria-hidden="true" />
+            Starting&hellip;
+          </>
+        ) : (
+          "Import them again"
+        )}
+      </Button>
+    </div>
+  );
 }
 
 /** done: a legible outcome — imported/skipped counts (counting auto-applied
  * albums) + the feed list, whose applied rows now link straight to their
  * library pages (replaces the old blanket "View in library", spec §1). */
 function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: string }>) {
+  const againPath = importAgainPath(state);
   return (
     <div className="flex flex-col gap-4">
       <EmptyState
@@ -1047,6 +1150,11 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
             {countsLine(state.progress)}
             <ElapsedSegment seconds={state.elapsed_seconds} />
           </>
+        }
+        action={
+          againPath === null ? undefined : (
+            <ImportAgainButton path={againPath} />
+          )
         }
       />
       {state.albums.length > 0 && (

@@ -97,6 +97,15 @@ class ImportProgress(BaseModel):
     # session died before beets ran task.add. Only ever nonzero on a TERMINAL
     # (done/failed) job: mid-run an id can simply trail its row by one poll.
     not_landed: int = 0
+    # Disjoint from every other counter here: beets' task factory consults its
+    # history BEFORE any session hook fires, so a history-skipped folder emits
+    # no outcome and reaches no feed row (measured in
+    # tests/test_import_incremental_e2e.py). Nonzero means "the run had nothing
+    # to do here", which is what the UI offers a way past.
+    already_known: int = Field(
+        default=0,
+        description="Album folders skipped because beets' import history has them.",
+    )
 
 
 class ImportAlbumSummary(BaseModel):
@@ -181,6 +190,14 @@ class ImportJobState(BaseModel):
     # Where the import came from: "manual" (the web Start flow) or "inbox" (the
     # unattended acquisition seam). Defaulted so manual imports need no change.
     origin: ImportOrigin = "manual"
+    # The folder the job was started with, so a reloaded page can re-post it
+    # (the "Import them again" retry sends the same folder with
+    # ``incremental: false``). None for a multi-folder start — the inbox hands
+    # over its settled folders individually and there is no single one to name.
+    path: str | None = Field(
+        default=None,
+        description="The folder this import was started with, when it was exactly one.",
+    )
     # Albums left in the source for a later manual pass: needs_review (uncertain)
     # + needs_dup_resolution (a library duplicate). For an unattended import this
     # is everything that did not auto-apply.

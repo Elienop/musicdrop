@@ -133,7 +133,9 @@ def test_runner_passes_trash_dir_to_session(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(runner_mod, "WebImportSession", _FakeSession)
     monkeypatch.setattr(
-        runner_mod, "run_import_worker", lambda s, *, move=None, sweep=False, directive=None: None
+        runner_mod,
+        "run_import_worker",
+        lambda s, *, move=None, sweep=False, incremental=None, directive=None: None,
     )
 
     BeetsImportRunner(lib=object(), trash_dir=Path("/tmp/t"), trash_origins_dir=Path("/tmp/o")).run(
@@ -183,6 +185,7 @@ def test_runner_translates_options_operation_to_move(
         *,
         move: bool | None = None,
         sweep: bool = False,
+        incremental: bool | None = None,
         directive: object = None,
     ) -> None:
         captured["move"] = move
@@ -228,7 +231,9 @@ def test_runner_forwards_unattended_to_session(
 
     monkeypatch.setattr(runner_mod, "WebImportSession", _FakeSession)
     monkeypatch.setattr(
-        runner_mod, "run_import_worker", lambda s, *, move=None, sweep=False, directive=None: None
+        runner_mod,
+        "run_import_worker",
+        lambda s, *, move=None, sweep=False, incremental=None, directive=None: None,
     )
 
     finished = threading.Event()
@@ -272,6 +277,7 @@ def test_runner_forwards_sweep_and_bank_dir(
         *,
         move: bool | None = None,
         sweep: bool = False,
+        incremental: bool | None = None,
         directive: object = None,
     ) -> None:
         captured["worker_sweep"] = sweep
@@ -362,6 +368,7 @@ def test_runner_forwards_directive_to_session_and_worker(
         *,
         move: bool | None = None,
         sweep: bool = False,
+        incremental: bool | None = None,
         directive: object = None,
     ) -> None:
         captured["worker_directive"] = directive
@@ -382,3 +389,53 @@ def test_runner_forwards_directive_to_session_and_worker(
     assert captured["session_directive"] is directive
     assert captured["worker_directive"] is directive
     assert captured["sweep"] is False  # an apply is never a sweep
+
+
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        # The "Import them again" retry, and beets' own ``-I``.
+        (ImportOptions(incremental=False), False),
+        (ImportOptions(incremental=True), True),
+        # None is not False: it leaves the worker to decide from the resolved
+        # file operation (a run that keeps the files goes incremental).
+        (ImportOptions(), None),
+        (None, None),
+    ],
+)
+def test_runner_forwards_the_incremental_override_to_the_worker(
+    options: ImportOptions | None,
+    expected: bool | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.import_jobs.runner as runner_mod
+
+    captured: dict[str, object] = {}
+
+    class _FakeSession:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+    def _capture_worker(
+        session: object,
+        *,
+        move: bool | None = None,
+        sweep: bool = False,
+        incremental: bool | None = None,
+        directive: object = None,
+    ) -> None:
+        captured["incremental"] = incremental
+
+    monkeypatch.setattr(runner_mod, "WebImportSession", _FakeSession)
+    monkeypatch.setattr(runner_mod, "run_import_worker", _capture_worker)
+
+    finished = threading.Event()
+    BeetsImportRunner(lib=object()).run(
+        ["/music"],
+        ImportBridge(),
+        on_finish=finished.set,
+        on_error=lambda _message: None,
+        options=options,
+    )
+    assert finished.wait(timeout=2.0)
+    assert captured["incremental"] is expected

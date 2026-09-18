@@ -13200,6 +13200,18 @@
             "title": "Origin",
             "default": "manual"
           },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path",
+            "description": "The folder this import was started with, when it was exactly one."
+          },
           "set_aside": {
             "type": "integer",
             "title": "Set Aside"
@@ -13260,11 +13272,22 @@
             "type": "boolean",
             "title": "Sweep",
             "default": false
+          },
+          "incremental": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Incremental"
           }
         },
         "type": "object",
         "title": "ImportOptions",
-        "description": "Per-import overrides (replaces the reserved ``dict[str, str]``).\n\n``operation`` ``\"default\"`` falls through to the user's beets config (the\nmanual-import default). ``\"move\"``/``\"copy\"`` force that operation for this\nimport only. ``unattended`` ``True`` is the inbox path: no human review \u2014\nuncertain/duplicate albums are set aside rather than parked. ``sweep``\n``True`` is the banking sweep: an unattended, beets-incremental run that\nBANKS every set-aside album (with its candidate payload) instead of just\nskipping it, recorded as ``origin=\"sweep\"``. A sweep is unattended by\ndefinition \u2014 the session enforces ``unattended or sweep`` \u2014 so\n``{\"sweep\": true}`` alone is a complete sweep request. The sweep forces no\nfile operation: ``operation`` behaves exactly as for a manual import (the\nin-library guard still force-corrects in-library sources to move)."
+        "description": "Per-import overrides (replaces the reserved ``dict[str, str]``).\n\n``operation`` ``\"default\"`` falls through to the user's beets config (the\nmanual-import default). ``\"move\"``/``\"copy\"`` force that operation for this\nimport only. ``unattended`` ``True`` is the inbox path: no human review \u2014\nuncertain/duplicate albums are set aside rather than parked. ``sweep``\n``True`` is the banking sweep: an unattended, beets-incremental run that\nBANKS every set-aside album (with its candidate payload) instead of just\nskipping it, recorded as ``origin=\"sweep\"``. A sweep is unattended by\ndefinition \u2014 the session enforces ``unattended or sweep`` \u2014 so\n``{\"sweep\": true}`` alone is a complete sweep request. The sweep forces no\nfile operation: ``operation`` behaves exactly as for a manual import (the\nin-library guard still force-corrects in-library sources to move).\n\n``incremental`` is the per-run override of beets' ``import.incremental``:\n``False`` is ``beet import -I``, the way past an import history that would\notherwise skip the folder (a hardlink run records every folder it imports).\n``True`` forces it on. ``None`` leaves the decision to the worker, which\nturns it on for a run that keeps the files and otherwise honours the user's\nconfig. A sweep sets both history keys itself, so the two cannot be\ncombined."
       },
       "ImportPhase": {
         "type": "string",
@@ -13295,6 +13318,12 @@
           "not_landed": {
             "type": "integer",
             "title": "Not Landed",
+            "default": 0
+          },
+          "already_known": {
+            "type": "integer",
+            "title": "Already Known",
+            "description": "Album folders skipped because beets' import history has them.",
             "default": 0
           }
         },

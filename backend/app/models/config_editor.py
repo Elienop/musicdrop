@@ -288,13 +288,17 @@ def _singletons_advisory(section: ImportSection) -> str | None:
 
 
 def _incremental_advisory(section: ImportSection) -> str | None:
+    # The hardlink clause is stated, not detected: ``import_advisories``
+    # validates one key at a time, so ``section.hardlink`` here is always the
+    # default whatever the file says.
     if not section.incremental:
         return None
     return (
         "MusicDrop honours import.incremental, and that is the trap: beets' taghistory"
         " records every folder a sweep finished OR skipped, so re-importing one of those"
         " folders from MusicDrop is skipped before anything runs and reports nothing."
-        " (A sweep forces it on and a bank apply forces it off, whatever this says.)"
+        " (A sweep or a hardlink import forces it on and a bank apply forces it off,"
+        " whatever this says. Import them again gets one run past it.)"
         " `beet import` from the command line behaves the same way."
     )
 
@@ -332,12 +336,22 @@ def _always_moves_advisory(key: str) -> Callable[[ImportSection], str | None]:
     is ignored.
     """
 
+    # Only a hardlink forces the history keys (``run_import_worker``), and an
+    # ``incremental: no`` beside it fires no rule of its own, so it is said here.
+    history = (
+        " A manual hardlink import also turns on beets' import history"
+        " (import.incremental), so a kept folder added again is skipped."
+        if key == "hardlink"
+        else ""
+    )
+
     def rule(section: ImportSection) -> str | None:
         if not getattr(section, key):
             return None
         return (
             f"MusicDrop honours import.{key} on a manual import, a sweep and a bank apply."
-            " Inbox imports and Trash restore always move, so it does not apply there —"
+            + history
+            + " Inbox imports and Trash restore always move, so it does not apply there —"
             " a download filed from the inbox leaves the inbox. `beet import` from the"
             " command line always honours it."
         )
@@ -355,7 +369,8 @@ def _always_moves_advisory(key: str) -> Callable[[ImportSection], str | None]:
 #: has no way to learn is that MusicDrop overrides it (``run_import_worker``
 #: snapshots, forces and restores these keys around every session —
 #: ``incremental`` excepted: it is honoured on the default review path and
-#: forced only for sweep/bank-apply runs, which is what its advisory says).
+#: forced only for sweep, bank-apply and hardlink runs, which is what its
+#: advisory says).
 #:
 #: ``link``/``hardlink``/``reflink`` are HONOURED on a manual import, a sweep
 #: and a bank apply, and overridden by the inbox routes and Trash restore, which

@@ -13,6 +13,7 @@ so a beets bump that changes either fails there.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Literal
 
 from beets import config
@@ -68,6 +69,32 @@ def configured_file_operation() -> FileOperation:
         hardlink=bool(imp["hardlink"]),
         reflink=imp["reflink"].get(),
         delete=bool(imp["delete"]),
+    )
+
+
+def forced_file_operation(forced: Mapping[str, object]) -> FileOperation:
+    """:func:`file_operation` of the live config with ``forced`` merged over it.
+
+    What beets will resolve for a run whose ``import`` overlay is ``forced``:
+    the keys ``forced`` names win, the rest fall through to the user's config.
+    Read BEFORE the overlay is installed, so a caller can decide on the
+    operation while its own ``forced`` dict is still being built.
+    """
+    imp = config["import"]
+
+    def flag(name: str) -> object:
+        return forced[name] if name in forced else imp[name].get()
+
+    reflink = flag("reflink")
+    return file_operation(
+        move=bool(flag("move")),
+        copy=bool(flag("copy")),
+        link=bool(flag("link")),
+        hardlink=bool(flag("hardlink")),
+        # ``reflink: auto`` is its own operation, so the string has to survive
+        # the merge; anything else is read for truth like the other flags.
+        reflink=reflink if isinstance(reflink, bool | str) else bool(reflink),
+        delete=bool(flag("delete")),
     )
 
 

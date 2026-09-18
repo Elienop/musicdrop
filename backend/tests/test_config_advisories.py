@@ -291,6 +291,29 @@ def test_a_filing_flag_advisory_says_where_it_applies_not_that_it_is_ignored() -
     # reflink's own real value counts as set
     (advisory,) = _advise("import:\n  reflink: auto\n")
     assert advisory.key == "import.reflink"
+    assert "import history" not in advisory.message
+
+    # Only a hardlink forces beets' history on, and `incremental: no` beside it
+    # fires no rule of its own — so the hardlink advisory is where it is said.
+    (hardlink,) = _advise("import:\n  hardlink: yes\n  incremental: no\n")
+    assert "import.incremental" in hardlink.message
+    (link,) = _advise("import:\n  link: yes\n")
+    assert "import history" not in link.message
 
     # and an explicit off is not an opinion to contradict
     assert _advise("import:\n  hardlink: no\n") == []
+
+
+def test_incremental_advisory_names_the_hardlink_forcing_and_the_way_past_it() -> None:
+    """The sentence has to stay true as the forcing grows.
+
+    A hardlink run now turns ``incremental`` on itself, so a user reading
+    "MusicDrop honours this" needs to know a keep-downloads import does not
+    leave it alone — and that there is a per-run way past the history it
+    builds. The rule cannot DETECT the hardlink (``import_advisories``
+    validates one key at a time, so every sibling reads its default here), so
+    the clause is stated; this is what pins it.
+    """
+    msg = _message_for(_advise("import:\n  incremental: yes\n"), "import.incremental")
+    assert "hardlink" in msg
+    assert "Import them again" in msg

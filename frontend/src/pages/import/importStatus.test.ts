@@ -12,7 +12,7 @@ function job(overrides: Partial<ImportJobState> = {}): ImportJobState {
   return {
     job_id: "j",
     phase: "reviewing",
-    progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+    progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
     albums: [],
     error: null,
     origin: "manual",
@@ -29,7 +29,7 @@ function sweepState(overrides: Partial<ImportJobState> = {}): ImportJobState {
   return {
     job_id: "s",
     phase: "scanning",
-    progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+    progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
     albums: [],
     error: null,
     origin: "sweep",
@@ -99,7 +99,7 @@ describe("announceMessage", () => {
       isError: false,
       notFound: false,
       data: job({
-        progress: { applied: 2, needs_review: 1, skipped: 1, not_landed: 0 },
+        progress: { applied: 2, needs_review: 1, skipped: 1, not_landed: 0, already_known: 0 },
       }),
     });
     expect(active).toMatch(/imported 2/i);
@@ -115,7 +115,7 @@ describe("announceMessage", () => {
       // `progress` has no duplicate counter — the announcer derives it from the
       // feed row, so a screen-reader user hears the worker is waiting on them.
       data: job({
-        progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0 },
+        progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
         albums: [
           {
             index: 0,
@@ -141,7 +141,7 @@ describe("announceMessage", () => {
         notFound: false,
         data: job({
           phase: "done",
-          progress: { applied: 3, needs_review: 0, skipped: 1, not_landed: 0 },
+          progress: { applied: 3, needs_review: 0, skipped: 1, not_landed: 0, already_known: 0 },
         }),
       }),
     ).toMatch(/import complete.*imported 3.*skipped 1/i);
@@ -177,7 +177,7 @@ describe("announceMessage", () => {
     const parked = (seconds: number) =>
       speak(
         job({
-          progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
+          progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0, already_known: 0 },
           elapsed_seconds: seconds,
           awaiting_decision: true,
         }),
@@ -189,7 +189,7 @@ describe("announceMessage", () => {
       speak(
         job({
           phase: "done",
-          progress: { applied: 3, needs_review: 0, skipped: 1, not_landed: 0 },
+          progress: { applied: 3, needs_review: 0, skipped: 1, not_landed: 0, already_known: 0 },
           elapsed_seconds: 840,
         }),
       ),
@@ -205,7 +205,7 @@ describe("announceMessage", () => {
       speak(
         job({
           phase: "done",
-          progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0 },
+          progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
           elapsed_seconds: 45,
         }),
       ),
@@ -234,7 +234,7 @@ describe("announceMessage", () => {
     expect(
       speak(
         job({
-          progress: { applied: 2, needs_review: 0, skipped: 0, not_landed: 0 },
+          progress: { applied: 2, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
           elapsed_seconds: 600,
           awaiting_decision: true,
         }),
@@ -246,7 +246,7 @@ describe("announceMessage", () => {
     expect(
       speak(
         job({
-          progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
+          progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0, already_known: 0 },
           elapsed_seconds: 600,
           awaiting_decision: false,
         }),
@@ -289,7 +289,7 @@ describe("announceMessage", () => {
         job({
           phase: "failed",
           error: "the session died",
-          progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
+          progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0, already_known: 0 },
           elapsed_seconds: 840,
           awaiting_decision: true,
         }),
@@ -301,7 +301,7 @@ describe("announceMessage", () => {
       speak(
         job({
           phase: "done",
-          progress: { applied: 3, needs_review: 1, skipped: 0, not_landed: 0 },
+          progress: { applied: 3, needs_review: 1, skipped: 0, not_landed: 0, already_known: 0 },
           elapsed_seconds: 840,
           awaiting_decision: true,
         }),
@@ -319,7 +319,7 @@ describe("announceMessage", () => {
         notFound: false,
         data: job({
           phase: "done",
-          progress: { applied: 3, needs_review: 0, skipped: 1, not_landed: 2 },
+          progress: { applied: 3, needs_review: 0, skipped: 1, not_landed: 2, already_known: 0 },
           elapsed_seconds: 840,
         }),
       }),
@@ -339,7 +339,7 @@ describe("announceMessage", () => {
         job({
           phase: "failed",
           error: "the session died",
-          progress: { applied: 200, needs_review: 0, skipped: 3, not_landed: 2 },
+          progress: { applied: 200, needs_review: 0, skipped: 3, not_landed: 2, already_known: 0 },
           elapsed_seconds: 840,
         }),
       ),
@@ -423,7 +423,7 @@ describe("announceMessage", () => {
         job({
           phase: "failed",
           error: "the session died",
-          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 5 },
+          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 5, already_known: 0 },
           elapsed_seconds: 840,
         }),
       ),
@@ -437,7 +437,7 @@ describe("announceMessage", () => {
           error: "the session died",
           origin: "inbox",
           set_aside: 5,
-          progress: { applied: 2, needs_review: 5, skipped: 0, not_landed: 0 },
+          progress: { applied: 2, needs_review: 5, skipped: 0, not_landed: 0, already_known: 0 },
           elapsed_seconds: 840,
         }),
       ),

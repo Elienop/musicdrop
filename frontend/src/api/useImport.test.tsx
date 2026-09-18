@@ -162,7 +162,7 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
   return {
     job_id: "job-1",
     phase: "reviewing",
-    progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
+    progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0, already_known: 0 },
     albums: [],
     error: null,
     origin: "manual",
@@ -202,7 +202,7 @@ describe("useImportJob", () => {
     const seq: ImportJobState[] = [
       makeJob({
         phase: "scanning",
-        progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+        progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
       }),
       makeJob({ phase: "done" }),
     ];
@@ -305,7 +305,7 @@ describe("useImportJob poll cadence", () => {
       await pollIntervalFor(
         makeJob({
           phase: "scanning",
-          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
           albums: [],
         }),
       ),
@@ -318,7 +318,7 @@ describe("useImportJob poll cadence", () => {
       await pollIntervalFor(
         makeJob({
           phase: "reviewing",
-          progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0 },
+          progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
           albums: [feedRow("applied")],
         }),
       ),
@@ -340,7 +340,7 @@ describe("useImportJob poll cadence", () => {
         await pollIntervalFor(
           makeJob({
             phase: "reviewing",
-            progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
+            progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0, already_known: 0 },
             albums: [feedRow(status)],
             awaiting_decision: false,
           }),
@@ -362,7 +362,7 @@ describe("useImportJob poll cadence", () => {
       await pollIntervalFor(
         makeJob({
           phase: "scanning",
-          progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0 },
+          progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
           albums: [feedRow("applied")],
           awaiting_decision: true,
         }),
@@ -380,7 +380,7 @@ describe("useImportJob poll cadence", () => {
       await pollIntervalFor(
         makeJob({
           phase: "scanning",
-          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
           albums: [],
           awaiting_decision: true,
         }),

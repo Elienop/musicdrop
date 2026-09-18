@@ -107,6 +107,7 @@ def test_job_state_round_trips() -> None:
         "needs_review": 1,
         "skipped": 0,
         "not_landed": 0,
+        "already_known": 0,
     }
     assert dumped["albums"][0]["did_not_land"] is False  # defaulted
     assert dumped["albums"][0]["status"] == "applied"
@@ -458,6 +459,7 @@ def test_feed_shows_applied_then_the_current_needs_review() -> None:
         "needs_review": 1,
         "skipped": 0,
         "not_landed": 0,
+        "already_known": 0,
     }
 
 
@@ -702,3 +704,62 @@ def test_active_status_last_sweep_none_for_manual_done_and_failed_sweep() -> Non
         sweep=SweepStatus(processed=2),
     )
     assert reg.active_status().last_sweep is None
+
+
+# --- the per-run incremental override on the wire ----------------------------
+
+
+def test_sweep_plus_incremental_is_refused_as_a_422() -> None:
+    """A sweep sets both of beets' history keys itself (incremental on,
+    incremental_skip_later off), so a request carrying its own ``incremental``
+    is asking for two different things at once. Refused by the request model,
+    before a job slot is claimed."""
+    client = _client_with_fake()
+    resp = client.post(
+        "/api/import", json={"path": "/library", "options": {"sweep": True, "incremental": False}}
+    )
+    assert resp.status_code == 422
+    assert "sweep" in resp.text.lower()
+
+
+def test_sweep_alone_and_incremental_alone_are_both_accepted() -> None:
+    """The control for the refusal above: neither field is refused on its own,
+    and the override reaches the runner."""
+    runner = FakeImportRunner()
+    reset_registry(runner=runner)
+    client = TestClient(app)
+
+    sweep_only = client.post("/api/import", json={"path": "/library", "options": {"sweep": True}})
+    assert sweep_only.status_code == 202
+    assert runner.received_options is not None
+    assert runner.received_options.incremental is None  # the sweep decides for itself
+
+    runner = FakeImportRunner()
+    reset_registry(runner=runner)
+    client = TestClient(app)
+    override_only = client.post(
+        "/api/import", json={"path": "/library", "options": {"incremental": False}}
+    )
+    assert override_only.status_code == 202
+    assert runner.received_options is not None
+    assert runner.received_options.incremental is False
+
+
+def test_import_options_incremental_defaults_to_none() -> None:
+    """None is not False: it means "no per-run opinion", which is what lets the
+    worker decide from the resolved file operation."""
+    from app.models.import_models import ImportOptions
+
+    assert ImportOptions().incremental is None
+    req = StartImportRequest.model_validate({"path": "/library", "options": {"incremental": False}})
+    assert req.options is not None
+    assert req.options.incremental is False
+
+
+def test_the_job_state_carries_the_posted_folder_and_the_known_count() -> None:
+    """Both new fields end to end over the route the Import page polls."""
+    client = _client_with_fake(parked=[_api_parked(0, Recommendation.medium)])
+    job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
+    state = _poll(client, job_id, lambda s: len(s["albums"]) == 1)
+    assert state["path"] == "/music/incoming"
+    assert state["progress"]["already_known"] == 0

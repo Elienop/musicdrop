@@ -582,7 +582,11 @@ describe("BankReviewPage", () => {
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
-  test("a stale row offers Review now: starts an attended import of the folder, deletes the row, navigates", async () => {
+  // `incremental: false` is beets' `-I`. Banking the folder recorded it in
+  // beets' import history, and this screen deletes the row on success — so
+  // without the override a keep-downloads run skips every album here and the
+  // album is in neither the bank nor the library.
+  test("a stale row offers Review now: starts an attended import of the folder past beets' history, deletes the row, navigates", async () => {
     let importBody: unknown = null;
     let deleted = false;
     server.use(
@@ -599,7 +603,15 @@ describe("BankReviewPage", () => {
     renderRow();
     await userEvent.click(await screen.findByRole("button", { name: /review now/i }));
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/import?job=jx"));
-    expect(importBody).toEqual({ path: "/inbox/BoC" });
+    expect(importBody).toEqual({
+      path: "/inbox/BoC",
+      options: {
+        operation: "default",
+        unattended: false,
+        sweep: false,
+        incremental: false,
+      },
+    });
     expect(deleted).toBe(true);
   });
 

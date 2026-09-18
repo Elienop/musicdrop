@@ -29,11 +29,26 @@ class ImportOptions(BaseModel):
     ``{"sweep": true}`` alone is a complete sweep request. The sweep forces no
     file operation: ``operation`` behaves exactly as for a manual import (the
     in-library guard still force-corrects in-library sources to move).
+
+    ``incremental`` is the per-run override of beets' ``import.incremental``:
+    ``False`` is ``beet import -I``, the way past an import history that would
+    otherwise skip the folder (a hardlink run records every folder it imports).
+    ``True`` forces it on. ``None`` leaves the decision to the worker, which
+    turns it on for a run that keeps the files and otherwise honours the user's
+    config. A sweep sets both history keys itself, so the two cannot be
+    combined.
     """
 
     operation: Literal["default", "move", "copy"] = "default"
     unattended: bool = False
     sweep: bool = False
+    incremental: bool | None = None
+
+    @model_validator(mode="after")
+    def _sweep_owns_incremental(self) -> Self:
+        if self.sweep and self.incremental is not None:
+            raise ValueError("A sweep sets incremental itself.")
+        return self
 
 
 class Recommendation(StrEnum):

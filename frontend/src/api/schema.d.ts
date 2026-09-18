@@ -3500,6 +3500,11 @@ export interface components {
              * @enum {string}
              */
             origin: "manual" | "inbox" | "sweep" | "bank_apply";
+            /**
+             * Path
+             * @description The folder this import was started with, when it was exactly one.
+             */
+            path?: string | null;
             /** Set Aside */
             set_aside: number;
             sweep?: components["schemas"]["SweepStatus"] | null;
@@ -3529,6 +3534,14 @@ export interface components {
          *     ``{"sweep": true}`` alone is a complete sweep request. The sweep forces no
          *     file operation: ``operation`` behaves exactly as for a manual import (the
          *     in-library guard still force-corrects in-library sources to move).
+         *
+         *     ``incremental`` is the per-run override of beets' ``import.incremental``:
+         *     ``False`` is ``beet import -I``, the way past an import history that would
+         *     otherwise skip the folder (a hardlink run records every folder it imports).
+         *     ``True`` forces it on. ``None`` leaves the decision to the worker, which
+         *     turns it on for a run that keeps the files and otherwise honours the user's
+         *     config. A sweep sets both history keys itself, so the two cannot be
+         *     combined.
          */
         ImportOptions: {
             /**
@@ -3547,6 +3560,8 @@ export interface components {
              * @default false
              */
             sweep: boolean;
+            /** Incremental */
+            incremental?: boolean | null;
         };
         /**
          * ImportPhase
@@ -3576,6 +3591,12 @@ export interface components {
              * @default 0
              */
             not_landed: number;
+            /**
+             * Already Known
+             * @description Album folders skipped because beets' import history has them.
+             * @default 0
+             */
+            already_known: number;
         };
         /**
          * ImportSearch

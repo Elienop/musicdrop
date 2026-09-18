@@ -100,6 +100,10 @@ class ImportJob:
     # Where this import came from: "manual" (the web Start flow) or "inbox" (the
     # unattended acquisition seam). Surfaced on the job state + the active probe.
     origin: ImportOrigin = "manual"
+    # The single folder this job was started with, or None when it was started
+    # with several (beets takes each as its own toppath). Surfaced on the job
+    # state so a reloaded Import page can re-post the same folder.
+    path: str | None = None
     # Sweep-origin jobs count instead of accumulating feed rows: a whole-library
     # sweep would otherwise hold thousands of _FeedAlbum dicts. None for
     # manual/inbox jobs (their feed is untouched).
@@ -292,6 +296,7 @@ class ImportJobRegistry:
                 id=uuid.uuid4().hex,
                 bridge=ImportBridge(),
                 origin=origin,
+                path=paths[0] if len(paths) == 1 else None,
                 sweep=SweepStatus() if origin == "sweep" else None,
                 directive_astracks=directive is not None and directive.action == "astracks",
             )
@@ -753,10 +758,15 @@ class ImportJobRegistry:
                     needs_review=needs_review,
                     skipped=skipped,
                     not_landed=not_landed,
+                    # Read from the BRIDGE, like awaiting_decision below: a
+                    # history-skipped folder emits no outcome, so the feed rows
+                    # this method counts can never show one.
+                    already_known=job.bridge.known_skips(),
                 ),
                 albums=self._summaries(job),
                 error=job.error,
                 origin=job.origin,
+                path=job.path,
                 set_aside=set_aside,
                 sweep=job.sweep.model_copy() if job.sweep is not None else None,
                 elapsed_seconds=job.elapsed_seconds(),

@@ -40,7 +40,11 @@ from app.beets.import_mapping import (
     map_album_match,
     map_candidate_options,
 )
-from app.beets.import_operation import configured_file_operation, file_flags
+from app.beets.import_operation import (
+    configured_file_operation,
+    file_flags,
+    forced_file_operation,
+)
 from app.beets.library import _require_id, duplicate_albums_still_present
 from app.beets.merge_preview import build_merge_preview
 from app.beets.release_identity import release_identity
@@ -1567,6 +1571,7 @@ def run_import_worker(
     move: bool | None = None,
     in_place: bool = False,
     sweep: bool = False,
+    incremental: bool | None = None,
     directive: BankApplyDirective | None = None,
 ) -> None:
     """Run one import session serially on the calling (worker) thread.
@@ -1628,9 +1633,11 @@ def run_import_worker(
     ``sweep`` scopes the banking sweep's beets flags to this one run (same
     snapshot/restore discipline as move/copy): ``incremental`` on — beets'
     taghistory then skips every folder a previous sweep finished OR banked
-    (SKIPped tasks are recorded too: ``incremental_skip_later`` stays at
-    beets' default ``no``, so the bank is the sole re-entry path for banked
-    folders. ``resume`` off EXPLICITLY — beets 2.13.1 already excludes it when
+    (SKIPped tasks are recorded too: ``incremental_skip_later`` is forced
+    ``no`` so a user's ``yes`` cannot stop that recording, which left every
+    later sweep re-banking the same folders; the bank is the re-entry path for
+    a banked folder, not a re-sweep). ``resume`` off EXPLICITLY — beets 2.13.1
+    already excludes it when
     ``incremental`` is on (``importer/session.py:100-101``), and that exclusion
     is LIVE: ``want_resume`` at ``:140`` reads ``set_config``'s *parameter*,
     which is ``config["import"]``, not the module global. (An earlier note here
@@ -1660,6 +1667,16 @@ def run_import_worker(
     ``search_ids`` snapshot/restore is unconditional so a directive pin never
     leaks into the next manual import. ``sweep`` and ``directive`` are never
     both set (the runner builds one or the other).
+
+    ``incremental`` is the per-run override, and the four arms below are
+    exclusive and ordered: a ``directive`` run is non-incremental; a ``sweep``
+    is incremental; then this flag, whose ``False`` is ``beet import -I``
+    (``ui/commands/import_/__init__.py:280-286``); then the resolved file
+    operation — a run that HARDLINKS the files leaves the download in place, so
+    history is what stops the same folder importing the album a second time,
+    and ``incremental_skip_later`` goes on with it so a SKIPped album is
+    offered again. Anything else (an inbox move, in_place, a plain ``copy: yes``
+    config) leaves both history keys to the user.
     """
     # Bind the music dir for the WHOLE body: beets relativises an item's path
     # on write only when its ``music_dir`` ContextVar is set, and ``Library``
@@ -1718,6 +1735,7 @@ def run_import_worker(
                 "autotag",
                 "singletons",
                 "incremental",
+                "incremental_skip_later",
                 "resume",
                 "search_ids",
                 "move",
@@ -1761,13 +1779,34 @@ def run_import_worker(
             forced.update(file_flags("in_place"))
         elif move is not None:
             forced.update(file_flags("move" if move else "copy"))
-        if sweep:
-            forced["incremental"] = True
-            forced["resume"] = False
+        # beets' import history, in one place because the arms are exclusive.
+        # A folder is recorded when ``incremental`` is on and the album was not
+        # SKIPped-with-``incremental_skip_later`` (``importer/tasks.py:301-305``),
+        # and a recorded folder is skipped before any hook fires
+        # (``importer/session.py:246-256``).
         if directive is not None:
             forced["incremental"] = False
             forced["resume"] = False
             forced["search_ids"] = [directive.search_id] if directive.search_id else []
+        elif sweep:
+            forced["incremental"] = True
+            # A user's ``incremental_skip_later: yes`` stops a sweep recording
+            # the folders it banked or SKIPped, so every later sweep re-banks
+            # them. The bank is their re-entry path, not a re-sweep.
+            forced["incremental_skip_later"] = False
+            forced["resume"] = False
+        elif incremental is not None:
+            # The per-run override: ``False`` is ``beet import -I``, which is
+            # how a kept folder gets re-imported after its album left the
+            # library. ``incremental_skip_later`` stays the user's.
+            forced["incremental"] = incremental
+        elif forced_file_operation(forced) == "hardlink":
+            # A hardlink leaves the download in place, so adding the same
+            # folder again would import the album a second time onto one set of
+            # files. History is what stops that, and skipping an album must not
+            # record it: the user gets offered it again next time.
+            forced["incremental"] = True
+            forced["incremental_skip_later"] = True
         # ONE source per phase, not one per key: ``config[...][k] = v`` is
         # ``RootView.set``, which inserts a source that is never removed, so the
         # old per-key shape appended ~2N permanent overlays per import and made

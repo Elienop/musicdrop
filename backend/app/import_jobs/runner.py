@@ -138,6 +138,9 @@ class BeetsImportRunner:
         # additionally banks each set-aside, so it gets the bank dir.
         unattended = options.unattended if options is not None else False
         sweep = options.sweep if options is not None else False
+        # None = the worker decides from the resolved file operation (a run that
+        # keeps the files goes incremental); False is beets' own ``-I``.
+        incremental = options.incremental if options is not None else None
         session = WebImportSession(
             self._lib,
             None,  # loghandler -> beets installs a NullHandler
@@ -155,7 +158,13 @@ class BeetsImportRunner:
 
         def target() -> None:
             try:
-                run_import_worker(session, move=move, sweep=sweep, directive=directive)
+                run_import_worker(
+                    session,
+                    move=move,
+                    sweep=sweep,
+                    incremental=incremental,
+                    directive=directive,
+                )
             # Broad by design: any worker crash must become a failed job, never
             # an unhandled thread exception (which the API could not surface).
             except Exception as exc:
