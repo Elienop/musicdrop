@@ -343,7 +343,7 @@ class BankApplyRunner:
         if state is None:
             return  # shutting down mid-apply; startup reconciliation reverts
         status, error, album_id, retryable = self._classify(claimed, state, replace_targets_gone)
-        self._refresh_stored_duplicate(claimed, job_id, state)
+        self._refresh_stored_duplicate(claimed, job_id, state, status)
         bank_store.set_status(
             self._bank_dir,
             item.id,
@@ -353,20 +353,27 @@ class BankApplyRunner:
             error_retryable=retryable,
         )
 
-    def _refresh_stored_duplicate(self, item: BankItem, job_id: str, state: ImportJobState) -> None:
-        """Store the collision this apply saw, when it published one.
+    def _refresh_stored_duplicate(
+        self, item: BankItem, job_id: str, state: ImportJobState, status: BankStatus
+    ) -> None:
+        """Store the collision this apply saw, when a FAILED apply published one.
 
-        Keyed on the PROMPT, never on the note's wording: the session publishes a
-        live prompt only where the stored one is what refused the apply (stale
-        consent), so "a prompt is on the feed for an album of this job" is the
-        whole condition. Every other refusal leaves the feed without one and this
-        writes nothing.
+        Two conditions, both local. The row must have failed - what a stored
+        prompt is for is deciding again, and a row that finished has nothing left
+        to decide; overwriting its prompt would park a collision on a ``done``
+        row (``test_a_successful_apply_leaves_the_stored_prompt_alone``). And a
+        live prompt must be on the feed for an album of this job - keyed on the
+        PROMPT, never on the note's wording. The session publishes one only where
+        the stored prompt is what refused the apply (stale consent); every other
+        refusal leaves the feed without one and this writes nothing.
 
         Still inside the ``applying`` window, so the row cannot be decided or
         rescanned between this write and the status flip that follows it. A
         failure to read the prompt is not a failure of the apply: the row still
         fails with its note, one retry short of a fresh prompt.
         """
+        if status != "failed":
+            return
         for album in state.albums:
             try:
                 prompt = self._import_registry.duplicate_prompt(job_id, album.index)

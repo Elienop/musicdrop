@@ -281,6 +281,12 @@ class ImportBridge:
         stays False and the job is not reported as awaiting a decision. Used by
         the stale-consent refusal, whose remedy IS the refreshed prompt
         (:meth:`WebImportSession._consent_covers`).
+
+        "Nobody will answer" is about the SESSION, not the row: the registry
+        drains this queue into the job row, so a finished job shows
+        ``needs_dup_resolution`` with a fetchable prompt, and answering it 404s
+        ("no duplicate parked") because the session that would have consumed the
+        reply is gone. The bank row is where that decision is made again.
         """
         self._dup_out.put(prompt)
 
@@ -509,22 +515,49 @@ def _task_source_paths(task: Any) -> set[Any]:
     return {item.path for item in (task.items or []) if item is not None and item.path}
 
 
-def _entry_key(path: str) -> tuple[_EntryKey | None, bool]:
-    """One path as a DIRECTORY ENTRY: ``(key, unreadable)``.
+def _entry_key(path: str, *, follow_leaf: bool) -> tuple[_EntryKey | None, bool]:
+    """One path as a DIRECTORY ENTRY: ``(key, unreadable)``. Two questions, one shape.
 
-    ``realpath`` first, then the file's ``(st_dev, st_ino)`` PLUS its holding
-    directory's — two paths compare equal exactly when moving one would move or
-    break the other. The four measured shapes are tabulated on
-    :func:`_file_identities`, which is where this key started.
+    The key is always the leaf's ``(st_dev, st_ino)`` plus its holding
+    directory's. The holder needs no ``realpath``: ``os.stat`` follows a symlink
+    alias of the download folder by itself, so a second spelling already keys
+    equal (measured — resolving it first was an unkillable line and is gone).
+    ``follow_leaf`` is the whole difference between the two callers, and they
+    MUST answer differently on a ``link``-mode library entry:
+
+    * ``True`` — "do these two rows reach the same bytes?"
+      (:func:`_file_identities`, before a move that would break the other). A
+      library symlink onto the download file IS that file.
+    * ``False`` — "is this row the entry a move would take?"
+      (:class:`_SourceFiles`, deciding whose file this is). A library symlink is
+      NOT the file it points at: moving it moves a link and leaves the target
+      alone, so the album it belongs to is the library's to Trash.
+
+    Measured (security seat, ``link`` mode; the same table is asserted through
+    the production helpers by ``test_the_four_ownership_shapes``):
+
+    ====================  ================  =================
+    row                   follow_leaf=True  follow_leaf=False
+    ====================  ================  =================
+    the source file       == source         == source
+    link-mode lib entry   == source         != source
+    hardlink lib copy     != source         != source
+    aliased download      == source         == source
+    ====================  ================  =================
+
+    Sharing one function with ``follow_leaf=True`` for both dropped a refiled
+    ``link``-mode album's rows silently and left its entries untracked in the
+    music folder, where the previous build moved them to Trash with an origin
+    record (``test_a_link_mode_album_refiled_elsewhere_still_reaches_trash``).
 
     A missing path is not "could not be read": it answers ``(None, False)``, and
     only an ``OSError`` that is neither a missing path nor a non-directory
     component answers ``(None, True)``.
     """
-    resolved = os.path.realpath(path)
+    leaf = os.path.realpath(path) if follow_leaf else path
     try:
-        entry = os.stat(resolved)
-        holder = os.stat(os.path.dirname(resolved))
+        entry = os.stat(leaf) if follow_leaf else os.lstat(leaf)
+        holder = os.stat(os.path.dirname(leaf))
     except (FileNotFoundError, NotADirectoryError):
         return None, False
     except OSError:
@@ -548,6 +581,13 @@ class _SourceFiles:
     Not the inode alone: under ``hardlink`` the old library copy and the
     download are one inode in two folders, and that copy must still reach Trash
     (``test_a_refiled_hardlink_sibling_still_reaches_trash``).
+
+    And not the RESOLVED leaf: under ``link`` the old library entry is a symlink
+    onto the download file, so following it made the library's own entries read
+    as "files the run is reading" — the rows were dropped and a refiled album
+    was left untracked in the music folder. ``follow_leaf=False`` keys the link
+    itself, so it goes to Trash as a link and the download it points at is not
+    touched (``test_a_link_mode_album_refiled_elsewhere_still_reaches_trash``).
 
     A source file whose key cannot be built keeps its BYTES in the set and adds
     no entry, so an alias of it is not recognised. Both causes are safe here and
@@ -576,7 +616,7 @@ class _SourceFiles:
         """
         for raw in _task_source_paths(task):
             self.paths.add(raw)
-            key, unreadable = _entry_key(os.fsdecode(raw))
+            key, unreadable = _entry_key(os.fsdecode(raw), follow_leaf=False)
             if key is not None:
                 self.entries.add(key)
             elif unreadable:
@@ -590,7 +630,7 @@ class _SourceFiles:
         """Is this stored row path one of the files the run is reading?"""
         if raw in self.paths:
             return True
-        key, _unreadable = _entry_key(_abs_path(lib, raw))
+        key, _unreadable = _entry_key(_abs_path(lib, raw), follow_leaf=False)
         return key is not None and key in self.entries
 
 
@@ -616,6 +656,9 @@ def _drop_rows_the_run_is_reading(lib: Any, album: Any, source: _SourceFiles) ->
     skipped, because a bank row is a FOLDER and a folder can hold more than one
     album. beets only deletes the rows of tasks that reach ``task.add``, so a
     sibling task that is skipped leaves its own source rows for this to catch.
+    The cost of covering that sibling: a library album whose files ARE a skipped
+    task's sources is de-registered here although beets never replaces it — the
+    files stay where they are, and a re-import or a disk scan re-registers them.
 
     ``with_album=False``: the caller disposes of the album itself, and beets'
     default drops the album row the moment its last item goes
@@ -2674,14 +2717,19 @@ def _file_identities(lib: Any, album: Any) -> tuple[set[_EntryKey], bool]:
     A path that is simply absent is not "could not be read" — only an
     ``OSError`` that is neither a missing path nor a non-directory component is.
 
-    The key itself is :func:`_entry_key`, shared with the ownership question
-    (:class:`_SourceFiles`): the two ask different things of it, and one
-    definition is what keeps them from drifting apart.
+    The key is :func:`_entry_key` with ``follow_leaf=True``, and on a
+    ``link``-mode entry it MUST disagree with the ownership question
+    (:class:`_SourceFiles`, ``follow_leaf=False``): here a library symlink onto
+    a download file is that file — moving the file breaks the link, which is the
+    whole point of this set — while for ownership it is the library's own entry,
+    which Trash may take as a link. One shared definition of the two made
+    ownership follow the leaf and lose a refiled album's rows; the parameter is
+    the disagreement.
     """
     identities: set[_EntryKey] = set()
     unreadable = False
     for raw in _album_file_paths(album):
-        key, missed = _entry_key(_abs_path(lib, raw))
+        key, missed = _entry_key(_abs_path(lib, raw), follow_leaf=True)
         if key is not None:
             identities.add(key)
         unreadable = unreadable or missed

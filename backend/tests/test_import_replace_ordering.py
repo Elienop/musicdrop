@@ -1652,6 +1652,139 @@ def test_a_hardlinked_library_copy_still_reaches_trash(
     assert len(list(lib.albums())) == 1
 
 
+def test_the_four_ownership_shapes(tmp_path: Path) -> None:
+    """All four shapes at once, through the production helpers — the seat's table.
+
+    Ownership (``_SourceFiles.covers``) and identity (``_file_identities``' key)
+    are the SAME key with one parameter between them, and this is the row where
+    they must disagree: a ``link``-mode library entry is a symlink onto a source
+    file, so it reaches the same bytes (identity: equal) but is not the entry a
+    move would take (ownership: not ours). Following the leaf for both dropped a
+    refiled ``link`` album's rows —
+    ``test_a_link_mode_album_refiled_elsewhere_still_reaches_trash``.
+    """
+    lib = _library(tmp_path, "copy")
+    source = _source_folder(tmp_path)
+    src = source / "01 Track 1.flac"
+    alias_root = tmp_path / "dl-alias"
+    alias_root.symlink_to(tmp_path / "downloads")
+    aliased = alias_root / source.name / src.name
+    library_dir = Path(os.fsdecode(lib.directory)) / "Elsewhere"
+    library_dir.mkdir()
+    link_entry = library_dir / "01 Airbag 1.flac"
+    link_entry.symlink_to(src)
+    hardlinked = library_dir / "02 Airbag 2.flac"
+    os.link(src, hardlinked)
+    assert aliased.stat().st_ino == src.stat().st_ino, "premise: one file, two spellings"
+    assert link_entry.is_symlink(), "premise: link mode makes the library entry a symlink"
+    assert link_entry.resolve() == src, "premise: it points at the source file"
+    assert hardlinked.stat().st_ino == src.stat().st_ino, "premise: hardlink mode"
+
+    files = session_mod._SourceFiles()
+    files.note(_FakeTask([src]))
+    owned = {
+        p: files.covers(lib, os.fsencode(str(p))) for p in (src, aliased, link_entry, hardlinked)
+    }
+
+    assert owned == {src: True, aliased: True, link_entry: False, hardlinked: False}
+    source_key, _ = session_mod._entry_key(str(src), follow_leaf=True)
+    link_key, _ = session_mod._entry_key(str(link_entry), follow_leaf=True)
+    assert link_key == source_key, "identity must still see the link as the file it points at"
+
+
+def test_a_link_mode_album_refiled_elsewhere_still_reaches_trash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A library album of symlinks is the LIBRARY's, and goes to Trash as links.
+
+    Under ``link`` the old album's entries point at the download files this run
+    is reading. Keying ownership on the resolved leaf read them as the import's
+    own: the rows were dropped, Trash stayed empty (``notes: []``) and the
+    album's entries were left in the music folder with nothing naming them —
+    measured by the security seat. The links themselves belong to the library,
+    so they move with an origin record and the files they point at are untouched.
+
+    Refiled out of the album's own folder so that the entries cannot be confused
+    with the ones beets is about to place.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "link")
+    source = _source_folder(tmp_path)
+    trash = tmp_path / "trash"
+    music = Path(os.fsdecode(lib.directory))
+    _seed_library_copy(lib, source, monkeypatch)
+    old = next(iter(lib.albums()))
+    refiled = _refile_into_its_own_folder(lib, old, music / "Elsewhere")
+    assert [p for p in refiled if not p.is_symlink()] == [], "premise: link mode symlinked"
+    assert [p.resolve().parent for p in refiled] == [source, source], "premise: onto the download"
+    before_downloads = _tree(source)
+
+    run, notes = _replace(lib, source, trash_dir=trash)
+
+    assert run.errors == []
+    assert notes == []
+    # NOT ``get_album(old_id) is None``: the old album row is deleted inside the
+    # hook, so the album beets adds next reuses rowid 1 (measured). The rows are
+    # the oracle — nothing in the library still names the refiled entries.
+    assert len(list(lib.albums())) == 1
+    assert [p for p in _item_paths(lib) if p in set(refiled)] == [], "the old rows survived"
+    assert [p for p in refiled if p.is_symlink()] == [], "the old entries did not move"
+    assert _tree(source) == before_downloads, "the download the links point at was disturbed"
+    assert sorted(p.name for p in trash.rglob("*.flac")) == [
+        "01 Airbag 1.flac",
+        "02 Airbag 2.flac",
+    ], "the old entries did not reach Trash"
+    assert [p for p in trash.rglob("*.flac") if not p.is_symlink()] == [], "moved as links"
+    assert [p for p in trash.rglob("*.flac") if p.resolve().parent != source] == [], (
+        "a link in Trash no longer points at the download it was made from"
+    )
+    assert [p for p in _tree(origins_for(trash)) if p.endswith(".json")] != [], "no origin record"
+    tracked = set(_item_paths(lib))
+    assert [p for p in music.rglob("*.flac") if p not in tracked] == [], (
+        "an entry was left in the music folder with no row naming it"
+    )
+
+
+def test_a_link_mode_reimport_of_the_same_folder_stays_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The benign ``link`` shape, measured rather than assumed — the L1 control.
+
+    Same folder, same album, re-imported with Replace: the old entries sit
+    exactly where beets is about to place the new ones. MEASURED with the leaf
+    rule split out: the old album goes to Trash as links like any other, beets
+    then makes fresh links at the same paths, and the download is untouched. So
+    the answer is "Trash + fresh links", not "reuse" — one album, one Trash
+    container, no untracked entry.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "link")
+    source = _source_folder(tmp_path)
+    trash = tmp_path / "trash"
+    music = Path(os.fsdecode(lib.directory))
+    _seed_library_copy(lib, source, monkeypatch)
+    before_downloads = _tree(source)
+    before_paths = sorted(_item_paths(lib))
+
+    run, notes = _replace(lib, source, trash_dir=trash)
+
+    assert run.errors == []
+    assert notes == []
+    assert len(list(lib.albums())) == 1
+    assert sorted(_item_paths(lib)) == before_paths, "the new album took the same paths"
+    assert [p for p in _item_paths(lib) if not p.is_symlink()] == [], "fresh links"
+    assert [p for p in _item_paths(lib) if not p.exists()] == [], "a link points at nothing"
+    assert _tree(source) == before_downloads, "the download the links point at was disturbed"
+    assert sorted(p.name for p in trash.rglob("*.flac")) == [
+        "01 Airbag 1.flac",
+        "02 Airbag 2.flac",
+    ], "the old entries did not reach Trash"
+    tracked = set(_item_paths(lib))
+    assert [p for p in music.rglob("*.flac") if p not in tracked] == [], (
+        "an entry was left in the music folder with no row naming it"
+    )
+
+
 def test_a_source_file_that_cannot_be_keyed_still_matches_its_own_bytes(
     tmp_path: Path,
 ) -> None:

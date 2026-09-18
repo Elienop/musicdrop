@@ -1033,6 +1033,39 @@ def test_a_refusal_without_a_published_prompt_leaves_the_stored_one(tmp_path: Pa
         runner.stop()
 
 
+def test_a_successful_apply_leaves_the_stored_prompt_alone(tmp_path: Path) -> None:
+    """The second control: a row that SUCCEEDED has nothing left to decide.
+
+    Same published prompt as the refusal above, but the apply landed the album.
+    Writing the collision onto a ``done`` row would park a question on a row the
+    Review page is finished with, so the write is gated on the status the runner
+    is about to set, not on who published what.
+    """
+    handle, ids = _library(tmp_path, [("A", "B"), ("A", "B")])
+    live = _dup_prompt([_existing(ids[0]), _existing(ids[1])])
+    fake = FakeImportRunner(
+        applied=[_outcome(AlbumOutcomeStatus.applied, album_id=55)],
+        published_duplicates=[live],
+    )
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    stored = _dup_prompt([_existing(ids[0])])
+    item_id = _seed_dup_row(bank, _folder(tmp_path), DuplicateAction.replace, prompt=stored)
+
+    runner = _make_runner(bank, reg, lambda: handle)
+    runner.start()
+    try:
+        got = _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status in ("done", "failed"),
+        )
+        assert got is not None
+        assert got.status == "done"
+        assert got.duplicate == stored, "a successful apply rewrote the banked prompt"
+    finally:
+        runner.stop()
+
+
 def test_replace_is_done_when_a_banked_copy_still_survives(tmp_path: Path) -> None:
     # THE control for the arm above, identical in every other respect: an album
     # landed, the hook never ran, the prompt listed a stored id — the ONLY
