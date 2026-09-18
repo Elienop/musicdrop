@@ -163,18 +163,18 @@ entry carries a dated correction block where the pass changed it._
      Bank's Review now. `copy`, `link` and `reflink` configs are left to the user (`decisions`
      #53: the setting writes `hardlink`), though `link: yes` shares the same-file hazard below
      (measured: `util.samefile` follows the symlink).
-     Recorded by the 2026-09-18 review seats, none closed yet:
-     - **HIGH — closed by the next slice (Replace = Trash move first).** Under hardlink,
-       re-importing a folder whose album is still in the library and answering Replace leaves
-       one album whose rows name files that are gone. beets skips `unique_path` when source and
-       destination are the same file (`library/models.py:1044-1045`), so the new rows resolve
-       to the old paths, and the post-run Trash pass then moves those files away (measured for
-       `hardlink` and `link`; a copy config is healthy). Held by TWO strict xfails, the
-       `hardlink` and `link` params of
-       `test_replacing_a_duplicate_leaves_an_album_whose_files_exist` — the fix must turn both
-       red. *Keep both* on the same
-       files leaves two albums over one set of files, beets' own behaviour and untested;
-       whether the duplicate question should offer anything but Skip there is an owner call.
+     Recorded by the 2026-09-18 review seats:
+     - **HIGH — CLOSED 2026-09-18 on this branch (Replace moves the old copy to Trash first).**
+       Under hardlink or link, re-importing a folder whose album is still in the library and
+       answering Replace left one album whose rows named files that were gone: beets skips
+       `unique_path` when source and destination are the same file
+       (`library/models.py:1044-1045`), so the new rows resolved to the old paths, and the
+       post-run Trash pass then moved those files away. The `hardlink` and `link` params of
+       `test_replacing_a_duplicate_leaves_an_album_whose_files_exist` pass unmarked now; see
+       "Replace disposes of the old copy before beets places the new one" below. STILL OPEN
+       from this bullet: *Keep both* on the same files leaves two albums over one set of
+       files, beets' own behaviour and untested; whether the duplicate question should offer
+       anything but Skip there is an owner call.
      - **A mixed run cannot name what it skipped.** beets skips a known folder before any hook
        fires, MusicDrop keeps a bare counter, and Import them again is withheld when anything
        else happened — so "1 imported · 2 already known" names no folder and offers no control.
@@ -197,6 +197,57 @@ entry carries a dated correction block where the pass changed it._
        (`aria-disabled`, click swallowed) has no dim of its own, so each site adds the class,
        and a pending button keeps its hover fill. Lifting both into `buttonVariants` beside
        `disabled:opacity-50` is a primitive-level decision.
+   - **Replace disposes of the old copy before beets places the new one — BUILT 2026-09-18 on
+     `feat/import-keep-downloads`** (`decisions` #58, corrected the same day). The duplicate
+     hook moves every duplicate that has files to Trash, drops the rows of one that has none,
+     and answers beets KEEP; the new album lands on the old paths (no `.1`, no `[2]`). It
+     answers KEEP and NOT beets' own `remove` on purpose: `remove_duplicates` re-runs
+     `find_duplicates` after the user has answered, and on an as-is import `task.add` has by
+     then rewritten albumartist — measured: a compilation shown as a duplicate of
+     `('A','Comp X')` had `('Various Artists','Comp X')`, an album nobody was shown, hard-deleted
+     outside Trash with no error. If the music root looks unmounted, a duplicate's files cannot
+     be read, no Trash is wired, the store layout is refused or a move fails, beets is answered
+     SKIP, nothing is imported, and the feed row carries a short `note` saying why (a bank
+     apply fails its row with the same text). The banked route (`_seed_replace_from_directive`)
+     still trashes after the run, because a bank apply can import nothing; it moves nothing of
+     an old album that shares a file, by inode, with an album landed in that run. What the
+     2026-09-18 seats left open:
+     - **A dropped share with a stray entry on its mountpoint** (`.stfolder`, `lost+found`)
+       passes `require_library_root`, so every duplicate reads as having no files and its rows
+       are dropped while its files sit untouched on the unmounted share. Bounded to the albums
+       the user asked to replace. The stronger `require_library_present` was measured to refuse
+       a small library whose only album is the ghost, which is the flow ghost Replace exists
+       for. A refusal at import start is planned (slice 7) and covers a share that is down
+       when the run begins, not one that drops mid-run.
+     - **`link` mode: a Replace over dangling symlinks fails** (download folder moved, library
+       links dangle). beets treats a dangling link as a missing source and moves nothing; with
+       another healthy album in the library the rows are dropped, the links stay, and placement
+       then fails on the names they occupy. Measured on this branch and on the commit before
+       the reorder — the import failed there too. No data at risk. Clearing a dangling link at
+       a stored path needs its own small decision.
+     - **A ghost's surviving cover stays in the folder, and beets overwrites it later.** When the
+       old album's audio is gone but its cover is not, Replace drops the rows and leaves the
+       cover untouched (`trash_album` cannot move art when no item moved, measured). The new
+       album's `artpath` starts empty, and the next art save for it goes through beets'
+       `Album.set_art`, which removes whatever sits at the art destination before writing
+       (`library/models.py`, `util.remove(artdest)`, no `unique_path`) — so the old cover is
+       replaced then, with no Trash entry. beets' own behaviour for any untracked file at that
+       name, not only after a Replace.
+     - **One refused Replace fails the whole bank row**, even when a sibling album of the same
+       folder landed; a retry re-imports the folder and the sibling then surfaces as a
+       duplicate. A bank row is a folder and has one status.
+     - **Not run on the shipped Docker layout** (Trash on another filesystem than the music).
+       `trash_album`'s cross-device behaviour is unchanged, but its failure now arrives before
+       the import instead of after it.
+   - **BUG, on `main` — a playlist can silently name a different song.** Playlist entries
+     store a bare beets item id (`app/playlists/store.py`, `StoredEntry.item_id`), nothing
+     prunes an id whose item is gone, and SQLite hands a freed rowid to the next insert.
+     Measured 2026-09-18 with a real store and library, no Replace involved: delete the newest
+     album, import a different one — the stored ids `[1, 2]` went from `Airbag 1/2` to
+     unresolved to `Idioteque 1/2`, and the next `.m3u8` export names the new files. Reached
+     only when the deleted items held the highest ids (the newest album). After a Replace of
+     the newest album the same reuse re-points the entries at the replacement copy, which
+     happens to be what the user wants there, by accident. The fix is not designed.
    - **KNOWN LIMIT — a raced config Apply drops the pin and re-shadows the new config.** Every
      forced `import.*` key is an overlay on a mutable process global, not an invariant.
      `reset_beets_globals` calls `beets.config.clear()` (`app/beets/setup.py:133`), so an Apply
@@ -965,7 +1016,9 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   album-id branch and the queued copy); `replace` rides a new internal
   `BankApplyDirective.replace_existing` into
   the session, which unions the stored ids into the SAME post-run Trash pass the hook-recorded
-  ids use (`WebImportSession._seed_replace_from_directive`); `merge` cannot be forced at all
+  ids use (`WebImportSession._seed_replace_from_directive`; true when this shipped — since
+  2026-09-18 on `feat/import-keep-downloads` the hook disposes of its own duplicates before
+  placement and that pass serves this banked route only); `merge` cannot be forced at all
   (beets performs it inside the hook) so it is REPORTED honestly — an album that landed with
   no `needs_dup_resolution` on the feed now fails with wording that says a second copy landed
   and steers to removing one, never to a blind re-decide that would import a third;
