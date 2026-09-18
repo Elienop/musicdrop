@@ -7,16 +7,21 @@ the two files cannot drift on how an import is driven.
 
 What the ordering buys, measured rather than argued:
 
-* beets removes duplicates at ``importer/stages.py:276`` and places files at
-  ``:293``, so a Trash move made inside the duplicate hook happens while the new
-  album is still only in the download folder.
+* beets asks the duplicate hook from ``_resolve_duplicates``
+  (``importer/stages.py:337``) and places files in ``manipulate_files`` at
+  ``:294``, so a Trash move made inside the hook happens while the new album is
+  still only in the download folder.
 * all-or-nothing falls out of it: if the move fails there is nothing to undo,
   because beets has not been told anything yet.
+* the hook answers ``KEEP``, so ``task.remove_duplicates`` — the only caller of
+  which is the ``REMOVE`` arm at ``:275-276`` — never runs, and nothing is
+  disposed of except what this hook was handed.
 """
 
 from __future__ import annotations
 
 import errno
+import json
 import logging
 import os
 import shutil
@@ -26,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 from beets import config
+from beets import util as beets_util
 from beets.autotag.match import Recommendation as BeetsRec
 
 import app.beets.import_session as session_mod
@@ -43,6 +49,7 @@ from app.models.import_models import DuplicateAction, ImportAction
 from tests.conftest import origins_for
 from tests.test_import_incremental_e2e import (
     _ALBUM,
+    _ARTIST,
     _DEADLINE_S,
     _import,
     _install_lookup,
@@ -110,6 +117,92 @@ def _tree(root: Path) -> list[str]:
     if not root.exists():
         return []
     return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+
+
+def _half_finished_import(
+    lib: Library, source: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path]:
+    """The state a mid-album placement failure leaves. Returns (landed, stranded).
+
+    beets' own ``FilesystemError`` out of ``util.copy`` on the SECOND track:
+    ``task.add`` has already committed the album, so the library keeps one row
+    naming the music folder and one still naming the download folder (measured,
+    ENOSPC). Re-importing the folder is the documented repair for it, which is
+    why a Replace has to survive the shape rather than refuse it.
+    """
+    real_copy = beets_util.copy
+    calls: list[int] = []
+
+    def flaky_copy(path: Any, dest: Any, replace: bool = False) -> Any:
+        calls.append(1)
+        if len(calls) == 2:
+            raise beets_util.FilesystemError(
+                OSError(errno.ENOSPC, "No space left on device"), "copy", (path, dest)
+            )
+        return real_copy(path, dest, replace=replace)
+
+    monkeypatch.setattr(beets_util, "copy", flaky_copy)
+    try:
+        run = _import(lib, source, ImportBridge())
+    finally:
+        monkeypatch.setattr(beets_util, "copy", real_copy)
+    assert run.errors != [], "the fixture must actually fail one placement"
+    music = Path(os.fsdecode(lib.directory))
+    rows = _item_paths(lib)
+    inside = [p for p in rows if p.is_relative_to(music)]
+    outside = [p for p in rows if not p.is_relative_to(music)]
+    assert len(inside) == 1, rows
+    assert outside == [source / "02 Track 2.flac"], rows
+    return inside[0], outside[0]
+
+
+def _extra_matching_album(lib: Library, *, folder_name: str) -> tuple[int, Path]:
+    """A second library album with the SAME albumartist+album, added directly.
+
+    Directly and not by import, because the point is an album that appears in
+    the collision bucket WITHOUT ever appearing on a prompt.
+    """
+    from beets.library import Item
+
+    folder = Path(os.fsdecode(lib.directory)) / _ARTIST / folder_name
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "01 later.flac"
+    shutil.copyfile(Path(__file__).parent / "fixtures" / "silent.flac", path)
+    with lib.music_dir_context():
+        album = lib.add_album(
+            [
+                Item(
+                    artist=_ARTIST,
+                    albumartist=_ARTIST,
+                    album=_ALBUM,
+                    title="Later",
+                    track=1,
+                    length=1.0,
+                    path=os.fsencode(str(path)),
+                )
+            ]
+        )
+        album.store()
+    return _require_id(album.id), path
+
+
+def _refile_into_its_own_folder(lib: Library, album: Any, folder: Path) -> list[Path]:
+    """Move an album's files to ``folder``, rows and all, leaving its NAME alone.
+
+    Its own folder is what lets a test make one duplicate of a collision
+    unreadable without touching the other; leaving albumartist+album alone is
+    what keeps beets' name-keyed ``find_duplicates`` finding both.
+    """
+    folder.mkdir(parents=True, exist_ok=True)
+    moved: list[Path] = []
+    with lib.music_dir_context():
+        for item in album.items():
+            dest = folder / Path(os.fsdecode(item.path)).name
+            shutil.move(os.fsdecode(item.path), dest)
+            item.path = os.fsencode(str(dest))
+            item.store()
+            moved.append(dest)
+    return moved
 
 
 def _library_snapshot(lib: Library) -> list[tuple[int, str]]:
@@ -273,9 +366,9 @@ def test_a_dropped_library_root_refuses_the_replace(
     """The share is gone, so "this album has no file" means nothing.
 
     With the music root emptied, EVERY duplicate reads as a ghost — and the ghost
-    branch answers beets REMOVE, which would drop the whole collision's rows on a
-    library that is merely unreachable. ``require_library_root`` is asked first,
-    at the decision moment its own docstring names, and the run refuses instead.
+    arm drops the rows, which would take the whole collision's rows on a library
+    that is merely unreachable. ``require_library_root`` is asked first, at the
+    decision moment its own docstring names, and the run refuses instead.
 
     ``root_dropped=False`` is the control: the SAME fixture with the root intact
     replaces for real. Without it this test would pass on a build that refused
@@ -315,10 +408,13 @@ def test_a_partial_failure_still_repairs_the_exports_the_moved_copy_broke(
 ) -> None:
     """One copy left the library, so its playlists are already wrong.
 
-    The re-export sits in a ``finally`` for exactly this: the run is about to
-    answer SKIP, and the album that DID move has taken its rows with it. Running
-    the re-export only on the success path would leave those exports naming files
-    that are now in Trash.
+    The run is about to answer SKIP, and the album that DID move has taken its
+    rows with it. Running the re-export only on the success path would leave
+    those exports naming files that are now in Trash — which is what this test
+    pins. That the re-export sits in a ``finally`` rather than after the
+    ``try/except`` is pinned separately, by
+    ``test_a_run_that_fails_after_the_hook_still_repairs_the_export``: here the
+    worker returns normally, so both spellings pass.
 
     Four entries go in, two of them the trashed copy's; two lines must come out.
     """
@@ -473,7 +569,7 @@ def _run_banked_replace(
 
 
 def test_a_banked_replace_sharing_a_file_drops_rows_and_moves_nothing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """The same-file hazard on the route that still trashes after the run.
 
@@ -487,6 +583,10 @@ def test_a_banked_replace_sharing_a_file_drops_rows_and_moves_nothing(
 
     So the pass asks per ALBUM whether it shares a file with anything this run
     landed, and if it does: drop its rows, move nothing at all.
+
+    The files stay in the library UNTRACKED, which disk sync (DB from disk, one
+    way) will not pick up — so the warning has to name the album and its folder.
+    An id cannot: this one is a rowid that is free the moment the rows go.
     """
     _install_lookup(monkeypatch, BeetsRec.strong)
     lib = _library(tmp_path, "hardlink")
@@ -504,7 +604,8 @@ def test_a_banked_replace_sharing_a_file_drops_rows_and_moves_nothing(
         replace_existing=[to_existing_album(lib, lib.get_album(old_id))],
     )
 
-    assert _run_banked_replace(lib, source, trash_dir=trash, directive=directive) == []
+    with caplog.at_level(logging.WARNING, logger="app.beets.import_session"):
+        assert _run_banked_replace(lib, source, trash_dir=trash, directive=directive) == []
 
     assert lib.get_album(old_id) is None, "the renamed copy's rows survived"
     albums = list(lib.albums())
@@ -513,6 +614,9 @@ def test_a_banked_replace_sharing_a_file_drops_rows_and_moves_nothing(
     assert sorted(landed) == sorted(old_paths), "the import did not reuse the old paths"
     assert [p for p in landed if not p.exists()] == []
     assert _tree(trash) == [], "the only files the old album named are the new album's"
+    shares = [r.getMessage() for r in caplog.records if "shares a file" in r.getMessage()]
+    assert len(shares) == 1, [r.getMessage() for r in caplog.records]
+    assert f"Radiohead - Kid A ({old_paths[0].parent})" in shares[0], shares[0]
 
 
 def test_a_symlinked_library_root_is_still_the_same_file(
@@ -664,7 +768,7 @@ def test_two_albums_sharing_only_their_cover_still_share_a_file(
 
     A unit pin, not a run: the identity sets are read DURING the post-run pass,
     and nothing in a plugin-free import sets an artpath on the landed album
-    (measured in round 1b — beets imports no ``cover.jpg`` from a download folder
+    (measured — beets imports no ``cover.jpg`` from a download folder
     without ``fetchart``), so the pairing cannot be built end to end here.
     """
     from beets.library import Item
@@ -798,6 +902,14 @@ def test_a_replace_leaves_the_export_equal_to_a_fresh_render(
     thing. The invariant below holds either way; the count and the on-disk file
     are what say which one happened.
 
+    The old copy is RETITLED and moved first, so its file names differ from the
+    ones the import will compute. Without that the fixture is vacuous: in
+    ``copy`` mode a re-import of the same source reuses both the rowids and the
+    filenames, so an export nobody rewrote is already byte-equal to a fresh
+    render and deleting the re-export leaves this test green (measured by the
+    code seat). The album-level fields are untouched, so beets' name-keyed
+    ``find_duplicates`` still hits and the hook still fires.
+
     Driven through the directive route because it answers the duplicate question
     without a human; the hook and the trashing are the same code either way.
     """
@@ -812,6 +924,11 @@ def test_a_replace_leaves_the_export_equal_to_a_fresh_render(
     playlists_dir.mkdir()
     _seed_library_copy(lib, source, monkeypatch)
     old = next(iter(lib.albums()))
+    with lib.music_dir_context():  # retitled + refiled: the old names differ
+        for item in old.items():
+            item.title = f"{item.title} (first rip)"
+            item.store()
+            item.move()
     doomed = next(iter(old.items()))
     record = create_playlist(
         playlists_dir,
@@ -821,6 +938,7 @@ def test_a_replace_leaves_the_export_equal_to_a_fresh_render(
     render_export(record, lib, export_dir_for(lib))
     export = export_dir_for(lib) / f"{record.id}.m3u8"
     doomed_line = os.path.relpath(os.fsdecode(doomed.path), str(export_dir_for(lib)))
+    assert "(first rip)" in doomed_line, "the premise: the old file has its own name"
     assert doomed_line in export.read_text(encoding="utf-8")
     directive = BankApplyDirective(
         action="duplicate",
@@ -838,6 +956,7 @@ def test_a_replace_leaves_the_export_equal_to_a_fresh_render(
     after_run = export.read_text(encoding="utf-8")
     entries = [line for line in after_run.splitlines() if line and not line.startswith("#")]
     assert len(entries) == 1, after_run
+    assert doomed_line not in after_run, "the export still names the copy that left"
     named = (export_dir_for(lib) / entries[0]).resolve()
     assert named.is_file(), f"the export names a file that is not there: {named}"
     assert named in [p.resolve() for p in _item_paths(lib)], "not a file the store now holds"
@@ -1038,8 +1157,8 @@ def test_a_ghost_whose_cover_survived_is_replaced_and_its_cover_left_alone(
     not deleted and not renamed. It is still byte-identical at its own path
     afterwards, and nothing about it is in Trash.
 
-    Counting the art as presence instead (which is what this test asserted
-    before fix round 1b) sent the album to ``trash_album``, which REFUSES here:
+    Counting the art as presence instead sent the album to ``trash_album``,
+    which REFUSES here (measured, which is why the ruling reversed):
     beets skips the move of every missing track, and with no item moved
     ``Album.move_art`` computes the art destination from the album's first item,
     whose stored path never changed, so ``new_art == old_art`` and it returns
@@ -1085,44 +1204,63 @@ def test_a_ghost_whose_cover_survived_is_replaced_and_its_cover_left_alone(
     assert old_id == _require_id(next(iter(lib.albums())).id)  # the reused rowid
 
 
-def test_a_duplicate_of_dangling_symlinks_keeps_its_rows(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("broken", [True, False])
+def test_a_duplicate_of_dangling_symlinks_refuses_the_replace(
+    broken: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """MEASURED: what Trash does with an album whose files are broken links.
+    """A library path occupied by a link to nowhere is where the NEW audio goes.
 
-    ``lstat`` succeeds on a dangling symlink, so the album classifies as PRESENT
-    rather than as a ghost. ``trash_album`` then moves nothing — beets skips a
-    move whose source ``Path.exists()`` is False, and a dangling link is False
-    (``library/models.py:1178-1192``) — and its post-condition refuses to drop
-    the rows on a move that did not happen. The links stay, the rows stay,
-    nothing is imported.
+    MEASURED by the security seat: beets' ``unique_path`` asks
+    ``os.path.exists``, which is False for a dangling link, so placement takes
+    that exact name and writes THROUGH the link — the new album's FLACs land
+    wherever the link pointed, outside the music library, in ``copy``,
+    ``hardlink`` and ``reflink:auto`` alike, with no error and no note. A later
+    cleanup of that location destroys the user's only copy of an album the app
+    still lists.
 
-    The alternative reading, "the target is missing so this is a ghost", drops
-    the rows and leaves the links behind: measured with another healthy album in
-    the library, where the ghost arm's liveness check passes. It then also
-    breaks the import itself, because beets copies the new file onto a path a
-    dangling link still occupies (``FilesystemError: No such file or directory``).
+    So the whole Replace is refused before anything moves, with its own
+    sentence. Replace does not delete anything, links included (owner ruling):
+    the rows stay, the links stay, and nothing is written outside the library.
+
+    ``broken=False`` is the control — the SAME fixture with the links pointing
+    at real files, which replaces for real. Without it this test would pass on a
+    build that refused every Replace, and it is also the pin that a LIVE symlink
+    at a library path still counts as present.
     """
     _install_lookup(monkeypatch, BeetsRec.strong)
     lib = _library(tmp_path, "copy")
     source = _source_folder(tmp_path)
     trash = tmp_path / "trash"
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
     _seed_library_copy(lib, source, monkeypatch)
     old_paths = _item_paths(lib)
-    for path in old_paths:  # the file becomes a link to nowhere
-        path.unlink()
-        path.symlink_to(tmp_path / "gone" / path.name)
+    for path in old_paths:  # the file becomes a link out of the library
+        target = outside / path.name
+        if not broken:
+            shutil.move(path, target)
+        else:
+            path.unlink()
+        path.symlink_to(target)
         assert path.is_symlink()
-        assert not path.exists()  # the premise: the link resolves to nothing
+        assert path.exists() is not broken  # the premise
     before_rows = _library_snapshot(lib)
+    before_outside = _tree(outside)
 
     run, notes = _replace(lib, source, trash_dir=trash)
 
     assert run.errors == []
-    assert notes == ["Replace failed while moving the old copy to Trash. Nothing was imported."]
-    assert [p for p in old_paths if not p.is_symlink()] == [], "a link left the library"
-    assert _library_snapshot(lib) == before_rows
-    assert _tree(trash) == []
+    if broken:
+        assert notes == ["The old copy's files are broken links. Nothing was imported."]
+        assert _library_snapshot(lib) == before_rows
+        assert [p for p in old_paths if not p.is_symlink()] == [], "a link left the library"
+        assert _tree(outside) == before_outside, "the new album's audio landed outside"
+        assert _tree(trash) == []
+    else:
+        assert notes == []
+        assert len(list(lib.albums())) == 1
+        assert [p for p in _item_paths(lib) if not p.exists()] == []
+        assert [p for p in _tree(trash) if p.endswith(".flac")] != []
 
 
 def test_a_refused_store_layout_imports_nothing(
@@ -1210,3 +1348,564 @@ def test_a_run_that_fails_after_the_hook_still_repairs_the_export(
     assert "#EXTINF:" not in body, "the export still names the file the hook moved"
     render_export(record, lib, export_dir_for(lib))
     assert export.read_text(encoding="utf-8") == body
+
+
+# ----- containment: a Replace never moves a file that is not in the library -----
+
+
+def test_a_replace_leaves_a_half_finished_imports_download_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recovery from a half-finished import must not eat the download.
+
+    MEASURED before the containment rule: after a placement failure the library
+    holds one row in the music folder and one still naming the download folder,
+    and re-importing that folder — the documented repair — sent the WHOLE album
+    to ``trash_album``, which moved the import's own source file out of the
+    download folder. beets then skipped the vanished source, kept a row naming
+    nothing, and reported ``errors: []`` with ``notes: []``. The only copy of
+    that track sat in a Trash container that does not look related to the
+    current album, one Empty away from gone.
+
+    So the row is dropped and its file left alone, and the rest of the album
+    goes to Trash as before. The origin record is the same fix's second half:
+    with the straddling row gone, ``_album_root`` describes the album's music
+    folder instead of ``commonpath(music, downloads)`` — ``/`` under the shipped
+    layout, on a data-recovery surface.
+
+    The control is ``test_replace_trashes_the_old_copy_before_the_new_one_is_placed``:
+    a whole album inside the library, where every file does reach Trash.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "copy")
+    source = _source_folder(tmp_path)
+    trash = tmp_path / "trash"
+    landed, stranded = _half_finished_import(lib, source, monkeypatch)
+    before_downloads = _tree(source)
+    assert stranded.is_file()
+
+    run, notes = _replace(lib, source, trash_dir=trash)
+
+    assert run.errors == []
+    assert notes == []
+    assert _tree(source) == before_downloads, "the Replace moved the import's own source file"
+    # One album, and every row it holds names a file that is there.
+    assert len(list(lib.albums())) == 1
+    rows = _item_paths(lib)
+    assert [p for p in rows if not p.exists()] == []
+    assert sorted(p.name for p in rows) == ["01 Airbag 1.flac", "02 Airbag 2.flac"]
+    # The half that WAS in the library left, reversibly and on its own.
+    assert [p for p in _tree(trash) if p.endswith(".flac")] == [
+        "Radiohead - OK Computer/Radiohead/OK Computer/01 Airbag 1.flac"
+    ]
+    # ``landed`` still exists, and is the NEW album's file: copy mode reuses the
+    # freed name. What says the old one left is the Trash entry above.
+    assert landed in rows
+    records = [json.loads(p.read_text()) for p in sorted(origins_for(trash).rglob("*.json"))]
+    assert len(records) == 1, records
+    assert records[0]["origin"] == str(Path(os.fsdecode(lib.directory)) / _ARTIST / _ALBUM)
+
+
+def test_a_banked_replace_leaves_a_row_outside_the_music_folder_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same containment rule on the route that trashes after the run.
+
+    The straddling row is built DIRECTLY here, and the download folder it names
+    is NOT the one being imported. MEASURED as the reason: re-importing the same
+    folder makes beets' own ``ImportTask.remove_replaced``
+    (``importer/tasks.py:618``) drop every library row whose path is one of the
+    task's source paths, so the straddling row is already gone by the time this
+    pass runs — a row naming a folder the current import is not reading is what
+    remains reachable, and a second half-finished import is exactly that. The
+    copy is renamed in the DB only, which is what makes beets' name-keyed
+    ``find_duplicates`` miss it and leaves this pass as the only thing running.
+
+    The control is ``test_a_banked_replace_of_a_readable_copy_moves_it_to_trash``:
+    the same pass on an album wholly inside the library, where the files move.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "copy")
+    source = _source_folder(tmp_path)
+    trash = tmp_path / "trash"
+    _seed_library_copy(lib, source, monkeypatch)
+    old = next(iter(lib.albums()))
+    old_id = _require_id(old.id)
+    kept, stranded_from = sorted(_item_paths(lib))
+    stray_dir = tmp_path / "downloads" / "an-earlier-half-done-import"
+    stray_dir.mkdir(parents=True)
+    stray = stray_dir / stranded_from.name
+    with lib.music_dir_context():
+        for item in old.items():
+            if Path(os.fsdecode(item.path)) == stranded_from:
+                shutil.move(stranded_from, stray)
+                item.path = os.fsencode(str(stray))
+                item.store()
+        old.album = "Kid A"  # renamed in the DB only: the hook never fires
+        old.store()
+    assert sorted(_item_paths(lib)) == sorted([kept, stray])
+    directive = BankApplyDirective(
+        action="duplicate",
+        duplicate_action=DuplicateAction.replace,
+        replace_existing=[to_existing_album(lib, lib.get_album(old_id))],
+    )
+
+    assert _run_banked_replace(lib, source, trash_dir=trash, directive=directive) == []
+
+    assert _tree(stray_dir) == [stray.name], "the pass moved a file out of a download folder"
+    assert lib.get_album(old_id) is None, "the banked copy's rows survived"
+    assert [p for p in _tree(trash) if p.endswith(".flac")] == [
+        "Radiohead - Kid A/Radiohead/Kid A/01 Airbag 1.flac"
+    ], "the container is named for the album as the DB now spells it"
+    assert [p for p in _item_paths(lib) if not p.exists()] == []
+
+
+# ----- the bank route: only the duplicates the banked prompt named -----
+
+
+def test_a_bank_replace_leaves_an_album_added_after_banking_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A directive's consent set is what it named, not the live collision bucket.
+
+    MEASURED before the intersection: a directive built at sweep time was
+    applied against a library that had since gained a second matching album,
+    and the hook disposed of BOTH — the second one's rows dropped and its file
+    moved to Trash, having appeared on no prompt. The attended route cannot do
+    this (the prompt's ``existing`` list and the disposal read one list, in one
+    call, with the park in between); a directive can, because
+    ``found_duplicates`` is re-derived hours later.
+
+    The import proceeds beside the album it did not name.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "copy")
+    source = _source_folder(tmp_path)
+    trash = tmp_path / "trash"
+    _seed_library_copy(lib, source, monkeypatch)
+    banked = next(iter(lib.albums()))
+    directive = BankApplyDirective(
+        action="duplicate",
+        duplicate_action=DuplicateAction.replace,
+        replace_existing=[to_existing_album(lib, banked)],
+    )
+    later_id, later_file = _extra_matching_album(lib, folder_name="OK Computer (2nd rip)")
+
+    assert _run_banked_replace(lib, source, trash_dir=trash, directive=directive) == []
+
+    # The album nobody was shown: rows and file exactly as they were.
+    later = lib.get_album(later_id)
+    assert later is not None, "an album added after banking was disposed of"
+    assert later.album == _ALBUM, "a reused rowid, not the album we seeded"
+    assert later_file.is_file()
+    assert [os.fsdecode(i.path) for i in later.items()] == [str(later_file)]
+    # The album the prompt DID name: its files in Trash. NOT "its paths are
+    # empty": copy mode files the new album on exactly those names.
+    assert [p for p in _tree(trash) if p.endswith(".flac")] == [
+        f"{_ARTIST} - {_ALBUM}/{_ARTIST}/{_ALBUM}/01 Airbag 1.flac",
+        f"{_ARTIST} - {_ALBUM}/{_ARTIST}/{_ALBUM}/02 Airbag 2.flac",
+    ]
+    # And the import landed, beside the survivor.
+    assert sorted(a.album for a in lib.albums()) == [_ALBUM, _ALBUM]
+    assert [p for p in _item_paths(lib) if not p.exists()] == []
+
+
+def test_a_bank_replace_still_disposes_of_the_album_it_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control for the intersection: naming both duplicates disposes of both.
+
+    Same fixture, same second album, one difference — the directive names it.
+    Without this, "leaves it alone" could pass on a build that disposed of
+    nothing at all.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "copy")
+    source = _source_folder(tmp_path)
+    trash = tmp_path / "trash"
+    _seed_library_copy(lib, source, monkeypatch)
+    banked = next(iter(lib.albums()))
+    later_id, later_file = _extra_matching_album(lib, folder_name="OK Computer (2nd rip)")
+    directive = BankApplyDirective(
+        action="duplicate",
+        duplicate_action=DuplicateAction.replace,
+        replace_existing=[
+            to_existing_album(lib, banked),
+            to_existing_album(lib, lib.get_album(later_id)),
+        ],
+    )
+
+    assert _run_banked_replace(lib, source, trash_dir=trash, directive=directive) == []
+
+    assert [p for p in _tree(trash) if p.endswith(".flac")] == [
+        f"{_ARTIST} - {_ALBUM} (1)/{_ARTIST}/{_ALBUM}/01 Later.flac",
+        f"{_ARTIST} - {_ALBUM}/{_ARTIST}/{_ALBUM}/01 Airbag 1.flac",
+        f"{_ARTIST} - {_ALBUM}/{_ARTIST}/{_ALBUM}/02 Airbag 2.flac",
+    ]
+    assert not later_file.exists(), "the album the directive named was left in place"
+    assert len(list(lib.albums())) == 1
+    assert [p for p in _item_paths(lib) if not p.exists()] == []
+    # The filename oracle: both copies left BEFORE placement, so the new album
+    # took the clean names. An intersection that refused everything would leave
+    # the seed to trash them after the run, and beets' ``unique_path`` would
+    # have filed the new album at ``01 Airbag 1.1.flac``.
+    assert sorted(p.name for p in _item_paths(lib)) == ["01 Airbag 1.flac", "02 Airbag 2.flac"]
+
+
+# ----- order and freshness inside the disposal loop -----
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")
+def test_the_second_of_two_duplicates_being_unreadable_refuses_the_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The up-front classification covers EVERY duplicate, not the first.
+
+    MEASURED by the code seat with the filter narrowed to ``states[0]``: the
+    whole suite stayed green while a two-duplicate Replace trashed album 1,
+    dropped album 2's rows on an EACCES read and left album 2's files on disk
+    with no rows and no note.
+
+    The premise is the POSITION: the prompt below is asserted to name the
+    readable copy first, so a check that only asks about the first duplicate
+    cannot see this one.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "copy")
+    source = _source_folder(tmp_path)
+    trash = tmp_path / "trash"
+    _seed_library_copy(lib, source, monkeypatch, times=2)
+    first, second = sorted(lib.albums(), key=lambda a: _require_id(a.id))
+    second_id = _require_id(second.id)
+    second_paths = _refile_into_its_own_folder(
+        lib, second, Path(os.fsdecode(lib.directory)) / _ARTIST / "OK Computer (2)"
+    )
+    before_rows = _library_snapshot(lib)
+    second_paths[0].parent.chmod(0o000)
+    try:
+        run, notes = _replace(lib, source, trash_dir=trash)
+    finally:
+        second_paths[0].parent.chmod(0o755)
+
+    assert run.errors == []
+    assert len(run.duplicates) == 1, run.duplicates
+    assert [e.album_id for e in run.duplicates[0].existing] == [
+        _require_id(first.id),
+        second_id,
+    ], "the premise: the unreadable duplicate is the SECOND one"
+    assert notes == [
+        "Replace could not read the old copy's files, so nothing was moved or imported."
+    ]
+    assert _library_snapshot(lib) == before_rows, "rows changed on a refused Replace"
+    assert [p for p in second_paths if not p.exists()] == []
+    assert _tree(trash) == []
+
+
+def test_two_duplicates_over_one_file_set_replace_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One file set, two albums: the second is a ghost by the time its turn comes.
+
+    A ``hardlink`` keep-both builds this by construction — measured, albums 1
+    and 2 name the SAME two paths. The up-front pass classifies both as
+    ``present``; the first disposal moves the files; and an arm chosen from that
+    stale reading sent album 2 to ``trash_album``, which moved nothing and then
+    refused to drop the rows, leaving the library's only album naming two files
+    that are not there and importing nothing (measured by the code seat).
+
+    Re-reading each album's state at its own turn makes the second take the
+    row-drop arm, so both copies go and the import lands.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "hardlink")
+    source = _source_folder(tmp_path)
+    trash = tmp_path / "trash"
+    _seed_library_copy(lib, source, monkeypatch, times=2)
+    shared = sorted({os.fsdecode(i.path) for a in lib.albums() for i in a.items()})
+    assert len(shared) == 2, "the premise: two albums over ONE set of two files"
+
+    run, notes = _replace(lib, source, trash_dir=trash)
+
+    assert run.errors == []
+    assert notes == []
+    assert len(list(lib.albums())) == 1
+    assert [p for p in _item_paths(lib) if not p.exists()] == []
+    assert [p for p in _tree(trash) if p.endswith(".flac")] == [
+        f"{_ARTIST} - {_ALBUM}/{_ARTIST}/{_ALBUM}/01 Airbag 1.flac",
+        f"{_ARTIST} - {_ALBUM}/{_ARTIST}/{_ALBUM}/02 Airbag 2.flac",
+    ], "one container: the second album had nothing left of its own to move"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")
+def test_a_duplicate_that_turns_unreadable_mid_pass_stops_the_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The closed ``else``: a state that is neither here nor gone raises.
+
+    Reachable because the state is re-read per album — the folder is made
+    unreadable between the up-front classification and the second album's own
+    turn. Falling through to the row-drop instead would drop the rows of an
+    album whose files are all present, which is the shape the three-valued
+    classification exists to prevent.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "copy")
+    source = _source_folder(tmp_path)
+    trash = tmp_path / "trash"
+    _seed_library_copy(lib, source, monkeypatch, times=2)
+    _first, second = sorted(lib.albums(), key=lambda a: _require_id(a.id))
+    second_id = _require_id(second.id)
+    second_paths = _refile_into_its_own_folder(
+        lib, second, Path(os.fsdecode(lib.directory)) / _ARTIST / "OK Computer (2)"
+    )
+    folder = second_paths[0].parent
+
+    def then_lock_the_next_one(lib_arg: Any, album: Any, **kwargs: Any) -> str:
+        moved = str(real_trash_album(lib_arg, album, **kwargs))
+        folder.chmod(0o000)  # the race, made deterministic
+        return moved
+
+    monkeypatch.setattr(session_mod, "trash_album", then_lock_the_next_one)
+    try:
+        run, notes = _replace(lib, source, trash_dir=trash)
+    finally:
+        folder.chmod(0o755)
+
+    assert run.errors == []
+    assert notes == ["Replace moved 1 of 2 old copies to Trash, then failed. Nothing was imported."]
+    assert lib.get_album(second_id) is not None, "an unanswerable album's rows were dropped"
+    assert [p for p in second_paths if not p.exists()] == []
+    assert len(list(lib.albums())) == 1, "something was imported after a refused Replace"
+
+
+def test_a_failed_move_beside_a_ghost_costs_the_ghost_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Albums with files go first, so a failed move never costs a ghost its rows.
+
+    MEASURED in the other order: the ghost's rows were dropped, the next move
+    failed, and the note read "Replace moved 1 of 2 old copies to Trash" with
+    Trash empty — a sentence about moves, counting a row-drop. Nothing was
+    imported either, so the user lost a ghost's metadata for no gain.
+
+    Present-first makes the only reachable order the honest one: the move is
+    attempted first, fails, and the pass stops before any ghost is touched.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "copy")
+    source = _source_folder(tmp_path)
+    trash = tmp_path / "trash"
+    _seed_library_copy(lib, source, monkeypatch, times=2)
+    ghost, present = sorted(lib.albums(), key=lambda a: _require_id(a.id))
+    ghost_id = _require_id(ghost.id)
+    ghost_paths = _refile_into_its_own_folder(
+        lib, ghost, Path(os.fsdecode(lib.directory)) / _ARTIST / "OK Computer (2)"
+    )
+    for path in ghost_paths:  # rows, no files: a ghost at position ONE
+        path.unlink()
+    present_paths = [Path(os.fsdecode(i.path)) for i in present.items()]
+    before_rows = _library_snapshot(lib)
+
+    def boom(lib_arg: Any, album: Any, **kwargs: Any) -> str:
+        raise OSError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(session_mod, "trash_album", boom)
+
+    run, notes = _replace(lib, source, trash_dir=trash)
+
+    assert run.errors == []
+    assert notes == ["Replace failed while moving the old copy to Trash. Nothing was imported."]
+    assert lib.get_album(ghost_id) is not None, "the ghost paid for the other album's failure"
+    assert _library_snapshot(lib) == before_rows
+    assert [p for p in present_paths if not p.exists()] == []
+    assert _tree(trash) == []
+
+
+def test_a_raise_after_the_files_moved_still_repairs_the_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The item ids are read BEFORE the disposal call, not after it.
+
+    ``trash_album`` can raise once the files have already moved — the
+    origin-record write, or ``album.remove`` — and then the rows still name the
+    Trash location while every export naming them is stale. MEASURED with the
+    ids recorded after the call: ``export rewritten: False``, and the export
+    still named a music-folder file that is not there.
+
+    Recording first costs at most one redundant render (the re-export draws from
+    the store as it finally is), and this is the invariant it buys: when the run
+    ends, the export on disk equals a fresh render.
+    """
+    from app.playlists.reexport import export_dir_for, render_export
+    from app.playlists.store import StoredEntry, create_playlist
+
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "copy")
+    source = _source_folder(tmp_path)
+    trash = tmp_path / "trash"
+    playlists_dir = tmp_path / "playlists"
+    playlists_dir.mkdir()
+    _seed_library_copy(lib, source, monkeypatch)
+    old = next(iter(lib.albums()))
+    doomed = next(iter(old.items()))
+    record = create_playlist(
+        playlists_dir, name="Mix", entries=[StoredEntry(uid="u0", item_id=_require_id(doomed.id))]
+    )
+    render_export(record, lib, export_dir_for(lib))
+    export = export_dir_for(lib) / f"{record.id}.m3u8"
+    doomed_line = os.path.relpath(os.fsdecode(doomed.path), str(export_dir_for(lib)))
+    assert doomed_line in export.read_text(encoding="utf-8")
+
+    def move_then_die(lib_arg: Any, album: Any, *, trash_dir: Path, origins_dir: Path) -> str:
+        album.move(basedir=os.fsencode(str(trash_dir / "container")))
+        raise OSError(errno.EIO, "died after the files moved")
+
+    monkeypatch.setattr(session_mod, "trash_album", move_then_die)
+    bridge = ImportBridge()
+    run = _import(
+        lib,
+        source,
+        bridge,
+        incremental=False,
+        duplicate=DuplicateAction.replace,
+        trash_dir=trash,
+        playlists_dir=playlists_dir,
+    )
+
+    assert run.errors == []
+    assert [o.note for o in bridge.drain_outcomes() if o.note is not None] == [
+        "Replace failed while moving the old copy to Trash. Nothing was imported."
+    ]
+    assert [p for p in _tree(trash) if p.endswith(".flac")] != [], "the fixture must move files"
+    after_run = export.read_text(encoding="utf-8")
+    assert doomed_line not in after_run, "the export still names a file that moved"
+    render_export(record, lib, export_dir_for(lib))
+    assert export.read_text(encoding="utf-8") == after_run
+
+
+# ----- the banked pass: same inode is not the same directory entry -----
+
+
+def test_a_refiled_hardlink_sibling_still_reaches_trash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under ``hardlink`` the old copy and the new album are one inode by design.
+
+    Two hardlinks of one file are two directory entries. Moving the old album's
+    entry does not touch the new album's, so the old folder is trashable — and
+    reading "shares an inode" as "shares a file" left it behind as untracked
+    files in the library, invisible to disk sync, with the only trace a WARNING
+    (measured by the code seat).
+
+    So identity is the ENTRY, not the inode: the file's ``(st_dev, st_ino)`` AND
+    its holding directory's. The over-refusal that remains is two hardlinks of
+    one file side by side in ONE folder, which is left in place.
+
+    The controls either way are two tests above:
+    ``test_a_banked_replace_sharing_a_file_drops_rows_and_moves_nothing`` (one
+    entry, two albums) and
+    ``test_a_link_mode_import_onto_a_symlinked_source_shares_the_file`` (a link
+    chain ending at the old entry).
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "hardlink")
+    trash = tmp_path / "trash"
+    source, old_id, old_paths, directive = _banked_renamed_copy(lib, tmp_path, monkeypatch)
+    source_inodes = {p.stat().st_ino for p in sorted(source.glob("*.flac"))}
+    assert {p.stat().st_ino for p in old_paths} == source_inodes, (
+        "the premise: the old copy is hardlinked to the download"
+    )
+    assert {p.parent for p in old_paths} != {source}, "and it lives in its own folder"
+
+    assert _run_banked_replace(lib, source, trash_dir=trash, directive=directive) == []
+
+    landed = _item_paths(lib)
+    assert {p.stat().st_ino for p in landed} == source_inodes, (
+        "the premise: the landed album is the SAME inodes at new paths"
+    )
+    assert lib.get_album(old_id) is None
+    assert [p for p in old_paths if p.exists()] == [], "the old folder was left untracked"
+    assert [p for p in _tree(trash) if p.endswith(".flac")] != []
+    assert [p for p in _tree(origins_for(trash)) if p.endswith(".json")] != []
+    assert [p for p in landed if not p.exists()] == []
+
+
+def test_an_unreadable_landed_file_skips_the_whole_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One EACCES blinds BOTH sides of the comparison, so both are pinned.
+
+    The album's own side is
+    ``test_an_unreadable_file_leaves_the_banked_copy_in_place``. This is the
+    landed side: a file of the album this run just imported that cannot be
+    stat-ed has no identity either, so no duplicate can be ruled out as sharing
+    it and the pass moves nothing at all. Fault-injected at
+    ``_landed_file_identities`` rather than by permissions, because the landed
+    album does not exist until the run is already inside the pass.
+
+    The control is ``test_a_banked_replace_of_a_readable_copy_moves_it_to_trash``:
+    the same fixture without the injection, where the files reach Trash.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "copy")
+    trash = tmp_path / "trash"
+    source, old_id, old_paths, directive = _banked_renamed_copy(lib, tmp_path, monkeypatch)
+
+    def blind(lib_arg: Any, landed_album_ids: Any) -> tuple[set[Any], bool]:
+        return set(), True
+
+    monkeypatch.setattr(session_mod, "_landed_file_identities", blind)
+    with caplog.at_level(logging.WARNING, logger="app.beets.import_session"):
+        assert _run_banked_replace(lib, source, trash_dir=trash, directive=directive) == []
+
+    assert lib.get_album(old_id) is not None, "the banked copy's rows were dropped"
+    assert [p for p in old_paths if not p.exists()] == [], "its files were moved"
+    assert _tree(trash) == []
+    assert any("a shared file could not be ruled out" in r.getMessage() for r in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]
+
+
+def _album_naming_a_path_through_a_file(lib: Library) -> Any:
+    """One DB-only album whose row names ``<artist>/cover.jpg/01.flac``.
+
+    A path whose parent is a regular FILE: ``stat`` answers ENOTDIR, not ENOENT.
+    """
+    from beets.library import Item
+
+    blocker = Path(os.fsdecode(lib.directory)) / _ARTIST / "cover.jpg"
+    blocker.parent.mkdir(parents=True, exist_ok=True)
+    blocker.write_bytes(b"jpeg")
+    with lib.music_dir_context():
+        return lib.add_album(
+            [Item(albumartist=_ARTIST, album=_ALBUM, path=os.fsencode(str(blocker / "01.flac")))]
+        )
+
+
+def test_a_row_whose_path_runs_through_a_file_reads_as_gone(tmp_path: Path) -> None:
+    """ENOTDIR is a missing path, not an unreadable one — classification side.
+
+    Reading it as "could not be read" would refuse every Replace that met such a
+    row instead of treating the album as the ghost it is.
+    """
+    from app.beets.import_session import _album_file_state, _FileState
+
+    lib = _library(tmp_path, "copy")
+    album = _album_naming_a_path_through_a_file(lib)
+    with lib.music_dir_context():
+        assert _album_file_state(lib, album) is _FileState.absent
+
+
+def test_a_row_whose_path_runs_through_a_file_is_not_unreadable(tmp_path: Path) -> None:
+    """The same ENOTDIR on the identity side of the banked pass.
+
+    "Could not be read" there means the album keeps its rows AND its files, so a
+    row that simply names nowhere must not trip it — otherwise one such row
+    freezes the whole pass.
+    """
+    from app.beets.import_session import _file_identities
+
+    lib = _library(tmp_path, "copy")
+    album = _album_naming_a_path_through_a_file(lib)
+    with lib.music_dir_context():
+        assert _file_identities(lib, album) == (set(), False)

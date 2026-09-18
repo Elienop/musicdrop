@@ -578,6 +578,49 @@ def test_variant_gate_directive_replace_moves_a_twin_with_files_to_trash(
     assert len(origins) == 1, f"a Trash move must record where it came from: {origins}"
 
 
+@pytest.mark.parametrize("trash_wired", [False, True])
+def test_a_refused_hook_latches_that_the_run_replaced_nothing(
+    trash_wired: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The WRITE half of the latch that stops the banked seed, driven by the hook.
+
+    ``_replace_was_refused`` is one line, and it is the whole close of "a failed
+    hook-trash later trashed the second album": with it unset, a run whose
+    Replace refused still lets ``_seed_replace_from_directive`` move the user's
+    copies to Trash while their replacement was never imported. Deleting the
+    assignment left the whole suite green (measured by the code seat), because
+    the only test that read the flag set it by hand.
+
+    Here the hook itself sets it: the Trash pair is unwired, so the Replace
+    refuses and answers SKIP. ``trash_wired=True`` is the control — the same
+    call with the pair wired disposes of the duplicate and leaves the latch
+    clear, so this cannot pass on a build that latches unconditionally.
+    """
+    lib = _lib_album_in("Radiohead", "In Rainbows", tmp_path, with_file=True)
+    task = _apply_task(_match("In Rainbows"), monkeypatch)
+    session = _gate_session(
+        ImportBridge(),
+        lib,
+        directive=BankApplyDirective(action="duplicate", duplicate_action=DuplicateAction.replace),
+        trash_dir=(tmp_path / "trash") if trash_wired else None,
+    )
+    found = task.find_duplicates(lib)
+    twin_id = _require_id(found[0].id)
+    task.md_album_index = 0  # type: ignore[attr-defined]
+    assert session._replace_was_refused is False  # the premise
+
+    action = session.get_duplicate_action(task, found)
+
+    if trash_wired:
+        assert action is BeetsDuplicateAction.KEEP
+        assert lib.get_album(twin_id) is None
+        assert session._replace_was_refused is False, "a healthy Replace latched a refusal"
+    else:
+        assert action is BeetsDuplicateAction.SKIP
+        assert lib.get_album(twin_id) is not None, "a refused Replace dropped the rows"
+        assert session._replace_was_refused is True, "the banked seed was left free to run"
+
+
 # --------------------------------------------------------------------------
 # the variant signal is a compound (artist, title) key, and the normalization
 # ladder is what makes symbol-only titles group at all.

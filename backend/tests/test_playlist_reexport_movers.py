@@ -747,6 +747,11 @@ def test_run_import_worker_post_run_pass_tolerates_a_minimal_session(
     trashed: list[int] = []
 
     class _Album:
+        # ``albumartist``/``album``: the pass reads a label before any removal,
+        # so its warnings can name the album rather than a soon-free rowid.
+        albumartist = "Radiohead"
+        album = "OK Computer"
+
         def __init__(self, album_id: int) -> None:
             self.id = album_id
 

@@ -1456,6 +1456,11 @@ def test_run_import_worker_trashes_replace_ids_after_run(
     monkeypatch.setattr("app.config.settings.beets_dir", str(tmp_path / "beets"))
 
     class _Album:
+        # ``albumartist``/``album``: the pass reads a label BEFORE any removal,
+        # so its warnings can name an album whose rowid is about to be free.
+        albumartist = "Radiohead"
+        album = "OK Computer"
+
         def __init__(self, album_id: int) -> None:
             self.id = album_id
 
