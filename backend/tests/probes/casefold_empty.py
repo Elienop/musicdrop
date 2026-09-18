@@ -100,14 +100,14 @@ trees = protected_trees(
 )
 
 try:
-    empty_one(str(entry), trash_dir=trash, origins_dir=origins, protected=trees, lib=lib)
+    empty_one(str(entry), origins_dir=origins, protected=trees, lib=lib)
     print("EMPTY ONE RAN")
 except ProtectedTreeError:
     print("EMPTY ONE REFUSED")
 print("ONLY COPY SURVIVED ONE", only_copy.exists())
 
 try:
-    empty_one(str(other), trash_dir=trash, origins_dir=origins, protected=trees, lib=lib)
+    empty_one(str(other), origins_dir=origins, protected=trees, lib=lib)
     print("EMPTY ROOT-CASE RAN")
 except ProtectedTreeError:
     print("EMPTY ROOT-CASE REFUSED")

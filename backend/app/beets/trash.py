@@ -71,6 +71,19 @@ from app.wire import PLACEHOLDER, display_path
 logger = logging.getLogger(__name__)
 
 
+class TrashRowUnreadableError(Exception):
+    """An item row carries a NULL ``path``, so beets cannot move that track.
+
+    Not a shortfall to tolerate the way a missing FILE is: beets' own mover reads
+    ``item.path`` to build the destination, so a row without one raises out of
+    ``Album.move`` with rows already committed under the container. Refused in
+    :func:`trash_album` before the container is made — nothing is created, moved
+    or dropped, which is what lets ``delete._recovery`` state it as a fact rather
+    than hedge. Hand-made rows only: nothing in the app writes one
+    (``test_an_album_with_a_null_path_row_refuses_before_anything_moves``).
+    """
+
+
 class TrashMoveIncompleteError(Exception):
     """``Album.move`` returned normally but relocated nothing.
 
@@ -312,6 +325,12 @@ def trash_album(
         # caller. Behind both guards above, because this arm DROPS A ROW.
         album.remove(delete=False)
         return str(trash_dir)
+    if any(it.path is None for it in pre_move_items):
+        # Ahead of the ``mkdir``, for the same reason the two guards above are:
+        # every later step reads ``item.path`` — this file's own origin/audit
+        # readers and beets' mover alike — so the first one to meet the NULL row
+        # would raise with a container on disk and rows already rewritten.
+        raise TrashRowUnreadableError("A track of this album has no file path in the library.")
     trash_dir.mkdir(parents=True, exist_ok=True)
     container = _unique_trash_dest(trash_dir, origins_dir, _trash_container_name(album))
     container.mkdir(parents=True, exist_ok=True)

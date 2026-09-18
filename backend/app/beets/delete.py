@@ -30,17 +30,17 @@ relative item paths resolve on the worker thread (which doesn't inherit the
 from __future__ import annotations
 
 import contextlib
-import fnmatch
 import logging
 import os
 import stat
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
 import beets
-from beets.dbcore.query import PathQuery
 from beets.library import Library
+from beets.util import bytestring_path, fnmatch_all
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
@@ -53,10 +53,10 @@ from app.beets.library import (
     _require_id,
     require_library_root,
 )
-from app.beets.protected import ProtectedTrees, open_if_one_of_ours
+from app.beets.protected import ProtectedTrees, open_if_one_of_ours, rows_under_any
 from app.beets.sidecars import carry_sidecars, sidecar_base
 from app.beets.store_layout import StoreLayoutError, checked_protected_trees, checked_store_dirs
-from app.beets.trash import TrashMoveIncompleteError, trash_album
+from app.beets.trash import TrashMoveIncompleteError, TrashRowUnreadableError, trash_album
 from app.beets.trash_origins import TrashOriginsStoreUnusableError, require_usable_store
 from app.library_busy import library_job_active
 from app.models.delete import DeleteResult
@@ -187,7 +187,7 @@ def _trash_one(
     refusal would only deny the operator a delete.
     """
     items = list(album.items())
-    if _all_rows_are_in_trash(lib, items, trash_dir):
+    if _all_rows_are_in_trash(lib, items, protected.trash_spellings):
         require_usable_store(origins_dir)
         album.remove(delete=False)
         return os.path.dirname(_abs_path(lib, items[0].path))
@@ -208,14 +208,21 @@ def _trash_one(
     return trash_path
 
 
-def _all_rows_are_in_trash(lib: Library, items: list[Any], trash_dir: Path) -> bool:
+def _all_rows_are_in_trash(lib: Library, items: list[Any], roots: Sequence[Path]) -> bool:
     """Whether every item row of this album names a regular file inside Trash.
 
-    The SAME question Empty asks, asked the same way: beets' own ``PathQuery``
-    (``trash_manage._listed_entries``). A hand-rolled prefix compare on each side
-    could disagree about one row — Empty refusing an entry the retry arm does not
-    recognise leaves the user with no way out — and this one also inherits the
-    engine's directory-prefix, relative-row and case-sensitivity handling.
+    The SAME question Empty asks, from the SAME helper and over the same
+    ``roots`` (``protected.rows_under_any``, ``trash_manage._listed_entries``).
+    Two implementations could disagree about one row, and this side IS the
+    remedy the refusal names — an entry Empty refuses that the retry arm does not
+    recognise leaves the user with no way out. It also inherits the engine's
+    directory-prefix, relative-row and case-sensitivity handling.
+
+    ``it.path`` guarded: a row with a NULL path is one beets cannot interpret, so
+    it is "not in Trash" and this album takes the ordinary move — which then
+    refuses it by name (``trash.TrashRowUnreadableError``). Unguarded, the match
+    raised out of the route as a 500 carrying the Python message
+    (``test_an_album_with_a_null_path_row_refuses_before_anything_moves``).
 
     ``lstat`` + ``S_ISREG``, not ``isfile``: a symlink inside Trash onto a live
     library file took this arm and dropped the rows while the real file stayed
@@ -234,12 +241,18 @@ def _all_rows_are_in_trash(lib: Library, items: list[Any], trash_dir: Path) -> b
     ``PathQuery``'s directory arm carries a trailing separator, so a sibling
     ``trash-old`` is not inside Trash
     (``test_a_trash_old_sibling_is_not_read_as_being_in_trash``).
+
+    No ``music_dir_context`` of its own: both entry points bind it around the
+    whole delete, and an inner bind survived removal against the delete suite.
+    An unbound call would miss a Trash inside ``directory:`` and take the
+    ordinary move, which loses nothing.
     """
     if not items:
         return False
-    with lib.music_dir_context():
-        inside = PathQuery("path", os.fsencode(str(trash_dir)))
-        return all(inside.match(it) and _is_regular_file(_abs_path(lib, it.path)) for it in items)
+    inside = rows_under_any(roots)
+    return all(
+        it.path and inside.match(it) and _is_regular_file(_abs_path(lib, it.path)) for it in items
+    )
 
 
 def _is_regular_file(path: str) -> bool:
@@ -373,9 +386,14 @@ def _release_our_dirs(kept: list[_Kept]) -> None:
 
 
 def _keep_name_is_clutter() -> bool:
-    """Whether the user's ``clutter:`` list makes the keep-file invisible to the prune."""
-    patterns = beets.config["clutter"].as_str_seq()
-    return any(fnmatch.fnmatch(KEEP_NAME, str(p)) for p in patterns)
+    """Whether the user's ``clutter:`` list makes the keep-file invisible to the prune.
+
+    Asked through ``util.fnmatch_all``, the predicate ``prune_dirs`` itself calls,
+    with the same ``bytestring_path`` conversion — true by construction rather
+    than by imitation.
+    """
+    patterns = [bytestring_path(str(p)) for p in beets.config["clutter"].as_str_seq()]
+    return fnmatch_all([bytestring_path(KEEP_NAME)], patterns)
 
 
 def _dirs_the_prune_can_reach(
@@ -398,11 +416,16 @@ def _dirs_the_prune_can_reach(
     ``lib.directory`` itself is never returned: beets' prune stops there, and a
     keep-file in the music root would be planted on every delete
     (``test_no_keep_file_is_planted_in_the_music_root``).
+
+    A row with a NULL ``path`` names no directory, so the prune cannot reach one
+    from it. Skipped rather than decoded — it raised a ``TypeError`` out of the
+    route as a 500 carrying the Python message, ahead of the named refusal in
+    ``trash_album`` (``test_an_album_with_a_null_path_row_refuses_before_anything_moves``).
     """
     stop = os.path.normpath(os.fsdecode(lib.directory))
     found: list[str] = []
     seen: set[str] = set()
-    starts = [os.path.dirname(_abs_path(lib, it.path)) for it in items]
+    starts = [os.path.dirname(_abs_path(lib, it.path)) for it in items if it.path]
     if art:
         starts.append(os.path.dirname(_abs_path(lib, os.fsencode(art))))
     for start in starts:
@@ -480,12 +503,16 @@ def _stems_in_use(lib: Library, directories: set[str]) -> set[str]:
     stored, which it normalised on the way in. Normalising the ROW side only —
     the other half of this compare, ``sidecar_base(old_audio)``, never was —
     survived mutation both ways and is gone. The residual is the one Empty
-    states: a hand-edited row spelled ``..`` is not matched, so its sidecar
+    states: a hand-edited row spelled ``//`` is not matched, so its sidecar
     travels with the deleted track, which is the direction this errs in anyway.
+    (``..`` IS matched on both sides — pinned in
+    ``test_what_a_hand_built_row_spelling_answers``.)
 
-    The music root is the case that makes the prefix load-bearing:
-    ``relpath(music, music)`` is ``"."``, so a ``./`` prefix matched no stored
-    row and a neighbour's lyrics were carried off
+    NOT ``PathQuery``, unlike Empty's gate and the retry arm: this asks about the
+    music ROOT as well, and beets' predicate answers nothing there.
+    ``relpath(music, music)`` is ``"."``, so its directory arm is ``"./"``,
+    which no stored row carries — measured, 0 hits. The raw prefix pair below
+    asks ``""`` instead and finds them
     (``test_a_sidecar_claim_is_seen_for_tracks_in_the_music_root``).
     """
     stems: set[str] = set()
@@ -748,6 +775,10 @@ def _recovery(exc: Exception) -> str:
         return "Files are recoverable in the Trash folder. Retry."
     if isinstance(exc, TrashMoveIncompleteError):
         return "The files were not moved and the library still has the album. Retry."
+    # Refused before the container is made, so "nothing moved" is a fact here,
+    # and a plain retry would refuse again — the remedy has to change the row.
+    if isinstance(exc, TrashRowUnreadableError):
+        return "Nothing was moved. Fix the row in beets, then retry."
     return (
         "A delete that stops part-way can leave some or all of the files in Trash."
         " Retry before emptying Trash: emptying now can destroy the only copy."

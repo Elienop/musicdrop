@@ -10,7 +10,10 @@ per directory in the tree it walks.
 
 A leaf module — ``app.config``, ``app.fsutil`` and nothing else of this app's,
 both leaves themselves — so the movers, the remover and ``store_layout`` can all
-reach it. Residuals live in one place, the BACKLOG entry for this slice.
+reach it. It also holds :func:`rows_under_any`, the beets ``path:`` predicate the
+Trash spellings here are asked WITH, for the same reason: both movers and the
+Empty gate already import this module. Residuals live in one place, the BACKLOG
+entry for this slice.
 """
 
 from __future__ import annotations
@@ -18,10 +21,12 @@ from __future__ import annotations
 import logging
 import os
 import stat
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
+
+from beets.dbcore.query import OrQuery, PathQuery, Query
 
 from app.config import Settings, app_owned_dirs, export_dir
 from app.fsutil import BELOW_FLAGS
@@ -55,11 +60,16 @@ class ProtectedTrees:
     carried separately because ``ids`` keeps one owner per inode: the Trash is
     listed third, so for every directory after it ``ids[trash]`` says "the Trash
     directory" and an alias reads as no alias at all.
+
+    ``trash_spellings`` rides here because every caller that asks the library
+    about a Trash entry already takes this object — see :func:`_trash_spellings`
+    for what it is and why one spelling is not enough.
     """
 
     ids: ProtectedIds
     trash: tuple[int, int] | None
     trash_alias: tuple[str, str] | None
+    trash_spellings: tuple[Path, ...]
 
 
 #: What :func:`protected_trees` calls the Trash. Read back there to find the
@@ -169,7 +179,69 @@ def protected_trees(
         ((n, s) for ident, n, s in seen if ident == trash and n != _TRASH_NAME),
         None,
     )
-    return ProtectedTrees(ids=ids, trash=trash, trash_alias=alias)
+    return ProtectedTrees(
+        ids=ids,
+        trash=trash,
+        trash_alias=alias,
+        trash_spellings=_trash_spellings(settings, beets_dir, trash_dir),
+    )
+
+
+def _trash_spellings(settings: Settings, beets_dir: Path, trash_dir: Path) -> tuple[Path, ...]:
+    """Every spelling of the CURRENT Trash the app's own settings name, deduplicated.
+
+    A row holds the spelling the MOVER used; a check asks with the one the
+    settings resolve to NOW, and those differ after an ordinary ``mv trash
+    bigdisk-trash && ln -s bigdisk-trash trash``, or after the operator writes
+    the Trash's own location into Settings — measured on both Empty routes,
+    ``200`` with the album's only copy destroyed and the album still listed.
+    ``resolve_trash_dir`` returns a configured path resolved and the default
+    UNRESOLVED, so the two shapes are one setting apart.
+
+    Four CANDIDATES — what this request resolved to, ITS resolution, the
+    configured string as the operator wrote it, and the default
+    ``<beets_dir>/trash`` — deduplicated to 1-3 on every layout measured: 1 for a
+    default Trash with no link (the ordinary one), 2 for a configured real path
+    or a default leaf that is a link, 3 for a configured link. Four is the
+    ceiling of the list, never its length.
+
+    The resolution is the REVERSE of that door and needs its own clause: rows
+    written while a Trash was configured at a real path hold that real path, and
+    after the setting is CLEARED every spelling the app names is the default
+    leaf — a link to it. The gate asked ``{D, D}``, missed the rows under ``R``
+    and answered ``200`` with the album's only copy destroyed
+    (``test_empty_one_refuses_after_the_operator_clears_a_configured_trash``).
+    No new kind of I/O: ``resolve_trash_dir`` already resolves a configured path
+    every request, so this only adds something for the default. Unguarded on
+    purpose — ``Path.resolve()`` is non-strict, so a missing or looping path
+    comes back best-effort rather than raising, and the value is only ever a
+    QUERY PATTERN: a wrong one can make the gate miss, never act.
+
+    Deliberately not exhaustive — a bind mount, or a Trash re-pointed somewhere
+    none of these name, stays a recorded residual, because enumerating spellings
+    by hand is the machinery round 4 deleted.
+    """
+    spellings = [trash_dir, trash_dir.resolve()]
+    if settings.trash_dir:
+        spellings.append(Path(os.path.abspath(settings.trash_dir)))
+    spellings.append(beets_dir / "trash")
+    return tuple(dict.fromkeys(spellings))
+
+
+def rows_under_any(roots: Sequence[Path]) -> Query:
+    """beets' ``path:`` predicate for a file that IS, or is inside, any of ``roots``.
+
+    One definition, because Empty's gate and Delete's retry arm must answer the
+    same question: a refusal whose remedy does not recognise the same rows cannot
+    be cleared. Still only ``PathQuery`` — beets' own relative-row, directory-arm
+    and case handling — with ``OrQuery`` so it stays ONE pass over the rows.
+
+    Here rather than in ``library``: the roots it is asked with are
+    ``ProtectedTrees.trash_spellings``, which every caller already holds, so the
+    two halves of the question live together.
+    """
+    queries: list[Query] = [PathQuery("path", os.fsencode(str(root))) for root in roots]
+    return queries[0] if len(queries) == 1 else OrQuery(queries)
 
 
 def _note_walk_error(exc: OSError) -> None:

@@ -312,10 +312,6 @@ async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> 
             result = await run_in_threadpool(
                 empty_one,
                 str(dest),
-                # BOTH spellings: ``dest`` is resolved and the rows hold what
-                # Delete wrote. On a default Trash whose leaf is a link they
-                # differ, and the cross-check missed every row (measured).
-                trash_dir=checked.trash_dir,
                 origins_dir=checked.origins_dir,
                 protected=_required(checked.protected),
                 # The library, so an entry whose files the library still names is

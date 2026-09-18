@@ -760,7 +760,6 @@ def test_empty_one_refuses_a_protected_entry(tmp_path: Path) -> None:
     with pytest.raises(ProtectedTreeError, match="'Sneak' is the music library"):
         empty_one(
             sneak,
-            trash_dir=trash,
             origins_dir=origins,
             protected=trees,
             lib=library_with_no_rows(tmp_path),
@@ -770,7 +769,6 @@ def test_empty_one_refuses_a_protected_entry(tmp_path: Path) -> None:
     assert (
         empty_one(
             str(trash / "Ordinary"),
-            trash_dir=trash,
             origins_dir=origins,
             protected=trees,
             lib=library_with_no_rows(tmp_path),
@@ -866,7 +864,6 @@ def test_empty_one_removes_the_entry_it_guarded_and_not_the_name(
     ) as err:
         empty_one(
             entry,
-            trash_dir=trash,
             origins_dir=origins,
             protected=trees,
             lib=library_with_no_rows(tmp_path),
@@ -918,7 +915,6 @@ def test_an_entry_swapped_between_the_stat_and_the_open_is_refused(
     ) as err:
         empty_one(
             entry,
-            trash_dir=trash,
             origins_dir=origins,
             protected=trees,
             lib=library_with_no_rows(tmp_path),
@@ -994,7 +990,6 @@ def test_a_library_moved_in_after_the_walk_is_still_refused(
         else partial(
             empty_one,
             str(trash / "Album"),
-            trash_dir=trash,
             origins_dir=origins,
             protected=trees,
             lib=lib,
@@ -1485,7 +1480,7 @@ def test_the_sweep_builds_its_set_from_the_pair_the_layout_check_approved(
         seen.update(
             settings=settings_arg, handle=handle_arg, trash_dir=trash_dir, origins_dir=origins_dir
         )
-        return ProtectedTrees(ids={}, trash=None, trash_alias=None)
+        return ProtectedTrees(ids={}, trash=None, trash_alias=None, trash_spellings=(trash_dir,))
 
     monkeypatch.setattr(runner_mod, "checked_protected_trees", spy)
 
@@ -1573,7 +1568,7 @@ def test_the_empty_set_refuses_nothing(tmp_path: Path) -> None:
     """The control for every assertion above: with no identities, nothing matches."""
     music = tmp_path / "music"
     music.mkdir()
-    empty = ProtectedTrees(ids={}, trash=None, trash_alias=None)
+    empty = ProtectedTrees(ids={}, trash=None, trash_alias=None, trash_spellings=())
     assert protected_match(music, empty) is None
     refuse_protected_tree(music, empty, action="moved")
 
@@ -2000,10 +1995,12 @@ def test_a_delete_that_raises_while_collecting_leaks_no_descriptor(
 def _open_descriptors() -> Counter[str]:
     """This process's open descriptors, by WHAT each points at.
 
-    Not a set of NUMBERS: ``listdir`` opens a descriptor of its own, and a single
-    leak takes exactly the number that one had in the earlier sample, so the two
-    sets compare equal while an fd is held (code seat, round 3 — measured on the
-    keep-file leak this pins). Counting targets sees it, and the listdir's own
+    A set of NUMBERS DETECTS a leak just as well — measured both ways, and the
+    numbers-only version of this helper kills the same mutants. What it cannot do
+    is say what leaked: ``listdir`` opens a descriptor of its own, the leak takes
+    the number that one had, and the next sample's listdir takes the number after
+    it — so the set difference for a leak on fd 3 is ``{'4'}``, a descriptor that
+    was never the leak (measured). Targets name the file. The listdir's own
     descriptor is closed by the time its number is read back, so it is absent
     from both samples rather than counted in one.
     """

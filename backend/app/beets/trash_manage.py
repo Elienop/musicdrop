@@ -32,7 +32,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from beets.dbcore.query import PathQuery
 from beets.library import Item, Library
 
 from app.beets.delete import KEEP_NAME
@@ -52,6 +51,7 @@ from app.beets.protected import (
     protected_match,
     protected_tree_error,
     refuse_protected_tree,
+    rows_under_any,
 )
 from app.beets.trash_origins import (
     clear_trash_origins,
@@ -1480,7 +1480,7 @@ def resolve_trash_child(trash_dir: Path, rel: str) -> Path:
 
 
 def empty_one(
-    folder_abs: str, *, trash_dir: Path, origins_dir: Path, protected: ProtectedTrees, lib: Library
+    folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees, lib: Library
 ) -> EmptyResult:
     """Permanently remove one trashed entry — a folder or a loose file.
 
@@ -1498,13 +1498,15 @@ def empty_one(
     Trash this request checked, and when the LIBRARY still names a file inside it
     (:func:`_listed_entries`).
 
-    ``trash_dir`` is the CHECKED spelling and ``folder_abs`` the resolved one.
-    The cross-check needs both: the rows hold the spelling Delete moved with, and
-    on a default Trash whose leaf is a link those differ — measured, one click on
-    Empty answered ``200`` and destroyed the album's only copy.
+    ``folder_abs`` is the RESOLVED entry, and only the removal uses it. The
+    cross-check does not: the rows hold whichever spelling Delete moved with, so
+    it asks ``protected.trash_spellings`` — every spelling the app's own settings
+    give this Trash — through the same helper the sweep and the delete-side twin
+    use. One spelling was not enough: on a default Trash whose leaf is a link,
+    one click on Empty answered ``200`` and destroyed the album's only copy.
     """
     path = Path(folder_abs)
-    kept = _listed_entries(lib, trash_dir, [path.name]).get(path.name)
+    kept = _listed_entries(lib, protected.trash_spellings, [path.name]).get(path.name)
     if kept is not None:
         raise ProtectedTreeError(
             f"Refused: {path.name!r} — {kept.cause}. {kept.fix} Nothing was removed."
@@ -1557,7 +1559,9 @@ _LISTED_TRACK: Final = _Listed(
 _CAUSES: Final = (_LISTED_ALBUM, _LISTED_TRACK)
 
 
-def _listed_entries(lib: Library, trash_dir: Path, names: Sequence[str]) -> dict[str, _Listed]:
+def _listed_entries(
+    lib: Library, roots: Sequence[Path], names: Sequence[str]
+) -> dict[str, _Listed]:
     """Which of ``names`` the library still lists a file inside, and why.
 
     Asked of beets: ``PathQuery`` is its own ``path:`` predicate — the path itself
@@ -1566,28 +1570,41 @@ def _listed_entries(lib: Library, trash_dir: Path, names: Sequence[str]) -> dict
     each hit is bucketed per entry by the same predicate; ``album_id`` picks the
     remedy the refusal names.
 
-    Asked with the checked ``trash_dir`` only: Delete moves with that spelling,
-    so ``Album.move`` stored the rows under it. Asking the resolved path instead
-    emptied a listed album out of a linked default Trash
-    (``test_empty_one_refuses_when_the_default_trash_leaf_is_a_link``).
+    ``roots`` is every spelling the app's own settings give the current Trash
+    (:func:`~app.beets.protected._trash_spellings`), because the rows hold the
+    one the mover used. Asked as one ``OrQuery`` so it stays one pass;
+    ``delete._all_rows_are_in_trash`` asks the same set through the same helper,
+    so the remedy the refusal names still recognises the same rows.
 
     ``lib.music_dir_context()`` because relative rows need beets' music dir bound
     (``test_empty_one_refuses_a_relative_row_with_the_music_dir_context_unbound``).
 
-    Residual: beets compares path strings, so an alias it cannot see — a bind
-    mount, a second symlink, NFD against NFC, ``STRASSE`` against ``Straße`` — is
-    not recognised and Empty removes the entry. This app's own writer produces
-    none of them; measured in ``tests/probes/alias_rows.py``, recorded in BACKLOG.
+    Cost, min of 15 on a shared box at 100 000 RELATIVE rows (the slowest shape —
+    beets expands each one): 98 ms for one root spelling, then +45 ms for each
+    further one (144 / 189 / 233 ms). Linear in the spellings, so it is the
+    LENGTH of ``trash_spellings`` that sets the bill, not the number of entries —
+    and that length is 1 on an ordinary default Trash, 2-3 once a link is
+    involved (``protected._trash_spellings``). All of it runs inside the swap
+    lock, where every other library route waits.
+
+    Residual: beets compares path strings, so an alias none of ``roots`` spells —
+    a bind mount, a second symlink, a Trash re-pointed to a path no setting
+    names, NFD against NFC, ``STRASSE`` against ``Straße`` — is not recognised
+    and Empty removes the entry. Measured in ``tests/probes/alias_rows.py``,
+    recorded in BACKLOG with what IS covered.
     """
     if not names:
         return {}
     kept: dict[str, _Listed] = {}
-    root = str(trash_dir)
     with lib.music_dir_context():
-        hits = list(lib.items(PathQuery("path", os.fsencode(root))))
+        hits = list(lib.items(rows_under_any(roots)))
+        # Cost only, and load-bearing at it: building the per-entry queries
+        # probes the filesystem for case sensitivity once per pattern — 20.6 ms
+        # for 500 entries at three spellings, measured — and a healthy Trash has
+        # no hit at all, which is every request but the ones that refuse.
         if not hits:
             return {}
-        inside = {name: PathQuery("path", os.fsencode(os.path.join(root, name))) for name in names}
+        inside = {name: rows_under_any([root / name for root in roots]) for name in names}
         for item in hits:
             for name, query in inside.items():
                 if query.match(item):
@@ -1908,7 +1925,7 @@ def empty_all(
             names = sorted(entry.name for entry in entries)
         # ONE query for the whole sweep, before the first removal, inside the
         # swap lock (cost in :func:`_listed_entries`).
-        still_listed = _listed_entries(lib, trash_dir, names)
+        still_listed = _listed_entries(lib, protected.trash_spellings, names)
         for name in names:
             # Its OWN list: the rest of the Trash is still emptied, and the fix
             # for these is not the fix the protected entries below get.
@@ -1947,7 +1964,7 @@ def empty_all(
         os.close(fd)
     if listed:
         # First, because it is the only refusal here that is about LOSING data:
-        # those entries hold the album's one copy (see ``_STILL_LISTED``). It
+        # those entries hold the album's one copy (see ``_LISTED_ALBUM``). It
         # carries the other two causes with it — a raise that outranks them left
         # an entry that could not be removed invisible on every retry, which is
         # the bug the rung below documents against itself.

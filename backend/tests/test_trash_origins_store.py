@@ -332,7 +332,6 @@ def test_emptying_the_losing_row_keeps_the_other_entrys_record(tmp_path: Path) -
             str(trash / short_name),
             origins_dir=origins,
             protected=protected_for(trash_dir=trash, origins_dir=origins),
-            trash_dir=trash,
             lib=library_with_no_rows(tmp_path),
         ).removed
         == 1
@@ -814,7 +813,6 @@ def test_a_fifo_at_the_key_does_not_hang_the_delete_that_reads_it(
                 str(trash / "Album"),
                 origins_dir=origins,
                 protected=protected_for(trash_dir=trash, origins_dir=origins),
-                trash_dir=trash,
                 lib=library_with_no_rows(tmp_path),
             ).removed
         )
@@ -859,7 +857,6 @@ def test_a_file_too_large_to_be_a_record_is_refused_on_the_delete_path_too(
             str(trash / "Album"),
             origins_dir=origins,
             protected=protected_for(trash_dir=trash, origins_dir=origins),
-            trash_dir=trash,
             lib=library_with_no_rows(tmp_path),
         ).removed
 
@@ -1117,7 +1114,6 @@ def test_a_record_the_json_parser_gives_up_on_does_not_escape_empty_one(
             str(trash / "Deep"),
             origins_dir=origins,
             protected=protected_for(trash_dir=trash, origins_dir=origins),
-            trash_dir=trash,
             lib=library_with_no_rows(tmp_path),
         ).removed
         == 1

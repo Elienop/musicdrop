@@ -80,7 +80,7 @@ def _measure(label: str, root: Path, entry_name: str, row_spelling: str) -> None
         library_path=work / "library.db",
     )
     try:
-        empty_one(str(entry), trash_dir=trash, origins_dir=origins, protected=trees, lib=lib)
+        empty_one(str(entry), origins_dir=origins, protected=trees, lib=lib)
         print(f"{label} REMOVED")
     except ProtectedTreeError:
         print(f"{label} REFUSED")
@@ -131,7 +131,7 @@ trees = protected_trees(
     library_path=_measure_bind / "library.db",
 )
 try:
-    empty_one(str(entry), trash_dir=bind_trash, origins_dir=origins, protected=trees, lib=lib)
+    empty_one(str(entry), origins_dir=origins, protected=trees, lib=lib)
     print("BIND REMOVED")
 except ProtectedTreeError:
     print("BIND REFUSED")
@@ -163,7 +163,7 @@ trees = protected_trees(
     library_path=link_work / "library.db",
 )
 try:
-    empty_one(str(entry), trash_dir=link_trash, origins_dir=origins, protected=trees, lib=lib)
+    empty_one(str(entry), origins_dir=origins, protected=trees, lib=lib)
     print("SYMLINK REMOVED")
 except ProtectedTreeError:
     print("SYMLINK REFUSED")

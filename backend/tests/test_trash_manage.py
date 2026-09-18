@@ -453,7 +453,6 @@ def test_empty_one_and_all(tmp_path: Path) -> None:
             str(trash / "A"),
             origins_dir=origins_for(trash),
             protected=protected_for(trash_dir=trash, origins_dir=origins_for(trash)),
-            trash_dir=trash,
             lib=library_with_no_rows(tmp_path),
         ).removed
         == 1
@@ -1108,7 +1107,6 @@ def test_empty_one_removes_a_loose_file(tmp_path: Path) -> None:
             str(trash / "loose.flac"),
             origins_dir=origins_for(trash),
             protected=protected_for(trash_dir=trash, origins_dir=origins_for(trash)),
-            trash_dir=trash,
             lib=library_with_no_rows(tmp_path),
         ).removed
         == 1

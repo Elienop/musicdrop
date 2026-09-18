@@ -2273,7 +2273,6 @@ def test_empty_one_removes_the_origin_record(
             str(dest),
             origins_dir=_origins(tmp_path),
             protected=protected_for(trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)),
-            trash_dir=tmp_path / "trash",
             lib=library_with_no_rows(tmp_path),
         ).removed
 
@@ -2315,7 +2314,6 @@ def test_empty_one_keeps_the_record_when_the_removal_itself_fails(tmp_path: Path
         with pytest.raises(OSError):
             empty_one(
                 entry_path,
-                trash_dir=tmp_path / "trash",
                 origins_dir=origins,
                 protected=trees,
                 lib=library_with_no_rows(tmp_path),

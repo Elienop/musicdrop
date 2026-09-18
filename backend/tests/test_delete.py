@@ -1589,6 +1589,67 @@ def test_delete_album_500_does_not_read_the_answer_out_of_a_half_moved_album(
     assert (tmp_path / "music" / "Sharey" / "Both" / "03 B.mp3").is_file()
 
 
+def test_an_album_with_a_null_path_row_refuses_before_anything_moves(tmp_path: Path) -> None:
+    """A NULL ``path`` row is refused by name, not relayed as a Python message.
+
+    Hand-made: nothing in the app writes a row without a path, and the column is
+    nullable, so this is the shape a hand-edited DB can hand the route. Measured
+    before the refusal existed: the retry twin's ``PathQuery`` match raised
+    ``AttributeError``, and with that guarded the prune walk raised ``TypeError:
+    expected str, bytes or os.PathLike object, not NoneType`` — both left the
+    wire carrying the interpreter's own words, and the second had already made a
+    Trash container.
+
+    Two things are pinned: the body is the app's sentences on both fields, and
+    the state is untouched — rows kept, the good file where it was, Trash empty.
+    """
+    from beets.library import Item
+
+    music = tmp_path / "music"
+    folder = music / "Art" / "Alb"
+    folder.mkdir(parents=True)
+    good = folder / "01 T1.mp3"
+    good.write_bytes(b"\x00")
+    lib = build_library(str(beets_dir_for(tmp_path) / "library.db"), str(music))
+    one = Item(album="Alb", albumartist="Art", artist="Art", title="T1", track=1)
+    one.path = os.fsencode(str(good))
+    two = Item(album="Alb", albumartist="Art", artist="Art", title="T2", track=2)
+    two.path = os.fsencode(str(folder / "02 T2.mp3"))
+    album = lib.add_album([one, two])
+    album.store()
+    album_id = _require_id(album.id)
+    with lib.transaction() as tx:
+        tx.mutate("UPDATE items SET path = NULL WHERE track = 2", ())
+    trash = tmp_path / "trash"
+    handle = make_test_handle(lib, beets_dir_for(tmp_path))
+
+    class _App:
+        state = SimpleNamespace(
+            beets_library=handle,
+            settings=Settings(trash_dir=str(trash), trash_origins_dir=str(origins_for(trash))),
+        )
+
+    class _Req:
+        app = _App()
+
+    req = _Req()
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(delete_album_op(req, album_id))  # type: ignore[arg-type]  # stub req
+
+    assert ei.value.status_code == 500
+    detail = ei.value.detail
+    assert isinstance(detail, dict)
+    assert detail["message"] == (
+        "Delete failed: A track of this album has no file path in the library."
+    )
+    assert detail["recovery"] == "Nothing was moved. Fix the row in beets, then retry."
+    assert "NoneType" not in detail["message"], "no interpreter text on the wire"
+    # Nothing moved, nothing dropped, and no container was made.
+    assert lib.get_album(album_id) is not None
+    assert good.is_file()
+    assert sorted(p.name for p in trash.rglob("*")) == []
+
+
 def _shared_folder_ghost_library(tmp_path: Path) -> Library:
     """Two albums of one artist in ONE folder, the first of them files-less.
 
@@ -2304,6 +2365,44 @@ def test_rows_inside_trash_with_their_files_gone_still_meet_the_root_guard(
         _delete(lib, album_id, trash)
 
     assert lib.get_album(album_id) is not None, "nothing may be dropped on this path"
+
+
+def test_a_null_path_row_beside_rows_already_in_trash_refuses_by_name(tmp_path: Path) -> None:
+    """The one shape that REACHES the retry arm's ``it.path`` guard.
+
+    ``all()`` short-circuits, so an album with a NULL row and any row outside
+    Trash never asks about the NULL one. Here every other row IS in Trash, the
+    arm walks all of them, and the guard is what stops beets' predicate being
+    handed a ``None`` — unguarded it raised ``AttributeError: 'NoneType' object
+    has no attribute 'startswith'`` out of the route. Guarded, the album takes
+    the ordinary move and meets the named refusal there.
+    """
+    from beets.library import Item
+
+    from app.beets.trash import TrashRowUnreadableError
+
+    music = tmp_path / "music"
+    trash = music / "Trash"
+    entry = trash / "Art - Alb"
+    entry.mkdir(parents=True)
+    lib = build_library(str(beets_dir_for(tmp_path) / "library.db"), str(music))
+    track = entry / "01 T1.mp3"
+    track.write_bytes(b"\x00")
+    one = Item(album="Alb", albumartist="Art", artist="Art", title="T1", track=1)
+    one.path = os.fsencode(str(track))
+    two = Item(album="Alb", albumartist="Art", artist="Art", title="T2", track=2)
+    two.path = os.fsencode(str(entry / "02 T2.mp3"))
+    album = lib.add_album([one, two])
+    album.store()
+    album_id = _require_id(album.id)
+    with lib.transaction() as tx:
+        tx.mutate("UPDATE items SET path = NULL WHERE track = 2", ())
+
+    with pytest.raises(TrashRowUnreadableError):
+        _delete(lib, album_id, trash)
+
+    assert lib.get_album(album_id) is not None, "the rows are kept"
+    assert track.is_file(), "and the file that was already in Trash stayed"
 
 
 # --- the guards every row-dropping arm has to run first -----------------------
