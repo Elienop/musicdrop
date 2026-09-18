@@ -10023,6 +10023,18 @@
                 "type": "null"
               }
             ]
+          },
+          "folder_outside_library": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder Outside Library",
+            "description": "The folder of one album file that is not under the library folder."
           }
         },
         "type": "object",
@@ -10034,7 +10046,8 @@
           "track_count",
           "genre",
           "mb_albumid",
-          "tracks"
+          "tracks",
+          "folder_outside_library"
         ],
         "title": "AlbumDetail"
       },

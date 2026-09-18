@@ -2168,6 +2168,11 @@ export interface components {
             /** Tracks */
             tracks: components["schemas"]["Track"][];
             release?: components["schemas"]["ReleaseIdentity"] | null;
+            /**
+             * Folder Outside Library
+             * @description The folder of one album file that is not under the library folder.
+             */
+            folder_outside_library: string | null;
         };
         /**
          * AlbumDiffSide

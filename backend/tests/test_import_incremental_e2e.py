@@ -33,6 +33,7 @@ from beets.autotag.match import Proposal, assign_items
 from beets.autotag.match import Recommendation as BeetsRec
 
 from app.beets.import_session import ImportBridge, WebImportSession, run_import_worker
+from app.beets.library import _require_id, get_album_detail
 from app.models.import_models import (
     DuplicateAction,
     DuplicateDecision,
@@ -235,6 +236,119 @@ def _item_paths(lib: Library) -> list[Path]:
     """Every library item's file path, resolved the way beets resolves it."""
     with lib.music_dir_context():
         return [Path(os.fsdecode(item.path)) for item in lib.items()]
+
+
+def _stop_during_placement(
+    monkeypatch: pytest.MonkeyPatch, operation: str, nth: int
+) -> dict[str, bool]:
+    """Fail the ``nth`` file placement the way a cross-device hardlink fails.
+
+    beets raises ``FilesystemError`` out of ``util.hardlink`` on EXDEV
+    (``B/util/__init__.py:586-592``) and the import run does not catch it, so an
+    injected raise from the same function reaches exactly the same code. The
+    filing flag and the ``util`` function ``Item.move_file`` calls for it share a
+    name (``B/library/models.py:1046-1080``). Returns an ``armed`` dict the
+    caller flips off before the repair run.
+    """
+    from beets import util
+    from beets.util import FilesystemError
+
+    real = getattr(util, operation)
+    armed = {"on": True}
+    calls = {"n": 0}
+
+    def guarded(path: Any, dest: Any, *args: Any, **kwargs: Any) -> Any:
+        if armed["on"]:
+            calls["n"] += 1
+            if calls["n"] == nth:
+                raise FilesystemError(
+                    "Cannot hard link across devices", "link", (path, dest), "injected"
+                )
+        return real(path, dest, *args, **kwargs)
+
+    monkeypatch.setattr(util, operation, guarded)
+    return armed
+
+
+@pytest.mark.parametrize("nth", [2, 1])
+def test_a_stop_during_placement_leaves_rows_naming_the_download(
+    nth: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What a half-finished import leaves behind, in-process — slice 5's subject.
+
+    beets adds the rows at ``task.add`` (the ``user_query`` stage) and places
+    files in the last stage, so a stop during placement leaves the placed rows on
+    library paths and the unplaced ones on the DOWNLOAD path. ``nth=2`` stops
+    after one track landed; ``nth=1`` is what a cross-device hardlink does, where
+    every track fails so the first one does.
+
+    Measured here, not assumed: the run raises, no album is repaired, and the
+    detail endpoint's field names the download folder either way.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "hardlink")
+    source = _source_folder(tmp_path)
+    _stop_during_placement(monkeypatch, "hardlink", nth)
+
+    run = _import(lib, source, ImportBridge())
+    assert run.errors != [], "the placement failure was swallowed"
+    assert "Cannot hard link across devices" in run.errors[0]
+
+    (album,) = list(lib.albums())
+    outside = [p for p in _item_paths(lib) if source in p.parents]
+    assert len(outside) == 3 - nth  # nth=2 -> one row left behind, nth=1 -> both
+    assert sorted(p.name for p in source.iterdir()) == ["01 Track 1.flac", "02 Track 2.flac"]
+
+    detail = get_album_detail(lib, _require_id(album.id))
+    assert detail is not None
+    assert detail.folder_outside_library == str(source)
+
+
+@pytest.mark.parametrize("operation", ["copy", "hardlink"])
+@pytest.mark.parametrize("nth", [2, 1])
+def test_re_importing_a_stopped_folder_and_answering_replace_finishes_it(
+    operation: str, nth: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The remedy the UI offers: import that folder again, answer Replace.
+
+    End state, under an operation that keeps the download: one album, every row
+    inside the library, the flag off, every file on disk, and the download
+    untouched. ``incremental: false`` is how the second run gets past the history
+    beets wrote for a kept import.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, operation)
+    source = _source_folder(tmp_path)
+    trash = tmp_path / "trash"
+    trash.mkdir()
+    armed = _stop_during_placement(monkeypatch, operation, nth)
+
+    assert _import(lib, source, ImportBridge()).errors != []
+    armed["on"] = False
+
+    run = _import(
+        lib,
+        source,
+        ImportBridge(),
+        incremental=False,
+        duplicate=DuplicateAction.replace,
+        trash_dir=trash,
+    )
+    assert run.errors == []
+    # Measured, and it is beets' shape rather than ours: the prompt fires only
+    # when a track actually landed. With NO track placed every row names a file
+    # this task is importing, so ``find_duplicates`` excludes the album
+    # (``B/importer/tasks.py:387-397``) and ``remove_replaced`` (``:618-625``)
+    # drops those rows at ``task.add`` — nothing is asked, and nothing is lost.
+    assert (run.duplicates != []) is (nth == 2)
+    (album,) = list(lib.albums())
+    detail = get_album_detail(lib, _require_id(album.id))
+    assert detail is not None
+    assert detail.folder_outside_library is None
+    assert len(detail.tracks) == 2
+    landed = _item_paths(lib)
+    assert [p for p in landed if not p.exists()] == []
+    assert sorted(p.name for p in source.iterdir()) == ["01 Track 1.flac", "02 Track 2.flac"]
 
 
 def test_an_abandoned_park_leaves_no_worker_holding_the_config_lock(

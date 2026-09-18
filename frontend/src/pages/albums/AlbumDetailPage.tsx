@@ -15,6 +15,7 @@ import { ReleaseInfo } from "@/components/albums/ReleaseInfo";
 import {
   Cover as CoverIcon,
   Edit as EditIcon,
+  Info,
   Lyrics as LyricsIcon,
   MusicFallback,
   Spinner,
@@ -147,6 +148,15 @@ function AlbumDetailView({ album }: Readonly<{ album: AlbumDetail }>) {
           to={`/artists/${encodeURIComponent(album.album_artist)}`}
           label={album.album_artist}
         />
+      )}
+
+      {/* Above the rail, not inside the tracklist column: on a phone the
+          column stacks BELOW the whole cover panel, so a notice about the
+          album as a whole would arrive after the artwork and the actions.
+          Here it is the second thing read on every viewport and the rail's
+          own layout is untouched. */}
+      {album.folder_outside_library !== null && (
+        <OutsideLibraryNotice folder={album.folder_outside_library} />
       )}
 
       {/* Rail layout (the artist-page idiom): the left side is dedicated to
@@ -343,6 +353,44 @@ function AlbumDetailView({ album }: Readonly<{ album: AlbumDetail }>) {
         </div>
       </div>
     </article>
+  );
+}
+
+/** States where some of the album's files are, when the backend reports one
+ * that is not under the library folder.
+ *
+ * The field is a FACT, not a cause: an in-place import, an edited `directory:`
+ * and rows left in a Trash outside the music folder all produce it, and so does
+ * the case this exists for — an import that stopped part-way. So the sentence
+ * states the fact and offers the remedy conditionally ("if"), and nothing is
+ * lost either way: no destructive tone, no `role="alert"`.
+ *
+ * The recipe is the app's calm inline note — bordered box, muted text, leading
+ * Info glyph — as used by CoverEditPanel's cover detail and
+ * ArtistImageEditPanel's blocked sources. Deliberately NOT `StatusBanner`:
+ * that primitive maps every tone to a live-region role (`status`/`alert`), and
+ * this text is present at load and never changes, so a live region would
+ * announce nothing while still adding a region to browse mode. A plain <p> is
+ * read in document order; the glyph is decorative. */
+function OutsideLibraryNotice({ folder }: Readonly<{ folder: string }>) {
+  return (
+    <p className="text-muted-foreground flex items-start gap-2 rounded-md border p-3 text-sm">
+      <Info className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      {/* `min-w-0` sets the floor, `break-words` chooses the line break — two
+       * different jobs and neither substitutes for the other. The span is a
+       * flex item of the <p>, so without `min-w-0` its min-width is the longest
+       * unbreakable token inside it and a path component with no separator
+       * pushes the page sideways; SettingsTrashPage.tsx's RestoreOutlook
+       * spells the pair out with the numbers measured at 320px. The wrap goes
+       * on the PATH span only, so the sentence around it keeps breaking at
+       * words, and `text-foreground` lifts the one datum the reader has to act
+       * on out of the muted prose (the PlexSettingsPanel folder idiom). */}
+      <span className="min-w-0">
+        Some of this album’s files are outside your library folder:{" "}
+        <span className="text-foreground break-words">{folder}</span>. If an
+        import stopped part-way, import that folder again.
+      </span>
+    </p>
   );
 }
 

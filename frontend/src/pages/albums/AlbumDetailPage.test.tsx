@@ -37,6 +37,8 @@ function makeDetail(overrides: Partial<AlbumDetail> = {}): AlbumDetail {
     track_count: 3,
     genre: "Alternative Rock",
     mb_albumid: null,
+    // The ordinary album: every file under the library folder.
+    folder_outside_library: null,
     tracks: [
       makeTrack({
         id: 1,
@@ -626,5 +628,78 @@ describe("AlbumDetailPage", () => {
     expect(
       await screen.findByRole("region", { name: "Tracklist" }),
     ).toBeInTheDocument();
+  });
+
+  /** The notice's whole sentence — the test's own copy of the production
+   * string, so a reworded half fails rather than a fragment still matching. */
+  const outsideNotice = (folder: string) =>
+    `Some of this album’s files are outside your library folder: ${folder}. ` +
+    `If an import stopped part-way, import that folder again.`;
+
+  /** One path component at Linux's NAME_MAX, with nothing to break at — the
+   * string the wrapping classes exist for. */
+  const TORTURE_FOLDER = `/downloads/${"z".repeat(255)}`;
+
+  test("names the folder when some of the album's files are outside the library", async () => {
+    const folder = "/downloads/Radiohead - OK Computer";
+    server.use(
+      http.get(DETAIL_URL, () =>
+        HttpResponse.json(makeDetail({ folder_outside_library: folder })),
+      ),
+    );
+    renderDetail(1);
+
+    // The path sits in its own span for the wrap, so getByText's node text
+    // stops at the colon — textContent carries the assembled sentence.
+    const notice = await screen.findByText(/outside your library folder/);
+    expect(notice.textContent).toBe(outsideNotice(folder));
+
+    // A fact, not a failure: no live region anywhere above it (a StatusBanner
+    // would put role="status"/"alert" here) and the calm muted tone.
+    expect(notice.closest("[role]")).toBeNull();
+    expect(notice.parentElement).toHaveClass("text-muted-foreground");
+
+    // Read BEFORE the tracklist, in document order — which is also the order a
+    // screen reader takes it in, since the notice carries no role of its own.
+    const tracklist = screen.getByRole("region", { name: "Tracklist" });
+    expect(
+      notice.compareDocumentPosition(tracklist) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  test("says nothing about the library folder when the album is wholly inside it", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+    renderDetail(1);
+
+    // Wait for the loaded page first — on the skeleton this would pass for
+    // the wrong reason.
+    await screen.findByRole("heading", { name: "OK Computer" });
+    expect(screen.queryByText(/outside your library folder/)).toBeNull();
+  });
+
+  test("a 255-character path component renders whole and keeps both wrapping classes", async () => {
+    server.use(
+      http.get(DETAIL_URL, () =>
+        HttpResponse.json(
+          makeDetail({ folder_outside_library: TORTURE_FOLDER }),
+        ),
+      ),
+    );
+    renderDetail(1);
+
+    const notice = await screen.findByText(/outside your library folder/);
+    // Nothing clamped or truncated: the whole path is in the sentence.
+    expect(notice.textContent).toBe(outsideNotice(TORTURE_FOLDER));
+
+    // jsdom lays nothing out, so the classes are the oracle here. They are a
+    // PAIR doing different jobs: `min-w-0` lowers the flex item's min-content
+    // floor, `break-words` breaks the one token that has no separator. Either
+    // alone still scrolls the page sideways at 320px (measured on the Trash
+    // page's twin of this markup).
+    const path = screen.getByText(TORTURE_FOLDER);
+    expect(path).toHaveClass("break-words");
+    expect(path.parentElement).toHaveClass("min-w-0");
+    expect(path.parentElement).toBe(notice);
   });
 });

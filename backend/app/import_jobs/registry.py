@@ -365,7 +365,9 @@ class ImportJobRegistry:
     @staticmethod
     def _did_not_land(row: _FeedAlbum, *, astracks_directive: bool = False) -> bool:
         """Resolved as an album-landing action but no library album id ever
-        arrived — the session died/aborted before beets ran task.add.
+        arrived — the session died/aborted before it reported one. That is before
+        ``task.add``, or during placement with the album row already written
+        (``test_a_stop_during_placement_leaves_rows_naming_the_download``).
         astracks and dup-merge are exempt: they land without an id of their
         own (singletons form no Album row; a merge lands under the merged
         task's row). A bank astracks apply (``astracks_directive``) emits an

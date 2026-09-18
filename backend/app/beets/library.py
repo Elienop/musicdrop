@@ -770,24 +770,47 @@ def _to_track(item: Any) -> Track:
     )
 
 
+def _inside_library(lib: Library, item: Any) -> bool:
+    """True iff the item's file lives under the library dir. Reads no disk.
+
+    Mirrors beets' own guard in ``Item.try_sync`` (``library/models.py:1027``,
+    ``self._db.directory in util.ancestry(self.path)``): a file outside the
+    library is never relocated. Pure string work, so an unmounted library
+    answers the same as a mounted one instead of raising.
+    """
+    current = os.path.abspath(os.fsdecode(item.path))
+    libdir = os.path.abspath(os.fsdecode(lib.directory))
+    return os.path.commonpath([current, libdir]) == libdir
+
+
 def get_album_detail(lib: Library, album_id: int) -> AlbumDetail | None:
     """Return an album with its tracklist, or ``None`` when the album is missing.
 
     Tracks are sorted by ``(disc, track)`` so the tracklist reads in play order.
+    ``music_dir_context`` is bound because the outside-library read below expands
+    DB-relative paths; unbound, a whole album reads as outside.
     """
-    album = lib.get_album(album_id)
-    if album is None:
-        return None
-    items = list(album.items())
-    tracks = sorted(
-        (_to_track(item) for item in items),
-        key=lambda t: (t.disc, t.track),
-    )
-    return AlbumDetail(
-        **_album_fields(album, track_count=len(items), genre=_album_genre(album, items)),
-        tracks=tracks,
-        release=release_identity(album, album.mb_albumid),
-    )
+    with lib.music_dir_context():
+        album = lib.get_album(album_id)
+        if album is None:
+            return None
+        items = list(album.items())
+        # A row with no path names no folder the user could act on, so it is not
+        # one. The string keeps its exact bytes: the app-wide
+        # ``SurrogateSafeJSONResponse`` sink degrades an undecodable one.
+        outside = next((it for it in items if it.path and not _inside_library(lib, it)), None)
+        tracks = sorted(
+            (_to_track(item) for item in items),
+            key=lambda t: (t.disc, t.track),
+        )
+        return AlbumDetail(
+            **_album_fields(album, track_count=len(items), genre=_album_genre(album, items)),
+            tracks=tracks,
+            release=release_identity(album, album.mb_albumid),
+            folder_outside_library=(
+                None if outside is None else os.fsdecode(os.path.dirname(outside.path))
+            ),
+        )
 
 
 def list_artists(lib: Library) -> list[Artist]:

@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Album(BaseModel):
@@ -53,3 +53,11 @@ class ReleaseIdentity(BaseModel):
 class AlbumDetail(Album):
     tracks: list[Track]
     release: ReleaseIdentity | None = None
+    # ONE field, not a flag plus a folder: two cannot then disagree, and the
+    # sentence needs the folder anyway. The fact, not a cause — an import that
+    # stopped mid-placement produces it (measured, test_import_incremental_e2e),
+    # and so do an in_place import, an edited ``directory:`` and rows left in a
+    # Trash outside the music folder.
+    folder_outside_library: str | None = Field(
+        description="The folder of one album file that is not under the library folder.",
+    )

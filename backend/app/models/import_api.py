@@ -94,9 +94,11 @@ class ImportProgress(BaseModel):
     skipped: int
     # Albums resolved as an album-landing action (auto-apply / decided apply|asis
     # / dup keep_both|replace) for which no library album id ever arrived — the
-    # session died before beets ran task.add. Mid-run only NOTED rows count (a
-    # note says the session imported nothing); the id-based reading waits for a
-    # TERMINAL (done/failed) job, where an id can no longer trail by one poll.
+    # session died before reporting one (a stop during placement leaves the
+    # album row behind; the album page then names the folder outside the
+    # library). Mid-run only NOTED rows count (a note says the session imported
+    # nothing); the id-based reading waits for a TERMINAL (done/failed) job,
+    # where an id can no longer trail by one poll.
     not_landed: int = 0
     # Disjoint from every other counter here: beets' task factory consults its
     # history BEFORE any session hook fires, so a history-skipped folder emits
@@ -136,8 +138,8 @@ class ImportAlbumSummary(BaseModel):
     # trail its row by one poll; the first poll after done carries every id).
     album_id: int | None = None
     # True when this row was resolved as an album-landing action but no library
-    # album id ever arrived — beets never ran task.add for it (the session
-    # died/aborted) — or when the row carries a ``note``, which says so outright.
+    # album id ever arrived (the session died/aborted before reporting one) —
+    # or when the row carries a ``note``, which says so outright.
     # Without a note the flag waits for a TERMINAL (done/failed) job, because
     # mid-run the id may simply not have arrived yet. astracks and dup-merge do
     # not flag on the id alone (they land without an id of their own).
