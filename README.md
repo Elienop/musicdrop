@@ -69,8 +69,13 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
 - **Import** — interactive candidate picker, resume, an import-time duplicate guard (duplicates always route to review, whatever `duplicate_action` says), and search-by-release-ID when the right match isn't offered. Unattended runs **bank** undecidable albums for later review instead of stalling, and the summary verifies each album actually **landed** in the library.
 - **Duplicates** — find & resolve duplicate albums (resolve one, or resolve-all).
 - **Release identity** — which release an album is (source · label · country · media · disambiguation), with view-release links.
-- **Delete & Trash** — delete albums or artists into a reversible Trash; restore or empty it
-  under **Settings → Trash**. Three setup faults refuse a delete with a 503, and none of them
+- **Delete & Trash** — delete albums or artists into a Trash; restore or empty it under
+  **Settings → Trash**. A delete moves the album's tracks, its cover and its lyric files; any
+  other file in the folder stays where it is, and the folder stays while something is left in
+  it (a file your beets `clutter:` list names goes with the emptied folder, as in any beets
+  move). During the move MusicDrop puts a temporary `.musicdrop-keep` file in its own folders
+  above the album (inbox, Trash, playlists) so beets does not remove them, then deletes it; one
+  left behind by a crash is harmless and safe to delete. Three setup faults refuse a delete with a 503, and none of them
   drops a library row. The first is the music root being missing, empty or unreadable (an unmounted
   share), so a genuinely emptied library needs a remount (or beets' own CLI) before its
   leftover entries can be cleared. It is checked before the delete starts and again per album,
@@ -126,16 +131,11 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   albums it dropped that had no files left to move, and its advice is to *check* the Trash
   folder rather than a promise that anything is in it. That hedge is deliberate, and it now
   covers a narrower set: a move that stops PART-WAY — a copy across filesystems that fails
-  between the copy and the delete, or an album taken out of a shared folder file by file — can
-  leave some of it under Trash without this end being able to see it, so the honest instruction
-  is to look. **If removing the library rows fails after the whole folder reached Trash,
-  MusicDrop moves the folder back where it came from and reports the error**, so the files are
-  where the library last said they were and there is nothing in Trash for that album to find.
-  The message says only that much about the library: beets commits what it had already done on
-  the way out of a failed transaction, so the album may be untouched or may already be gone from
-  it, and the error says so and asks you to check before retrying. In the rare
-  case that moving it back fails too, the error names both paths, read from the disk, and tells
-  you not to empty Trash before comparing them.
+  between the copy and the delete, or a track that cannot be moved after others already were —
+  can leave some of it under Trash without this end being able to see it, so the honest
+  instruction is to look. **If removing the library rows fails after the files reached Trash,
+  the album stays listed and its files stay in Trash.** Delete the album again: the retry only
+  drops the rows. Until then **Empty refuses that entry**, because it is the album's only copy.
 - **Restore knows where things came from.** When MusicDrop moves a folder to Trash it
   records where that folder came from in a small JSON file alongside — one per Trash entry,
   under `<beets dir>/trash-origins/`, deliberately outside the trashed folder and outside
@@ -148,9 +148,10 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
     under your *current* naming rules rather than putting it back. The row says which of the
     three reasons applies: there is no record MusicDrop can use (it may predate origin
     records, its record may have failed to write, or that record may be unusable now — the
-    server log says which), its files came out of a folder shared with other music, or its
-    origin is no longer inside the library. Restore stays available in all three; the row just tells you it will
-    not be exact.
+    server log says which), its files were moved to Trash one by one — which is every album
+    you delete — or its origin is no longer inside the library. Restore stays available in all
+    three; the row just tells you it will not be exact. Restoring a deleted album brings back
+    its tracks; its cover and lyric files stay in the Trash entry.
   - **Files moved aside** — loose files MusicDrop moved out of the way when it replaced them:
     art a **Save art to library** run overwrote, or a portrait **Reset to auto** removed. They are
     not an album, so there is no Restore button — copy them out of the entry into the folder the row
@@ -458,7 +459,7 @@ Those are the shipped image's paths (`MUSICDROP_BEETS_DIR=/data/beets`, `MUSICDR
 
 You need not stop MusicDrop to take a snapshot. `library.db` is SQLite in its default rollback-journal mode (`journal_mode=delete`; neither beets nor MusicDrop switches it to WAL), so a `library.db-journal` sidecar exists only while a write transaction is open, and a snapshot atomic within the dataset captures the DB and that journal together — what SQLite needs to roll the interrupted transaction back. A snapshot of a running MusicDrop is crash-consistent; at worst one in-flight write is discarded.
 
-Separate datasets don't change that, so long as ONE snapshot operation covers both, and [`zfs-snapshot(8)`](https://openzfs.github.io/openzfs-docs/man/master/8/zfs-snapshot.8.html) promises a shared instant for exactly one form — `-r`: "[r]ecursive snapshots created through the `-r` option are all created at the same time". Take it over a common ancestor; within a pool one always exists (`zfs list` shows your layout), and on TrueNAS it is one Periodic Snapshot Task with **Recursive** ticked. Two *separate* operations — different pools, or a task each — are two instants, and moves fall through the gap: deleting to Trash moves a whole album folder from `/music` into `data/beets/trash/` under `/data`, and inbox drops import with `operation="move"`. Caught between the instants, that album is in both snapshots, in neither, or split across them — and `shutil.move` across filesystems is copy-then-delete, so a file can be captured truncated. The result is a folder to re-import or re-delete, not a damaged library; on that layout, snapshot with the container stopped, or at least never during a delete, a Trash restore, or an inbox import.
+Separate datasets don't change that, so long as ONE snapshot operation covers both, and [`zfs-snapshot(8)`](https://openzfs.github.io/openzfs-docs/man/master/8/zfs-snapshot.8.html) promises a shared instant for exactly one form — `-r`: "[r]ecursive snapshots created through the `-r` option are all created at the same time". Take it over a common ancestor; within a pool one always exists (`zfs list` shows your layout), and on TrueNAS it is one Periodic Snapshot Task with **Recursive** ticked. Two *separate* operations — different pools, or a task each — are two instants, and moves fall through the gap: deleting to Trash moves an album's files from `/music` into `data/beets/trash/` under `/data`, and inbox drops import with `operation="move"`. Caught between the instants, that album is in both snapshots, in neither, or split across them — and `shutil.move` across filesystems is copy-then-delete, so a file can be captured truncated. The result is a folder to re-import or re-delete, not a damaged library; on that layout, snapshot with the container stopped, or at least never during a delete, a Trash restore, or an inbox import.
 
 Quiescence comes from the process being gone, not from the shutdown grace: MusicDrop waits ~5s for an in-flight import to release the slot, but the beets worker is a daemon thread it cannot join, so past that bound the library closes under a still-running import. For the snapshot you keep as the restore point of record, snapshot after `docker compose down` returns.
 

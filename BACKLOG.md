@@ -205,13 +205,55 @@ entry carries a dated correction block where the pass changed it._
      `find_duplicates` after the user has answered, and on an as-is import `task.add` has by
      then rewritten albumartist — measured: a compilation shown as a duplicate of
      `('A','Comp X')` had `('Various Artists','Comp X')`, an album nobody was shown, hard-deleted
-     outside Trash with no error. If the music root looks unmounted, a duplicate's files cannot
-     be read, no Trash is wired, the store layout is refused or a move fails, beets is answered
+     outside Trash with no error. Every row of a duplicate goes to Trash with its album,
+     wherever its file lives (an in-place import, a changed `directory:` and a symlinked album
+     folder all put files outside the music folder legitimately). The one exception is a row
+     naming a file the run itself is reading: it is dropped and the file left alone (measured:
+     after a half-finished import, re-importing the folder and answering Replace had moved the
+     import's own source file out of the download folder). "The same file" is the same
+     directory entry (the entry's own inode plus its holding directory's, links not followed),
+     on both routes: beets' own byte comparison missed a symlink-alias spelling of the
+     download folder, a bare inode would match a hardlinked library copy, and a followed link
+     would match a `link`-mode library entry — both of which must still reach Trash. A bank
+     apply whose collision holds an album its banked prompt did not name refuses the whole
+     Replace ("The library changed since this was set aside. Decide again."), the bank row
+     fails retryable, and the row's stored prompt is replaced with the collision that apply
+     saw, so deciding again is a decision about what the library holds now. Filtering instead
+     was measured wrong twice (the un-named album went unclassified and beets wrote through
+     its dangling links; where it did dispose, a second copy stayed and the new album took
+     `.1` names). If
+     the music root looks unmounted, a duplicate's files cannot be read or are links to
+     nowhere, no Trash is wired, the store layout is refused or a move fails, beets is answered
      SKIP, nothing is imported, and the feed row carries a short `note` saying why (a bank
-     apply fails its row with the same text). The banked route (`_seed_replace_from_directive`)
-     still trashes after the run, because a bank apply can import nothing; it moves nothing of
-     an old album that shares a file, by inode, with an album landed in that run. What the
-     2026-09-18 seats left open:
+     apply fails its row with the same text). Those checks run over every album in the
+     collision, asked about or not, because they are about where beets is about to write. The
+     banked route (`_seed_replace_from_directive`) still trashes after the run, because a bank
+     apply can import nothing; it moves nothing of an old album that names the same directory
+     entry (resolved path, file inode plus holding-directory inode) as an album landed in that
+     run — a refiled hardlink sibling in another folder still reaches Trash. Accepted: two
+     hardlinks of one file in ONE folder read as one entry, and that album's files stay in
+     place untracked. What the 2026-09-18 seats left open:
+     - **OWNER'S CALL — a Replace decided on a bank row with no stored prompt replaces whatever
+       collides at apply time.** That is the documented recovery for "the album duplicates one
+       already in your library - decide again with a duplicate action", and what a Rescan
+       leaves (it clears the stored prompt). The user is shown no list. Closing it: an empty
+       list refuses once and stores the live collision, as the stale refusal now does — sized
+       at ~6 production lines, seven tests pin today's behaviour, and every such row would
+       need two tries.
+     - **OWNER'S CALL — the finished panel wears the green Success check when something
+       didn't land.** `JobDone` always passes `icon={Success}`, so a run whose only album was a
+       refused Replace reads "Import finished" with a green check over "0 albums imported ·
+       1 didn't land" (UI/UX seat, 2026-09-18). Older than this branch: a session that died
+       before `task.add` reads the same. A tone decision, not a bug fix.
+     - **MEDIUM — the banked post-run route cannot refuse a placement onto broken links.** It
+       runs after beets has placed the new album, so the hook's refusals do not exist there.
+       Measured by the security seat: a library copy made of links to nowhere, its DB fields
+       renamed so beets' byte-exact duplicate query misses it while the banked identity check
+       (case-folded) still matches — the new album's audio landed outside the music library,
+       `errors: []`, no note. Needs the old copy's stored paths to equal the new album's
+       destination while its duplicate key differs (a `beet modify` without `-M`, a case-only
+       re-tag). Not fixed with another guard: the later slice that drops the `find_duplicates`
+       wrap can hand the banked albums to the duplicate hook, where the refusals already are.
      - **A dropped share with a stray entry on its mountpoint** (`.stfolder`, `lost+found`)
        passes `require_library_root`, so every duplicate reads as having no files and its rows
        are dropped while its files sit untouched on the unmounted share. Bounded to the albums
@@ -219,12 +261,31 @@ entry carries a dated correction block where the pass changed it._
        a small library whose only album is the ghost, which is the flow ghost Replace exists
        for. A refusal at import start is planned (slice 7) and covers a share that is down
        when the run begins, not one that drops mid-run.
-     - **`link` mode: a Replace over dangling symlinks fails** (download folder moved, library
-       links dangle). beets treats a dangling link as a missing source and moves nothing; with
-       another healthy album in the library the rows are dropped, the links stay, and placement
-       then fails on the names they occupy. Measured on this branch and on the commit before
-       the reorder — the import failed there too. No data at risk. Clearing a dangling link at
-       a stored path needs its own small decision.
+     - **BUG in beets' placement, reachable on `main` — an import onto a dangling symlink
+       writes OUTSIDE the library.** `util.unique_path` asks `os.path.exists`, which is False
+       for a link to nowhere, so beets writes to that name and the bytes land wherever the link
+       points. Measured against beets 2.13.1 with a dangling destination: `copy`, `hardlink`
+       and `reflink: auto` create the file at the link's target with no error; `move` replaces
+       the link (safe); `link` fails loudly with "File exists". Measured end to end through a
+       Replace before the refusal below existed: a `link: yes` library whose download folder
+       was moved or deleted (the entries dangle), re-imported. NOT measured, expected from the
+       same mechanism: Keep both, or a plain import after a disk sync dropped the rows. A
+       Replace answered through the duplicate prompt (attended, or a bank apply whose collision
+       beets finds) refuses in that state ("The old copy's files are broken links. Nothing was
+       imported.") and deletes nothing, links included, so the user has to remove the links by
+       hand; the banked post-run route does not (the MEDIUM above). Clearing a dangling link at
+       a library path, or refusing placement onto one, needs its own decision.
+     - **Trash on another filesystem receives a full copy of a `link`-mode entry.** beets'
+       cross-device move reads through the symlink for the content and removes only the link
+       (`util/__init__.py`, the `copyfileobj` fallback), so nothing is lost but Trash holds a
+       copy of a file the download folder still has. Space, not safety. Code-read, not run.
+     - **Two unbuilt shapes in the banked route's file identity.** A holder directory renamed
+       from outside between the two stats reads a shared file as unshared (needs an external
+       change during a run); a row naming a FIFO reads as present and a cross-device move would
+       block on opening it. Neither was constructed.
+     - **beets' error text reaches the job error unscrubbed**, absolute host path included
+       (`FilesystemError: … while copying /music/…`). Accepted: the reader is the authenticated
+       owner of those paths, and the path is what lets them fix the problem.
      - **A ghost's surviving cover stays in the folder, and beets overwrites it later.** When the
        old album's audio is gone but its cover is not, Replace drops the rows and leaves the
        cover untouched (`trash_album` cannot move art when no item moved, measured). The new
@@ -239,6 +300,56 @@ entry carries a dated correction block where the pass changed it._
      - **Not run on the shipped Docker layout** (Trash on another filesystem than the music).
        `trash_album`'s cross-device behaviour is unchanged, but its failure now arrives before
        the import instead of after it.
+   - **Delete moves an album's own files to Trash, not its folder — BUILT 2026-09-18 on
+     `feat/import-keep-downloads`** (`decisions` #58; reverses #28 item 4). Tracks, the tracked
+     cover and MusicDrop's lyric files go; anything else in the folder stays, and the folder
+     stays only while something is left in it. Closes the released case-insensitive loss for
+     audio: measured both ways on a casefold tmpfs, 2 dangling rows under the folder move, 0
+     now. beets prunes folders its move empties, climbing to the music root; a keep-file holds
+     it off the app's own folders (inbox, Trash, playlists) for the length of the move, so
+     Delete never removes one and never creates a directory (putting a pruned folder back was
+     measured to create it on a dropped share's bare mountpoint, after which the mount check
+     passed). Open:
+     - **Restore brings back the audio only — owner's call.** Delete then Restore re-imports
+       the tracks; the cover and the `.lrc` files stay in Trash, the origin record is consumed
+       and a 0-track row remains (measured; the lyric half is pinned, the cover half is not).
+       Every deleted album now, where it used to be shared-folder albums only. Item 6 above
+       (import carries sidecars) would return the lyrics for every import; the cover needs
+       Restore to set it from the entry.
+     - **A failed row removal leaves the album listed with its files in Trash.** The error
+       says to retry before emptying, a retry finishes the delete, and Empty refuses an entry
+       the library still lists ("Delete the album again, then empty Trash."). The check reads
+       the item rows once per request and compares normalized paths under both spellings of
+       the Trash root, so a linked Trash folder, `..`, `//`, a case-only alias (confirmed by
+       inode) and a loose-file entry are all seen. Two holes left on purpose: a row written
+       through a DIFFERENT symlink to the entry is not seen (a hand-made link plus a `beet`
+       run through it; a `realpath` per library row inside the swap lock was the price), and a
+       singleton row does not refuse Empty, because the app has no control that would clear
+       it. Cost at 100 000 rows: a 50-entry Empty all 515 ms -> 80 ms, one entry 10 ms ->
+       79 ms. The "didn't
+       finish" detection planned for this branch matches that state (rows naming files outside
+       the library). The first attempt's lyric files are not recovered by the retry: they stay
+       beside where the audio was, for the orphan sweep. A delete that stopped PART-WAY (some
+       tracks moved) still gets a second Trash entry on retry.
+     - **A `clutter:` pattern matching `.musicdrop-keep`** (`.*`, `*`) turns the protection off;
+       it is logged, not prevented (a config advisory would be the place). A file the user's
+       `clutter:` names is removed with the emptied folder, permanently, as in any beets move
+       — measured with `['*']`: the album's other tracks count as clutter and never reach
+       Trash.
+     - **The keep-file's release checks identity before it unlinks**, so a file that arrives
+       at the name after the plant is left alone; the stat-to-unlink window is narrowed to
+       that one directory, not closed.
+     - **A cover both case-insensitive twins track still travels with whichever is deleted**
+       (characterized in `tests/probes/casefold_delete.py`).
+     - **The casefold pin may skip on CI.** It needs a casefold tmpfs and an unprivileged user
+       namespace; `MUSICDROP_REQUIRE_CASEFOLD` is set nowhere in `.github/`. Read the first CI
+       run's skip line before calling the loss pinned anywhere but the dev box.
+     - **Only Delete holds the prune off an app folder.** Duplicates resolve and import
+       Replace call the same mover without the keep-file (an album imported in place into the
+       inbox, then replaced) — measured. Reorganize, tag-edit moves and import run beets'
+       prune over the same chains with nothing planted — read in the code, not driven. Empty
+       or clutter-only directories only. One shared "hold our folders" step for every mover
+       is its own slice.
    - **BUG, on `main` — a playlist can silently name a different song.** Playlist entries
      store a bare beets item id (`app/playlists/store.py`, `StoredEntry.item_id`), nothing
      prunes an id whose item is gone, and SQLite hands a freed rowid to the next insert.
