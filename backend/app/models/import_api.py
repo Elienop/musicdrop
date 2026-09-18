@@ -212,8 +212,9 @@ class ImportJobState(BaseModel):
     )
     # Albums left in the source for a later manual pass: needs_review (uncertain)
     # + needs_dup_resolution (a library duplicate). For an unattended import this
-    # is everything that did not auto-apply. Disjoint from the counters above: a
-    # row carrying a ``note`` imported nothing and is counted by not_landed only.
+    # is everything that did not auto-apply. Disjoint from applied, skipped and
+    # not_landed (a needs_review row is also in progress.needs_review): a row
+    # carrying a ``note`` imported nothing and is counted by not_landed only.
     set_aside: int
     # Sweep-origin jobs surface counters instead of the per-album feed (their
     # ``albums`` list stays empty by design). None for manual/inbox jobs.

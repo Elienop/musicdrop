@@ -428,7 +428,7 @@ class ImportJobRegistry:
 
     @staticmethod
     def _is_set_aside(row: _FeedAlbum) -> bool:
-        """Awaiting a decision — and counted NOWHERE else.
+        """Awaiting a decision — and in none of applied, skipped or not_landed.
 
         The page reads the buckets as disjoint (``ImportPage``: a set-aside row
         "sits in none of the three counters"), and ``JobFailed`` renders the
@@ -448,7 +448,8 @@ class ImportJobRegistry:
         Not every non-imported row is skipped: a NOTED row failed rather than
         being skipped by choice, and is counted by not_landed instead — measured
         ``skipped == 0`` in both noted shapes
-        (``test_a_noted_row_is_not_counted_as_imported_mid_run``)."""
+        (``test_a_noted_row_is_not_counted_as_imported_mid_run``,
+        ``test_a_noted_directive_row_did_not_land_in_both_phases``)."""
         if row.duplicate_action is not None:
             return row.duplicate_action not in _DUP_IMPORTED_ACTIONS
         return row.status is ImportAlbumStatus.skipped or (
