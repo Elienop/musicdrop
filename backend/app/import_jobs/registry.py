@@ -49,7 +49,8 @@ from app.models.import_models import (
 # Phases in which a job still owns the single import slot.
 _ACTIVE_PHASES = {ImportPhase.scanning, ImportPhase.reviewing, ImportPhase.applying}
 # Feed statuses that count as "set aside" (left in the source for a later pass):
-# an uncertain match awaiting review, or an unresolved library duplicate.
+# an uncertain match awaiting review, or an unresolved library duplicate. The
+# count itself is _is_set_aside, which also excludes a noted row.
 _SET_ASIDE_STATUSES = {
     ImportAlbumStatus.needs_review,
     ImportAlbumStatus.needs_dup_resolution,
@@ -369,7 +370,14 @@ class ImportJobRegistry:
         own (singletons form no Album row; a merge lands under the merged
         task's row). A bank astracks apply (``astracks_directive``) emits an
         `applied` outcome for the SAME reason — its singletons never form an
-        Album row — so an idless applied row on such a job is exempt too."""
+        Album row — so an idless applied row on such a job is exempt too.
+
+        A NOTE is the session saying so itself, and it is checked first: the only
+        emitter (``_replace_refused``) answers beets SKIP before ``task.add``, so
+        no id can follow and the row is true in every phase, not just at the
+        terminal gate (``test_a_noted_row_is_not_counted_as_imported_mid_run``)."""
+        if row.outcome.note is not None:
+            return True
         if row.outcome.album_id is not None:
             return False
         if (
@@ -401,7 +409,11 @@ class ImportJobRegistry:
         the premature veto — otherwise the applied bucket transiently reads 0.
         The default (``terminal=True``) is state()'s post-finish reading, taken
         once _drain_locked has flushed every follow-up id — the point at which
-        asserting did-not-land is correct."""
+        asserting did-not-land is correct. A NOTED row is the exception the
+        optimism does not cover: it is already known not to have landed, so it is
+        vetoed in every phase."""
+        if row.outcome.note is not None:
+            return False
         if row.duplicate_action is not None:
             decided = row.duplicate_action in _DUP_IMPORTED_ACTIONS
         else:
@@ -415,9 +427,28 @@ class ImportJobRegistry:
         )
 
     @staticmethod
+    def _is_set_aside(row: _FeedAlbum) -> bool:
+        """Awaiting a decision — and counted NOWHERE else.
+
+        The page reads the buckets as disjoint (``ImportPage``: a set-aside row
+        "sits in none of the three counters"), and ``JobFailed`` renders the
+        counts line and a separate set-aside sentence, so a NOTED row counted
+        here as well as in not_landed reported one album twice. Both sites that
+        count set-aside rows — ``state()`` and the active probe — call this
+        (``test_a_noted_directive_row_did_not_land_in_both_phases``; the no-note
+        control is ``test_a_set_aside_row_without_a_note_counts_as_set_aside``).
+        """
+        return row.status in _SET_ASIDE_STATUSES and row.outcome.note is None
+
+    @staticmethod
     def _is_skipped(row: _FeedAlbum) -> bool:
         """The terminal complement of _is_imported for albums that landed nothing
-        (auto-skip, a non-apply choice, or a skip_new duplicate)."""
+        (auto-skip, a non-apply choice, or a skip_new duplicate).
+
+        Not every non-imported row is skipped: a NOTED row failed rather than
+        being skipped by choice, and is counted by not_landed instead — measured
+        ``skipped == 0`` in both noted shapes
+        (``test_a_noted_row_is_not_counted_as_imported_mid_run``)."""
         if row.duplicate_action is not None:
             return row.duplicate_action not in _DUP_IMPORTED_ACTIONS
         return row.status is ImportAlbumStatus.skipped or (
@@ -738,7 +769,8 @@ class ImportJobRegistry:
             # Only assert "did not land" on a terminal job — mid-run a landed
             # row's follow-up id can still be one drain behind. The applied count
             # shares the same guard so a just-applied idless row still counts
-            # (see _is_imported's terminal param).
+            # (see _is_imported's terminal param). A NOTED row is exempt from the
+            # wait: its note says nothing was imported and no id can follow.
             terminal = job.phase in (ImportPhase.done, ImportPhase.failed)
             applied = sum(
                 1
@@ -749,15 +781,12 @@ class ImportJobRegistry:
                 1 for a in job.albums.values() if a.status is ImportAlbumStatus.needs_review
             )
             skipped = sum(1 for a in job.albums.values() if self._is_skipped(a))
-            set_aside = sum(1 for a in job.albums.values() if a.status in _SET_ASIDE_STATUSES)
-            not_landed = (
-                sum(
-                    1
-                    for a in job.albums.values()
-                    if self._did_not_land(a, astracks_directive=astracks)
-                )
-                if terminal
-                else 0
+            set_aside = sum(1 for a in job.albums.values() if self._is_set_aside(a))
+            not_landed = sum(
+                1
+                for a in job.albums.values()
+                if (terminal or a.outcome.note is not None)
+                and self._did_not_land(a, astracks_directive=astracks)
             )
             return ImportJobState(
                 job_id=job.id,
@@ -801,7 +830,8 @@ class ImportJobRegistry:
     def active_status(self) -> ActiveImportStatus:
         """The active-import probe: ``active`` + resume ``job_id`` (invariant:
         equal), plus the live job's ``origin`` and set-aside count (the FE inbox
-        cue's "N set aside for review").
+        cue's "N set aside for review"). The count is :meth:`_is_set_aside`, the
+        same predicate ``state()`` uses, so the badge and the page agree.
 
         Drains the active job first so the count tracks the worker's latest
         outcomes; returns the idle ``{active: false}`` shape (with the defaulted
@@ -833,7 +863,7 @@ class ImportJobRegistry:
                 return ActiveImportStatus(
                     active=False, job_id=None, last_sweep=self._last_sweep_locked()
                 )
-            set_aside = sum(1 for a in job.albums.values() if a.status in _SET_ASIDE_STATUSES)
+            set_aside = sum(1 for a in job.albums.values() if self._is_set_aside(a))
             return ActiveImportStatus(
                 active=True,
                 job_id=job.id,
@@ -879,7 +909,8 @@ class ImportJobRegistry:
     @staticmethod
     def _summaries(job: ImportJob) -> list[ImportAlbumSummary]:
         # did_not_land is only asserted on a terminal job (mid-run a landed
-        # row's follow-up id can trail by one drain).
+        # row's follow-up id can trail by one drain) — except on a NOTED row,
+        # which says itself that nothing was imported and can gain no id.
         terminal = job.phase in (ImportPhase.done, ImportPhase.failed)
         rows: list[ImportAlbumSummary] = []
         for index in sorted(job.albums):
@@ -896,7 +927,7 @@ class ImportJobRegistry:
                     status=row.status,
                     album_id=outcome.album_id,
                     note=outcome.note,
-                    did_not_land=terminal
+                    did_not_land=(terminal or outcome.note is not None)
                     and ImportJobRegistry._did_not_land(
                         row, astracks_directive=job.directive_astracks
                     ),

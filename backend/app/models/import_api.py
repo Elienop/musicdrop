@@ -94,8 +94,9 @@ class ImportProgress(BaseModel):
     skipped: int
     # Albums resolved as an album-landing action (auto-apply / decided apply|asis
     # / dup keep_both|replace) for which no library album id ever arrived — the
-    # session died before beets ran task.add. Only ever nonzero on a TERMINAL
-    # (done/failed) job: mid-run an id can simply trail its row by one poll.
+    # session died before beets ran task.add. Mid-run only NOTED rows count (a
+    # note says the session imported nothing); the id-based reading waits for a
+    # TERMINAL (done/failed) job, where an id can no longer trail by one poll.
     not_landed: int = 0
     # Disjoint from every other counter here: beets' task factory consults its
     # history BEFORE any session hook fires, so a history-skipped folder emits
@@ -136,9 +137,10 @@ class ImportAlbumSummary(BaseModel):
     album_id: int | None = None
     # True when this row was resolved as an album-landing action but no library
     # album id ever arrived — beets never ran task.add for it (the session
-    # died/aborted). Only ever True on a TERMINAL (done/failed) job; mid-run the
-    # id may simply not have arrived yet, so the flag stays False. astracks and
-    # dup-merge never flag (they land without an id of their own).
+    # died/aborted) — or when the row carries a ``note``, which says so outright.
+    # Without a note the flag waits for a TERMINAL (done/failed) job, because
+    # mid-run the id may simply not have arrived yet. astracks and dup-merge do
+    # not flag on the id alone (they land without an id of their own).
     did_not_land: bool = False
     # A short note (up to three short sentences) when a Replace the user asked
     # for imported nothing, naming what stopped it (unreadable files, no Trash
@@ -210,7 +212,8 @@ class ImportJobState(BaseModel):
     )
     # Albums left in the source for a later manual pass: needs_review (uncertain)
     # + needs_dup_resolution (a library duplicate). For an unattended import this
-    # is everything that did not auto-apply.
+    # is everything that did not auto-apply. Disjoint from the counters above: a
+    # row carrying a ``note`` imported nothing and is counted by not_landed only.
     set_aside: int
     # Sweep-origin jobs surface counters instead of the per-album feed (their
     # ``albums`` list stays empty by design). None for manual/inbox jobs.
@@ -258,7 +261,8 @@ class ActiveImportStatus(BaseModel):
     # idle ``{active: false}`` fallback type-checks against the same model.
     origin: ImportOrigin = "manual"
     # How many albums the active import has set aside (needs_review +
-    # needs_dup_resolution) — the FE inbox cue's "N set aside for review".
+    # needs_dup_resolution, minus any row carrying a ``note`` — it imported
+    # nothing) — the FE inbox cue's "N set aside for review".
     needs_review_count: int = 0
     # The active sweep's counters (None when the active job is not a sweep, or
     # idle) — the FE sweep banner reads this off the existing probe.

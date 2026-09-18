@@ -464,6 +464,120 @@ def test_applied_idless_row_counts_as_applied_mid_run() -> None:
     assert state.progress.not_landed == 0  # veto stays quiet pre-terminal
 
 
+_NOTHING_IMPORTED = "Replace failed while moving the old copy to Trash. Nothing was imported."
+
+
+def test_a_noted_row_is_not_counted_as_imported_mid_run() -> None:
+    """A row whose outcome carries a note imported NOTHING, in every phase.
+
+    The attended shape: the user answered the duplicate prompt with Replace, the
+    hook refused and answered beets SKIP, and the only emitter of a note
+    (``_replace_refused``) does that before ``task.add`` — so no album id can
+    ever follow. Measured before the fix: mid-run this row read
+    ``progress.applied == 1`` and ``did_not_land=False``, so the page headline
+    said "1 album imported" directly above the row's "Nothing was imported." for
+    as long as the run lasted; the terminal gate corrected it only at the end.
+
+    The control for the optimistic mid-run count a note does NOT touch is
+    ``test_applied_idless_row_counts_as_applied_mid_run`` above — same fixture
+    shape, no note.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+    from app.models.import_models import DuplicateAction, DuplicateDecision
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="noted", bridge=ImportBridge(), phase=ImportPhase.reviewing)
+    reg._job = job  # white-box: install the job in the single slot for state()
+    job.bridge.note_outcome(_applied_outcome(0))
+    threading.Thread(target=lambda: job.bridge.park_duplicate(_dup_prompt(0)), daemon=True).start()
+    _poll(lambda: reg.state("noted").awaiting_decision, lambda v: v is True)
+    reg.record_duplicate_decision("noted", 0, DuplicateDecision(action=DuplicateAction.replace))
+    job.bridge.note_outcome(
+        _applied_outcome(0).model_copy(update={"note": _NOTHING_IMPORTED})
+    )  # the refusal's note attaches to the existing row
+
+    state = reg.state("noted")
+    assert state.phase is ImportPhase.reviewing  # still running: not the terminal gate answering
+    assert state.albums[0].note == _NOTHING_IMPORTED
+    assert state.albums[0].album_id is None  # the refusal answered SKIP: no id can follow
+    assert state.progress.applied == 0, "a row that imported nothing was counted as imported"
+    assert state.progress.not_landed == 1
+    assert state.albums[0].did_not_land is True
+    assert state.progress.skipped == 0, "it failed; it was not skipped by choice"
+
+
+def test_a_noted_directive_row_did_not_land_in_both_phases() -> None:
+    """The bank-apply shape of the same row, measured: it never reads ``decided``.
+
+    A directive run answers the duplicate itself, so nothing is parked and no
+    decision is recorded through the registry: the row reads
+    ``needs_dup_resolution`` with ``duplicate_action=None`` and
+    ``decided_action=None``. It was therefore never counted as imported — but it
+    also read ``did_not_land=False`` and ``not_landed=0`` in BOTH phases, so
+    nothing on the wire said the album had not landed.
+
+    It must be counted ONCE. ``ImportPage`` documents the buckets as disjoint (a
+    set-aside row "sits in none of the three counters — ``state.set_aside`` is
+    its count"), and ``JobFailed`` renders the counts line and a separate
+    set-aside sentence, so a row in both reported one album twice. The note wins:
+    it landed nothing, and the prompt on the row cannot be answered from the feed
+    anyway. The no-note control is
+    ``test_a_set_aside_row_without_a_note_counts_as_set_aside``.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="directive-noted", bridge=ImportBridge(), phase=ImportPhase.reviewing)
+    reg._job = job  # white-box: install the job in the single slot for state()
+    job.bridge.note_outcome(_applied_outcome(0))
+    job.bridge.note_outcome(_dup_outcome(0))  # the directive run's own upgrade
+    job.bridge.note_outcome(_applied_outcome(0).model_copy(update={"note": _NOTHING_IMPORTED}))
+
+    mid = reg.state("directive-noted")
+    assert mid.phase is ImportPhase.reviewing
+    assert mid.albums[0].status is ImportAlbumStatus.needs_dup_resolution  # the measured shape
+    assert mid.progress.applied == 0
+    assert mid.progress.not_landed == 1
+    assert mid.albums[0].did_not_land is True
+    assert mid.progress.skipped == 0
+    assert mid.set_aside == 0, "the same album was counted in two buckets"
+    assert reg.active_status().needs_review_count == 0, (
+        "the probe offered a review decision for an album that imported nothing"
+    )
+
+    job.phase = ImportPhase.done
+    end = reg.state("directive-noted")
+    assert end.progress.not_landed == 1
+    assert end.albums[0].did_not_land is True
+    assert end.set_aside == 0
+
+
+def test_a_set_aside_row_without_a_note_counts_as_set_aside() -> None:
+    """The control: only a NOTE takes a row out of the set-aside count.
+
+    Same fixture shape as the noted directive row above, minus the note — a
+    genuine ``needs_dup_resolution`` row awaiting a decision must still be
+    counted by both sites that compute it (``state()`` and the active probe).
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="set-aside", bridge=ImportBridge(), phase=ImportPhase.reviewing)
+    reg._job = job  # white-box: install the job in the single slot for state()
+    job.bridge.note_outcome(_applied_outcome(0))
+    job.bridge.note_outcome(_dup_outcome(0))
+
+    state = reg.state("set-aside")
+    assert state.albums[0].status is ImportAlbumStatus.needs_dup_resolution
+    assert state.albums[0].note is None
+    assert state.set_aside == 1
+    assert state.progress.not_landed == 0
+    assert reg.active_status().needs_review_count == 1
+
+
 def test_applied_idless_row_drops_to_not_landed_at_terminal() -> None:
     # The SAME applied-but-idless row on a TERMINAL job is the crash-before-landing
     # case: every follow-up id has flushed, so a still-idless applied row genuinely
