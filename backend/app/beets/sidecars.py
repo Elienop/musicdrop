@@ -60,22 +60,14 @@ def move_sidecars(old_audio: str | bytes | None, new_audio: str | bytes | None) 
     this runs, so no sidecar problem may rewrite that outcome — every skip and
     every error is logged instead, at WARNING with the traceback.
 
-    Never clobbers: a file already at the destination sidecar path wins and the
-    source is left where it is. The two are different lyrics for what is now the
-    same track name, and keeping one recoverable beats silently destroying
-    either — note "recoverable", not "in place": when the skip leaves the source
-    in a fully vacated folder, the post-run orphan sweep still moves that folder
-    to Trash, so the kept sidecar survives in Trash rather than beside the track.
-    The exists-check is a guard, not a lock — reorganize holds the single-slot
-    library mutex, so nothing else is writing sidecars concurrently.
+    Never clobbers: a file already at the destination wins and the source stays.
+    Either way the source is only left where it IS, not left with the track — a
+    skip in a vacated folder makes that folder the reorganize orphan sweep's, so
+    the kept sidecar ends up in Trash.
 
-    A source that is not a REGULAR file is skipped and left where it is. MusicDrop
-    only ever writes real files here (:mod:`app.beets.lyrics`), so anything else
-    at the name belongs to someone else: measured, a DIRECTORY called
-    ``01 T1.lrc`` was moved wholesale with its contents into Trash. The same
-    ``lstat`` drops a symlink at the name — measured safe (it moved as a link,
-    target untouched), so this half is caution rather than a fix, and skipping
-    costs only that the link stays beside no audio.
+    A source that is not a REGULAR file is skipped: measured, a DIRECTORY named
+    ``01 Song.lrc`` was otherwise moved wholesale with its contents
+    (``test_only_a_regular_file_at_the_sidecar_name_is_carried``).
     """
     old_base = sidecar_base(old_audio)
     new_base = sidecar_base(new_audio)

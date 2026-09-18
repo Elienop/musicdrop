@@ -24,7 +24,7 @@ from app.beets.delete import (
 from app.beets.library import LibraryRootUnavailableError, _require_id
 from app.beets.protected import ProtectedTrees
 from app.beets.trash import album_folder
-from app.beets.trash_origins import require_usable_store
+from app.beets.trash_origins import read_trash_origin, require_usable_store
 from app.config import Settings
 from app.models.delete import DeleteResult
 from tests.conftest import (
@@ -159,8 +159,8 @@ def test_a_prune_that_raises_does_not_fail_the_delete(
     album folder (the ``.lrc`` is still in it) and lets the carry's re-prune
     rmtree that folder and then hit ``PermissionError`` one level up.
 
-    Inside ``delete_artist`` the raise stopped the fan-out after album 1 with the
-    delete already done, which is the shape this is really about.
+    This drives the ALBUM route only. An artist fan-out stopping mid-way with one
+    album's delete already done is the worse shape and is NOT pinned here.
     """
     if os.geteuid() == 0:
         pytest.skip("root ignores the directory mode this fault needs")
@@ -251,6 +251,93 @@ def test_a_delete_leaves_a_sidecar_another_albums_track_claims(tmp_path: Path) -
     assert shared.read_text(encoding="utf-8") == "[00:01.00] both of ours"
     assert (folder / "01 T1.mp3").is_file(), "and neither did its track"
     assert list(trash.rglob("*.flac")), "the deleted album's own file did move"
+
+
+@pytest.mark.parametrize("neighbour", ["01 T1.1.mp3", "01 T1.5 (remix).mp3"])
+def test_a_beets_collision_divert_does_not_claim_the_other_albums_sidecar(
+    tmp_path: Path, neighbour: str
+) -> None:
+    """The claim is a STEM comparison, not a prefix one. MEASURED both ways.
+
+    ``01 T1.1.mp3`` is what beets itself writes for a Keep-both in the same
+    format, and ``01 T1.5 (remix).mp3`` is an ordinary name; both start with
+    ``01 T1.`` and neither owns ``01 T1.lrc``. A prefix test read them as
+    claimants and left the deleted album's own lyrics behind for nobody.
+
+    ``test_a_delete_leaves_a_sidecar_another_albums_track_claims`` is the other
+    direction, where the neighbour really is at the same stem.
+    """
+    from beets.library import Item
+
+    music = tmp_path / "music"
+    lib = build_library(str(beets_dir_for(tmp_path) / "library.db"), str(music))
+    folder = music / "Sharey" / "Both"
+    folder.mkdir(parents=True)
+
+    def add(*, album: str, name: str) -> Album:
+        track = folder / name
+        track.write_bytes(b"\x00")
+        item = Item(album=album, albumartist="Sharey", artist="Sharey", title="T1", track=1)
+        item.path = os.fsencode(str(track))
+        made: Album = lib.add_album([item])
+        made.store()
+        return made
+
+    doomed = add(album="A Doomed", name="01 T1.mp3")
+    add(album="B Neighbour", name=neighbour)
+    (folder / "01 T1.lrc").write_text("[00:01.00] the doomed album's", encoding="utf-8")
+
+    trash = tmp_path / "trash"
+    _delete(lib, _require_id(doomed.id), trash)
+
+    assert not (folder / "01 T1.lrc").exists(), "nobody left behind owns it"
+    landed = [p.name for p in trash.rglob("*.lrc")]
+    assert landed == ["01 T1.lrc"], "it went to Trash with its own track"
+    assert (folder / neighbour).is_file(), "and the neighbour is untouched"
+
+
+def test_a_sidecar_claim_is_seen_through_the_absolute_row_spelling(tmp_path: Path) -> None:
+    """Rows stored ABSOLUTE — an album outside the music dir — claim too.
+
+    beets stores paths relative to ``lib.directory`` in the ordinary case and
+    absolute for outside/legacy rows, so the claim query asks both spellings.
+    Measured: with only the relative one, this shape carried the other album's
+    lyrics away and the whole suite stayed green.
+    """
+    from beets.library import Item
+
+    music = tmp_path / "music"
+    music.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    lib = build_library(str(beets_dir_for(tmp_path) / "library.db"), str(music))
+    # One album inside the library keeps ``require_library_root`` satisfied.
+    resident = music / "Resident" / "Album"
+    resident.mkdir(parents=True)
+    (resident / "01 Here.mp3").write_bytes(b"\x00")
+    here = Item(album="Resident", albumartist="Resident", artist="Resident", title="H", track=1)
+    here.path = os.fsencode(str(resident / "01 Here.mp3"))
+    lib.add_album([here]).store()
+
+    def add(*, album: str, name: str) -> Album:
+        track = outside / name
+        track.write_bytes(b"\x00")
+        item = Item(album=album, albumartist="Sharey", artist="Sharey", title="T1", track=1)
+        item.path = os.fsencode(str(track))
+        made: Album = lib.add_album([item])
+        made.store()
+        return made
+
+    doomed = add(album="A Doomed", name="01 T1.flac")
+    add(album="B Keeper", name="01 T1.mp3")
+    shared = outside / "01 T1.lrc"
+    shared.write_text("[00:01.00] both of ours", encoding="utf-8")
+
+    trash = tmp_path / "trash"
+    _delete(lib, _require_id(doomed.id), trash)
+
+    assert shared.is_file(), "the neighbour's lyrics stayed"
+    assert not list(trash.rglob("*.lrc"))
 
 
 def test_delete_album_takes_the_tracked_cover_and_leaves_a_strangers_files(
@@ -960,19 +1047,12 @@ def test_delete_album_op_records_an_origin_in_the_store_the_listing_reads(
 
 _GHOST_ARTIST = "Ghosty"
 
-# The recovery line every failure that is not one of the TWO the ``_recovery``
-# chain names gets — the fan-out that really moved files, and
-# ``TrashMoveIncompleteError``. Spelled once here, asserted at each of the six
-# states that reach it (five where nothing moved, and a move stopping
-# mid-album). The ``album.remove`` window is one of them now: owner ruling
-# ``decisions.md`` 58 replaces 28 item 4's whole-folder move-back with a
-# primitive that has no undo, so the sentence that promised the files came BACK
-# is gone along with its test, and this one — which ASKS rather than tells — is
-# what that state gets. The sentence states no disk fact in either direction,
-# which is what lets one stand in all six, so an equality against this constant
-# is a SPELLING check and each state's test carries its own direction-asserting
-# line beside its disk asserts.
-_LOOK_IN_TRASH = (
+# The recovery line for every failure but the two ``_recovery`` names (a fan-out
+# that really moved files, and ``TrashMoveIncompleteError``). Spelled once,
+# asserted whole at each of the six states that reach it; the sentence states no
+# disk fact, which is what lets one stand in all six, so each of those tests
+# carries its own disk asserts beside this equality.
+_RETRY_BEFORE_EMPTY = (
     "A delete that stops part-way can leave some or all of the files in Trash."
     " Retry before emptying Trash: emptying now can destroy the only copy."
 )
@@ -1133,7 +1213,7 @@ def test_delete_artist_partial_counts_moves_not_row_drops(
     # The physical fact the wording has to match: the Trash folder holds
     # nothing, so a line telling the user to look in it points at nothing.
     assert list(trash.iterdir()) == []
-    assert detail["recovery"] == _LOOK_IN_TRASH
+    assert detail["recovery"] == _RETRY_BEFORE_EMPTY
     assert len([a for a in lib.albums() if a.albumartist == _GHOST_ARTIST]) == 1
 
 
@@ -1337,7 +1417,7 @@ def test_delete_artist_500_on_the_FIRST_album_does_not_promise_trash(
     assert isinstance(detail, dict)
     assert "Permission denied" in detail["message"]  # the cause is still relayed
     assert "recoverable in the Trash folder" not in detail["recovery"]
-    assert detail["recovery"] == _LOOK_IN_TRASH
+    assert detail["recovery"] == _RETRY_BEFORE_EMPTY
     # The disk agrees with the sentence: the Trash folder holds nothing.
     assert list(trash.iterdir()) == []
     assert len([a for a in duplicates_lib.albums() if a.albumartist == "Radiohead"]) == 2
@@ -1450,7 +1530,7 @@ def test_delete_album_500_does_not_read_the_answer_out_of_a_half_moved_album(
     detail = ei.value.detail
     assert isinstance(detail, dict)
     assert "Permission denied" in detail["message"]  # the cause is relayed
-    assert detail["recovery"] == _LOOK_IN_TRASH
+    assert detail["recovery"] == _RETRY_BEFORE_EMPTY
     # The direction, beside the state below: the sentence may point AT Trash and
     # may not tell this user what finding something there means.
     assert "can be restored" not in detail["recovery"]
@@ -1568,7 +1648,7 @@ def test_delete_artist_does_not_count_a_shared_folder_ghost_as_moved(
     assert isinstance(detail, dict)
     assert "1 of 2" in detail["message"]  # one album's rows went, and it says so
     assert "moved to Trash" not in detail["message"]  # but nothing was moved
-    assert detail["recovery"] == _LOOK_IN_TRASH
+    assert detail["recovery"] == _RETRY_BEFORE_EMPTY
     # The premise of the whole test, asserted rather than assumed: the ghost went
     # through the SHARED-folder fallback, whose sibling is still sitting in the
     # folder it was never allowed to move wholesale — and Trash is empty.
@@ -1631,7 +1711,7 @@ def test_the_delete_routes_500_description_does_not_deny_its_own_body(
         asyncio.run(op)
     detail = ei.value.detail
     assert isinstance(detail, dict)
-    assert detail["recovery"] == _LOOK_IN_TRASH
+    assert detail["recovery"] == _RETRY_BEFORE_EMPTY
     assert list(trash.iterdir()) == []  # nothing moved, and the body promises nothing
 
     description = app.openapi()["paths"][path]["delete"]["responses"]["500"]["description"]
@@ -1645,7 +1725,7 @@ def test_the_delete_routes_500_description_does_not_deny_its_own_body(
     # is the claim, so assert it directly.
     #
     # The verb is part of the claim. "points at the Trash folder only when" was
-    # false against this very body: ``_LOOK_IN_TRASH`` names the Trash folder for
+    # false against this very body: ``_RETRY_BEFORE_EMPTY`` names the Trash folder for
     # the moved-nothing case asserted above. What is conditional is the PROMISE,
     # not the mention — ``_recovery``'s docstring draws the line as promise vs
     # check — so both descriptions say "promises recovery from", and this asserts
@@ -1921,7 +2001,7 @@ def test_the_fanout_does_not_count_an_itemless_album_as_moved(
     message = detail["message"]
     assert "dropping 1 of 2 albums that had no files left to move" in message
     assert "moved to Trash" not in message
-    assert detail["recovery"] == _LOOK_IN_TRASH
+    assert detail["recovery"] == _RETRY_BEFORE_EMPTY
     assert list(trash.iterdir()) == []  # and the disk agrees: nothing reached it
 
 
@@ -1989,13 +2069,132 @@ def test_a_retry_after_a_failed_row_drop_leaves_ONE_trash_entry(
     assert sorted(p.name for p in trash.rglob("*.mp3")) == ["01 T1.mp3", "02 T2.mp3"]
     records = sorted(p.name for p in origins.glob("*.json"))
     assert records == ["Art - Alb.json"]
-    from app.beets.trash_origins import read_trash_origin
-
     record = read_trash_origin(origins, "Art - Alb")
     assert record is not None
     assert record.origin == str(folder), "the origin names the album's real folder"
     assert not record.origin.startswith(str(trash)), "and never a path inside Trash"
-    assert Path(result.trash_path).is_relative_to(trash), "the answer names where the files are"
+    # Strictly INSIDE, not the root: the fan-out reads this answer to decide
+    # whether the album counted as moved, and ``str(trash_dir)`` means "nothing
+    # reached Trash" (``_reached_trash``).
+    answer = Path(result.trash_path)
+    assert answer.is_relative_to(trash), "the answer is inside Trash"
+    assert answer != trash, "the answer is the entry, not the root"
+
+
+def test_a_retry_after_a_part_way_move_finishes_the_move(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A MIXED album is not the retry arm's, and the retry moves what is left.
+
+    A two-disc album whose second disc cannot be read: item 1 lands in Trash and
+    item 2 raises, so the rows point at both ends. Measured — with the arm gated
+    on ``any`` instead of ``all`` the retry dropped the rows and left item 2's
+    file in the library, untracked, and 200 tests stayed green.
+
+    The origin record is the other half. Taken over ALL rows, the retry's
+    ``source_root`` is the commonpath of Trash and music — ``/`` on the shipped
+    layout — which says nothing about where the album came from. Rows already
+    inside Trash are skipped instead (``trash._album_root``'s ``not_in``), so the
+    record names the folder the unmoved row is still sitting in. Gating the
+    record on "inside ``directory:``" would have been the smaller change and is
+    WRONG — an album stored outside the music folder is supported three ways and
+    keeps its record (``test_an_album_outside_the_music_folder_still_reaches_trash``,
+    which that gate failed).
+
+    What is NOT asserted is a file count in Trash. beets' own move copies before
+    it unlinks, so the failed first attempt leaves a stray copy of item 2 inside
+    the first container — beets', not this module's, and the album is whole in
+    the second container either way.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root ignores the directory mode this fault needs")
+
+    from beets.library import Item
+
+    music = tmp_path / "music"
+    lib = build_library(str(beets_dir_for(tmp_path) / "library.db"), str(music))
+    root = music / "Art" / "Alb"
+    discs = [root / "Disc 1", root / "Disc 2"]
+    items = []
+    for i, at in enumerate(discs, 1):
+        at.mkdir(parents=True)
+        track = at / f"{i:02d} T{i}.mp3"
+        track.write_bytes(b"\x00")
+        item = Item(album="Alb", albumartist="Art", artist="Art", title=f"T{i}", track=i, disc=i)
+        item.path = os.fsencode(str(track))
+        items.append(item)
+    album = lib.add_album(items)
+    album.store()
+    album_id = _require_id(album.id)
+    trash = tmp_path / "trash"
+    origins = origins_for(trash)
+
+    discs[1].chmod(0o555)  # item 2 cannot be moved out of it
+    try:
+        with pytest.raises(Exception, match=r"(?i)permission|denied|move"):
+            _delete(lib, album_id, trash)
+        rows = sorted(os.fsdecode(i.path) for i in _require_album(lib, album_id).items())
+        assert any(r.startswith(str(trash)) for r in rows), "item 1 really moved"
+        assert any(r.startswith(str(music)) for r in rows), "and item 2 really did not"
+    finally:
+        discs[1].chmod(0o755)
+
+    _delete(lib, album_id, trash)
+
+    assert lib.get_album(album_id) is None
+    assert not list(music.rglob("*.mp3")), "nothing untracked stayed in the library"
+    landed = {p.name for p in trash.rglob("*.mp3")}
+    assert landed == {"01 T1.mp3", "02 T2.mp3"}, "both tracks are in Trash"
+    origins_written = [read_trash_origin(origins, p.stem) for p in origins.glob("*.json")]
+    written = sorted(r.origin for r in origins_written if r is not None)
+    # One record, from the retry: the first attempt raised before recording. It
+    # names the disc the unmoved row was still in — a real folder of the album's,
+    # where the commonpath over all rows would have been the parent of Trash and
+    # music. Display only, so "a folder it came from" is the whole bar.
+    assert written == [str(discs[1])]
+
+
+def test_a_symlink_inside_trash_does_not_take_the_retry_arm(tmp_path: Path) -> None:
+    """The arm asks ``lstat``, like every other type test in this module. MEASURED.
+
+    A row naming a symlink INSIDE Trash whose target is a live library file read
+    as "already in Trash" under ``os.path.isfile``: the rows were dropped and the
+    real file stayed in the library, untracked. Contrived, and nothing was
+    destroyed — but the module's own posture (``sidecars.move_sidecars``) is that
+    the link is not the file.
+    """
+    from beets.library import Item
+
+    music = tmp_path / "music"
+    folder = music / "Art" / "Alb"
+    folder.mkdir(parents=True)
+    lib = build_library(str(beets_dir_for(tmp_path) / "library.db"), str(music))
+    real = folder / "01 T1.mp3"
+    real.write_bytes(b"\x00")
+    trash = tmp_path / "trash"
+    (trash / "Art - Alb").mkdir(parents=True)
+    link = trash / "Art - Alb" / "01 T1.mp3"
+    link.symlink_to(real)
+    item = Item(album="Alb", albumartist="Art", artist="Art", title="T1", track=1)
+    item.path = os.fsencode(str(link))
+    album = lib.add_album([item])
+    album.store()
+    album_id = _require_id(album.id)
+
+    result = _delete(lib, album_id, trash)
+
+    assert lib.get_album(album_id) is None
+    # The arm did NOT fire, so the row was relocated into a container of its own
+    # rather than being read as "already there" and dropped where it lay.
+    assert not os.path.lexists(link), "the row's own entry was moved"
+    assert Path(result.trash_path).is_relative_to(trash / "Art - Alb (1)")
+    assert real.is_file(), "and the live library file it pointed at was never touched"
+
+
+def _require_album(lib: Library, album_id: int) -> Album:
+    album = lib.get_album(album_id)
+    assert album is not None
+    return album
 
 
 def test_rows_inside_trash_with_their_files_gone_still_meet_the_root_guard(

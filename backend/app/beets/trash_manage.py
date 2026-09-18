@@ -1468,7 +1468,9 @@ def resolve_trash_child(trash_dir: Path, rel: str) -> Path:
     return dest
 
 
-def empty_one(folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees) -> EmptyResult:
+def empty_one(
+    folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees, lib: Library | None = None
+) -> EmptyResult:
     """Permanently remove one trashed entry — a folder or a loose file.
 
     Its OWN record goes with it, strictly AFTER: a failed ``rmtree`` raises out
@@ -1481,10 +1483,15 @@ def empty_one(folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees) 
     Raises :class:`~app.beets.protected.ProtectedTreeError` (503) when the entry
     is or holds one of the app's own directories by inode, when the name stopped
     naming what the guard was asked about (see :func:`_remove_checked_entry`,
-    which both delete paths share), and when the entry's parent is no longer the
-    Trash this request checked.
+    which both delete paths share), when the entry's parent is no longer the
+    Trash this request checked, and when the LIBRARY still names files inside it
+    (:func:`_library_still_lists`).
     """
     path = Path(folder_abs)
+    if _library_still_lists(lib, path) is not None:
+        raise ProtectedTreeError(
+            f"Refused: {path.name!r} — {_STILL_LISTED}. {_STILL_LISTED_FIX} Nothing was removed."
+        )
     # The resolved parent: ``folder_abs`` comes from ``resolve_trash_child``, so
     # every component above the entry is already what it resolved to. Opened
     # through the sweep's own check rather than a bare ``os.open``: the entry's
@@ -1500,6 +1507,40 @@ def empty_one(folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees) 
         raise _refusal_error(path, refusal)
     delete_trash_origin(origins_dir, path.name)
     return EmptyResult(removed=1)
+
+
+#: Any item row naming a file inside one Trash entry, both stored path forms
+#: (beets stores relative to ``lib.directory``, absolute for outside/legacy rows).
+_ROWS_INSIDE_SQL: Final = """
+SELECT 1 FROM items WHERE substr(path, 1, ?) = ? OR substr(path, 1, ?) = ? LIMIT 1
+"""
+
+#: What such an entry reads with, and what to do about it. Delete moves the files
+#: and THEN drops the rows, so a row naming Trash means the drop did not happen
+#: and the entry is the album's only copy — measured, one Empty destroyed it
+#: while the album stayed listed. Deleting the album again finishes it
+#: (``delete._trash_one``'s retry arm), after which the rows are gone and this
+#: refusal stops firing.
+_STILL_LISTED: Final = "the library still lists files inside"
+_STILL_LISTED_FIX: Final = "Delete the album again, then empty Trash."
+
+
+def _library_still_lists(lib: Library | None, entry: Path) -> str | None:
+    """The refusal clause when any item row names a file inside ``entry``, else None.
+
+    ``None`` when no library was passed, which is what the adapter's own tests
+    and any non-route caller get — the routes pass one
+    (``test_empty_one_refuses_an_entry_the_library_still_lists``).
+    """
+    if lib is None:
+        return None
+    absolute = os.fsencode(os.path.join(os.path.normpath(str(entry)), ""))
+    relative = absolute
+    with contextlib.suppress(ValueError):  # different drives: no relative spelling
+        relative = os.fsencode(os.path.join(os.path.relpath(str(entry), _music_dir(lib)), ""))
+    with lib.transaction() as tx:
+        rows = tx.query(_ROWS_INSIDE_SQL, (len(absolute), absolute, len(relative), relative))
+    return _STILL_LISTED if rows else None
 
 
 def _refusal_error(path: Path, refusal: _Refusal) -> ProtectedTreeError:
@@ -1717,7 +1758,9 @@ def _refused_message(refused: list[str], *, removed: int, failed: list[str]) -> 
     )
 
 
-def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) -> EmptyResult:
+def empty_all(
+    trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees, lib: Library | None = None
+) -> EmptyResult:
     """Permanently remove every unprotected entry under ``trash_dir``.
 
     The root is opened once through
@@ -1749,6 +1792,7 @@ def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) 
     removed = 0
     failed: list[str] = []
     refused: list[str] = []
+    listed: list[str] = []
     first: OSError | None = None
     fd = open_checked_dir(trash_dir, protected)
     try:
@@ -1758,6 +1802,12 @@ def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) 
         with os.scandir(fd) as entries:
             names = sorted(entry.name for entry in entries)
         for name in names:
+            # Ahead of the removal, and its OWN list: the rest of the Trash is
+            # still emptied, and the fix for these is not the fix the protected
+            # entries below get.
+            if _library_still_lists(lib, trash_dir / name) is not None:
+                listed.append(display_path(name))
+                continue
             try:
                 refusal = _remove_checked_entry(name, dir_fd=fd, protected=protected)
             except OSError as exc:
@@ -1779,6 +1829,12 @@ def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) 
             removed += 1
     finally:
         os.close(fd)
+    if listed:
+        # First, because it is the only refusal here that is about LOSING data:
+        # those entries hold the album's one copy (see ``_STILL_LISTED``).
+        raise ProtectedTreeError(
+            f"Refused: {_capped(listed)} — {_STILL_LISTED}. {_STILL_LISTED_FIX} Removed {removed}."
+        )
     if refused:
         raise ProtectedTreeError(_refused_message(refused, removed=removed, failed=failed))
     if failed:

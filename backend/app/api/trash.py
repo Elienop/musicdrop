@@ -303,6 +303,10 @@ async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> 
                 str(dest),
                 origins_dir=checked.origins_dir,
                 protected=_required(checked.protected),
+                # The library, so an entry whose files the library still names is
+                # refused: after a delete whose row drop raised, that entry is
+                # the album's ONLY copy and one click destroyed it (measured).
+                lib=checked.handle.lib,
             )
         # 503, like the layout refusal it completes: the entry is still in Trash
         # and the fix is the operator's. Raised inline so the status stays a
@@ -349,6 +353,7 @@ async def empty_trash_all(request: Request) -> EmptyResult:
                 checked.trash_dir,
                 origins_dir=checked.origins_dir,
                 protected=_required(checked.protected),
+                lib=checked.handle.lib,  # see empty_trash_one
             )
         # A partial sweep still CHANGED the library, so the event fires before
         # the error propagates — the page must not keep showing entries that are

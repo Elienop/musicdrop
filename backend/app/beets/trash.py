@@ -359,7 +359,7 @@ def trash_album(
     trash_dir.mkdir(parents=True, exist_ok=True)
     container = _unique_trash_dest(trash_dir, origins_dir, _trash_container_name(album))
     container.mkdir(parents=True, exist_ok=True)
-    source_root = _album_root(lib, pre_move_items)
+    source_root = _album_root(lib, pre_move_items, not_in=trash_dir)
     # Keyed by item id, which the move does not change — the only handle that
     # survives ``Album.move`` rewriting every path, since the post-move objects
     # come from a fresh query.
@@ -412,13 +412,27 @@ def trash_album(
     return trash_path
 
 
-def _album_root(lib: Library, items: list[Any]) -> str:
+def _album_root(lib: Library, items: list[Any], *, not_in: Path | None = None) -> str:
     """The album's on-disk folder: the deepest common dir of its item files.
 
     Single item -> that file's directory; multi-disc -> the common ancestor of
     the ``Disc N`` subfolders (their parent ``$album`` folder).
+
+    Rows under ``not_in`` are left out, and ``""`` when that is all of them. The
+    origin record passes Trash: a part-way move leaves rows at both ends, whose
+    commonpath is the parent of Trash AND music — ``/`` on the shipped layout,
+    which says nothing about where the album came from
+    (``test_a_retry_after_a_part_way_move_finishes_the_move``). Everything else
+    counts, music folder or not: ``in_place``, an edited ``directory:`` and a
+    symlinked album folder are all supported
+    (``test_an_album_outside_the_music_folder_still_reaches_trash``).
     """
     dirs = [os.path.dirname(_abs_path(lib, it.path)) for it in items]
+    if not_in is not None:
+        skip = os.path.normpath(str(not_in))
+        dirs = [d for d in dirs if not Path(d).is_relative_to(skip)]
+    if not dirs:
+        return ""
     return dirs[0] if len(dirs) == 1 else os.path.commonpath(dirs)
 
 

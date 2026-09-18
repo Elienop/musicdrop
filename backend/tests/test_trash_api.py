@@ -102,10 +102,12 @@ def test_a_trash_swapped_after_the_check_removes_nothing(
     (impostor / "Album").mkdir(parents=True)
     (impostor / "Album" / "01.flac").write_bytes(b"x")
 
-    def spy(path: str, *, origins_dir: Path, protected: ProtectedTrees) -> EmptyResult:
+    def spy(
+        path: str, *, origins_dir: Path, protected: ProtectedTrees, lib: object = None
+    ) -> EmptyResult:
         os.rename(trash, away)
         os.rename(impostor, trash)
-        return real_empty_one(path, origins_dir=origins_dir, protected=protected)
+        return real_empty_one(path, origins_dir=origins_dir, protected=protected, lib=lib)  # type: ignore[arg-type]  # the route's own handle
 
     monkeypatch.setattr(trash_mod, "empty_one", spy)
     r = client.delete("/api/trash", params={"folder": "Album"})
@@ -156,6 +158,66 @@ def test_empty_all_removes_seeded_folders(client: TestClient) -> None:
     assert r.status_code == 200
     assert r.json()["removed"] == 2
     assert list(trash.iterdir()) == []
+
+
+def _album_row_inside(client: TestClient, entry: Path) -> None:
+    """One item row naming a file inside ``entry`` — the row-drop failure's state.
+
+    What a delete leaves when ``Album.move`` finished and ``Album.remove`` then
+    raised: the files are in Trash and the library still lists the album, so the
+    entry is its ONLY copy.
+    """
+    from beets.library import Item
+
+    app: Any = client.app
+    lib = app.state.beets_library.lib
+    track = entry / "01 T1.mp3"
+    track.parent.mkdir(parents=True, exist_ok=True)
+    track.write_bytes(b"\x00")
+    item = Item(album="Alb", albumartist="Art", artist="Art", title="T1", track=1)
+    item.path = os.fsencode(str(track))
+    lib.add_album([item]).store()
+
+
+def test_empty_one_refuses_an_entry_the_library_still_lists(client: TestClient) -> None:
+    """One Empty click used to destroy an album's only copy. MEASURED.
+
+    After a delete whose row drop raised, the album stays listed with its rows
+    naming Trash and the entry looks ordinary on the page. The refusal says what
+    to do: delete the album again (the retry arm finishes it), then empty.
+    """
+    trash = _trash_dir(client)
+    entry = trash / "Art - Alb"
+    _album_row_inside(client, entry)
+
+    r = client.delete("/api/trash", params={"folder": "Art - Alb"})
+
+    assert r.status_code == 503
+    assert r.json()["detail"] == (
+        "Refused: 'Art - Alb' — the library still lists files inside."
+        " Delete the album again, then empty Trash. Nothing was removed."
+    )
+    assert (entry / "01 T1.mp3").is_file(), "the only copy is still there"
+
+
+def test_empty_all_keeps_the_entry_the_library_lists_and_empties_the_rest(
+    client: TestClient,
+) -> None:
+    """The sweep is not all-or-nothing: the rest goes, the kept one is named."""
+    trash = _trash_dir(client)
+    entry = trash / "Art - Alb"
+    _album_row_inside(client, entry)
+    (trash / "Ordinary").mkdir(parents=True)
+
+    r = client.delete("/api/trash/all")
+
+    assert r.status_code == 503
+    assert r.json()["detail"] == (
+        "Refused: 'Art - Alb' — the library still lists files inside."
+        " Delete the album again, then empty Trash. Removed 1."
+    )
+    assert not (trash / "Ordinary").exists(), "the rest was emptied"
+    assert (entry / "01 T1.mp3").is_file()
 
 
 def test_empty_rejects_path_traversal_404(client: TestClient) -> None:
@@ -316,10 +378,12 @@ def test_empty_one_holds_swap_lock_during_removal(
     (trash / "Album").mkdir(parents=True)
     seen: dict[str, bool] = {}
 
-    def spy(path: str, *, origins_dir: Path, protected: ProtectedTrees) -> EmptyResult:
+    def spy(
+        path: str, *, origins_dir: Path, protected: ProtectedTrees, lib: object = None
+    ) -> EmptyResult:
         lock = getattr(app.state, "beets_swap_lock", None)
         seen["locked"] = lock is not None and lock.locked()
-        return real_empty_one(path, origins_dir=origins_dir, protected=protected)
+        return real_empty_one(path, origins_dir=origins_dir, protected=protected, lib=lib)  # type: ignore[arg-type]  # the route's own handle
 
     monkeypatch.setattr(trash_mod, "empty_one", spy)
     r = client.delete("/api/trash", params={"folder": "Album"})
@@ -339,10 +403,12 @@ def test_empty_all_holds_swap_lock_during_removal(
     (trash / "A").mkdir(parents=True)
     seen: dict[str, bool] = {}
 
-    def spy(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) -> EmptyResult:
+    def spy(
+        trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees, lib: object = None
+    ) -> EmptyResult:
         lock = getattr(app.state, "beets_swap_lock", None)
         seen["locked"] = lock is not None and lock.locked()
-        return real_empty_all(trash_dir, origins_dir=origins_dir, protected=protected)
+        return real_empty_all(trash_dir, origins_dir=origins_dir, protected=protected, lib=lib)  # type: ignore[arg-type]  # ditto
 
     monkeypatch.setattr(trash_mod, "empty_all", spy)
     r = client.delete("/api/trash/all")

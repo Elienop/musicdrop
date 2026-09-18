@@ -11895,7 +11895,7 @@
           "trash_path"
         ],
         "title": "DeleteResult",
-        "description": "Outcome of a reversible delete: how many albums went to Trash + where.\n\n``trashed_albums`` is 1 for a single-album delete, N for an artist (every\nalbum of theirs). ``trash_path`` is where to look: the album's own folder\ninside Trash for an album delete (its source folder when it had nothing left\nto move), and always the Trash root for an artist delete, whose albums each\nget a container of their own."
+        "description": "Outcome of a reversible delete: how many albums went to Trash + where.\n\n``trashed_albums`` is 1 for a single-album delete, N for an artist (every\nalbum of theirs). ``trash_path`` is where to look: the album's own folder\ninside Trash for an album delete, its source folder when the files were\nalready there, or the Trash root \u2014 an album with no files lands nowhere, and\nan artist delete gives each of its albums a container of its own."
       },
       "DiskSyncChange": {
         "properties": {

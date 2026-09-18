@@ -266,26 +266,32 @@ def refuse_protected_tree(root: str | Path, protected: ProtectedTrees, *, action
         raise protected_tree_error(root, hit[1], action)
 
 
-def is_one_of_ours(root: str | Path, protected: ProtectedTrees) -> bool:
-    """Whether ``root`` IS one of the app's own directories. Never raises.
+def open_if_one_of_ours(root: str | Path, protected: ProtectedTrees) -> int | None:
+    """A descriptor on ``root`` when it IS one of ours; ``None`` otherwise. Never raises.
 
-    :func:`_match`'s first arm without the walk: the identity question only, so
-    it costs one ``stat`` and says nothing about what the tree CONTAINS. For a
-    caller that must act either way and only wants to know afterwards — the
-    per-item delete asks it about every directory beets' prune can reach, before
-    the move, because that prune took the inbox and the folder above it
-    (measured).
+    The identity question only — no walk, so it says nothing about what the tree
+    CONTAINS — answered by ``fstat`` on the descriptor the caller then acts
+    through, as :func:`open_checked_dir` does for the Trash. The caller owns the
+    descriptor and must close it.
 
-    Takes no ``dir_fd``, unlike the two above: its caller walks a chain of
-    absolute paths upward and has no descriptor on any of them.
+    ``BELOW_FLAGS``, so a symlink and a non-directory answer ``None``: the
+    callers act on the name in front of them.
 
-    False for a symlink and for a non-directory, same as :func:`protected_match`:
-    the callers act on the name in front of them.
+    The caller is the per-item delete, which writes a keep-file into each store
+    beets' prune would otherwise remove; the descriptor is what keeps that write
+    inside the directory whose identity was checked.
     """
-    st = _own_stat(str(root), None)
-    if st is None or not stat.S_ISDIR(st.st_mode):
-        return False
-    return (st.st_dev, st.st_ino) in protected.ids
+    try:
+        fd = os.open(root, BELOW_FLAGS)
+    except OSError:
+        return None
+    try:
+        if _fstat_id(fd) in protected.ids:
+            return fd
+    except OSError:
+        pass
+    os.close(fd)
+    return None
 
 
 def refuse_a_held_store(root: str | Path, protected: ProtectedTrees, *, action: _Action) -> bool:
