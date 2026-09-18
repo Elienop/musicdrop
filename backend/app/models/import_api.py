@@ -140,6 +140,10 @@ class ImportAlbumSummary(BaseModel):
     # id may simply not have arrived yet, so the flag stays False. astracks and
     # dup-merge never flag (they land without an id of their own).
     did_not_land: bool = False
+    # One short sentence when a Replace the user asked for imported nothing: the
+    # old copy could not be moved to Trash, so beets was answered SKIP. None on
+    # every other row.
+    note: str | None = None
 
 
 class SweepStatus(BaseModel):

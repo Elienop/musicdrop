@@ -45,7 +45,13 @@ from app.beets.import_operation import (
     file_flags,
     forced_file_operation,
 )
-from app.beets.library import _require_id, duplicate_albums_still_present
+from app.beets.library import (
+    LibraryRootUnavailableError,
+    _abs_path,
+    _require_id,
+    duplicate_albums_still_present,
+    require_library_root,
+)
 from app.beets.merge_preview import build_merge_preview
 from app.beets.release_identity import release_identity
 from app.beets.relookup import relookup
@@ -373,6 +379,35 @@ def _incoming_release(task: ImportTask, items: list[Any]) -> ReleaseIdentity | N
     return None
 
 
+#: A Replace that never got as far as moving anything: the Trash pair is not
+#: wired, or the store layout is refused.
+_REPLACE_NO_TRASH = "Replace could not use the Trash folder. Nothing was imported."
+
+
+def _replace_partial_note(moved: int, total: int) -> str:
+    """Why a Replace imported nothing — naming how many old copies did move.
+
+    The partial state is real: a failure on the second of two duplicates leaves
+    the first in Trash with its origin record, so "Replace failed" alone would
+    hide a folder that has left the library.
+    """
+    if moved:
+        return (
+            f"Replace moved {moved} of {total} old copies to Trash, then failed."
+            " Nothing was imported."
+        )
+    return "Replace could not move the old copy to Trash. Nothing was imported."
+
+
+def _album_has_a_file(lib: Any, album: Any) -> bool:
+    """True when at least one of the album's item files is still on disk.
+
+    The partition the Replace arm makes: an album with a file must reach Trash,
+    an album with none is a ghost beets' own REMOVE can drop.
+    """
+    return any(item.path and os.path.exists(_abs_path(lib, item.path)) for item in album.items())
+
+
 class WebImportSession(ImportSession):
     """An ImportSession driven by the web UI instead of a terminal prompt."""
 
@@ -408,17 +443,22 @@ class WebImportSession(ImportSession):
         self.bridge = bridge
         # Counter that assigns each parked album a stable index for replies.
         self._album_index = 0
-        # Where Replace moves the old copies (reversible Trash). None = unwired
-        # (the post-run trash pass is then skipped defensively).
+        # Where Replace moves the old copies (reversible Trash). None = unwired,
+        # and a Replace then refuses rather than importing a second copy.
         self._trash_dir = trash_dir
         # Its sibling origin store. Wired as a PAIR with ``trash_dir`` from the
-        # one resolve point (the runner / the restore path), and the post-run
-        # pass below skips unless BOTH are set — a Replace that trashed the old
-        # copies without recording where they came from would leave rows that can
-        # only ever be re-imported.
+        # one resolve point (the runner / the restore path), and both Replace
+        # paths skip unless BOTH are set — a Replace that trashed the old copies
+        # without recording where they came from would leave rows that can only
+        # ever be re-imported.
         self._trash_origins_dir = trash_origins_dir
-        # Existing duplicate album ids recorded by Replace, trashed AFTER run().
+        # Banked replace targets the duplicate hook never saw, trashed AFTER
+        # run() by _trash_replaced_albums. The hook's own Replace moves its
+        # duplicates BEFORE beets places anything and records nothing here.
         self._replace_album_ids: set[int] = set()
+        # Library album ids the duplicate hook already moved to Trash. Read by
+        # the banked seed so it does not re-enforce a copy that has left.
+        self._hook_replaced_album_ids: set[int] = set()
         # Library album ids beets actually ADDED during this run (filled by
         # _flush_album_ids from task.album). Gates the banked-replace seed:
         # a pinned lookup that resolves nothing SKIPs while run() still returns
@@ -426,8 +466,8 @@ class WebImportSession(ImportSession):
         # with no copy at all.
         self._landed_album_ids: set[int] = set()
         # The owned-playlist store, threaded from the runner exactly like
-        # trash_dir. Set = the post-run Trash pass also re-exports the `.m3u8` of
-        # every playlist that held a track from a replaced album; None = unwired
+        # trash_dir. Set = a Replace also re-exports the `.m3u8` of every
+        # playlist that held a track from a replaced album; None = unwired
         # (tests, fakes) and the re-export is skipped.
         self._playlists_dir = playlists_dir
         # When True, uncertain matches + duplicates are set aside (SKIP), not
@@ -530,9 +570,9 @@ class WebImportSession(ImportSession):
         instead of re-running the lookup.
 
         Our four model actions map onto beets' enum:
-        skip_new→SKIP, keep_both→KEEP, merge→MERGE, and replace→KEEP (the new
-        album imports + the old copy is kept in the DB, then trashed by id after
-        run() — never beets' destructive REMOVE).
+        skip_new→SKIP, keep_both→KEEP, merge→MERGE, and replace→REMOVE once the
+        old copy is in Trash (see :meth:`_replace_duplicates_now`), or SKIP when
+        it could not be moved.
         """
         self._check_pause()
         if not task.is_album:
@@ -543,9 +583,8 @@ class WebImportSession(ImportSession):
             # track (keeps the library copy): the safe, non-destructive resolution,
             # matching beets' own singleton default. Never feed Items to
             # to_existing_album (it does items[0].path on a Model.items() field
-            # tuple → crashes the whole import job) nor record their ids into
-            # _replace_album_ids (the post-run Trash pass would delete the album
-            # that happens to share that id).
+            # tuple → crashes the whole import job) nor hand their ids to the
+            # replace arm (it would Trash the album that shares that id).
             return BeetsDuplicateAction.SKIP
         index = getattr(task, "md_album_index", None)
         if index is None:
@@ -574,7 +613,7 @@ class WebImportSession(ImportSession):
                 # SKIP; the dup outcome above flips the feed row, and the
                 # apply runner fails the bank row with re-decide guidance.
                 return BeetsDuplicateAction.SKIP
-            return self._beets_dup_action(dup_action, found_duplicates)
+            return self._beets_dup_action(dup_action, found_duplicates, task=task, index=index)
         if self.unattended:
             if self.sweep:
                 # Bank the prompt the attended flow would park: the user
@@ -600,13 +639,21 @@ class WebImportSession(ImportSession):
             # album (keeps the library copy) without parking + blocking.
             return BeetsDuplicateAction.SKIP
         decision = self.bridge.park_duplicate(prompt, art_source=art_source)
-        return self._beets_dup_action(decision.action, found_duplicates)
+        return self._beets_dup_action(decision.action, found_duplicates, task=task, index=index)
 
     def _beets_dup_action(
-        self, action: DuplicateAction, found_duplicates: Any
+        self,
+        action: DuplicateAction,
+        found_duplicates: Any,
+        *,
+        task: ImportTask,
+        index: int,
     ) -> BeetsDuplicateAction:
-        """Translate our model DuplicateAction into beets' enum (recording the
-        replace ids for the post-run Trash on a ``replace``)."""
+        """Translate our model DuplicateAction into beets' enum.
+
+        ``replace`` is the only arm that does work of its own: it moves the old
+        copies to Trash before beets is answered (:meth:`_replace_duplicates_now`).
+        """
         if action is DuplicateAction.skip_new:
             return BeetsDuplicateAction.SKIP
         if action is DuplicateAction.merge:
@@ -615,13 +662,117 @@ class WebImportSession(ImportSession):
             # absorbs its rows.
             return BeetsDuplicateAction.MERGE
         if action is DuplicateAction.replace:
-            # Import the new album + KEEP the old in the DB, then move the old to
-            # the reversible Trash by id AFTER run() — never beets' destructive
-            # REMOVE (its hard-delete path).
-            self._replace_album_ids.update(int(a.id) for a in found_duplicates)
-            return BeetsDuplicateAction.KEEP
+            return self._replace_duplicates_now(found_duplicates, task=task, index=index)
         # keep_both: import alongside the existing copy.
         return BeetsDuplicateAction.KEEP
+
+    def _replace_duplicates_now(
+        self, found_duplicates: Any, *, task: ImportTask, index: int
+    ) -> BeetsDuplicateAction:
+        """Trash the old copies, then hand beets its own ``REMOVE``.
+
+        beets removes duplicates at ``importer/stages.py:276``, before it places
+        any file at ``:293``, so a Trash move made HERE happens while the new
+        album is still only in the download folder. That ordering is what fixes
+        the same-file case: under ``hardlink``/``link`` the incoming file and the
+        library file are one file, so beets reuses the old album's paths for the
+        new rows — a Trash move made afterwards moves the new album's own files
+        (pinned by ``test_replacing_a_duplicate_leaves_an_album_whose_files_exist``).
+
+        ``found_duplicates`` is then partitioned. An album with no file left on
+        disk is a GHOST: there is nothing to move, and beets' ``REMOVE`` drops its
+        rows itself — it runs before placement and ``util.remove`` is soft on a
+        missing file (``beets/util/__init__.py:448``). Everything else must reach
+        Trash, all of it, before beets is told anything: a single failure answers
+        SKIP, so nothing is imported and the copies that did not move stay in the
+        library.
+
+        The root check comes FIRST, at the decision moment
+        ``require_library_root`` names: "an album has no file on disk" is exactly
+        the reading that goes library-wide wrong when the share drops, and it is
+        the reading the ghost branch acts on. ``trash_album`` already applies the
+        same predicate on the file-bearing branch, so this makes the two branches
+        agree rather than adding a guard of its own.
+        """
+        try:
+            require_library_root(self.lib)
+        except LibraryRootUnavailableError as exc:
+            # With the root gone EVERY duplicate reads as a ghost, and the ghost
+            # branch answers REMOVE — which would drop the whole collision's rows
+            # on a library that is merely unreachable.
+            logger.warning("import replace: %s", exc)
+            return self._replace_refused(task, index, f"{exc} Nothing was imported.")
+        with_files = [album for album in found_duplicates if _album_has_a_file(self.lib, album)]
+        if not with_files:
+            return BeetsDuplicateAction.REMOVE
+        note = self._trash_duplicates_now(with_files)
+        if note is None:
+            return BeetsDuplicateAction.REMOVE
+        return self._replace_refused(task, index, note)
+
+    def _replace_refused(self, task: ImportTask, index: int, note: str) -> BeetsDuplicateAction:
+        """Say why this Replace imported nothing, then answer beets SKIP.
+
+        The album's feed row already reads ``needs_dup_resolution``; this carries
+        the reason. The registry attaches the note without touching the row's
+        status; the bank apply runner fails the row with it.
+        """
+        self.bridge.note_outcome(self._dup_outcome(index, task).model_copy(update={"note": note}))
+        return BeetsDuplicateAction.SKIP
+
+    def _trash_duplicates_now(self, duplicates: list[Any]) -> str | None:
+        """Move each duplicate's files to Trash. ``None`` on success, else why not.
+
+        Same three duties as the post-run pass it replaces on this route: re-check
+        the store layout (the Trash pair was resolved when the registry was handed
+        the library, possibly hours ago), read each album's item ids BEFORE
+        ``trash_album`` drops its rows, and re-export the `.m3u8` of every playlist
+        that held one. The re-export sits in a ``finally`` so a failure on the
+        second of two albums still repairs the exports the first one broke.
+        """
+        trash_dir = self._trash_dir
+        origins_dir = self._trash_origins_dir
+        if trash_dir is None or origins_dir is None:
+            logger.warning("import replace: no Trash folder is wired; nothing was imported")
+            return _REPLACE_NO_TRASH
+        lib = self.lib
+        try:
+            # BEETSDIR, not ``settings.beets_dir``: the setting's default is the
+            # RELATIVE "data/beets", which would resolve against a worker
+            # thread's CWD. ``setup_beets`` exports the resolved dir.
+            music_dir, library_path = lib_music_and_library(lib)
+            check_store_layout(
+                music_dir=music_dir,
+                beets_dir=Path(os.environ.get("BEETSDIR") or settings.beets_dir),
+                trash_dir=trash_dir,
+                origins_dir=origins_dir,
+                library_path=library_path,
+                settings=settings,
+            )
+        except StoreLayoutError:
+            logger.warning(
+                "import replace: the store layout is refused; nothing was imported", exc_info=True
+            )
+            return _REPLACE_NO_TRASH
+        dropped_item_ids: set[int] = set()
+        moved = 0
+        try:
+            # Nested inside run_import_worker's bind: beets expands DB-relative
+            # item paths through a ContextVar the worker thread does not inherit.
+            with lib.music_dir_context():
+                for album in duplicates:
+                    item_ids = [_require_id(item.id) for item in album.items()]
+                    with lib.transaction():
+                        trash_album(lib, album, trash_dir=trash_dir, origins_dir=origins_dir)
+                    self._hook_replaced_album_ids.add(int(album.id))
+                    dropped_item_ids.update(item_ids)
+                    moved += 1
+        except Exception:
+            logger.exception("import replace: moving a library copy to Trash failed")
+            return _replace_partial_note(moved, len(duplicates))
+        finally:
+            _reexport_replaced_playlists(self, dropped_item_ids)
+        return None
 
     # ----- import-gate guard: typographic-variant duplicates -----
 
@@ -1226,12 +1377,17 @@ class WebImportSession(ImportSession):
         ``_beets_dup_action`` never records anything and a ``replace`` imports
         the new album while trashing NOTHING - two copies, decision discarded.
         The banked prompt already recorded WHICH albums collide, by id, so this
-        seeds the SAME post-run pass from it rather than forking a second one
-        (``_trash_replaced_albums`` already dedupes, skips missing albums and
-        re-exports the affected playlists).
+        seeds the post-run pass from it (``_trash_replaced_albums`` dedupes,
+        skips missing albums and re-exports the affected playlists).
 
-        Three guards, each of which alone would make this destructive:
+        Four guards, each of which alone would make this destructive:
 
+        * **not a copy the hook already moved.** When the hook DID fire it
+          trashed the old copy before beets placed anything, and SQLite hands
+          the new album the freed rowid — measured ``[1] -> landed [1]``. Every
+          such entry would then look like the reused-id case below and warn on
+          a healthy run. Dropping them first keeps that guard for the case it
+          was written for (the hook never fired).
         * **something must have landed.** A directive whose pinned lookup
           resolves nothing SKIPs, ``run()`` returns normally, and the trash pass
           still executes - an ungated seed would move the user's only copies to
@@ -1248,9 +1404,12 @@ class WebImportSession(ImportSession):
         directive = self._directive
         if directive is None or directive.duplicate_action is not DuplicateAction.replace:
             return
-        stored = directive.replace_existing
-        if not stored:
+        banked = directive.replace_existing
+        if not banked:
             return  # legacy/up-front-resolver row: nothing banked to enforce
+        stored = [e for e in banked if e.album_id not in self._hook_replaced_album_ids]
+        if not stored:
+            return  # the duplicate hook already moved every banked copy to Trash
         if not self._landed_album_ids:
             logger.warning(
                 "bank apply replace: nothing landed, so the %d banked library copy/copies "
@@ -1594,10 +1753,10 @@ def run_import_worker(
     last one forced for EVERY MusicDrop-driven import (review included), not just
     sweep/apply branches: a ``singletons: yes`` user config would route every
     DEFAULT review album into ``choose_item``'s SKIP funnel, importing NOTHING
-    while recording import history. After run()
-    returns, moves any album the Replace action recorded to the reversible Trash,
-    by stable id — beets imports the new album first, so the old copy is only
-    touched once the new one is safe.
+    while recording import history. A Replace moves the old copy to the
+    reversible Trash inside the duplicate hook, before beets places anything;
+    after run() returns, this moves the one shape that hook never sees — a
+    banked replace whose library copy was renamed since banking.
 
     ``autotag`` is forced (snapshot/restore, like the flags below) because beets
     swaps the ``lookup_candidates`` + ``user_query`` stages for ``import_asis``
@@ -1866,7 +2025,22 @@ def run_import_worker(
 
 
 def _trash_replaced_albums(session: WebImportSession) -> None:
-    """Move every Replace-recorded existing album to Trash (post-run, by id).
+    """Move every BANKED replace target to Trash (post-run, by id).
+
+    The attended and directive duplicate hooks move their own copies BEFORE beets
+    places anything (``_replace_duplicates_now``); this pass exists for the one
+    shape that never reaches the hook — a banked replace whose library copy was
+    renamed since banking, so beets' own ``find_duplicates`` misses it
+    (``_seed_replace_from_directive``, vault decision 25). It therefore runs after
+    ``session.run()``, where a bank apply that resolved nothing has already proved
+    it: moving first would Trash the user's only copy while importing nothing.
+
+    Running after placement is what makes the landed-file guard below necessary.
+    Under ``hardlink``/``link`` the incoming file and the library file are one
+    file, so beets files the new album on the old album's paths — and moving the
+    old album by id would move the new album's own files. An item row naming a
+    path a just-landed album also names is DROPPED here, file untouched; whatever
+    else the old album owns still goes to Trash.
 
     Synchronous library primitive on the worker thread — NOT the async
     resolve_duplicates_op (which gates on has_active_job + the swap lock and would
@@ -1937,14 +2111,63 @@ def _trash_replaced_albums(session: WebImportSession) -> None:
         return
     dropped_item_ids: set[int] = set()
     with lib.music_dir_context():
+        landed = _landed_item_paths(lib, session._landed_album_ids)
         for album_id in session._replace_album_ids:
             album = lib.get_album(album_id)
             if album is None:
                 continue  # already gone — nothing to trash
-            dropped_item_ids.update(_require_id(i.id) for i in album.items())
             with lib.transaction():
+                shared = _drop_rows_naming_a_landed_file(lib, album, landed)
+                dropped_item_ids.update(shared)
+                if shared and not list(album.items()):
+                    # Every row named a file this run's import now owns: nothing
+                    # is left to move, so the album row goes on its own.
+                    album.remove(delete=False)
+                    continue
+                dropped_item_ids.update(_require_id(i.id) for i in album.items())
                 trash_album(lib, album, trash_dir=trash_dir, origins_dir=origins_dir)
     _reexport_replaced_playlists(session, dropped_item_ids)
+
+
+def _landed_item_paths(lib: Any, landed_album_ids: set[int]) -> set[str]:
+    """Every file path the albums this run imported currently name."""
+    paths: set[str] = set()
+    for album_id in landed_album_ids:
+        album = lib.get_album(album_id)
+        if album is None:
+            continue
+        paths.update(
+            os.path.normpath(_abs_path(lib, item.path)) for item in album.items() if item.path
+        )
+    return paths
+
+
+def _drop_rows_naming_a_landed_file(lib: Any, album: Any, landed: set[str]) -> list[int]:
+    """Drop the album's rows whose file a just-landed album also names.
+
+    Byte-equal stored paths, not ``samefile``: the row that must not be moved is
+    exactly the one the new album points at. A hardlinked SIBLING at another path
+    is a different name for the same inode and moving it leaves the new album's
+    path intact, so it stays trashable.
+
+    ``with_album=False`` — this album is still being processed; its own removal
+    is the caller's decision.
+    """
+    doomed = [
+        item
+        for item in album.items()
+        if item.path and os.path.normpath(_abs_path(lib, item.path)) in landed
+    ]
+    for item in doomed:
+        item.remove(delete=False, with_album=False)
+    if doomed:
+        logger.warning(
+            "post-import Trash cleanup: %d row(s) of library album %s name a file this import "
+            "just landed; the rows were dropped and the files left alone",
+            len(doomed),
+            album.id,
+        )
+    return [_require_id(item.id) for item in doomed]
 
 
 def _reexport_replaced_playlists(session: WebImportSession, dropped_item_ids: set[int]) -> None:

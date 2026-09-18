@@ -385,34 +385,26 @@ def test_a_skipped_album_under_a_hardlink_config_is_offered_again(
     assert second_bridge.known_skips() == 0
 
 
-#: Why the same-file operations fail the last assertion below, until the Replace
-#: reorder lands. Shared by the two params that hit it.
-_SAMEFILE_REASON = (
-    "KNOWN: the download and the library file resolve to one file, so beets"
-    " reuses the OLD album's paths for the new rows (Item.move_file skips"
-    " unique_path on samefile) and MusicDrop's post-run pass then trashes those"
-    " very files. Fixed by the Replace reorder (Trash move first, then beets)."
-)
-
-
 @pytest.mark.parametrize("operation", ["hardlink", "copy", "link"])
 def test_replacing_a_duplicate_leaves_an_album_whose_files_exist(
     operation: str,
-    request: pytest.FixtureRequest,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Re-import a folder whose album is still in the library, answer Replace.
 
     Whatever the file operation, the one album left behind must have files on
-    disk. Two arms do not: they report success, and every item row of the
-    surviving album names a path that is now in Trash.
+    disk. ``hardlink`` and ``link`` did not, until the Replace moved the old copy
+    to Trash BEFORE beets placed anything: the download and the library file
+    resolve to one file, so beets reuses the old album's paths for the new rows
+    (``Item.move_file`` skips ``unique_path`` on samefile) and a Trash move made
+    afterwards moved those very files. Both were strict xfails here until
+    2026-09-18.
 
     ``link`` was measured here 2026-09-18, not assumed: ``util.samefile`` is
     ``os.path.samefile``, which follows symlinks, so a symlink import hits the
-    same shape as a hardlink — same assertion, same reused paths (no
-    ``*.1.flac``). ``copy`` is the control: a distinct file, filed at
-    ``*.1.flac``, and Replace is fine.
+    same shape as a hardlink. ``copy`` is the control: a distinct file, and
+    Replace was always fine.
     """
     _install_lookup(monkeypatch, BeetsRec.strong)
     lib = _library(tmp_path, operation)
@@ -434,12 +426,5 @@ def test_replacing_a_duplicate_leaves_an_album_whose_files_exist(
     assert run.errors == []
     assert run.duplicates != [], "nothing asked about the duplicate"
     assert len(list(lib.albums())) == 1, "Replace left more than one album"
-    # Scoped to the ONE assertion below, not to the whole test: on the param the
-    # mark covers every assertion above too, so a regression in any of them
-    # would report XFAIL for these two operations and stay green. Applied here
-    # it is still strict — the Replace reorder turns this red until the mark
-    # goes.
-    if operation in ("hardlink", "link"):
-        request.applymarker(pytest.mark.xfail(strict=True, reason=_SAMEFILE_REASON))
     missing = [p for p in _item_paths(lib) if not p.exists()]
     assert missing == [], f"{len(missing)} item rows point at files that are gone"

@@ -508,9 +508,18 @@ class BankApplyRunner:
           album_id None, but only when its applied outcome reached the feed.
         * ``apply``/``asis`` without a landed album id failed (a pinned id
           that resolved nothing, an unreadable folder).
+
+        A feed row carrying a ``note`` outranks all of it: the session answered
+        the duplicate hook SKIP because a Replace could not move the old copy to
+        Trash, so nothing was imported and the note is the only channel that
+        says which of those two things happened. Retryable — the recovery IS
+        deciding again, once the Trash folder works.
         """
         if state.phase is ImportPhase.failed:
             return "failed", state.error or "import failed", None, True
+        note = next((a.note for a in state.albums if a.note is not None), None)
+        if note is not None:
+            return "failed", note, None, True
         album_id = next((a.album_id for a in state.albums if a.album_id is not None), None)
         decision = item.decided
         action = decision.action if decision is not None else "apply"

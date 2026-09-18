@@ -12951,6 +12951,17 @@
             "type": "boolean",
             "title": "Did Not Land",
             "default": false
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
           }
         },
         "type": "object",

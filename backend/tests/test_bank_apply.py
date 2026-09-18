@@ -909,6 +909,44 @@ def test_replace_that_replaced_nothing_fails_honestly(tmp_path: Path) -> None:
         runner.stop()
 
 
+def test_a_replace_that_could_not_reach_trash_fails_the_row_with_its_own_sentence(
+    tmp_path: Path,
+) -> None:
+    # The session answered beets SKIP because the old copy could not be moved to
+    # Trash, so nothing was imported. Without the note this row reads DONE —
+    # ``_classify_duplicate``'s "the resolution ran" arm cannot tell a Replace
+    # that happened from one that refused, and the note is the only thing that
+    # can. Retryable: the recovery IS deciding again once Trash works.
+    note = "Replace could not move the old copy to Trash. Nothing was imported."
+    handle, ids = _library(tmp_path, [("A", "B")])
+    fake = FakeImportRunner(
+        applied=[
+            _outcome(AlbumOutcomeStatus.needs_dup_resolution),
+            _outcome(AlbumOutcomeStatus.needs_dup_resolution).model_copy(update={"note": note}),
+        ]
+    )
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    item_id = _seed_dup_row(
+        bank, _folder(tmp_path), DuplicateAction.replace, prompt=_dup_prompt([_existing(ids[0])])
+    )
+
+    runner = _make_runner(bank, reg, lambda: handle)
+    runner.start()
+    try:
+        got = _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status in ("done", "failed"),
+        )
+        assert got is not None
+        assert got.status == "failed"
+        assert got.error == note
+        assert got.album_id is None
+        assert got.error_retryable is True
+    finally:
+        runner.stop()
+
+
 def test_replace_is_done_when_a_banked_copy_still_survives(tmp_path: Path) -> None:
     # THE control for the arm above, identical in every other respect: an album
     # landed, the hook never ran, the prompt listed a stored id — the ONLY

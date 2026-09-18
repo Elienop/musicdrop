@@ -1766,3 +1766,50 @@ def test_a_single_folder_start_reports_its_path_and_a_multi_folder_start_does_no
     job_id = reg.start(["/downloads/one"])
     _poll(lambda: reg.state(job_id).phase, lambda p: p is ImportPhase.done)
     assert reg.state(job_id).path == "/downloads/one"
+
+
+# --- the Replace-became-Skip note --------------------------------------------
+
+
+def _replace_note_outcome(index: int, note: str) -> AlbumOutcome:
+    """The follow-up the session emits when a Replace could not reach Trash."""
+    return _dup_outcome(index).model_copy(update={"note": note})
+
+
+def test_a_replace_note_reaches_the_feed_row_without_moving_its_status() -> None:
+    """The only channel the worker has for "your Replace imported nothing".
+
+    The row already reads ``needs_dup_resolution`` (emitted at the top of
+    ``get_duplicate_action``) and the user's decision still stands, so the note
+    attaches and the status ladder is left alone. Without the attach the sentence
+    is dropped: a ``needs_dup_resolution`` outcome for a row that already exists
+    does not replace ``row.outcome``.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    note = "Replace could not move the old copy to Trash. Nothing was imported."
+    bridge = ImportBridge()
+    reg = ImportJobRegistry()
+    reg._job = ImportJob(id="note-job", bridge=bridge, phase=ImportPhase.reviewing)
+    bridge.note_outcome(_dup_outcome(0))
+    bridge.note_outcome(_replace_note_outcome(0, note))
+
+    rows = reg.drain("note-job")
+
+    assert [r.note for r in rows] == [note]
+    assert [r.status for r in rows] == [ImportAlbumStatus.needs_dup_resolution]
+
+
+def test_a_row_carries_no_note_when_nothing_went_wrong() -> None:
+    """The control: an ordinary row's note is None, so the field is a signal."""
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    bridge = ImportBridge()
+    reg = ImportJobRegistry()
+    reg._job = ImportJob(id="clean-job", bridge=bridge, phase=ImportPhase.reviewing)
+    bridge.note_outcome(_dup_outcome(0))
+    bridge.note_outcome(_applied_outcome(1))
+
+    assert [r.note for r in reg.drain("clean-job")] == [None, None]

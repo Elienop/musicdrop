@@ -572,6 +572,9 @@ def _replace_session(lib: Library, *, trash_dir: Path, playlists_dir: Path | Non
     session._trash_origins_dir = trash_dir.parent / "trash-origins"
     session._playlists_dir = playlists_dir
     session._replace_album_ids = set()
+    # Nothing landed in these fixtures, so the pass has no just-imported file to
+    # protect; the I6 case has its own test below.
+    session._landed_album_ids = set()
     return session
 
 
@@ -757,6 +760,7 @@ def test_run_import_worker_post_run_pass_tolerates_a_minimal_session(
         lib = _Lib()
         paths: ClassVar[list[bytes]] = []
         _replace_album_ids: ClassVar[set[int]] = {11, 22}
+        _landed_album_ids: ClassVar[set[int]] = set()
         _trash_dir = tmp_path / "trash"
         _trash_origins_dir = tmp_path / "trash-origins"
         _playlists_dir = None

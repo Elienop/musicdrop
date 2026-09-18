@@ -189,6 +189,9 @@ def _make_session(bridge: ImportBridge) -> WebImportSession:
     # the banked-replace seed gates on. A __new__ fake breaks the moment
     # production reads an attribute it never set, so this is not optional.
     session._landed_album_ids = set()
+    # __init__ is skipped, so seed the set the duplicate hook fills when IT moved
+    # a copy to Trash; the banked seed drops those entries before its own guards.
+    session._hook_replaced_album_ids = set()
     # __init__ is skipped, so default the astracks-in-flight flag choose_item
     # now reads (armed by choose_match when a park is decided "as tracks").
     session._astracks_in_flight = False
@@ -1414,7 +1417,11 @@ def test_run_import_worker_forces_autotag_on_and_restores_it() -> None:
 def test_run_import_worker_trashes_replace_ids_after_run(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Recorded Replace ids are moved to Trash AFTER run() returns, by id.
+    """Seeded Replace ids are moved to Trash AFTER run() returns, by id.
+
+    The BANKED route only: the duplicate hook trashes its own copies before beets
+    places anything, so the only thing left for this pass is a banked replace the
+    hook never saw (``_seed_replace_from_directive``).
 
     The fake library carries a ``directory`` and a ``path`` because the post-run
     pass re-checks the store layout before it moves anything: the Trash pair was
@@ -1460,6 +1467,9 @@ def test_run_import_worker_trashes_replace_ids_after_run(
         lib = _Lib()
         paths: ClassVar[list[bytes]] = []
         _replace_album_ids: ClassVar[set[int]] = {11, 22}
+        # Nothing landed, so the pass has no just-imported file to protect and
+        # every row of both albums is trashable.
+        _landed_album_ids: ClassVar[set[int]] = set()
         _trash_dir = tmp_path / "trash"
         # Wired as a PAIR with _trash_dir: the post-run pass skips unless both
         # are set, so a fake with only one silently stops trashing.
@@ -2028,13 +2038,19 @@ def test_directive_apply_with_no_candidates_skips(monkeypatch: pytest.MonkeyPatc
 def _directive_dup_setup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[WebImportSession, ImportTask, Any]:
-    """A directive-mode session + APPLY-chosen task + one real library duplicate."""
+    """A directive-mode session + APPLY-chosen task + one real library duplicate.
+
+    The music root is created holding an unrelated folder: present and non-empty,
+    as a real library's root is, while the duplicate's own file is never written
+    (it is a ghost, which is what the replace arm below turns on).
+    """
     from beets.library import Library as BeetsLibrary
 
     match = _build_match(BeetsRec.strong)
     session = _make_session(ImportBridge())
     session.unattended = True
     session._replace_album_ids = set()
+    (tmp_path / "music" / "Someone Else").mkdir(parents=True, exist_ok=True)
     lib = BeetsLibrary(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
     session.lib = lib
     dup_item = Item(
@@ -2070,13 +2086,16 @@ def test_directive_duplicate_actions_map_like_attended(
     )
     assert session2.get_duplicate_action(task2, [existing2]) is BeetsDuplicateAction.MERGE
 
-    # replace records the ids for the post-run Trash pass (KEEP, never hard-delete)
+    # replace: the duplicate here is a GHOST (its item path names a file that was
+    # never created), so there is nothing to move and beets' own REMOVE drops the
+    # rows before it places anything.
     session3, task3, existing3 = _directive_dup_setup(tmp_path, monkeypatch)
     session3._directive = BankApplyDirective(
         action="duplicate", duplicate_action=DuplicateAction.replace
     )
-    assert session3.get_duplicate_action(task3, [existing3]) is BeetsDuplicateAction.KEEP
-    assert session3._replace_album_ids == {int(existing3.id)}
+    assert not os.path.exists(os.fsdecode(next(iter(existing3.items())).path))
+    assert session3.get_duplicate_action(task3, [existing3]) is BeetsDuplicateAction.REMOVE
+    assert session3._replace_album_ids == set()
 
     # keep_both imports alongside the existing copy
     session4, task4, existing4 = _directive_dup_setup(tmp_path, monkeypatch)

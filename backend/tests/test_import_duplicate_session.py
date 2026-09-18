@@ -73,6 +73,11 @@ def _session(bridge: ImportBridge, *, trash_dir: Path | None = None) -> WebImpor
     # Replace pass skips entirely unless both are set.
     session._trash_origins_dir = None if trash_dir is None else trash_dir.parent / "trash-origins"
     session._replace_album_ids = set()
+    # __init__ is skipped, so default the two id sets the Replace machinery
+    # reads: what the duplicate hook already trashed, and what this run landed
+    # (the post-run pass compares its paths before it moves anything).
+    session._hook_replaced_album_ids = set()
+    session._landed_album_ids = set()
     # __init__ is skipped, so default the library the shared ExistingAlbum mapper
     # reads. None is safe: these fakes carry no items, so folder resolves to "".
     session.lib = None  # type: ignore[assignment]  # fake session never dereferences lib
@@ -270,10 +275,38 @@ def test_merge_returns_merge(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result["action"] is BeetsDuplicateAction.MERGE
 
 
-def test_replace_records_ids_and_keeps(monkeypatch: pytest.MonkeyPatch) -> None:
+class _RootOnlyLib:
+    """The smallest library ``require_library_root`` accepts: where the music is.
+
+    The replace arm asks the root question before it reads "this album has no
+    file" as a ghost, so a fake session that answers Replace needs a real music
+    directory even when its albums carry no items.
+    """
+
+    def __init__(self, music_dir: Path) -> None:
+        self.directory = os.fsencode(str(music_dir))
+
+
+def test_replace_of_file_less_duplicates_answers_remove_and_trashes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both fakes carry no items, so both are ghosts: rows and no files.
+
+    There is nothing to move, so the hook answers beets' own REMOVE — which runs
+    at ``importer/stages.py:276``, before any file is placed at ``:293``, and
+    whose ``util.remove`` is soft on a missing file. Nothing is recorded for the
+    post-run pass: that pass is the BANKED route's only (see
+    ``_seed_replace_from_directive``).
+
+    The music root holds an unrelated folder: present and non-empty, so the root
+    check passes, while the duplicates themselves still have no file anywhere.
+    """
+    music = tmp_path / "music"
+    (music / "Someone Else").mkdir(parents=True)
     match = _match()
     bridge = ImportBridge()
     session = _session(bridge, trash_dir=Path("/tmp/trash"))
+    session.lib = _RootOnlyLib(music)  # type: ignore[assignment]  # root-only stand-in, not a Library
     task = _task(match, monkeypatch)
     task.md_album_index = 0  # type: ignore[attr-defined]  # dynamic attr (see above)
 
@@ -281,10 +314,9 @@ def test_replace_records_ids_and_keeps(monkeypatch: pytest.MonkeyPatch) -> None:
     assert bridge.get_parked_duplicate(timeout=2.0) is not None
     bridge.push_duplicate_decision(0, DuplicateDecision(action=DuplicateAction.replace))
     t.join(timeout=2.0)
-    # New album imports + the old copies are KEPT in the DB (never beets' REMOVE),
-    # then recorded for the post-run reversible Trash by id.
-    assert result["action"] is BeetsDuplicateAction.KEEP
-    assert session._replace_album_ids == {11, 22}
+    assert result["action"] is BeetsDuplicateAction.REMOVE
+    assert session._replace_album_ids == set()
+    assert session._hook_replaced_album_ids == set()  # nothing was moved
 
 
 def test_singleton_astracks_duplicate_skips_without_crashing() -> None:

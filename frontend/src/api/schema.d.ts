@@ -3420,6 +3420,8 @@ export interface components {
              * @default false
              */
             did_not_land: boolean;
+            /** Note */
+            note?: string | null;
         };
         /**
          * ImportChoice

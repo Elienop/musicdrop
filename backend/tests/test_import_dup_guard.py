@@ -37,7 +37,6 @@ from beets.library import Album, Item, Library
 
 from app.bank import store as bank_store
 from app.beets.import_session import ImportBridge, WebImportSession
-from app.beets.library import _require_id
 from app.models.bank import BankApplyDirective
 from app.models.import_models import (
     AlbumOutcomeStatus,
@@ -114,9 +113,16 @@ def _asis_task(album: str, artist: str | None, monkeypatch: pytest.MonkeyPatch) 
 
 
 def _lib_album_in(artist: str, album: str, tmp_path: Path, *, path: str | None = None) -> Library:
-    """A DB-only library holding ONE album — the in-library side of the twin."""
+    """A DB-only library holding ONE album — the in-library side of the twin.
+
+    The album's FOLDER is created and its file is not: the music root is present
+    and non-empty (so ``require_library_root`` passes, as it does on a real
+    library) while the album itself stays file-less, which is what these gate
+    tests are about.
+    """
     if path is None:
         path = str(tmp_path / "music" / f"{artist} - {album}" / "01.mp3")
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     item = Item(
         artist=artist,
         albumartist=artist,
@@ -148,6 +154,7 @@ def _gate_session(
     session._album_index = 0
     session._trash_dir = None
     session._replace_album_ids = set()
+    session._hook_replaced_album_ids = set()
     session.lib = lib
     session.unattended = unattended
     session.sweep = sweep
@@ -483,11 +490,12 @@ def test_variant_gate_directive_without_decision_skips(
     assert bridge.pending_count() == 0
 
 
-def test_variant_gate_directive_replace_trashes_the_twin(
+def test_variant_gate_directive_replace_resolves_the_twin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # With an explicit dup decision, the resolution machinery works on the
-    # variant twin exactly as on an exact one (replace records the twin's id).
+    # variant twin exactly as on an exact one. The twin's file was never created,
+    # so it is a ghost: nothing to move, and beets' own REMOVE drops its rows.
     lib = _lib_album_in("Radiohead", "Greatest Hits - Chapter One", tmp_path)
     task = _apply_task(_match("Greatest Hits " + _EN_DASH + " Chapter One"), monkeypatch)
     bridge = ImportBridge()
@@ -503,8 +511,8 @@ def test_variant_gate_directive_replace_trashes_the_twin(
 
     action = session.get_duplicate_action(task, found)
 
-    assert action is BeetsDuplicateAction.KEEP  # new imports, old kept in DB
-    assert session._replace_album_ids == {_require_id(found[0].id)}  # post-run Trash by id
+    assert action is BeetsDuplicateAction.REMOVE  # beets drops the twin's rows
+    assert session._replace_album_ids == set()  # nothing left for the post-run pass
 
 
 # --------------------------------------------------------------------------
