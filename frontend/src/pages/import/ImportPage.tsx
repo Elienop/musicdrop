@@ -53,6 +53,7 @@ import {
   announceMessage,
   elapsedLabel,
   isPausedSweep,
+  pendingDuplicates,
   spokenElapsed,
 } from "@/pages/import/importStatus";
 
@@ -595,10 +596,11 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
   // prevent. LiveFeed is only reached on an active phase.
   const scanningEmpty = state.albums.length === 0;
   // `progress` has no duplicate counter (backend), so derive the
-  // duplicate-pending count from the feed rows for the cue line below.
-  const needsDup = state.albums.filter(
-    (a) => a.status === "needs_dup_resolution",
-  ).length;
+  // duplicate-pending count from the feed rows for the cue line below. The
+  // announcer's twin, not a second copy of the filter: the two disagreed about
+  // a refused Replace on a bank apply, which wears `needs_dup_resolution` and
+  // `did_not_land` at once.
+  const needsDup = pendingDuplicates(state);
   return (
     <div className="flex flex-col gap-4">
       <StatusLine spinning={working}>
@@ -611,24 +613,30 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
             {/* No known total (the feed grows as the worker reads) — count
                 what's applied + flag whether one album awaits a decision.
                 `needs_review` is at most 1 (review is sequential), but derive
-                the count so that invariant is self-evident. */}
-            {state.progress.applied}{" "}
-            {state.progress.applied === 1 ? "album" : "albums"} imported
+                the count so that invariant is self-evident.
+                Every clause goes through {@link segment}, like both terminal
+                panels: the rule is that a wrap may fall only BETWEEN segments,
+                and a line that kept it for one clause in five was the same
+                defect that rule was written for. */}
+            {segment(
+              `${state.progress.applied} ${state.progress.applied === 1 ? "album" : "albums"} imported`,
+            )}
             {state.progress.skipped > 0 &&
-              `${SEGMENT_SEP}${state.progress.skipped} skipped`}
+              tailSegment(`${state.progress.skipped} skipped`)}
             {/* A refused Replace is lost the moment it is refused, and the
                 server stops counting it as applied there and then — so without
                 this the album simply left the line, and the headline read
                 "0 albums imported" above a row saying nothing was imported.
-                Same words as the two terminal panels ({@link notLandedText}),
-                and `segment` so a wrap cannot strand the number from them. */}
+                Same words as the two terminal panels ({@link notLandedText}). */}
             {state.progress.not_landed > 0 &&
-              `${SEGMENT_SEP}${segment(notLandedText(state.progress.not_landed))}`}
+              tailSegment(notLandedText(state.progress.not_landed))}
             {state.progress.needs_review > 0 &&
-              `${SEGMENT_SEP}${state.progress.needs_review} album${state.progress.needs_review === 1 ? "" : "s"} needs review`}
+              tailSegment(
+                `${state.progress.needs_review} album${state.progress.needs_review === 1 ? "" : "s"} needs review`,
+              )}
             {/* Import-time duplicates are named "already in library" so
                 "Duplicates" (the Manage page) names exactly one thing. */}
-            {needsDup > 0 && `${SEGMENT_SEP}${needsDup} already in library`}
+            {needsDup > 0 && tailSegment(`${needsDup} already in library`)}
           </>
         )}
         {/* Same middot dialect as the counts, inside the one text flow so it
@@ -988,9 +996,11 @@ function ReplaceNote({ note }: Readonly<{ note: string }>) {
           lower this span's min-content floor, which is `min-w-0`'s job. Both
           are needed and neither substitutes: without the floor a long token
           pans the page, and without the wrap the list's `overflow-hidden`
-          CLIPS it. Today's notes are prose (`import_session.py:408-445`,
-          longest unbreakable token 11 characters), so this is insurance for
-          the `strerror` interpolation at `:1090`. */}
+          CLIPS it. Every note the backend can send today is prose — measured
+          across the `_REPLACE_*` constants, `_replace_partial_note` and the
+          `LibraryRootUnavailableError` sentences `_replace_refused` forwards,
+          the longest unbreakable token is 12 characters ("unavailable.") — so
+          this is insurance for the `strerror` those sentences interpolate. */}
       <span className="min-w-0 break-words">{note}</span>
     </p>
   );
@@ -1015,8 +1025,6 @@ function FeedRow({
   jobId: string;
   readOnly?: boolean;
 }> ) {
-  const needsReview = album.status === "needs_review";
-  const needsDup = album.status === "needs_dup_resolution";
   // Final fallback is non-empty: `album` may be null and `folder` may be ""/"/",
   // in which case folderName() returns "" — never show an empty title.
   const title = (album.album ?? folderName(album.folder)) || "Unknown album";
@@ -1062,18 +1070,23 @@ function FeedRow({
     // block sibling it would be a second line inside the row's box, which
     // re-centres every `items-center` neighbour beside it.
     //
-    // A row can carry BOTH. `registry._drain_locked` attaches the note without
-    // touching the status, and that status is `decided` on an attended run but
-    // `needs_dup_resolution` on a directive (bank-apply) one — for which
+    // A row can carry BOTH. `registry._drain_outcomes_locked` attaches the note
+    // without touching the status, and that status is `decided` on an attended
+    // run but `needs_dup_resolution` on a directive (bank-apply) one — for which
     // `feedRowAction` returns Resolve. Two explicitly placed grid items in one
     // area do not stack, they paint over each other, so the action takes row 3
     // in the narrow arm whenever a note is present. That arm is conditional
     // rather than unconditional on purpose: an empty `auto` row costs 0px only
     // while the wrapper has no row-gap, and a row with no note must keep the
     // exact tracks it took before this line existed.
+    //
+    // The tint is keyed on the ACTION, not on the status that used to imply
+    // one. It means "this row needs you", and a read-only feed has nothing to
+    // press on any row: a bank-apply duplicate wore it with no control, and so
+    // did every parked row on a failed job.
     <div
       className={cn(
-        (needsReview || needsDup) && "bg-primary/5",
+        action !== undefined && "bg-primary/5",
         (action !== undefined || note !== null) &&
           "@container/feedrow grid grid-cols-[minmax(0,1fr)_auto] items-center",
       )}
@@ -1227,10 +1240,24 @@ function notLandedText(notLanded: number): string {
  * 2026-09-18, the finished panel broke as "0 albums imported · 0 skipped · 1" /
  * "already known".
  *
+ * Every clause of all three counting lines goes through this — the two terminal
+ * panels and the live status line. The live one had it on one clause of five
+ * for a round, which is the state the rule exists to forbid. Adding the other
+ * four cost no test changes: RTL normalises NBSP in the ELEMENT, so a query
+ * written with ordinary spaces still matches.
+ *
  * Visible text only. The spoken twins in `importStatus.ts` keep ordinary
  * spaces — nothing wraps inside a live region. */
 function segment(text: string): string {
   return text.replaceAll(" ", "\u00A0");
+}
+
+/** A counts clause that is not the first: the separator plus {@link segment}.
+ * Both halves of the rule in one call, so a clause added later cannot take one
+ * and forget the other \u2014 which is how the live line ended up with four
+ * breakable clauses and one unbreakable. */
+function tailSegment(text: string): string {
+  return `${SEGMENT_SEP}${segment(text)}`;
 }
 
 /** The failed panel's count line, or null when the run has nothing to own up to.
@@ -1402,11 +1429,45 @@ function doneTitle(state: ImportJobState): string {
   return onlySkippedKnown(state) ? "Nothing new to import" : "Import finished";
 }
 
+/** A finished bank apply that left something to decide again, or still holds a
+ * set-aside row — the one origin whose feed is read-only, so nothing on this
+ * page can clear either.
+ *
+ * The decision lives on the Review page's bank row, which carries the runner's
+ * re-decide guidance. Without this the panel's only link was the shell's "Start
+ * over" → `/import`, a folder import, while a row said "Decide again."; the
+ * file's own rule is that a sentence must name a control the screen has.
+ *
+ * Same button and words as {@link SweepDoneCta}'s banked arm — the other place
+ * a finished run hands the user to `/review`. A bank apply that landed
+ * everything gains nothing. */
+function bankApplyNeedsReview(state: ImportJobState): boolean {
+  return (
+    state.origin === "bank_apply" &&
+    state.progress.not_landed + state.set_aside > 0
+  );
+}
+
 /** done: a legible outcome — imported/skipped counts (counting auto-applied
  * albums) + the feed list, whose applied rows now link straight to their
  * library pages (replaces the old blanket "View in library", spec §1). */
 function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: string }>) {
   const againPath = importAgainPath(state);
+  // The two are mutually exclusive by origin — `importAgainPath` is `manual`
+  // only, `bankApplyNeedsReview` is `bank_apply` only — so neither can hide the
+  // other, and the panel still ends up with at most one button.
+  let doneAction: React.ReactNode | undefined;
+  if (bankApplyNeedsReview(state)) {
+    doneAction = (
+      <Button size="sm" asChild>
+        <Link to="/review">Review banked albums</Link>
+      </Button>
+    );
+  } else if (againPath !== null) {
+    doneAction = (
+      <ImportAgainButton path={againPath} known={state.progress.already_known} />
+    );
+  }
   return (
     <div className="flex flex-col gap-4">
       <EmptyState
@@ -1422,14 +1483,7 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
             <ElapsedSegment seconds={state.elapsed_seconds} />
           </>
         }
-        action={
-          againPath === null ? undefined : (
-            <ImportAgainButton
-              path={againPath}
-              known={state.progress.already_known}
-            />
-          )
-        }
+        action={doneAction}
       />
       {state.albums.length > 0 && (
         <FeedList

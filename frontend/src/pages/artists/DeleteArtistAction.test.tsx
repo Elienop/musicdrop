@@ -53,7 +53,9 @@ function body(count: number, plural: string, folder: string, noun: string): stri
 }
 
 const THREE = [3, "s", "their folders", "the albums"] as const;
-const ONE = [1, "", "its folder", "the album"] as const;
+// "the folder", not "its folder": the nearest singular noun before a possessive
+// here is Trash, and "the Trash folder" is a real phrase in this app.
+const ONE = [1, "", "the folder", "the album"] as const;
 
 describe("DeleteArtistAction", () => {
   beforeEach(() => vi.restoreAllMocks());

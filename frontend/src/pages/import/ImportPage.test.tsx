@@ -713,7 +713,7 @@ describe("ImportPage — live feed", () => {
 
   // A Replace the user asked for that imported NOTHING. The backend attaches
   // its reason to the row's `note` WITHOUT touching the row's status
-  // (`registry._drain_locked`), and separately flags the row `did_not_land` in
+  // (`registry._drain_outcomes_locked`), and separately flags it `did_not_land` in
   // every phase — so the badge classifies and the note explains, from the
   // moment of the refusal rather than only once the job ends.
   const REFUSED_NOTE =
@@ -863,12 +863,12 @@ describe("ImportPage — live feed", () => {
   });
 
   test("a noted row that still has a button stacks them, never sharing a cell", async () => {
-    // `_drain_locked` attaches a note without touching the status, and on a
-    // directive run that status is `needs_dup_resolution` — for which
+    // `_drain_outcomes_locked` attaches a note without touching the status, and
+    // on a directive run that status is `needs_dup_resolution` — for which
     // `feedRowAction` returns Resolve. Two explicitly placed grid items in one
     // area paint over each other rather than stacking, so the narrow arm must
-    // give them different rows. (`bank_apply` feeds are read-only now, so this
-    // pairing is unreachable in production; the layout must survive it anyway.)
+    // give them different rows. (`bank_apply` feeds are read-only, so no origin
+    // produces this pairing today; the layout must survive it anyway.)
     server.use(
       http.get(JOB_URL, () =>
         HttpResponse.json(
@@ -918,39 +918,135 @@ describe("ImportPage — live feed", () => {
     );
   });
 
-  test("a bank-apply feed offers no decision button — nothing would consume it", async () => {
-    // A directive run answers every hook from the banked decision and never
-    // parks (`_directive_choice`), so a Resolve here posts into the void. The
-    // row keeps its badge and its note.
+  /** A finished/running bank apply whose one row is a refused Replace. The
+   * second run mode: the row wears `needs_dup_resolution` AND the server's
+   * `did_not_land`, which is the pair every FE-derived count has to respect. */
+  function bankApplyJob(phase: ImportJobState["phase"]): ImportJobState {
+    return makeJob({
+      origin: "bank_apply",
+      phase,
+      progress: {
+        applied: 0,
+        needs_review: 0,
+        skipped: 0,
+        not_landed: 1,
+        already_known: 0,
+      },
+      albums: [
+        refusedRow({
+          status: "needs_dup_resolution",
+          note: REFUSED_NOTE,
+          did_not_land: true,
+        }),
+      ],
+    });
+  }
+
+  test.each([
+    // `feedIsReadOnly` is passed at TWO call sites and the default phase only
+    // reaches the live one; the finished panel is the one a user sees longest.
+    ["while the job runs", "applying"],
+    ["once the job is terminal", "done"],
+  ] as const)(
+    "a bank-apply feed offers no decision button %s — nothing would consume it",
+    async (_case, phase) => {
+      // A directive run answers every hook from the banked decision and never
+      // parks (`_directive_choice`), so a Resolve here posts into the void. The
+      // row keeps its badge and its note.
+      server.use(http.get(JOB_URL, () => HttpResponse.json(bankApplyJob(phase))));
+      renderAt("/import?job=job-1");
+
+      expect(await screen.findByText(REFUSED_NOTE)).toBeInTheDocument();
+      expect(screen.getByText("Didn’t land")).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /resolve/i })).toBeNull();
+      expect(screen.queryByRole("link", { name: /^review$/i })).toBeNull();
+      // And with no control on the row, nothing may claim the row needs one.
+      const wrapper = screen.getByRole("listitem").firstElementChild;
+      expect(wrapper?.className.split(/\s+/)).not.toContain("bg-primary/5");
+    },
+  );
+
+  test("a bank-apply run counts its refused album once, not once per surface", async () => {
+    // The FE derives the duplicate count itself (the backend `progress` has no
+    // duplicate counter), so the server's "counted nowhere else" rule does not
+    // reach it: on status alone this row was BOTH "1 didn’t land" and "1 already
+    // in library" — the second naming a resolution this read-only feed cannot
+    // offer. The flag decides, never the note.
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(bankApplyJob("applying"))),
+    );
+    renderAt("/import?job=job-1");
+
+    const headline = await screen.findByText("0 albums imported · 1 didn’t land");
+    expect(headline.textContent).not.toContain("already in library");
+  });
+
+  test("an UN-noted duplicate still earns its cue on the same feed", async () => {
+    // The control for the test above: the exclusion is the server's flag, not
+    // the status, so a real pending duplicate keeps its clause.
     server.use(
       http.get(JOB_URL, () =>
         HttpResponse.json(
           makeJob({
             origin: "bank_apply",
+            phase: "applying",
             progress: {
               applied: 0,
               needs_review: 0,
               skipped: 0,
-              not_landed: 1,
+              not_landed: 0,
               already_known: 0,
             },
-            albums: [
-              refusedRow({
-                status: "needs_dup_resolution",
-                note: REFUSED_NOTE,
-                did_not_land: true,
-              }),
-            ],
+            albums: [refusedRow({ status: "needs_dup_resolution" })],
           }),
         ),
       ),
     );
     renderAt("/import?job=job-1");
 
-    expect(await screen.findByText(REFUSED_NOTE)).toBeInTheDocument();
-    expect(screen.getByText("Didn’t land")).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /resolve/i })).toBeNull();
-    expect(screen.queryByRole("link", { name: /^review$/i })).toBeNull();
+    expect(
+      await screen.findByText("0 albums imported · 1 already in library"),
+    ).toBeInTheDocument();
+  });
+
+  test("a finished bank apply that owes a decision points at the Review page", async () => {
+    // "…Decide again." is a bank-apply-only note, and this feed is read-only:
+    // the decision lives on /review's bank row. Without this the panel's only
+    // link was the shell's "Start over" → /import, a folder import.
+    server.use(http.get(JOB_URL, () => HttpResponse.json(bankApplyJob("done"))));
+    renderAt("/import?job=job-1");
+
+    const cta = await screen.findByRole("link", { name: "Review banked albums" });
+    expect(cta).toHaveAttribute("href", "/review");
+  });
+
+  test("a finished bank apply that landed everything gains no Review link", async () => {
+    // Gated on what the run left behind, not on the origin: nothing to decide,
+    // nothing to offer.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            origin: "bank_apply",
+            phase: "done",
+            progress: {
+              applied: 1,
+              needs_review: 0,
+              skipped: 0,
+              not_landed: 0,
+              already_known: 0,
+            },
+            albums: [refusedRow({ status: "applied", album_id: 41 })],
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Import finished")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Review banked albums" }),
+    ).toBeNull();
   });
 
   test("mid-run, the headline owns the album that didn’t land", async () => {
@@ -967,7 +1063,7 @@ describe("ImportPage — live feed", () => {
             progress: {
               applied: 1,
               needs_review: 0,
-              skipped: 0,
+              skipped: 2,
               not_landed: 1,
               already_known: 0,
             },
@@ -982,10 +1078,17 @@ describe("ImportPage — live feed", () => {
     renderAt("/import?job=job-1");
 
     // Same words as the two terminal panels, in the page's middot dialect.
-    const headline = await screen.findByText("1 album imported · 1 didn’t land");
-    // The number and the words it counts can only wrap together — the rule the
-    // finished panel already keeps, applied to the clause this line just gained.
-    expect(headline.textContent).toContain("1 didn’t land");
+    const headline = await screen.findByText(
+      "1 album imported · 2 skipped · 1 didn’t land",
+    );
+    // EVERY clause is unbreakable, not only the one this slice added: the line
+    // may wrap between segments and nowhere else. Same oracle as the finished
+    // panel's twin further down — N segments, N-1 ordinary spaces.
+    // `textContent`, not the matcher: RTL's normaliser folds NBSP to a space,
+    // which is why the query above reads naturally and cannot see this.
+    const raw = lineOf(headline).textContent ?? "";
+    expect(raw.split(" ")).toHaveLength(3);
+    expect(raw).toContain("1\u00a0didn’t\u00a0land");
   });
 
   test("the live cue surfaces a parked duplicate to resolve", async () => {

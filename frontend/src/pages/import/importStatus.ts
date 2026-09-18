@@ -172,9 +172,10 @@ function failedSweepCounts(sweep: SweepStatus): string {
   return sweepCounts(sweep) + knownClause(sweep.skipped_known);
 }
 
-/** The lost-album clause every data-bearing announcement owes — the two
+/** The lost-album clause every FEED-COUNTING announcement owes — the two
  * terminal ones and, since a refused Replace is lost the moment it is refused
- * and stops counting as applied there and then, the live one. Drops out of a
+ * and stops counting as applied there and then, the live one. A sweep's three
+ * announcements count on `sweep` instead and call none of this. Drops out of a
  * clean run. Straight apostrophe: this string is spoken, never seen. */
 function notLandedClause(notLanded: number): string {
   return notLanded > 0 ? ` ${notLanded} didn't land.` : "";
@@ -228,9 +229,20 @@ function failedMessage(data: ImportJobState): string {
  * is blocked on it (an unattended duplicate sets this status and skips on) —
  * either way the user has something to clear, so a screen-reader user must hear
  * it. Whether the worker is blocked is `awaiting_decision`; the spinner and the
- * poll cadence read that instead. */
-function pendingDuplicates(data: ImportJobState): number {
-  return data.albums.filter((a) => a.status === "needs_dup_resolution").length;
+ * poll cadence read that instead.
+ *
+ * Exported because the visible status line counts the same thing, and two
+ * copies of this filter disagreed with the server: `did_not_land` rows are
+ * excluded, because a refused Replace on a bank apply wears
+ * `needs_dup_resolution` AND the flag, so status alone counted that one album
+ * twice — once as lost, once as a duplicate awaiting a resolution nothing on
+ * the page offers. The server's flag decides, never `note`: the registry's
+ * `_is_set_aside` keeps the same row out of `set_aside` for the same reason.
+ * An un-noted duplicate keeps its clause, flag clear, exactly as before. */
+export function pendingDuplicates(data: ImportJobState): number {
+  return data.albums.filter(
+    (a) => a.status === "needs_dup_resolution" && !a.did_not_land,
+  ).length;
 }
 
 /** Whether the announcement names something the run is waiting for. The one

@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
 
-import type { ImportJobState, SweepStatus } from "@/api/useImport";
+import type {
+  ImportAlbumSummary,
+  ImportJobState,
+  SweepStatus,
+} from "@/api/useImport";
 import {
   ELAPSED_AFTER_S,
   announceMessage,
@@ -133,6 +137,64 @@ describe("announceMessage", () => {
         }),
       }),
     ).toBe("Imported 1.");
+  });
+
+  /** A refused Replace on a bank apply: the row wears `needs_dup_resolution`
+   * (the directive run's status) AND the server's `did_not_land`. */
+  function notedDuplicateRow(
+    overrides: Partial<ImportAlbumSummary> = {},
+  ): ImportAlbumSummary {
+    return {
+      index: 0,
+      folder: "/music/incoming/dup",
+      artist: "X",
+      album: "Y",
+      recommendation: "strong",
+      confidence: 99,
+      status: "needs_dup_resolution",
+      album_id: null,
+      did_not_land: true,
+      note: "Replace could not use the Trash folder. Nothing was imported.",
+      ...overrides,
+    };
+  }
+
+  test("a refused Replace is announced once, not also as a duplicate to resolve", () => {
+    // `pendingDuplicates` is derived from the rows, so the server's "counted
+    // nowhere else" rule does not reach it. On status alone this one album was
+    // announced twice, the second time naming a resolution the read-only
+    // bank-apply feed cannot offer. WHOLE string: a clause moving or a second
+    // one appearing both fail.
+    expect(
+      announceMessage({
+        isPending: false,
+        isError: false,
+        notFound: false,
+        data: job({
+          origin: "bank_apply",
+          phase: "applying",
+          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 1, already_known: 0 },
+          albums: [notedDuplicateRow()],
+        }),
+      }),
+    ).toBe("Imported 0. 1 didn't land.");
+  });
+
+  test("...and an UN-noted duplicate on the same run still is", () => {
+    // The control: the exclusion is the server's flag, not the status.
+    expect(
+      announceMessage({
+        isPending: false,
+        isError: false,
+        notFound: false,
+        data: job({
+          origin: "bank_apply",
+          phase: "applying",
+          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
+          albums: [notedDuplicateRow({ did_not_land: false, note: null })],
+        }),
+      }),
+    ).toBe("Imported 0. 1 duplicate awaiting resolution.");
   });
 
   test("announces a parked duplicate (a blocking prompt the user must clear)", () => {

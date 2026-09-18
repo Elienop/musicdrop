@@ -56,7 +56,7 @@ export function DeleteArtistAction({
           <AlertDialogDescription>
             Tracks, cover art, and lyrics from {albumCount} album
             {albumCount === 1 ? "" : "s"} by {name} move to Trash; other files
-            stay in {albumCount === 1 ? "its folder" : "their folders"}. Restore
+            stay in {albumCount === 1 ? "the folder" : "their folders"}. Restore
             re-imports only the tracks. Plex shows{" "}
             {albumCount === 1 ? "the album" : "the albums"} as unavailable until
             a rescan.
