@@ -37,7 +37,7 @@ from beets.importer.tasks import ImportTask
 from beets.library import Album, Item, Library
 
 from app.bank import store as bank_store
-from app.beets.import_session import ImportBridge, WebImportSession
+from app.beets.import_session import ImportBridge, WebImportSession, _SourceFiles
 from app.beets.library import _require_id
 from app.models.bank import BankApplyDirective
 from app.models.import_models import (
@@ -182,6 +182,9 @@ def _gate_session(
     session._directive = directive
     # toppaths _task_folder scopes by (beets sets these in ImportSession.__init__).
     session.paths = toppaths if toppaths is not None else [b"/incoming"]
+    # __init__ is skipped, so seed the record of what the run is READING; both
+    # Replace routes ask it which library rows are the import's own.
+    session._source_files = _SourceFiles()
     return session
 
 

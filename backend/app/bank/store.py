@@ -528,6 +528,30 @@ def set_status(
         return item
 
 
+def refresh_duplicate(bank_dir: Path, item_id: str, prompt: DuplicatePrompt) -> BankItem | None:
+    """Replace the row's stored collision with the one an apply just saw.
+
+    The one writer that REPLACES a prompt rather than clearing it (``rescan_item``
+    sets it to None). It exists for the stale-consent refusal: that refusal is
+    caused by the stored prompt no longer matching the library, so re-deciding
+    on the same payload refuses again, forever — measured. The refusing apply
+    publishes the live collision and the runner writes it here, still inside the
+    ``applying`` window, so the row the user re-opens shows what is in the
+    library NOW.
+
+    Status is not touched: the caller flips it (``failed``) immediately after,
+    and an ``applying`` row is neither decidable nor rescannable, so no second
+    writer can see the half-updated shape.
+    """
+    with _LOCK:
+        item = get_item(bank_dir, item_id)
+        if item is None:
+            return None
+        item.duplicate = prompt
+        _write(bank_dir, item)
+        return item
+
+
 def delete_item(bank_dir: Path, item_id: str) -> bool:
     """Delete the row (file + index entry). True iff a file was removed.
 

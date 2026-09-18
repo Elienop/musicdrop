@@ -565,7 +565,7 @@ def _replace_session(lib: Library, *, trash_dir: Path, playlists_dir: Path | Non
     """
     import logging
 
-    from app.beets.import_session import ImportBridge, WebImportSession
+    from app.beets.import_session import ImportBridge, WebImportSession, _SourceFiles
 
     session = WebImportSession.__new__(WebImportSession)
     session.logger = logging.getLogger("test.replace")
@@ -581,6 +581,9 @@ def _replace_session(lib: Library, *, trash_dir: Path, playlists_dir: Path | Non
     # protect; the I6 case has its own test below.
     session._landed_album_ids = set()
     session._dropped_item_ids = set()
+    # __init__ is skipped, so seed the record of what the run is READING; the
+    # post-run Replace pass asks it which rows are the import's own.
+    session._source_files = _SourceFiles()
     return session
 
 
@@ -742,7 +745,7 @@ def test_run_import_worker_post_run_pass_tolerates_a_minimal_session(
     from contextlib import AbstractContextManager
 
     import app.beets.import_session as session_mod
-    from app.beets.import_session import run_import_worker
+    from app.beets.import_session import _SourceFiles, run_import_worker
 
     trashed: list[int] = []
 
@@ -784,6 +787,8 @@ def test_run_import_worker_post_run_pass_tolerates_a_minimal_session(
         _trash_origins_dir = tmp_path / "trash-origins"
         _playlists_dir = None
         _dropped_item_ids: ClassVar[set[int]] = set()
+        # The post-run pass asks this which rows the run itself is reading.
+        _source_files = _SourceFiles()
 
         def run(self) -> None:
             pass

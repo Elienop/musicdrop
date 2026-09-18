@@ -947,6 +947,92 @@ def test_a_replace_that_could_not_reach_trash_fails_the_row_with_its_own_sentenc
         runner.stop()
 
 
+_STALE_CONSENT = "The library changed since this was set aside. Decide again."
+
+
+def test_a_published_prompt_refreshes_the_failed_rows_collision(tmp_path: Path) -> None:
+    """A stale-consent refusal must leave the row DECIDABLE INTO SOMETHING ELSE.
+
+    MEASURED by the security seat: deciding again re-queued the row with the
+    same stored prompt, the next apply rebuilt the same consent set from it and
+    refused identically — a loop with no exit but a rescan, which clears the
+    prompt entirely and removes the bound the refusal exists to enforce.
+
+    So the refusing session publishes the collision it saw and the runner writes
+    it onto the row it is failing. The stored prompt here named album 1 alone;
+    the live one names 1 AND 2, which is exactly the difference that refused the
+    apply, and it is what the next decision is made against.
+    """
+    handle, ids = _library(tmp_path, [("A", "B"), ("A", "B")])
+    live = _dup_prompt([_existing(ids[0]), _existing(ids[1])])
+    fake = FakeImportRunner(
+        applied=[
+            _outcome(AlbumOutcomeStatus.needs_dup_resolution).model_copy(
+                update={"note": _STALE_CONSENT}
+            )
+        ],
+        published_duplicates=[live],
+    )
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    item_id = _seed_dup_row(
+        bank, _folder(tmp_path), DuplicateAction.replace, prompt=_dup_prompt([_existing(ids[0])])
+    )
+
+    runner = _make_runner(bank, reg, lambda: handle)
+    runner.start()
+    try:
+        got = _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status in ("done", "failed"),
+        )
+        assert got is not None
+        assert got.status == "failed"
+        assert got.error == _STALE_CONSENT
+        assert got.error_retryable is True
+        assert got.duplicate is not None
+        assert [e.album_id for e in got.duplicate.existing] == [ids[0], ids[1]], (
+            "the row still carries the prompt that refused it, so deciding again refuses again"
+        )
+    finally:
+        runner.stop()
+
+
+def test_a_refusal_without_a_published_prompt_leaves_the_stored_one(tmp_path: Path) -> None:
+    """The control: only a PUBLISHED prompt rewrites the row.
+
+    Same failure, same note channel, no published prompt — the refusals whose
+    cause is external (no Trash folder, unreadable copy) have nothing new to
+    say about the collision, and overwriting the banked prompt from every run
+    would lose what the user was originally shown.
+    """
+    handle, ids = _library(tmp_path, [("A", "B")])
+    note = "Replace failed while moving the old copy to Trash. Nothing was imported."
+    fake = FakeImportRunner(
+        applied=[
+            _outcome(AlbumOutcomeStatus.needs_dup_resolution).model_copy(update={"note": note})
+        ]
+    )
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    stored = _dup_prompt([_existing(ids[0])])
+    item_id = _seed_dup_row(bank, _folder(tmp_path), DuplicateAction.replace, prompt=stored)
+
+    runner = _make_runner(bank, reg, lambda: handle)
+    runner.start()
+    try:
+        got = _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status in ("done", "failed"),
+        )
+        assert got is not None
+        assert got.status == "failed"
+        assert got.error == note
+        assert got.duplicate == stored, "an unrelated refusal rewrote the banked prompt"
+    finally:
+        runner.stop()
+
+
 def test_replace_is_done_when_a_banked_copy_still_survives(tmp_path: Path) -> None:
     # THE control for the arm above, identical in every other respect: an album
     # landed, the hook never ran, the prompt listed a stored id — the ONLY

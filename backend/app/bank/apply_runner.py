@@ -343,6 +343,7 @@ class BankApplyRunner:
         if state is None:
             return  # shutting down mid-apply; startup reconciliation reverts
         status, error, album_id, retryable = self._classify(claimed, state, replace_targets_gone)
+        self._refresh_stored_duplicate(claimed, job_id, state)
         bank_store.set_status(
             self._bank_dir,
             item.id,
@@ -351,6 +352,28 @@ class BankApplyRunner:
             album_id=album_id,
             error_retryable=retryable,
         )
+
+    def _refresh_stored_duplicate(self, item: BankItem, job_id: str, state: ImportJobState) -> None:
+        """Store the collision this apply saw, when it published one.
+
+        Keyed on the PROMPT, never on the note's wording: the session publishes a
+        live prompt only where the stored one is what refused the apply (stale
+        consent), so "a prompt is on the feed for an album of this job" is the
+        whole condition. Every other refusal leaves the feed without one and this
+        writes nothing.
+
+        Still inside the ``applying`` window, so the row cannot be decided or
+        rescanned between this write and the status flip that follows it. A
+        failure to read the prompt is not a failure of the apply: the row still
+        fails with its note, one retry short of a fresh prompt.
+        """
+        for album in state.albums:
+            try:
+                prompt = self._import_registry.duplicate_prompt(job_id, album.index)
+            except KeyError:
+                continue
+            bank_store.refresh_duplicate(self._bank_dir, item.id, prompt)
+            return
 
     def _skip_new_is_enforced(self, item: BankItem) -> bool:
         """Whether "keep my copy, import nothing" must short-circuit the import.
@@ -512,8 +535,13 @@ class BankApplyRunner:
         A feed row carrying a ``note`` outranks all of it: the session answered
         the duplicate hook SKIP because the old copy could not be disposed of, so
         nothing was imported and the note is the only channel that says which
-        reason applied. Retryable — the recovery IS deciding again, once the
-        Trash folder works.
+        reason applied. Retryable, but WHAT the retry needs differs by note: most
+        name an external cause the user fixes first (wire the Trash folder,
+        remount the share) and then decide again unchanged. Stale consent does
+        not — its cause is the row's own stored prompt, so deciding again on the
+        same payload refuses identically. That note's remedy is written onto the
+        row before this classification is applied
+        (``_refresh_stored_duplicate``).
 
         The note is read over EVERY album of the job, like ``album_id`` and
         ``dup_resolution_ran`` beside it, because a bank row is a FOLDER and a

@@ -29,6 +29,7 @@ from beets.library import Item
 from app.beets.import_session import (
     ImportBridge,
     WebImportSession,
+    _SourceFiles,
     _trash_replaced_albums,
 )
 from app.models.bank import BankApplyDirective
@@ -99,6 +100,9 @@ def _session(bridge: ImportBridge, *, trash_dir: Path | None = None) -> WebImpor
     # __init__ is skipped, so set the toppaths _task_folder scopes by (beets sets
     # these in ImportSession.__init__). The tasks import from /incoming.
     session.paths = [b"/incoming"]
+    # __init__ is skipped, so seed the record of what the run is READING; both
+    # Replace routes ask it which library rows are the import's own.
+    session._source_files = _SourceFiles()
     return session
 
 

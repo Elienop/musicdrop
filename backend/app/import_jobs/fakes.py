@@ -36,6 +36,7 @@ class FakeImportRunner:
         fail_with: str | None = None,
         art_sources: dict[int, str] | None = None,
         duplicates: list[DuplicatePrompt] | None = None,
+        published_duplicates: list[DuplicatePrompt] | None = None,
     ) -> None:
         self._parked = parked or []
         self._applied = applied or []
@@ -44,6 +45,9 @@ class FakeImportRunner:
         # park (mirrors the worker's choose_match). Keyed by album_index.
         self._art_sources = art_sources or {}
         self._duplicates = duplicates or []
+        # Prompts pushed non-blocking (ImportBridge.publish_duplicate) after the
+        # parked ones, modelling a refusal that republishes what it saw.
+        self._published_duplicates = published_duplicates or []
         # The ImportOptions forwarded by the registry's start(), recorded so the
         # plumbing tests can assert start -> runner.run threading (None = manual).
         self.received_options: ImportOptions | None = None
@@ -125,6 +129,12 @@ class FakeImportRunner:
                     bridge.park_duplicate(
                         prompt, art_source=self._art_sources.get(prompt.album_index)
                     )
+                # Prompts published WITHOUT a park: what a refusing Replace does
+                # when the stored decision no longer fits the library, so the
+                # row the user re-opens shows the live collision. Nobody answers
+                # these, so they must not block or be reported as awaited.
+                for prompt in self._published_duplicates:
+                    bridge.publish_duplicate(prompt)
             # Broad by design: mirror the real worker's guard so a canned-data
             # bug surfaces as a failed job rather than a silent dead thread.
             except Exception as exc:

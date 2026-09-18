@@ -25,6 +25,7 @@ from app.beets.import_session import (
     ImportBridge,
     InLibraryCopyError,
     WebImportSession,
+    _SourceFiles,
     is_in_library_source,
     run_import_worker,
 )
@@ -187,6 +188,8 @@ class _PostRunReads:
     _trash_origins_dir: ClassVar[Path | None] = None
     _playlists_dir: ClassVar[Path | None] = None
     _dropped_item_ids: ClassVar[set[int]] = set()
+    # The post-run Trash pass asks this which rows are the import's own.
+    _source_files: ClassVar[_SourceFiles] = _SourceFiles()
 
 
 def _make_session(bridge: ImportBridge) -> WebImportSession:
@@ -231,6 +234,9 @@ def _make_session(bridge: ImportBridge) -> WebImportSession:
     # __init__ is skipped, so give run_import_worker something to bind its
     # music-dir context on (see _BindOnlyLib).
     session.lib = _BindOnlyLib()  # type: ignore[assignment]  # bind-only stand-in, not a Library
+    # __init__ is skipped, so seed the record of what the run is READING; both
+    # Replace routes ask it which library rows are the import's own.
+    session._source_files = _SourceFiles()
     return session
 
 

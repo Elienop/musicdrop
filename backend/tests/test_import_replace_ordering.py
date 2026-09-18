@@ -27,6 +27,7 @@ import os
 import shutil
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -206,6 +207,31 @@ def _refile_into_its_own_folder(lib: Library, album: Any, folder: Path) -> list[
             item.store()
             moved.append(dest)
     return moved
+
+
+class _FakeTask:
+    """The one thing ``_SourceFiles.note`` reads: ``task.items[*].path``.
+
+    A stand-in, not a beets task, so the helper's own arms can be reached with
+    paths no real import would produce (a vanished source, a locked folder).
+    """
+
+    def __init__(self, paths: list[Path]) -> None:
+        self.items = [SimpleNamespace(path=os.fsencode(str(p))) for p in paths]
+
+
+def _respell_row(lib: Library, old: Path, new: Path) -> None:
+    """Rewrite the row naming ``old`` so it names ``new`` — the same file, spelled twice.
+
+    Moves nothing: the caller supplies a second spelling of one file (a symlink
+    alias of its folder), which is what a downloads tree reachable by two names
+    leaves behind. The premise is asserted at the call site with ``st_ino``.
+    """
+    with lib.music_dir_context():
+        for item in lib.items():
+            if item.path and Path(os.fsdecode(item.path)) == old:
+                item.path = os.fsencode(str(new))
+                item.store()
 
 
 def _add_row_naming(lib: Library, album: Any, path: Path) -> Path:
@@ -1452,21 +1478,225 @@ def test_a_replace_leaves_a_half_finished_imports_download_alone(
     assert records[0]["origin"] == str(Path(os.fsdecode(lib.directory)) / _ARTIST / _ALBUM)
 
 
+def test_a_replace_whose_only_move_put_nothing_in_trash_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The partial note counts containers in Trash, not calls to the mover.
+
+    An album classifies ``present`` on the strength of a row naming a file this
+    import is reading; dropping that row leaves the mover only ghost rows, so it
+    rmdirs the container it made and Trash stays empty (measured by the security
+    seat). Counting that as a move made the note claim a folder the user could
+    go and look for: "moved 1 of 2 old copies to Trash" with one container.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "copy")
+    source = _source_folder(tmp_path)
+    trash = tmp_path / "trash"
+    _seed_library_copy(lib, source, monkeypatch, times=2)
+    ghostish, healthy = sorted(lib.albums(), key=lambda a: _require_id(a.id))
+    for path in [Path(os.fsdecode(i.path)) for i in ghostish.items()]:
+        path.unlink()  # its own files are gone; only the source row keeps it "present"
+    _add_row_naming(lib, ghostish, source / "01 Track 1.flac")
+    healthy_id = _require_id(healthy.id)
+    calls: list[int] = []
+
+    def flaky_trash(lib_arg: Any, album: Any, **kwargs: Any) -> str:
+        calls.append(_require_id(album.id))
+        if _require_id(album.id) == healthy_id:
+            raise OSError("the container could not be written")
+        return str(real_trash_album(lib_arg, album, **kwargs))
+
+    monkeypatch.setattr(session_mod, "trash_album", flaky_trash)
+
+    run, notes = _replace(lib, source, trash_dir=trash)
+
+    assert run.errors == []
+    assert calls[0] != healthy_id, "fixture premise: the source-row album goes first"
+    assert notes == ["Replace failed while moving the old copy to Trash. Nothing was imported."]
+    assert [p for p in _tree(trash) if p.endswith(".flac")] == [], "nothing reached Trash"
+    assert (source / "01 Track 1.flac").is_file()
+
+
+def test_a_replace_leaves_an_aliased_download_row_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ownership survives a SECOND SPELLING of the same file — the hook route.
+
+    MEASURED by the security seat against the byte-set rule: with the stranded
+    row rewritten to a symlink alias of the download folder (one inode, two
+    spellings), the ownership test missed it and the mover took the import's own
+    source file to Trash, left a row naming a file that is no longer there, and
+    wrote an origin record naming ``commonpath(music, alias)`` — ``/`` under the
+    shipped layout. That is the whole of S1 and S5 again, through a spelling.
+
+    beets misses the alias too (``PathQuery``/``find_duplicates`` compare stored
+    bytes), and that is exactly why mirroring it is not enough here: beets' miss
+    only fails to exclude an album, ours drives a mover.
+
+    The premise is asserted, not assumed: the alias and the real path are the
+    same inode. The control that this does not over-match is
+    ``test_a_hardlinked_library_copy_still_reaches_trash``.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "copy")
+    source = _source_folder(tmp_path)
+    trash = tmp_path / "trash"
+    _landed, stranded = _half_finished_import(lib, source, monkeypatch)
+    alias_root = tmp_path / "dl-alias"
+    alias_root.symlink_to(tmp_path / "downloads")
+    aliased = alias_root / source.name / stranded.name
+    assert aliased.stat().st_ino == stranded.stat().st_ino, "fixture premise: one file"
+    assert os.fsdecode(aliased) != os.fsdecode(stranded), "fixture premise: two spellings"
+    _respell_row(lib, stranded, aliased)
+    before_downloads = _tree(source)
+
+    run, notes = _replace(lib, source, trash_dir=trash)
+
+    assert run.errors == []
+    assert notes == []
+    assert _tree(source) == before_downloads, "the Replace moved the import's own source file"
+    assert stranded.is_file()
+    rows = _item_paths(lib)
+    assert [p for p in rows if not p.exists()] == [], "a row names a file that is not there"
+    assert len(list(lib.albums())) == 1
+    records = [json.loads(p.read_text()) for p in sorted(origins_for(trash).rglob("*.json"))]
+    assert [r["origin"] for r in records] == [
+        str(Path(os.fsdecode(lib.directory)) / _ARTIST / _ALBUM)
+    ], "the origin record names the album's music folder, not a common parent"
+
+
+def test_a_banked_replace_leaves_an_aliased_download_row_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same second spelling, on the post-run route — measured there too.
+
+    beets' own ``record_replaced`` / ``remove_replaced`` deletes the library
+    rows whose path is one of the task's source files before this pass runs, so
+    round 3 left this route with no ownership rule of its own. Both halves of
+    that justification are narrower than the route: the deletion is a
+    ``PathQuery`` on stored BYTES (so an aliased spelling survives it —
+    measured: the download was moved to Trash with ``notes: []``), and it only
+    covers tasks that reach ``task.add``.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "copy")
+    source = _source_folder(tmp_path)
+    trash = tmp_path / "trash"
+    _seed_library_copy(lib, source, monkeypatch)
+    old = next(iter(lib.albums()))
+    old_id = _require_id(old.id)
+    _kept, respelled_from = sorted(_item_paths(lib))
+    alias_root = tmp_path / "dl-alias"
+    alias_root.symlink_to(tmp_path / "downloads")
+    read_by_the_run = source / "02 Track 2.flac"
+    aliased = alias_root / source.name / read_by_the_run.name
+    assert aliased.stat().st_ino == read_by_the_run.stat().st_ino, "fixture premise: one file"
+    # The library copy's second row now names a file the run IS reading, spelled
+    # through the alias; its own file goes where an earlier repair left it.
+    respelled_from.unlink()
+    _respell_row(lib, respelled_from, aliased)
+    with lib.music_dir_context():
+        old.album = "Kid A"  # renamed in the DB only: the hook never fires
+        old.store()
+    directive = BankApplyDirective(
+        action="duplicate",
+        duplicate_action=DuplicateAction.replace,
+        replace_existing=[to_existing_album(lib, lib.get_album(old_id))],
+    )
+
+    assert _run_banked_replace(lib, source, trash_dir=trash, directive=directive) == []
+
+    assert read_by_the_run.is_file(), "the post-run pass moved a file the import was reading"
+    assert _tree(source) == ["01 Track 1.flac", "02 Track 2.flac"]
+    assert lib.get_album(old_id) is None, "the banked copy's rows survived"
+    assert [p for p in _tree(trash) if p.endswith(".flac")] == [
+        "Radiohead - Kid A/Radiohead/Kid A/01 Airbag 1.flac"
+    ], "its own file left; the aliased row was dropped, not moved"
+    assert [p for p in _item_paths(lib) if not p.exists()] == []
+
+
+def test_a_hardlinked_library_copy_still_reaches_trash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sharing an INODE with a source file is not owning it — the ownership control.
+
+    Under ``hardlink`` every library file IS the download file: one inode, two
+    directory entries. Keying ownership on the inode alone would read the whole
+    old album as "the import's own", drop its rows and leave its files in the
+    music folder untracked — the invisible-orphan shape S1 was fixed to prevent.
+
+    The entry key answers this one correctly because it carries the HOLDING
+    directory as well: same inode, different folder, so the album is the
+    library's and goes to Trash whole.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "hardlink")
+    source = _source_folder(tmp_path)
+    trash = tmp_path / "trash"
+    _seed_library_copy(lib, source, monkeypatch)
+    library_file = sorted(_item_paths(lib))[0]
+    assert library_file.stat().st_ino == (source / "01 Track 1.flac").stat().st_ino, (
+        "fixture premise: hardlink mode makes the library file the download file"
+    )
+
+    run, notes = _replace(lib, source, trash_dir=trash)
+
+    assert run.errors == []
+    assert notes == []
+    assert [p for p in _tree(trash) if p.endswith(".flac")] == [
+        f"{_ARTIST} - {_ALBUM}/{_ARTIST}/{_ALBUM}/01 Airbag 1.flac",
+        f"{_ARTIST} - {_ALBUM}/{_ARTIST}/{_ALBUM}/02 Airbag 2.flac",
+    ], "the old copy's rows were read as the import's own and dropped"
+    assert _tree(source) == ["01 Track 1.flac", "02 Track 2.flac"]
+    assert len(list(lib.albums())) == 1
+
+
+def test_a_source_file_that_cannot_be_keyed_still_matches_its_own_bytes(
+    tmp_path: Path,
+) -> None:
+    """What happens when the key cannot be built — stated, not guessed.
+
+    A source path that is GONE and one whose folder cannot be read both add no
+    entry to the set, so an alias of either is not recognised. Neither is read
+    as "absent" or as "ours": the exact bytes still match, which is the round-3
+    behaviour, and the two causes are safe for the reasons ``_SourceFiles``
+    records (a gone file cannot be moved; an unreadable one makes the album
+    classify ``unknown``, which refuses the whole Replace).
+    """
+    lib = _library(tmp_path, "copy")
+    source = _source_folder(tmp_path)
+    present = source / "01 Track 1.flac"
+    missing = tmp_path / "downloads" / "vanished" / "01 Track 1.flac"
+    locked_dir = tmp_path / "downloads" / "locked"
+    locked_dir.mkdir()
+    locked = locked_dir / "02 Track 2.flac"
+    shutil.copyfile(present, locked)
+
+    files = session_mod._SourceFiles()
+    locked_dir.chmod(0o000)
+    try:
+        files.note(_FakeTask([present, missing, locked]))
+    finally:
+        locked_dir.chmod(0o755)
+
+    assert len(files.entries) == 1, "only the file that could be keyed"
+    for path in (present, missing, locked):
+        assert files.covers(lib, os.fsencode(str(path))), path
+    assert not files.covers(lib, os.fsencode(str(source / "02 Track 2.flac")))
+
+
 def test_a_banked_replace_takes_a_row_outside_the_music_folder_with_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A row outside the music folder belongs to the album, so it goes WITH it.
 
-    This route has no copy of the hook's "drop the rows this import is reading"
-    rule, and MEASURED, it needs none: re-importing a folder makes beets' own
-    ``record_replaced`` / ``remove_replaced`` (``importer/tasks.py:522, :618``)
-    delete every library row whose path is one of the task's source files, so
-    by the time this pass runs the mover is handed the in-root row alone.
-
-    What is left reachable here is a row naming some OTHER folder — an earlier
-    half-finished import, an ``in_place`` album, a moved ``directory:`` — and
-    that file is the album's own. Round 2 dropped such a row silently where the
-    build before it moved it to Trash reversibly; this asserts the Trash entry.
+    This route drops the rows the RUN is reading, like the hook's
+    (``test_a_banked_replace_leaves_an_aliased_download_row_alone``). A row
+    naming some OTHER folder is a different thing — an earlier half-finished
+    import, an ``in_place`` album, a moved ``directory:`` — and that file is the
+    album's own. Round 2 dropped such a row silently where the build before it
+    moved it to Trash reversibly; this asserts the Trash entry.
     The copy is renamed in the DB only, which is what makes beets' name-keyed
     ``find_duplicates`` miss it and leaves this pass as the only thing running.
 
@@ -1633,6 +1863,81 @@ def test_a_bank_replace_refuses_when_the_bucket_gained_an_album(
     assert later_file.is_file()
     assert _library_snapshot(lib) == before_rows
     assert _tree(trash) == []
+
+
+def test_a_stale_consent_refusal_can_be_decided_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal's remedy, end to end on the session side.
+
+    MEASURED by the security seat: "Decide again" re-queued the row with the
+    SAME stored prompt, so the next apply rebuilt the same consent set and
+    refused identically — forever. The one writer that cleared the prompt
+    (rescan) cleared it to None, which the gate reads as "nothing to compare"
+    and allows unbounded.
+
+    So the refusing apply PUBLISHES the collision it saw, non-blocking: the feed
+    row carries it, the apply runner writes it onto the bank row
+    (``test_a_published_prompt_refreshes_the_failed_rows_collision``), and the
+    user's next decision is made against what the library now holds. Here the
+    second directive is built from the published prompt exactly as the runner
+    would rebuild it, and it succeeds: the whole bucket goes, and the import
+    lands on the clean names.
+
+    Publishing must not make the run look blocked — nobody will answer this
+    prompt — so ``has_unanswered_park`` is asserted False.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "copy")
+    source = _source_folder(tmp_path)
+    trash = tmp_path / "trash"
+    music = Path(os.fsdecode(lib.directory))
+    _seed_library_copy(lib, source, monkeypatch)
+    banked = next(iter(lib.albums()))
+    banked_id = _require_id(banked.id)
+    stale_directive = BankApplyDirective(
+        action="duplicate",
+        duplicate_action=DuplicateAction.replace,
+        replace_existing=[to_existing_album(lib, banked)],
+    )
+    later_id, later_file = _extra_matching_album(
+        lib, folder=music / _ARTIST / "OK Computer (2nd rip)"
+    )
+
+    bridge = ImportBridge()
+    assert (
+        _run_banked_replace(lib, source, trash_dir=trash, directive=stale_directive, bridge=bridge)
+        == []
+    )
+    assert [o.note for o in bridge.drain_outcomes() if o.note is not None] == [_STALE]
+    refreshed = bridge.get_parked_duplicate(timeout=0)
+    assert refreshed is not None, "the refusal published no prompt, so deciding again cannot work"
+    assert bridge.has_unanswered_park() is False, "a published prompt must not block the job"
+    assert sorted(e.album_id for e in refreshed.existing) == sorted([banked_id, later_id])
+
+    # Decide again, on the refreshed collision.
+    assert (
+        _run_banked_replace(
+            lib,
+            source,
+            trash_dir=trash,
+            directive=BankApplyDirective(
+                action="duplicate",
+                duplicate_action=DuplicateAction.replace,
+                replace_existing=list(refreshed.existing),
+            ),
+        )
+        == []
+    )
+
+    assert not later_file.exists(), "the second decision left the album it was shown"
+    assert [p for p in _tree(trash) if p.endswith(".flac")] == [
+        f"{_ARTIST} - {_ALBUM} (1)/{_ARTIST}/{_ALBUM}/01 Later.flac",
+        f"{_ARTIST} - {_ALBUM}/{_ARTIST}/{_ALBUM}/01 Airbag 1.flac",
+        f"{_ARTIST} - {_ALBUM}/{_ARTIST}/{_ALBUM}/02 Airbag 2.flac",
+    ]
+    assert len(list(lib.albums())) == 1
+    assert sorted(p.name for p in _item_paths(lib)) == ["01 Airbag 1.flac", "02 Airbag 2.flac"]
 
 
 def test_a_bank_replace_still_disposes_of_a_bucket_its_prompt_covers(

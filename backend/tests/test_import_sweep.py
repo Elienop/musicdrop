@@ -26,7 +26,7 @@ from beets.library import Item, Library
 import app.beets.import_session as session_mod
 from app.bank import store
 from app.bank.fingerprint import folder_fingerprint
-from app.beets.import_session import ImportBridge, WebImportSession
+from app.beets.import_session import ImportBridge, WebImportSession, _SourceFiles
 from app.beets.library import _require_id
 from app.models.import_models import Recommendation
 
@@ -84,6 +84,9 @@ def _sweep_session(bridge: ImportBridge, bank_dir: Path) -> WebImportSession:
     session._directive = None
     session._await_album_id = []
     session.paths = []
+    # __init__ is skipped, so seed the record of what the run is READING; both
+    # Replace routes ask it which library rows are the import's own.
+    session._source_files = _SourceFiles()
     return session
 
 
