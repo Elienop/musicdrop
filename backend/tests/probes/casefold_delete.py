@@ -7,12 +7,13 @@ that state were measured on 2026-09-15 (``Keep both`` on the duplicate prompt,
 and an edit retitling a same-artist album to a case variant); this probe builds
 the END state by hand, which is the row/disk shape those measurements printed.
 
-The released whole-folder Delete then loses the OTHER album's tracks:
-``_folder_is_shared`` decides "shared" by byte-prefix over the row strings, rows
-spelled ``Art/ALB/…`` do not prefix-match the root ``Art/Alb``, so it answers
-"not shared" and one ``shutil.move`` takes the single real directory — measured,
-``dangling_rows = 2``. ``delete_album`` asks each item where IT lives, so the
-loss is unreachable rather than guarded.
+The released whole-folder Delete then lost the OTHER album's tracks: its
+shared-folder check (``_folder_is_shared``, deleted along with that mover)
+decided "shared" by byte-prefix over the row strings, rows spelled ``Art/ALB/…``
+did not prefix-match the root ``Art/Alb``, so it answered "not shared" and one
+``shutil.move`` took the single real directory — measured, ``dangling_rows = 2``.
+``delete_album`` asks each item where IT lives, so the loss is unreachable
+rather than guarded.
 
 For ROWS. A cover BOTH twins track is one real file at one path, and
 ``Album.move`` carries ``album.artpath`` — so deleting either twin still takes

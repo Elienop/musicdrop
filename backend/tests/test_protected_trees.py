@@ -2378,39 +2378,3 @@ def test_a_ghost_delete_keeps_a_trash_that_sits_inside_the_library(
     # line, re-adding ``prune_dirs(album_root, lib.directory)`` leaves this test
     # green. A ghost relocated nothing, so nothing here has a folder to tidy.
     assert entry.is_dir(), "nothing pruned the folder the rows named"
-
-
-def test_the_whole_folder_mover_still_refuses_a_folder_that_holds_a_store(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The control for the fall-through above, on the mover that still has both arms.
-
-    ``trash_album_folder`` relocates a TREE, so an ``is`` answer and a
-    ``contains`` answer must not collapse into one branch there. The delete route
-    no longer calls it (owner ruling ``decisions.md`` 58) — the twin for what the
-    front door does with this shape is
-    ``test_delete_does_not_refuse_an_album_folder_that_holds_an_app_store``, which
-    measures that it is not refused at all.
-    """
-    from app.beets.trash import trash_album_folder
-    from tests.conftest import build_library
-
-    music = tmp_path / "music"
-    album_dir = music / "Artist" / "Album"
-    album_dir.mkdir(parents=True)
-    (album_dir / "inbox").mkdir()
-    beets_dir = beets_dir_for(tmp_path)
-    lib = build_library(str(beets_dir / "library.db"), str(music))
-    _add_album(lib, album_dir)
-    monkeypatch.setattr("app.config.settings.inbox_dir", str(album_dir / "inbox"))
-    trash = tmp_path / "trash"
-    origins = origins_for(trash)
-    trees = protected_for(lib, trash_dir=trash, origins_dir=origins)
-
-    album = next(iter(lib.albums()))
-    tx = lib.transaction()  # constructing one is inert; the open happens on entry
-    with pytest.raises(ProtectedTreeError, match="'Album' contains the inbox"):
-        with tx:
-            trash_album_folder(lib, album, trash_dir=trash, origins_dir=origins, protected=trees)
-    assert len(list(lib.albums())) == 1
-    assert (album_dir / "01 Track.mp3").exists()

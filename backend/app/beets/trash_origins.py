@@ -224,9 +224,10 @@ _ENTRY_IS_ALREADY_GONE: Final = (
 #: What the mover actually relocated, which is what decides whether a faithful
 #: move-back is even possible:
 #:
-#: * ``"folder"`` — one whole directory moved wholesale
-#:   (``trash_album_folder``'s folder branch, ``trash_folder``). The trash entry
-#:   IS that directory, so putting it back is a single move.
+#: * ``"folder"`` — one whole directory moved wholesale (``trash_folder``, and
+#:   released versions' whole-folder ALBUM mover, whose records are still on
+#:   users' disks and still restore). The trash entry IS that directory, so
+#:   putting it back is a single move.
 #: * ``"items"`` — beets relocated the album's tracked FILES individually out of
 #:   a folder it shared with other music (``trash_album``). The origin is
 #:   recorded for display, but a move-back is not offered: the files would have

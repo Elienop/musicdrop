@@ -254,9 +254,8 @@ def _sampled_library_files(lib: Library, size: int) -> list[str]:
     out of 5 and the check ACCEPTED, while the same rows re-filed under
     ``$albumartist/$album/$title`` were refused.
 
-    Raw SQL rather than ``lib.albums()``/``album.items()`` for the same reason
-    ``trash._folder_is_shared`` uses it: materializing beets models to read one
-    path each costs seconds at 75k tracks. Paths are resolved through
+    Raw SQL rather than ``lib.albums()``/``album.items()``: materializing beets
+    models to read one path each costs seconds at 75k tracks. Paths are resolved through
     :func:`_abs_path` because the DB stores them relative to ``lib.directory``
     in the normal case.
     """

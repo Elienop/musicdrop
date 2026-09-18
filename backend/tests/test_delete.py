@@ -2373,9 +2373,10 @@ def test_every_arm_that_drops_a_row_asks_the_origin_store_first() -> None:
 def test_delete_album_on_a_casefold_fs_leaves_no_dangling_rows(tmp_path: Path) -> None:
     """Two albums, ONE real folder, two spellings — the released loss. MEASURED.
 
-    ``_folder_is_shared`` decides "shared" by byte-prefix over the row strings,
-    so rows spelled ``Art/ALB/…`` do not match the root ``Art/Alb`` and the
-    whole-folder mover took the one real directory with both albums' tracks in
+    The released whole-folder mover's shared-folder check (``_folder_is_shared``,
+    deleted with it) decided "shared" by byte-prefix over the row strings, so
+    rows spelled ``Art/ALB/…`` did not match the root ``Art/Alb`` and one
+    ``shutil.move`` took the single real directory with both albums' tracks in
     it (measured on released code: ``dangling_rows = 2``). Per-file Delete asks
     each item where it lives, which makes the loss unreachable rather than
     guarded.

@@ -144,11 +144,13 @@ _NO_RECORD_NOTE = (
 #: ``moved="items"``: the album's own files were moved out of their folder, one
 #: by one. That is EVERY album deleted since owner ruling ``decisions.md`` 58, not
 #: only one that shared a folder, so the sentence no longer says "shared" — it
-#: said so to every deleted album and was false for almost all of them. What is
+#: said so to every deleted album and was false for almost all of them. The
+#: constant was ``_SHARED_FOLDER_NOTE`` for the same reason and is not any more.
+#: What is
 #: true of all of them is what Restore does and what stays behind: the tracks are
 #: re-imported under the current naming, and the cover and lyric files beets does
 #: not track as items stay in the Trash entry.
-_SHARED_FOLDER_NOTE = (
+_MOVED_ITEMS_NOTE = (
     "MusicDrop moved this album's files out of their folder one by one, so it cannot"
     " put them back exactly. Restoring re-imports the tracks under your current naming"
     " rules; the cover and lyric files stay in this Trash entry."
@@ -710,7 +712,7 @@ def _restore_fields(
     if record.moved == "files":
         return "by_hand", _MOVED_ASIDE_NOTE, origin
     if record.moved != "folder":
-        return "import", _SHARED_FOLDER_NOTE, origin
+        return "import", _MOVED_ITEMS_NOTE, origin
     if move_back_target(record, music_dir=music_dir) is None:
         return "import", _OUTSIDE_LIBRARY_NOTE, origin
     return "move_back", None, origin

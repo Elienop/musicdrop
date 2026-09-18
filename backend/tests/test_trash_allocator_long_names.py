@@ -54,7 +54,6 @@ from app.beets.trash import (
     _trash_container_name,
     _unique_trash_dest,
     trash_album,
-    trash_album_folder,
     trash_folder,
 )
 from app.beets.trash_manage import restore_album
@@ -211,40 +210,42 @@ def test_a_husk_at_the_name_limit_moves_back_to_where_it_came_from(tmp_path: Pat
     assert read_trash_origin(origins, dest.name) is None, "the landed entry's record must go"
 
 
-def test_an_album_folder_at_the_name_limit_deletes_past_an_EXISTING_trash_entry(
+def test_a_folder_at_the_name_limit_moves_past_an_EXISTING_trash_entry(
     tmp_path: Path,
 ) -> None:
-    """The older way into the loop, through the whole-folder album mover.
+    """The other half of "taken": an ENTRY in the way, not an orphaned record.
 
-    A Trash entry already holds the name — the ordinary "deleted this album,
-    changed my mind, deleted it again" shape — so the allocator must lengthen,
-    and cannot. This arm predates the origins store; the fix is shared.
+    A Trash entry already holds the name — the ordinary "deleted this, changed my
+    mind, deleted it again" shape — so the allocator must lengthen, and at 255
+    bytes it could not. The test above covers the record half; this one is the
+    filesystem half, and both go through the same ``while`` loop.
+
+    Asked through ``trash_folder``: the whole-folder ALBUM mover this used to
+    drive is gone, and ``trash_folder`` is the surviving caller that hands the
+    allocator a FOLDER's own name (``delete_album`` builds its container name
+    from tags, which ``test_a_container_name_built_from_TAGS...`` covers).
     """
-    lib = _library_with_bystander(tmp_path, folder=LONGEST)
     trash, origins = _dirs(tmp_path)
     (trash / LONGEST).mkdir(parents=True)
     (trash / LONGEST / "older.jpg").write_bytes(b"\x00")
-    source = tmp_path / "music" / LONGEST
+    husk = _husk(tmp_path, LONGEST)
 
-    with lib.transaction():
-        dest = Path(
-            trash_album_folder(
-                lib,
-                _dummy(lib),
-                trash_dir=trash,
-                origins_dir=origins,
-                protected=protected_for(lib, trash_dir=trash, origins_dir=origins),
-            )
-        )
+    dest = trash_folder(
+        husk,
+        trash_dir=trash,
+        origins_dir=origins,
+        protected=protected_for(trash_dir=trash, origins_dir=origins),
+    )
 
     assert dest.is_dir()
-    assert (dest / "01 t.flac").is_file()
-    assert not source.exists()
+    assert (dest / "cover.jpg").is_file()
+    assert not husk.exists()
     assert len(os.fsencode(dest.name)) <= 255
+    assert dest.name != LONGEST, "the entry in the way means the name must not be reused"
     assert (trash / LONGEST / "older.jpg").is_file(), "the entry in the way must be untouched"
     record = read_trash_origin(origins, dest.name)
     assert record is not None
-    assert record.origin == str(source)
+    assert record.origin == str(husk)
 
 
 def test_the_orphan_sweep_does_not_skip_a_husk_at_the_name_limit(tmp_path: Path) -> None:

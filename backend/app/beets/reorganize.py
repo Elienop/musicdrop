@@ -631,11 +631,11 @@ def live_album_roots(lib: Any) -> frozenset[str]:
     otherwise protect the whole library.
 
     Cost: one ``lib.items()`` pass grouped by album id plus one ``destination()``
-    render per album — O(items + albums). That is the same "seconds at 75k tracks"
-    class of full-library read ``app.beets.trash._folder_is_shared`` documents, paid
-    once per sweep/preview beside their own full-disk ``os.walk``. If it ever
-    measures slow, the named escape is a raw-SQL fold over ``items`` (the
-    ``_folder_is_shared`` pattern). One spot measurement, 2026-08-28, synthetic
+    render per album — O(items + albums). That is the "seconds at 75k tracks"
+    class of full-library read (``library._sampled_library_files`` documents the
+    same measurement), paid once per sweep/preview beside their own full-disk
+    ``os.walk``. If it ever measures slow, the named escape is a raw-SQL fold
+    over ``items``. One spot measurement, 2026-08-28, synthetic
     1000 albums x 10 tracks on the dev box: 0.73 s, 0.45 s of it the item
     materialization — a dated data point, not a live figure; re-measure rather than
     quoting it.

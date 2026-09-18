@@ -362,6 +362,45 @@ def library_with_no_rows(tmp_path: Path) -> "Library":
     return build_library(str(beets_dir_for(tmp_path) / "library.db"), str(tmp_path / "music"))
 
 
+def trash_the_folder_as_released(
+    lib: "Library", album: Any, *, trash_dir: Path, origins_dir: Path
+) -> Path:
+    """Put ``album`` in Trash the way RELEASED versions' whole-folder mover did.
+
+    That mover is gone, but records it wrote are on users' disks and restore by
+    MOVE-BACK, so the shape has to be buildable without it. Captured from a real
+    run before the deletion: the album's folder moved WHOLE to
+    ``<trash>/<folder name>`` (files, art and sidecars alike, tracked or not),
+    the origin record ``<origins>/<entry name>.json`` holding
+    ``{"moved": "folder", "origin": <the folder>, ...}``, and the album's rows
+    dropped afterwards.
+
+    Hand-written rather than routed through ``trash_folder``: this is a FIXTURE
+    for a released on-disk shape, and it must not move when a live mover does.
+    The ``(n)`` suffix is the allocator's, kept because a test that deletes the
+    same album twice depends on it; ``_fit_name``'s NAME_MAX shortening is NOT
+    reproduced — a test about that boundary belongs on a live mover.
+    """
+    import shutil
+
+    from app.beets.trash_origins import write_trash_origin
+
+    items = list(album.items())
+    folders = {os.path.dirname(os.fsdecode(it.path)) for it in items}
+    assert len(folders) == 1, f"the released mover moved ONE folder, got {sorted(folders)}"
+    source = folders.pop()
+    trash_dir.mkdir(parents=True, exist_ok=True)
+    dest = trash_dir / os.path.basename(source)
+    counter = 1
+    while dest.exists():
+        dest = trash_dir / f"{os.path.basename(source)} ({counter})"
+        counter += 1
+    shutil.move(source, str(dest))
+    write_trash_origin(origins_dir, dest.name, origin=source, moved="folder")
+    album.remove(delete=False)
+    return dest
+
+
 @pytest.fixture
 def anyio_backend() -> str:
     """Run anyio-marked async tests on asyncio only (no trio dependency)."""

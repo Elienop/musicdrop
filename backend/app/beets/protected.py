@@ -299,22 +299,6 @@ def open_if_one_of_ours(root: str | Path, protected: ProtectedTrees) -> int | No
     return None
 
 
-def refuse_a_held_store(root: str | Path, protected: ProtectedTrees, *, action: _Action) -> bool:
-    """Refuse a tree that HOLDS one of ours; answer ``True`` when it IS one.
-
-    A tree holding an app store has no safe relocation. A tree that IS one has a
-    per-item path: the album's FILES go, the directory stays. One function, so
-    the delete route and ``delete_artist``'s pre-check refuse the same set.
-    """
-    hit = _match(root, protected, None)
-    if hit is None:
-        return False
-    is_root, clause = hit
-    if not is_root:
-        raise protected_tree_error(root, clause, action)
-    return True
-
-
 def open_checked_dir(path: Path, protected: ProtectedTrees) -> int:
     """A descriptor on the Trash, refusing anything but the directory checked.
 
