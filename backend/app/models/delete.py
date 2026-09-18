@@ -10,9 +10,10 @@ class DeleteResult(BaseModel):
 
     ``trashed_albums`` is 1 for a single-album delete, N for an artist (every
     album of theirs). ``trash_path`` is where to look: the album's own folder
-    inside Trash for an album delete, its source folder when the files were
-    already there, or the Trash root — an album with no files lands nowhere, and
-    an artist delete gives each of its albums a container of its own.
+    inside Trash when its files moved there; the folder its rows named when
+    nothing moved (already in Trash, or gone from the disk entirely); the Trash
+    root when it had no files at all, and for an artist delete, whose albums each
+    get a container of their own.
     """
 
     trashed_albums: int

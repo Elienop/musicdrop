@@ -68,9 +68,11 @@ _TRASH_RESTORE_FAILED_RESPONSE: Final = {
 #: the containment check on what it resolved to, so every one of them can answer
 #: this. One sentence for all three, and it says nothing about what was left:
 #: ``DELETE /api/trash/all`` removes every unprotected entry BEFORE it refuses.
+#: "Kept" rather than "store-layout or identity", because the Empty routes also
+#: refuse an entry whose files the LIBRARY still lists, which is neither.
 _TRASH_LAYOUT_REFUSED_RESPONSE: Final = {
     "model": ErrorDetail,
-    "description": "A store-layout or identity refusal; the message names the cause.",
+    "description": "The entry was kept; the message names the cause and what to do.",
 }
 #: The single delete's twin of the sweep's failed-entry 500: the entry is still
 #: in Trash, and the fault is on disk rather than in the request.
@@ -301,6 +303,10 @@ async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> 
             result = await run_in_threadpool(
                 empty_one,
                 str(dest),
+                # BOTH spellings: ``dest`` is resolved and the rows hold what
+                # Delete wrote. On a default Trash whose leaf is a link they
+                # differ, and the cross-check missed every row (measured).
+                trash_dir=checked.trash_dir,
                 origins_dir=checked.origins_dir,
                 protected=_required(checked.protected),
                 # The library, so an entry whose files the library still names is

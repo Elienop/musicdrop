@@ -516,7 +516,7 @@ def _folder_is_shared(lib: Library, album: Any, album_root: str) -> bool:
         )
     root_with_sep = os.path.join(root, "")
     for row in weird:
-        # ``os.fsencode``, never ``bytes(...)`` — see ``_sampled_library_dirs``
+        # ``os.fsencode``, never ``bytes(...)`` — see ``_sampled_library_files``
         # for why a raw ``path`` row can come back as ``str``. Here the TypeError
         # would 500 a delete that should have taken its ordinary answer.
         path = os.path.normpath(_abs_path(lib, os.fsencode(row[0])))

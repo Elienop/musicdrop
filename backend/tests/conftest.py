@@ -350,6 +350,18 @@ def build_library(
     return Library(path, directory=directory)
 
 
+def library_with_no_rows(tmp_path: Path) -> "Library":
+    """An empty library for a test that must pass one but has no rows to protect.
+
+    ``empty_one``/``empty_all`` take a ``Library`` because the cross-check that
+    keeps an Empty from destroying an album's only copy fails OPEN without one —
+    a data-safety guard whose off switch is forgetting an argument. Tests about
+    the SWEEP rather than about that guard pass this: a real library, one real
+    query, zero rows.
+    """
+    return build_library(str(beets_dir_for(tmp_path) / "library.db"), str(tmp_path / "music"))
+
+
 @pytest.fixture
 def anyio_backend() -> str:
     """Run anyio-marked async tests on asyncio only (no trio dependency)."""

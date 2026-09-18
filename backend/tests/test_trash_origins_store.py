@@ -61,7 +61,7 @@ from app.beets.trash_origins import (
     require_usable_store,
     write_trash_origin,
 )
-from tests.conftest import build_library, protected_for, write_leased
+from tests.conftest import build_library, library_with_no_rows, protected_for, write_leased
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
 
@@ -332,6 +332,8 @@ def test_emptying_the_losing_row_keeps_the_other_entrys_record(tmp_path: Path) -
             str(trash / short_name),
             origins_dir=origins,
             protected=protected_for(trash_dir=trash, origins_dir=origins),
+            trash_dir=trash,
+            lib=library_with_no_rows(tmp_path),
         ).removed
         == 1
     )
@@ -812,6 +814,8 @@ def test_a_fifo_at_the_key_does_not_hang_the_delete_that_reads_it(
                 str(trash / "Album"),
                 origins_dir=origins,
                 protected=protected_for(trash_dir=trash, origins_dir=origins),
+                trash_dir=trash,
+                lib=library_with_no_rows(tmp_path),
             ).removed
         )
 
@@ -855,6 +859,8 @@ def test_a_file_too_large_to_be_a_record_is_refused_on_the_delete_path_too(
             str(trash / "Album"),
             origins_dir=origins,
             protected=protected_for(trash_dir=trash, origins_dir=origins),
+            trash_dir=trash,
+            lib=library_with_no_rows(tmp_path),
         ).removed
 
     assert removed == 1
@@ -891,6 +897,7 @@ def test_empty_all_sweeps_past_a_planted_key_instead_of_stopping_on_it(
                 trash,
                 origins_dir=origins,
                 protected=protected_for(trash_dir=trash, origins_dir=origins),
+                lib=library_with_no_rows(tmp_path),
             ).removed
         )
 
@@ -1110,6 +1117,8 @@ def test_a_record_the_json_parser_gives_up_on_does_not_escape_empty_one(
             str(trash / "Deep"),
             origins_dir=origins,
             protected=protected_for(trash_dir=trash, origins_dir=origins),
+            trash_dir=trash,
+            lib=library_with_no_rows(tmp_path),
         ).removed
         == 1
     )
@@ -1147,6 +1156,7 @@ def test_a_record_the_json_parser_gives_up_on_does_not_abort_empty_all(
             trash,
             origins_dir=origins,
             protected=protected_for(trash_dir=trash, origins_dir=origins),
+            lib=library_with_no_rows(tmp_path),
         ).removed
         == 3
     )

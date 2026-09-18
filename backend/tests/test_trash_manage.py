@@ -17,6 +17,7 @@ from app.beets.trash_manage import (
     TrashEmptyPartialError,
     TrashEntryUnreadableError,
     _link_name_under,
+    _refused_clauses,
     empty_all,
     empty_one,
     list_trashed_albums,
@@ -24,9 +25,22 @@ from app.beets.trash_manage import (
     restore_album,
 )
 from app.beets.trash_origins import read_trash_origin, write_trash_origin
-from tests.conftest import build_library, origins_for, protected_for
+from tests.conftest import build_library, library_with_no_rows, origins_for, protected_for
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
+
+
+def test_a_sixth_refused_entry_is_counted_not_named() -> None:
+    """The cap and the pronoun, the two arms both 503s share.
+
+    Six refused entries is a sweep no route test builds cheaply, and the clause
+    is pure string work, so it is asked here directly. The end-to-end reading of
+    the singular arm is ``test_all_three_causes_reach_the_user_in_the_one_message``.
+    """
+    six = [f"{i!r} is the inbox" for i in "abcdef"]
+
+    assert _refused_clauses(six) == ("; ".join(six[:5]) + " and 1 more", "those entries")
+    assert _refused_clauses(six[:1]) == (six[0], "that entry")
 
 
 @pytest.fixture(autouse=True)
@@ -439,6 +453,8 @@ def test_empty_one_and_all(tmp_path: Path) -> None:
             str(trash / "A"),
             origins_dir=origins_for(trash),
             protected=protected_for(trash_dir=trash, origins_dir=origins_for(trash)),
+            trash_dir=trash,
+            lib=library_with_no_rows(tmp_path),
         ).removed
         == 1
     )
@@ -448,6 +464,7 @@ def test_empty_one_and_all(tmp_path: Path) -> None:
             trash,
             origins_dir=origins_for(trash),
             protected=protected_for(trash_dir=trash, origins_dir=origins_for(trash)),
+            lib=library_with_no_rows(tmp_path),
         ).removed
         == 1
     )  # B remains
@@ -485,6 +502,7 @@ def test_empty_all_finishes_what_it_can_and_names_what_it_could_not(tmp_path: Pa
                 trash,
                 origins_dir=origins,
                 protected=protected,
+                lib=library_with_no_rows(tmp_path),
             )
     finally:
         (trash / "B Album").chmod(0o700)  # or the tmp_path teardown cannot clean up
@@ -534,6 +552,7 @@ def test_empty_all_clears_the_store_once_trash_is_empty(tmp_path: Path) -> None:
             trash,
             origins_dir=origins,
             protected=protected_for(trash_dir=trash, origins_dir=origins),
+            lib=library_with_no_rows(tmp_path),
         ).removed
         == 1
     )
@@ -568,6 +587,7 @@ def test_empty_all_keeps_every_record_when_it_removed_nothing(tmp_path: Path) ->
             trash,
             origins_dir=origins,
             protected=protected_for(trash_dir=trash, origins_dir=origins),
+            lib=library_with_no_rows(tmp_path),
         ).removed
         == 0
     )
@@ -605,6 +625,7 @@ def test_empty_all_clears_a_symlinked_entry_without_following_it(tmp_path: Path)
             trash,
             origins_dir=origins_for(trash),
             protected=protected_for(trash_dir=trash, origins_dir=origins_for(trash)),
+            lib=library_with_no_rows(tmp_path),
         ).removed
         == 2
     )
@@ -1087,6 +1108,8 @@ def test_empty_one_removes_a_loose_file(tmp_path: Path) -> None:
             str(trash / "loose.flac"),
             origins_dir=origins_for(trash),
             protected=protected_for(trash_dir=trash, origins_dir=origins_for(trash)),
+            trash_dir=trash,
+            lib=library_with_no_rows(tmp_path),
         ).removed
         == 1
     )

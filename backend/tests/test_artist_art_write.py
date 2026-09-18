@@ -240,6 +240,8 @@ def test_a_trashed_art_container_can_be_emptied(
         protected=protected_for(
             edit_lib, trash_dir=art_trash.trash_dir, origins_dir=art_trash.origins_dir
         ),
+        trash_dir=art_trash.trash_dir,
+        lib=edit_lib,
     )
 
     assert result.removed == 1

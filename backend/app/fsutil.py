@@ -277,13 +277,15 @@ def move_no_merge(src: Path, dest: Path) -> None:
 #: followed, and a FIFO planted mid-path cannot block the open (measured: with
 #: ``O_DIRECTORY`` a FIFO answers ENOTDIR in 6 us, so ``O_NONBLOCK`` is belt and
 #: braces rather than the thing that saves the open). The ONE definition, and
-#: these are all its readers: :func:`open_below`'s walk, the Trash remover's
+#: these are its readers: :func:`open_below`'s walk, the Trash remover's
 #: descent, the move-aside's container open, ``store_layout``'s walk of the
 #: Trash's whole spelling — above the music root as well as below, since the
 #: owner's 2026-09-13 ruling, which is why "below the root" no longer describes
-#: every reader — and ``protected.open_checked_dir``'s open of the Trash ROOT,
+#: every reader — ``protected.open_checked_dir``'s open of the Trash ROOT,
 #: the one place a ROOT is opened ``O_NOFOLLOW``, because that root is the one
-#: directory the app must not reach through a link.
+#: directory the app must not reach through a link, and
+#: ``protected.open_if_one_of_ours``, which the per-item delete plants its
+#: keep-file through. Grep before trusting the list.
 BELOW_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
 
 #: The ROOT is opened FOLLOWING links: an operator's beets ``directory:`` may be a

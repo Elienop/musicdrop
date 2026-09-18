@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app.beets import delete as delete_mod
 from app.beets.library import _require_id
 from app.beets.protected import (
     ProtectedTreeError,
@@ -33,7 +34,14 @@ from app.beets.trash import trash_folder
 from app.beets.trash_manage import TrashEmptyPartialError, empty_all, empty_one
 from app.config import Settings, app_owned_dirs, settings
 from tests._mountns import run_probe, unshare_works
-from tests.conftest import beets_dir_for, make_test_handle, origins_for, protected_for
+from tests.conftest import (
+    beets_dir_for,
+    build_library,
+    library_with_no_rows,
+    make_test_handle,
+    origins_for,
+    protected_for,
+)
 
 # --------------------------------------------------------------------------
 # The set itself: one owner for every app-owned path.
@@ -348,7 +356,9 @@ def test_empty_all_carries_on_past_an_entry_it_cannot_open(
     try:
         with caplog.at_level(logging.WARNING, logger="app.beets.protected"):
             with pytest.raises(TrashEmptyPartialError) as caught:
-                empty_all(trash, origins_dir=origins, protected=trees)
+                empty_all(
+                    trash, origins_dir=origins, protected=trees, lib=library_with_no_rows(tmp_path)
+                )
     finally:
         os.chmod(trash / "b", 0o755)
 
@@ -416,7 +426,7 @@ def test_empty_all_refuses_a_trash_directory_swapped_after_the_check(tmp_path: P
     origins = origins_for(trash)
 
     with pytest.raises(ProtectedTreeError, match="changed between the check and the open"):
-        empty_all(trash, origins_dir=origins, protected=trees)
+        empty_all(trash, origins_dir=origins, protected=trees, lib=library_with_no_rows(tmp_path))
     assert (trash / "Impostor").is_dir()
 
 
@@ -448,7 +458,10 @@ def test_empty_all_enumerates_from_the_descriptor_it_checked(
 
     monkeypatch.setattr(manage, "open_checked_dir", swapping)
     result = empty_all(
-        trash, origins_dir=origins_for(trash), protected=_trees_for(tmp_path / "music", trash)
+        trash,
+        origins_dir=origins_for(trash),
+        protected=_trees_for(tmp_path / "music", trash),
+        lib=library_with_no_rows(tmp_path),
     )
 
     assert result.removed == 1
@@ -473,7 +486,7 @@ def test_empty_all_leaves_the_protected_entry_and_removes_the_rest(tmp_path: Pat
     origins = origins_for(trash)
 
     with pytest.raises(ProtectedTreeError) as caught:
-        empty_all(trash, origins_dir=origins, protected=trees)
+        empty_all(trash, origins_dir=origins, protected=trees, lib=library_with_no_rows(tmp_path))
 
     assert "'Sneak' is the music library" in str(caught.value)
     assert "Removed 1" in str(caught.value)
@@ -506,13 +519,68 @@ def test_two_refused_entries_read_as_two(tmp_path: Path) -> None:
 
     try:
         with pytest.raises(ProtectedTreeError) as caught:
-            empty_all(trash, origins_dir=origins, protected=trees)
+            empty_all(
+                trash, origins_dir=origins, protected=trees, lib=library_with_no_rows(tmp_path)
+            )
     finally:
         os.chmod(trash / "stuck", 0o700)
 
     message = str(caught.value)
     assert "move those entries out of Trash" in message, message
     assert "1 could not be removed ('stuck')" in message, message
+
+
+def test_all_three_causes_reach_the_user_in_the_one_message(tmp_path: Path) -> None:
+    """A sweep can leave entries behind for three reasons, and raise ONCE.
+
+    The listed cause outranks the other two, so the raise it makes is the only
+    message the user sees: an entry the guard refused, or one that could not be
+    removed, was invisible on every retry. Whole string, because a fragment could
+    not see a clause going missing.
+    """
+    if os.getuid() == 0:
+        pytest.skip("root removes a mode-000 entry anyway")
+    trash = tmp_path / "trash"
+    music = tmp_path / "music"
+    music.mkdir()
+    listed = trash / "AAA-listed"
+    listed.mkdir(parents=True)
+    (trash / "MMM-ordinary").mkdir()
+    stuck = trash / "YYY-stuck"
+    stuck.mkdir()
+    (stuck / "01.flac").write_bytes(b"x")
+    os.chmod(stuck, 0o500)
+    lib = build_library(str(beets_dir_for(tmp_path) / "library.db"), str(music))
+    _add_album(lib, listed)
+    # The app's own inbox, inside Trash: the guard refuses it by inode, which it
+    # takes when the set is built — so the directory exists first.
+    (trash / "ZZZ-inbox").mkdir()
+    trees = protected_trees(
+        settings=Settings(inbox_dir=str(trash / "ZZZ-inbox")),
+        music_dir=music,
+        beets_dir=beets_dir_for(tmp_path),
+        trash_dir=trash,
+        origins_dir=origins_for(trash),
+        library_path=beets_dir_for(tmp_path) / "library.db",
+    )
+
+    try:
+        with pytest.raises(ProtectedTreeError) as caught:
+            empty_all(trash, origins_dir=origins_for(trash), protected=trees, lib=lib)
+    finally:
+        os.chmod(stuck, 0o700)
+
+    assert str(caught.value) == (
+        "Refused: 'AAA-listed' — the library still lists files inside."
+        " Delete the album again, then empty Trash."
+        " Removed 1, 1 could not be removed ('YYY-stuck')."
+        " Also refused: 'ZZZ-inbox' is the inbox (same inode as MUSICDROP_INBOX_DIR)"
+        " — move that entry out of Trash."
+    )
+    assert listed.is_dir(), "the album's only copy is still there"
+    assert (trash / "ZZZ-inbox").is_dir()
+    assert stuck.is_dir()
+    assert not (trash / "MMM-ordinary").exists(), "and the rest was still emptied"
 
 
 def test_open_checked_dir_refuses_a_trash_it_could_not_stat(tmp_path: Path) -> None:
@@ -561,7 +629,7 @@ def test_empty_all_refuses_a_trash_that_is_one_of_the_apps_own_directories(
 
     origins = origins_for(trash)
     with pytest.raises(ProtectedTreeError, match="the Trash directory is the music library"):
-        empty_all(trash, origins_dir=origins, protected=trees)
+        empty_all(trash, origins_dir=origins, protected=trees, lib=library_with_no_rows(tmp_path))
     assert (trash / "Artist" / "01.flac").exists()
 
 
@@ -604,7 +672,7 @@ def test_the_trash_root_alias_is_found_wherever_the_twin_is_listed(
 
     origins = origins_for(trash)
     with pytest.raises(ProtectedTreeError, match=f"the Trash directory {phrase}"):
-        empty_all(trash, origins_dir=origins, protected=trees)
+        empty_all(trash, origins_dir=origins, protected=trees, lib=library_with_no_rows(tmp_path))
     assert (trash / "Artist" / "01.flac").exists()
 
 
@@ -663,7 +731,9 @@ def test_the_refusal_names_how_many_entries_could_not_be_removed(tmp_path: Path)
     (trash / "Stuck").chmod(0o500)
     try:
         with pytest.raises(ProtectedTreeError) as caught:
-            empty_all(trash, origins_dir=origins, protected=trees)
+            empty_all(
+                trash, origins_dir=origins, protected=trees, lib=library_with_no_rows(tmp_path)
+            )
     finally:
         (trash / "Stuck").chmod(0o700)
 
@@ -685,10 +755,25 @@ def test_empty_one_refuses_a_protected_entry(tmp_path: Path) -> None:
     sneak = str(trash / "Sneak")
 
     with pytest.raises(ProtectedTreeError, match="'Sneak' is the music library"):
-        empty_one(sneak, origins_dir=origins, protected=trees)
+        empty_one(
+            sneak,
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=trees,
+            lib=library_with_no_rows(tmp_path),
+        )
     assert (trash / "Sneak" / "01.flac").exists()
 
-    assert empty_one(str(trash / "Ordinary"), origins_dir=origins, protected=trees).removed == 1
+    assert (
+        empty_one(
+            str(trash / "Ordinary"),
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=trees,
+            lib=library_with_no_rows(tmp_path),
+        ).removed
+        == 1
+    )
 
 
 def _rename_onto_the_entry_after_the_guard(
@@ -746,7 +831,7 @@ def test_empty_all_removes_the_entry_it_guarded_and_not_the_name(
     with pytest.raises(
         ProtectedTreeError, match="changed between the check and the removal"
     ) as err:
-        empty_all(trash, origins_dir=origins, protected=trees)
+        empty_all(trash, origins_dir=origins, protected=trees, lib=library_with_no_rows(tmp_path))
 
     assert fired == [True]
     assert (trash / "Album" / "01.flac").exists(), "the music library, under the entry's name"
@@ -776,7 +861,13 @@ def test_empty_one_removes_the_entry_it_guarded_and_not_the_name(
     with pytest.raises(
         ProtectedTreeError, match="changed between the check and the removal"
     ) as err:
-        empty_one(entry, origins_dir=origins, protected=trees)
+        empty_one(
+            entry,
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=trees,
+            lib=library_with_no_rows(tmp_path),
+        )
 
     assert fired == [True]
     assert (trash / "Album" / "01.flac").exists(), "the music library, under the entry's name"
@@ -822,7 +913,13 @@ def test_an_entry_swapped_between_the_stat_and_the_open_is_refused(
     with pytest.raises(
         ProtectedTreeError, match="changed between the check and the removal"
     ) as err:
-        empty_one(entry, origins_dir=origins, protected=trees)
+        empty_one(
+            entry,
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=trees,
+            lib=library_with_no_rows(tmp_path),
+        )
 
     assert fired == [True]
     assert (trash / "Album" / "01.flac").exists(), "the music library, under the entry's name"
@@ -887,10 +984,18 @@ def test_a_library_moved_in_after_the_walk_is_still_refused(
     )
     origins = origins_for(trash)
     # Built before the block, and inert until called: the seam is already armed.
+    lib = library_with_no_rows(tmp_path)
     empty = (
-        partial(empty_all, trash, origins_dir=origins, protected=trees)
+        partial(empty_all, trash, origins_dir=origins, protected=trees, lib=lib)
         if path == "all"
-        else partial(empty_one, str(trash / "Album"), origins_dir=origins, protected=trees)
+        else partial(
+            empty_one,
+            str(trash / "Album"),
+            trash_dir=trash,
+            origins_dir=origins,
+            protected=trees,
+            lib=lib,
+        )
     )
 
     with pytest.raises(ProtectedTreeError, match="contains the music library") as err:
@@ -1069,7 +1174,7 @@ def test_delete_artist_still_deletes_on_a_flat_library(
     """The album root IS the protected music dir, and the delete still lands.
 
     The music library is in the protected set, and it is also where
-    ``_our_dirs_at_or_above`` STOPS, so this is the layout where that walk
+    ``_dirs_the_prune_can_reach`` STOPS, so this is the layout where that walk
     collects nothing at all: the delete must go through anyway rather than refuse
     or leave the root behind.
 
@@ -1529,8 +1634,8 @@ def test_a_multi_disc_album_whose_root_is_a_store_leaves_the_store(
     parent of this fix, ``store still a dir: False`` against ``True`` for the
     whole-folder mover it replaced.
 
-    ``_our_dirs_at_or_above`` asks per ITEM and climbs, which covers the disc
-    levels and the commonpath in one walk without having to compute either.
+    ``_dirs_the_prune_can_reach`` asks per ITEM and climbs, which covers the
+    disc levels and the commonpath in one walk without having to compute either.
     """
     from app.beets.delete import delete_album
     from tests.conftest import build_library
@@ -1809,6 +1914,202 @@ def test_a_keep_file_that_cannot_be_removed_does_not_fail_the_delete(
     assert (inbox / ".musicdrop-keep").is_file(), "left behind, which the next delete adopts"
 
 
+def test_a_store_holding_only_the_cover_survives_the_delete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``Album.move_art`` prunes from the COVER's directory, which is a second chain.
+
+    beets 2.13.1 ``library/models.py:446``: ``move_art`` runs its own
+    ``prune_dirs(dirname(old_art), directory, clutter=…)``. Measured with the
+    walk asking about item directories only — the store holding the cover was
+    rmtree'd, contents and all, by a delete whose tracks live elsewhere.
+    """
+    from app.beets.delete import delete_album
+    from tests.conftest import build_library
+
+    music = tmp_path / "music"
+    folder = music / "Art" / "Alb"
+    folder.mkdir(parents=True)
+    art_store = music / "Downloads" / "inbox"
+    art_store.mkdir(parents=True)
+    beets_dir = beets_dir_for(tmp_path)
+    lib = build_library(str(beets_dir / "library.db"), str(music))
+    _add_album(lib, folder)
+    cover = art_store / "cover.jpg"
+    cover.write_bytes(b"\xff\xd8\xffcover")
+    album = next(iter(lib.albums()))
+    album.artpath = os.fsencode(str(cover))
+    album.store()
+    monkeypatch.setattr("app.config.settings.inbox_dir", str(art_store))
+    trash = tmp_path / "trash"
+    origins = origins_for(trash)
+    trees = protected_for(lib, trash_dir=trash, origins_dir=origins)
+    before = art_store.stat()
+
+    delete_album(lib, _require_id(album.id), trash_dir=trash, origins_dir=origins, protected=trees)
+
+    after = art_store.stat()
+    assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino), "the SAME directory"
+    assert not cover.exists(), "the cover itself travelled, as beets moves it"
+
+
+def test_a_delete_that_raises_while_collecting_leaks_no_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Acquire, then more code, then ``try`` — measured as one leaked fd per attempt.
+
+    ``_keep_our_dirs`` reads the user's ``clutter:`` list after the descriptors
+    are open and the keep-files planted; a broken value (``clutter: 5``) raises
+    there. Above the caller's ``try`` that left the descriptor open and the
+    keep-file planted on every attempt.
+    """
+    import beets
+
+    from app.beets.delete import delete_album
+    from tests.conftest import build_library
+
+    music = tmp_path / "music"
+    inbox = music / "Downloads" / "inbox"
+    folder = inbox / "Art" / "Alb"
+    folder.mkdir(parents=True)
+    beets_dir = beets_dir_for(tmp_path)
+    lib = build_library(str(beets_dir / "library.db"), str(music))
+    _add_album(lib, folder)
+    monkeypatch.setattr("app.config.settings.inbox_dir", str(inbox))
+    trash = tmp_path / "trash"
+    origins = origins_for(trash)
+    trees = protected_for(lib, trash_dir=trash, origins_dir=origins)
+    album_id = _require_id(next(iter(lib.albums())).id)
+    was = beets.config["clutter"].get()
+    beets.config["clutter"] = 5  # not a string and not a list
+    open_before = _open_descriptors()
+
+    try:
+        with pytest.raises(Exception, match="clutter"):
+            delete_album(lib, album_id, trash_dir=trash, origins_dir=origins, protected=trees)
+    finally:
+        beets.config["clutter"] = was
+
+    assert _open_descriptors() == open_before, "the descriptors it had opened were closed"
+    assert not (inbox / ".musicdrop-keep").exists(), "and the keep-file it had planted went"
+
+
+def _open_descriptors() -> set[str]:
+    """This process's open descriptors, by number."""
+    return set(os.listdir("/proc/self/fd"))
+
+
+def test_a_delete_closes_every_descriptor_it_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One per app-owned directory walked, on the ORDINARY path.
+
+    Measured: deleting either ``os.close`` — the not-ours arm in
+    ``open_if_one_of_ours`` or the one in ``_release_our_dirs`` — leaves the
+    whole suite green while every delete leaks a descriptor per directory it
+    walked, until the server stops at EMFILE.
+    """
+    from app.beets.delete import delete_album
+    from tests.conftest import build_library
+
+    music = tmp_path / "music"
+    inbox = music / "Downloads" / "inbox"
+    folder = inbox / "Art" / "Alb"
+    folder.mkdir(parents=True)
+    beets_dir = beets_dir_for(tmp_path)
+    lib = build_library(str(beets_dir / "library.db"), str(music))
+    _add_album(lib, folder)
+    monkeypatch.setattr("app.config.settings.inbox_dir", str(inbox))
+    trash = tmp_path / "trash"
+    origins = origins_for(trash)
+    trees = protected_for(lib, trash_dir=trash, origins_dir=origins)
+    album_id = _require_id(next(iter(lib.albums())).id)
+    open_before = _open_descriptors()
+
+    delete_album(lib, album_id, trash_dir=trash, origins_dir=origins, protected=trees)
+
+    assert _open_descriptors() == open_before
+
+
+def test_a_file_that_replaces_the_keep_file_is_not_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The release unlinks by NAME, so it asks whether the name is still ours.
+
+    Measured before the identity check: a file renamed onto ``.musicdrop-keep``
+    inside the store after the move was destroyed by the ``finally``. The racer
+    is another process on the host — MusicDrop's own destructive routes are
+    serialized — but the cost was somebody else's file.
+    """
+    from app.beets.delete import delete_album
+    from tests.conftest import build_library
+
+    music = tmp_path / "music"
+    inbox = music / "Downloads" / "inbox"
+    folder = inbox / "Art" / "Alb"
+    folder.mkdir(parents=True)
+    beets_dir = beets_dir_for(tmp_path)
+    lib = build_library(str(beets_dir / "library.db"), str(music))
+    _add_album(lib, folder)
+    monkeypatch.setattr("app.config.settings.inbox_dir", str(inbox))
+    trash = tmp_path / "trash"
+    origins = origins_for(trash)
+    trees = protected_for(lib, trash_dir=trash, origins_dir=origins)
+    album_id = _require_id(next(iter(lib.albums())).id)
+    precious = inbox / "precious.bin"
+    precious.write_bytes(b"someone else's")
+    real_carry = delete_mod._carry_the_sidecars
+
+    def _swaps(*args: Any, **kwargs: Any) -> None:
+        # After the move, before the ``finally``: the window a racer has.
+        os.replace(precious, inbox / ".musicdrop-keep")
+        real_carry(*args, **kwargs)
+
+    monkeypatch.setattr(delete_mod, "_carry_the_sidecars", _swaps)
+
+    delete_album(lib, album_id, trash_dir=trash, origins_dir=origins, protected=trees)
+
+    assert (inbox / ".musicdrop-keep").read_bytes() == b"someone else's", "not ours, not removed"
+
+
+def test_no_keep_file_is_planted_in_the_music_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The walk stops at ``lib.directory``, which is where beets' prune stops.
+
+    The music root is one of the app's own directories, so without that stop a
+    keep-file would be planted in it on EVERY delete and the user would find a
+    dot-file in the top of their library. beets never prunes the root, so there
+    is nothing to hold off there.
+    """
+    from app.beets.delete import delete_album
+    from tests.conftest import build_library
+
+    music = tmp_path / "music"
+    folder = music / "Art" / "Alb"
+    folder.mkdir(parents=True)
+    beets_dir = beets_dir_for(tmp_path)
+    lib = build_library(str(beets_dir / "library.db"), str(music))
+    _add_album(lib, folder)
+    trash = tmp_path / "trash"
+    origins = origins_for(trash)
+    trees = protected_for(lib, trash_dir=trash, origins_dir=origins)
+    album_id = _require_id(next(iter(lib.albums())).id)
+    during: list[list[str]] = []
+    real_trash_album = delete_mod.trash_album  # type: ignore[attr-defined]  # re-export
+
+    def _looks(*args: Any, **kwargs: Any) -> str:
+        during.append(sorted(p.name for p in music.iterdir()))
+        answer: str = real_trash_album(*args, **kwargs)
+        return answer
+
+    monkeypatch.setattr(delete_mod, "trash_album", _looks)
+
+    delete_album(lib, album_id, trash_dir=trash, origins_dir=origins, protected=trees)
+
+    assert during == [["Art"]], "nothing of ours was planted in the music root"
+
+
 def test_a_directory_swapped_after_the_check_gets_no_keep_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1856,6 +2157,36 @@ def test_a_directory_swapped_after_the_check_gets_no_keep_file(
     assert moved_to.is_dir(), "the real store is there"
     assert list(moved_to.iterdir()) == [], "and its keep-file came off the descriptor"
     assert not inbox.exists(), "nothing was written at the swapped-in name, so beets' prune took it"
+
+
+def test_a_symlink_at_a_store_name_is_not_one_of_ours(tmp_path: Path) -> None:
+    """``O_NOFOLLOW``: the identity question is about the NAME, not its target.
+
+    Without it a link standing where a store used to be answers with the
+    target's identity, and the delete would plant its keep-file through the
+    link — into a directory nobody checked. Measured: dropping ``O_NOFOLLOW``
+    from the open left every other test in this file green.
+    """
+    from app.beets.protected import open_if_one_of_ours
+
+    real = tmp_path / "inbox"
+    real.mkdir()
+    link = tmp_path / "inbox-link"
+    link.symlink_to(real)
+    trees = protected_trees(
+        settings=Settings(inbox_dir=str(real)),
+        music_dir=tmp_path / "music",
+        beets_dir=tmp_path / "beets",
+        trash_dir=tmp_path / "trash",
+        origins_dir=tmp_path / "origins",
+        library_path=tmp_path / "beets" / "library.db",
+    )
+
+    by_name = open_if_one_of_ours(real, trees)
+    assert by_name is not None, "the control: the store itself IS one of ours"
+    os.close(by_name)
+
+    assert open_if_one_of_ours(link, trees) is None, "a link at the name is not the store"
 
 
 def test_a_leftover_keep_file_is_adopted_and_left_where_it_is(
@@ -1932,7 +2263,7 @@ def test_a_clutter_list_that_matches_the_keep_file_is_logged(
     assert result.trashed_albums == 1
     assert not inbox.exists(), "clutter-only to beets, so the store went with the prune"
     assert [r.getMessage() for r in caplog.records] == [
-        "clutter: matches .musicdrop-keep, so MusicDrop's own directories are not"
+        "clutter: matches .musicdrop-keep, so MusicDrop's own directories may not be"
         " protected from beets' prune during a delete",
         # The second line is the same fact from the other end: the ``finally``
         # cannot unlink a keep-file whose directory beets took.
@@ -1985,7 +2316,9 @@ def test_a_store_that_cannot_be_written_in_is_not_protected_and_the_delete_lands
     assert result.trashed_albums == 1
     assert list(lib.albums()) == []
     assert list(trash.rglob("*.mp3")), "the delete really happened"
-    assert inbox.is_dir()
+    # The LOG is this test's pin, not the store's survival: a read-only parent
+    # stops beets' own ``rmtree`` too, so ``inbox.is_dir()`` holds with the keep
+    # logic switched off entirely (measured by the code seat).
     assert [r.getMessage() for r in caplog.records] == [
         f"not protected from beets' prune, cannot write in it: {inbox}"
     ]
@@ -2040,8 +2373,8 @@ def test_a_ghost_delete_keeps_a_trash_that_sits_inside_the_library(
     assert len(list(lib.albums())) == 1, "the ghost rows went"
     assert trash.is_dir(), "the Trash root did not"
     # The entry, not only the root: with the old prune put back, the Trash root
-    # still ends up standing — ``_restore_our_dirs`` re-creates it — and the
-    # difference that remains is the folder BELOW it. Measured: without this
+    # still ends up standing — its keep-file holds it — and the difference that
+    # remains is the folder BELOW it. Measured: without this
     # line, re-adding ``prune_dirs(album_root, lib.directory)`` leaves this test
     # green. A ghost relocated nothing, so nothing here has a folder to tidy.
     assert entry.is_dir(), "nothing pruned the folder the rows named"

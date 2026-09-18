@@ -83,6 +83,7 @@ from app.models.trash import RestoreResult
 from tests.conftest import (
     beets_dir_for,
     build_library,
+    library_with_no_rows,
     make_test_handle,
     origins_for,
     protected_for,
@@ -907,8 +908,14 @@ def test_listing_marks_a_shared_folder_row_as_an_import_but_shows_its_origin(
     )
     assert row.restore_mode == "import"
     assert row.origin == str(tmp_path / "music" / "Portishead" / "Dummy")
-    assert row.restore_note is not None
-    assert "shared" in row.restore_note
+    # WHOLE, not a fragment: the note used to say the album "shared a folder",
+    # which per-file Delete makes false for every album it moves (owner ruling
+    # ``decisions.md`` 58) — and a fragment assertion could not see that.
+    assert row.restore_note == (
+        "MusicDrop moved this album's files out of their folder one by one, so it cannot"
+        " put them back exactly. Restoring re-imports the tracks under your current naming"
+        " rules; the cover and lyric files stay in this Trash entry."
+    )
 
 
 def test_listing_marks_an_origin_outside_the_library_as_an_import(tmp_path: Path) -> None:
@@ -2366,6 +2373,8 @@ def test_empty_one_removes_the_origin_record(
             str(dest),
             origins_dir=_origins(tmp_path),
             protected=protected_for(trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)),
+            trash_dir=tmp_path / "trash",
+            lib=library_with_no_rows(tmp_path),
         ).removed
 
     assert removed == 1
@@ -2404,7 +2413,13 @@ def test_empty_one_keeps_the_record_when_the_removal_itself_fails(tmp_path: Path
         origins = _origins(tmp_path)
         trees = protected_for(trash_dir=tmp_path / "trash", origins_dir=origins)
         with pytest.raises(OSError):
-            empty_one(entry_path, origins_dir=origins, protected=trees)
+            empty_one(
+                entry_path,
+                trash_dir=tmp_path / "trash",
+                origins_dir=origins,
+                protected=trees,
+                lib=library_with_no_rows(tmp_path),
+            )
     finally:
         (tmp_path / "trash").chmod(0o700)
 
@@ -2442,6 +2457,7 @@ def test_empty_all_removes_every_origin_record_including_a_symlinked_entry(
             trash,
             origins_dir=origins,
             protected=protected_for(trash_dir=trash, origins_dir=origins),
+            lib=library_with_no_rows(tmp_path),
         ).removed
         == 3
     )
@@ -2481,6 +2497,7 @@ def test_empty_all_leaves_a_record_whose_entry_was_removed_outside_the_app(
             trash,
             origins_dir=origins,
             protected=protected_for(trash_dir=trash, origins_dir=origins),
+            lib=library_with_no_rows(tmp_path),
         ).removed
         == 0
     )

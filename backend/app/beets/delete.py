@@ -9,7 +9,8 @@ beets tracks — every item from its OWN stored path, plus ``album.artpath`` —
 Anything else in the folder is a stranger's and stays — except a file the user's
 ``clutter:`` list names, which beets' prune deletes outright along with the
 folder it emptied, Trash not involved (measured with ``clutter: ['*.pdf']`` and a
-booklet; it is what beets' own move does). The FOLDER stays only while something
+booklet; it is what beets' own move does, and under ``clutter: ['*']`` it is the
+album's own remaining tracks). The FOLDER stays only while something
 is left in it: that prune climbs to ``lib.directory``, so an album alone in its
 folder takes the folder with it, and an app-owned directory in the chain is held
 by a keep-file for the length of the move (:func:`_keep_our_dirs`).
@@ -189,9 +190,14 @@ def _trash_one(
         require_usable_store(origins_dir)
         album.remove(delete=False)
         return os.path.dirname(_abs_path(lib, items[0].path))
-    kept = _keep_our_dirs(lib, items, protected)
+    kept: list[_Kept] = []
     moved_audio: list[tuple[str, str]] = []
     try:
+        # Inside the ``try``, filling ``kept`` as it goes: collecting can raise
+        # (a broken ``clutter:`` value, measured) with descriptors already open,
+        # and above the ``try`` that leaked one per directory and left the
+        # keep-files planted.
+        _keep_our_dirs(lib, album, items, protected, kept)
         trash_path = trash_album(
             lib, album, trash_dir=trash_dir, origins_dir=origins_dir, moved_audio=moved_audio
         )
@@ -217,6 +223,9 @@ def _all_rows_are_in_trash(lib: Library, items: list[Any], trash_dir: Path) -> b
 
     False positive: an album whose files genuinely live inside Trash has its rows
     dropped and its files left where they are. Nothing is lost.
+
+    The prefix carries a trailing separator, so a sibling ``trash-old`` is not
+    inside Trash (``test_a_trash_old_sibling_is_not_read_as_being_in_trash``).
     """
     if not items:
         return False
@@ -235,24 +244,32 @@ def _is_regular_file(path: str) -> bool:
 
 #: Planted in an app-owned directory for the length of a Delete so beets' prune
 #: BREAKS there. FIXED and short by choice: a name derived from the directory is
-#: a symlink target and a random one leaves an unbounded pile behind a kill (the
-#: art/lyrics writers' temp names, memory ``atomic-write-temp-names``). A killed
-#: run leaves exactly this one file, which the next Delete finds and leaves.
+#: a symlink target, and a random one leaves an unbounded pile behind a kill. A
+#: killed run leaves one file per app-owned directory it had reached, and the
+#: next Delete finds each and leaves it
+#: (``test_a_leftover_keep_file_is_adopted_and_left_where_it_is``).
 _KEEP_NAME: Final = ".musicdrop-keep"
 _KEEP_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
 
 
 @dataclass(frozen=True)
 class _Kept:
-    """One app-owned directory held open for the move, and whether WE planted in it."""
+    """One app-owned directory held open for the move, and the file WE planted in it.
+
+    ``planted`` is the keep-file's ``(st_dev, st_ino)`` when this delete created
+    it, and ``None`` when it did not: an adopted leftover, or a store that could
+    not be written in.
+    """
 
     path: str
     fd: int
-    planted: bool
+    planted: tuple[int, int] | None
 
 
-def _keep_our_dirs(lib: Library, items: list[Any], protected: ProtectedTrees) -> list[_Kept]:
-    """Hold beets' prune off every app-owned directory it could reach. Never raises.
+def _keep_our_dirs(
+    lib: Library, album: Any, items: list[Any], protected: ProtectedTrees, kept: list[_Kept]
+) -> None:
+    """Hold beets' prune off every app-owned directory it could reach.
 
     beets prunes inside ``Album.move``, climbing to ``lib.directory``, and
     ``prune_dirs`` rmtree's an ancestor that is empty OR CLUTTER-ONLY — contents
@@ -267,37 +284,58 @@ def _keep_our_dirs(lib: Library, items: list[Any], protected: ProtectedTrees) ->
 
     A store that cannot be written into is NOT protected and says so in the log:
     a tidy-up may not fail a delete the user asked for.
+
+    ``kept`` is an OUT parameter, filled as each directory is taken, because the
+    caller's ``finally`` must release what was collected before a raise
+    part-way through (``test_a_delete_that_raises_while_collecting_leaks_no_descriptor``).
     """
-    kept: list[_Kept] = []
-    for path in _dirs_the_prune_can_reach(lib, items):
+    for path in _dirs_the_prune_can_reach(lib, items, art=getattr(album, "artpath", None)):
         fd = open_if_one_of_ours(path, protected)
         if fd is not None:
             kept.append(_Kept(path, fd, _plant(path, fd)))
     if kept and _keep_name_is_clutter():
         _log.warning(
-            "clutter: matches %s, so MusicDrop's own directories are not protected"
+            "clutter: matches %s, so MusicDrop's own directories may not be protected"
             " from beets' prune during a delete",
             _KEEP_NAME,
         )
-    return kept
 
 
-def _plant(path: str, fd: int) -> bool:
-    """Create the keep-file in ``fd``; whether THIS call created it."""
+def _plant(path: str, fd: int) -> tuple[int, int] | None:
+    """Create the keep-file in ``fd``; its identity when THIS call created it."""
     try:
-        os.close(os.open(_KEEP_NAME, _KEEP_FLAGS, 0o600, dir_fd=fd))
+        file_fd = os.open(_KEEP_NAME, _KEEP_FLAGS, 0o600, dir_fd=fd)
     except FileExistsError:
         # A killed run's leftover, which already holds the prune off. Left alone
         # so this delete puts the directory back exactly as it found it.
-        return False
+        return None
     except OSError:
         _log.warning("not protected from beets' prune, cannot write in it: %s", path)
-        return False
-    return True
+        return None
+    # Outside the create's ``try``: the file exists from here on, so a close that
+    # raises may not leave it recorded as someone else's and orphan it.
+    try:
+        return _ident(os.fstat(file_fd))
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(file_fd)
+
+
+def _ident(st: os.stat_result) -> tuple[int, int]:
+    """The identity two stats are compared by."""
+    return (st.st_dev, st.st_ino)
 
 
 def _release_our_dirs(kept: list[_Kept]) -> None:
     """Remove the keep-files this delete planted, and close the descriptors.
+
+    Only what is still the file this delete created: the name is re-stat'd
+    through the descriptor and compared with the identity ``_plant`` recorded, so
+    a file that ARRIVED at the name afterwards is left
+    (``test_a_file_that_replaces_the_keep_file_is_not_removed``). The stat and
+    the unlink are two syscalls, so a swap in that window still loses the new
+    file; both go through the directory's own descriptor, which bounds it to
+    this directory.
 
     In a ``finally`` and silent about its own faults: the files have moved by the
     time it runs, so a tidy-up may not turn a delete that happened into one that
@@ -306,9 +344,10 @@ def _release_our_dirs(kept: list[_Kept]) -> None:
     inode, which is no longer on the mountpoint — nothing is written there.
     """
     for one in kept:
-        if one.planted:
+        if one.planted is not None:
             try:
-                os.unlink(_KEEP_NAME, dir_fd=one.fd)
+                if _ident(os.stat(_KEEP_NAME, dir_fd=one.fd, follow_symlinks=False)) == one.planted:
+                    os.unlink(_KEEP_NAME, dir_fd=one.fd)
             except OSError:
                 _log.warning("could not remove %s in %s", _KEEP_NAME, one.path)
         with contextlib.suppress(OSError):
@@ -321,22 +360,35 @@ def _keep_name_is_clutter() -> bool:
     return any(fnmatch.fnmatch(_KEEP_NAME, str(p)) for p in patterns)
 
 
-def _dirs_the_prune_can_reach(lib: Library, items: list[Any]) -> list[str]:
+def _dirs_the_prune_can_reach(
+    lib: Library, items: list[Any], *, art: bytes | str | None = None
+) -> list[str]:
     """The directories ``Album.move``'s prune could remove, deepest first.
 
     Asked the way ``prune_dirs`` asks: from each item's directory upward,
     stopping at ``lib.directory``, which it never removes and outside which it
     removes nothing (``ancestry`` + the ``root in ancestors`` test).
 
-    Per ITEM, not from the album root: one item in ``music/B`` and another
-    directly in the store have no common chain
-    (``test_a_store_holding_one_of_two_item_folders_survives``).
+    TWO kinds of start. Per ITEM, not from the album root: one item in
+    ``music/B`` and another directly in the store have no common chain
+    (``test_a_store_holding_one_of_two_item_folders_survives``). And the cover's
+    own directory, because ``Album.move_art`` runs a prune of its own from
+    ``dirname(artpath)`` (beets 2.13.1 ``library/models.py:446``) — measured, an
+    app store holding only the cover was rmtree'd
+    (``test_a_store_holding_only_the_cover_survives_the_delete``).
+
+    ``lib.directory`` itself is never returned: beets' prune stops there, and a
+    keep-file in the music root would be planted on every delete
+    (``test_no_keep_file_is_planted_in_the_music_root``).
     """
     stop = os.path.normpath(os.fsdecode(lib.directory))
     found: list[str] = []
     seen: set[str] = set()
-    for it in items:
-        cur = os.path.normpath(os.path.dirname(_abs_path(lib, it.path)))
+    starts = [os.path.dirname(_abs_path(lib, it.path)) for it in items]
+    if art:
+        starts.append(os.path.dirname(_abs_path(lib, os.fsencode(art))))
+    for start in starts:
+        cur = os.path.normpath(start)
         while cur != stop and cur not in seen and Path(cur).is_relative_to(stop):
             seen.add(cur)
             found.append(cur)
@@ -370,11 +422,15 @@ def _carry_the_sidecars(lib: Library, moved_audio: list[tuple[str, str]]) -> Non
         carry_sidecars(lib, old_audio, new_audio)
 
 
-#: Every item row under one directory, both stored path forms — beets stores
-#: relative to ``lib.directory`` in the normal case and absolute for
-#: outside/legacy rows. One query per DIRECTORY, not per item: at 100k rows
-#: ``substr`` defeats the index and costs 4.3 ms a time (measured by the code
-#: seat), which for a 300-track artist was ~1.3 s inside the transaction.
+#: Every item row under one directory's SUBTREE, both stored path forms — beets
+#: stores relative to ``lib.directory`` in the normal case and absolute for
+#: outside/legacy rows. The subtree is wider than the question (one directory
+#: returned 41 rows, 40 of them from subfolders); the caller keeps the direct
+#: children. One query per DIRECTORY, not per item: at 100k rows ``substr``
+#: defeats the index and costs 4.3 ms a time (measured by the code seat), which
+#: for a 300-track artist was ~1.3 s inside the transaction. For a track filed
+#: directly in the music ROOT the relative prefix is empty and every row comes
+#: back — 20 000 rows in 21 ms, measured; it is bounded by library size.
 _ROWS_UNDER_SQL = """
 SELECT path FROM items WHERE substr(path, 1, ?) = ? OR substr(path, 1, ?) = ?
 """
@@ -390,20 +446,34 @@ def _stems_in_use(lib: Library, directories: set[str]) -> set[str]:
     by spelling or by stem, leaves the sidecar travelling with its own track
     (``test_a_delete_leaves_a_sidecar_another_albums_track_claims`` and
     ``test_a_beets_collision_divert_does_not_claim_the_other_albums_sidecar``).
+
+    The query is a SUBTREE prefix and the answer is still about one directory,
+    because a stem is an absolute path: a row one folder down produces a
+    different stem and can never claim a sidecar up here. Filtering the rows to
+    the directory's direct children first is therefore an equivalent mutant —
+    measured, and removed rather than left unpinned.
+
+    The music root is the case that makes the prefix load-bearing:
+    ``relpath(music, music)`` is ``"."``, so a ``./`` prefix matched no stored
+    row and a neighbour's lyrics were carried off
+    (``test_a_sidecar_claim_is_seen_for_tracks_in_the_music_root``).
     """
     stems: set[str] = set()
     music = os.fsdecode(lib.directory)
     with lib.transaction() as tx:
         for directory in directories:
-            absolute = os.fsencode(os.path.join(directory, ""))
+            here = os.path.normpath(directory)
+            absolute = os.fsencode(os.path.join(here, ""))
             relative = absolute
             with contextlib.suppress(ValueError):  # different drives: no relative spelling
-                relative = os.fsencode(os.path.join(os.path.relpath(directory, music), ""))
+                rel = os.path.relpath(here, music)
+                relative = b"" if rel == os.curdir else os.fsencode(os.path.join(rel, ""))
             rows = tx.query(_ROWS_UNDER_SQL, (len(absolute), absolute, len(relative), relative))
             stems.update(
                 base
                 for (raw,) in rows
-                if (base := sidecar_base(_abs_path(lib, os.fsencode(raw)))) is not None
+                if (base := sidecar_base(os.path.normpath(_abs_path(lib, os.fsencode(raw)))))
+                is not None
             )
     return stems
 
@@ -488,7 +558,7 @@ def delete_artist(
         # from its own path — measured, a store held inside an album folder
         # survives the per-item delete untouched. What is left of the identity
         # question is :func:`_trash_one`'s, asked per album and answered by
-        # re-creating the directory rather than by refusing.
+        # holding the prune off with a keep-file rather than by refusing.
         #
         # Two counters, because they answer different questions and a run can
         # have one without the other. ``mutated`` is albums whose ROWS are gone,

@@ -267,15 +267,20 @@ def refuse_protected_tree(root: str | Path, protected: ProtectedTrees, *, action
 
 
 def open_if_one_of_ours(root: str | Path, protected: ProtectedTrees) -> int | None:
-    """A descriptor on ``root`` when it IS one of ours; ``None`` otherwise. Never raises.
+    """A descriptor on ``root`` when it IS one of ours; ``None`` otherwise.
 
     The identity question only — no walk, so it says nothing about what the tree
     CONTAINS — answered by ``fstat`` on the descriptor the caller then acts
     through, as :func:`open_checked_dir` does for the Trash. The caller owns the
     descriptor and must close it.
 
-    ``BELOW_FLAGS``, so a symlink and a non-directory answer ``None``: the
-    callers act on the name in front of them.
+    ``BELOW_FLAGS``, so a symlink at the name answers ``None``
+    (``test_a_symlink_at_a_store_name_is_not_one_of_ours``); the callers act on
+    the name in front of them.
+
+    ``ValueError`` beside ``OSError``: a NUL in a stored path makes ``os.open``
+    raise that instead (measured), and this answers ``None`` for every path it
+    cannot open rather than raising past a caller that has descriptors open.
 
     The caller is the per-item delete, which writes a keep-file into each store
     beets' prune would otherwise remove; the descriptor is what keeps that write
@@ -283,7 +288,7 @@ def open_if_one_of_ours(root: str | Path, protected: ProtectedTrees) -> int | No
     """
     try:
         fd = os.open(root, BELOW_FLAGS)
-    except OSError:
+    except (OSError, ValueError):
         return None
     try:
         if _fstat_id(fd) in protected.ids:

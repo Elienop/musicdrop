@@ -253,6 +253,45 @@ def test_a_delete_leaves_a_sidecar_another_albums_track_claims(tmp_path: Path) -
     assert list(trash.rglob("*.flac")), "the deleted album's own file did move"
 
 
+def test_a_sidecar_claim_is_seen_for_tracks_in_the_music_root(tmp_path: Path) -> None:
+    """A flat library (``paths: default: $title``) is a documented layout. REGRESSION.
+
+    ``relpath(music, music)`` is ``"."``, so the relative prefix was ``./`` and
+    matched no stored row: measured, the neighbour's ``01 T1.lrc`` was carried
+    into Trash from the music root while the same shape one folder down was
+    left alone. The root's prefix is EMPTY, and the direct-children filter is
+    what keeps the answer about this directory.
+    """
+    from beets.library import Item
+
+    music = tmp_path / "music"
+    music.mkdir()
+    lib = build_library(
+        str(beets_dir_for(tmp_path) / "library.db"), str(music), path_format="$title"
+    )
+
+    def add(*, album: str, name: str) -> Album:
+        track = music / name
+        track.write_bytes(b"\x00")
+        item = Item(album=album, albumartist="Sharey", artist="Sharey", title="T1", track=1)
+        item.path = os.fsencode(str(track))
+        made: Album = lib.add_album([item])
+        made.store()
+        return made
+
+    doomed = add(album="A Doomed", name="01 T1.flac")
+    add(album="B Keeper", name="01 T1.mp3")
+    shared = music / "01 T1.lrc"
+    shared.write_text("[00:01.00] both of ours", encoding="utf-8")
+
+    trash = tmp_path / "trash"
+    _delete(lib, _require_id(doomed.id), trash)
+
+    assert not list(trash.rglob("*.lrc")), "the neighbour's lyrics did not travel"
+    assert shared.read_text(encoding="utf-8") == "[00:01.00] both of ours"
+    assert list(trash.rglob("*.flac")), "the deleted album's own file did move"
+
+
 @pytest.mark.parametrize("neighbour", ["01 T1.1.mp3", "01 T1.5 (remix).mp3"])
 def test_a_beets_collision_divert_does_not_claim_the_other_albums_sidecar(
     tmp_path: Path, neighbour: str
@@ -2152,6 +2191,40 @@ def test_a_retry_after_a_part_way_move_finishes_the_move(
     # where the commonpath over all rows would have been the parent of Trash and
     # music. Display only, so "a folder it came from" is the whole bar.
     assert written == [str(discs[1])]
+
+
+def test_a_trash_old_sibling_is_not_read_as_being_in_trash(tmp_path: Path) -> None:
+    """The retry arm's prefix carries a trailing separator, and that is why.
+
+    Rows under ``<trash>-old`` share every byte of ``<trash>`` up to its last
+    character. Without the separator they read as "already in Trash", the arm
+    drops the rows without moving anything, and the files sit in a sibling
+    folder with nothing naming them. Measured: the whole file stayed green with
+    the separator removed.
+    """
+    from beets.library import Item
+
+    music = tmp_path / "music"
+    music.mkdir()
+    lib = build_library(str(beets_dir_for(tmp_path) / "library.db"), str(music))
+    # Inside the music folder, which is a supported layout and the one where a
+    # sibling is reachable at all: the library root guard wants files under it.
+    trash = music / ".trash"
+    sibling = music / ".trash-old"
+    folder = sibling / "Art - Alb"
+    folder.mkdir(parents=True)
+    track = folder / "01 T1.mp3"
+    track.write_bytes(b"\x00")
+    item = Item(album="Alb", albumartist="Art", artist="Art", title="T1", track=1)
+    item.path = os.fsencode(str(track))
+    album = lib.add_album([item])
+    album.store()
+
+    result = _delete(lib, _require_id(album.id), trash)
+
+    assert Path(result.trash_path).is_relative_to(trash), "it really moved into Trash"
+    assert not track.exists(), "and left the sibling folder"
+    assert [p.name for p in trash.rglob("*.mp3")] == ["01 T1.mp3"]
 
 
 def test_a_symlink_inside_trash_does_not_take_the_retry_arm(tmp_path: Path) -> None:

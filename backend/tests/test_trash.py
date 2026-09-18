@@ -202,6 +202,25 @@ def test_trash_album_folder_ghost_folder_already_gone_drops_rows(
     assert not trash.exists()  # nothing relocated — there was nothing on disk
 
 
+def test_an_album_whose_every_row_is_in_trash_has_no_origin_to_show(
+    duplicates_lib: Library, tmp_path: Path
+) -> None:
+    """``not_in`` can exclude EVERY row, and then there is no folder to name.
+
+    The part-way retry is the shape that reaches it — the first attempt moved
+    what it could, and a second call sees only Trash rows. Falling back to the
+    rows themselves would write an origin naming a path inside Trash, which is
+    the record the round-2 fix removed. ``trash_album`` gates on
+    ``source_root and moved``, so ``""`` means no record rather than a bad one.
+    """
+    album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
+    items = list(album.items())
+    real_root = _album_root(duplicates_lib, items)
+    assert real_root, "the control: with no exclusion it answers the album's folder"
+
+    assert _album_root(duplicates_lib, items, not_in=Path(real_root).parent) == ""
+
+
 def test_folder_shared_guard(duplicates_lib: Library) -> None:
     album = next(a for a in duplicates_lib.albums() if a.albumartist == "Daft Punk")
     album_root = _album_root(duplicates_lib, list(album.items()))
