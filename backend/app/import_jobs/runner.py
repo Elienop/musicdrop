@@ -138,8 +138,8 @@ class BeetsImportRunner:
         # additionally banks each set-aside, so it gets the bank dir.
         unattended = options.unattended if options is not None else False
         sweep = options.sweep if options is not None else False
-        # None = the worker decides from the resolved file operation (a run that
-        # keeps the files goes incremental); False is beets' own ``-I``.
+        # None = the worker decides from the resolved file operation (a hardlink
+        # run goes incremental); False is beets' own ``-I``.
         incremental = options.incremental if options is not None else None
         session = WebImportSession(
             self._lib,

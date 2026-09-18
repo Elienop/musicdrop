@@ -294,12 +294,10 @@ def _incremental_advisory(section: ImportSection) -> str | None:
     if not section.incremental:
         return None
     return (
-        "MusicDrop honours import.incremental, and that is the trap: beets' taghistory"
-        " records every folder a sweep finished OR skipped, so re-importing one of those"
-        " folders from MusicDrop is skipped before anything runs and reports nothing."
-        " (A sweep or a hardlink import forces it on and a bank apply forces it off,"
-        " whatever this says. Import them again gets one run past it.)"
-        " `beet import` from the command line behaves the same way."
+        "MusicDrop honours import.incremental: a folder in beets' import history is"
+        " skipped and counted as already known. A sweep or a hardlink import forces it"
+        " on and sets incremental_skip_later itself; a bank apply forces it off."
+        " `beet import` behaves the same way."
     )
 
 
@@ -339,8 +337,8 @@ def _always_moves_advisory(key: str) -> Callable[[ImportSection], str | None]:
     # Only a hardlink forces the history keys (``run_import_worker``), and an
     # ``incremental: no`` beside it fires no rule of its own, so it is said here.
     history = (
-        " A manual hardlink import also turns on beets' import history"
-        " (import.incremental), so a kept folder added again is skipped."
+        " A manual hardlink import turns beets' import history on, so a kept folder"
+        " added again is skipped."
         if key == "hardlink"
         else ""
     )

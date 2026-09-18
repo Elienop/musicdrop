@@ -59,9 +59,9 @@ class StartImportRequest(BaseModel):
     """Body of ``POST /api/import``.
 
     ``path`` is a server-side folder (maps 1:1 to ``beet import <path>``).
-    ``options`` carries per-import overrides (operation move/copy/default +
-    unattended). ``None`` falls through to today's manual default (the user's
-    beets config, attended review).
+    ``options`` carries per-import overrides (operation move/copy/default,
+    unattended, sweep, incremental). ``None`` falls through to today's manual
+    default (the user's beets config, attended review).
     """
 
     # Non-blank after stripping (a blank/whitespace path is a 422). Otherwise
@@ -102,9 +102,14 @@ class ImportProgress(BaseModel):
     # no outcome and reaches no feed row (measured in
     # tests/test_import_incremental_e2e.py). Nonzero means "the run had nothing
     # to do here", which is what the UI offers a way past.
+    #
+    # Almost always the import history. beets' same check also answers "already
+    # imported" for a folder held by a RESUME record, which needs the user's own
+    # ``resume: yes`` on a run MusicDrop forces nothing for — every forcing arm
+    # pins ``resume: False``. Hence the wording here.
     already_known: int = Field(
         default=0,
-        description="Album folders skipped because beets' import history has them.",
+        description="Album folders beets skipped as already imported.",
     )
 
 

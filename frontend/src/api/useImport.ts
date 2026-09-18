@@ -56,13 +56,38 @@ export function importCoverUrl(jobId: string, index: number): string {
   return `/api/import/${jobId}/albums/${index}/cover`;
 }
 
-/** Thrown when a start is rejected because an import is already running (409).
- * Lets the entry screen surface a "an import is already running" message with a
- * link to it, instead of the generic failure. */
+/** Thrown when `POST /api/import` answers 409. Lets the entry screen surface a
+ * message with a link to the running import, instead of the generic failure.
+ *
+ * Carries the server's own sentence, because the status has three reasons
+ * (backend/app/api/import_.py `ensure_import_can_start` + the registry's
+ * single-slot refusal): an import already running, a held beets swap lock, or a
+ * running backfill / disk sync. A class-only error made every caller pick one of
+ * the three and be wrong for the other two. The fallback is the sentence true
+ * for all of them. */
 export class ImportConflictError extends Error {
-  constructor() {
-    super("An import is already running");
+  constructor(detail?: string | null) {
+    super(detail ?? "The library is busy. Try again shortly.");
     this.name = "ImportConflictError";
+  }
+}
+
+/** Thrown when `POST /api/import` answers 503 WITH a reason: the attached
+ * library sits under a layout Apply refused, so no import can start. Carries
+ * the refusal's own sentence — a "try again" is false for it, since nothing
+ * changes until the layout does.
+ *
+ * `detail` is REQUIRED, so this class can only ever speak for a 503 our route
+ * sent. The route's own 503 always carries a sentence (backend/app/api/
+ * import_.py `detail=str(exc)`), so a bodyless one came from somewhere else — a
+ * proxy answering for a restarting container — and there "try again" is the
+ * right advice. That one falls through to the caller's generic sentence, the
+ * same as a 502. The class's old no-detail fallback ("The library is
+ * unavailable.") was therefore reachable only by the sender it was wrong for. */
+export class ImportUnavailableError extends Error {
+  constructor(detail: string) {
+    super(detail);
+    this.name = "ImportUnavailableError";
   }
 }
 
@@ -75,6 +100,42 @@ export class ImportStartRejectedError extends Error {
     super(message);
     this.name = "ImportStartRejectedError";
   }
+}
+
+/** The one sentence a failed start can take, for every surface that starts an
+ * import. A refusal (409 / 422 / 503) carries the server's own reason; anything
+ * else takes the caller's `generic` sentence, which is the only part that
+ * differs between call sites. Returns null while there is no error.
+ *
+ * One helper, not one per page: the finished panel and the Bank's stale row
+ * each held a copy of these branches, so a corrected sentence could land in one
+ * of them only. The entry screen keeps its own conflict copy — it has the
+ * Resume banner and the active-import probe, so it can name the control. */
+export function startErrorSentence(
+  error: unknown,
+  isError: boolean,
+  generic: string,
+): string | null {
+  if (
+    error instanceof ImportConflictError ||
+    error instanceof ImportStartRejectedError ||
+    error instanceof ImportUnavailableError
+  ) {
+    return endStopped(error.message);
+  }
+  return isError ? generic : null;
+}
+
+/** A carried server sentence with a full stop, when it ends in no terminal
+ * punctuation of its own.
+ *
+ * The two conventions differ: the UI/UX seat counted the literal `detail=`
+ * strings under `backend/app/api/` as 47 without terminal punctuation to 5
+ * with, while every client sentence in this app has one. Rather than churn the
+ * 47, the join is normalised here — the one place all three refusals pass
+ * through on their way to a surface. */
+function endStopped(sentence: string): string {
+  return /[.!?…]$/u.test(sentence) ? sentence : `${sentence}.`;
 }
 
 /** Thrown when the polled job id is unknown or expired (backend 404). Lets the
@@ -103,13 +164,25 @@ async function startImport(
   body: StartImportRequest,
 ): Promise<StartImportResponse> {
   const { data, error, response } = await client.POST("/api/import", { body });
+  // Each refusal carries the server's own sentence (the route declares an
+  // ErrorDetail body for all three); for 409 and 422 a bodyless answer falls
+  // back to a class sentence, which is why detailMessage's null passes through.
   if (response.status === 409) {
-    throw new ImportConflictError();
+    throw new ImportConflictError(detailMessage(error));
   }
   if (response.status === 422) {
     throw new ImportStartRejectedError(
       detailMessage(error) ?? "The import was rejected. Check the path and options.",
     );
+  }
+  // 503 is the exception: only throw the carrying class when there is a
+  // sentence to carry. A bodyless/HTML 503 is a proxy's, not ours, and falls to
+  // the generic failure below — see {@link ImportUnavailableError}.
+  if (response.status === 503) {
+    const reason = detailMessage(error);
+    if (reason !== null) {
+      throw new ImportUnavailableError(reason);
+    }
   }
   if (error || !data) {
     throw new Error("Failed to start import");

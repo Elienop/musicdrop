@@ -37,6 +37,18 @@ test("bordered: the dashed-card recipe", () => {
   ) as HTMLElement;
   expect(root).toHaveClass("border", "border-dashed", "rounded-xl", "py-16");
   expect(root).not.toHaveClass("py-24");
+  // Horizontal padding too: the box has a border of its own, and with vertical
+  // padding only a wrapped body line ran into it at phone width.
+  expect(root).toHaveClass("px-4");
+});
+
+test("the bare recipe keeps the page's gutter — no box, no inset", () => {
+  const { container } = render(<EmptyState icon={Search} title="No results" />);
+  const root = container.querySelector(
+    '[data-slot="empty-state"]',
+  ) as HTMLElement;
+  expect(root).toHaveClass("py-24");
+  expect(root).not.toHaveClass("px-4");
 });
 
 test("body is omitted from the DOM when not given", () => {

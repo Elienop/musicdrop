@@ -615,6 +615,109 @@ describe("BankReviewPage", () => {
     expect(deleted).toBe(true);
   });
 
+  test("while the re-scan is starting Review now is aria-disabled, not disabled, and swallows the repeat", async () => {
+    // The Pagination rule (the import page's Pause button carries the
+    // measurement): this button holds focus when it is pressed, so disabling it
+    // on that commit strands keyboard focus on <body> — and the failure sentence
+    // right above it invites another press. The import-slot gate stays a real
+    // `disabled`, pinned by the test below.
+    let posts = 0;
+    server.use(
+      http.get(ITEM, () => HttpResponse.json(bankItem({ status: "stale", error: "changed" }))),
+      http.post(IMPORT_URL, async () => {
+        posts += 1;
+        await delay("infinite");
+        return HttpResponse.json({ job_id: "jx" });
+      }),
+    );
+    renderRow();
+    const button = await screen.findByRole("button", { name: /review now/i });
+    await userEvent.click(button);
+
+    await waitFor(() => expect(button).toHaveAttribute("aria-disabled", "true"));
+    expect(button).not.toBeDisabled();
+
+    await userEvent.click(button);
+    expect(posts).toBe(1);
+  });
+
+  test("a stale-row start failure carries the server's own reason", async () => {
+    // One of the three refusals behind this status. A hard-coded "an import is
+    // already running" sent the user off to wait for an import that was not
+    // running.
+    server.use(
+      http.get(ITEM, () => HttpResponse.json(bankItem({ status: "stale", error: "changed" }))),
+      http.post(IMPORT_URL, () =>
+        HttpResponse.json(
+          { detail: "A library operation is in progress; import available when it finishes" },
+          { status: 409 },
+        ),
+      ),
+    );
+    renderRow();
+    await userEvent.click(await screen.findByRole("button", { name: /review now/i }));
+    // By text, not by role: the stale screen's own warning banner is an alert
+    // too, so the role alone matches two nodes here. The full stop is the
+    // client's — server details carry none, every sentence in the app does, and
+    // `startErrorSentence` is the one place the two conventions meet.
+    const alert = await screen.findByText(
+      "A library operation is in progress; import available when it finishes.",
+    );
+    expect(alert).toHaveAttribute("role", "alert");
+    expect(screen.queryByText(/an import is already running;/i)).not.toBeInTheDocument();
+    // The button keeps focus through the failure, so the sentence describes it.
+    expect(
+      screen.getByRole("button", { name: /review now/i }),
+    ).toHaveAttribute("aria-describedby", alert.id);
+    expect(alert.id).not.toBe("");
+  });
+
+  // The 409 and the hint open on the same clause, and the hint is the fuller
+  // sentence (it names the slot AND what still works), so once the probe
+  // catches up the alert stands down rather than repeating it one line above.
+  test("the start alert stands down once the import-slot hint is up", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let started = false;
+      server.use(
+        http.get(ITEM, () => HttpResponse.json(bankItem({ status: "stale", error: "changed" }))),
+        http.post(IMPORT_URL, () => {
+          started = true;
+          return HttpResponse.json(
+            { detail: "An import is already running" },
+            { status: 409 },
+          );
+        }),
+        http.get(ACTIVE, () =>
+          HttpResponse.json(
+            started
+              ? { active: true, job_id: "j9", origin: "manual", needs_review_count: 0 }
+              : { active: false, origin: "manual", needs_review_count: 0 },
+          ),
+        ),
+      );
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderRow();
+      await user.click(await screen.findByRole("button", { name: /review now/i }));
+      // The probe still reads idle, so the alert is the only thing that speaks.
+      expect(
+        await screen.findByText("An import is already running."),
+      ).toBeInTheDocument();
+
+      // The idle probe cadence is 30s (useActiveImport).
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(await screen.findByText(/needs the import slot/i)).toBeInTheDocument();
+      expect(
+        screen.queryByText("An import is already running."),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /review now/i }),
+      ).toHaveAttribute("aria-describedby", "stale-rescan-hint");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("the stale re-scan is gated while an import runs — with the visible reason", async () => {
     server.use(
       http.get(ACTIVE, () => HttpResponse.json({ active: true, job_id: "j9", origin: "manual", needs_review_count: 0 })),

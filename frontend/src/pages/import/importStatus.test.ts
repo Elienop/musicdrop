@@ -328,6 +328,53 @@ describe("announceMessage", () => {
     );
   });
 
+  // The history skips reach no outcome record, so none of the three counters
+  // holds them: without its own clause the one live region says "Imported 0,
+  // skipped 0." for a run whose whole story is that it knew every folder.
+  // Pinned per channel here, not only through the page's role="status".
+  test("a finished run announces the history skips, and a clean one does not", () => {
+    const speak = (data: ImportJobState) =>
+      announceMessage({ isPending: false, isError: false, notFound: false, data });
+    expect(
+      speak(
+        job({
+          phase: "done",
+          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 2 },
+          elapsed_seconds: 840,
+        }),
+      ),
+    ).toBe("Import complete. Imported 0, skipped 0. 2 already known. Took 14 minutes.");
+    // The clause is gated on itself — a run with none of them gains no words.
+    expect(
+      speak(
+        job({
+          phase: "done",
+          progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
+          elapsed_seconds: 840,
+        }),
+      ),
+    ).toBe("Import complete. Imported 1, skipped 0. Took 14 minutes.");
+  });
+
+  // The failed side of the same clause, on the run the gate is about: nothing
+  // landed, nothing was skipped on its merits, so the imported/skipped pair is
+  // gated out and the history skips are the only news there is.
+  test("a failed run whose only news is a history skip announces it", () => {
+    expect(
+      announceMessage({
+        isPending: false,
+        isError: false,
+        notFound: false,
+        data: job({
+          phase: "failed",
+          error: "the session died",
+          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 4 },
+          elapsed_seconds: 840,
+        }),
+      }),
+    ).toBe("The import failed. 4 already known. Took 14 minutes.");
+  });
+
   // A crash mid-apply is exactly when albums land or fail to land, and the
   // panel now reports what the run earned — so the one live region must too, or
   // a screen-reader user hears a bare failure for a run that imported 200.

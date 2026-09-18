@@ -19,10 +19,10 @@ from typing import Literal
 from beets import config
 
 FileOperation = Literal["move", "copy", "link", "hardlink", "reflink", "reflink_auto", "in_place"]
-#: ``hardlink`` has no production caller yet — the hardlink arm is still a
-#: BACKLOG item (download providers). Declared here so ``file_flags`` needs
-#: no change when it lands, and exercised by the parametrized test.
-ForcedOperation = Literal["move", "copy", "hardlink", "in_place"]
+#: The operations a caller may FORCE for one run. No ``hardlink``: the keep-downloads
+#: setting is one global switch written into beets' own ``import:`` keys and the app
+#: adds no per-import choice (``decisions`` #53), so nothing forces a hardlink.
+ForcedOperation = Literal["move", "copy", "in_place"]
 
 _FILE_FLAGS = ("move", "copy", "link", "hardlink", "reflink")
 
@@ -55,23 +55,6 @@ def file_operation(
     return "in_place"
 
 
-def configured_file_operation() -> FileOperation:
-    """:func:`file_operation` of the live ``config["import"]``.
-
-    Truthiness, not ``get(bool)``: ``set_config`` tests each flag with ``if``,
-    and ``delete: 1`` must not raise where beets would simply accept it.
-    """
-    imp = config["import"]
-    return file_operation(
-        move=bool(imp["move"]),
-        copy=bool(imp["copy"]),
-        link=bool(imp["link"]),
-        hardlink=bool(imp["hardlink"]),
-        reflink=imp["reflink"].get(),
-        delete=bool(imp["delete"]),
-    )
-
-
 def forced_file_operation(forced: Mapping[str, object]) -> FileOperation:
     """:func:`file_operation` of the live config with ``forced`` merged over it.
 
@@ -79,6 +62,9 @@ def forced_file_operation(forced: Mapping[str, object]) -> FileOperation:
     the keys ``forced`` names win, the rest fall through to the user's config.
     Read BEFORE the overlay is installed, so a caller can decide on the
     operation while its own ``forced`` dict is still being built.
+
+    Truthiness, not ``get(bool)``: ``set_config`` tests each flag with ``if``,
+    and ``delete: 1`` must not raise where beets would simply accept it.
     """
     imp = config["import"]
 
@@ -96,6 +82,15 @@ def forced_file_operation(forced: Mapping[str, object]) -> FileOperation:
         reflink=reflink if isinstance(reflink, bool | str) else bool(reflink),
         delete=bool(flag("delete")),
     )
+
+
+def configured_file_operation() -> FileOperation:
+    """:func:`file_operation` of the live ``config["import"]``, no overlay.
+
+    Defined as the empty-overlay case of :func:`forced_file_operation` rather
+    than a second reader of the same six flags, so the parity test covers both.
+    """
+    return forced_file_operation({})
 
 
 def file_flags(op: ForcedOperation) -> dict[str, bool]:

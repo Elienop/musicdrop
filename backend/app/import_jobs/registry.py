@@ -260,7 +260,8 @@ class ImportJobRegistry:
         in whatever is still downloading beside them). A bare string is the
         single-folder shorthand every other caller uses.
         ``options`` threads per-import overrides (operation move/copy,
-        unattended, sweep) to the runner; ``None`` is today's manual default.
+        unattended, sweep, incremental) to the runner; ``None`` is today's
+        manual default.
         ``origin`` (manual/inbox/sweep/bank_apply) is recorded on the job and
         surfaced on the job state + the active probe. ``directive`` is the
         bank apply runner's translated decision, threaded to the session so
@@ -760,8 +761,16 @@ class ImportJobRegistry:
                     not_landed=not_landed,
                     # Read from the BRIDGE, like awaiting_decision below: a
                     # history-skipped folder emits no outcome, so the feed rows
-                    # this method counts can never show one.
-                    already_known=job.bridge.known_skips(),
+                    # this method counts can never show one. For a sweep, from
+                    # the counter the drain above just refreshed instead — the
+                    # bridge keeps counting between the two lock holds, and one
+                    # response must not carry the same number twice with two
+                    # values.
+                    already_known=(
+                        job.sweep.skipped_known
+                        if job.sweep is not None
+                        else job.bridge.known_skips()
+                    ),
                 ),
                 albums=self._summaries(job),
                 error=job.error,

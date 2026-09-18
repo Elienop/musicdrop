@@ -23,6 +23,7 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, ClassVar
 
+import pytest
 from beets import config
 
 
@@ -65,6 +66,7 @@ class _RecordingSession:
         self.seen["singletons"] = imp["singletons"].get(bool)
         self.seen["incremental"] = imp["incremental"].get()
         self.seen["incremental_skip_later"] = imp["incremental_skip_later"].get()
+        self.seen["resume"] = imp["resume"].get()
         for flag in ("move", "copy", "link", "hardlink", "reflink", "delete"):
             self.seen[flag] = imp[flag].get()
 
@@ -542,20 +544,23 @@ def test_a_bank_apply_directive_beats_a_hardlink_config() -> None:
     hardlinking, with their own ``incremental: yes``), so this pins the
     ORDER too: ``incremental`` off, and ``incremental_skip_later`` left alone
     because only the sweep arm has a reason to touch it.
+
+    Ambient ``incremental_skip_later`` is ``False`` on purpose — arm 4 forces it
+    ``True``, so the "untouched" assertion below can only pass for this arm.
     """
     from app.beets.import_session import run_import_worker
     from app.models.bank import BankApplyDirective
 
     config["import"]["hardlink"] = True  # the user's config: keep downloads
     config["import"]["incremental"] = True
-    config["import"]["incremental_skip_later"] = True
+    config["import"]["incremental_skip_later"] = False
 
     session = _RecordingSession()
     directive = BankApplyDirective(action="asis")
     run_import_worker(session, directive=directive)  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
 
     assert session.seen["incremental"] is False
-    assert session.seen["incremental_skip_later"] is True  # the user's, untouched
+    assert session.seen["incremental_skip_later"] is False  # the user's, untouched
     assert config["import"]["incremental"].get(bool) is True  # restored
 
 
@@ -563,9 +568,15 @@ def test_a_sweep_records_the_folders_it_banks_over_a_user_skip_later() -> None:
     """Arm 2. A user's ``incremental_skip_later: yes`` stops beets recording a
     folder the sweep SKIPped — which is every folder the sweep banks — so every
     later sweep re-banked the same folders. The bank is their re-entry path.
+
+    The ambient config hardlinks, which is arm 4's case and the realistic one
+    for a user who sweeps a keep-downloads library: arm 4 would leave
+    ``incremental_skip_later`` ON and re-bank the same folders every sweep. This
+    is the only test that crosses those two arms, so it is what pins the order.
     """
     from app.beets.import_session import run_import_worker
 
+    config["import"]["hardlink"] = True  # the user's config: keep downloads
     config["import"]["incremental"] = False  # the user's config
     config["import"]["incremental_skip_later"] = True
 
@@ -584,32 +595,26 @@ def test_the_per_run_override_turns_history_off_under_a_hardlink_config() -> Non
     the library is in beets' history, so re-adding it imports nothing; this is
     the request field that gets one run past that. Ambient config is arm 4's
     (hardlink), which would otherwise force history ON.
+
+    ``resume`` goes off with it: beets clears ``resume`` only when
+    ``incremental`` is ON (``importer/session.py:98-101``), so this is the one
+    arm where the coupling gives nothing — and the same task-factory check that
+    skips a history folder skips one held by a resume record.
     """
     from app.beets.import_session import run_import_worker
 
     config["import"]["hardlink"] = True  # the user's config: keep downloads
     config["import"]["incremental"] = True
+    config["import"]["resume"] = True  # the user's config
 
     session = _RecordingSession()
     run_import_worker(session, incremental=False)  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
 
     assert session.seen["incremental"] is False
+    assert session.seen["resume"] is False
     assert session.seen["hardlink"] is True  # the file operation is untouched
     assert config["import"]["incremental"].get(bool) is True  # restored
-
-
-def test_the_per_run_override_can_also_turn_history_on() -> None:
-    """Arm 3, the other half: ``True`` forces it on where the user's config
-    says no and no arm below would have."""
-    from app.beets.import_session import run_import_worker
-
-    config["import"]["incremental"] = False  # the user's config
-
-    session = _RecordingSession()
-    run_import_worker(session, incremental=True)  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
-
-    assert session.seen["incremental"] is True
-    assert config["import"]["incremental"].get(bool) is False  # restored
+    assert config["import"]["resume"].get(bool) is True  # restored
 
 
 def test_a_hardlink_run_goes_incremental_and_offers_a_skipped_album_again() -> None:
@@ -619,24 +624,30 @@ def test_a_hardlink_run_goes_incremental_and_offers_a_skipped_album_again() -> N
     what refuses that.
 
     ``incremental_skip_later`` goes on with it: an album the user SKIPped is
-    not recorded, so the next run offers it again. There is no production
-    caller that FORCES hardlink today, so the arm is driven the way a user
-    reaches it — their own ``hardlink: yes``.
+    not recorded, so the next run offers it again. Nothing FORCES hardlink (the
+    keep-downloads setting writes it into the user's config), so the arm is
+    driven the way a user reaches it — their own ``hardlink: yes``.
+
+    ``resume`` off EXPLICITLY, like the sweep arm: beets clears it for an
+    incremental run today, and this must not depend on that surviving a bump.
     """
     from app.beets.import_session import run_import_worker
 
     config["import"]["hardlink"] = True  # the user's config: keep downloads
     config["import"]["incremental"] = False
     config["import"]["incremental_skip_later"] = False
+    config["import"]["resume"] = True  # the user's config
 
     session = _RecordingSession()
     run_import_worker(session)  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
 
     assert session.seen["incremental"] is True
     assert session.seen["incremental_skip_later"] is True
-    # ...and neither value survives the run
+    assert session.seen["resume"] is False
+    # ...and no value survives the run
     assert config["import"]["incremental"].get(bool) is False
     assert config["import"]["incremental_skip_later"].get(bool) is False
+    assert config["import"]["resume"].get(bool) is True
 
 
 def test_an_inbox_move_under_a_hardlink_config_leaves_history_to_the_user() -> None:
@@ -677,21 +688,39 @@ def test_an_in_place_restore_under_a_hardlink_config_leaves_history_to_the_user(
     assert session.seen["incremental_skip_later"] is False
 
 
-def test_a_copy_config_is_left_alone() -> None:
-    """Arm 5's deliberate gap. A copy also leaves the download in place, so it
-    has the same re-import shape as a hardlink — but a copy-config user did not
-    opt into anything, and turning history on for them would change what their
-    existing setup does. Only the keep-downloads operation switches.
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("copy", True),  # beets' own default, spelled out
+        ("link", True),  # a symlink leaves the download exactly as a hardlink does
+        ("reflink", True),
+        ("reflink", "auto"),
+    ],
+)
+def test_a_config_that_is_not_hardlink_is_left_alone(flag: str, value: object) -> None:
+    """Arm 5's deliberate gap, and what the ``== "hardlink"`` predicate means.
+
+    A copy, a symlink and a reflink all leave the download in place, so each has
+    the same re-import shape as a hardlink. None of them gets history:
+    ``hardlink`` is the spelling the keep-downloads setting writes into beets'
+    config (``decisions`` #53), and turning history on for a config the user
+    built themselves would change what their existing setup does.
+
+    The config is the one a real user has: beets' shipped ``copy: yes`` plus
+    whichever flag they added. ``copy`` is the LOWEST precedence of the five —
+    move > link > hardlink > reflink each clear it (``importer/session.py:114-133``)
+    — so leaving it on is what the link/reflink rows have to survive.
     """
     from app.beets.import_session import run_import_worker
 
-    config["import"]["copy"] = True  # beets' own default, spelled out
+    config["import"][flag] = value
     config["import"]["incremental"] = False
 
     session = _RecordingSession()
     run_import_worker(session)  # type: ignore[arg-type]  # minimal stand-in; only .run() is exercised
 
-    assert session.seen["copy"] is True
+    assert session.seen[flag] == value
+    assert session.seen["hardlink"] is False
     assert session.seen["incremental"] is False
     assert session.seen["incremental_skip_later"] is False
 

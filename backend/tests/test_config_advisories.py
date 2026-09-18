@@ -93,17 +93,18 @@ def test_singletons_false_yields_no_advisory() -> None:
 # --- incremental: honoured, but TRAPPED by beets' taghistory ----------------
 
 
-def test_incremental_true_advisory_names_the_taghistory_trap() -> None:
+def test_incremental_true_advisory_names_the_history_and_what_a_skip_reports() -> None:
     """``incremental`` is NOT filed as safe.
 
     MusicDrop honours it on a manual import, but beets records every folder a
-    sweep finished OR skipped in its taghistory — so re-importing one of those
-    folders from MusicDrop silently does nothing. The advisory must name that,
-    not describe the key as merely inert.
+    sweep finished OR skipped in its history — so re-importing one of those
+    folders lands nothing and is counted as already known. The advisory must
+    name both halves, not describe the key as merely inert.
     """
     advisories = _advise("import:\n  incremental: yes\n")
     msg = _message_for(advisories, "import.incremental")
-    assert "taghistory" in msg
+    assert "import history" in msg
+    assert "already known" in msg
     assert "sweep" in msg.lower()
 
 
@@ -130,6 +131,26 @@ def test_every_advisory_names_the_cli_escape_hatch() -> None:
     assert len(advisories) == 8
     for advisory in advisories:
         assert "beet import" in advisory.message, advisory.key
+
+
+def test_every_advisory_stays_short() -> None:
+    """Owner ruling: app text is short, and these render as a block on one
+    Settings screen.
+
+    A ratchet against regrowth, not a target: the two advisories this slice
+    touched were 426 and 382 characters before it, and 360 is today's longest
+    rounded up. When it trips, CUT THE TEXT — raising the bound is the owner's
+    call, not the author's. The failure names the key and its length, so the
+    current figures are read from the run, not from here.
+    """
+    advisories = _advise(
+        "import:\n  autotag: no\n  duplicate_action: skip\n  singletons: yes\n"
+        "  incremental: yes\n  delete: yes\n  link: yes\n  hardlink: yes\n"
+        "  reflink: auto\n"
+    )
+    assert len(advisories) == 8
+    for advisory in advisories:
+        assert len(advisory.message) <= 360, f"{advisory.key}: {len(advisory.message)} chars"
 
 
 def test_every_rule_fires_together_in_a_stable_order() -> None:
@@ -296,7 +317,7 @@ def test_a_filing_flag_advisory_says_where_it_applies_not_that_it_is_ignored() -
     # Only a hardlink forces beets' history on, and `incremental: no` beside it
     # fires no rule of its own — so the hardlink advisory is where it is said.
     (hardlink,) = _advise("import:\n  hardlink: yes\n  incremental: no\n")
-    assert "import.incremental" in hardlink.message
+    assert "import history" in hardlink.message
     (link,) = _advise("import:\n  link: yes\n")
     assert "import history" not in link.message
 
@@ -304,16 +325,17 @@ def test_a_filing_flag_advisory_says_where_it_applies_not_that_it_is_ignored() -
     assert _advise("import:\n  hardlink: no\n") == []
 
 
-def test_incremental_advisory_names_the_hardlink_forcing_and_the_way_past_it() -> None:
+def test_incremental_advisory_names_every_key_the_forcing_touches() -> None:
     """The sentence has to stay true as the forcing grows.
 
-    A hardlink run now turns ``incremental`` on itself, so a user reading
-    "MusicDrop honours this" needs to know a keep-downloads import does not
-    leave it alone — and that there is a per-run way past the history it
-    builds. The rule cannot DETECT the hardlink (``import_advisories``
-    validates one key at a time, so every sibling reads its default here), so
-    the clause is stated; this is what pins it.
+    A hardlink run turns ``incremental`` on itself AND sets
+    ``incremental_skip_later``, a key the editor does not model and no other
+    rule mentions — so a user reading "MusicDrop honours this" needs both named.
+    The rule cannot DETECT the hardlink (``import_advisories`` validates one key
+    at a time, so every sibling reads its default here), so the clause is
+    stated; this is what pins it.
     """
     msg = _message_for(_advise("import:\n  incremental: yes\n"), "import.incremental")
     assert "hardlink" in msg
-    assert "Import them again" in msg
+    assert "incremental_skip_later" in msg
+    assert "bank apply" in msg

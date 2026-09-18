@@ -1717,6 +1717,34 @@ def test_already_known_is_reported_for_a_manual_job_and_never_counted_as_skipped
     assert state.sweep is None  # not a sweep: the counter is on progress
 
 
+def test_a_sweep_reports_one_already_known_number_not_two() -> None:
+    """One response, one number.
+
+    ``state()`` drains first (which refreshes ``sweep.skipped_known``), releases
+    the registry lock and takes it again — and the worker keeps counting in
+    between. Reading the bridge a second time for ``progress.already_known``
+    could therefore put "3 already known" beside "4 already known" in the same
+    body. The sweep's own counter is the one number a sweep reports.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    class _ClimbingBridge(ImportBridge):
+        """A worker that skips one more folder between every read."""
+
+        def known_skips(self) -> int:
+            self.note_known_skip()
+            return super().known_skips()
+
+    reg = ImportJobRegistry()
+    job = ImportJob(id="sweep-job", bridge=_ClimbingBridge(), origin="sweep", sweep=SweepStatus())
+    reg._job = job  # white-box: install in the single slot (established pattern)
+
+    state = reg.state("sweep-job")
+    assert state.sweep is not None
+    assert state.progress.already_known == state.sweep.skipped_known
+
+
 def test_a_single_folder_start_reports_its_path_and_a_multi_folder_start_does_not() -> None:
     """The Import page re-posts this folder (with ``incremental: false``) after
     a reload, so the job has to carry it. A multi-folder start has no single

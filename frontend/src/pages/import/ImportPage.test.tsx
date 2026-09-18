@@ -1,11 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { delay, http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
-import type { ImportJobState } from "@/api/useImport";
+import type { ImportAlbumSummary, ImportJobState } from "@/api/useImport";
 import type { AppIcon } from "@/components/icons";
 import { Pause, Success } from "@/components/icons";
 import { ImportPage } from "@/pages/import/ImportPage";
@@ -216,14 +216,45 @@ describe("ImportPage — entry", () => {
     expect(seenBody).toEqual({ path: "/music/incoming" });
   });
 
-  test("a 409 with no resumable import surfaces an accurate, non-dead-end message", async () => {
+  test("while a start is in flight Start is aria-disabled, not disabled, and a re-submit posts nothing", async () => {
+    // Same rule as the Pause button: the submit button holds focus when it is
+    // pressed, so disabling it on that commit strands keyboard focus on <body>.
+    // The blank-path and running-import gates stay real `disabled` — those are
+    // reasons the control cannot be used at all (pinned by their own tests).
+    let posts = 0;
+    server.use(
+      http.post(IMPORT_URL, async () => {
+        posts += 1;
+        await delay("infinite");
+        return HttpResponse.json({ job_id: "job-1" }, { status: 202 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt("/import");
+
+    await user.type(screen.getByLabelText("Folder path"), "/music/incoming");
+    await user.click(screen.getByRole("button", { name: /start import/i }));
+
+    const button = await screen.findByRole("button", { name: /starting/i });
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).not.toBeDisabled();
+
+    // The form still submits while aria-disabled — the handler swallows it.
+    await user.click(button);
+    expect(posts).toBe(1);
+  });
+
+  test("a 409 with no resumable import carries the server's own reason", async () => {
     // The swap-lock case: no import owns the slot (probe idle -> Start enabled),
-    // but a config Apply / duplicate resolve holds the beets lock, so POST
-    // /api/import 409s. The message must not claim a resumable import.
+    // but a config Apply / duplicate resolve / backfill holds it, so POST
+    // /api/import 409s. Three causes share the status, so the screen's own
+    // "a library operation is in progress. Try again in a moment." was vague
+    // where the server was specific — and "in a moment" is a length only the
+    // library knows. The message must not claim a resumable import either.
     server.use(
       http.post(IMPORT_URL, () =>
         HttpResponse.json(
-          { detail: "A library operation is in progress" },
+          { detail: "A library backfill is in progress; import available when it finishes" },
           { status: 409 },
         ),
       ),
@@ -234,11 +265,61 @@ describe("ImportPage — entry", () => {
     await user.type(screen.getByLabelText("Folder path"), "/music/incoming");
     await user.click(screen.getByRole("button", { name: /start import/i }));
 
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "A library backfill is in progress; import available when it finishes.",
+    );
+    expect(screen.queryByText(/try again in a moment/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/use resume above/i)).not.toBeInTheDocument();
+    // Start keeps focus through a failure (only `aria-disabled` while pending),
+    // so the sentence is its description on the way back to it.
     expect(
-      await screen.findByText(/library operation is in progress/i),
-    ).toBeInTheDocument();
+      screen.getByRole("button", { name: /start import/i }),
+    ).toHaveAttribute("aria-describedby", alert.id);
+    expect(alert.id).not.toBe("");
     // Still on the entry screen (no ?job=, so the input is still shown).
     expect(screen.getByLabelText("Folder path")).toBeInTheDocument();
+  });
+
+  test("a 503 layout refusal reaches the entry screen verbatim", async () => {
+    // The main start surface was the last one still throwing this reason away
+    // for "Check the path and the backend, then try again" — advice that cannot
+    // work: nothing changes until the store layout does.
+    server.use(
+      http.post(IMPORT_URL, () =>
+        HttpResponse.json(
+          { detail: "the music folder is not mounted; imports are refused" },
+          { status: 503 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderAt("/import");
+
+    await user.type(screen.getByLabelText("Folder path"), "/music/incoming");
+    await user.click(screen.getByRole("button", { name: /start import/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "the music folder is not mounted; imports are refused.",
+    );
+    expect(screen.queryByText(/check the path and the backend/i)).not.toBeInTheDocument();
+  });
+
+  test("a transport failure still takes the screen's generic sentence", async () => {
+    // The carried-sentence arms must not swallow the case they were added
+    // beside: a bodyless 500 has no reason to carry.
+    server.use(
+      http.post(IMPORT_URL, () => new HttpResponse(null, { status: 500 })),
+    );
+    const user = userEvent.setup();
+    renderAt("/import");
+
+    await user.type(screen.getByLabelText("Folder path"), "/music/incoming");
+    await user.click(screen.getByRole("button", { name: /start import/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn’t start the import. Check the path and the backend, then try again.",
+    );
   });
 
   test("shows a Resume banner to the running job and disables Start while active", async () => {
@@ -308,6 +389,11 @@ describe("ImportPage — entry", () => {
     // The 409-triggered probe invalidation surfaces the running job as a Resume.
     const resume = await screen.findByRole("link", { name: /resume/i });
     expect(resume).toHaveAttribute("href", "/import?job=job-7");
+    // And THIS 409 keeps the screen's own sentence rather than the server's:
+    // it is the one case where the screen can name a control it has.
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "An import is already running; use Resume above.",
+    );
   });
 });
 
@@ -1087,7 +1173,7 @@ describe("ImportPage — terminal states", () => {
     ).not.toBeInTheDocument();
   });
 
-  test("a row that never landed shows a Didn't-land badge and the done body counts it", async () => {
+  test("a row that never landed shows a Didn’t-land badge and the done body counts it", async () => {
     // A decided/applied row whose library album id never arrived on a terminal
     // job carries did_not_land; progress.not_landed mirrors the count. The row
     // must flag the failure and the done body must own up to it.
@@ -1116,11 +1202,12 @@ describe("ImportPage — terminal states", () => {
     );
     renderAt("/import?job=job-1");
 
-    // The row badge names the failure (its own element, exact text).
-    expect(await screen.findByText("Didn't land")).toBeInTheDocument();
+    // The row badge names the failure (its own element, exact text). The
+    // apostrophe is the page's typographic one, like the counts line below it.
+    expect(await screen.findByText("Didn’t land")).toBeInTheDocument();
     // The finished body appends the count...
     expect(
-      screen.getByText("0 albums imported · 0 skipped · 1 didn't land"),
+      screen.getByText("0 albums imported · 0 skipped · 1 didn’t land"),
     ).toBeInTheDocument();
     // ...and so does the one live region, which used to drop it — `not_landed`
     // is computed for BOTH terminal phases, and only the failed announcement
@@ -1383,7 +1470,7 @@ describe("ImportPage — terminal states", () => {
     // ...that owns up to what it did, on its own line — not glued to the raw
     // exception by the middot dialect.
     const counts = screen.getByText(
-      "200 albums imported · 3 skipped · 2 didn't land",
+      "200 albums imported · 3 skipped · 2 didn’t land",
     );
     expect(counts).toHaveClass("block");
     expect(screen.getByText("Ran for 40m 12s.")).toBeInTheDocument();
@@ -1466,7 +1553,7 @@ describe("ImportPage — terminal states", () => {
     renderAt("/import?job=job-1");
 
     expect(await screen.findByText("Import failed")).toBeInTheDocument();
-    expect(screen.getByText("5 didn't land")).toBeInTheDocument();
+    expect(screen.getByText("5 didn’t land")).toBeInTheDocument();
     expect(screen.queryByText(/albums imported/)).not.toBeInTheDocument();
     // The announcer owed the same correction, in its own dialect.
     expect(screen.getByRole("status")).toHaveTextContent(
@@ -1652,6 +1739,25 @@ describe("ImportPage — terminal states", () => {
 describe("ImportPage — already known folders", () => {
   const RETRY_JOB_URL = `${window.location.origin}/api/import/job-2`;
 
+  /** A feed row waiting for a decision — the category that sits in none of the
+   * imported / skipped / lost counters (`state.set_aside` is its count). On a
+   * finished unattended run it is still on screen, with its Review button. */
+  const PARKED_ROW: ImportAlbumSummary = {
+    index: 0,
+    folder: "/music/incoming/Radiohead - Kid A",
+    artist: "Radiohead",
+    album: "Kid A",
+    recommendation: "medium",
+    confidence: 76,
+    status: "needs_review",
+    album_id: null,
+    did_not_land: false,
+  };
+
+  /** That row as a feed. Its own binding, so the `as const` rows below carry a
+   * mutable `ImportAlbumSummary[]` rather than a readonly tuple literal. */
+  const PARKED_FEED: ImportAlbumSummary[] = [PARKED_ROW];
+
   /** A finished review run that did nothing but skip folders beets' import
    * history already has — the keep-downloads dead end `incremental: false`
    * (beets' `-I`) exists for. `path` is the folder the run was started with. */
@@ -1697,6 +1803,54 @@ describe("ImportPage — already known folders", () => {
       "Import complete. Imported 1, skipped 0. 2 already known.",
     );
   });
+
+  // At 360px and 320px the line wraps, and it was breaking INSIDE a segment —
+  // "… · 1" / "already known" — orphaning a number from the words it counts.
+  // jsdom lays nothing out, so the oracle is the raw text: every space inside a
+  // segment is non-breaking, leaving the ordinary space before each middot as
+  // the only break opportunity (and a wrapped line then opens with the middot,
+  // which is this page's dialect). `textContent`, not the matcher — testing-
+  // library's normaliser folds NBSP to a space, which is exactly why the
+  // assertions elsewhere in this file still read naturally.
+  test.each([
+    [
+      "the finished",
+      "done",
+      { applied: 2, needs_review: 0, skipped: 1, not_landed: 1, already_known: 3 },
+      "2 albums imported · 1 skipped · 1 didn’t land · 3 already known",
+    ],
+    // The failed panel's own join branch (nothing landed or skipped), so both
+    // builders are covered rather than one calling the other.
+    [
+      "the failed",
+      "failed",
+      { applied: 0, needs_review: 0, skipped: 0, not_landed: 1, already_known: 3 },
+      "1 didn’t land · 3 already known",
+    ],
+  ] as const)(
+    "%s counts line can only wrap between segments",
+    async (_case, phase, progress, text) => {
+      server.use(
+        http.get(JOB_URL, () =>
+          HttpResponse.json(
+            knownOnlyJob({
+              phase,
+              error: phase === "failed" ? "the disk went away" : null,
+              progress,
+            }),
+          ),
+        ),
+      );
+      renderAt("/import?job=job-1");
+
+      const raw = (await screen.findByText(text)).textContent ?? "";
+      expect(raw).toContain(`${progress.already_known} already known`);
+      expect(raw).toContain("1 didn’t land");
+      // One ordinary space per separator and nowhere else: N segments, N-1
+      // break opportunities, N chunks.
+      expect(raw.split(" ")).toHaveLength(text.split("·").length);
+    },
+  );
 
   test("a run with no history skips gains no clause, in either channel", async () => {
     server.use(
@@ -1777,10 +1931,12 @@ describe("ImportPage — already known folders", () => {
     });
   });
 
-  test("while the re-import is starting the button is disabled and says so", async () => {
+  test("while the re-import is starting the button is aria-disabled, keeps focus, and swallows the repeat", async () => {
+    let posts = 0;
     server.use(
       http.get(JOB_URL, () => HttpResponse.json(knownOnlyJob())),
       http.post(IMPORT_URL, async () => {
+        posts += 1;
         await delay("infinite");
         return HttpResponse.json({ job_id: "job-2" }, { status: 202 });
       }),
@@ -1791,17 +1947,31 @@ describe("ImportPage — already known folders", () => {
     await user.click(
       await screen.findByRole("button", { name: /import them again/i }),
     );
-    expect(
-      await screen.findByRole("button", { name: /starting/i }),
-    ).toBeDisabled();
+    const button = await screen.findByRole("button", { name: /starting/i });
+    // THE oracle: `disabled` on the click's own commit strands keyboard focus
+    // on <body>, and the failure this button is most likely to hit says "try
+    // again". jsdom does not blur on disable, so an activeElement assertion
+    // would pass with the bug present — these two attributes are the proof.
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).not.toBeDisabled();
+
+    // ...and inert all the same.
+    await user.click(button);
+    expect(posts).toBe(1);
   });
 
-  test("a 409 keeps the panel and names the running import — no Resume this panel lacks", async () => {
+  test("a 409 carries the server's own reason, and links it to the button", async () => {
+    // Three different refusals share this status (a running import, a held
+    // beets swap lock, a backfill/disk sync), so a hard-coded sentence is false
+    // for two of them. This fixture is the one the old copy named wrongly.
     server.use(
       http.get(JOB_URL, () => HttpResponse.json(knownOnlyJob())),
       http.post(IMPORT_URL, () =>
         HttpResponse.json(
-          { detail: "An import is already running" },
+          {
+            detail:
+              "A library backfill is in progress; import available when it finishes",
+          },
           { status: 409 },
         ),
       ),
@@ -1812,13 +1982,65 @@ describe("ImportPage — already known folders", () => {
     await user.click(
       await screen.findByRole("button", { name: /import them again/i }),
     );
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "An import is already running; try again when it finishes.",
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "A library backfill is in progress; import available when it finishes",
     );
-    // Not a dead end: the panel stays and the button is live for a retry.
+    expect(screen.queryByText(/an import is already running/i)).not.toBeInTheDocument();
+    // The alert describes the control it belongs to, so a keyboard user who
+    // comes back to the button hears why the last press failed.
+    const button = screen.getByRole("button", { name: /import them again/i });
+    expect(button).toHaveAttribute("aria-describedby", alert.id);
+    expect(alert.id).not.toBe("");
+    // Reading order: counts, then why it failed, then the control — the same
+    // shape as the page's three other error sites.
     expect(
-      screen.getByRole("button", { name: /import them again/i }),
-    ).toBeEnabled();
+      alert.compareDocumentPosition(button) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // Not a dead end: the panel stays and the button is live for a retry.
+    expect(button).toBeEnabled();
+    expect(button).not.toHaveAttribute("aria-disabled", "true");
+  });
+
+  test("a 409 with no detail falls back to a sentence true for every reason", async () => {
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(knownOnlyJob())),
+      http.post(IMPORT_URL, () => new HttpResponse(null, { status: 409 })),
+    );
+    const user = userEvent.setup();
+    renderAt("/import?job=job-1");
+
+    await user.click(
+      await screen.findByRole("button", { name: /import them again/i }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The library is busy. Try again shortly.",
+    );
+  });
+
+  test("a 503 carries the layout refusal instead of inviting a retry", async () => {
+    // Nothing changes until the store layout does, so "Couldn't start. Try
+    // again." is an instruction that cannot work.
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(knownOnlyJob())),
+      http.post(IMPORT_URL, () =>
+        HttpResponse.json(
+          { detail: "the music folder is not mounted; imports are refused" },
+          { status: 503 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderAt("/import?job=job-1");
+
+    await user.click(
+      await screen.findByRole("button", { name: /import them again/i }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "the music folder is not mounted; imports are refused",
+    );
+    expect(screen.queryByText(/try again/i)).not.toBeInTheDocument();
   });
 
   test("a 422 shows the backend's own reason", async () => {
@@ -1842,9 +2064,165 @@ describe("ImportPage — already known folders", () => {
     );
   });
 
+  test("an all-known run is titled Nothing new to import, not a check over two zeros", async () => {
+    // A success check above "0 albums imported · 0 skipped" reads as a silent
+    // failure; the skips are the whole story, so the title tells it.
+    server.use(http.get(JOB_URL, () => HttpResponse.json(knownOnlyJob())));
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Nothing new to import")).toBeInTheDocument();
+    expect(screen.queryByText("Import finished")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("0 albums imported · 0 skipped · 2 already known"),
+    ).toBeInTheDocument();
+  });
+
+  // Each row has known folders AND something else to report, so the run did do
+  // something. The overrides are whole job shapes, not just progress: the
+  // set-aside row lives outside `progress` entirely.
+  test.each([
+    [
+      "a run that imported something",
+      {
+        progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0, already_known: 2 },
+      },
+    ],
+    [
+      "a run that skipped an album on its own merits",
+      {
+        progress: { applied: 0, needs_review: 0, skipped: 1, not_landed: 0, already_known: 2 },
+      },
+    ],
+    [
+      "a run that lost an album",
+      {
+        progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 1, already_known: 2 },
+      },
+    ],
+    [
+      "a run with no history skips at all",
+      {
+        progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
+      },
+    ],
+    // The counters do not partition the run: a set-aside row is in none of the
+    // three, so "nothing happened" read true over a feed listing an album with
+    // a live Review button under it. An unattended inbox run is how a finished
+    // job still holds one.
+    [
+      "an unattended run holding an album for review",
+      { origin: "inbox" as const, set_aside: 1, albums: PARKED_FEED },
+    ],
+  ] as const)("%s is still titled Import finished", async (_case, overrides) => {
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(knownOnlyJob(overrides))),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Import finished")).toBeInTheDocument();
+    expect(screen.queryByText("Nothing new to import")).not.toBeInTheDocument();
+  });
+
+  test("one known folder: the label agrees in number", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          knownOnlyJob({
+            progress: {
+              applied: 0,
+              needs_review: 0,
+              skipped: 0,
+              not_landed: 0,
+              already_known: 1,
+            },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(
+      await screen.findByRole("button", { name: "Import it again" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Import them again" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText("0 albums imported · 0 skipped · 1 already known"),
+    ).toBeInTheDocument();
+  });
+
+  test("the new run takes focus to the page heading, not <body>", async () => {
+    // `?job=A -> ?job=B` is a search-param change, so RouteAnnouncer's
+    // pathname-keyed focus move never fires and the clicked button unmounts
+    // with the panel (measured in Chromium (Orca), 2026-09-18: activeElement is
+    // BODY).
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(knownOnlyJob())),
+      http.post(IMPORT_URL, () =>
+        HttpResponse.json({ job_id: "job-2" }, { status: 202 }),
+      ),
+      http.get(RETRY_JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({ job_id: "job-2", phase: "scanning", albums: [] }),
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderAt("/import?job=job-1");
+
+    await user.click(
+      await screen.findByRole("button", { name: /import them again/i }),
+    );
+    expect(await screen.findByText(/scanning your folder/i)).toBeInTheDocument();
+    expect(document.activeElement).toBe(
+      screen.getByRole("heading", { level: 1, name: "Add from folder" }),
+    );
+  });
+
+  test("...and a cold load keeps the browser's own focus", async () => {
+    // The first effect run only records the pointer: landing on `?job=` by URL
+    // is a page load, and RouteAnnouncer leaves those alone too.
+    server.use(http.get(JOB_URL, () => HttpResponse.json(knownOnlyJob())));
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Nothing new to import")).toBeInTheDocument();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  test("...but never takes focus from something that holds it", async () => {
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(knownOnlyJob())),
+      http.post(IMPORT_URL, () =>
+        HttpResponse.json({ job_id: "job-2" }, { status: 202 }),
+      ),
+      http.get(RETRY_JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({ job_id: "job-2", phase: "scanning", albums: [] }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    // fireEvent, not userEvent: it does not move focus, so the start is in
+    // flight while the user tabs on to the chrome's own link — which survives
+    // the job swap.
+    fireEvent.click(
+      await screen.findByRole("button", { name: /import them again/i }),
+    );
+    const startOver = screen.getByRole("link", { name: /start over/i });
+    startOver.focus();
+
+    expect(await screen.findByText(/scanning your folder/i)).toBeInTheDocument();
+    expect(document.activeElement).toBe(startOver);
+  });
+
   // Offered ONLY for a review run that did nothing but skip known folders.
   // A mixed run has a better next step — the album's own folder (design note
   // 13) — and re-importing the parent would re-offer what just landed.
+  // The third column is the panel's title: it follows the COUNTS while the
+  // button follows `importAgainPath`, so the two all-known rows here are a
+  // "Nothing new to import" panel with nothing to press.
   test.each([
     [
       "a mixed run",
@@ -1857,6 +2235,7 @@ describe("ImportPage — already known folders", () => {
           already_known: 2,
         },
       },
+      "Import finished",
     ],
     [
       "a run that skipped an album on its own merits",
@@ -1869,6 +2248,7 @@ describe("ImportPage — already known folders", () => {
           already_known: 2,
         },
       },
+      "Import finished",
     ],
     [
       "a run with no history skips",
@@ -1881,18 +2261,43 @@ describe("ImportPage — already known folders", () => {
           already_known: 0,
         },
       },
+      "Import finished",
     ],
-    ["a multi-folder start (no single path)", { path: null }],
-    ["an unattended inbox run", { origin: "inbox" as const }],
-  ] as const)("no Import them again for %s", async (_case, overrides) => {
+    // A lost album is something that happened, so the title and the button now
+    // agree it is not an all-known run — one predicate feeds both. Before, the
+    // title counted `not_landed` and the button did not, and this row got
+    // "Import finished" with "Import them again" under it.
+    [
+      "a run that lost an album",
+      {
+        progress: {
+          applied: 0,
+          needs_review: 0,
+          skipped: 0,
+          not_landed: 1,
+          already_known: 2,
+        },
+      },
+      "Import finished",
+    ],
+    // The same predicate's set-aside term: this run is still holding an album,
+    // and the feed below lists it with a live Review button.
+    [
+      "a run holding an album for review",
+      { origin: "inbox" as const, set_aside: 1, albums: PARKED_FEED },
+      "Import finished",
+    ],
+    ["a multi-folder start (no single path)", { path: null }, "Nothing new to import"],
+    ["an unattended inbox run", { origin: "inbox" as const }, "Nothing new to import"],
+  ] as const)("no Import them again for %s", async (_case, overrides, title) => {
     server.use(
       http.get(JOB_URL, () => HttpResponse.json(knownOnlyJob(overrides))),
     );
     renderAt("/import?job=job-1");
 
-    expect(await screen.findByText("Import finished")).toBeInTheDocument();
+    expect(await screen.findByText(title)).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /import them again/i }),
+      screen.queryByRole("button", { name: /import (them|it) again/i }),
     ).not.toBeInTheDocument();
   });
 

@@ -49,6 +49,16 @@ describe("detailMessage", () => {
     ).toBe("Field required");
   });
 
+  // A blank detail is no detail: `""` passed every caller's `??` and rendered
+  // an empty red alert — and, on the import panel, an empty aria-describedby
+  // target with it. Whitespace counts as blank for the same reason.
+  test("returns null for a blank detail, in every shape", () => {
+    expect(detailMessage({ detail: "" })).toBeNull();
+    expect(detailMessage({ detail: "   " })).toBeNull();
+    expect(detailMessage({ detail: [{ msg: "" }] })).toBeNull();
+    expect(detailMessage({ detail: { message: "  " } })).toBeNull();
+  });
+
   test("returns null for anything else", () => {
     expect(detailMessage(undefined)).toBeNull();
     expect(detailMessage(null)).toBeNull();

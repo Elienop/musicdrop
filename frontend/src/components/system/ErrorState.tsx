@@ -42,7 +42,7 @@ export function ErrorState({
     <div
       data-slot="error-state"
       role="alert"
-      className="border-destructive/40 bg-destructive/5 flex flex-col items-center gap-3 rounded-xl border py-16 text-center"
+      className="border-destructive/40 bg-destructive/5 flex flex-col items-center gap-3 rounded-xl border px-4 py-16 text-center"
     >
       <ErrorIcon className="text-destructive size-10" aria-hidden="true" />
       <p className="font-medium">{message}</p>

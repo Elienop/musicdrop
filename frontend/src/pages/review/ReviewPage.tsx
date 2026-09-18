@@ -468,6 +468,11 @@ function SweepBanner({ jobId, sweep }: Readonly<{ jobId: string; sweep: SweepSta
             variant="outline"
             size="sm"
             aria-disabled={pause.isPending || sweep.paused}
+            // The app's recipe for an aria-disabled control: `disabled:` never
+            // matches one, so without this the button swallows its click while
+            // still looking pressable. This was the one site of the twenty that
+            // had the posture and not the dimming.
+            className="aria-disabled:opacity-50"
             onClick={() => {
               // In flight or already requested → swallow the re-click instead
               // of disabling (a mid-flight disable strands keyboard focus on

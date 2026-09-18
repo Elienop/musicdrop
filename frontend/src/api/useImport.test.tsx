@@ -9,6 +9,8 @@ import {
   ImportConflictError,
   ImportJobNotFoundError,
   ImportStartRejectedError,
+  ImportUnavailableError,
+  startErrorSentence,
   useDuplicatePrompt,
   useImportCandidate,
   useImportJob,
@@ -69,6 +71,135 @@ describe("useStartImport", () => {
 
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(result.current.error).toBeInstanceOf(ImportConflictError);
+  });
+
+  // One status, three server reasons (a running import, a held beets swap
+  // lock, a running backfill / disk sync), so the sentence has to come from the
+  // server — a class-only error made every caller pick one and be wrong for the
+  // other two.
+  test("a 409 carries the server's own reason; a bodyless one falls back", async () => {
+    server.use(
+      http.post(IMPORT_URL, () =>
+        HttpResponse.json(
+          { detail: "A library backfill is in progress; import available when it finishes" },
+          { status: 409 },
+        ),
+      ),
+    );
+    const { result } = renderHook(() => useStartImport(), { wrapper: wrapper() });
+    result.current.mutate({ path: "/music/incoming" });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error).toMatchObject({
+      name: "ImportConflictError",
+      message: "A library backfill is in progress; import available when it finishes",
+    });
+
+    server.use(http.post(IMPORT_URL, () => new HttpResponse(null, { status: 409 })));
+    const bodyless = renderHook(() => useStartImport(), { wrapper: wrapper() });
+    bodyless.result.current.mutate({ path: "/music/incoming" });
+
+    await waitFor(() => expect(bodyless.result.current.isError).toBe(true));
+    expect(bodyless.result.current.error).toMatchObject({
+      name: "ImportConflictError",
+      message: "The library is busy. Try again shortly.",
+    });
+  });
+
+  // 503 is the refused store layout: a retry cannot succeed until the layout
+  // changes, so it must not land in the generic "try again" arm.
+  test("a 503 becomes ImportUnavailableError with the refusal's sentence", async () => {
+    server.use(
+      http.post(IMPORT_URL, () =>
+        HttpResponse.json(
+          { detail: "the music folder is not mounted; imports are refused" },
+          { status: 503 },
+        ),
+      ),
+    );
+    const { result } = renderHook(() => useStartImport(), { wrapper: wrapper() });
+    result.current.mutate({ path: "/music/incoming" });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error).toBeInstanceOf(ImportUnavailableError);
+    expect(result.current.error).toMatchObject({
+      message: "the music folder is not mounted; imports are refused",
+    });
+  });
+
+  // Our route's 503 always carries a sentence, so a bodyless one is somebody
+  // else's — a proxy answering for a restarting container — and there a retry
+  // IS the right advice. It must not wear the refusal class, whose whole point
+  // is that retrying cannot help.
+  test("a bodyless 503 is the generic failure, not ImportUnavailableError", async () => {
+    server.use(
+      http.post(IMPORT_URL, () => new HttpResponse(null, { status: 503 })),
+    );
+    const { result } = renderHook(() => useStartImport(), { wrapper: wrapper() });
+    result.current.mutate({ path: "/music/incoming" });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error).not.toBeInstanceOf(ImportUnavailableError);
+    expect(result.current.error).toMatchObject({
+      message: "Failed to start import",
+    });
+  });
+
+  // The same sender, with an HTML body — what a reverse proxy actually returns.
+  // openapi-fetch keeps a non-JSON body as a string, which detailMessage cannot
+  // read, so this is the case the old class fallback was written for.
+  test("an HTML-bodied 503 (a proxy's) is the generic failure too", async () => {
+    server.use(
+      http.post(
+        IMPORT_URL,
+        () =>
+          new HttpResponse("<html><body>503 Service Unavailable</body></html>", {
+            status: 503,
+            headers: { "Content-Type": "text/html" },
+          }),
+      ),
+    );
+    const { result } = renderHook(() => useStartImport(), { wrapper: wrapper() });
+    result.current.mutate({ path: "/music/incoming" });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error).not.toBeInstanceOf(ImportUnavailableError);
+    expect(result.current.error).toMatchObject({
+      message: "Failed to start import",
+    });
+  });
+});
+
+// The sentence every start surface shares. Only the generic half differs
+// between call sites, and it is the one the caller passes in.
+describe("startErrorSentence", () => {
+  // The server's details carry no terminal punctuation and every client
+  // sentence does, so the join is normalised here rather than in the 47
+  // backend strings — a carried sentence gains a full stop when it ends in
+  // none of its own.
+  test("refusals carry the server's reason, ended with a full stop", () => {
+    expect(
+      startErrorSentence(new ImportConflictError("a backfill is running"), true, "G"),
+    ).toBe("a backfill is running.");
+    expect(
+      startErrorSentence(new ImportStartRejectedError("that folder is in your library"), true, "G"),
+    ).toBe("that folder is in your library.");
+    expect(
+      startErrorSentence(new ImportUnavailableError("the layout is refused"), true, "G"),
+    ).toBe("the layout is refused.");
+    expect(startErrorSentence(new Error("socket hang up"), true, "G")).toBe("G");
+    expect(startErrorSentence(null, false, "G")).toBeNull();
+  });
+
+  test("a sentence that already ends in punctuation is left alone", () => {
+    // The class fallbacks and every other client sentence are already ended;
+    // a second full stop would read as a typo.
+    expect(
+      startErrorSentence(new ImportConflictError(null), true, "G"),
+    ).toBe("The library is busy. Try again shortly.");
+    expect(
+      startErrorSentence(new ImportStartRejectedError("is the disk full?"), true, "G"),
+    ).toBe("is the disk full?");
   });
 });
 

@@ -1130,7 +1130,13 @@ describe("ReviewPage", () => {
     expect(banner).toHaveTextContent(/412 processed/);
     expect(banner).toHaveTextContent(/144 banked/);
     expect(banner).toHaveTextContent(/Now: 21/); // current folder's last segment
-    await userEvent.click(screen.getByRole("button", { name: /pause/i }));
+    const pause = screen.getByRole("button", { name: /pause/i });
+    // It swallows the repeat click while `aria-disabled` instead of disabling
+    // (keyboard focus stays on it), so it needs the app's dimming recipe —
+    // `disabled:opacity-50` never matches an aria-disabled control, and this
+    // was the one site in the app that looked pressable while inert.
+    expect(pause).toHaveClass("aria-disabled:opacity-50");
+    await userEvent.click(pause);
     await waitFor(() => expect(paused).toBe(true));
   });
 

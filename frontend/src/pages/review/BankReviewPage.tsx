@@ -14,11 +14,7 @@ import {
   useDeleteBankItem,
 } from "@/api/useBank";
 import type { DuplicateAction } from "@/api/useImport";
-import {
-  ImportConflictError,
-  ImportStartRejectedError,
-  useStartImport,
-} from "@/api/useImport";
+import { startErrorSentence, useStartImport } from "@/api/useImport";
 import { BackLink } from "@/components/albums/album-grid";
 import { AlreadyInLibrary } from "@/components/import/AlreadyInLibrary";
 import { CandidateReview } from "@/components/import/CandidateReview";
@@ -80,7 +76,7 @@ export function BankReviewPage() {
           bordered
           icon={Info}
           title="This row is no longer in the bank"
-          body="It may have been applied, ignored, or removed. Head back to see what's waiting."
+          body="It may have been applied, ignored, or removed. Head back to see what’s waiting."
           action={
             <Button variant="outline" size="sm" asChild>
               <Link to="/review">Back to Review</Link>
@@ -877,21 +873,18 @@ function RemoveRowButton({ itemId }: Readonly<{ itemId: string }>) {
  * needs the import slot, so it gates on the active probe with the visible
  * reason below (never a disabled-button title).
  */
-/** The one sentence a failed re-scan start can take: a running import names
- * the conflict, a rejected start carries the server's own reason, and
- * anything else is the generic backend failure. */
-function startErrorMessage(error: unknown, isError: boolean): string | null {
-  if (error instanceof ImportConflictError) {
-    return "An import is already running; try again when it finishes.";
-  }
-  if (error instanceof ImportStartRejectedError) {
-    return error.message;
-  }
-  if (isError) {
-    return "Couldn’t start the re-scan. Check the backend, then try again.";
-  }
-  return null;
-}
+/** The generic half of a failed re-scan start — the only part that is this
+ * screen's own. The refusals (409 / 422 / 503) carry the server's own reason
+ * through {@link startErrorSentence}: a 409 has three different causes and
+ * naming the wrong one sent the user off to wait for an import that was not
+ * running. */
+const START_FAILED = "Couldn’t start the re-scan. Check the backend, then try again.";
+
+/** The id linking that sentence to the button it belongs to — "Review now"
+ * keeps focus through a failed start (it is only `aria-disabled` while
+ * pending), so the alert is what a keyboard user hears on coming back to it.
+ * One screen, one alert, like the import panel's. */
+const STALE_START_ERROR_ID = "stale-start-error";
 
 function StaleScreen({ item }: Readonly<{ item: BankItem }>) {
   const navigate = useNavigate();
@@ -931,7 +924,7 @@ function StaleScreen({ item }: Readonly<{ item: BankItem }>) {
     );
   }
 
-  const startError = startErrorMessage(start.error, start.isError);
+  const startError = startErrorSentence(start.error, start.isError, START_FAILED);
 
   return (
     <Shell
@@ -954,8 +947,16 @@ function StaleScreen({ item }: Readonly<{ item: BankItem }>) {
       <p className="text-muted-foreground font-mono text-xs" title={item.folder}>
         {item.folder}
       </p>
-      {startError && (
-        <p className="text-destructive text-sm" role="alert">
+      {/* Not while an import runs: the hint under the buttons is the fuller
+          sentence (it names the slot AND what still works), and the server's
+          409 opens on the same clause — the two stacked in one column repeated
+          "an import is already running" twice, the alert first and shorter. */}
+      {startError && !importActive && (
+        <p
+          id={STALE_START_ERROR_ID}
+          className="text-destructive text-sm"
+          role="alert"
+        >
           {startError}
         </p>
       )}
@@ -971,10 +972,31 @@ function StaleScreen({ item }: Readonly<{ item: BankItem }>) {
         <Button
           variant="outline"
           size="sm"
-          className="ml-auto"
-          disabled={busy || importActive}
-          aria-describedby={importActive ? "stale-rescan-hint" : undefined}
-          onClick={reviewNow}
+          className="ml-auto aria-disabled:opacity-50"
+          // The pending half is `aria-disabled`, not `disabled`: this button
+          // holds focus when it is clicked, and disabling it on that commit
+          // strands keyboard focus on <body> (the Pagination rule — the import
+          // page's Pause button carries the measurement). The other two
+          // mutations and a running import belong to controls elsewhere, so they
+          // stay `disabled`. The click is swallowed below.
+          disabled={remove.isPending || rescan.isPending || importActive}
+          aria-disabled={start.isPending}
+          // Both descriptions, joined — the import-slot hint and the failure
+          // sentence. They are mutually exclusive today (the alert is gated on
+          // `!importActive` above), so this is the shape rather than a second
+          // branch to keep in step with that gate.
+          aria-describedby={
+            [
+              importActive ? "stale-rescan-hint" : null,
+              startError && !importActive ? STALE_START_ERROR_ID : null,
+            ]
+              .filter((id) => id !== null)
+              .join(" ") || undefined
+          }
+          onClick={() => {
+            if (busy) return;
+            reviewNow();
+          }}
         >
           {start.isPending ? (
             <>

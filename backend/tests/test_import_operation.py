@@ -102,14 +102,18 @@ def test_file_operation_matches_beets_for_every_flag_combination() -> None:
     assert mismatches == []
 
 
-@pytest.mark.parametrize("op", ["move", "copy", "hardlink", "in_place"])
+@pytest.mark.parametrize("op", ["move", "copy", "in_place"])
 def test_file_flags_turn_on_one_flag_and_delete_off(op: ForcedOperation) -> None:
+    """``hardlink`` is not a forceable operation: the keep-downloads setting
+    writes it into the user's own config and the app adds no per-import choice
+    (``decisions`` #53). ``file_flags`` still turns the flag OFF for every op it
+    does take — a user's ``hardlink: yes`` beats a lone ``copy: yes``."""
     flags = file_flags(op)
     assert flags == {
         "move": op == "move",
         "copy": op == "copy",
         "link": False,
-        "hardlink": op == "hardlink",
+        "hardlink": False,
         "reflink": False,
         "delete": False,
     }

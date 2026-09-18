@@ -3521,27 +3521,7 @@ export interface components {
         };
         /**
          * ImportOptions
-         * @description Per-import overrides (replaces the reserved ``dict[str, str]``).
-         *
-         *     ``operation`` ``"default"`` falls through to the user's beets config (the
-         *     manual-import default). ``"move"``/``"copy"`` force that operation for this
-         *     import only. ``unattended`` ``True`` is the inbox path: no human review —
-         *     uncertain/duplicate albums are set aside rather than parked. ``sweep``
-         *     ``True`` is the banking sweep: an unattended, beets-incremental run that
-         *     BANKS every set-aside album (with its candidate payload) instead of just
-         *     skipping it, recorded as ``origin="sweep"``. A sweep is unattended by
-         *     definition — the session enforces ``unattended or sweep`` — so
-         *     ``{"sweep": true}`` alone is a complete sweep request. The sweep forces no
-         *     file operation: ``operation`` behaves exactly as for a manual import (the
-         *     in-library guard still force-corrects in-library sources to move).
-         *
-         *     ``incremental`` is the per-run override of beets' ``import.incremental``:
-         *     ``False`` is ``beet import -I``, the way past an import history that would
-         *     otherwise skip the folder (a hardlink run records every folder it imports).
-         *     ``True`` forces it on. ``None`` leaves the decision to the worker, which
-         *     turns it on for a run that keeps the files and otherwise honours the user's
-         *     config. A sweep sets both history keys itself, so the two cannot be
-         *     combined.
+         * @description Per-import overrides for one import request.
          */
         ImportOptions: {
             /**
@@ -3560,8 +3540,11 @@ export interface components {
              * @default false
              */
             sweep: boolean;
-            /** Incremental */
-            incremental?: boolean | null;
+            /**
+             * Incremental
+             * @description false imports folders beets' import history already has; null follows the defaults.
+             */
+            incremental?: false | null;
         };
         /**
          * ImportPhase
@@ -3593,7 +3576,7 @@ export interface components {
             not_landed: number;
             /**
              * Already Known
-             * @description Album folders skipped because beets' import history has them.
+             * @description Album folders beets skipped as already imported.
              * @default 0
              */
             already_known: number;
@@ -4936,9 +4919,9 @@ export interface components {
          * @description Body of ``POST /api/import``.
          *
          *     ``path`` is a server-side folder (maps 1:1 to ``beet import <path>``).
-         *     ``options`` carries per-import overrides (operation move/copy/default +
-         *     unattended). ``None`` falls through to today's manual default (the user's
-         *     beets config, attended review).
+         *     ``options`` carries per-import overrides (operation move/copy/default,
+         *     unattended, sweep, incremental). ``None`` falls through to today's manual
+         *     default (the user's beets config, attended review).
          */
         StartImportRequest: {
             /** Path */

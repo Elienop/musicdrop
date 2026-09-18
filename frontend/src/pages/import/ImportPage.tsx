@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
 import { useActiveImport } from "@/api/useActiveImport";
@@ -13,10 +13,10 @@ import type {
 import {
   ImportConflictError,
   ImportJobNotFoundError,
-  ImportStartRejectedError,
   RECOMMENDATION_LABEL,
   isTerminalPhase,
   isWorking,
+  startErrorSentence,
   useImportJob,
   usePauseSweep,
   useStartImport,
@@ -158,9 +158,37 @@ function importOrigin(jobId: string): { from: AlbumOrigin } {
   return { from: { label: "Import", to: `/import?job=${jobId}` } };
 }
 
+/** Focus the page h1 when the run pointer changes on the same pathname.
+ *
+ * RouteAnnouncer moves focus to the h1 on a PATHNAME change, and `?job=A` ->
+ * `?job=B` is not one — nor is the entry screen's own hand-off into a new run.
+ * The control that started the run unmounts with the panel it sat in, so
+ * keyboard focus falls to <body> and the next Tab restarts at "Skip to content"
+ * (measured in Chromium (Orca), 2026-09-18: document.activeElement is BODY
+ * after "Import them again"). This lands it where a pathname navigation would,
+ * so the app keeps one focus convention.
+ *
+ * The {@link useDeferredH1Focus} shape: a ref sentinel skips the first run, so a
+ * cold load keeps the browser's own focus, and a focus HELD by a live element is
+ * never taken — by the time the new job commits with focus on a control, the
+ * user is somewhere deliberate. */
+function useJobChangeH1Focus(jobId: string | undefined): void {
+  // null is "no effect has run yet" — distinct from an absent `?job=`, which is
+  // `undefined` and is a real value to compare against.
+  const previous = useRef<string | null | undefined>(null);
+  useEffect(() => {
+    const prior = previous.current;
+    previous.current = jobId;
+    if (prior === null || prior === jobId) return;
+    if (document.activeElement !== document.body) return;
+    document.querySelector<HTMLElement>('h1[tabindex="-1"]')?.focus();
+  }, [jobId]);
+}
+
 export function ImportPage() {
   const [searchParams] = useSearchParams();
   const jobId = searchParams.get("job") ?? undefined;
+  useJobChangeH1Focus(jobId);
 
   // No active job in the URL -> the entry screen (path + Start).
   if (!jobId) {
@@ -188,6 +216,11 @@ function resumeBannerText(
   return "An import is already running.";
 }
 
+/** The id linking the entry screen's failure sentence to Start. One screen, one
+ * alert (the branches below are exclusive), so a constant is enough — the same
+ * shape as {@link IMPORT_AGAIN_ERROR_ID} and the `resume-import-hint` above. */
+const START_ERROR_ID = "start-import-error";
+
 /** Entry: a server-path input + Start. Polls the active-import probe so a
  * running import the user navigated away from surfaces a Resume banner (and
  * Start is gated while one runs); the blank-path guard and the residual 409
@@ -213,18 +246,32 @@ function ImportEntry() {
   const needsReview = active.data?.needs_review_count ?? 0;
 
   const trimmed = path.trim();
-  const conflict = start.error instanceof ImportConflictError;
-  // A 422 carries the backend guard's reason verbatim (e.g. the in-library
-  // copy-mode refusal) — surfaced as its own alert below.
-  const rejected =
-    start.error instanceof ImportStartRejectedError ? start.error.message : null;
-  // A non-conflict, non-rejected error is a generic start failure.
-  const genericError = start.isError && !conflict && rejected === null;
+  // The ONE sentence this screen owns: a 409 with a resumable import names the
+  // Resume control above it, which no shared copy can do. Everything else goes
+  // through {@link startErrorSentence} like the other two start surfaces, so a
+  // 422 guard refusal AND a 503 layout refusal reach the user verbatim — this
+  // screen is where most imports start, and it was the last one still throwing
+  // the server's reason away in favour of "check the path and the backend".
+  const resumeConflict =
+    start.error instanceof ImportConflictError && activeJobId !== null;
+  const failure = resumeConflict
+    ? "An import is already running; use Resume above."
+    : startErrorSentence(
+        start.error,
+        start.isError,
+        "Couldn’t start the import. Check the path and the backend, then try again.",
+      );
 
   function onSubmit(e: React.SubmitEvent) {
     e.preventDefault();
     if (trimmed.length === 0) {
       return; // Button is disabled too; guard the Enter key.
+    }
+    // The pending half of the button is `aria-disabled`, so the form still
+    // submits while a start is in flight — swallow it here, the same way the
+    // Pause button swallows its own click.
+    if (start.isPending) {
+      return;
     }
     start.mutate(
       mode === "sweep"
@@ -325,7 +372,7 @@ function ImportEntry() {
           />
           <p className="text-muted-foreground text-xs">
             {mode === "sweep"
-              ? "Unattended: strong matches import automatically; everything else is banked for review on the Review page. Re-running a sweep skips what's already handled."
+              ? "Unattended: strong matches import automatically; everything else is banked for review on the Review page. Re-running a sweep skips what’s already handled."
               : "Interactive: each uncertain album waits for your decision before the import continues."}
           </p>
         </div>
@@ -338,34 +385,45 @@ function ImportEntry() {
             onChange={(e) => setPath(e.target.value)}
             placeholder="/music/incoming"
             aria-label="Folder path"
-            aria-invalid={genericError || conflict || rejected !== null}
+            aria-invalid={start.isError}
           />
         </label>
 
-        {conflict && (
-          <p className="text-destructive text-sm" role="alert">
-            {activeJobId
-              ? "An import is already running; use Resume above."
-              : "Couldn't start; a library operation is in progress. Try again in a moment."}
-          </p>
-        )}
-        {rejected !== null && (
-          <p className="text-destructive text-sm" role="alert">
-            {rejected}
-          </p>
-        )}
-        {genericError && (
-          <p className="text-destructive text-sm" role="alert">
-            Couldn&rsquo;t start the import. Check the path and the backend,
-            then try again.
+        {failure !== null && (
+          <p
+            id={START_ERROR_ID}
+            className="text-destructive text-sm"
+            role="alert"
+          >
+            {failure}
           </p>
         )}
 
         <div>
           <Button
             type="submit"
-            disabled={trimmed.length === 0 || start.isPending || importActive}
-            aria-describedby={importActive ? "resume-import-hint" : undefined}
+            // Two states, two attributes. A blank path and a running import are
+            // reasons the control cannot be used at all, so they stay
+            // `disabled`. Pending is the button's OWN commit: disabling it there
+            // strands keyboard focus on <body> (the Pagination rule, measured on
+            // the Pause button below), so it goes `aria-disabled` and the submit
+            // handler swallows the repeat.
+            disabled={trimmed.length === 0 || importActive}
+            aria-disabled={start.isPending}
+            className="aria-disabled:opacity-50"
+            // Both descriptions, joined: this button keeps focus through a
+            // failed start (it is only `aria-disabled` while pending), so the
+            // sentence saying why the last press failed is what a keyboard user
+            // hears on coming back to it — and the resume hint still explains a
+            // Start that is disabled outright.
+            aria-describedby={
+              [
+                importActive ? "resume-import-hint" : null,
+                failure !== null ? START_ERROR_ID : null,
+              ]
+                .filter((id) => id !== null)
+                .join(" ") || undefined
+            }
           >
             {start.isPending ? (
               <>
@@ -970,7 +1028,7 @@ function StatusBadge({ album }: Readonly<{ album: ImportAlbumSummary }>) {
   if (album.did_not_land) {
     return (
       <Badge variant="destructive" className="shrink-0">
-        Didn&apos;t land
+        Didn&rsquo;t land
       </Badge>
     );
   }
@@ -1011,14 +1069,37 @@ function folderName(folder: string): string {
  *
  * `already_known` is the run's history skips — beets skips those folders before
  * tagging, so they reach no outcome record and `skipped` does not hold them.
- * "Already known" is the sweep tile's word for the same number. */
+ * "Already known" is the sweep tile's word for the same number.
+ *
+ * The apostrophe is the page's typographic one. `importStatus`' spoken twin
+ * keeps the straight one; that string is never seen. */
 function countsLine(progress: ImportProgress): string {
   const { applied, skipped, not_landed, already_known } = progress;
   return (
-    `${applied} ${applied === 1 ? "album" : "albums"} imported${SEGMENT_SEP}${skipped} skipped` +
-    (not_landed > 0 ? `${SEGMENT_SEP}${not_landed} didn't land` : "") +
-    (already_known > 0 ? `${SEGMENT_SEP}${already_known} already known` : "")
+    segment(`${applied} ${applied === 1 ? "album" : "albums"} imported`) +
+    SEGMENT_SEP +
+    segment(`${skipped} skipped`) +
+    (not_landed > 0 ? SEGMENT_SEP + segment(`${not_landed} didn’t land`) : "") +
+    (already_known > 0
+      ? SEGMENT_SEP + segment(`${already_known} already known`)
+      : "")
   );
+}
+
+/** One segment of a counts line, made unbreakable: a wrap may fall only
+ * BETWEEN segments, never between a number and the words it counts.
+ *
+ * SEGMENT_SEP already owns the other half of the rule — its ordinary space is
+ * the only break point and its trailing one is non-breaking, so a wrapped line
+ * opens with the middot, which is this page's dialect. What was missing is the
+ * inside of a segment: measured in Chromium (Orca) at 360px and 320px,
+ * 2026-09-18, the finished panel broke as "0 albums imported · 0 skipped · 1" /
+ * "already known".
+ *
+ * Visible text only. The spoken twins in `importStatus.ts` keep ordinary
+ * spaces — nothing wraps inside a live region. */
+function segment(text: string): string {
+  return text.replaceAll(" ", "\u00A0");
 }
 
 /** The failed panel's count line, or null when the run has nothing to own up to.
@@ -1037,61 +1118,93 @@ function failedCountsLine(progress: ImportProgress): string | null {
   const { applied, skipped, not_landed, already_known } = progress;
   if (applied + skipped > 0) return countsLine(progress);
   const rest = [
-    not_landed > 0 ? `${not_landed} didn't land` : null,
-    already_known > 0 ? `${already_known} already known` : null,
+    not_landed > 0 ? segment(`${not_landed} didn’t land`) : null,
+    already_known > 0 ? segment(`${already_known} already known`) : null,
   ].filter((part) => part !== null);
   return rest.length > 0 ? rest.join(SEGMENT_SEP) : null;
 }
 
+/** "The run did nothing but skip folders beets' import history already has."
+ *
+ * ONE predicate for the two things this panel says about such a run — its title
+ * ({@link doneTitle}) and whether it offers the folder again
+ * ({@link importAgainPath}). They read the same outcome with different terms
+ * before: the title counted `not_landed`, the button did not.
+ *
+ * `progress` does NOT partition the run. A set-aside row (`needs_review` /
+ * `needs_dup_resolution`) is refused by the server's `_is_imported` AND its
+ * `_is_skipped`, and it never landed, so it sits in none of the three counters —
+ * `state.set_aside` is its count ({@link JobFailed} says the same of its own
+ * line). Without that term a finished unattended run with an album set aside was
+ * titled "Nothing new to import" directly above the row holding its Review
+ * button. */
+function onlySkippedKnown(state: ImportJobState): boolean {
+  const { applied, skipped, not_landed, already_known } = state.progress;
+  return (
+    already_known > 0 && applied + skipped + not_landed + state.set_aside === 0
+  );
+}
+
 /** The folder a finished run can offer again, or null when it cannot.
  *
- * Only a run that did nothing BUT skip known folders: with `keep downloads` on,
- * MusicDrop turns beets' import history on for runs that leave the files in
- * place, so re-adding a kept folder skips every album it already imported. That
- * dead-ends a folder whose album has since left the library, and the way past it
- * is beets' own `-I` ({@link ImportAgainButton}).
- *
- * `applied + skipped == 0` is the "nothing but" half: in a mixed run the user
- * picks the album's own folder instead (design note 13), so offering the parent
- * here would re-import what just landed.
+ * Only a run that did nothing BUT skip known folders ({@link onlySkippedKnown}):
+ * with `keep downloads` on, MusicDrop turns beets' import history on for runs
+ * that leave the files in place, so re-adding a kept folder skips every album it
+ * already imported. That dead-ends a folder whose album has since left the
+ * library, and the way past it is beets' own `-I` ({@link ImportAgainButton}).
+ * In a mixed run the user picks the album's own folder instead (design note 13),
+ * so offering the parent here would re-import what just landed.
  *
  * `origin === "manual"` is the review-run half — the only origin this button's
  * attended re-run matches. `path` is null for a multi-folder start (the inbox
- * hands over several toppaths), and a sweep never reaches this panel. */
+ * hands over several toppaths), and a sweep never reaches this panel. Those two
+ * are the button's own terms, so an all-known inbox or multi-folder run still
+ * takes the title above with nothing to press. */
 function importAgainPath(state: ImportJobState): string | null {
-  const { applied, skipped, already_known } = state.progress;
   if (state.origin !== "manual" || state.path == null) return null;
-  if (applied + skipped > 0 || already_known === 0) return null;
-  return state.path;
+  return onlySkippedKnown(state) ? state.path : null;
 }
 
-/** The one sentence a failed re-import can take: a running import names the
- * conflict, a rejected start carries the server's own reason, anything else is
- * the generic failure. No "use Resume above" here — this panel has no resume
- * banner, and a sentence must name a control the screen actually has. */
-function importAgainError(error: unknown, isError: boolean): string | null {
-  if (error instanceof ImportConflictError) {
-    return "An import is already running; try again when it finishes.";
-  }
-  if (error instanceof ImportStartRejectedError) {
-    return error.message;
-  }
-  return isError ? "Couldn’t start. Try again." : null;
-}
+/** The id linking the failure sentence to the button it belongs to. One panel,
+ * one button, so a constant is enough. */
+const IMPORT_AGAIN_ERROR_ID = "import-again-error";
 
 /** Re-import the run's folder past beets' import history (`incremental: false`
  * is beets' `-I`). Moves into the new job the way the entry screen does — the
  * URL's `?job=` is the only run pointer — so this panel is replaced by the live
  * feed. A failure keeps the panel and says why; without that the button would
- * dead-end on the one error it is most likely to hit (the import slot). */
-function ImportAgainButton({ path }: Readonly<{ path: string }>) {
+ * dead-end on the one error it is most likely to hit (the import slot).
+ *
+ * The sentence comes from {@link startErrorSentence}, so a 409 names the reason
+ * the server gave — three different ones share that status, and naming a running
+ * import for a backfill left the user waiting for something that was not
+ * happening. No "use Resume above" in the generic half either: this panel has no
+ * resume banner, and a sentence must name a control the screen has.
+ *
+ * `known` is only the label's number. The predicate that offers the button at
+ * all is {@link importAgainPath}. */
+function ImportAgainButton({
+  path,
+  known,
+}: Readonly<{ path: string; known: number }>) {
   const [, setSearchParams] = useSearchParams();
   const start = useStartImport();
-  const failure = importAgainError(start.error, start.isError);
+  const failure = startErrorSentence(
+    start.error,
+    start.isError,
+    "Couldn’t start. Try again.",
+  );
+  // The count is on the line above, so the label only has to agree with it in
+  // number.
+  const label = known === 1 ? "Import it again" : "Import them again";
   return (
     <div className="flex flex-col items-center gap-2">
       {failure !== null && (
-        <p className="text-destructive text-sm" role="alert">
+        <p
+          id={IMPORT_AGAIN_ERROR_ID}
+          className="text-destructive text-sm"
+          role="alert"
+        >
           {failure}
         </p>
       )}
@@ -1099,14 +1212,24 @@ function ImportAgainButton({ path }: Readonly<{ path: string }>) {
         type="button"
         variant="outline"
         size="sm"
-        disabled={start.isPending}
-        onClick={() =>
+        // `aria-disabled`, never `disabled` — the Pagination rule the Pause
+        // button above records: this button holds focus when it is clicked, and
+        // disabling it on that commit strands keyboard focus on <body>. It is
+        // the failure path that needs it, and that path's copy says "try again".
+        // The click is swallowed instead.
+        aria-disabled={start.isPending}
+        className="aria-disabled:opacity-50"
+        // The alert is the button's description while it is up, so a keyboard
+        // user who comes back to the button hears why the last press failed.
+        aria-describedby={failure !== null ? IMPORT_AGAIN_ERROR_ID : undefined}
+        onClick={() => {
+          if (start.isPending) return;
           start.mutate(
             {
               path,
-              // All four fields: the generated ImportOptions marks defaulted
-              // ones required. Everything but `incremental` is the manual
-              // default this run already used.
+              // `incremental: false` is beets' own `-I`. The other three fields
+              // are the manual default this run already used; the generated
+              // ImportOptions marks them required.
               options: {
                 operation: "default",
                 unattended: false,
@@ -1115,8 +1238,8 @@ function ImportAgainButton({ path }: Readonly<{ path: string }>) {
               },
             },
             { onSuccess: (data) => setSearchParams({ job: data.job_id }) },
-          )
-        }
+          );
+        }}
       >
         {start.isPending ? (
           <>
@@ -1124,11 +1247,23 @@ function ImportAgainButton({ path }: Readonly<{ path: string }>) {
             Starting&hellip;
           </>
         ) : (
-          "Import them again"
+          label
         )}
       </Button>
     </div>
   );
+}
+
+/** The finished panel's title. A success check over "0 albums imported · 0
+ * skipped" reads as a silent failure, so a run whose whole story is the history
+ * skips says that instead — and only such a run.
+ *
+ * Shares {@link onlySkippedKnown} with the button below, so the title cannot
+ * claim nothing happened over a feed that lists an album. An all-known
+ * multi-folder start or inbox run still reads this way with nothing to press:
+ * those are the button's own terms, not the outcome's. */
+function doneTitle(state: ImportJobState): string {
+  return onlySkippedKnown(state) ? "Nothing new to import" : "Import finished";
 }
 
 /** done: a legible outcome — imported/skipped counts (counting auto-applied
@@ -1141,7 +1276,7 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
       <EmptyState
         bordered
         icon={Success}
-        title="Import finished"
+        title={doneTitle(state)}
         body={
           <>
             {/* The finished summary carries the run's duration too (the owner's
@@ -1153,7 +1288,10 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
         }
         action={
           againPath === null ? undefined : (
-            <ImportAgainButton path={againPath} />
+            <ImportAgainButton
+              path={againPath}
+              known={state.progress.already_known}
+            />
           )
         }
       />

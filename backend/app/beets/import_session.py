@@ -19,7 +19,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
 from beets import config
 from beets.autotag.match import Recommendation as BeetsRec
@@ -212,7 +212,7 @@ class ImportBridge:
         # both sides already share - the registry never holds the session.
         self._pause = threading.Event()
         # Folders beets' task factory skipped as already imported (incremental
-        # history). Monotone; the sweep counters read it, others ignore it.
+        # history). Monotone; every job state reports it, sweep or not.
         self._known_skips = 0
 
     # ----- worker side -----
@@ -475,12 +475,18 @@ class WebImportSession(ImportSession):
             raise ImportAbortError
 
     def already_imported(self, toppath: Any, paths: Any) -> bool:
-        """Count folders beets skips as already imported (sweep counters).
+        """Count folders beets skips as already imported.
 
         beets' task factory consults this per prospective album folder BEFORE
         any session hook fires, so history-skipped folders never reach the
         outcome stream - this override is the only seam that sees them. The
-        count rides the bridge; non-sweep consumers simply never read it.
+        count rides the bridge and every job state reports it.
+
+        beets answers True for a RESUMED folder too, not only a history one
+        (``importer/session.py:246-256``), and that arm needs the user's own
+        ``resume: yes`` (``should_resume`` above returns False, so ``ask`` does
+        not reach it). Every arm ``run_import_worker`` forces pins
+        ``resume: False``; a run it leaves alone can count a resume skip here.
         """
         known = bool(super().already_imported(toppath, paths))
         if known:
@@ -1571,7 +1577,7 @@ def run_import_worker(
     move: bool | None = None,
     in_place: bool = False,
     sweep: bool = False,
-    incremental: bool | None = None,
+    incremental: Literal[False] | None = None,
     directive: BankApplyDirective | None = None,
 ) -> None:
     """Run one import session serially on the calling (worker) thread.
@@ -1673,10 +1679,15 @@ def run_import_worker(
     is incremental; then this flag, whose ``False`` is ``beet import -I``
     (``ui/commands/import_/__init__.py:280-286``); then the resolved file
     operation — a run that HARDLINKS the files leaves the download in place, so
-    history is what stops the same folder importing the album a second time,
-    and ``incremental_skip_later`` goes on with it so a SKIPped album is
-    offered again. Anything else (an inbox move, in_place, a plain ``copy: yes``
-    config) leaves both history keys to the user.
+    history is what stops the same folder meeting the album a second time, and
+    ``incremental_skip_later`` goes on with it so a SKIPped album is offered
+    again. All four pin ``resume: False``, for two different reasons: the sweep
+    and hardlink arms turn history ON, so beets clears ``resume`` itself and
+    ours is the redundancy the sweep paragraph describes; the directive arm and
+    a ``False`` override turn it OFF, where beets leaves ``resume`` alone and
+    the pin is the only thing stopping a resume record from skipping the
+    folder. Anything else (an inbox move, in_place, a
+    ``link``/``reflink``/``copy`` config) leaves the history keys to the user.
     """
     # Bind the music dir for the WHOLE body: beets relativises an item's path
     # on write only when its ``music_dir`` ContextVar is set, and ``Library``
@@ -1798,15 +1809,29 @@ def run_import_worker(
         elif incremental is not None:
             # The per-run override: ``False`` is ``beet import -I``, which is
             # how a kept folder gets re-imported after its album left the
-            # library. ``incremental_skip_later`` stays the user's.
+            # library. ``resume`` off with it: beets leaves ``resume`` alone
+            # when ``incremental`` is off, and the same task-factory check
+            # skips a folder held by a resume record (``session.py:246-256``),
+            # so "import it now" must clear that too.
+            # ``incremental_skip_later`` stays the user's.
             forced["incremental"] = incremental
+            forced["resume"] = False
         elif forced_file_operation(forced) == "hardlink":
             # A hardlink leaves the download in place, so adding the same
-            # folder again would import the album a second time onto one set of
-            # files. History is what stops that, and skipping an album must not
-            # record it: the user gets offered it again next time.
+            # folder again would meet the album a second time. History is what
+            # stops that, and skipping an album must not record it: the user
+            # gets offered it again next time. ``resume`` off explicitly, for
+            # the sweep arm's reason.
+            #
+            # ``hardlink`` alone, not every operation that keeps the download:
+            # it is the spelling MusicDrop's keep-downloads setting writes into
+            # beets' config (``decisions`` #53, BACKLOG "Download providers"). A
+            # ``link``/``reflink``/``copy`` config keeps the download too and is
+            # left to the user — they did not opt into this, and turning
+            # history on would change what their setup already does.
             forced["incremental"] = True
             forced["incremental_skip_later"] = True
+            forced["resume"] = False
         # ONE source per phase, not one per key: ``config[...][k] = v`` is
         # ``RootView.set``, which inserts a source that is never removed, so the
         # old per-key shape appended ~2N permanent overlays per import and made

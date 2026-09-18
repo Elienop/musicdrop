@@ -1,5 +1,6 @@
 import threading
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from beets.library import Library
@@ -185,7 +186,7 @@ def test_runner_translates_options_operation_to_move(
         *,
         move: bool | None = None,
         sweep: bool = False,
-        incremental: bool | None = None,
+        incremental: Literal[False] | None = None,
         directive: object = None,
     ) -> None:
         captured["move"] = move
@@ -277,7 +278,7 @@ def test_runner_forwards_sweep_and_bank_dir(
         *,
         move: bool | None = None,
         sweep: bool = False,
-        incremental: bool | None = None,
+        incremental: Literal[False] | None = None,
         directive: object = None,
     ) -> None:
         captured["worker_sweep"] = sweep
@@ -368,7 +369,7 @@ def test_runner_forwards_directive_to_session_and_worker(
         *,
         move: bool | None = None,
         sweep: bool = False,
-        incremental: bool | None = None,
+        incremental: Literal[False] | None = None,
         directive: object = None,
     ) -> None:
         captured["worker_directive"] = directive
@@ -396,16 +397,15 @@ def test_runner_forwards_directive_to_session_and_worker(
     [
         # The "Import them again" retry, and beets' own ``-I``.
         (ImportOptions(incremental=False), False),
-        (ImportOptions(incremental=True), True),
         # None is not False: it leaves the worker to decide from the resolved
-        # file operation (a run that keeps the files goes incremental).
+        # file operation (a hardlink run goes incremental).
         (ImportOptions(), None),
         (None, None),
     ],
 )
 def test_runner_forwards_the_incremental_override_to_the_worker(
     options: ImportOptions | None,
-    expected: bool | None,
+    expected: Literal[False] | None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.import_jobs.runner as runner_mod
@@ -421,7 +421,7 @@ def test_runner_forwards_the_incremental_override_to_the_worker(
         *,
         move: bool | None = None,
         sweep: bool = False,
-        incremental: bool | None = None,
+        incremental: Literal[False] | None = None,
         directive: object = None,
     ) -> None:
         captured["incremental"] = incremental

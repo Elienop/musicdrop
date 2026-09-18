@@ -756,6 +756,18 @@ def test_import_options_incremental_defaults_to_none() -> None:
     assert req.options.incremental is False
 
 
+def test_incremental_true_is_refused_as_a_422() -> None:
+    """The field admits ``false`` and ``null`` only.
+
+    ``true`` would preempt the hardlink arm and turn beets' history on WITHOUT
+    the ``incremental_skip_later`` guard that arm installs — weaker than sending
+    nothing, which is what a caller with no opinion sends.
+    """
+    client = _client_with_fake()
+    resp = client.post("/api/import", json={"path": "/library", "options": {"incremental": True}})
+    assert resp.status_code == 422
+
+
 def test_the_job_state_carries_the_posted_folder_and_the_known_count() -> None:
     """Both new fields end to end over the route the Import page polls."""
     client = _client_with_fake(parked=[_api_parked(0, Recommendation.medium)])
