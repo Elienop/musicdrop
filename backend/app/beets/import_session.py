@@ -271,22 +271,16 @@ class ImportBridge:
     def publish_duplicate(self, prompt: DuplicatePrompt) -> None:
         """Push a duplicate prompt that NOBODY will answer (non-blocking).
 
-        The park channel carries two things today: "here is the collision, I am
-        blocked until you decide" (:meth:`park_duplicate`) and — through this —
-        "here is the collision as I saw it, for a decision made later". The
-        consumer drains one queue and cannot tell them apart, which is the
-        point: the feed row gets the live prompt either way.
-
+        Same queue as :meth:`park_duplicate` — the consumer cannot tell them
+        apart, which is the point: the feed row gets the live prompt either way.
         No reply slot and no ``_pending`` increment, so ``has_unanswered_park``
-        stays False and the job is not reported as awaiting a decision. Used by
-        the stale-consent refusal, whose remedy IS the refreshed prompt
-        (:meth:`WebImportSession._consent_covers`).
+        stays False. Used by the stale-consent refusal, whose remedy IS the
+        refreshed prompt (:meth:`WebImportSession._consent_covers`).
 
         "Nobody will answer" is about the SESSION, not the row: the registry
-        drains this queue into the job row, so a finished job shows
-        ``needs_dup_resolution`` with a fetchable prompt, and answering it 404s
-        ("no duplicate parked") because the session that would have consumed the
-        reply is gone. The bank row is where that decision is made again.
+        still drains this onto the job row, so a finished job shows
+        ``needs_dup_resolution`` with a fetchable prompt and answering it 404s
+        ("no duplicate parked"). The bank row is where it is decided again.
         """
         self._dup_out.put(prompt)
 
@@ -427,15 +421,13 @@ def _replace_partial_note(completed: int, total: int) -> str:
     the first in Trash with its origin record, so "Replace failed" alone would
     hide a folder that has left the library.
 
-    ``completed`` counts the calls that actually PUT a container in Trash. A
-    ghost row-drop is not one, and neither is an album whose only present row
-    was a file this import is reading: dropping that row leaves the mover its
-    ghost arm, which rmdirs the container it made
+    ``completed`` counts the calls that actually PUT a container in Trash —
+    neither a ghost row-drop nor an album whose only present row was a file this
+    import is reading, because the mover rmdirs the container it made
     (``test_a_replace_whose_only_move_put_nothing_in_trash_says_so``).
-    ``trash_album`` can also raise after the files have already moved (the
-    origin-record write, or ``album.remove``), so the zero case says the step
-    failed rather than claiming nothing moved — it cannot tell, and neither can
-    the caller.
+    ``trash_album`` can also raise after the files moved (the origin-record
+    write, or ``album.remove``), so the zero case says the step failed rather
+    than claiming nothing moved — it cannot tell, and neither can the caller.
     """
     if completed:
         return (
@@ -449,17 +441,16 @@ def _store_layout_ok(lib: Any, *, trash_dir: Path, origins_dir: Path, refusal: s
     """Is the music / beets / Trash / origins layout still one we will move into?
 
     Both Replace routes re-check it for the reason the request paths do: the pair
-    was resolved once, when the registry was handed the library at lifespan or
-    after an Apply, and an import can run hours later.
+    was resolved once, at lifespan or after an Apply, and an import can run hours
+    later.
 
     ``BEETSDIR``, not ``settings.beets_dir``: the setting's default is the
     RELATIVE "data/beets", which would resolve against a worker thread's CWD.
-    ``setup_beets`` exports the resolved dir and re-exports it on every Apply.
 
     The cause is shared, the CONSEQUENCE is not — one route imports nothing, the
     other leaves an already-imported album's old copy in the library — so the
-    caller supplies the whole sentence. It is logged here, where the exception is
-    still live and ``exc_info`` can name which pair was refused.
+    caller supplies the whole sentence, logged here where ``exc_info`` can still
+    name which pair was refused.
     """
     try:
         music_dir, library_path = lib_music_and_library(lib)
@@ -501,16 +492,12 @@ def _album_file_paths(album: Any) -> list[Any]:
 def _task_source_paths(task: Any) -> set[Any]:
     """Every file the CURRENT task is reading, as beets' own re-import test reads it.
 
-    ``{i.path for i in task.items}`` — the stored-path form, byte-compared, and
-    the SAME expression beets uses to exclude a re-import from its own
-    duplicates (``importer/tasks.py:388``, then ``album_paths <= task_paths``)
-    and to find the library rows it deletes moments later at ``task.add``
-    (``record_replaced``, ``tasks.py:522`` — a ``PathQuery`` per imported item).
-    Not ``task.paths``, which holds the toppath DIRECTORIES.
-
-    Bytes, so it mirrors beets exactly — which is all it is for. Deciding what a
-    MOVER may touch asks :class:`_SourceFiles` instead, because one file has
-    more than one spelling.
+    The stored-path form, byte-compared — the same expression beets uses to
+    exclude a re-import from its own duplicates (``importer/tasks.py:388``,
+    ``album_paths <= task_paths``) and to find the rows it deletes at
+    ``task.add`` (``record_replaced``). Not ``task.paths``, which holds the
+    toppath DIRECTORIES. Deciding what a MOVER may touch asks
+    :class:`_SourceFiles`, which also keys by directory entry.
     """
     return {item.path for item in (task.items or []) if item is not None and item.path}
 
@@ -518,23 +505,17 @@ def _task_source_paths(task: Any) -> set[Any]:
 def _entry_key(path: str, *, follow_leaf: bool) -> tuple[_EntryKey | None, bool]:
     """One path as a DIRECTORY ENTRY: ``(key, unreadable)``. Two questions, one shape.
 
-    The key is always the leaf's ``(st_dev, st_ino)`` plus its holding
-    directory's. The holder needs no ``realpath``: ``os.stat`` follows a symlink
-    alias of the download folder by itself, so a second spelling already keys
-    equal (measured — resolving it first was an unkillable line and is gone).
-    ``follow_leaf`` is the whole difference between the two callers, and they
-    MUST answer differently on a ``link``-mode library entry:
+    The key is the leaf's ``(st_dev, st_ino)`` plus its holding directory's. The
+    holder needs no ``realpath`` — ``os.stat`` follows a symlinked folder itself,
+    so a second spelling of the download dir already keys equal.
 
-    * ``True`` — "do these two rows reach the same bytes?"
-      (:func:`_file_identities`, before a move that would break the other). A
-      library symlink onto the download file IS that file.
-    * ``False`` — "is this row the entry a move would take?"
-      (:class:`_SourceFiles`, deciding whose file this is). A library symlink is
-      NOT the file it points at: moving it moves a link and leaves the target
-      alone, so the album it belongs to is the library's to Trash.
-
-    Measured (security seat, ``link`` mode; the same table is asserted through
-    the production helpers by ``test_the_four_ownership_shapes``):
+    ``follow_leaf`` is the whole difference between the callers, and on a
+    ``link``-mode library entry they MUST answer differently — "does this reach
+    the same bytes?" (:func:`_file_identities`, True) says a library symlink IS
+    the download file; "is this the entry a move would take?"
+    (:class:`_SourceFiles`, False) says it is not, so its album is the library's
+    to Trash. The four shapes, measured, and asserted through the production
+    helpers by ``test_the_four_ownership_shapes``:
 
     ====================  ================  =================
     row                   follow_leaf=True  follow_leaf=False
@@ -545,10 +526,9 @@ def _entry_key(path: str, *, follow_leaf: bool) -> tuple[_EntryKey | None, bool]
     aliased download      == source         == source
     ====================  ================  =================
 
-    Sharing one function with ``follow_leaf=True`` for both dropped a refiled
-    ``link``-mode album's rows silently and left its entries untracked in the
-    music folder, where the previous build moved them to Trash with an origin
-    record (``test_a_link_mode_album_refiled_elsewhere_still_reaches_trash``).
+    One shared answer for both lost a refiled ``link`` album's rows and left its
+    entries untracked
+    (``test_a_link_mode_album_refiled_elsewhere_still_reaches_trash``).
 
     A missing path is not "could not be read": it answers ``(None, False)``, and
     only an ``OSError`` that is neither a missing path nor a non-directory
@@ -569,38 +549,24 @@ class _SourceFiles:
     """Every file this RUN is reading — by stored path AND by directory entry.
 
     Ownership asked twice, because one file has more than one spelling. The byte
-    set is beets' own; the entry set is :func:`_entry_key`. With the byte set
-    alone, a row rewritten to a symlink ALIAS of the download folder (same
-    inode, different bytes) was not recognised as the import's own, so the mover
-    took the import's own source file to Trash, left a row naming a file that is
-    no longer there, and wrote an origin record naming the common parent of the
-    music folder and the alias (measured by the security seat on BOTH routes;
-    pinned by ``test_a_replace_leaves_an_aliased_download_row_alone`` and
+    set is beets' own (:func:`_task_source_paths`); the entry set is
+    :func:`_entry_key` with ``follow_leaf=False``, whose table is the reason for
+    every part of the key. With bytes alone a row rewritten to a symlink ALIAS
+    of the download folder was not recognised as the import's own and the mover
+    took the import's own source file to Trash
+    (``test_a_replace_leaves_an_aliased_download_row_alone`` and
     ``test_a_banked_replace_leaves_an_aliased_download_row_alone``).
 
-    Not the inode alone: under ``hardlink`` the old library copy and the
-    download are one inode in two folders, and that copy must still reach Trash
-    (``test_a_refiled_hardlink_sibling_still_reaches_trash``).
-
-    And not the RESOLVED leaf: under ``link`` the old library entry is a symlink
-    onto the download file, so following it made the library's own entries read
-    as "files the run is reading" — the rows were dropped and a refiled album
-    was left untracked in the music folder. ``follow_leaf=False`` keys the link
-    itself, so it goes to Trash as a link and the download it points at is not
-    touched (``test_a_link_mode_album_refiled_elsewhere_still_reaches_trash``).
-
     A source file whose key cannot be built keeps its BYTES in the set and adds
-    no entry, so an alias of it is not recognised. Both causes are safe here and
-    neither is guessed to be "absent":
+    no entry, so an alias of it is not recognised. Neither cause is guessed to be
+    "absent" and both are safe here
+    (``test_a_source_file_that_cannot_be_keyed_still_matches_its_own_bytes``):
 
-    * gone (``FileNotFoundError``/``NotADirectoryError``) — there is no file
-      left to protect, and a row naming it any way it likes reads ``absent``,
-      which drops rows and moves nothing.
-    * unreadable (any other ``OSError``) — the row naming that same file is
-      unreadable too, so :func:`_album_file_state` answers ``unknown`` and the
-      whole Replace refuses before disposal.
-
-    (``test_a_source_file_that_cannot_be_keyed_still_matches_its_own_bytes``.)
+    * gone — there is no file left to protect, and a row naming it reads
+      ``absent``, which drops rows and moves nothing.
+    * unreadable — the row naming that same file is unreadable too, so
+      :func:`_album_file_state` answers ``unknown`` and the Replace refuses
+      before disposal.
     """
 
     def __init__(self) -> None:
@@ -637,32 +603,26 @@ class _SourceFiles:
 def _drop_rows_the_run_is_reading(lib: Any, album: Any, source: _SourceFiles) -> list[str]:
     """Drop the album's rows naming a file THIS run is reading; return the paths.
 
-    Ownership, not location. A half-finished import leaves one row naming the
-    download folder (measured — ``FilesystemError`` on the 2nd of 2 tracks,
-    rows ``[music/.../01 Airbag 1.flac, downloads/okc/02 Track 2.flac]``), and
-    re-importing that folder IS the documented repair; moving the album
-    wholesale took the import's OWN source file into Trash, after which beets
-    skipped the vanished source and kept a row naming nothing with no error at
-    all (``test_a_replace_leaves_a_half_finished_imports_download_alone``).
+    Ownership, not location. A half-finished import leaves a library row naming
+    the download folder, and re-importing that folder IS the documented repair;
+    moving the album wholesale took the import's OWN source file to Trash, after
+    which beets skipped the vanished source silently
+    (``test_a_replace_leaves_a_half_finished_imports_download_alone``). Dropping
+    the row only moves forward what beets does at ``task.add``, in front of the
+    mover. A row whose file merely lives OUTSIDE the music folder is a different
+    thing — ``in_place``, a changed ``directory:`` and a symlinked album folder
+    all produce those legitimately, and they go to Trash with the album
+    (``test_an_album_outside_the_music_folder_still_reaches_trash``).
 
-    Dropping the row is what beets itself does to it seconds later at
-    ``task.add`` — so this only moves that removal earlier, in front of the
-    mover. A row whose file merely lives outside the music folder is NOT this:
-    an ``in_place`` import, a changed ``directory:`` and a symlinked album
-    folder all produce those legitimately, and they go to Trash with the rest
-    of the album (``test_an_album_outside_the_music_folder_still_reaches_trash``).
+    The RUN, not this task: a bank row is a FOLDER and can hold several albums,
+    and beets only deletes the rows of tasks that reach ``task.add``, so a
+    skipped sibling leaves its own source rows for this. The cost: a library
+    album whose files ARE a skipped task's sources is de-registered although
+    beets never replaces it — the files stay put, and a re-import or disk scan
+    re-registers them.
 
-    The RUN, not this task: the set covers every task the session saw, landed or
-    skipped, because a bank row is a FOLDER and a folder can hold more than one
-    album. beets only deletes the rows of tasks that reach ``task.add``, so a
-    sibling task that is skipped leaves its own source rows for this to catch.
-    The cost of covering that sibling: a library album whose files ARE a skipped
-    task's sources is de-registered here although beets never replaces it — the
-    files stay where they are, and a re-import or a disk scan re-registers them.
-
-    ``with_album=False``: the caller disposes of the album itself, and beets'
-    default drops the album row the moment its last item goes
-    (``library/models.py:1128-1132``).
+    ``with_album=False``: the caller disposes of the album itself, and beets
+    drops the album row when its last item goes.
     """
     dropped: list[str] = []
     for item in album.items():
@@ -675,10 +635,9 @@ def _drop_rows_the_run_is_reading(lib: Any, album: Any, source: _SourceFiles) ->
 def _album_label(lib: Any, album: Any) -> str:
     """``artist - album (folder)``, for a log line about an album being disposed of.
 
-    Read BEFORE the rows go, by every caller. An id alone is useless afterwards:
-    SQLite frees the rowid and the next insert takes it (measured ``[1] ->
-    landed [1]``), so a warning naming only the id cannot lead anyone back to
-    the folder it is about.
+    Read BEFORE the rows go. An id alone is useless afterwards: SQLite frees the
+    rowid and the next insert takes it (measured — the replacement album came
+    back as id 1), so a warning naming only the id leads nowhere.
     """
     paths = [item.path for item in album.items() if item.path]
     folder = os.path.dirname(_abs_path(lib, paths[0])) if paths else ""
@@ -688,9 +647,9 @@ def _album_label(lib: Any, album: Any) -> str:
 class _ReplaceStateChanged(RuntimeError):
     """A duplicate answered something new at its own disposal — so nothing is assumed.
 
-    Raised by the disposal loop's closed ``else``. It is reachable: the state is
-    re-read per album, and a folder that turns unreadable between the up-front
-    classification and its own turn answers ``unknown`` there
+    Raised by the disposal loop's closed ``else``, and reachable: the state is
+    re-read per album, so a folder that turns unreadable after the up-front
+    classification answers ``unknown`` there
     (``test_a_duplicate_that_turns_unreadable_mid_pass_stops_the_replace``).
     """
 
@@ -709,30 +668,24 @@ def _album_file_state(lib: Any, album: Any) -> _FileState:
 
     Three measured facts, one per state that is not ``present``:
 
-    * ``os.path.exists`` is False for EACCES, EIO and a stale handle as much as
-      for ENOENT, so a two-valued test reads a folder the user made unreadable
-      as a ghost and drops the rows of an album whose files are all there
-      (measured at 0o444 and 0o000 —
-      ``test_an_unreadable_duplicate_refuses_the_whole_replace``).
-    * a dangling symlink at a library path is its own answer, not "present" and
-      not "gone": beets' ``unique_path`` also asks ``os.path.exists``, so
-      placement writes THROUGH the link and the new album's audio lands outside
-      the music library in ``copy``, ``hardlink`` and ``reflink:auto``
-      (measured by the security seat —
-      ``test_a_duplicate_of_dangling_symlinks_refuses_the_replace``).
-    * the ITEMS only, and ``album.artpath`` is not asked (owner ruling): an
-      album with no track file left is a ghost whatever its cover
-      says, because "deleted the bad rip, kept cover.jpg, imported the good one,
-      pressed Replace" has to work
+    * ``os.path.exists`` is False for EACCES and EIO as much as for ENOENT, so a
+      two-valued test reads a folder the user made unreadable as a ghost and
+      drops the rows of an album whose files are all there (measured at 0o444
+      and 0o000 — ``test_an_unreadable_duplicate_refuses_the_whole_replace``).
+    * a dangling symlink at a library path is neither present nor gone: beets'
+      ``unique_path`` also asks ``os.path.exists``, so placement writes THROUGH
+      the link and the new album's audio lands outside the music library
+      (``test_a_duplicate_of_dangling_symlinks_refuses_the_replace``).
+    * the ITEMS only, and ``album.artpath`` is not asked (owner ruling): an album
+      with no track file left is a ghost whatever its cover says, so "deleted the
+      bad rip, kept cover.jpg, imported the good one, pressed Replace" works
       (``test_a_ghost_whose_cover_survived_is_replaced_and_its_cover_left_alone``).
-      This arm does not read the art path, so the cover is untouched HERE;
-      beets' next ``Album.set_art`` deletes it (``library/models.py:561-589``
-      has no ``unique_path``), which is a recorded residual of its own.
+      The cover is untouched here; beets' next ``Album.set_art`` deletes it,
+      which is a recorded residual of its own.
 
-    Every item row votes, wherever its file lives: an ``in_place`` import, a
-    changed ``directory:`` and a symlinked album folder all put files
-    legitimately outside the music folder, and such an album is as present as
-    any other.
+    Every item row votes, wherever its file lives — ``in_place``, a changed
+    ``directory:`` and a symlinked album folder all put files legitimately
+    outside the music folder.
     """
     state = _FileState.absent
     broken = False
@@ -794,11 +747,9 @@ class WebImportSession(ImportSession):
         # Where Replace moves the old copies (reversible Trash). None = unwired,
         # and a Replace then refuses rather than importing a second copy.
         self._trash_dir = trash_dir
-        # Its sibling origin store. Wired as a PAIR with ``trash_dir`` from the
-        # one resolve point (the runner / the restore path), and both Replace
-        # paths skip unless BOTH are set — a Replace that trashed the old copies
-        # without recording where they came from would leave rows that can only
-        # ever be re-imported.
+        # Its sibling origin store, wired as a PAIR with ``trash_dir``: both
+        # Replace paths skip unless BOTH are set, because copies trashed without
+        # a record of where they came from can only ever be re-imported.
         self._trash_origins_dir = trash_origins_dir
         # Banked replace targets the duplicate hook never saw, trashed AFTER
         # run() by _trash_replaced_albums. The hook's own Replace moves its
@@ -807,19 +758,15 @@ class WebImportSession(ImportSession):
         # Library album ids the duplicate hook already disposed of. Read by the
         # banked seed so it does not re-enforce a copy that has left.
         self._hook_replaced_album_ids: set[int] = set()
-        # Latched by the first refused Replace. The banked seed enforces nothing
-        # once it is set: a Replace that failed half-way must not have its
-        # remaining targets trashed by the post-run pass while nothing was
-        # imported for them.
+        # Latched by the first refused Replace: a Replace that failed half-way
+        # must not have its remaining targets trashed by the post-run pass while
+        # nothing was imported for them.
         self._replace_was_refused = False
-        # Every file this run is READING, by path and by directory entry. Filled
-        # at the one seam each task passes (choose_match / choose_item), which is
-        # before placement moves anything, and read by both Replace routes to
-        # tell the import's own source rows from the library's.
+        # Every file this run is READING (:class:`_SourceFiles`), filled at
+        # choose_match / choose_item and read by both Replace routes.
         self._source_files = _SourceFiles()
-        # Item ids this run dropped from the library, from BOTH replace routes.
-        # run_import_worker re-exports the affected playlists once, after the
-        # run, when the ids the new album took are settled.
+        # Item ids this run dropped from the library, from BOTH replace routes;
+        # run_import_worker re-exports the affected playlists once, after the run.
         self._dropped_item_ids: set[int] = set()
         # Library album ids beets actually ADDED during this run (filled by
         # _flush_album_ids from task.album). Gates the banked-replace seed:
@@ -1044,42 +991,35 @@ class WebImportSession(ImportSession):
         """Dispose of the albums the user was shown, then answer beets ``KEEP``.
 
         **Timing.** beets asks this hook from ``_resolve_duplicates``
-        (``importer/stages.py:337``, reached from ``apply_choices`` at ``:188``)
-        and places files in ``manipulate_files`` at ``:294``, so the disposal
-        here happens while the new album is still only in the download folder.
-        That is what fixes the same-file case: under ``hardlink``/``link`` the
-        incoming file and the library file are one file, so beets reuses the old
-        album's paths for the new rows, and a Trash move made afterwards moves
-        the new album's own files (pinned by
-        ``test_replacing_a_duplicate_leaves_an_album_whose_files_exist``).
+        (``importer/stages.py``) and places files later in ``manipulate_files``,
+        so the disposal happens while the new album is still only in the download
+        folder. That is what fixes the same-file case: under ``hardlink``/``link``
+        the incoming and library files are one file, so beets reuses the old
+        album's paths and a Trash move made afterwards would move the NEW album's
+        files (``test_replacing_a_duplicate_leaves_an_album_whose_files_exist``).
 
-        **Why not beets' own REMOVE.** ``ImportTask.remove_duplicates``
-        (``tasks.py:246``) RE-RUNS ``find_duplicates`` rather than reusing the
-        list this hook was handed, and the query key can move in between:
-        ``task.add`` → ``align_album_level_fields`` rewrites ``albumartist`` for
+        **Why not beets' own REMOVE.** ``ImportTask.remove_duplicates`` RE-RUNS
+        ``find_duplicates`` instead of reusing the list this hook was handed, and
+        the query key moves in between: ``task.add`` rewrites ``albumartist`` for
         an ASIS task, so an as-is compilation shown as duplicating ``('A', 'Comp
         X')`` had ``('Various Artists', 'Comp X')`` hard-deleted outside Trash
-        (measured by the security seat; pinned by
-        ``test_an_as_is_compilation_replace_leaves_the_album_the_user_never_saw``).
-        Answering KEEP means that method never runs, so nothing is disposed of
-        that this hook was not handed.
+        (``test_an_as_is_compilation_replace_leaves_the_album_the_user_never_saw``).
+        Answering KEEP means that method never runs.
 
-        **Order, and it is load-bearing.** The gates — root check, then
-        ``unknown``, then ``broken_link`` — run over beets' WHOLE live bucket,
-        each refusing the whole Replace before anything moves. They are not
-        about what we may dispose of but about where beets is about to WRITE:
-        scoping them by consent left an excluded bucket member unclassified and
-        beets wrote the new album's audio through its dangling links, outside
-        the music library (security seat, no race; pinned by
-        ``test_a_bucket_member_the_prompt_did_not_name_is_still_classified``).
-        Consent is asked after them, and a directive that no longer accounts
-        for the bucket refuses too (:meth:`_consent_covers`). The arm each
-        album takes is decided at its own turn, in
-        :meth:`_dispose_duplicates_now`; any failure there answers SKIP.
+        **Order, and it is load-bearing.** The gates — root check, ``unknown``,
+        ``broken_link`` — run over beets' WHOLE live bucket and each refuses the
+        whole Replace before anything moves. They are not about what we may
+        dispose of but about where beets is about to WRITE: scoping them by
+        consent left an excluded bucket member unclassified and beets wrote the
+        new album's audio through its dangling links, outside the music library
+        (``test_a_bucket_member_the_prompt_did_not_name_is_still_classified``).
+        Consent is asked after them (:meth:`_consent_covers`). Each album's arm
+        is chosen at its own turn in :meth:`_dispose_duplicates_now`; any failure
+        there answers SKIP.
 
-        The root check comes first, at the decision moment
-        ``require_library_root`` names: "this album has no file on disk" is
-        exactly the reading that goes library-wide wrong when the share drops.
+        The root check is first, at the decision moment ``require_library_root``
+        names: "this album has no file on disk" is the reading that goes
+        library-wide wrong when the share drops.
         """
         try:
             require_library_root(self.lib)
@@ -1101,10 +1041,9 @@ class WebImportSession(ImportSession):
             return self._replace_refused(task, index, _REPLACE_BROKEN_LINKS)
         if not self._consent_covers(found_duplicates):
             # The remedy is the prompt: publish the collision as THIS apply saw
-            # it so the feed row — and from it the bank row — carries what the
-            # user is being asked to decide about now. Without it "decide again"
-            # re-queues the same stored prompt and refuses identically forever
-            # (measured by the security seat).
+            # it, so the feed row — and from it the bank row — carries what the
+            # user is now being asked about. Without it, "decide again" re-queues
+            # the same stored prompt and refuses identically forever.
             self.bridge.publish_duplicate(prompt)
             return self._replace_refused(task, index, _REPLACE_STALE_CONSENT)
         note = self._dispose_duplicates_now(states, task=task)
@@ -1115,45 +1054,35 @@ class WebImportSession(ImportSession):
     def _consent_covers(self, found_duplicates: Any) -> bool:
         """Does the banked prompt still account for EVERY album in the live bucket?
 
-        The attended route is bounded by construction: the prompt's ``existing``
-        list and the disposal read the ONE list this hook was handed, in one
-        call, with the park in between. A directive is not — built from a bank
-        row swept possibly hours earlier, read against beets' collision bucket
-        as it is NOW, it disposed of an album added after banking that appeared
-        on no prompt (measured by the security seat: rows dropped, file moved).
+        The attended route is bounded by construction: the prompt and the
+        disposal read the ONE list this hook was handed, with the park in
+        between. A directive is not — built from a bank row swept hours earlier
+        and read against the collision bucket as it is NOW, it disposed of an
+        album that appeared on no prompt.
 
-        Intersecting the two and leaving the rest was measured wrong twice: it
-        puts a consent filter above the gates, and where it did dispose it left
-        an unasked-for second copy with the new album filed at ``01 Airbag
-        1.1.flac`` (``unique_path`` saw the survivor) and nothing on the wire
-        saying so. So stale consent refuses the whole Replace through the note
-        path, the bank row fails retryable, and the user decides again against
-        what the library now holds
-        (``test_a_bank_replace_refuses_when_the_bucket_gained_an_album``).
+        All or nothing, not an intersection: filtering the bucket by consent puts
+        that filter above the gates, and where it did dispose it left an
+        unasked-for second copy (``unique_path`` saw the survivor, so the new
+        album landed at ``01 Airbag 1.1.flac``) with nothing on the wire saying
+        so. Stale consent refuses the whole Replace, the bank row fails
+        retryable, and the user decides again against what the library now holds
+        (``test_a_bank_replace_refuses_when_the_bucket_gained_an_album``), with
+        the refusal carrying its own remedy — deciding again on the SAME stored
+        prompt would rebuild the same consent set, so the refusing apply
+        publishes the live collision and the runner writes it onto the row it
+        fails (``test_a_stale_consent_refusal_can_be_decided_again``).
 
-        The refusal carries its own remedy, because deciding again on the SAME
-        stored prompt rebuilds the same consent set and refuses identically: the
-        refusing apply publishes the live collision, and the apply runner writes
-        it onto the bank row it fails
-        (``test_a_stale_consent_refusal_can_be_decided_again``).
+        Identity by ``duplicate_albums_still_present``, the check the banked seed
+        uses, so a reused rowid cannot stand in for the album the user decided
+        about. Its albumartist+album pair adds no discrimination here (every
+        bucket member carries the incoming album's pair), so the check is only as
+        strong as a stored AND live release id; with neither it is name-only and
+        a same-named album on a reused rowid would pass.
 
-        Identity by ``duplicate_albums_still_present``, the check the banked
-        seed uses — a reused rowid must not stand in for the album the user
-        decided about. Its albumartist+album pair adds no discrimination here
-        (every bucket member already carries the incoming album's pair, and the
-        banked record stored the same one), so the check is exactly as strong
-        as the presence of a stored AND a live release id. What a weak one costs
-        is this album: with no stored and no live release id the check is
-        name-only (``library.py:509-522``), so a same-named album sitting on a
-        reused rowid passes as the one the prompt named, and its rows are
-        dropped and its files moved to Trash.
-
-        An empty ``replace_existing`` names nothing to compare and keeps today's
-        unbounded behaviour — reachable from the up-front resolver's legacy
-        shape AND from a rescan, which clears the stored prompt (the remedy
-        above is what keeps a stale-consent refusal out of that path). Sizing
-        for closing it is in the round-3b report; it is a consent-semantics
-        change, not a patch.
+        An empty ``replace_existing`` names nothing to compare and stays
+        unbounded — reachable from the up-front resolver's legacy shape and from
+        a rescan, which clears the stored prompt. Closing that is a
+        consent-semantics change, not a patch.
         """
         directive = self._directive
         if directive is None or not directive.replace_existing:
@@ -1175,9 +1104,8 @@ class WebImportSession(ImportSession):
         Also latches ``_replace_was_refused`` for the run: the banked seed must
         not enforce a replace target this hook already failed on, or the post-run
         pass would trash the user's copy while its replacement was never
-        imported. The WRITE is pinned by
-        ``test_a_refused_hook_latches_that_the_run_replaced_nothing`` (deleting
-        this line left the whole suite green) and the READ by
+        imported. The write is pinned by
+        ``test_a_refused_hook_latches_that_the_run_replaced_nothing``, the read by
         ``test_a_refused_replace_stops_the_banked_seed_for_the_rest_of_the_run``.
         """
         self._replace_was_refused = True
@@ -1192,31 +1120,25 @@ class WebImportSession(ImportSession):
         Order and freshness, both measured:
 
         * the albums WITH files go first and the ghosts last, so a failed move
-          never costs a ghost its rows and ``completed`` counts moves only. In
-          the other order a ghost's rows went, then the next move failed, and the
-          note said "moved 1 of 2 old copies to Trash" with Trash empty.
-        * each album's state is RE-READ immediately before its own disposal. Two
-          duplicates can name one set of files — a ``hardlink`` keep-both does it
-          by construction (measured: albums 1 and 2, same two paths) — and the
-          first move leaves the second a ghost by the time its turn comes. The
+          never costs a ghost its rows. In the other order a ghost's rows went,
+          the next move failed, and the note said "moved 1 of 2 old copies to
+          Trash" with Trash empty.
+        * each album's state is RE-READ immediately before its own disposal: two
+          duplicates can name one set of files (a ``hardlink`` keep-both does it
+          by construction), and the first move leaves the second a ghost. The
           up-front pass answers the all-or-nothing refusals; it does not decide
           the arm (``test_two_duplicates_over_one_file_set_replace_together``).
 
-        The arms are explicit and fail closed: a state that is neither
-        ``present`` nor ``absent`` at the moment of disposal raises rather than
-        falling through. And the arm is chosen BEFORE any row is dropped, the
-        drop being the statement before the move
-        (:func:`_drop_rows_the_task_is_reading`), so a refusal from here moves
-        no file. Not "changes nothing": if ``trash_album`` raises after that
-        drop the row is gone — DB metadata for a file still exactly where it
-        was, which beets would have dropped itself at ``task.add``. There is
-        deliberately no rollback.
+        The arms fail closed — a state that is neither ``present`` nor ``absent``
+        here raises — and the arm is chosen BEFORE any row is dropped
+        (:func:`_drop_rows_the_run_is_reading`), so a refusal from here moves no
+        file. Not "changes nothing": if ``trash_album`` raises after that drop
+        the row is gone, DB metadata for a file still exactly where it was, which
+        beets would have dropped itself at ``task.add``. No rollback, by choice.
 
-        Two duties beyond the disposal itself: re-check the store layout (the
-        Trash pair was resolved when the registry was handed the library,
-        possibly hours ago), and record each album's item ids BEFORE the call
-        that disposes of it, so a raise after the files have already moved still
-        leaves the run's re-export knowing which playlists broke.
+        Two duties beyond the disposal: re-check the store layout, and record
+        each album's item ids BEFORE disposing of it, so a raise after the files
+        moved still leaves the re-export knowing which playlists broke.
         """
         trash_dir = self._trash_dir
         origins_dir = self._trash_origins_dir
@@ -1253,8 +1175,7 @@ class WebImportSession(ImportSession):
                         )
                     # Re-read AFTER the drop: an album whose only present row was
                     # one of those takes the mover's ghost arm, which rmdirs the
-                    # container it made and puts nothing in Trash (measured by
-                    # the security seat), so counting it would make
+                    # container it made, so counting it would make
                     # _replace_partial_note name a container that is not there.
                     lands_in_trash = _album_file_state(lib, album) is _FileState.present
                     trash_album(lib, album, trash_dir=trash_dir, origins_dir=origins_dir)
@@ -1506,10 +1427,8 @@ class WebImportSession(ImportSession):
         # is not an expected re-entrancy.)
         self._install_dup_guard(task)
         # Record what this task is reading WHILE it is still in the download
-        # folder: this hook is the seam every album task passes, whether it
-        # lands or is skipped, and it runs before beets places any file. Both
-        # Replace routes then ask one question — "is this library row naming a
-        # file the RUN is reading?" — over the whole run, not one task.
+        # folder: this hook is the seam every task passes, landed or skipped, and
+        # it runs before beets places any file.
         self._source_files.note(task)
         # Flush the PREVIOUS task's library album id (its task.add has run by
         # now — sequential pipeline) before this album claims the feed.
@@ -1886,13 +1805,12 @@ class WebImportSession(ImportSession):
         skips missing albums).
 
         Every bullet below is a data guard: remove one and this pass moves the
-        user's files on a premise that does not hold. The noise filter after them
-        is not one — it only silences a log line on a healthy run.
+        user's files on a premise that does not hold.
 
         * **a Replace this run already refused enforces nothing.** Given
           duplicates [A, B] where A was disposed of and B raised, the hook
-          answered SKIP and imported nothing — but if some OTHER task in the run
-          landed, every guard below passes and the pass would trash B while its
+          answered SKIP and imported nothing — but if some OTHER task landed,
+          every guard below passes and the pass would trash B while its
           replacement was never imported
           (``test_a_refused_replace_stops_the_banked_seed_for_the_rest_of_the_run``).
         * **something must have landed.** A directive whose pinned lookup
@@ -1908,10 +1826,9 @@ class WebImportSession(ImportSession):
           it is the same album, it would pass the identity check too. Trashing
           it would Trash the album we just imported.
 
-        And the noise filter: an entry the hook already disposed of is dropped
-        first, because SQLite hands the new album the freed rowid (measured
-        ``[1] -> landed [1]``) and every such entry would otherwise trip the
-        reused-id warning on a healthy run.
+        The filter before them is not a guard: an entry the hook already disposed
+        of is dropped because the new album takes the freed rowid, and it would
+        otherwise trip the reused-id warning on a healthy run.
         """
         directive = self._directive
         if directive is None or directive.duplicate_action is not DuplicateAction.replace:
@@ -2530,24 +2447,19 @@ def run_import_worker(
             # resolve rather than what the user asked for.
             operator_logger.info("import file operation: %s", configured_file_operation())
             session.run()
-            # The album is in the library the moment session.run() returns; a
-            # failure moving a Replace-superseded copy to Trash must annotate,
-            # not invalidate. Reporting a committed import as failed would
-            # re-trigger duplicate detection against the just-imported album on
-            # retry. Skipped when run() raises: the banked pass moves files on
-            # the strength of an import that then did not finish.
+            # The album is in the library the moment run() returns, so a failed
+            # Trash move must annotate, not invalidate: reporting a committed
+            # import as failed would re-trigger duplicate detection on retry.
+            # Skipped when run() raises — the banked pass moves files on the
+            # strength of an import that then did not finish.
             try:
                 _trash_replaced_albums(session)
             except Exception:
                 logger.exception("post-import Trash cleanup failed; the old copy stayed in place")
         finally:
             config.set({"threaded": orig_threaded, "import": orig_import})
-            # One re-export point for the whole run. Both routes that drop item
-            # rows -- the duplicate hook and the banked pass above -- record the
-            # ids on the session, so the exports are rendered once, from the
-            # store as it finally is. In the finally because the hook drops rows
-            # during run(): a raise afterwards must not leave an export naming
-            # files that moved. Swallows its own failures.
+            # In the finally because the hook drops rows during run(): a raise
+            # afterwards must not leave an export naming files that moved.
             _reexport_replaced_playlists(session)
 
 
@@ -2570,34 +2482,28 @@ def _trash_replaced_albums(session: WebImportSession) -> None:
     this run landed names?" — :func:`_file_identities`. An album that shares one
     has its rows dropped and every file left where it is.
 
-    Not "the same inode": under ``hardlink`` a refiled old copy and the new
-    album are the same inode at different paths as a matter of course, and
-    reading that as shared left the old folder behind as untracked files
+    Not "the same inode": under ``hardlink`` a refiled old copy and the new album
+    are one inode at two paths as a matter of course, and reading that as shared
+    left the old folder behind as untracked files
     (``test_a_refiled_hardlink_sibling_still_reaches_trash``). Not the stored
-    strings either, which is the other half — one file carries more than one
-    spelling (a symlinked music root, a case-insensitive volume, a ``link``-mode
-    symlink onto the source). Pinned by
+    strings either — one file carries more than one spelling (a symlinked music
+    root, a case-insensitive volume, a ``link``-mode symlink onto the source):
     ``test_a_banked_replace_sharing_a_file_drops_rows_and_moves_nothing``,
-    ``test_a_symlinked_library_root_is_still_the_same_file`` and
+    ``test_a_symlinked_library_root_is_still_the_same_file``,
     ``test_a_link_mode_import_onto_a_symlinked_source_shares_the_file``.
 
     A path that cannot be stat-ed leaves its album alone, rows and files: unread
-    is not unshared. One EACCES blinds both sides of the comparison, so both are
-    pinned — the album's own side by
-    ``test_an_unreadable_file_leaves_the_banked_copy_in_place`` and the landed
-    side by ``test_an_unreadable_landed_file_skips_the_whole_pass``.
+    is not unshared. One EACCES blinds both sides, so both are pinned —
+    ``test_an_unreadable_file_leaves_the_banked_copy_in_place`` (the album's side)
+    and ``test_an_unreadable_landed_file_skips_the_whole_pass`` (the landed side).
 
-    Every row goes with the album, wherever its file LIVES — an ``in_place``
-    import, a changed ``directory:`` and a symlinked album folder all put files
-    legitimately outside the music folder
+    Every row goes with the album, wherever its file LIVES
     (``test_a_banked_replace_takes_a_row_outside_the_music_folder_with_it``).
-    What does not go is a row naming a file the RUN itself is reading, dropped
-    here exactly as on the hook route. beets' own ``record_replaced`` /
-    ``remove_replaced`` covers most of that by the time this runs, but only for
-    the byte-identical spelling and only for tasks that reached ``task.add``:
-    an aliased spelling of the download folder was moved to Trash with the
-    album, with no note (measured by the security seat), and a sibling task
-    beets skipped never has its sources queried at all.
+    What does not go is a row naming a file the RUN is reading, dropped here as on
+    the hook route: beets' own ``record_replaced``/``remove_replaced`` covers most
+    of that by now, but only for the byte-identical spelling and only for tasks
+    that reached ``task.add``, so an aliased spelling of the download folder was
+    moved to Trash with the album and a skipped sibling task is never queried.
 
     Synchronous library primitive on the worker thread — NOT the async
     resolve_duplicates_op (which gates on has_active_job + the swap lock and would
@@ -2618,11 +2524,9 @@ def _trash_replaced_albums(session: WebImportSession) -> None:
     library primitive stays correct on its own terms instead of silently
     depending on a caller that a future refactor could change.
 
-    Finally, the `.m3u8` collateral: a replaced album's files are now in Trash and
-    its rows are gone, so every playlist that held one of its tracks has an export
-    naming a file that is not there. The item ids are read BEFORE the rows go and
-    recorded on the session; ``run_import_worker`` renders the exports once, after
-    this pass, for every route in the run.
+    The `.m3u8` collateral is repaired once for the whole run, not here: the ids
+    are read BEFORE the rows go and recorded on the session, and
+    ``_reexport_replaced_playlists`` renders the exports after this pass.
 
     The store layout is re-checked here for the reason the request paths re-check
     it: this pair was resolved once, when the registry was handed the library at
@@ -2698,33 +2602,24 @@ def _trash_replaced_albums(session: WebImportSession) -> None:
 def _file_identities(lib: Any, album: Any) -> tuple[set[_EntryKey], bool]:
     """The album's files as DIRECTORY ENTRIES, and whether one could not be read.
 
-    Each path is resolved with ``realpath`` and then keyed by the file's
-    ``(st_dev, st_ino)`` PLUS the holding directory's — which is what makes two
-    entries equal exactly when moving one would move or break the other. All
-    four cases measured on this machine:
+    :func:`_entry_key` with ``follow_leaf=True`` — two entries are equal exactly
+    when moving one would move or break the other. Measured:
 
-    * two hardlinks of one file in DIFFERENT folders: not equal. This is the
-      normal ``hardlink`` refile, where the old copy is a sibling with its own
-      directory entry and is safe to move.
-    * one entry through a symlinked music root, and a ``link``-mode chain
-      (landed symlink → download symlink → the old album's real file): equal,
-      because ``realpath`` collapses both to the same entry.
+    * two hardlinks of one file in DIFFERENT folders: not equal — the normal
+      ``hardlink`` refile, where the old copy is a sibling safe to move.
+    * a symlinked music root, and a ``link``-mode chain (landed symlink →
+      download symlink → the old album's real file): equal.
     * two hardlinks of one file in ONE folder: equal. The acknowledged
       over-refusal — that album is left in place instead of moved.
-    * a dangling link resolves to a path that is not there, so it contributes
-      nothing (``FileNotFoundError``), same as a row naming a deleted file.
+    * a dangling link contributes nothing, like a row naming a deleted file.
 
-    A path that is simply absent is not "could not be read" — only an
-    ``OSError`` that is neither a missing path nor a non-directory component is.
+    A path that is simply absent is not "could not be read" — only an ``OSError``
+    that is neither a missing path nor a non-directory component is.
 
-    The key is :func:`_entry_key` with ``follow_leaf=True``, and on a
-    ``link``-mode entry it MUST disagree with the ownership question
-    (:class:`_SourceFiles`, ``follow_leaf=False``): here a library symlink onto
-    a download file is that file — moving the file breaks the link, which is the
-    whole point of this set — while for ownership it is the library's own entry,
-    which Trash may take as a link. One shared definition of the two made
-    ownership follow the leaf and lose a refiled album's rows; the parameter is
-    the disagreement.
+    ``follow_leaf=True`` MUST disagree here with the ownership question
+    (:class:`_SourceFiles`): a library symlink onto a download file IS that file
+    for this set, because moving the file breaks the link, while for ownership it
+    is the library's own entry, which Trash may take as a link.
     """
     identities: set[_EntryKey] = set()
     unreadable = False
@@ -2755,20 +2650,15 @@ def _reexport_replaced_playlists(session: WebImportSession) -> None:
 
     One point for the whole run. Both Replace routes drop rows — the duplicate
     hook before beets places anything, the banked pass after — and each records
-    the item ids it dropped on the session, so the exports are rendered once from
-    the store as it finally is rather than twice from two halves of it.
+    the ids on the session, so the exports are rendered once from the store as it
+    finally is rather than twice from two halves of it.
 
-    Best-effort and swallowing: ``run_import_worker`` already treats a post-run
-    Trash failure as an annotation rather than an invalidated import (reporting a
-    committed import as failed would re-trigger duplicate detection on retry), and
-    this collateral has even less claim to fail the run. It is also called from a
-    ``finally``, where a raise would replace whatever the run was already raising.
-
-    The count is LOGGED rather than returned: the worker's channels out are
-    ``on_finish()``, which takes no arguments, and the per-album outcome note,
-    which belongs to a decision rather than to the run. Carrying the number
-    would widen the ImportRunner protocol, the registry and ``ImportJobState``
-    for a figure the import UI has nowhere to show.
+    Best-effort and swallowing: its caller already treats a post-run Trash
+    failure as an annotation rather than an invalidated import (reporting a
+    committed import as failed would re-trigger duplicate detection on retry),
+    and this collateral has even less claim to fail the run. The count is LOGGED,
+    not returned — carrying it would widen the ImportRunner protocol, the
+    registry and ``ImportJobState`` for a figure the UI has nowhere to show.
     """
     playlists_dir = session._playlists_dir
     dropped_item_ids = session._dropped_item_ids
