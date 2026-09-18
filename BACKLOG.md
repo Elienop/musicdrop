@@ -116,12 +116,14 @@ entry carries a dated correction block where the pass changed it._
      one of move > link > hardlink > reflink, each clearing `copy` (`importer/session.py:114-138`),
      and the files stage then takes `copy` if it survived, telling `reflink: auto` apart from
      `reflink` (`importer/stages.py:278-291`). It ships `copy: yes` (2.13.1,
-     `config_default.yaml`), so a hardlink import needs `move: no`, `copy: no`, `hardlink: yes`.
+     `config_default.yaml`), and `hardlink` beats it, so a hardlink import needs `hardlink: yes`
+     and `move: no` (beets' default).
      An explicit per-import `operation` (`move`, `copy`) now pins all five file flags plus
      `delete`, and `delete` is pinned off on every path including `default` — so a hardlink
-     provider can no longer have its source removed. MusicDrop adds NO hardlink arm and NO
-     link probe (`decisions` #53, #57): a `default` import leaves the user's `hardlink: yes` to
-     beets. Still owed: the in-library guard (`is_in_library_source`,
+     provider can no longer have its source removed. MusicDrop forces NO file flag for a
+     hardlink and runs NO link probe (`decisions` #53, #57): a `default` import leaves the
+     user's `hardlink: yes` to beets, and only turns beets' import history on for that run
+     (the kept-folders bullet below). Still owed: the in-library guard (`is_in_library_source`,
      refusing copy today) covering hardlink; and a note that `write: yes` changes a hardlinked
      downloader's own file (mutagen opens it `rb+`) — acceptable for non-torrent sources, as *arr
      only documents it.
@@ -152,13 +154,60 @@ entry carries a dated correction block where the pass changed it._
      escape hatch to name — and the rule loop validates one key at a time, so a predicate over
      five flags reads four defaults (it fired on `copy: no, hardlink: yes`, a hardlink import).
      The warning belongs in the import panel, where the user can act on it.
+   - **Kept folders rely on beets' import history — BUILT 2026-09-18 on
+     `feat/import-keep-downloads`.** A run whose resolved file operation is hardlink forces
+     `incremental` on, with `incremental_skip_later` so a skipped album is offered again; a
+     sweep forces `incremental_skip_later` off (a user's `yes` made every sweep re-bank the
+     same folders). The way past the history is beets' own `-I` — `ImportOptions.incremental:
+     false` (the wire admits `false` and `null`; `true` is a 422) — sent by **Import them again** and always by the
+     Bank's Review now. `copy`, `link` and `reflink` configs are left to the user (`decisions`
+     #53: the setting writes `hardlink`), though `link: yes` shares the same-file hazard below
+     (measured: `util.samefile` follows the symlink).
+     Recorded by the 2026-09-18 review seats, none closed yet:
+     - **HIGH — closed by the next slice (Replace = Trash move first).** Under hardlink,
+       re-importing a folder whose album is still in the library and answering Replace leaves
+       one album whose rows name files that are gone. beets skips `unique_path` when source and
+       destination are the same file (`library/models.py:1044-1045`), so the new rows resolve
+       to the old paths, and the post-run Trash pass then moves those files away (measured for
+       `hardlink` and `link`; a copy config is healthy). Held by TWO strict xfails, the
+       `hardlink` and `link` params of
+       `test_replacing_a_duplicate_leaves_an_album_whose_files_exist` — the fix must turn both
+       red. *Keep both* on the same
+       files leaves two albums over one set of files, beets' own behaviour and untested;
+       whether the duplicate question should offer anything but Skip there is an owner call.
+     - **A mixed run cannot name what it skipped.** beets skips a known folder before any hook
+       fires, MusicDrop keeps a bare counter, and Import them again is withheld when anything
+       else happened — so "1 imported · 2 already known" names no folder and offers no control.
+       Future shape: known folders as read-only feed rows with a per-row "import anyway",
+       bounded (a sweep skips thousands). Its own slice.
+     - **An attended run cannot be stopped.** Import them again on a parent of N kept albums
+       parks N duplicate questions and holds the single import slot; only a sweep has Pause.
+       Needs a design discussion.
+     - **beets' state file fails open, silently.** `ImportState._open` swallows any read error
+       at DEBUG (`importer/state.py:73-85`, a missing file included) and `_save` then
+       overwrites the file, so a truncated `state.pickle` loses the whole history with no
+       signal. The visible result is a duplicate question instead of a skip, not a silent
+       second import. Recorded, not guarded (`decisions` #57): probing the pickle ourselves is
+       a layer around beets.
+     - **The bank row is deleted when Review now's start returns 202,** not when the import
+       ends, and a failed delete is swallowed.
+     - **Touch targets.** `Button size="sm"` is 32px and the frontend has no coarse-pointer
+       floor — a primitive-level decision, not a call-site override.
+     - **`aria-disabled:opacity-50` is copied onto ~20 buttons.** The pending recipe
+       (`aria-disabled`, click swallowed) has no dim of its own, so each site adds the class,
+       and a pending button keeps its hover fill. Lifting both into `buttonVariants` beside
+       `disabled:opacity-50` is a primitive-level decision.
    - **KNOWN LIMIT — a raced config Apply drops the pin and re-shadows the new config.** Every
      forced `import.*` key is an overlay on a mutable process global, not an invariant.
      `reset_beets_globals` calls `beets.config.clear()` (`app/beets/setup.py:133`), so an Apply
      that wins the documented TOCTOU (`app/beets/config_editor.py:799-812`, gated on
      `library_job_active()` outside the swap lock) drops the forced source mid-import — and the
      import's `finally` then inserts its PRE-Apply snapshot on top of the freshly reloaded
-     config, re-shadowing 12 just-applied keys for the life of the process. Acceptable for a
+     config, re-shadowing every snapshotted key (13 since `incremental_skip_later` joined the
+     set) for the life of the process. The same race can now revert `incremental_skip_later`
+     mid-run: to a user's `yes` under a sweep (it re-banks the same folders), or to beets'
+     default `no` under a hardlink run whose user also set `incremental: yes` (a SKIP is
+     recorded as done). Acceptable for a
      single-user self-host and not a data-loss path (the import config lock now 409s the
      reachable races), but it means "never deletes a source" is "never, outside that race".
      Closing it properly means asserting the value where beets READS it rather than where we
