@@ -552,11 +552,16 @@ def test_disk_sync_count_is_recorded_before_the_job_finishes(
 
 
 def _replace_session(lib: Library, *, trash_dir: Path, playlists_dir: Path | None) -> Any:
-    """A WebImportSession stripped to what ``_trash_replaced_albums`` reads.
+    """A WebImportSession stripped to what the post-run pass and re-export read.
 
     ``__init__`` is skipped (it would build a real beets ImportSession), so every
-    attribute the post-run pass touches is set explicitly — the same fake shape
+    attribute they touch is set explicitly — the same fake shape
     tests/test_import_duplicate_session.py uses.
+
+    ``_dropped_item_ids`` is the channel between the two halves: the pass records
+    the ids whose rows it dropped, and the single re-export point at the end of
+    ``run_import_worker`` reads them. An instance set, not a class one, so ids
+    cannot leak from one test into the next.
     """
     import logging
 
@@ -575,6 +580,7 @@ def _replace_session(lib: Library, *, trash_dir: Path, playlists_dir: Path | Non
     # Nothing landed in these fixtures, so the pass has no just-imported file to
     # protect; the I6 case has its own test below.
     session._landed_album_ids = set()
+    session._dropped_item_ids = set()
     return session
 
 
@@ -582,8 +588,14 @@ def test_import_replace_reexports_the_superseded_albums_playlists(
     duplicates_lib: Library, tmp_path: Path
 ) -> None:
     """A ``replace`` decision trashes the pre-existing copy after the run; every
-    playlist that held one of its tracks must lose those lines."""
-    from app.beets.import_session import _trash_replaced_albums
+    playlist that held one of its tracks must lose those lines.
+
+    Two calls, in the order ``run_import_worker`` makes them: the pass drops the
+    rows and records their ids, then the run's single re-export point renders the
+    exports once. Calling only the first leaves the export stale, which is the
+    state this test exists to refuse.
+    """
+    from app.beets.import_session import _reexport_replaced_playlists, _trash_replaced_albums
 
     playlists_dir = tmp_path / "playlists"
     playlists_dir.mkdir()
@@ -601,6 +613,7 @@ def test_import_replace_reexports_the_superseded_albums_playlists(
     )
     session._replace_album_ids = {_require_id(superseded.id)}
     _trash_replaced_albums(session)
+    _reexport_replaced_playlists(session)
 
     body = _export_text(duplicates_lib, record.id)
     assert doomed_line not in body
@@ -610,9 +623,9 @@ def test_import_replace_reexports_the_superseded_albums_playlists(
 def test_import_replace_without_a_playlists_dir_leaves_exports_alone(
     duplicates_lib: Library, tmp_path: Path
 ) -> None:
-    """Unwired (``playlists_dir=None``, the tests/fakes shape) the pass is skipped:
-    the trashing still happens, the export is simply not rewritten."""
-    from app.beets.import_session import _trash_replaced_albums
+    """Unwired (``playlists_dir=None``, the tests/fakes shape) the re-export is
+    skipped: the trashing still happens, the export is simply not rewritten."""
+    from app.beets.import_session import _reexport_replaced_playlists, _trash_replaced_albums
 
     playlists_dir = tmp_path / "playlists"
     playlists_dir.mkdir()
@@ -624,6 +637,7 @@ def test_import_replace_without_a_playlists_dir_leaves_exports_alone(
     session = _replace_session(duplicates_lib, trash_dir=tmp_path / "trash", playlists_dir=None)
     session._replace_album_ids = {_require_id(superseded.id)}
     _trash_replaced_albums(session)
+    _reexport_replaced_playlists(session)
 
     assert duplicates_lib.get_album(_require_id(superseded.id)) is None  # it really ran
     assert _export_text(duplicates_lib, record.id) == before
@@ -712,11 +726,11 @@ def test_run_import_worker_post_run_pass_tolerates_a_minimal_session(
     """A REPLICA of the fake-session shape in tests/test_import_session.py.
 
     That file may never be run here (it writes the real ``~/.config/beets``), and
-    both additions to ``_trash_replaced_albums`` — reading ``album.items()``
-    before the trash, and reading ``session._playlists_dir`` after it — are
-    exactly the kind of change that breaks an attribute-by-attribute fake without
-    any local test noticing. This runs the same shape so the edit made over there
-    is verified here rather than assumed.
+    every attribute the post-run halves added — ``album.items()`` before the
+    trash, ``_dropped_item_ids`` after it, ``_playlists_dir`` at the re-export —
+    is exactly the kind of change that breaks an attribute-by-attribute fake
+    without any local test noticing. This runs the same shape so the edit made
+    over there is verified here rather than assumed.
 
     The ERROR-log assertion is load-bearing, not decoration: ``run_import_worker``
     wraps the whole post-run pass in ``except Exception: logger.exception(...)``,
@@ -764,6 +778,7 @@ def test_run_import_worker_post_run_pass_tolerates_a_minimal_session(
         _trash_dir = tmp_path / "trash"
         _trash_origins_dir = tmp_path / "trash-origins"
         _playlists_dir = None
+        _dropped_item_ids: ClassVar[set[int]] = set()
 
         def run(self) -> None:
             pass

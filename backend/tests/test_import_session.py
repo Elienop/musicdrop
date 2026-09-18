@@ -165,6 +165,30 @@ class _BindOnlyLib:
         return contextlib.nullcontext()
 
 
+class _PostRunReads:
+    """Everything ``run_import_worker`` reads off a session around ``run()``.
+
+    One base instead of the same four lines in every stand-in below: the in-library
+    guard reads ``paths``; the post-run Trash pass reads the trash pair and
+    ``_replace_album_ids``; the single playlist re-export point reads
+    ``_playlists_dir`` and ``_dropped_item_ids``. ``None``/empty makes both
+    post-run halves return before touching ``lib``, which is what these
+    config-flag tests want.
+
+    A stand-in breaks the moment production reads an attribute it never set, and
+    the re-export is called from a ``finally`` that no broad ``except`` wraps — so
+    a missing one fails the test loudly rather than logging and passing.
+    """
+
+    lib = _BindOnlyLib()
+    paths: ClassVar[list[bytes]] = []
+    _replace_album_ids: ClassVar[set[int]] = set()
+    _trash_dir: ClassVar[Path | None] = None
+    _trash_origins_dir: ClassVar[Path | None] = None
+    _playlists_dir: ClassVar[Path | None] = None
+    _dropped_item_ids: ClassVar[set[int]] = set()
+
+
 def _make_session(bridge: ImportBridge) -> WebImportSession:
     """Construct a session without a real Library (we never call run()).
 
@@ -192,6 +216,12 @@ def _make_session(bridge: ImportBridge) -> WebImportSession:
     # __init__ is skipped, so seed the set the duplicate hook fills when IT moved
     # a copy to Trash; the banked seed drops those entries before its own guards.
     session._hook_replaced_album_ids = set()
+    # __init__ is skipped, so seed the refusal latch the banked seed reads first
+    # (a refused Replace disables the seed for the rest of the run) and the
+    # dropped-row ids the single playlist re-export point reads.
+    session._replace_was_refused = False
+    session._dropped_item_ids = set()
+    session._playlists_dir = None
     # __init__ is skipped, so default the astracks-in-flight flag choose_item
     # now reads (armed by choose_match when a park is decided "as tracks").
     session._astracks_in_flight = False
@@ -574,15 +604,7 @@ def test_run_import_worker_forces_single_threaded_and_runs(
     config["threaded"] = True  # ambient default; the worker must override it.
     seen: dict[str, Any] = {}
 
-    class FakeSession:
-        # The post-run trash pass reads these off the session; trash_dir=None
-        # makes it return early before touching lib/get_album.
-        lib = _BindOnlyLib()
-        # The in-library guard reads session.paths; empty -> guard no-ops.
-        paths: ClassVar[list[bytes]] = []
-        _replace_album_ids: ClassVar[set[int]] = set()
-        _trash_dir = None
-
+    class FakeSession(_PostRunReads):
         def run(self) -> None:
             seen["threaded"] = bool(config["threaded"])
 
@@ -1372,12 +1394,7 @@ def test_run_import_worker_forces_duplicate_action_ask() -> None:
     config["import"]["duplicate_action"] = "keep"  # user config says keep-both
     seen: dict[str, Any] = {}
 
-    class FakeSession:
-        lib = _BindOnlyLib()
-        paths: ClassVar[list[bytes]] = []
-        _replace_album_ids: ClassVar[set[int]] = set()
-        _trash_dir = None
-
+    class FakeSession(_PostRunReads):
         def run(self) -> None:
             seen["dup_action"] = config["import"]["duplicate_action"].get()
 
@@ -1399,12 +1416,7 @@ def test_run_import_worker_forces_autotag_on_and_restores_it() -> None:
     config["import"]["autotag"] = False  # hostile user config
     seen: dict[str, Any] = {}
 
-    class FakeSession:
-        lib = _BindOnlyLib()
-        paths: ClassVar[list[bytes]] = []
-        _replace_album_ids: ClassVar[set[int]] = set()
-        _trash_dir = None
-
+    class FakeSession(_PostRunReads):
         def run(self) -> None:
             seen["autotag"] = config["import"]["autotag"].get(bool)
 
@@ -1463,10 +1475,13 @@ def test_run_import_worker_trashes_replace_ids_after_run(
         def transaction(self) -> Any:
             return contextlib.nullcontext()
 
-    class FakeSession:
+    class FakeSession(_PostRunReads):
         lib = _Lib()
-        paths: ClassVar[list[bytes]] = []
         _replace_album_ids: ClassVar[set[int]] = {11, 22}
+        # Its OWN set, not the base's: this stand-in reaches the pass, which
+        # updates it in place, and a shared class attribute would carry the ids
+        # into the next test.
+        _dropped_item_ids: ClassVar[set[int]] = set()
         # Nothing landed, so the pass has no just-imported file to protect and
         # every row of both albums is trashable.
         _landed_album_ids: ClassVar[set[int]] = set()
@@ -1486,13 +1501,8 @@ def test_run_import_worker_trashes_replace_ids_after_run(
     assert sorted(trashed) == [11, 22]
 
 
-class _ScopedMoveSession:
+class _ScopedMoveSession(_PostRunReads):
     """Minimal session that records config['import']['move'] seen during run()."""
-
-    lib = _BindOnlyLib()
-    paths: ClassVar[list[bytes]] = []
-    _replace_album_ids: ClassVar[set[int]] = set()
-    _trash_dir = None
 
     def __init__(self) -> None:
         self.seen: bool | None = None
@@ -1868,13 +1878,8 @@ def test_already_imported_counts_known_skips() -> None:
     assert bridge.known_skips() == 1
 
 
-class _SweepConfigSession:
+class _SweepConfigSession(_PostRunReads):
     """Minimal session recording the sweep-relevant config seen during run()."""
-
-    lib = _BindOnlyLib()
-    paths: ClassVar[list[bytes]] = []
-    _replace_album_ids: ClassVar[set[int]] = set()
-    _trash_dir = None
 
     def __init__(self) -> None:
         self.seen: dict[str, Any] = {}
@@ -2043,6 +2048,9 @@ def _directive_dup_setup(
     The music root is created holding an unrelated folder: present and non-empty,
     as a real library's root is, while the duplicate's own file is never written
     (it is a ghost, which is what the replace arm below turns on).
+
+    The Trash pair is wired because the replace arm now disposes of the duplicate
+    ITSELF (it answers beets KEEP): unwired, it would refuse and answer SKIP.
     """
     from beets.library import Library as BeetsLibrary
 
@@ -2050,6 +2058,8 @@ def _directive_dup_setup(
     session = _make_session(ImportBridge())
     session.unattended = True
     session._replace_album_ids = set()
+    session._trash_dir = tmp_path / "trash"
+    session._trash_origins_dir = tmp_path / "trash-origins"
     (tmp_path / "music" / "Someone Else").mkdir(parents=True, exist_ok=True)
     lib = BeetsLibrary(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
     session.lib = lib
@@ -2087,15 +2097,19 @@ def test_directive_duplicate_actions_map_like_attended(
     assert session2.get_duplicate_action(task2, [existing2]) is BeetsDuplicateAction.MERGE
 
     # replace: the duplicate here is a GHOST (its item path names a file that was
-    # never created), so there is nothing to move and beets' own REMOVE drops the
-    # rows before it places anything.
+    # never created), so there is nothing to move — the hook drops its rows and
+    # answers KEEP, which is what stops beets from re-running find_duplicates and
+    # hard-deleting whatever THAT query returns.
     session3, task3, existing3 = _directive_dup_setup(tmp_path, monkeypatch)
     session3._directive = BankApplyDirective(
         action="duplicate", duplicate_action=DuplicateAction.replace
     )
+    ghost_id = _require_id(existing3.id)
     assert not os.path.exists(os.fsdecode(next(iter(existing3.items())).path))
-    assert session3.get_duplicate_action(task3, [existing3]) is BeetsDuplicateAction.REMOVE
-    assert session3._replace_album_ids == set()
+    assert session3.get_duplicate_action(task3, [existing3]) is BeetsDuplicateAction.KEEP
+    assert session3.lib.get_album(ghost_id) is None  # disposed of by the hook, in the hook
+    assert session3._hook_replaced_album_ids == {ghost_id}
+    assert session3._replace_album_ids == set()  # nothing left for the post-run pass
 
     # keep_both imports alongside the existing copy
     session4, task4, existing4 = _directive_dup_setup(tmp_path, monkeypatch)
@@ -2179,6 +2193,38 @@ def test_banked_replace_seeds_the_trash_set_when_the_hook_never_fired(tmp_path: 
     session._landed_album_ids = {existing_id + 500}  # the new album landed
     session._seed_replace_from_directive()
     assert session._replace_album_ids == {existing_id}
+
+
+def test_a_refused_replace_stops_the_banked_seed_for_the_rest_of_the_run(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A Replace the hook refused disables the seed for the whole run.
+
+    The dangerous shape is a run where one Replace failed part-way (copy A
+    reached Trash, copy B raised, so nothing was imported and the user was told)
+    while some OTHER task in the same run landed normally. That landing satisfies
+    the seed's "something landed" gate, and the seed would then enforce the
+    banked entry for copy B — moving the user's only copy out of the library on
+    the strength of an import that never happened.
+
+    The latch is set by ``_replace_refused``, which every refusal goes through;
+    ``test_a_failed_first_move_imports_nothing_and_leaves_the_library_alone``
+    (tests/test_import_replace_ordering.py) drives that end to end. The control
+    for this test is ``test_banked_replace_seeds_the_trash_set_when_the_hook
+    _never_fired`` directly above: identical, minus the latch, and it seeds.
+    """
+    session, existing_id = _replace_seed_setup(tmp_path)
+    session._directive = _replace_directive(_existing_album_model(existing_id))
+    session._landed_album_ids = {existing_id + 500}  # another task landed
+    session._replace_was_refused = True  # ...but a Replace in this run refused
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.import_session"):
+        session._seed_replace_from_directive()
+
+    assert session._replace_album_ids == set()
+    assert any("was refused" in r.getMessage() for r in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]
 
 
 def test_banked_replace_seed_skips_an_identity_mismatch(tmp_path: Path) -> None:

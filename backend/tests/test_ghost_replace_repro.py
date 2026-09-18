@@ -82,6 +82,24 @@ def _seed_ghost(lib: Library, music: Path, *, artist: str, album: str, folder: s
     return ghost_id
 
 
+def _assert_no_row_names_a_deleted_file(lib: Library, *, where: str) -> None:
+    """The ghost is gone when nothing left in the DB names a file that is not there.
+
+    This replaced ``assert lib.get_album(ghost_id) is None`` in the three
+    single-ghost tests. A Replace now drops the old album's rows BEFORE beets
+    inserts the new one, and SQLite hands the freed rowid straight to that insert
+    (measured: ghost album ``[1]`` -> landed album ``[1]``), so the ghost's id
+    compares equal to an album that is not the ghost. The ghost's defining
+    property is a row whose file was deleted, so that is what is asserted —
+    together with each test's own album count, which is what catches a ghost that
+    survived alongside the new album.
+    """
+    for album in lib.albums():
+        for item in album.items():
+            path = os.fsdecode(item.path)
+            assert os.path.isfile(path), f"{where}: row for {album.album} names no file: {path}"
+
+
 def _patch_match(
     monkeypatch: pytest.MonkeyPatch, *, artist: str, album: str, rec: BeetsRec
 ) -> None:
@@ -194,9 +212,7 @@ def test_attended_replace_of_ghost_imports_new_and_drops_ghost(
     music.mkdir()
     lib = build_library(str(tmp_path / "library.db"), str(music))
 
-    ghost_id = _seed_ghost(
-        lib, music, artist="Radiohead", album="In Rainbows", folder="Radiohead/In Rainbows"
-    )
+    _seed_ghost(lib, music, artist="Radiohead", album="In Rainbows", folder="Radiohead/In Rainbows")
     source = tmp_path / "incoming" / "Radiohead - In Rainbows"
     _make_tagged_flac(
         source / "01 15 Step.flac",
@@ -218,7 +234,7 @@ def test_attended_replace_of_ghost_imports_new_and_drops_ghost(
     _answer(bridge, _APPLY)
     handle.wait()
 
-    assert lib.get_album(ghost_id) is None, "ghost album still in the DB after Replace"
+    _assert_no_row_names_a_deleted_file(lib, where="attended replace of a ghost")
     albums = list(lib.albums())
     assert len(albums) == 1, f"expected exactly the new album, got {[a.album for a in albums]}"
     new_items = list(albums[0].items())
@@ -290,9 +306,7 @@ def test_attended_asis_replace_of_ghost(tmp_path: Path, monkeypatch: pytest.Monk
     music = tmp_path / "music"
     music.mkdir()
     lib = build_library(str(tmp_path / "library.db"), str(music))
-    ghost_id = _seed_ghost(
-        lib, music, artist="blink-182", album="blink-182", folder="blink-182/blink-182"
-    )
+    _seed_ghost(lib, music, artist="blink-182", album="blink-182", folder="blink-182/blink-182")
     source = tmp_path / "incoming" / "blink-182"
     _make_tagged_flac(
         source / "01 Feeling This.flac",
@@ -315,7 +329,7 @@ def test_attended_asis_replace_of_ghost(tmp_path: Path, monkeypatch: pytest.Monk
     _answer(bridge, _ASIS)
     handle.wait()
 
-    assert lib.get_album(ghost_id) is None, "ghost still present (asis replace)"
+    _assert_no_row_names_a_deleted_file(lib, where="asis replace of a ghost")
     albums = list(lib.albums())
     assert len(albums) == 1, f"expected the new album only, got {[a.album for a in albums]}"
     for it in albums[0].items():
@@ -333,9 +347,7 @@ def test_attended_replace_of_ghost_inlibrary_source(
     music = tmp_path / "music"
     music.mkdir()
     lib = build_library(str(tmp_path / "library.db"), str(music))
-    ghost_id = _seed_ghost(
-        lib, music, artist="Radiohead", album="In Rainbows", folder="Radiohead/In Rainbows"
-    )
+    _seed_ghost(lib, music, artist="Radiohead", album="In Rainbows", folder="Radiohead/In Rainbows")
     # A DIFFERENT folder but physically under the library root.
     source = music / "incoming" / "Radiohead - In Rainbows"
     _make_tagged_flac(
@@ -358,7 +370,7 @@ def test_attended_replace_of_ghost_inlibrary_source(
     _answer(bridge, _APPLY)
     handle.wait()
 
-    assert lib.get_album(ghost_id) is None, "ghost still present (in-library source)"
+    _assert_no_row_names_a_deleted_file(lib, where="in-library-source replace of a ghost")
     albums = list(lib.albums())
     assert len(albums) == 1, f"expected the new album only, got {[a.album for a in albums]}"
     for it in albums[0].items():

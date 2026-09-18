@@ -510,10 +510,17 @@ class BankApplyRunner:
           that resolved nothing, an unreadable folder).
 
         A feed row carrying a ``note`` outranks all of it: the session answered
-        the duplicate hook SKIP because a Replace could not move the old copy to
-        Trash, so nothing was imported and the note is the only channel that
-        says which of those two things happened. Retryable — the recovery IS
-        deciding again, once the Trash folder works.
+        the duplicate hook SKIP because the old copy could not be disposed of, so
+        nothing was imported and the note is the only channel that says which
+        reason applied. Retryable — the recovery IS deciding again, once the
+        Trash folder works.
+
+        The note is read over EVERY album of the job, like ``album_id`` and
+        ``dup_resolution_ran`` beside it, because a bank row is a FOLDER and a
+        folder can hold more than one album. One refusal therefore fails the
+        whole row even if a sibling album landed: the row has one status, and
+        reporting ``done`` would hide the refusal. Deciding again re-imports the
+        folder, where the sibling that landed now surfaces as a duplicate.
         """
         if state.phase is ImportPhase.failed:
             return "failed", state.error or "import failed", None, True

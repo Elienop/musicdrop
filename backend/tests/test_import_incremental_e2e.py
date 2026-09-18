@@ -143,6 +143,7 @@ def _import(
     choice: ImportAction = ImportAction.skip,
     duplicate: DuplicateAction = DuplicateAction.skip_new,
     trash_dir: Path | None = None,
+    playlists_dir: Path | None = None,
     answer_for: float = _DEADLINE_S,
     **kwargs: Any,
 ) -> _Run:
@@ -171,7 +172,8 @@ def _import(
 
     ``trash_dir`` wires the post-run Replace pass; without BOTH it and its
     origin sibling the pass skips itself and a Replace leaves the old album in
-    the library.
+    the library. ``playlists_dir`` wires the run's single `.m3u8` re-export
+    point; unwired, a Replace repairs no export (the shape most tests want).
     """
     from tests.conftest import origins_for
 
@@ -190,6 +192,7 @@ def _import(
             sweep=False,
             bank_dir=None,
             directive=None,
+            playlists_dir=playlists_dir,
         )
         try:
             run_import_worker(session, **kwargs)

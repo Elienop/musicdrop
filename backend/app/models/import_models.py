@@ -256,10 +256,11 @@ class AlbumOutcome(BaseModel):
     # however it was chosen (strong auto-apply or a user apply/asis decision),
     # and a non-applied follow-up status could regress a decided feed row.
     album_id: int | None = None
-    # Why an album the user asked to Replace imported nothing: the old copy
-    # could not reach Trash, so beets was answered SKIP. Carried on its own
-    # follow-up outcome (same album_index) and attached to the feed row without
-    # touching its status. None on every other outcome.
+    # Why an album the user asked to Replace imported nothing: the old copy was
+    # not disposed of — unreadable, no Trash wired, a refused store layout, a
+    # failed move — so beets was answered SKIP. Carried on its own follow-up
+    # outcome (same album_index) and attached to the feed row without touching
+    # its status. None on every other outcome.
     note: str | None = None
 
 

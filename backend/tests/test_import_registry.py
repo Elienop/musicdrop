@@ -1779,26 +1779,51 @@ def _replace_note_outcome(index: int, note: str) -> AlbumOutcome:
 def test_a_replace_note_reaches_the_feed_row_without_moving_its_status() -> None:
     """The only channel the worker has for "your Replace imported nothing".
 
-    The row already reads ``needs_dup_resolution`` (emitted at the top of
-    ``get_duplicate_action``) and the user's decision still stands, so the note
-    attaches and the status ladder is left alone. Without the attach the sentence
-    is dropped: a ``needs_dup_resolution`` outcome for a row that already exists
-    does not replace ``row.outcome``.
+    The row is driven to the state the note actually arrives in: the duplicate
+    outcome put it at ``needs_dup_resolution``, the user answered ``replace``
+    (which marks it ``decided`` and records the action), and only then does the
+    session find it cannot dispose of the old copy. So the note has to attach to
+    a DECIDED row without dragging its status back — the decision stands, and
+    ``needs_dup_resolution`` would put the prompt back in front of a user the
+    worker has already moved past.
+
+    Without the attach the sentence is dropped: a note-bearing outcome for a row
+    that already exists does not replace ``row.outcome``.
     """
     from app.beets.import_session import ImportBridge
     from app.import_jobs.registry import ImportJob
+    from app.models.import_models import DuplicateAction, DuplicateDecision
 
-    note = "Replace could not move the old copy to Trash. Nothing was imported."
+    note = "Replace could not read the old copy's files, so nothing was moved or imported."
     bridge = ImportBridge()
     reg = ImportJobRegistry()
     reg._job = ImportJob(id="note-job", bridge=bridge, phase=ImportPhase.reviewing)
     bridge.note_outcome(_dup_outcome(0))
-    bridge.note_outcome(_replace_note_outcome(0, note))
+
+    # The worker blocks in park_duplicate until the decision arrives, exactly as
+    # the attended route does; the note is emitted after it returns.
+    answered = threading.Event()
+
+    def worker() -> None:
+        bridge.park_duplicate(_dup_prompt(0))
+        bridge.note_outcome(_replace_note_outcome(0, note))
+        answered.set()
+
+    threading.Thread(target=worker, daemon=True).start()
+    deadline = time.monotonic() + 2.0
+    while not reg.state("note-job").awaiting_decision and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert reg.state("note-job").awaiting_decision, "the prompt never parked"
+
+    reg.record_duplicate_decision("note-job", 0, DuplicateDecision(action=DuplicateAction.replace))
+    assert answered.wait(2.0), "the worker never left park_duplicate()"
+    decided = reg.state("note-job").albums
+    assert [r.status for r in decided] == [ImportAlbumStatus.decided]  # the premise
 
     rows = reg.drain("note-job")
 
     assert [r.note for r in rows] == [note]
-    assert [r.status for r in rows] == [ImportAlbumStatus.needs_dup_resolution]
+    assert [r.status for r in rows] == [ImportAlbumStatus.decided]
 
 
 def test_a_row_carries_no_note_when_nothing_went_wrong() -> None:

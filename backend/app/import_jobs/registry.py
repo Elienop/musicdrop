@@ -460,10 +460,11 @@ class ImportJobRegistry:
         for outcome in job.bridge.drain_outcomes():
             row = job.albums.get(outcome.album_index)
             if outcome.note is not None and row is not None:
-                # A Replace that imported nothing because the old copy could not
-                # reach Trash. The row already reads needs_dup_resolution and the
-                # user's decision still stands — only the reason is new, so the
-                # status ladder is left alone.
+                # A Replace that imported nothing because the old copy was not
+                # disposed of. On an attended run the row reads ``decided`` by
+                # now (the user answered the prompt); on a directive run it
+                # reads needs_dup_resolution. Either way the decision stands and
+                # only the reason is new, so the status ladder is left alone.
                 row.outcome = row.outcome.model_copy(update={"note": outcome.note})
             elif row is None:
                 job.albums[outcome.album_index] = _FeedAlbum(

@@ -87,15 +87,17 @@ class BeetsImportRunner:
         self._lib = lib
         self._trash_dir = trash_dir
         # Threaded session-ward as a PAIR with trash_dir (see WebImportSession):
-        # the post-run Replace pass records where each trashed copy came from.
+        # a Replace records where each trashed copy came from, so Restore can
+        # put it back.
         self._trash_origins_dir = trash_origins_dir
         # Where sweep runs write bank rows (<beets_dir>/bank by default),
         # threaded session-ward exactly like trash_dir. Non-sweep runs never
         # receive it (the session's _bank_row would no-op anyway).
         self._bank_dir = bank_dir
         # The owned-playlist store, threaded session-ward like the two above so
-        # the post-run Replace Trash pass can repair the `.m3u8` exports that
-        # named the replaced album's files. INJECTED rather than read from
+        # a Replace can repair the `.m3u8` exports that named the replaced
+        # album's files (one re-export at the end of the run, covering both the
+        # duplicate hook and the banked pass). INJECTED rather than read from
         # settings on the worker thread: a settings read would make a test import
         # list the developer's real playlist store.
         self._playlists_dir = playlists_dir

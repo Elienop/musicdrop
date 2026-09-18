@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import threading
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,7 @@ from beets.library import Album, Item, Library
 
 from app.bank import store as bank_store
 from app.beets.import_session import ImportBridge, WebImportSession
+from app.beets.library import _require_id
 from app.models.bank import BankApplyDirective
 from app.models.import_models import (
     AlbumOutcomeStatus,
@@ -112,17 +114,24 @@ def _asis_task(album: str, artist: str | None, monkeypatch: pytest.MonkeyPatch) 
     return task
 
 
-def _lib_album_in(artist: str, album: str, tmp_path: Path, *, path: str | None = None) -> Library:
+def _lib_album_in(
+    artist: str, album: str, tmp_path: Path, *, path: str | None = None, with_file: bool = False
+) -> Library:
     """A DB-only library holding ONE album — the in-library side of the twin.
 
     The album's FOLDER is created and its file is not: the music root is present
     and non-empty (so ``require_library_root`` passes, as it does on a real
     library) while the album itself stays file-less, which is what these gate
     tests are about.
+
+    ``with_file`` writes the real FLAC fixture there instead, for the one test
+    that needs the twin's files to actually reach Trash.
     """
     if path is None:
         path = str(tmp_path / "music" / f"{artist} - {album}" / "01.mp3")
     Path(path).parent.mkdir(parents=True, exist_ok=True)
+    if with_file:
+        shutil.copyfile(Path(__file__).parent / "fixtures" / "silent.flac", path)
     item = Item(
         artist=artist,
         albumartist=artist,
@@ -146,15 +155,26 @@ def _gate_session(
     bank_dir: Path | None = None,
     directive: BankApplyDirective | None = None,
     toppaths: list[bytes] | None = None,
+    trash_dir: Path | None = None,
 ) -> WebImportSession:
-    """A hook session (run() never called) wired for the duplicate path."""
+    """A hook session (run() never called) wired for the duplicate path.
+
+    ``trash_dir`` is what a Replace needs: the hook disposes of the duplicate
+    itself now, so an unwired pair makes it refuse and answer SKIP. Wired as a
+    pair from one argument, as production resolves it.
+    """
     session = WebImportSession.__new__(WebImportSession)
     session.logger = logging.getLogger("test.dupguard")
     session.bridge = bridge
     session._album_index = 0
-    session._trash_dir = None
+    session._trash_dir = trash_dir
+    session._trash_origins_dir = None if trash_dir is None else trash_dir.parent / "trash-origins"
+    session._playlists_dir = None
     session._replace_album_ids = set()
     session._hook_replaced_album_ids = set()
+    session._landed_album_ids = set()
+    session._replace_was_refused = False
+    session._dropped_item_ids = set()
     session.lib = lib
     session.unattended = unattended
     session.sweep = sweep
@@ -495,7 +515,7 @@ def test_variant_gate_directive_replace_resolves_the_twin(
 ) -> None:
     # With an explicit dup decision, the resolution machinery works on the
     # variant twin exactly as on an exact one. The twin's file was never created,
-    # so it is a ghost: nothing to move, and beets' own REMOVE drops its rows.
+    # so it is a ghost: nothing to move, and the hook drops its rows itself.
     lib = _lib_album_in("Radiohead", "Greatest Hits - Chapter One", tmp_path)
     task = _apply_task(_match("Greatest Hits " + _EN_DASH + " Chapter One"), monkeypatch)
     bridge = ImportBridge()
@@ -503,16 +523,59 @@ def test_variant_gate_directive_replace_resolves_the_twin(
         bridge,
         lib,
         directive=BankApplyDirective(action="duplicate", duplicate_action=DuplicateAction.replace),
+        trash_dir=tmp_path / "trash",
     )
     session._install_dup_guard(task)
     found = task.find_duplicates(lib)
-    assert found
+    twin_id = _require_id(found[0].id)
     task.md_album_index = 0  # type: ignore[attr-defined]
 
     action = session.get_duplicate_action(task, found)
 
-    assert action is BeetsDuplicateAction.REMOVE  # beets drops the twin's rows
+    # KEEP, not REMOVE: beets' REMOVE would re-run find_duplicates with the
+    # EXACT query, which is what the guard exists to widen — the variant twin is
+    # not in that result, so the album the user replaced would have survived.
+    assert action is BeetsDuplicateAction.KEEP
+    assert lib.get_album(twin_id) is None  # the hook dropped the twin's rows
+    assert session._hook_replaced_album_ids == {twin_id}
     assert session._replace_album_ids == set()  # nothing left for the post-run pass
+    assert not (tmp_path / "trash").exists()  # a ghost has nothing to move
+
+
+def test_variant_gate_directive_replace_moves_a_twin_with_files_to_trash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The widened guard's twin, this time WITH its file on disk.
+
+    The sibling above is a ghost, so it only proves the rows-only arm. A twin the
+    exact query cannot see and whose file IS there must reach Trash — reversibly,
+    with an origin record — before beets places the incoming album. Nothing else
+    in the suite covers a variant twin whose files move.
+    """
+    lib = _lib_album_in("Radiohead", "Greatest Hits - Chapter One", tmp_path, with_file=True)
+    task = _apply_task(_match("Greatest Hits " + _EN_DASH + " Chapter One"), monkeypatch)
+    session = _gate_session(
+        ImportBridge(),
+        lib,
+        directive=BankApplyDirective(action="duplicate", duplicate_action=DuplicateAction.replace),
+        trash_dir=tmp_path / "trash",
+    )
+    session._install_dup_guard(task)
+    found = task.find_duplicates(lib)
+    twin_id = _require_id(found[0].id)
+    twin_file = Path(os.fsdecode(next(iter(found[0].items())).path))
+    assert twin_file.is_file()  # the premise: this twin is not a ghost
+    task.md_album_index = 0  # type: ignore[attr-defined]
+
+    action = session.get_duplicate_action(task, found)
+
+    assert action is BeetsDuplicateAction.KEEP
+    assert lib.get_album(twin_id) is None
+    assert not twin_file.exists()  # moved, not copied
+    moved = [p for p in (tmp_path / "trash").rglob("*") if p.is_file()]
+    assert len(moved) == 1, f"expected the twin's file under Trash, found {moved}"
+    origins = [p for p in (tmp_path / "trash-origins").rglob("*.json")]
+    assert len(origins) == 1, f"a Trash move must record where it came from: {origins}"
 
 
 # --------------------------------------------------------------------------

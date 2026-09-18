@@ -912,12 +912,12 @@ def test_replace_that_replaced_nothing_fails_honestly(tmp_path: Path) -> None:
 def test_a_replace_that_could_not_reach_trash_fails_the_row_with_its_own_sentence(
     tmp_path: Path,
 ) -> None:
-    # The session answered beets SKIP because the old copy could not be moved to
-    # Trash, so nothing was imported. Without the note this row reads DONE —
+    # The session answered beets SKIP because the old copy was not disposed of,
+    # so nothing was imported. Without the note this row reads DONE —
     # ``_classify_duplicate``'s "the resolution ran" arm cannot tell a Replace
     # that happened from one that refused, and the note is the only thing that
     # can. Retryable: the recovery IS deciding again once Trash works.
-    note = "Replace could not move the old copy to Trash. Nothing was imported."
+    note = "Replace failed while moving the old copy to Trash. Nothing was imported."
     handle, ids = _library(tmp_path, [("A", "B")])
     fake = FakeImportRunner(
         applied=[

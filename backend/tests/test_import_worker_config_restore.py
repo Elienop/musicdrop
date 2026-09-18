@@ -47,13 +47,20 @@ class _RecordingSession:
     AttributeError that ``run_import_worker``'s broad ``except Exception``
     logged and swallowed. Every test here passed anyway, which is why the
     omission survived — the docstring claimed an early return the pass never
-    reached."""
+    reached.
+
+    ``_playlists_dir`` and ``_dropped_item_ids`` for the single re-export point,
+    which the worker now calls in a ``finally`` on EVERY run. That call is not
+    inside a broad ``except``, so the same omission failed all 20 tests in this
+    file loudly instead of one silently."""
 
     lib: ClassVar[Any] = _BindOnlyLib()
     paths: ClassVar[list[bytes]] = []
     _replace_album_ids: ClassVar[set[int]] = set()
     _trash_dir = None
     _trash_origins_dir = None
+    _playlists_dir = None
+    _dropped_item_ids: ClassVar[set[int]] = set()
 
     def __init__(self) -> None:
         self.seen: dict[str, Any] = {}
