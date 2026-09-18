@@ -42,27 +42,30 @@ function renderAction(albumCount = 3) {
 /** The confirm body, pinned WHOLE — see the twin in DeleteAlbumAction.test.tsx
  * for why a fragment is not enough. The copy this replaced claimed the artist's
  * FOLDERS move and that everything stays recoverable in Trash; neither is true
- * of what Delete does. */
-function body(count: number, plural: string): string {
+ * of what Delete does. THREE clauses inflect on the count, not one, and a
+ * plural leaking into the singular arm is the whole reason both are pinned. */
+function body(count: number, plural: string, folder: string, noun: string): string {
   return (
     `Tracks, cover art, and lyrics from ${count} album${plural} by Daft Punk ` +
-    "move to Trash and leave your library. Other files in those folders stay " +
-    "where they are. Plex shows them as unavailable until a rescan."
+    `move to Trash; other files stay in ${folder}. Restore re-imports only the ` +
+    `tracks. Plex shows ${noun} as unavailable until a rescan.`
   );
 }
+
+const THREE = [3, "s", "their folders", "the albums"] as const;
+const ONE = [1, "", "its folder", "the album"] as const;
 
 describe("DeleteArtistAction", () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  it.each([
-    [3, "s"],
-    [1, ""],
-  ])(
-    "says what Delete actually moves for %i album(s), promising no more recovery",
-    async (count, plural) => {
+  it.each([THREE, ONE])(
+    "says what Delete actually moves for %i album(s), promising only the tracks back",
+    async (count, plural, folder, noun) => {
       renderAction(count);
       await userEvent.click(screen.getByRole("button", { name: /delete artist/i }));
-      expect(await screen.findByText(body(count, plural))).toBeInTheDocument();
+      expect(
+        await screen.findByText(body(count, plural, folder, noun)),
+      ).toBeInTheDocument();
     },
   );
 
@@ -74,7 +77,7 @@ describe("DeleteArtistAction", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /delete artist/i }));
     // Count + name surface in the confirm copy.
-    expect(await screen.findByText(body(3, "s"))).toBeInTheDocument();
+    expect(await screen.findByText(body(...THREE))).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /move to trash/i }));
 
     await waitFor(() =>

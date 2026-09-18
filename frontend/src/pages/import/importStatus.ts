@@ -172,8 +172,10 @@ function failedSweepCounts(sweep: SweepStatus): string {
   return sweepCounts(sweep) + knownClause(sweep.skipped_known);
 }
 
-/** The lost-album clause both terminal announcements owe. `not_landed` is only
- * ever nonzero on a terminal job, so it drops out of a clean run. */
+/** The lost-album clause every data-bearing announcement owes — the two
+ * terminal ones and, since a refused Replace is lost the moment it is refused
+ * and stops counting as applied there and then, the live one. Drops out of a
+ * clean run. Straight apostrophe: this string is spoken, never seen. */
 function notLandedClause(notLanded: number): string {
   return notLanded > 0 ? ` ${notLanded} didn't land.` : "";
 }
@@ -240,12 +242,20 @@ function namesAWait(data: ImportJobState): boolean {
 
 /** Active (non-terminal) non-sweep runs: count what's applied + flag pending
  * decisions (review, duplicate) so a screen-reader user hears the import is
- * waiting on them. */
+ * waiting on them.
+ *
+ * The lost clause belongs here as well as on the two terminal announcements: a
+ * refused Replace leaves `applied` and joins `not_landed` while the run is
+ * still going, so without it the album is announced by nobody — and this is the
+ * channel that had been saying "Imported 1" over a row reading "Nothing was
+ * imported." Same wording as the terminal pair; {@link notLandedClause} is the
+ * one source. */
 function progressMessage(data: ImportJobState): string {
-  const { applied, skipped, needs_review } = data.progress;
+  const { applied, skipped, needs_review, not_landed } = data.progress;
   const needs_dup = pendingDuplicates(data);
   let m = `Imported ${applied}.`;
   if (skipped > 0) m += ` Skipped ${skipped}.`;
+  m += notLandedClause(not_landed);
   if (needs_review > 0) {
     m += ` ${needs_review} album${needs_review === 1 ? "" : "s"} awaiting review.`;
   }

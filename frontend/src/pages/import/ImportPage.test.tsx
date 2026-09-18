@@ -712,15 +712,20 @@ describe("ImportPage — live feed", () => {
   });
 
   // A Replace the user asked for that imported NOTHING. The backend attaches
-  // its reason to the row's `note` and leaves the row's status alone
-  // (`registry._drain_locked`), so mid-run the badge still reads the calm
-  // "Decided" — the note is the only thing on screen saying the Replace
-  // refused, which is why a row that carries one may never render without it.
+  // its reason to the row's `note` WITHOUT touching the row's status
+  // (`registry._drain_locked`), and separately flags the row `did_not_land` in
+  // every phase — so the badge classifies and the note explains, from the
+  // moment of the refusal rather than only once the job ends.
   const REFUSED_NOTE =
     "Replace moved 1 of 2 old copies to Trash, then failed. Nothing was imported.";
 
   /** The decided row that note belongs to. `note` is left OFF by default so the
-   * absence case below is the same row minus one field. */
+   * absence case below is the same row minus one field.
+   *
+   * Counting rule every fixture here keeps: a noted row is counted ONCE, in
+   * `progress.not_landed`, with `did_not_land: true` and `set_aside` untouched —
+   * true on an attended run and on a bank-apply one, where the row wears
+   * `needs_dup_resolution` and is still not set aside. */
   function refusedRow(
     overrides: Partial<ImportAlbumSummary> = {},
   ): ImportAlbumSummary {
@@ -738,29 +743,43 @@ describe("ImportPage — live feed", () => {
     };
   }
 
+  /** A second, ordinary row. A one-row feed cannot tell "the note is on the
+   * refused row" from "the note is somewhere on the page". */
+  const LANDED_ROW: ImportAlbumSummary = {
+    index: 1,
+    folder: "/music/incoming/Radiohead - Kid A",
+    artist: "Radiohead",
+    album: "Kid A",
+    recommendation: "strong",
+    confidence: 98,
+    status: "applied",
+    album_id: 42,
+    did_not_land: false,
+  };
+
   test.each([
-    // Mid-run: the badge cannot express the refusal at all (the backend only
-    // sets did_not_land on a terminal job), so this is the whole message.
-    ["while the job runs", "reviewing", false, 0, "Decided"],
-    // At job end the badge turns destructive and the note says why.
-    ["once the job is terminal", "done", true, 1, "Didn’t land"],
+    // The contract is phase-independent, so the row must read the same in the
+    // live view and in the finished one — two different panels render the feed.
+    ["while the job runs", "reviewing"],
+    ["once the job is terminal", "done"],
   ] as const)(
     "a refused Replace says so on its own row %s",
-    async (_case, phase, didNotLand, notLanded, badge) => {
+    async (_case, phase) => {
       server.use(
         http.get(JOB_URL, () =>
           HttpResponse.json(
             makeJob({
               phase,
               progress: {
-                applied: 0,
+                applied: 1,
                 needs_review: 0,
                 skipped: 0,
-                not_landed: notLanded,
+                not_landed: 1,
                 already_known: 0,
               },
               albums: [
-                refusedRow({ note: REFUSED_NOTE, did_not_land: didNotLand }),
+                refusedRow({ note: REFUSED_NOTE, did_not_land: true }),
+                LANDED_ROW,
               ],
             }),
           ),
@@ -773,13 +792,17 @@ describe("ImportPage — live feed", () => {
       const text = await screen.findByText(REFUSED_NOTE);
       const line = text.closest("p");
       expect(line).not.toBeNull();
-      // The badge ladder is untouched by the note: it reads exactly what the
-      // status/flag alone would have made it read.
-      expect(screen.getByText(badge)).toBeInTheDocument();
+      // ON the refused row: the note's own <li> holds that album and not the
+      // other one. A one-row fixture cannot fail this.
+      const row = text.closest("li");
+      expect(row).toHaveTextContent("OK Computer");
+      expect(row).not.toHaveTextContent("Kid A");
+      // The badge classifies what the note explains, in BOTH phases.
+      expect(row).toHaveTextContent("Didn’t land");
       // In reading order with the row, and a grid item of the row WRAPPER —
       // from inside AlbumRow's box a second line re-centres every `items-center`
       // sibling beside it.
-      const wrapper = text.closest("li")?.firstElementChild;
+      const wrapper = row?.firstElementChild;
       expect(line?.parentElement).toBe(wrapper);
       expect(wrapper?.firstElementChild?.nextElementSibling).toBe(line);
       expect(wrapper?.className.split(/\s+/)).toContain("grid");
@@ -788,16 +811,24 @@ describe("ImportPage — live feed", () => {
       );
       // Both axes: CSS grid places definite-position items BEFORE auto-placed
       // ones, so without the column the note takes (row 1, col 1) and shoves the
-      // row body a track right.
-      for (const token of ["col-start-1", "row-start-2"]) {
+      // row body a track right. `col-span-full` so the line may also run under
+      // the action's column in the wide arm.
+      for (const token of ["col-span-full", "row-start-2"]) {
         expect(line?.className.split(/\s+/)).toContain(token);
       }
-      // Not colour alone: the glyph is decorative and amber, and the accessible
-      // content of the line is the sentence itself.
+      // A long unbreakable token must WRAP, not be clipped by the list's
+      // `overflow-hidden`; `min-w-0` alone only stops the page panning.
+      expect(text.className.split(/\s+/)).toEqual(
+        expect.arrayContaining(["min-w-0", "break-words"]),
+      );
+      // Not colour alone: the glyph is decorative and amber, and the line's
+      // whole text IS the sentence — no run-in label, nothing the colour has to
+      // carry. Equality, not `toHaveTextContent`: `line` was found by walking up
+      // from that very text, so a containment check cannot fail.
       const glyph = line?.querySelector("svg");
       expect(glyph).toHaveAttribute("aria-hidden", "true");
       expect(glyph?.getAttribute("class")?.split(/\s+/)).toContain("text-warning");
-      expect(line).toHaveTextContent(REFUSED_NOTE);
+      expect(line?.textContent).toBe(REFUSED_NOTE);
     },
   );
 
@@ -829,6 +860,132 @@ describe("ImportPage — live feed", () => {
     expect(wrapper?.children).toHaveLength(1);
     expect(wrapper?.className.split(/\s+/)).not.toContain("grid");
     expect(wrapper?.className.split(/\s+/)).not.toContain("@container/feedrow");
+  });
+
+  test("a noted row that still has a button stacks them, never sharing a cell", async () => {
+    // `_drain_locked` attaches a note without touching the status, and on a
+    // directive run that status is `needs_dup_resolution` — for which
+    // `feedRowAction` returns Resolve. Two explicitly placed grid items in one
+    // area paint over each other rather than stacking, so the narrow arm must
+    // give them different rows. (`bank_apply` feeds are read-only now, so this
+    // pairing is unreachable in production; the layout must survive it anyway.)
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            progress: {
+              applied: 0,
+              needs_review: 0,
+              skipped: 0,
+              not_landed: 1,
+              already_known: 0,
+            },
+            albums: [
+              refusedRow({
+                status: "needs_dup_resolution",
+                note: REFUSED_NOTE,
+                did_not_land: true,
+              }),
+            ],
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    const text = await screen.findByText(REFUSED_NOTE);
+    const line = text.closest("p");
+    const group = screen.getByRole("link", { name: /resolve/i }).parentElement;
+    const wrapper = text.closest("li")?.firstElementChild;
+    expect(line?.parentElement).toBe(wrapper);
+    expect(group?.parentElement).toBe(wrapper);
+    // Row, then note, then action — the order a screen reader walks and the
+    // order the rows paint in.
+    expect(wrapper?.firstElementChild?.nextElementSibling).toBe(line);
+    expect(line?.nextElementSibling).toBe(group);
+    // The narrow arm is where they used to collide; they must not name the same
+    // row there.
+    const rowStart = (el: Element | null | undefined) =>
+      el?.className.split(/\s+/).filter((c) => c.startsWith("row-start-")) ?? [];
+    expect(rowStart(line)).toEqual(["row-start-2"]);
+    expect(rowStart(group)).toEqual(["row-start-3"]);
+    // The wide arm is untouched: the action returns to row 1, column 2.
+    expect(group?.className.split(/\s+/)).toEqual(
+      expect.arrayContaining([
+        "@min-[28rem]/feedrow:col-start-2",
+        "@min-[28rem]/feedrow:row-start-1",
+      ]),
+    );
+  });
+
+  test("a bank-apply feed offers no decision button — nothing would consume it", async () => {
+    // A directive run answers every hook from the banked decision and never
+    // parks (`_directive_choice`), so a Resolve here posts into the void. The
+    // row keeps its badge and its note.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            origin: "bank_apply",
+            progress: {
+              applied: 0,
+              needs_review: 0,
+              skipped: 0,
+              not_landed: 1,
+              already_known: 0,
+            },
+            albums: [
+              refusedRow({
+                status: "needs_dup_resolution",
+                note: REFUSED_NOTE,
+                did_not_land: true,
+              }),
+            ],
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText(REFUSED_NOTE)).toBeInTheDocument();
+    expect(screen.getByText("Didn’t land")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /resolve/i })).toBeNull();
+    expect(screen.queryByRole("link", { name: /^review$/i })).toBeNull();
+  });
+
+  test("mid-run, the headline owns the album that didn’t land", async () => {
+    // The server drops a refused Replace out of `applied` and into `not_landed`
+    // the moment it happens. Without a clause of its own the album left the
+    // line entirely — the headline read "0 albums imported" over a row saying
+    // "Nothing was imported." The spoken twin is pinned in importStatus.test.ts
+    // (mid-run the announcer is behind a 4s throttle this test cannot outwait).
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "reviewing",
+            progress: {
+              applied: 1,
+              needs_review: 0,
+              skipped: 0,
+              not_landed: 1,
+              already_known: 0,
+            },
+            albums: [
+              refusedRow({ note: REFUSED_NOTE, did_not_land: true }),
+              LANDED_ROW,
+            ],
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    // Same words as the two terminal panels, in the page's middot dialect.
+    const headline = await screen.findByText("1 album imported · 1 didn’t land");
+    // The number and the words it counts can only wrap together — the rule the
+    // finished panel already keeps, applied to the clause this line just gained.
+    expect(headline.textContent).toContain("1 didn’t land");
   });
 
   test("the live cue surfaces a parked duplicate to resolve", async () => {

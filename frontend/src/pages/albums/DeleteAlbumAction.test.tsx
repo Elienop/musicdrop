@@ -55,8 +55,8 @@ function renderAction() {
  * pass again on the next such promise; this only passes on the sentence that
  * was checked against the behaviour. */
 const BODY =
-  "Tracks, cover art, and lyrics move to Trash and leave your library. " +
-  "Other files in the folder stay where they are. Plex shows it as unavailable " +
+  "Tracks, cover art, and lyrics move to Trash; other files stay in the folder. " +
+  "Restore re-imports only the tracks. Plex shows the album as unavailable " +
   "until a rescan.";
 
 describe("DeleteAlbumAction", () => {

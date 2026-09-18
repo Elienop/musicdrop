@@ -107,6 +107,34 @@ describe("announceMessage", () => {
     expect(active).toMatch(/awaiting review/i);
   });
 
+  test("a live run owns the album that didn't land, in the terminal wording", () => {
+    // A refused Replace leaves `applied` and joins `not_landed` while the run is
+    // still going. Without this clause the one live region said "Imported 1."
+    // over a feed row reading "Nothing was imported." — the whole announcement
+    // is pinned, so a clause going missing or moving fails.
+    expect(
+      announceMessage({
+        isPending: false,
+        isError: false,
+        notFound: false,
+        data: job({
+          progress: { applied: 1, needs_review: 0, skipped: 2, not_landed: 3, already_known: 0 },
+        }),
+      }),
+    ).toBe("Imported 1. Skipped 2. 3 didn't land.");
+    // Gated on itself, like every other clause: a clean run gains nothing.
+    expect(
+      announceMessage({
+        isPending: false,
+        isError: false,
+        notFound: false,
+        data: job({
+          progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
+        }),
+      }),
+    ).toBe("Imported 1.");
+  });
+
   test("announces a parked duplicate (a blocking prompt the user must clear)", () => {
     const m = announceMessage({
       isPending: false,

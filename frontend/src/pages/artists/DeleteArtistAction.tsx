@@ -20,8 +20,9 @@ import {
  * Trash action for an entire artist: confirm -> move every album's tracks, cover
  * art and MusicDrop's lyric files to Trash + drop the albums from the library ->
  * navigate back to the roster. Not the whole folders: anything else in them
- * stays, and Restore re-imports the tracks rather than putting them back, so the
- * body promises neither.
+ * stays. Restore re-imports the tracks and leaves the cover and the lyric files
+ * in Trash (BACKLOG.md, open item), so the body promises "only the tracks" and
+ * never a put-back.
  */
 export function DeleteArtistAction({
   name,
@@ -54,9 +55,11 @@ export function DeleteArtistAction({
           <AlertDialogTitle>Move every album by this artist to Trash?</AlertDialogTitle>
           <AlertDialogDescription>
             Tracks, cover art, and lyrics from {albumCount} album
-            {albumCount === 1 ? "" : "s"} by {name} move to Trash and leave your
-            library. Other files in those folders stay where they are. Plex shows
-            them as unavailable until a rescan.
+            {albumCount === 1 ? "" : "s"} by {name} move to Trash; other files
+            stay in {albumCount === 1 ? "its folder" : "their folders"}. Restore
+            re-imports only the tracks. Plex shows{" "}
+            {albumCount === 1 ? "the album" : "the albums"} as unavailable until
+            a rescan.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {del.isError && (

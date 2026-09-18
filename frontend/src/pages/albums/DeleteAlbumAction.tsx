@@ -22,9 +22,11 @@ import {
  * MusicDrop's lyric files to Trash + drop the album from the library -> navigate
  * to the artist page (this album is gone). Anything else in the folder is left
  * alone, and the folder itself survives while something is still in it, so the
- * body must not promise the whole folder — Restore re-imports the tracks rather
- * than putting them back. The Action button preventDefaults so the dialog stays
- * open showing "Moving…" until the move resolves, then closes on success.
+ * body must not promise the whole folder. Restore is not a put-back either: it
+ * re-imports the tracks, and the cover and lyrics stay in Trash — hence "only
+ * the tracks" (BACKLOG.md, open item). The Action button preventDefaults so the
+ * dialog stays open showing "Moving…" until the move resolves, then closes on
+ * success.
  */
 export function DeleteAlbumAction({ album }: Readonly<{ album: AlbumDetail }>) {
   const navigate = useNavigate();
@@ -50,8 +52,8 @@ export function DeleteAlbumAction({ album }: Readonly<{ album: AlbumDetail }>) {
         <AlertDialogHeader>
           <AlertDialogTitle>Move this album to Trash?</AlertDialogTitle>
           <AlertDialogDescription>
-            Tracks, cover art, and lyrics move to Trash and leave your library.
-            Other files in the folder stay where they are. Plex shows it as
+            Tracks, cover art, and lyrics move to Trash; other files stay in the
+            folder. Restore re-imports only the tracks. Plex shows the album as
             unavailable until a rescan.
           </AlertDialogDescription>
         </AlertDialogHeader>

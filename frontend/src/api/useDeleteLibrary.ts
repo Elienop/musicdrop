@@ -18,6 +18,7 @@ function deleteErrorMessage(error: unknown): string {
 }
 
 /** Move an album's tracks, cover and lyrics to Trash and drop its DB rows.
+ * Other files in the folder stay, and Restore re-imports only the tracks.
  * On success the album is gone library-wide, so blow the cache to refetch every
  * roster/grid/stat. */
 export function useDeleteAlbum() {
@@ -36,8 +37,9 @@ export function useDeleteAlbum() {
   });
 }
 
-/** Move every album of an artist to Trash. `name` is a query param so slashes
- * (e.g. "AC/DC") survive routing. */
+/** Move every album of an artist to Trash, on the same terms as
+ * {@link useDeleteAlbum}. `name` is a query param so slashes (e.g. "AC/DC")
+ * survive routing. */
 export function useDeleteArtist() {
   const qc = useQueryClient();
   return useMutation<DeleteResult, Error, string>({

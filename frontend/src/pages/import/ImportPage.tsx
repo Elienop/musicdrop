@@ -616,6 +616,14 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
             {state.progress.applied === 1 ? "album" : "albums"} imported
             {state.progress.skipped > 0 &&
               `${SEGMENT_SEP}${state.progress.skipped} skipped`}
+            {/* A refused Replace is lost the moment it is refused, and the
+                server stops counting it as applied there and then — so without
+                this the album simply left the line, and the headline read
+                "0 albums imported" above a row saying nothing was imported.
+                Same words as the two terminal panels ({@link notLandedText}),
+                and `segment` so a wrap cannot strand the number from them. */}
+            {state.progress.not_landed > 0 &&
+              `${SEGMENT_SEP}${segment(notLandedText(state.progress.not_landed))}`}
             {state.progress.needs_review > 0 &&
               `${SEGMENT_SEP}${state.progress.needs_review} album${state.progress.needs_review === 1 ? "" : "s"} needs review`}
             {/* Import-time duplicates are named "already in library" so
@@ -635,7 +643,11 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
       {state.albums.length === 0 ? (
         <FeedSkeleton />
       ) : (
-        <FeedList albums={state.albums} jobId={jobId} />
+        <FeedList
+          albums={state.albums}
+          jobId={jobId}
+          readOnly={feedIsReadOnly(state.origin)}
+        />
       )}
     </div>
   );
@@ -836,9 +848,28 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
   );
 }
 
+/** Can a decision posted from this feed reach a worker?
+ *
+ * No, on a bank-apply run: the banked decision IS the answer, so the session
+ * answers every hook from its directive and never parks
+ * (`import_session.py` `_directive_choice` returns on every arm, and the
+ * directive branch of `resolve_duplicate` answers SKIP or the banked duplicate
+ * action). `ReviewPage.tsx` already excludes the same origin from its decision
+ * list for this reason. The entry screen's Resume links `/import?job=<id>`
+ * whatever the origin, so such a feed IS reachable here — and a `Resolve`
+ * button on it would open a decision nothing consumes, the same dead end
+ * {@link JobFailed} passes `readOnly` to avoid. Rows keep their badge and note.
+ *
+ * `origin` is the server's, not a guess from the rows: a directive run's
+ * duplicate row reads `needs_dup_resolution` exactly like a parked one. */
+function feedIsReadOnly(origin: ImportJobState["origin"]): boolean {
+  return origin === "bank_apply";
+}
+
 /** The feed listing — shared by the live run and the terminal panels. Carries
  * the `jobId` so each row's links can thread the run origin. `readOnly` drops
- * the per-row decision buttons: on a failed job nothing consumes a choice. */
+ * the per-row decision buttons: on a failed job, and on a bank-apply run,
+ * nothing consumes a choice ({@link feedIsReadOnly}). */
 function FeedList({
   albums,
   jobId,
@@ -936,13 +967,31 @@ function feedRowAction(
  * No `role`/live region: the feed is polled list content read in order with its
  * row, and the page already owns one `role="status"` for the run.
  *
- * `col-start-1 row-start-2` because the wrapper is a grid whenever this line
- * renders — see the placement note in {@link FeedRow}. */
+ * `mx-4`, so the glyph starts at the artwork's left edge (x=16) rather than the
+ * title's (x=68 = px-4 16 + cover 40 + gap-3 12). That is the Trash line
+ * translated, not a departure from it: there the glyph sits on the row's leading
+ * edge too, and that row has no cover, so the two edges coincide. It is also the
+ * inset the dropped action below already uses (`ml-4`), which makes this row's
+ * second line one column rather than two.
+ *
+ * `col-span-full row-start-2` because the wrapper is a grid whenever this line
+ * renders — see the placement note in {@link FeedRow}. Full-width, not
+ * `col-start-1`: at 28rem and up the action sits in column 2, and a note
+ * confined to column 1 would stop short of a track it is free to run under.
+ * On a row with no action column 2 is 0 wide, so the span changes nothing
+ * there. */
 function ReplaceNote({ note }: Readonly<{ note: string }>) {
   return (
-    <p className="text-muted-foreground col-start-1 row-start-2 mx-4 mb-3 flex min-w-0 items-start gap-1.5 text-xs">
+    <p className="text-muted-foreground col-span-full row-start-2 mx-4 mb-3 flex min-w-0 items-start gap-1.5 text-xs">
       <Warning className="text-warning mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-      <span className="min-w-0">{note}</span>
+      {/* `break-words` (overflow-wrap) chooses where LINES break; it does not
+          lower this span's min-content floor, which is `min-w-0`'s job. Both
+          are needed and neither substitutes: without the floor a long token
+          pans the page, and without the wrap the list's `overflow-hidden`
+          CLIPS it. Today's notes are prose (`import_session.py:408-445`,
+          longest unbreakable token 11 characters), so this is insurance for
+          the `strerror` interpolation at `:1090`. */}
+      <span className="min-w-0 break-words">{note}</span>
     </p>
   );
 }
@@ -952,10 +1001,11 @@ function ReplaceNote({ note }: Readonly<{ note: string }>) {
  * id); `skipped`/`decided` rows are calm; `needs_review` / parked-duplicate
  * rows are highlighted and offer Review / Resolve, threading the run origin.
  *
- * A row can also carry a `note` — a refused Replace. Its status is untouched by
- * it, so mid-run such a row's badge reads the calm "Decided" and the note is the
- * only thing on screen saying the Replace imported nothing; at job end the
- * badge turns destructive ("Didn't land") and the note says why. */
+ * A row can also carry a `note` — a refused Replace. The note does not touch the
+ * row's STATUS, but the server flags such a row `did_not_land` in every phase,
+ * so the badge reads the destructive "Didn't land" from the moment of the
+ * refusal and the note under it says why. Nothing here reads `note` to decide a
+ * status; that is the server's call and the FE must not second-guess it. */
 function FeedRow({
   album,
   jobId,
@@ -1008,13 +1058,19 @@ function FeedRow({
     // in its OWN row track, so the dropped line cannot re-centre anything
     // above it.
     //
-    // A note takes the same second row, and takes the grid for the same reason:
-    // as a plain block sibling it would be a second line inside the row's box,
-    // which re-centres every `items-center` neighbour beside it. The note and
-    // the action never share row 2 — the backend attaches a note to a row it has
-    // already DECIDED (`registry._drain_locked` leaves the status alone), and
-    // `feedRowAction` only returns a button for a row still parked. If that ever
-    // stops being true, one of the two has to move off `row-start-2`.
+    // A note takes row 2, and takes the grid for the same reason: as a plain
+    // block sibling it would be a second line inside the row's box, which
+    // re-centres every `items-center` neighbour beside it.
+    //
+    // A row can carry BOTH. `registry._drain_locked` attaches the note without
+    // touching the status, and that status is `decided` on an attended run but
+    // `needs_dup_resolution` on a directive (bank-apply) one — for which
+    // `feedRowAction` returns Resolve. Two explicitly placed grid items in one
+    // area do not stack, they paint over each other, so the action takes row 3
+    // in the narrow arm whenever a note is present. That arm is conditional
+    // rather than unconditional on purpose: an empty `auto` row costs 0px only
+    // while the wrapper has no row-gap, and a row with no note must keep the
+    // exact tracks it took before this line existed.
     <div
       className={cn(
         (needsReview || needsDup) && "bg-primary/5",
@@ -1049,7 +1105,17 @@ function FeedRow({
         // a line of its own without growing AlbumRow's box. `-ml-1` gives back
         // the 4px by which AlbumRow's px-4 exceeds its own gap-3, so the
         // inline arm keeps today's 12px gap and 16px inset.
-        <div className="col-start-1 row-start-2 mb-3 ml-4 flex items-center @min-[28rem]/feedrow:col-start-2 @min-[28rem]/feedrow:row-start-1 @min-[28rem]/feedrow:mb-0 @min-[28rem]/feedrow:-ml-1 @min-[28rem]/feedrow:mr-4">
+        //
+        // The narrow arm's row is the note's only coupling to this box: row 2
+        // is the note's when there is one. The wide arm is untouched either
+        // way — there the action is in column 2 of row 1 and the note spans
+        // row 2 beneath it.
+        <div
+          className={cn(
+            "col-start-1 mb-3 ml-4 flex items-center @min-[28rem]/feedrow:col-start-2 @min-[28rem]/feedrow:row-start-1 @min-[28rem]/feedrow:mb-0 @min-[28rem]/feedrow:-ml-1 @min-[28rem]/feedrow:mr-4",
+            note !== null ? "row-start-3" : "row-start-2",
+          )}
+        >
           {action}
         </div>
       )}
@@ -1073,8 +1139,9 @@ function badgeVariant(
  * resolve screen's heading, so "Duplicates" names only the library finder.
  *
  * Precedence over the raw status (both landing outcomes the status alone can't
- * express): a row that never landed (only ever set on a TERMINAL job — the
- * backend gates the flag) flags the failure destructively; else a row that DID
+ * express): a row that never landed flags the failure destructively — the flag
+ * is the server's, in every phase, so a refused Replace reads this way from the
+ * moment it is refused and not only once the job ends; else a row that DID
  * land (an album_id arrived) reads as the positive "Imported" chip, upgrading a
  * user-decided Apply from the vague "Decided"; else the per-status label. */
 function StatusBadge({ album }: Readonly<{ album: ImportAlbumSummary }>) {
@@ -1116,9 +1183,11 @@ function folderName(folder: string): string {
 /** A feed-counting run's outcome line, in the page's middot dialect — shared by
  * the done panel and the failed one, which owe the same numbers.
  *
- * Owns up to albums that were decided/applied but never landed in the library
- * (the session died before beets ran task.add). `not_landed` is only ever
- * nonzero on a terminal job, so the clause drops out of a clean run.
+ * Owns up to albums that were decided/applied but never landed in the library —
+ * the session died before beets ran task.add, or a Replace the user asked for
+ * was refused and answered SKIP. The second kind is known the moment it
+ * happens, so `not_landed` can be nonzero while the run is still going; the
+ * clause drops out of a clean run, not out of a live one.
  *
  * `already_known` is the run's history skips — beets skips those folders before
  * tagging, so they reach no outcome record and `skipped` does not hold them.
@@ -1132,11 +1201,20 @@ function countsLine(progress: ImportProgress): string {
     segment(`${applied} ${applied === 1 ? "album" : "albums"} imported`) +
     SEGMENT_SEP +
     segment(`${skipped} skipped`) +
-    (not_landed > 0 ? SEGMENT_SEP + segment(`${not_landed} didn’t land`) : "") +
+    (not_landed > 0 ? SEGMENT_SEP + segment(notLandedText(not_landed)) : "") +
     (already_known > 0
       ? SEGMENT_SEP + segment(`${already_known} already known`)
       : "")
   );
+}
+
+/** The lost-album segment's words, one source for all three surfaces that owe
+ * them: the finished panel, the failed panel and — since a refused Replace is
+ * lost the moment it is refused — the LIVE status line. Typographic apostrophe,
+ * like every visible string on this page; `importStatus`' spoken twin keeps the
+ * straight one. */
+function notLandedText(notLanded: number): string {
+  return `${notLanded} didn’t land`;
 }
 
 /** One segment of a counts line, made unbreakable: a wrap may fall only
@@ -1171,7 +1249,7 @@ function failedCountsLine(progress: ImportProgress): string | null {
   const { applied, skipped, not_landed, already_known } = progress;
   if (applied + skipped > 0) return countsLine(progress);
   const rest = [
-    not_landed > 0 ? segment(`${not_landed} didn’t land`) : null,
+    not_landed > 0 ? segment(notLandedText(not_landed)) : null,
     already_known > 0 ? segment(`${already_known} already known`) : null,
   ].filter((part) => part !== null);
   return rest.length > 0 ? rest.join(SEGMENT_SEP) : null;
@@ -1190,7 +1268,12 @@ function failedCountsLine(progress: ImportProgress): string | null {
  * `state.set_aside` is its count ({@link JobFailed} says the same of its own
  * line). Without that term a finished unattended run with an album set aside was
  * titled "Nothing new to import" directly above the row holding its Review
- * button. */
+ * button.
+ *
+ * The status does not decide the bucket on its own: a row carrying a `note` was
+ * answered SKIP and can never land, so the server counts it in `not_landed` and
+ * leaves it out of `set_aside` — including the bank-apply row that wears
+ * `needs_dup_resolution`. */
 function onlySkippedKnown(state: ImportJobState): boolean {
   const { applied, skipped, not_landed, already_known } = state.progress;
   return (
@@ -1349,7 +1432,11 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
         }
       />
       {state.albums.length > 0 && (
-        <FeedList albums={state.albums} jobId={jobId} />
+        <FeedList
+          albums={state.albums}
+          jobId={jobId}
+          readOnly={feedIsReadOnly(state.origin)}
+        />
       )}
     </div>
   );
@@ -1358,9 +1445,10 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
 /** failed: the worker's error, and what the run still earned before it died.
  *
  * A crash mid-apply is exactly when albums land or fail to land, so the server
- * keeps reporting this job's counters and computes `not_landed` BECAUSE the job
- * is terminal — a sweep that banked 200 albums and then died must not read as
- * though nothing happened. Sweeps count on `state.sweep` (their `albums` stays
+ * keeps reporting this job's counters, and a terminal job is where the last of
+ * them are settled into `not_landed` — a sweep that banked 200 albums and then
+ * died must not read as though nothing happened. Sweeps count on `state.sweep`
+ * (their `albums` stays
  * empty by design); every other origin counts on `state.progress` and carries
  * the feed rows.
  *
@@ -1369,7 +1457,8 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
  * `_is_skipped`, and never landed, so it falls out of all three counters — and
  * on a failed job its Review button is gone. `state.set_aside` is the count, and
  * it gets its own sentence: a failed run must not silently drop a category of
- * album it is still holding.
+ * album it is still holding. A row carrying a `note` is the one exception, and
+ * the server owns it — see {@link onlySkippedKnown}.
  *
  * An outcome notice on the EmptyState recipe (the recovery is a navigation, so
  * ErrorState's mandatory Retry would mislead — there is nothing to re-run), in
@@ -1436,9 +1525,9 @@ function JobFailed({
         }
       />
       {sweep !== null && <SweepTiles sweep={sweep} />}
-      {/* Read-only. The rows are the record of what landed and — only ever on a
-          terminal job — what didn't, but the worker is gone: a Review/Resolve
-          button here would open a decision whose POST no worker will consume
+      {/* Read-only, whatever the origin. The rows are the record of what landed
+          and what didn't, but the worker is gone: a Review/Resolve button here
+          would open a decision whose POST no worker will consume
           (`record_choice` has no terminal guard). */}
       {sweep === null && state.albums.length > 0 && (
         <FeedList albums={state.albums} jobId={jobId} readOnly />
