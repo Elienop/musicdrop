@@ -321,15 +321,19 @@ entry carries a dated correction block where the pass changed it._
        Restore to set it from the entry.
      - **A failed row removal leaves the album listed with its files in Trash.** The error
        says to retry before emptying, a retry finishes the delete, and Empty refuses an entry
-       the library still lists ("Delete the album again, then empty Trash."). The check reads
-       the item rows once per request and compares normalized paths under both spellings of
-       the Trash root, so a linked Trash folder, `..`, `//`, a case-only alias (confirmed by
-       inode) and a loose-file entry are all seen. Two holes left on purpose: a row written
-       through a DIFFERENT symlink to the entry is not seen (a hand-made link plus a `beet`
-       run through it; a `realpath` per library row inside the swap lock was the price), and a
-       singleton row does not refuse Empty, because the app has no control that would clear
-       it. Cost at 100 000 rows: a 50-entry Empty all 515 ms -> 80 ms, one entry 10 ms ->
-       79 ms. The "didn't
+       the library still lists ("Delete the album again, then empty Trash."; a lone track gets
+       "move that entry out of Trash"). The check is beets' own `path:` query (`PathQuery`),
+       asked once per request with the spelling Delete moves with — three rounds of
+       hand-rolled path SQL, root spellings and inode confirms were deleted for it (owner,
+       2026-09-19: do not over-engineer what beets already has), and the delete-retry side
+       asks the same query. Every app-reachable state in the round's acceptance table refuses, a
+       linked Trash folder and a symlinked music root included. RESIDUAL, recorded not guarded — beets has
+       no identity beyond the path string: a row that reaches the entry through an alias
+       beets cannot see is not recognised and Empty removes the entry (measured in
+       `tests/probes/alias_rows.py`: a bind mount, a second symlink, NFD against NFC,
+       `STRASSE` against `Straße`, a hand-written `//` or relative row; a `..` row happens to
+       refuse). None is producible by the app's own writer. Cost at 100 000 rows: 50-entry
+       Empty all 616 ms -> 32 ms, one entry 615 ms -> 32 ms. The "didn't
        finish" detection planned for this branch matches that state (rows naming files outside
        the library). The first attempt's lyric files are not recovered by the retry: they stay
        beside where the audio was, for the orphan sweep. A delete that stopped PART-WAY (some
@@ -341,7 +345,16 @@ entry carries a dated correction block where the pass changed it._
        Trash.
      - **The keep-file's release checks identity before it unlinks**, so a file that arrives
        at the name after the plant is left alone; the stat-to-unlink window is narrowed to
-       that one directory, not closed.
+       that one directory, not closed. A plant whose own `fstat` faults (EIO on a stale
+       share) leaves its keep-file behind; the descriptor is still released.
+     - **An artist delete on a FLAT library reads the library once per album** for the
+       sidecar claim (`_stems_in_use`, the one hand-rolled path predicate left — beets has
+       no "who shares this stem" query): 11 ms per album nested, 165 ms per album in a flat
+       100 000-row root, so ~1.6 s for ten albums inside the swap lock. Hoisting the read to
+       once per artist is the fix.
+     - **Under `hardlink: yes` a Replace leaves the trashed old copy and the new library
+       file on one inode** (measured through the branch's own flow). Nothing compares inodes
+       there today; any future identity check on Trash must include the holding directory.
      - **A cover both case-insensitive twins track still travels with whichever is deleted**
        (characterized in `tests/probes/casefold_delete.py`).
      - **The casefold pin may skip on CI.** It needs a casefold tmpfs and an unprivileged user
