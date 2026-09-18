@@ -262,7 +262,14 @@ class TrashDeleteIncompleteError(Exception):
     """
 
 
-def trash_album(lib: Library, album: Any, *, trash_dir: Path, origins_dir: Path) -> str:
+def trash_album(
+    lib: Library,
+    album: Any,
+    *,
+    trash_dir: Path,
+    origins_dir: Path,
+    moved_audio: list[tuple[str, str]] | None = None,
+) -> str:
     """Relocate one album's files under ``trash_dir`` and drop it from the library.
 
     Reversible: the album is moved into its OWN collision-free container dir
@@ -279,6 +286,19 @@ def trash_album(lib: Library, album: Any, *, trash_dir: Path, origins_dir: Path)
     ``moved="items"`` — this mover takes tracked files out of a folder that may
     hold other music, so Restore falls back to re-importing rather than offering
     a move-back that could put files back among a stranger's.
+
+    ``moved_audio``, when given, collects ``(old absolute path, new absolute
+    path)`` for every item that really landed under the container — the only
+    moment that mapping exists, since ``Album.move`` rewrites each stored path
+    and ``Album.remove`` then drops the row. Reported rather than acted on: what
+    ELSE travels with a track is the caller's policy, and the three callers do
+    not agree. ``app.beets.delete`` carries the lyric sidecars; import Replace
+    must not, and that is MEASURED rather than assumed: with the old album's
+    audio moved out from under it, the surviving ``01 T1.lrc`` sits at exactly
+    the stem ``item.destination()`` gives the new copy of the same album
+    (``Art/Alb/01 T1``), so the new album inherits its lyrics and carrying them
+    to Trash would lose them. Purely additive — pass nothing and this mover
+    behaves exactly as before.
 
     Guarded on BOTH sides of the move, because neither half is enough alone.
     beets 2.12's ``Item.move`` silently skips a source file that is not there
@@ -332,6 +352,10 @@ def trash_album(lib: Library, album: Any, *, trash_dir: Path, origins_dir: Path)
     # is the last moment the album's own folder can be read off the rows.
     pre_move_items = list(album.items())
     source_root = _album_root(lib, pre_move_items) if pre_move_items else ""
+    # Keyed by item id, which the move does not change — the only handle that
+    # survives ``Album.move`` rewriting every path, since the post-move objects
+    # come from a fresh query.
+    was_at = {it.id: _abs_path(lib, it.path) for it in pre_move_items}
     basedir = bytestring_path(str(container))
     album.move(basedir=basedir)  # relocate under the container + prune source dir
     items = list(album.items())
@@ -344,6 +368,12 @@ def trash_album(lib: Library, album: Any, *, trash_dir: Path, origins_dir: Path)
     moved = _moved_under(lib, items, container)
     if len(moved) != len(items):
         _require_move_happened(lib, album, container, items=items, moved=moved)
+    if moved_audio is not None:
+        # AFTER the post-condition: a mover that refused reports no pairs, so a
+        # caller carrying sidecars cannot move them off an album still in place.
+        moved_audio.extend(
+            (was_at[it.id], _abs_path(lib, it.path)) for it in moved if it.id in was_at
+        )
     # ``moved[0]``, not ``items[0]``: with a skipped first item the latter still
     # points into the music dir, so the returned "Trash folder" would name the
     # place the album was never moved from.

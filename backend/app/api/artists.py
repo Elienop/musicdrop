@@ -1221,8 +1221,8 @@ def _start(
             "model": StructuredErrorDetail,
             "description": (
                 # Also the status for a fault PART-WAY through the fan-out. The
-                # promise excludes the album it stopped on: that folder is moved
-                # back out of Trash when dropping its rows failed.
+                # promise excludes the album it stopped on: its files can be
+                # under Trash with its rows kept, or with them gone.
                 "Deleting the artist failed; the message names how far the fan-out got,"
                 " and the body promises recovery from the Trash folder only when albums"
                 " really reached it."

@@ -810,6 +810,10 @@ def test_delete_artist_fan_out_stops_on_the_first_masked_drop(
     Radiohead holds two albums; a guard that fired only after the first
     ``album.remove`` would leave one row committed and unrecoverable (beets
     commits on the way out of the transaction even while unwinding).
+
+    ``trash.exists()`` is not the assertion it was: the per-item mover
+    ``mkdir``s the Trash root before it moves, so what this pins is that no
+    ENTRY was created — the refusal lands before any container is filled.
     """
     from app.beets.delete import delete_artist
 
@@ -829,7 +833,8 @@ def test_delete_artist_fan_out_stops_on_the_first_masked_drop(
         )
 
     assert len(list(duplicates_lib.albums())) == total_before
-    assert not trash.exists()
+    assert list(trash.iterdir()) == []
+    assert not list(origins.glob("*.json"))
 
 
 # ----- The same dropped share, under a FLAT path template -----

@@ -709,7 +709,7 @@
           "albums"
         ],
         "summary": "Delete Album Endpoint",
-        "description": "Move the album's whole folder to Trash (reversible) and drop it from the\nlibrary. 404 unknown album; 409 while a library job is running.\n\nThe dropped items' playlists get a fresh `.m3u8` afterwards: their exports\nstill list files that now live in Trash, and a re-export prunes those lines\n(an unresolvable id simply drops out of ``m3u_entries``).",
+        "description": "Move the album's own files to Trash (reversible) and drop it from the\nlibrary. 404 unknown album; 409 while a library job is running.\n\nThe dropped items' playlists get a fresh `.m3u8` afterwards: their exports\nstill list files that now live in Trash, and a re-export prunes those lines\n(an unresolvable id simply drops out of ``m3u_entries``).",
         "operationId": "delete_album_endpoint_api_albums__album_id__delete",
         "parameters": [
           {
@@ -11895,7 +11895,7 @@
           "trash_path"
         ],
         "title": "DeleteResult",
-        "description": "Outcome of a reversible delete: how many albums went to Trash + where.\n\n``trashed_albums`` is 1 for a single-album delete, N for an artist (every\nalbum of theirs). ``trash_path`` is the Trash location the files were moved\nto (recoverable from there)."
+        "description": "Outcome of a reversible delete: how many albums went to Trash + where.\n\n``trashed_albums`` is 1 for a single-album delete, N for an artist (every\nalbum of theirs). ``trash_path`` is where the files went \u2014 a location inside\nthe Trash folder when any moved, and the album's own folder or the Trash root\nwhen an album had nothing left to move."
       },
       "DiskSyncChange": {
         "properties": {

@@ -448,8 +448,8 @@ async def fetch_album_lyrics_endpoint(
         },
         # The body's `recovery` line, not this text, is what says where the
         # files are: it promises the Trash only when something reached it, and
-        # a failure after the folder was moved puts it back and says so. A
-        # failed move-back is the one case that names both paths from disk.
+        # otherwise asks the reader to look, because a delete that stops
+        # part-way has no undo (app/beets/delete.py `_recovery`).
         500: {
             "model": StructuredErrorDetail,
             "description": (
@@ -480,7 +480,7 @@ async def delete_album_endpoint(
     handle: Annotated[LibraryHandle, Depends(get_library)],
     playlists_dir: Annotated[Path, Depends(get_playlists_dir)],
 ) -> DeleteResult:
-    """Move the album's whole folder to Trash (reversible) and drop it from the
+    """Move the album's own files to Trash (reversible) and drop it from the
     library. 404 unknown album; 409 while a library job is running.
 
     The dropped items' playlists get a fresh `.m3u8` afterwards: their exports

@@ -144,7 +144,9 @@ def test_delete_artist_op_records_origins_in_the_store_not_in_trash(
         trash, origins_dir=origins, music_dir=os.fsdecode(duplicates_lib.directory)
     )
     assert {r.origin for r in rows} == roots
-    assert {r.restore_mode for r in rows} == {"move_back"}
+    # ``moved="items"``, which is what a per-file delete records (owner ruling
+    # ``decisions.md`` 58): the origin is shown, a move-back is not offered.
+    assert {r.restore_mode for r in rows} == {"import"}
 
 
 # ----- putting a folder back ---------------------------------------------------

@@ -228,7 +228,7 @@ export interface paths {
         post?: never;
         /**
          * Delete Album Endpoint
-         * @description Move the album's whole folder to Trash (reversible) and drop it from the
+         * @description Move the album's own files to Trash (reversible) and drop it from the
          *     library. 404 unknown album; 409 while a library job is running.
          *
          *     The dropped items' playlists get a fresh `.m3u8` afterwards: their exports
@@ -2964,8 +2964,9 @@ export interface components {
          * @description Outcome of a reversible delete: how many albums went to Trash + where.
          *
          *     ``trashed_albums`` is 1 for a single-album delete, N for an artist (every
-         *     album of theirs). ``trash_path`` is the Trash location the files were moved
-         *     to (recoverable from there).
+         *     album of theirs). ``trash_path`` is where the files went — a location inside
+         *     the Trash folder when any moved, and the album's own folder or the Trash root
+         *     when an album had nothing left to move.
          */
         DeleteResult: {
             /** Trashed Albums */
