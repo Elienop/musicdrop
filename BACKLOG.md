@@ -344,19 +344,33 @@ entry carries a dated correction block where the pass changed it._
        says to retry before emptying, a retry finishes the delete, and Empty refuses an entry
        the library still lists ("Delete the album again, then empty Trash."; a lone track gets
        "move that entry out of Trash"). The check is beets' own `path:` query (`PathQuery`),
-       asked once per request with the spelling Delete moves with — three rounds of
-       hand-rolled path SQL, root spellings and inode confirms were deleted for it (owner,
-       2026-09-19: do not over-engineer what beets already has), and the delete-retry side
-       asks the same query. Every app-reachable state in the round's acceptance table refuses, a
-       linked Trash folder and a symlinked music root included. RESIDUAL, recorded not guarded — beets has
-       no identity beyond the path string: a row that reaches the entry through an alias
-       beets cannot see is not recognised and Empty removes the entry (measured in
-       `tests/probes/alias_rows.py`: a bind mount, a second symlink, NFD against NFC,
-       `STRASSE` against `Straße`, a hand-written `//` or relative row; a `..` row happens to
-       refuse). None is producible by the app's own writer. Cost at 100 000 rows: 50-entry
-       Empty all 616 ms -> 32 ms, one entry 615 ms -> 32 ms. The "didn't
-       finish" detection planned for this branch matches that state (rows naming files outside
-       the library). The first attempt's lyric files are not recovered by the retry: they stay
+       shared by Empty and the delete-retry side through one helper (`protected.rows_under_any`)
+       — three rounds of hand-rolled path SQL, root spellings and inode confirms were deleted
+       for it (owner, 2026-09-19: do not over-engineer what beets already has). It is asked
+       with four CANDIDATE spellings the app's own settings name for the current Trash — the
+       checked Trash, its resolution, the configured string as written, and the default
+       `<beets_dir>/trash` — deduplicated to 1 on an ordinary default layout and 2-3 once a
+       link is involved, in one `OrQuery` pass. One spelling was not enough: a row holds the
+       spelling the mover used THEN, the settings resolve NOW, and `resolve_trash_dir` returns
+       a configured path resolved and the default unresolved — measured through the routes
+       with no hand-edited row (`mv trash bigdisk-trash && ln -s bigdisk-trash trash`;
+       configuring a linked default Trash; clearing a configured one): Empty answered 200 with
+       the only copy gone and the album still listed. Each now refuses, and the remedy clears
+       it. RESIDUAL, recorded not guarded — beets has no identity beyond the path string: a
+       Trash reachable only under some other spelling is not recognised and Empty removes the
+       entry (measured in `tests/probes/alias_rows.py`: a bind mount, a second symlink, a
+       path no setting names, NFD against NFC, `STRASSE` against `Straße`). A hand-built
+       `<trash>//Entry//01.mp3` row is matched by the root query (the retry arm treats it as
+       in Trash) and not by the per-entry query (Empty removes the entry); `..` is matched by
+       both; `Album.move` normpaths what it stores, so the app writes neither. beets probes
+       case sensitivity per PATTERN, so the root query and an entry query can sit on
+       differently flagged mounts (code-read, not built). Enumerating more spellings by hand
+       is the machinery that was deleted. Cost at 100 000 relative rows: 98 ms with one
+       spelling, +45 ms each (shared box; the seats measured ~30 ms on a quiet one). An item
+       row with a NULL `path` (hand-made only) is refused by name before anything moves:
+       "Nothing was moved. Fix the row in beets, then retry." The album-page notice built on
+       this branch matches the failed-row-removal state when Trash is outside the music
+       folder (rows naming files outside the library). The first attempt's lyric files are not recovered by the retry: they stay
        beside where the audio was, for the orphan sweep. A delete that stopped PART-WAY (some
        tracks moved) still gets a second Trash entry on retry.
      - **A `clutter:` pattern matching `.musicdrop-keep`** (`.*`, `*`) turns the protection off;
