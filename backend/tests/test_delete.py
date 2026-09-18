@@ -259,8 +259,9 @@ def test_a_sidecar_claim_is_seen_for_tracks_in_the_music_root(tmp_path: Path) ->
     ``relpath(music, music)`` is ``"."``, so the relative prefix was ``./`` and
     matched no stored row: measured, the neighbour's ``01 T1.lrc`` was carried
     into Trash from the music root while the same shape one folder down was
-    left alone. The root's prefix is EMPTY, and the direct-children filter is
-    what keeps the answer about this directory.
+    left alone. The root's prefix is EMPTY, which brings every row back; the
+    answer stays about this directory because a stem is an absolute path, so a
+    row one folder down produces a different one.
     """
     from beets.library import Item
 

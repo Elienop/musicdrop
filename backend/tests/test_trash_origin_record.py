@@ -1915,8 +1915,8 @@ def test_a_failed_restore_whose_undo_also_fails_says_where_the_folder_went(
     That retaken entry is also why the sentence talks about BOTH paths rather
     than "no longer in Trash": ``_whereabouts`` reads the DISK, and the disk has
     something at each path. Nothing can tell a stranger's folder from a
-    half-finished copy of ours, so the message says so and the record survives —
-    see ``test_the_record_survives_a_trash_entry_that_still_exists``.
+    half-finished copy of ours, so the message says so and the record survives,
+    which the last assertion here checks.
     """
     lib = _seeded_library(tmp_path, folder="Weird Folder")
     origin = tmp_path / "music" / "Weird Folder"

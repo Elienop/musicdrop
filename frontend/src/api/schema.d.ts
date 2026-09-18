@@ -12688,7 +12688,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The entry was kept; the message names the cause and what to do. */
+            /** @description Trash could not be listed; the message names the setup fault. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -12952,7 +12952,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Some Trash entries were removed and others could not be; the message names which are still there. */
+            /** @description Trash was not fully cleared; the message names the entries still there or the fault. */
             500: {
                 headers: {
                     [name: string]: unknown;

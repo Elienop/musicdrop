@@ -66,13 +66,20 @@ _TRASH_RESTORE_FAILED_RESPONSE: Final = {
 }
 #: Every route here resolves the Trash / origin-store pair per request and runs
 #: the containment check on what it resolved to, so every one of them can answer
-#: this. One sentence for all three, and it says nothing about what was left:
-#: ``DELETE /api/trash/all`` removes every unprotected entry BEFORE it refuses.
-#: "Kept" rather than "store-layout or identity", because the Empty routes also
-#: refuse an entry whose files the LIBRARY still lists, which is neither.
+#: 503. The two EMPTY routes get this one, and it says nothing about what was
+#: left: ``DELETE /api/trash/all`` removes every unprotected entry BEFORE it
+#: refuses. "Kept" rather than "store-layout or identity", because the Empty
+#: routes also refuse an entry whose files the LIBRARY still lists, which is
+#: neither.
 _TRASH_LAYOUT_REFUSED_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": "The entry was kept; the message names the cause and what to do.",
+}
+#: The LISTING's own, because "the entry was kept" is false for it: it removes
+#: nothing and keeps nothing, it only could not read the Trash it resolved.
+_TRASH_LIST_REFUSED_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "Trash could not be listed; the message names the setup fault.",
 }
 #: The single delete's twin of the sweep's failed-entry 500: the entry is still
 #: in Trash, and the fault is on disk rather than in the request.
@@ -80,11 +87,13 @@ _TRASH_EMPTY_FAILED_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": "The entry could not be removed; the message names the fault.",
 }
+#: The sweep's 500, which has TWO causes: entries it could not remove, and a
+#: fault that ended it — the root open, or a record it could not drop after an
+#: entry went. One sentence for both, because OpenAPI carries one per status.
 _TRASH_EMPTY_PARTIAL_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": (
-        "Some Trash entries were removed and others could not be; the message names"
-        " which are still there."
+        "Trash was not fully cleared; the message names the entries still there or the fault."
     ),
 }
 #: A move-back restore writes INTO the music library, so it answers an
@@ -205,7 +214,7 @@ def _child_or_404(app: Any, folder: str) -> tuple[CheckedTrash, Path]:
         raise HTTPException(status_code=404, detail="Not in Trash") from None
 
 
-@router.get("/trash", responses={503: _TRASH_LAYOUT_REFUSED_RESPONSE})
+@router.get("/trash", responses={503: _TRASH_LIST_REFUSED_RESPONSE})
 async def list_trash(request: Request) -> TrashListing:
     """List the albums sitting in Trash (read off disk; no gate)."""
     app = request.app
@@ -372,5 +381,13 @@ async def empty_trash_all(request: Request) -> EmptyResult:
         except ProtectedTreeError as exc:
             emit_library_changed(app)
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # The twin of ``empty_trash_one``'s arm: the root open, or an origin
+        # record that could not be dropped after its entry went, raises out of
+        # here and used to fall into the blanket 500 with no declared body. The
+        # event fires first for the same reason the two above it do — entries
+        # this call already removed are gone from the page.
+        except OSError as exc:
+            emit_library_changed(app)
+            raise HTTPException(status_code=500, detail=f"Empty Trash: {exc}") from exc
         emit_library_changed(app)
     return result

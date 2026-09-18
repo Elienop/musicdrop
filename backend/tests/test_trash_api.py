@@ -152,6 +152,36 @@ def test_a_mode_000_entry_answers_the_declared_500(client: TestClient) -> None:
     assert locked.is_dir(), "still in Trash"
 
 
+def test_a_trash_root_that_stops_opening_answers_the_declared_500(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sweep's twin of the arm above, which it did not have.
+
+    The root open is the one syscall between the route's check and the first
+    removal, so a share that drops in that window (EIO/ESTALE) raises out of the
+    sweep — into the blanket 500, the same status with no declared body, so the
+    generated client had no type for what it reads. A merely unreadable Trash
+    does not get here: the route's own store check refuses it 503 first, which is
+    why the fault is injected at the open rather than made with a mode bit.
+    """
+    import errno as errno_mod
+
+    trash = _trash_dir(client)
+    trash.mkdir(parents=True, exist_ok=True)
+    (trash / "Album").mkdir()
+
+    def _gone(*args: Any, **kwargs: Any) -> int:
+        raise OSError(errno_mod.ESTALE, "Stale file handle")
+
+    monkeypatch.setattr("app.beets.trash_manage.open_checked_dir", _gone)
+
+    r = client.delete("/api/trash/all")
+
+    assert r.status_code == 500
+    assert "Empty Trash" in r.json()["detail"]
+    assert (trash / "Album").is_dir(), "still in Trash"
+
+
 def test_empty_one_removes_folder(client: TestClient) -> None:
     trash = _trash_dir(client)
     (trash / "Album").mkdir(parents=True)
@@ -277,20 +307,24 @@ def test_empty_one_refuses_when_the_default_trash_leaf_is_a_link(
 
 
 @pytest.mark.parametrize(
-    ("label", "spell"),
+    ("label", "spell", "refuses"),
     [
-        ("dotdot", lambda t: f"{t}/Art - Alb/../Art - Alb/01 T1.mp3"),
-        ("double-slash", lambda t: f"{t}//Art - Alb//01 T1.mp3"),
+        ("dotdot", lambda t: f"{t}/Art - Alb/../Art - Alb/01 T1.mp3", True),
+        ("double-slash", lambda t: f"{t}//Art - Alb//01 T1.mp3", False),
     ],
 )
-def test_empty_one_refuses_a_row_however_it_is_spelled(
-    client: TestClient, label: str, spell: Any
+def test_what_a_hand_built_row_spelling_answers(
+    client: TestClient, label: str, spell: Any, refuses: bool
 ) -> None:
-    """beets stores ``..`` and ``//`` VERBATIM (measured), and both bypassed a prefix.
+    """A RESIDUAL, pinned: beets' ``path:`` query compares path STRINGS.
 
-    Not producible through MusicDrop's own writer — ``Album.move`` normpaths what
-    it stores — so the row here is hand-built, which is what an alien or
-    hand-edited row looks like.
+    Neither spelling is producible through MusicDrop's own writer — ``Album.move``
+    normpaths what it stores — so a row like this needs an alien or hand-edited
+    database. Measured here so the boundary is visible rather than assumed:
+    ``..`` still carries the entry's own prefix and refuses, ``//`` does not and
+    Empty removes the entry. beets has no path identity beyond the string, and
+    guarding it here would put back the hand-rolled compare three rounds of
+    review found faults in.
     """
     trash = _trash_dir(client)
     entry = trash / "Art - Alb"
@@ -298,9 +332,13 @@ def test_empty_one_refuses_a_row_however_it_is_spelled(
 
     r = client.delete("/api/trash", params={"folder": "Art - Alb"})
 
-    assert r.status_code == 503, label
-    assert "the library still lists files inside" in r.json()["detail"]
-    assert track.is_file(), "the only copy is still there"
+    if refuses:
+        assert r.status_code == 503, label
+        assert "the library still lists files inside" in r.json()["detail"]
+        assert track.is_file(), "the only copy is still there"
+    else:
+        assert r.status_code == 200, label
+        assert not entry.exists(), "the residual: this spelling is not recognised"
 
 
 def test_empty_one_refuses_a_relative_row_when_trash_is_inside_the_music_folder(
@@ -321,6 +359,35 @@ def test_empty_one_refuses_a_relative_row_when_trash_is_inside_the_music_folder(
     )
 
     r = client.delete("/api/trash", params={"folder": "Art - Alb"})
+
+    assert r.status_code == 503
+    assert "the library still lists files inside" in r.json()["detail"]
+    assert track.is_file(), "the only copy is still there"
+
+
+def test_empty_one_refuses_a_relative_row_with_the_music_dir_context_unbound(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The check binds beets' music dir itself rather than inheriting it.
+
+    beets keeps it in a ``ContextVar`` set when the ``Library`` is constructed,
+    and both halves of relative-row handling read it — the query's pattern and
+    ``Item.path`` coming back out of the DB. A ``ContextVar`` set in one task
+    does not reach another, and a config Apply builds the new ``Library`` in
+    whichever task ran it, so the value the request sees is not guaranteed.
+    Unbound here, which is that state exactly: the entry must still be refused.
+    """
+    from beets import context
+
+    trash = tmp_path / "music" / ".trash"
+    trash.mkdir(parents=True)
+    monkeypatch.setattr("app.config.settings.trash_dir", str(trash))
+    track = _album_row_inside(
+        client, trash / "Art - Alb", spelled=os.path.join(".trash", "Art - Alb", "01 T1.mp3")
+    )
+
+    with context.music_dir(b""):
+        r = client.delete("/api/trash", params={"folder": "Art - Alb"})
 
     assert r.status_code == 503
     assert "the library still lists files inside" in r.json()["detail"]
@@ -383,24 +450,121 @@ def test_empty_one_removes_an_entry_a_trash_old_sibling_row_names(client: TestCl
     assert not entry.exists()
 
 
-def test_empty_one_removes_an_entry_only_a_singleton_row_names(client: TestClient) -> None:
-    """A singleton has no album, so "delete the album again" names nothing to press.
+def test_empty_one_refuses_an_entry_only_a_singleton_row_names(client: TestClient) -> None:
+    """EVERY item row counts, album or not — a wrong removal costs the only copy.
 
-    Measured: such a row refused every Empty for ever, per-entry and sweep, and
-    only a hand-edited database could clear it. A refusal whose remedy the user
-    cannot operate is worse than Empty doing what Empty does, so the query asks
-    about ALBUM rows only. ``test_empty_one_refuses_an_entry_the_library_still_lists``
-    is the control: with an album, the same shape still refuses.
+    Round 3 stopped refusing these because "delete the album again" names nothing
+    a singleton's owner can press. That was the wrong trade: the security seat
+    measured it as a WIDENING (503 with the copy alive before, ``200 removed=1``
+    with the track still listed after). A refusal costs a click; the removal
+    costs the file. So the row still refuses, with a control that is true for
+    IT.
     """
     trash = _trash_dir(client)
     entry = trash / "Loose"
-    _album_row_inside(client, entry, album=False)
+    track = _album_row_inside(client, entry, album=False)
 
     r = client.delete("/api/trash", params={"folder": "Loose"})
 
-    assert r.status_code == 200
-    assert r.json()["removed"] == 1
-    assert not entry.exists()
+    assert r.status_code == 503
+    assert r.json()["detail"] == (
+        "Refused: 'Loose' — the library still lists a track inside."
+        " Move that entry out of Trash, or remove the track with beets."
+        " Nothing was removed."
+    )
+    assert track.is_file(), "the only copy is still there"
+
+
+@pytest.mark.parametrize("album_first", [True, False])
+def test_an_entry_an_album_row_and_a_singleton_row_both_name_reads_with_the_album_fix(
+    client: TestClient, album_first: bool
+) -> None:
+    """One entry, two kinds of row: the remedy that CLEARS it wins.
+
+    Deleting the album again drops the album's rows, so the album sentence is the
+    one that moves the user forward; the other order would send them to beets for
+    a row the Delete button removes.
+
+    BOTH row orders, because the rows come back in one query and "the last one
+    seen wins" gives the right answer for exactly one of them — measured, that
+    mutant survived the single-order version of this test.
+    """
+    trash = _trash_dir(client)
+    entry = trash / "Mixed"
+    if album_first:
+        _album_row_inside(client, entry)
+        _album_row_inside(client, entry, album=False)
+    else:
+        _album_row_inside(client, entry, album=False)
+        _album_row_inside(client, entry)
+
+    r = client.delete("/api/trash", params={"folder": "Mixed"})
+
+    assert r.status_code == 503
+    assert r.json()["detail"] == (
+        "Refused: 'Mixed' — the library still lists files inside."
+        " Delete the album again, then empty Trash. Nothing was removed."
+    )
+
+
+def test_empty_all_keeps_both_listed_entries_and_names_each_cause(client: TestClient) -> None:
+    """TWO still-listed entries in one sweep, asserted per copy.
+
+    The cross-check answers for every entry in one query; an early exit that
+    stopped at the first hit emptied the second one (measured on the previous
+    code). Both causes are in the message, each with its own control.
+    """
+    trash = _trash_dir(client)
+    first = trash / "AAA-album"
+    second = trash / "BBB-track"
+    first_track = _album_row_inside(client, first)
+    second_track = _album_row_inside(client, second, album=False)
+    (trash / "ZZZ-ordinary").mkdir(parents=True)
+
+    r = client.delete("/api/trash/all")
+
+    assert r.status_code == 503
+    assert r.json()["detail"] == (
+        "Refused: 'AAA-album' — the library still lists files inside."
+        " Delete the album again, then empty Trash."
+        " 'BBB-track' — the library still lists a track inside."
+        " Move that entry out of Trash, or remove the track with beets."
+        " Removed 1."
+    )
+    assert first_track.is_file(), "the first entry's only copy is still there"
+    assert second_track.is_file(), "and so is the second's"
+    assert not (trash / "ZZZ-ordinary").exists(), "the rest was still emptied"
+
+
+def test_empty_one_refuses_when_the_music_root_itself_is_a_link(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A symlinked ``directory:`` with Trash configured inside it.
+
+    The adapter already names this layout. Measured end to end
+    (``<scratchpad>/del5/probe_symlink_root_row.py``): the configured Trash is
+    RESOLVED at the source, so the mover writes to ``<real>/.trash/...`` and
+    beets stores that row ABSOLUTE — the resolved root is not a string-child of
+    the link spelling, so its relative-path rule does not fire. The row the app
+    really leaves and the spelling this check asks with are the same one.
+
+    The hand-written RELATIVE row in that layout is a residual, not this: beets
+    would not store one, and its own query would not find it either.
+    """
+    real = tmp_path / "real-music"
+    (real / ".trash").mkdir(parents=True)
+    link = tmp_path / "music-link"
+    link.symlink_to(real)
+    app: Any = client.app
+    app.state.beets_library.lib.directory = os.fsencode(str(link))
+    monkeypatch.setattr("app.config.settings.trash_dir", str(link / ".trash"))
+    track = _album_row_inside(client, real / ".trash" / "Art - Alb")
+
+    r = client.delete("/api/trash", params={"folder": "Art - Alb"})
+
+    assert r.status_code == 503
+    assert "the library still lists files inside" in r.json()["detail"]
+    assert track.is_file(), "the only copy is still there"
 
 
 def test_an_empty_all_that_keeps_a_listed_entry_still_names_the_stuck_one(
@@ -468,11 +632,11 @@ def test_two_entries_differing_only_in_case_are_two_entries(client: TestClient) 
 def test_empty_all_reads_the_library_once_for_the_whole_sweep(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The cost invariant: one pass over the item rows per REQUEST, not per entry.
+    """The cost invariant: the library is asked once per REQUEST, not per entry.
 
-    Measured at 100 000 rows and 50 entries: per entry 524 ms, one pass 77 ms —
-    and all of it runs inside the swap lock, where every other library route
-    waits. Counted rather than timed, so it cannot go flaky.
+    All of it runs inside the swap lock, where every other library route waits;
+    the measured figures are on ``trash_manage._listed_entries``. Counted rather
+    than timed, so it cannot go flaky.
     """
     from app.beets import trash_manage
 
@@ -499,7 +663,9 @@ def test_empty_all_counts_the_entries_the_page_showed(client: TestClient) -> Non
 
     A Trash inside the music library can hold a ``.musicdrop-keep`` a killed
     delete left behind: measured, one visible entry answered ``removed=2``. It
-    is still removed — the count is the only thing at stake.
+    is still removed — the count is the only thing at stake, and this file is the
+    ONE exception to "the count is what Empty removed" because the app planted
+    it.
     """
     trash = _trash_dir(client)
     (trash / "Art - Alb").mkdir(parents=True)
@@ -508,8 +674,66 @@ def test_empty_all_counts_the_entries_the_page_showed(client: TestClient) -> Non
     r = client.delete("/api/trash/all")
 
     assert r.status_code == 200
-    assert r.json()["removed"] == 1, "one entry was listed, so one was removed"
+    assert r.json()["removed"] == 1, "one entry, plus the app's own keep-file"
     assert list(trash.iterdir()) == [], "the leftover went with it"
+
+
+def test_empty_all_counts_a_hidden_entry_it_destroyed(client: TestClient) -> None:
+    """Everything Empty removes is in the count — hiding is not the app's doing.
+
+    Measured on the previous predicate (skip every dot-leading name): a hidden
+    directory AND its contents were destroyed while the response said
+    ``removed: 0``. A zero also suppresses the orphan origin-record sweep, so the
+    records of what went are left behind too.
+    """
+    trash = _trash_dir(client)
+    hidden = trash / ".stash"
+    hidden.mkdir(parents=True)
+    (hidden / "keepsake.flac").write_bytes(b"x")
+
+    r = client.delete("/api/trash/all")
+
+    assert r.status_code == 200
+    assert r.json()["removed"] == 1, "it was destroyed, so it is counted"
+    assert not hidden.exists()
+
+
+def test_the_aliases_beets_cannot_see_are_recorded_not_guarded(tmp_path: Path) -> None:
+    """Four aliases of one file that beets' ``path:`` query does not equate. RESIDUAL.
+
+    Recorded, not guarded, and this test exists to say which is which. beets
+    compares path STRINGS; an alias it cannot see is an entry Empty removes while
+    a row still names it. All four need a hand-edited row or an alias the config
+    never named, so MusicDrop's own writer produces none of them
+    (``tests/probes/alias_rows.py`` measures each end to end).
+
+    A check of our own that saw them is exactly the code three rounds of review
+    found faults in — a fail-open stat, an unconfirmed root spelling, a
+    dangling row that refused for ever. The owner's call: do not re-implement
+    what beets already answers.
+    """
+    from tests._mountns import run_probe, unshare_works
+
+    required = os.environ.get("MUSICDROP_REQUIRE_CASEFOLD") == "1"
+    if not unshare_works():
+        if required:
+            pytest.fail("MUSICDROP_REQUIRE_CASEFOLD=1 but this box has no mount namespace")
+        pytest.skip("no unprivileged mount namespace on this box")
+
+    work = tmp_path / "work"
+    work.mkdir()
+    lines = run_probe("alias_rows", work)
+
+    if "CASE-INSENSITIVE True" not in lines:
+        if required:
+            pytest.fail(f"MUSICDROP_REQUIRE_CASEFOLD=1 but no casefold tmpfs: {lines}")
+        pytest.skip(f"no casefolding tmpfs on this box: {lines}")
+
+    for label in ("NFD-ROW", "SS-ROW", "BIND", "SYMLINK"):
+        # The premise first: each fixture really is one file under two names.
+        assert f"{label} SAME FILE True" in lines, lines
+        assert f"{label} REMOVED" in lines, lines
+        assert f"{label} ONLY COPY SURVIVED False" in lines, lines
 
 
 def test_empty_refuses_a_row_that_spells_the_entry_in_another_case(tmp_path: Path) -> None:
@@ -517,11 +741,13 @@ def test_empty_refuses_a_row_that_spells_the_entry_in_another_case(tmp_path: Pat
 
     Measured by the security seat on a real ``casefold=utf8-12.1.0`` tmpfs: the
     byte-prefix check saw no match, Empty ran, and the album's only copy was
-    destroyed while the album stayed listed. Confirmed by IDENTITY rather than by
-    lowercasing, so two genuinely different entries on a case-SENSITIVE
-    filesystem are not refused
-    (``test_empty_one_removes_an_entry_a_trash_old_sibling_row_names`` is one
-    such control).
+    destroyed while the album stayed listed. beets decides case sensitivity by
+    PROBING the filesystem the path is on and folds both sides when it finds one,
+    so two genuinely different entries on a case-SENSITIVE filesystem are not
+    refused — ``test_two_entries_differing_only_in_case_are_two_entries`` is that
+    control, and
+    ``test_case_sensitivity_is_decided_by_probing_the_filesystem`` pins the beets
+    property both rest on.
 
     Needs a casefolding tmpfs inside a mount namespace, so it runs as a probe,
     with the same skip-guard as its neighbours: ``MUSICDROP_REQUIRE_CASEFOLD=1``

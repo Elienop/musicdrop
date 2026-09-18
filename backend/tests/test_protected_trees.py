@@ -10,9 +10,12 @@ dir through it.
 from __future__ import annotations
 
 import contextlib
+import errno
 import logging
 import os
 import shutil
+import stat
+from collections import Counter
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -1994,9 +1997,73 @@ def test_a_delete_that_raises_while_collecting_leaks_no_descriptor(
     assert not (inbox / ".musicdrop-keep").exists(), "and the keep-file it had planted went"
 
 
-def _open_descriptors() -> set[str]:
-    """This process's open descriptors, by number."""
-    return set(os.listdir("/proc/self/fd"))
+def _open_descriptors() -> Counter[str]:
+    """This process's open descriptors, by WHAT each points at.
+
+    Not a set of NUMBERS: ``listdir`` opens a descriptor of its own, and a single
+    leak takes exactly the number that one had in the earlier sample, so the two
+    sets compare equal while an fd is held (code seat, round 3 — measured on the
+    keep-file leak this pins). Counting targets sees it, and the listdir's own
+    descriptor is closed by the time its number is read back, so it is absent
+    from both samples rather than counted in one.
+    """
+    targets: Counter[str] = Counter()
+    for fd in os.listdir("/proc/self/fd"):
+        with contextlib.suppress(OSError):
+            targets[os.readlink(f"/proc/self/fd/{fd}")] += 1
+    return targets
+
+
+def test_a_plant_that_raises_leaks_no_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The descriptor is recorded BEFORE the keep-file work runs on it.
+
+    ``_Kept(path, fd, _plant(path, fd))`` evaluated ``_plant`` first, so its
+    ``os.fstat`` raising the module's own failure class (EIO/ESTALE) lost the
+    descriptor before anything held it — measured, 1 leaked fd per attempt.
+
+    The keep-file itself is LEFT, and that is the same state a killed run leaves:
+    ``_plant`` could not identify the file it had just created, so releasing may
+    not remove it, and the next delete adopts it
+    (``test_a_leftover_keep_file_is_adopted_and_left_where_it_is``).
+    """
+    from app.beets.delete import delete_album
+    from tests.conftest import build_library
+
+    music = tmp_path / "music"
+    inbox = music / "Downloads" / "inbox"
+    folder = inbox / "Art" / "Alb"
+    folder.mkdir(parents=True)
+    beets_dir = beets_dir_for(tmp_path)
+    lib = build_library(str(beets_dir / "library.db"), str(music))
+    _add_album(lib, folder)
+    monkeypatch.setattr("app.config.settings.inbox_dir", str(inbox))
+    trash = tmp_path / "trash"
+    origins = origins_for(trash)
+    trees = protected_for(lib, trash_dir=trash, origins_dir=origins)
+    album_id = _require_id(next(iter(lib.albums())).id)
+
+    real_fstat = os.fstat
+
+    def _eio(fd: int) -> os.stat_result:
+        # Only for the keep-FILE's descriptor: ``os`` is one module object, so a
+        # blanket fake also breaks the directory fstat that decides whether the
+        # directory is ours, and then nothing is kept and nothing plants.
+        st = real_fstat(fd)
+        if stat.S_ISDIR(st.st_mode):
+            return st
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr("app.beets.delete.os.fstat", _eio)
+    open_before = _open_descriptors()
+
+    with pytest.raises(OSError, match="Input/output error"):
+        delete_album(lib, album_id, trash_dir=trash, origins_dir=origins, protected=trees)
+
+    monkeypatch.undo()
+    assert _open_descriptors() == open_before, "the descriptor it had opened was closed"
+    assert (inbox / ".musicdrop-keep").is_file(), "left the way a killed run leaves one"
 
 
 def test_a_delete_closes_every_descriptor_it_opened(
@@ -2072,6 +2139,51 @@ def test_a_file_that_replaces_the_keep_file_is_not_removed(
     assert (inbox / ".musicdrop-keep").read_bytes() == b"someone else's", "not ours, not removed"
 
 
+def test_a_link_that_replaces_the_keep_file_is_not_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``follow_symlinks=False``: the identity is the NAME's, not its target's.
+
+    The one racer shape the test above cannot make. A link left at the name and
+    pointing at a hardlink of the keep-file answers the planted identity through
+    ``stat`` — measured, following the link removed a link the app never created
+    while its own file stayed. ``lstat`` sees the link's own inode and leaves it.
+    """
+    from app.beets.delete import delete_album
+    from tests.conftest import build_library
+
+    music = tmp_path / "music"
+    inbox = music / "Downloads" / "inbox"
+    folder = inbox / "Art" / "Alb"
+    folder.mkdir(parents=True)
+    beets_dir = beets_dir_for(tmp_path)
+    lib = build_library(str(beets_dir / "library.db"), str(music))
+    _add_album(lib, folder)
+    monkeypatch.setattr("app.config.settings.inbox_dir", str(inbox))
+    trash = tmp_path / "trash"
+    origins = origins_for(trash)
+    trees = protected_for(lib, trash_dir=trash, origins_dir=origins)
+    album_id = _require_id(next(iter(lib.albums())).id)
+    real_carry = delete_mod._carry_the_sidecars
+    keep = inbox / ".musicdrop-keep"
+    twin = inbox / "keep-twin"
+
+    def _relinks(*args: Any, **kwargs: Any) -> None:
+        # After the move, before the ``finally``. The twin shares the keep-file's
+        # inode, so following the link lands on exactly the planted identity.
+        os.link(keep, twin)
+        keep.unlink()
+        keep.symlink_to(twin.name)
+        real_carry(*args, **kwargs)
+
+    monkeypatch.setattr(delete_mod, "_carry_the_sidecars", _relinks)
+
+    delete_album(lib, album_id, trash_dir=trash, origins_dir=origins, protected=trees)
+
+    assert keep.is_symlink(), "a link at the name is not the file this delete planted"
+    assert twin.is_file(), "and its target is untouched"
+
+
 def test_no_keep_file_is_planted_in_the_music_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2117,7 +2229,7 @@ def test_a_directory_swapped_after_the_check_gets_no_keep_file(
 
     The check and the plant are two syscalls, so a rename between them makes a
     path-spelled plant write into whatever now answers to the name. Measured:
-    with ``os.open(os.path.join(path, _KEEP_NAME))`` instead of ``dir_fd=fd``
+    with ``os.open(os.path.join(path, KEEP_NAME))`` instead of ``dir_fd=fd``
     the whole file stayed green, so this shape is the only reader the anchoring
     has. The swap is done from a wrapper around the identity check, which is
     exactly the window a real racer has.
@@ -2187,6 +2299,33 @@ def test_a_symlink_at_a_store_name_is_not_one_of_ours(tmp_path: Path) -> None:
     os.close(by_name)
 
     assert open_if_one_of_ours(link, trees) is None, "a link at the name is not the store"
+
+
+def test_a_stored_path_holding_a_nul_byte_is_not_one_of_ours(tmp_path: Path) -> None:
+    """The ``ValueError`` beside the ``OSError``, which had no pin.
+
+    ``os.open`` raises ``ValueError`` — not ``OSError`` — for an embedded NUL,
+    and the walk that feeds this reads stored row paths. Raising past the caller
+    would abandon every descriptor it already holds open.
+    """
+    from app.beets.protected import open_if_one_of_ours
+
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    trees = protected_trees(
+        settings=Settings(inbox_dir=str(inbox)),
+        music_dir=tmp_path / "music",
+        beets_dir=tmp_path / "beets",
+        trash_dir=tmp_path / "trash",
+        origins_dir=tmp_path / "origins",
+        library_path=tmp_path / "beets" / "library.db",
+    )
+
+    ours = open_if_one_of_ours(inbox, trees)
+    assert ours is not None, "the control: this path IS one of ours"
+    os.close(ours)
+
+    assert open_if_one_of_ours(f"{inbox}\x00/Art", trees) is None
 
 
 def test_a_leftover_keep_file_is_adopted_and_left_where_it_is(

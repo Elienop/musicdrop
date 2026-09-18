@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import beets
+from beets.dbcore.query import PathQuery
 from beets.library import Library
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -210,6 +211,12 @@ def _trash_one(
 def _all_rows_are_in_trash(lib: Library, items: list[Any], trash_dir: Path) -> bool:
     """Whether every item row of this album names a regular file inside Trash.
 
+    The SAME question Empty asks, asked the same way: beets' own ``PathQuery``
+    (``trash_manage._listed_entries``). A hand-rolled prefix compare on each side
+    could disagree about one row — Empty refusing an entry the retry arm does not
+    recognise leaves the user with no way out — and this one also inherits the
+    engine's directory-prefix, relative-row and case-sensitivity handling.
+
     ``lstat`` + ``S_ISREG``, not ``isfile``: a symlink inside Trash onto a live
     library file took this arm and dropped the rows while the real file stayed
     (measured). The type test also keeps a GHOST out, which matters because a
@@ -224,14 +231,15 @@ def _all_rows_are_in_trash(lib: Library, items: list[Any], trash_dir: Path) -> b
     False positive: an album whose files genuinely live inside Trash has its rows
     dropped and its files left where they are. Nothing is lost.
 
-    The prefix carries a trailing separator, so a sibling ``trash-old`` is not
-    inside Trash (``test_a_trash_old_sibling_is_not_read_as_being_in_trash``).
+    ``PathQuery``'s directory arm carries a trailing separator, so a sibling
+    ``trash-old`` is not inside Trash
+    (``test_a_trash_old_sibling_is_not_read_as_being_in_trash``).
     """
     if not items:
         return False
-    prefix = os.path.join(os.path.normpath(str(trash_dir)), "")
-    paths = [os.path.normpath(_abs_path(lib, it.path)) for it in items]
-    return all(p.startswith(prefix) and _is_regular_file(p) for p in paths)
+    with lib.music_dir_context():
+        inside = PathQuery("path", os.fsencode(str(trash_dir)))
+        return all(inside.match(it) and _is_regular_file(_abs_path(lib, it.path)) for it in items)
 
 
 def _is_regular_file(path: str) -> bool:
@@ -248,22 +256,23 @@ def _is_regular_file(path: str) -> bool:
 #: killed run leaves one file per app-owned directory it had reached, and the
 #: next Delete finds each and leaves it
 #: (``test_a_leftover_keep_file_is_adopted_and_left_where_it_is``).
-_KEEP_NAME: Final = ".musicdrop-keep"
+KEEP_NAME: Final = ".musicdrop-keep"
 _KEEP_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
 
 
-@dataclass(frozen=True)
+@dataclass
 class _Kept:
     """One app-owned directory held open for the move, and the file WE planted in it.
 
     ``planted`` is the keep-file's ``(st_dev, st_ino)`` when this delete created
     it, and ``None`` when it did not: an adopted leftover, or a store that could
-    not be written in.
+    not be written in. It is filled AFTER the record exists, which is why this is
+    not frozen — see :func:`_keep_our_dirs`.
     """
 
     path: str
     fd: int
-    planted: tuple[int, int] | None
+    planted: tuple[int, int] | None = None
 
 
 def _keep_our_dirs(
@@ -288,23 +297,32 @@ def _keep_our_dirs(
     ``kept`` is an OUT parameter, filled as each directory is taken, because the
     caller's ``finally`` must release what was collected before a raise
     part-way through (``test_a_delete_that_raises_while_collecting_leaks_no_descriptor``).
+
+    The descriptor is RECORDED before anything runs on it. Built as one
+    expression, ``_plant`` was evaluated before the record existed, and its
+    ``fstat`` can raise the module's own failure class (EIO/ESTALE) — measured, 1
+    leaked descriptor per attempt
+    (``test_a_plant_that_raises_leaks_no_descriptor``). The keep-file itself is
+    left, the way a killed run leaves one, and the next delete adopts it.
     """
     for path in _dirs_the_prune_can_reach(lib, items, art=getattr(album, "artpath", None)):
         fd = open_if_one_of_ours(path, protected)
         if fd is not None:
-            kept.append(_Kept(path, fd, _plant(path, fd)))
+            one = _Kept(path, fd)
+            kept.append(one)
+            one.planted = _plant(path, fd)
     if kept and _keep_name_is_clutter():
         _log.warning(
             "clutter: matches %s, so MusicDrop's own directories may not be protected"
             " from beets' prune during a delete",
-            _KEEP_NAME,
+            KEEP_NAME,
         )
 
 
 def _plant(path: str, fd: int) -> tuple[int, int] | None:
     """Create the keep-file in ``fd``; its identity when THIS call created it."""
     try:
-        file_fd = os.open(_KEEP_NAME, _KEEP_FLAGS, 0o600, dir_fd=fd)
+        file_fd = os.open(KEEP_NAME, _KEEP_FLAGS, 0o600, dir_fd=fd)
     except FileExistsError:
         # A killed run's leftover, which already holds the prune off. Left alone
         # so this delete puts the directory back exactly as it found it.
@@ -346,10 +364,10 @@ def _release_our_dirs(kept: list[_Kept]) -> None:
     for one in kept:
         if one.planted is not None:
             try:
-                if _ident(os.stat(_KEEP_NAME, dir_fd=one.fd, follow_symlinks=False)) == one.planted:
-                    os.unlink(_KEEP_NAME, dir_fd=one.fd)
+                if _ident(os.stat(KEEP_NAME, dir_fd=one.fd, follow_symlinks=False)) == one.planted:
+                    os.unlink(KEEP_NAME, dir_fd=one.fd)
             except OSError:
-                _log.warning("could not remove %s in %s", _KEEP_NAME, one.path)
+                _log.warning("could not remove %s in %s", KEEP_NAME, one.path)
         with contextlib.suppress(OSError):
             os.close(one.fd)
 
@@ -357,7 +375,7 @@ def _release_our_dirs(kept: list[_Kept]) -> None:
 def _keep_name_is_clutter() -> bool:
     """Whether the user's ``clutter:`` list makes the keep-file invisible to the prune."""
     patterns = beets.config["clutter"].as_str_seq()
-    return any(fnmatch.fnmatch(_KEEP_NAME, str(p)) for p in patterns)
+    return any(fnmatch.fnmatch(KEEP_NAME, str(p)) for p in patterns)
 
 
 def _dirs_the_prune_can_reach(
@@ -424,13 +442,17 @@ def _carry_the_sidecars(lib: Library, moved_audio: list[tuple[str, str]]) -> Non
 
 #: Every item row under one directory's SUBTREE, both stored path forms — beets
 #: stores relative to ``lib.directory`` in the normal case and absolute for
-#: outside/legacy rows. The subtree is wider than the question (one directory
-#: returned 41 rows, 40 of them from subfolders); the caller keeps the direct
-#: children. One query per DIRECTORY, not per item: at 100k rows ``substr``
-#: defeats the index and costs 4.3 ms a time (measured by the code seat), which
-#: for a 300-track artist was ~1.3 s inside the transaction. For a track filed
-#: directly in the music ROOT the relative prefix is empty and every row comes
-#: back — 20 000 rows in 21 ms, measured; it is bounded by library size.
+#: outside/legacy rows. Wider than the question (one directory returned 41 rows,
+#: 40 of them from subfolders) and harmlessly so: a stem is an absolute path, so
+#: a row one folder down produces a different one.
+#:
+#: One query per DIRECTORY, and the caller asks once per ALBUM, inside the
+#: delete's transaction. Measured on THIS code at 100 000 rows: 11.1 ms for an
+#: album folder, 164.7 ms for a track filed in the music ROOT, where the relative
+#: prefix is empty and every row comes back. Both multiply by the albums in the
+#: request — a 10-album artist delete on a flat library is ~1.6 s. Not hoisted to
+#: once per request: the read happens AFTER the mover returned so the deleted
+#: album's own rows are already gone, which a single earlier read cannot give.
 _ROWS_UNDER_SQL = """
 SELECT path FROM items WHERE substr(path, 1, ?) = ? OR substr(path, 1, ?) = ?
 """
@@ -453,6 +475,14 @@ def _stems_in_use(lib: Library, directories: set[str]) -> set[str]:
     the directory's direct children first is therefore an equivalent mutant —
     measured, and removed rather than left unpinned.
 
+    Neither side is re-normalised. Both come from the mover: the directory is a
+    ``dirname`` of a path ``Album.move`` produced, and a row is what beets
+    stored, which it normalised on the way in. Normalising the ROW side only —
+    the other half of this compare, ``sidecar_base(old_audio)``, never was —
+    survived mutation both ways and is gone. The residual is the one Empty
+    states: a hand-edited row spelled ``..`` is not matched, so its sidecar
+    travels with the deleted track, which is the direction this errs in anyway.
+
     The music root is the case that makes the prefix load-bearing:
     ``relpath(music, music)`` is ``"."``, so a ``./`` prefix matched no stored
     row and a neighbour's lyrics were carried off
@@ -462,18 +492,16 @@ def _stems_in_use(lib: Library, directories: set[str]) -> set[str]:
     music = os.fsdecode(lib.directory)
     with lib.transaction() as tx:
         for directory in directories:
-            here = os.path.normpath(directory)
-            absolute = os.fsencode(os.path.join(here, ""))
+            absolute = os.fsencode(os.path.join(directory, ""))
             relative = absolute
             with contextlib.suppress(ValueError):  # different drives: no relative spelling
-                rel = os.path.relpath(here, music)
+                rel = os.path.relpath(directory, music)
                 relative = b"" if rel == os.curdir else os.fsencode(os.path.join(rel, ""))
             rows = tx.query(_ROWS_UNDER_SQL, (len(absolute), absolute, len(relative), relative))
             stems.update(
                 base
                 for (raw,) in rows
-                if (base := sidecar_base(os.path.normpath(_abs_path(lib, os.fsencode(raw)))))
-                is not None
+                if (base := sidecar_base(_abs_path(lib, os.fsencode(raw)))) is not None
             )
     return stems
 
