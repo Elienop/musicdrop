@@ -99,10 +99,13 @@ entry carries a dated correction block where the pass changed it._
      setting"*. Off writes `move: yes`, on writes `hardlink: yes`, into beets' own `import:` keys;
      the app adds no per-import choice. Hardlink serves sources whose files must stay (seeding;
      downloaders that skip a track whose file exists — yubal, and deemix under its default
-     `DONT_OVERWRITE`), and falls back to COPY when the link fails. While it is on, no download
-     folder empties itself, and the setting's own text must say so. NOT BUILT YET: nothing in
-     `app/models/`, `app/api/` or the frontend references `hardlink` (verified), so today the user
-     edits `import:` by hand in Settings -> Beets, which is the same keys with a worse face.
+     `DONT_OVERWRITE`). A link that cannot be made fails the import loudly — beets raises
+     `Cannot hard link across devices.` (`util/__init__.py:587-589`) — and MusicDrop does not
+     downgrade it to a copy: `decisions` #57 drops the fallback #51 described. While it is on,
+     no download folder empties itself, and the setting's own text must say so. NOT BUILT YET:
+     there is no switch route and no switch UI — `config_editor` models `hardlink` only for its
+     advisory — so today the user edits `import:` by hand in Settings -> Beets, which is the
+     same keys with a worse face.
      slskd's auto-import keeps MOVING until branch 2 — the inbox routes and the drain send
      `operation="move"`, overriding the global switch by design, and `config_editor`'s
      link/hardlink/reflink advisory is where that is currently disclosed.
@@ -116,10 +119,9 @@ entry carries a dated correction block where the pass changed it._
      `config_default.yaml`), so a hardlink import needs `move: no`, `copy: no`, `hardlink: yes`.
      An explicit per-import `operation` (`move`, `copy`) now pins all five file flags plus
      `delete`, and `delete` is pinned off on every path including `default` — so a hardlink
-     provider can no longer have its source removed. MusicDrop still adds: a hardlink arm in
-     `run_import_worker`'s force/restore beside that override; a probe with a real
-     `os.link` into the library, because `util.hardlink` raises on EXDEV with no fallback and two
-     bind mounts of one filesystem share `st_dev`; the in-library guard (`is_in_library_source`,
+     provider can no longer have its source removed. MusicDrop adds NO hardlink arm and NO
+     link probe (`decisions` #53, #57): a `default` import leaves the user's `hardlink: yes` to
+     beets. Still owed: the in-library guard (`is_in_library_source`,
      refusing copy today) covering hardlink; and a note that `write: yes` changes a hardlinked
      downloader's own file (mutagen opens it `rb+`) — acceptable for non-torrent sources, as *arr
      only documents it.
