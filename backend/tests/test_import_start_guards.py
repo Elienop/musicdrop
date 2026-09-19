@@ -636,18 +636,15 @@ def test_the_inbox_review_refuses_while_the_library_root_is_unavailable(
     monkeypatch.setattr(acq_api, "settled_folders", lambda *a, **k: [folder])
     monkeypatch.setattr(acq_api, "count_pending", lambda _d: 1)
     _drop_root(lib, bare=True)
-    app.state.inbox_dir = inbox
-    try:
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.post("/api/acquisition/review-inbox")
-        assert resp.status_code == 503
-        assert "share mounted" in resp.json()["detail"]
-    finally:
-        app.state.inbox_dir = None
+    monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post("/api/acquisition/review-inbox")
+    assert resp.status_code == 503
+    assert "share mounted" in resp.json()["detail"]
 
 
 def test_the_per_item_inbox_import_refuses_while_the_library_root_is_unavailable(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The sibling route's 503 arm, which no test reached.
 
@@ -659,14 +656,11 @@ def test_the_per_item_inbox_import_refuses_while_the_library_root_is_unavailable
     inbox = tmp_path / "inbox"
     folder = _album_folder(inbox, b"okc")
     _drop_root(lib, bare=True)
-    app.state.inbox_dir = inbox
-    try:
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.post("/api/acquisition/inbox/items/import", json={"name": folder.name})
-        assert resp.status_code == 503, resp.text
-        assert "share mounted" in resp.json()["detail"]
-    finally:
-        app.state.inbox_dir = None
+    monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post("/api/acquisition/inbox/items/import", json={"name": folder.name})
+    assert resp.status_code == 503, resp.text
+    assert "share mounted" in resp.json()["detail"]
 
 
 # ----- 10: the two automatic producers wait instead of burning their work -----
@@ -1102,16 +1096,13 @@ def test_review_all_survives_a_folder_that_vanished_since_the_listing(
 
     monkeypatch.setattr(acq_api, "settled_folders", settle_then_vanish)
     monkeypatch.setattr(acq_api, "count_pending", lambda _d: 2)
-    app.state.inbox_dir = inbox
-    try:
-        client = TestClient(app)
-        resp = client.post("/api/acquisition/review-inbox")
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["started"] is True
-        state = _drive(client, body["job_id"])
-    finally:
-        app.state.inbox_dir = None
+    monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
+    client = TestClient(app)
+    resp = client.post("/api/acquisition/review-inbox")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["started"] is True
+    state = _drive(client, body["job_id"])
     assert state["phase"] == "done", state
     assert not gone.exists()
     assert len(list(lib.albums())) == 1

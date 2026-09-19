@@ -355,13 +355,12 @@ def test_empty_all_carries_on_past_an_entry_it_cannot_open(
     os.chmod(trash / "b", 0o000)
     trees = _trees_for(tmp_path / "music", trash)
     origins = origins_for(trash)
+    lib = library_with_no_rows(tmp_path)
 
     try:
         with caplog.at_level(logging.WARNING, logger="app.beets.protected"):
             with pytest.raises(TrashEmptyPartialError) as caught:
-                empty_all(
-                    trash, origins_dir=origins, protected=trees, lib=library_with_no_rows(tmp_path)
-                )
+                empty_all(trash, origins_dir=origins, protected=trees, lib=lib)
     finally:
         os.chmod(trash / "b", 0o755)
 
@@ -427,9 +426,10 @@ def test_empty_all_refuses_a_trash_directory_swapped_after_the_check(tmp_path: P
     os.rename(trash, tmp_path / "gone")
     (trash / "Impostor").mkdir(parents=True)
     origins = origins_for(trash)
+    lib = library_with_no_rows(tmp_path)
 
     with pytest.raises(ProtectedTreeError, match="changed between the check and the open"):
-        empty_all(trash, origins_dir=origins, protected=trees, lib=library_with_no_rows(tmp_path))
+        empty_all(trash, origins_dir=origins, protected=trees, lib=lib)
     assert (trash / "Impostor").is_dir()
 
 
@@ -488,8 +488,10 @@ def test_empty_all_leaves_the_protected_entry_and_removes_the_rest(tmp_path: Pat
     trees = _trees_for(trash / "Sneak", trash)
     origins = origins_for(trash)
 
+    lib = library_with_no_rows(tmp_path)
+
     with pytest.raises(ProtectedTreeError) as caught:
-        empty_all(trash, origins_dir=origins, protected=trees, lib=library_with_no_rows(tmp_path))
+        empty_all(trash, origins_dir=origins, protected=trees, lib=lib)
 
     assert "'Sneak' is the music library" in str(caught.value)
     assert "Removed 1" in str(caught.value)
@@ -519,12 +521,11 @@ def test_two_refused_entries_read_as_two(tmp_path: Path) -> None:
         library_path=tmp_path / "absent" / "library.db",
     )
     origins = origins_for(trash)
+    lib = library_with_no_rows(tmp_path)
 
     try:
         with pytest.raises(ProtectedTreeError) as caught:
-            empty_all(
-                trash, origins_dir=origins, protected=trees, lib=library_with_no_rows(tmp_path)
-            )
+            empty_all(trash, origins_dir=origins, protected=trees, lib=lib)
     finally:
         os.chmod(trash / "stuck", 0o700)
 
@@ -567,9 +568,11 @@ def test_all_three_causes_reach_the_user_in_the_one_message(tmp_path: Path) -> N
         library_path=beets_dir_for(tmp_path) / "library.db",
     )
 
+    origins = origins_for(trash)
+
     try:
         with pytest.raises(ProtectedTreeError) as caught:
-            empty_all(trash, origins_dir=origins_for(trash), protected=trees, lib=lib)
+            empty_all(trash, origins_dir=origins, protected=trees, lib=lib)
     finally:
         os.chmod(stuck, 0o700)
 
@@ -631,8 +634,9 @@ def test_empty_all_refuses_a_trash_that_is_one_of_the_apps_own_directories(
     )
 
     origins = origins_for(trash)
+    lib = library_with_no_rows(tmp_path)
     with pytest.raises(ProtectedTreeError, match="the Trash directory is the music library"):
-        empty_all(trash, origins_dir=origins, protected=trees, lib=library_with_no_rows(tmp_path))
+        empty_all(trash, origins_dir=origins, protected=trees, lib=lib)
     assert (trash / "Artist" / "01.flac").exists()
 
 
@@ -674,8 +678,9 @@ def test_the_trash_root_alias_is_found_wherever_the_twin_is_listed(
     )
 
     origins = origins_for(trash)
+    lib = library_with_no_rows(tmp_path)
     with pytest.raises(ProtectedTreeError, match=f"the Trash directory {phrase}"):
-        empty_all(trash, origins_dir=origins, protected=trees, lib=library_with_no_rows(tmp_path))
+        empty_all(trash, origins_dir=origins, protected=trees, lib=lib)
     assert (trash / "Artist" / "01.flac").exists()
 
 
@@ -732,11 +737,10 @@ def test_the_refusal_names_how_many_entries_could_not_be_removed(tmp_path: Path)
     origins = origins_for(trash)
     trees = _trees_for(trash / "Sneak", trash)
     (trash / "Stuck").chmod(0o500)
+    lib = library_with_no_rows(tmp_path)
     try:
         with pytest.raises(ProtectedTreeError) as caught:
-            empty_all(
-                trash, origins_dir=origins, protected=trees, lib=library_with_no_rows(tmp_path)
-            )
+            empty_all(trash, origins_dir=origins, protected=trees, lib=lib)
     finally:
         (trash / "Stuck").chmod(0o700)
 
@@ -756,14 +760,10 @@ def test_empty_one_refuses_a_protected_entry(tmp_path: Path) -> None:
     trees = _trees_for(trash / "Sneak", trash)
     origins = origins_for(trash)
     sneak = str(trash / "Sneak")
+    lib = library_with_no_rows(tmp_path)
 
     with pytest.raises(ProtectedTreeError, match="'Sneak' is the music library"):
-        empty_one(
-            sneak,
-            origins_dir=origins,
-            protected=trees,
-            lib=library_with_no_rows(tmp_path),
-        )
+        empty_one(sneak, origins_dir=origins, protected=trees, lib=lib)
     assert (trash / "Sneak" / "01.flac").exists()
 
     assert (
@@ -829,10 +829,11 @@ def test_empty_all_removes_the_entry_it_guarded_and_not_the_name(
     )
 
     origins = origins_for(trash)
+    lib = library_with_no_rows(tmp_path)
     with pytest.raises(
         ProtectedTreeError, match="changed between the check and the removal"
     ) as err:
-        empty_all(trash, origins_dir=origins, protected=trees, lib=library_with_no_rows(tmp_path))
+        empty_all(trash, origins_dir=origins, protected=trees, lib=lib)
 
     assert fired == [True]
     assert (trash / "Album" / "01.flac").exists(), "the music library, under the entry's name"
@@ -859,15 +860,11 @@ def test_empty_one_removes_the_entry_it_guarded_and_not_the_name(
 
     origins = origins_for(trash)
     entry = str(trash / "Album")
+    lib = library_with_no_rows(tmp_path)
     with pytest.raises(
         ProtectedTreeError, match="changed between the check and the removal"
     ) as err:
-        empty_one(
-            entry,
-            origins_dir=origins,
-            protected=trees,
-            lib=library_with_no_rows(tmp_path),
-        )
+        empty_one(entry, origins_dir=origins, protected=trees, lib=lib)
 
     assert fired == [True]
     assert (trash / "Album" / "01.flac").exists(), "the music library, under the entry's name"
@@ -909,16 +906,12 @@ def test_an_entry_swapped_between_the_stat_and_the_open_is_refused(
     trees = _trees_for(music, trash)
     origins = origins_for(trash)
     entry = str(trash / "Album")
+    lib = library_with_no_rows(tmp_path)
 
     with pytest.raises(
         ProtectedTreeError, match="changed between the check and the removal"
     ) as err:
-        empty_one(
-            entry,
-            origins_dir=origins,
-            protected=trees,
-            lib=library_with_no_rows(tmp_path),
-        )
+        empty_one(entry, origins_dir=origins, protected=trees, lib=lib)
 
     assert fired == [True]
     assert (trash / "Album" / "01.flac").exists(), "the music library, under the entry's name"

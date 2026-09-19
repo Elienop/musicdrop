@@ -28,7 +28,7 @@ import logging
 import os
 import stat
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
@@ -1867,6 +1867,71 @@ def _refused_message(refused: list[str], *, removed: int, failed: list[str]) -> 
     return f"Refused: {shown}. Removed {removed}{stuck}; move {those} out of Trash, then retry."
 
 
+@dataclass
+class _Sweep:
+    """What one pass over the Trash root removed, and what each survivor cost."""
+
+    removed: int = 0
+    listed: list[tuple[str, _Listed]] = field(default_factory=list)
+    refused: list[str] = field(default_factory=list)
+    failed: list[str] = field(default_factory=list)
+    first: OSError | None = None
+
+
+def _sweep_entries(
+    names: Sequence[str],
+    still_listed: dict[str, _Listed],
+    *,
+    dir_fd: int,
+    origins_dir: Path,
+    protected: ProtectedTrees,
+) -> _Sweep:
+    """Decide each name's fate through ``dir_fd``: listed, refused, failed or removed.
+
+    A symlinked entry is acted on as the LINK: following it would ``rm -rf`` a
+    directory merely pointed at, and ``rmtree`` refuses one, which used to wedge
+    every entry after it in ``iterdir`` order.
+
+    Each origin record is dropped right after its entry.
+    """
+    sweep = _Sweep()
+    for name in names:
+        # Its OWN list: the rest of the Trash is still emptied, and the fix
+        # for these is not the fix the protected entries get.
+        found = still_listed.get(name)
+        if found is not None:
+            sweep.listed.append((display_path(name), found))
+            continue
+        try:
+            refusal = _remove_checked_entry(name, dir_fd=dir_fd, protected=protected)
+        except OSError as exc:
+            # Carry on. One entry the app cannot remove -- a root-owned file, a
+            # permission bit, a share that dropped half way -- used to abort the
+            # whole sweep and take the count with it, so the user was told
+            # nothing and could not tell 1-of-12 from 11-of-12. The entry stays
+            # in Trash either way; only the reporting was ever at stake.
+            sweep.failed.append(display_path(name))
+            sweep.first = sweep.first or exc
+            continue
+        if refusal is not None:
+            # The partial note rides on the clause: the summary says
+            # "Removed 0" for an entry whose contents are already gone.
+            note = f" ({_PARTIAL})" if refusal.partial else ""
+            sweep.refused.append(f"{display_path(name)!r} {refusal.clause}{note}")
+            continue
+        delete_trash_origin(origins_dir, name)
+        # The count is the top-level entries this Empty removed, with one
+        # exception: the app's own keep-file, which a killed delete can leave
+        # in a Trash inside the music library and which made one visible
+        # entry read as ``removed=2``. Skipping every dot-leading name
+        # instead read ``removed: 0`` while a hidden folder and its contents
+        # were destroyed (measured), and a zero also suppresses the
+        # orphan-record sweep.
+        if name != KEEP_NAME:
+            sweep.removed += 1
+    return sweep
+
+
 def empty_all(
     trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees, lib: Library
 ) -> EmptyResult:
@@ -1888,24 +1953,15 @@ def empty_all(
     (:func:`_listed_message`, :func:`_refused_message`); a sweep whose only fault
     is a failed removal answers 500.
 
-    A symlinked entry is acted on as the LINK: following it would ``rm -rf`` a
-    directory merely pointed at, and ``rmtree`` refuses one, which used to wedge
-    every entry after it in ``iterdir`` order.
-
-    Each origin record is dropped inside the loop, right after its entry. The
-    whole store is swept only when this call REMOVED something AND Trash is
-    empty afterwards: emptiness alone would destroy every record when the share
-    has dropped.
+    Each name is decided and acted on by :func:`_sweep_entries`, which drops
+    each origin record right after its entry. The whole store is swept only when
+    this call REMOVED something AND Trash is empty afterwards: emptiness alone
+    would destroy every record when the share has dropped.
 
     The residual list is the BACKLOG entry for this slice.
     """
     if not trash_dir.exists():
         return EmptyResult(removed=0)
-    removed = 0
-    failed: list[str] = []
-    refused: list[str] = []
-    listed: list[tuple[str, _Listed]] = []
-    first: OSError | None = None
     fd = open_checked_dir(trash_dir, protected)
     try:
         # Inside a ``with``, like ``_Remover.children``: the dup an fd
@@ -1916,58 +1972,28 @@ def empty_all(
         # ONE query for the whole sweep, before the first removal, inside the
         # swap lock (cost in :func:`_listed_entries`).
         still_listed = _listed_entries(lib, protected.trash_spellings, names)
-        for name in names:
-            # Its OWN list: the rest of the Trash is still emptied, and the fix
-            # for these is not the fix the protected entries below get.
-            found = still_listed.get(name)
-            if found is not None:
-                listed.append((display_path(name), found))
-                continue
-            try:
-                refusal = _remove_checked_entry(name, dir_fd=fd, protected=protected)
-            except OSError as exc:
-                # Carry on. One entry the app cannot remove -- a root-owned file, a
-                # permission bit, a share that dropped half way -- used to abort the
-                # whole sweep and take the count with it, so the user was told
-                # nothing and could not tell 1-of-12 from 11-of-12. The entry stays
-                # in Trash either way; only the reporting was ever at stake.
-                failed.append(display_path(name))
-                first = first or exc
-                continue
-            if refusal is not None:
-                # The partial note rides on the clause: the summary below says
-                # "Removed 0" for an entry whose contents are already gone.
-                note = f" ({_PARTIAL})" if refusal.partial else ""
-                refused.append(f"{display_path(name)!r} {refusal.clause}{note}")
-                continue
-            delete_trash_origin(origins_dir, name)
-            # The count is the top-level entries this Empty removed, with one
-            # exception: the app's own keep-file, which a killed delete can leave
-            # in a Trash inside the music library and which made one visible
-            # entry read as ``removed=2``. Skipping every dot-leading name
-            # instead read ``removed: 0`` while a hidden folder and its contents
-            # were destroyed (measured), and a zero also suppresses the
-            # orphan-record sweep below.
-            if name != KEEP_NAME:
-                removed += 1
+        sweep = _sweep_entries(
+            names, still_listed, dir_fd=fd, origins_dir=origins_dir, protected=protected
+        )
     finally:
         os.close(fd)
-    if listed:
+    removed, failed = sweep.removed, sweep.failed
+    if sweep.listed:
         # First, because it is the only refusal here about LOSING data: those
         # entries hold the album's one copy (see ``_LISTED_ALBUM``). It carries
         # the other two causes with it — a raise that outranked them left an
         # entry that could not be removed invisible on every retry.
         raise ProtectedTreeError(
-            _listed_message(listed, refused=refused, removed=removed, failed=failed)
+            _listed_message(sweep.listed, refused=sweep.refused, removed=removed, failed=failed)
         )
-    if refused:
-        raise ProtectedTreeError(_refused_message(refused, removed=removed, failed=failed))
+    if sweep.refused:
+        raise ProtectedTreeError(_refused_message(sweep.refused, removed=removed, failed=failed))
     if failed:
         # Named, not just counted: the user's next move is to look at them.
         raise TrashEmptyPartialError(
             f"removed {removed} of {removed + len(failed)}."
             f" {len(failed)} could not be removed and are still in Trash: {_capped(failed)}."
-            f" The first failure was: {_one_full_stop(str(first))}"
+            f" The first failure was: {_one_full_stop(str(sweep.first))}"
         )
     # Suppressed rather than allowed to escape: everything above has already
     # happened, so a ``trash_dir`` that stopped answering between the loop and

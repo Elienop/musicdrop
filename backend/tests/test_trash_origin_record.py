@@ -2311,13 +2311,9 @@ def test_empty_one_keeps_the_record_when_the_removal_itself_fails(tmp_path: Path
         entry_path = str(dest)
         origins = _origins(tmp_path)
         trees = protected_for(trash_dir=tmp_path / "trash", origins_dir=origins)
+        lib = library_with_no_rows(tmp_path)
         with pytest.raises(OSError):
-            empty_one(
-                entry_path,
-                origins_dir=origins,
-                protected=trees,
-                lib=library_with_no_rows(tmp_path),
-            )
+            empty_one(entry_path, origins_dir=origins, protected=trees, lib=lib)
     finally:
         (tmp_path / "trash").chmod(0o700)
 

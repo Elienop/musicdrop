@@ -1637,8 +1637,10 @@ def test_an_album_with_a_null_path_row_refuses_before_anything_moves(
         app = _App()
 
     req = _Req()
+    # Created outside the block: nothing runs until asyncio.run drives it.
+    op = delete_album_op(req, album_id)  # type: ignore[arg-type]  # stub req
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(delete_album_op(req, album_id))  # type: ignore[arg-type]  # stub req
+        asyncio.run(op)
 
     assert ei.value.status_code == 500
     detail = ei.value.detail
