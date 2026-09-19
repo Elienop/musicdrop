@@ -4,6 +4,7 @@ import { http, HttpResponse } from "msw";
 import type { ReactNode } from "react";
 import { describe, expect, test } from "vitest";
 
+import { detailMessage } from "@/api/lib";
 import {
   CandidateNotFoundError,
   ImportConflictError,
@@ -11,6 +12,7 @@ import {
   ImportStartRejectedError,
   ImportUnavailableError,
   startErrorSentence,
+  throwIfRefused,
   useDuplicatePrompt,
   useImportCandidate,
   useImportJob,
@@ -167,6 +169,53 @@ describe("useStartImport", () => {
     expect(result.current.error).toMatchObject({
       message: "Failed to start import",
     });
+  });
+});
+
+// The helper the two inbox routes share. It speaks for exactly two statuses —
+// the ones whose bodies are OUR route's own refusal sentences — and returns for
+// everything else, so any other failure keeps the caller's generic copy through
+// `unwrap`. That narrowing was true and pinned by nothing: widening it to every
+// error status survived the whole suite (security-delta-review L-2). It matters
+// because a 500's detail on this branch interpolates absolute paths and OSError
+// text, which no alert should render.
+describe("throwIfRefused", () => {
+  function refusal(status: number, error?: unknown) {
+    return { error, response: new Response(null, { status }) };
+  }
+
+  // Each body is READABLE — the `detailMessage` assertion is the control, so a
+  // pass cannot come from an unreadable body instead of from the status check.
+  test.each([
+    [500, { detail: "Empty Trash: [Errno 13] Permission denied: '/srv/music/incoming'" }],
+    [404, { detail: "No such import job" }],
+    [422, { detail: [{ msg: "path is not a directory" }] }],
+  ])(
+    "a %i carrying a detail does not throw, so the caller's own sentence stands",
+    (status, body) => {
+      expect(detailMessage(body)).not.toBeNull();
+      expect(() => throwIfRefused(refusal(status, body))).not.toThrow();
+    },
+  );
+
+  test("a 409 with a detail throws ImportConflictError carrying it", () => {
+    const call = () =>
+      throwIfRefused(refusal(409, { detail: "A library backfill is in progress" }));
+    expect(call).toThrow(ImportConflictError);
+    expect(call).toThrow("A library backfill is in progress");
+  });
+
+  test("a 503 with a detail throws ImportUnavailableError carrying it", () => {
+    const call = () =>
+      throwIfRefused(refusal(503, { detail: "the music folder is not mounted" }));
+    expect(call).toThrow(ImportUnavailableError);
+    expect(call).toThrow("the music folder is not mounted");
+  });
+
+  // A bodyless 503 came from a proxy, where "try again" IS right; a bodyless
+  // 409 has no reason to offer. Both fall through to the caller's sentence.
+  test.each([409, 503])("a bodyless %i falls through as well", (status) => {
+    expect(() => throwIfRefused(refusal(status))).not.toThrow();
   });
 });
 
