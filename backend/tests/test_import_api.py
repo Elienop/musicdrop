@@ -99,6 +99,7 @@ def test_job_state_round_trips() -> None:
         set_aside=1,
         elapsed_seconds=125,
         awaiting_decision=True,
+        stopped=False,
     )
     dumped = state.model_dump(mode="json")
     assert dumped["phase"] == "reviewing"
@@ -190,7 +191,7 @@ def test_sweep_status_defaults() -> None:
     s = SweepStatus()
     assert (s.processed, s.auto_applied, s.banked, s.skipped_known) == (0, 0, 0, 0)
     assert s.current_folder is None
-    assert s.paused is False
+    assert s.stopped is False
 
 
 def test_job_state_sweep_block_round_trips() -> None:
@@ -206,12 +207,13 @@ def test_job_state_sweep_block_round_trips() -> None:
         set_aside=0,
         elapsed_seconds=0,
         awaiting_decision=False,
+        stopped=False,
         sweep=SweepStatus(processed=3, auto_applied=2, banked=1, current_folder="/library/x"),
     )
     dumped = state.model_dump(mode="json")
     assert dumped["origin"] == "sweep"
     assert dumped["sweep"]["processed"] == 3
-    assert dumped["sweep"]["paused"] is False
+    assert dumped["sweep"]["stopped"] is False
     # Non-sweep jobs default the block to None (existing constructors unchanged).
     assert (
         ImportJobState.model_validate({**dumped, "origin": "manual", "sweep": None}).sweep is None
@@ -536,16 +538,6 @@ def test_second_choice_after_advance_is_404() -> None:
     assert second.status_code == 404
 
 
-def test_abort_choice_ends_job_cleanly() -> None:
-    client = _client_with_fake(parked=[_api_parked(0, Recommendation.medium)])
-    job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
-    _poll(client, job_id, lambda s: len(s["albums"]) == 1)
-    resp = client.post(f"/api/import/{job_id}/albums/0/choice", json={"action": "abort"})
-    assert resp.status_code == 204
-    state = _poll(client, job_id, lambda s: s["phase"] in ("done", "failed"))
-    assert state["phase"] == "done"
-
-
 def test_worker_crash_marks_failed_never_500() -> None:
     client = _client_with_fake(fail_with="lookup exploded")
     job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
@@ -569,35 +561,68 @@ def test_feed_row_album_id_defaults_to_null() -> None:
     assert state["albums"][0]["album_id"] is None
 
 
-def test_pause_unknown_job_is_404() -> None:
+def test_stop_unknown_job_is_404() -> None:
     reset_registry(runner=FakeImportRunner())
-    resp = TestClient(app).post("/api/import/does-not-exist/pause")
+    resp = TestClient(app).post("/api/import/does-not-exist/stop")
     assert resp.status_code == 404
 
 
-def test_pause_non_sweep_job_is_409() -> None:
+def test_stop_ends_a_manual_run_parked_on_a_question() -> None:
+    """The owner's case over the wire: a manual run parked on the match question
+    is ended by one POST. Its predecessor refused every job that was not a sweep.
+    """
     client = _client_with_fake(parked=[_api_parked(0, Recommendation.medium)])
     job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
-    resp = client.post(f"/api/import/{job_id}/pause")
-    assert resp.status_code == 409
-    assert "sweep" in resp.json()["detail"].lower()
+    _poll(client, job_id, lambda s: s["awaiting_decision"] is True)
+
+    assert client.post(f"/api/import/{job_id}/stop").status_code == 204
+
+    state = _poll(client, job_id, lambda s: s["phase"] in ("done", "failed"))
+    # done, not failed: a stop is beets' clean abort. (_poll returns the last
+    # state it saw rather than raising, so the phase is asserted here.)
+    assert (state["phase"], state["error"]) == ("done", None)
+    assert state["stopped"] is True
+    assert state["awaiting_decision"] is False
+    assert state["albums"][0]["status"] == "needs_review"  # not decided, not imported
+    assert state["set_aside"] == 1
+    assert client.get("/api/imports/active").json()["active"] is False
+    # A choice submitted from a tab that had not noticed reads as "already over".
+    late = client.post(f"/api/import/{job_id}/albums/0/choice", json={"action": "skip"})
+    assert late.status_code == 404
 
 
-def test_pause_finished_sweep_is_409() -> None:
+def test_repeating_a_stop_on_an_active_job_is_204() -> None:
+    # White-box: an active job with no worker racing it to done, so the second
+    # call is observably made while the job is still active.
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = reset_registry(runner=FakeImportRunner())
+    reg._job = ImportJob(id="live", bridge=ImportBridge(), phase=ImportPhase.reviewing)
+    client = TestClient(app)
+    assert client.post("/api/import/live/stop").status_code == 204
+    assert client.post("/api/import/live/stop").status_code == 204
+
+
+def test_stop_on_a_finished_job_is_409() -> None:
     reset_registry(runner=FakeImportRunner())  # nothing canned: finishes at once
     client = TestClient(app)
     job_id = client.post(
         "/api/import", json={"path": "/library", "options": {"sweep": True}}
     ).json()["job_id"]
     _poll(client, job_id, lambda s: s["phase"] == "done")
-    assert client.post(f"/api/import/{job_id}/pause").status_code == 409
+    resp = client.post(f"/api/import/{job_id}/stop")
+    assert resp.status_code == 409
+    # The fixed literal the responses= block declares, not str(exc): the pattern
+    # would publish whatever the next raise under request_stop says.
+    assert resp.json()["detail"] == "That import is no longer running."
 
 
-def test_sweep_start_pause_and_finish_flow() -> None:
+def test_sweep_start_stop_and_finish_flow() -> None:
     # The fake parks its album, which keeps the worker blocked - a stable
-    # window to observe the active sweep, pause it, then release the worker
-    # through the existing choice endpoint (sweep jobs have no feed rows, but
-    # the bridge reply slot is real).
+    # window to observe the active sweep before it is stopped. A real sweep
+    # banks instead of parking, so only the fake has a worker here for the stop
+    # to release; the wire shape either way is the one asserted below.
     runner = FakeImportRunner(parked=[_api_parked(0, Recommendation.medium)])
     reset_registry(runner=runner)
     client = TestClient(app)
@@ -618,19 +643,14 @@ def test_sweep_start_pause_and_finish_flow() -> None:
     assert probe["origin"] == "sweep"
     assert probe["sweep"] is not None
 
-    pause = client.post(f"/api/import/{job_id}/pause")
-    assert pause.status_code == 204
-    assert client.get(f"/api/import/{job_id}").json()["sweep"]["paused"] is True
-    # Idempotent while the sweep is still active.
-    assert client.post(f"/api/import/{job_id}/pause").status_code == 204
+    assert client.post(f"/api/import/{job_id}/stop").status_code == 204
 
-    release = client.post(f"/api/import/{job_id}/albums/0/choice", json={"action": "skip"})
-    assert release.status_code == 204
     state = _poll(client, job_id, lambda s: s["phase"] == "done")
-    # The pause survives the finish, and the structured field is the only place
+    # The stop survives the finish, and the structured field is the only place
     # it is carried: the wire once repeated it in a summary string, which the UI
     # then rendered under a heading that already said it.
-    assert state["sweep"]["paused"] is True
+    assert state["sweep"]["stopped"] is True
+    assert state["stopped"] is True
     assert "summary" not in state
 
 
@@ -641,7 +661,7 @@ def test_active_status_last_sweep_defaults_none() -> None:
 def test_active_status_carries_last_sweep_recap_when_done() -> None:
     # A DONE sweep still holds the single slot — the idle probe carries its
     # recap so the Review page can show "Sweep finished" after the live
-    # banner dies. paused passes through (a paused sweep ends phase=done).
+    # banner dies. stopped passes through (a paused sweep ends phase=done).
     from app.beets.import_session import ImportBridge
     from app.import_jobs.registry import ImportJob, ImportJobRegistry
     from app.models.import_api import SweepStatus
@@ -652,7 +672,7 @@ def test_active_status_carries_last_sweep_recap_when_done() -> None:
         bridge=ImportBridge(),
         phase=ImportPhase.done,
         origin="sweep",
-        sweep=SweepStatus(processed=12, auto_applied=9, banked=3, skipped_known=2, paused=True),
+        sweep=SweepStatus(processed=12, auto_applied=9, banked=3, skipped_known=2, stopped=True),
     )
     s = reg.active_status()
     assert s.active is False
@@ -664,7 +684,7 @@ def test_active_status_carries_last_sweep_recap_when_done() -> None:
         s.last_sweep.auto_applied,
         s.last_sweep.banked,
         s.last_sweep.skipped_known,
-        s.last_sweep.paused,
+        s.last_sweep.stopped,
     ) == (12, 9, 3, 2, True)
 
 

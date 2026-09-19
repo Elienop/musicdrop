@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { ImportAlbumSummary, ImportJobState } from "@/api/useImport";
 import type { AppIcon } from "@/components/icons";
-import { Pause, Success } from "@/components/icons";
+import { Pause, Stop, Success } from "@/components/icons";
 import { ImportPage } from "@/pages/import/ImportPage";
 import { ELAPSED_AFTER_S } from "@/pages/import/importStatus";
 import {
@@ -23,7 +23,9 @@ const ACTIVE_URL = `${window.location.origin}/api/imports/active`;
 // The sweep tests start/poll a distinct job id so the two run views can't
 // shadow each other's handlers.
 const SWEEP_JOB_URL = `${window.location.origin}/api/import/s1`;
-const SWEEP_PAUSE_URL = `${window.location.origin}/api/import/s1/pause`;
+// The sweep's Pause posts the same /stop the run page's Stop does — one
+// route, two labels.
+const SWEEP_STOP_URL = `${window.location.origin}/api/import/s1/stop`;
 
 function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
   return {
@@ -63,6 +65,9 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
     // both wear one while beets works). A test that means "parked on a person"
     // says `awaiting_decision: true`.
     awaiting_decision: false,
+    // Default: nobody pressed Stop. A test that means "the run was stopped"
+    // says `stopped: true` — the job flag, not a row status.
+    stopped: false,
     ...overrides,
   };
 }
@@ -81,13 +86,14 @@ function sweepJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
     elapsed_seconds: 0,
     // A sweep is unattended by definition — it never blocks on a person.
     awaiting_decision: false,
+    stopped: false,
     sweep: {
       processed: 0,
       auto_applied: 0,
       banked: 0,
       skipped_known: 0,
       current_folder: null,
-      paused: false,
+      stopped: false,
     },
     ...overrides,
   };
@@ -1020,6 +1026,9 @@ describe("ImportPage — live feed", () => {
 
     const cta = await screen.findByRole("link", { name: "Review banked albums" });
     expect(cta).toHaveAttribute("href", "/review");
+    // The control for the stopped arm in "stop this run": an apply that ran to
+    // the end keeps the solid CTA, so the outline there is about the stop.
+    expect(cta).toHaveAttribute("data-variant", "default");
   });
 
   test("a finished bank apply that landed everything gains no Review link", async () => {
@@ -1678,7 +1687,7 @@ describe("ImportPage — terminal states", () => {
     });
   });
 
-  test("failed shows the error message + a start-over link", async () => {
+  test("failed shows the error message + one way on, and no stop control", async () => {
     server.use(
       http.get(JOB_URL, () =>
         HttpResponse.json(
@@ -1690,12 +1699,19 @@ describe("ImportPage — terminal states", () => {
 
     expect(await screen.findByText("Import failed")).toBeInTheDocument();
     expect(screen.getByText("lookup exploded")).toBeInTheDocument();
-    // Two distinct CTAs render, both -> /import: the shared ImportShell chrome's
-    // ghost "Start over", and the JobFailed panel's "Import another folder".
-    const startOver = screen.getByRole("link", { name: /start over/i });
-    expect(startOver).toHaveAttribute("href", "/import");
-    const another = screen.getByRole("link", { name: /import another folder/i });
+    // ONE CTA now. The chrome's ghost "Start over" is gone from every run view:
+    // the header slot carries the stop while a run is going and nothing once it
+    // is over, and this panel already owns the way on. One label for /import
+    // across the three terminal panels — the nav item's and the h1's own words.
+    const another = screen.getByRole("link", { name: "Add from folder" });
     expect(another).toHaveAttribute("href", "/import");
+    expect(
+      screen.queryByRole("link", { name: /import another folder/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /start over/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /stop this run/i }),
+    ).not.toBeInTheDocument();
   });
 
   test.each([
@@ -1865,7 +1881,7 @@ describe("ImportPage — terminal states", () => {
     expect(screen.queryByRole("link", { name: "Resolve" })).not.toBeInTheDocument();
     // Nothing was banked, so the CTA is still a fresh run.
     expect(
-      screen.getByRole("link", { name: /import another folder/i }),
+      screen.getByRole("link", { name: "Add from folder" }),
     ).toHaveAttribute("href", "/import");
   });
 
@@ -2030,7 +2046,7 @@ describe("ImportPage — terminal states", () => {
               banked: 40,
               skipped_known: 10,
               current_folder: null,
-              paused: false,
+              stopped: false,
             },
           }),
         ),
@@ -2108,13 +2124,644 @@ describe("ImportPage — terminal states", () => {
     expect(
       await screen.findByText(/no longer available/i),
     ).toBeInTheDocument();
-    // Distinct from the transient error: offers a fresh start, with no Retry.
+    // Distinct from the transient error: offers a fresh start, with no Retry —
+    // under the same label the other two terminal panels use for /import, which
+    // the sentence above it names.
     expect(
-      screen.getByRole("link", { name: /start a new import/i }),
+      screen.getByRole("link", { name: "Add from folder" }),
     ).toHaveAttribute("href", "/import");
+    expect(
+      screen.getByText(/Add the folder again to continue\./),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /retry/i }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("ImportPage — stop this run", () => {
+  const STOP_URL = `${JOB_URL}/stop`;
+
+  /** An active manual run, parked on the album the user wants to walk away
+   * from — the owner's case ("i dont want to go throught the whole review"). */
+  function parkedJob(overrides: Partial<ImportJobState> = {}) {
+    return makeJob({ phase: "reviewing", awaiting_decision: true, ...overrides });
+  }
+
+  test("an active manual run offers the stop, and pressing it posts /stop", async () => {
+    let posts = 0;
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(parkedJob())),
+      http.post(STOP_URL, () => {
+        posts += 1;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt("/import?job=job-1");
+
+    const stop = await screen.findByRole("button", { name: "Stop this run" });
+    // The link it replaces is gone — the owner saw no value in it here.
+    expect(
+      screen.queryByRole("link", { name: /start over/i }),
+    ).not.toBeInTheDocument();
+
+    await user.click(stop);
+    await waitFor(() => expect(posts).toBe(1));
+  });
+
+  test("pending reads Stopping… and is aria-disabled, never disabled", async () => {
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(parkedJob())),
+      // Held open: the button's OWN pending state is the subject here, with the
+      // job state unchanged, so the two terms behind the label are separable.
+      http.post(STOP_URL, async () => {
+        await delay("infinite");
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt("/import?job=job-1");
+
+    const stop = await screen.findByRole("button", { name: "Stop this run" });
+    await user.click(stop);
+
+    await waitFor(() => expect(stop).toHaveTextContent("Stopping…"));
+    expect(stop).toHaveAttribute("aria-disabled", "true");
+    // THE oracle, and the reason for the posture: `disabled` on the click's own
+    // commit strands keyboard focus on <body>. `disabled:` never matches an
+    // aria-disabled control, so the dimming has to be spelled out too.
+    expect(stop).not.toBeDisabled();
+    expect(stop).toHaveClass("aria-disabled:opacity-50");
+    // The app's stop register, not the navigation one: every other Stop/Pause
+    // button is outline, including the sweep's Pause in this file on this
+    // mutation. `ghost sm` here is links.
+    expect(stop).toHaveAttribute("data-variant", "outline");
+  });
+
+  test("a repeat click while pending is swallowed", async () => {
+    let posts = 0;
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(parkedJob())),
+      http.post(STOP_URL, async () => {
+        posts += 1;
+        await delay("infinite");
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt("/import?job=job-1");
+
+    const stop = await screen.findByRole("button", { name: "Stop this run" });
+    await user.click(stop);
+    await waitFor(() => expect(stop).toHaveTextContent("Stopping…"));
+    await user.click(stop);
+    await user.click(stop);
+
+    expect(posts).toBe(1);
+  });
+
+  test("a reload mid-stop reads pending from the job, with nothing clicked", async () => {
+    let posts = 0;
+    server.use(
+      // `stopped` is true and the phase is still active: the stop was accepted
+      // in another tab (or before this reload) and the worker has not unwound
+      // yet. Nothing on THIS page ever entered a pending mutation.
+      http.get(JOB_URL, () => HttpResponse.json(parkedJob({ stopped: true }))),
+      http.post(STOP_URL, () => {
+        posts += 1;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt("/import?job=job-1");
+
+    const stop = await screen.findByRole("button", { name: "Stopping…" });
+    expect(stop).toHaveAttribute("aria-disabled", "true");
+    await user.click(stop);
+    expect(posts).toBe(0);
+  });
+
+  // Both paths to `isError`, because they are different mechanisms: a 500
+  // reaches it through the hook's own `throw`, a dead connection through fetch's
+  // rejection before any status exists to read. The 404/409 arm swallows two
+  // statuses, so "the request did not happen at all" has to be shown not to fall
+  // into it.
+  test.each([
+    { how: "a server error", stop: () => new HttpResponse(null, { status: 500 }) },
+    { how: "a transport failure", stop: () => HttpResponse.error() },
+  ])("$how says so and leaves the button pressable", async ({ stop: reply }) => {
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(parkedJob())),
+      http.post(STOP_URL, reply),
+    );
+    const user = userEvent.setup();
+    renderAt("/import?job=job-1");
+
+    await user.click(await screen.findByRole("button", { name: "Stop this run" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Couldn’t stop. Try again.");
+    // Stacked above the button, the recipe SweepRun uses for the same sentence
+    // beside the same mutation — not inline-left of it, which made the header's
+    // shrink-0 slot as wide as sentence + gap + button.
+    expect(alert.parentElement).toHaveClass("flex", "flex-col");
+    expect(alert.nextElementSibling).toBe(
+      screen.getByRole("button", { name: "Stop this run" }),
+    );
+    // Not latched: the run is still going, so the control must still work.
+    expect(
+      screen.getByRole("button", { name: "Stop this run" }),
+    ).toHaveAttribute("aria-disabled", "false");
+  });
+
+  test("a finished run offers no stop — there is nothing left to end", async () => {
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(makeJob({ phase: "done" }))),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Import finished")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /stop this run/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /start over/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("a sweep run keeps Pause sweep and grows no second stop control", async () => {
+    server.use(http.get(SWEEP_JOB_URL, () => HttpResponse.json(sweepJob())));
+    renderAt("/import?job=s1");
+
+    expect(
+      await screen.findByRole("button", { name: /pause sweep/i }),
+    ).toBeInTheDocument();
+    // One mechanism, one control: the sweep's Pause posts the same /stop.
+    expect(
+      screen.queryByRole("button", { name: /stop this run/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("a stopped run's done view says so, and offers no action it cannot carry out", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "done",
+            stopped: true,
+            // The album the run stopped on stays `needs_review` on the server
+            // (it was never decided and its files never moved), so it counts as
+            // set aside.
+            set_aside: 1,
+            elapsed_seconds: 95,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Import stopped")).toBeInTheDocument();
+    expect(screen.queryByText("Import finished")).not.toBeInTheDocument();
+    // What a stop leaves, and the way past it — the counts above cannot say
+    // either, because an album the run never reached has no row and no counter.
+    expect(
+      screen.getByText("The rest stayed in the folder. Add it again to continue."),
+    ).toBeInTheDocument();
+    // The sentence names a control this screen has.
+    expect(
+      screen.getByRole("link", { name: "Add from folder" }),
+    ).toHaveAttribute("href", "/import");
+    // The row is still listed and still says it was never decided...
+    expect(screen.getByText("Needs review")).toBeInTheDocument();
+    // ...but the worker is gone, so the button that would post into the void
+    // is not offered.
+    expect(screen.queryByRole("link", { name: "Review" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Resolve" })).not.toBeInTheDocument();
+    // A run the user ended is not a completion, so no success check.
+    const glyph = screen
+      .getByText("Import stopped")
+      .closest("[data-slot='empty-state']")
+      ?.querySelector("svg path");
+    expect(glyph?.getAttribute("d")).toBe(pathOf(Stop));
+    expect(glyph?.getAttribute("d")).not.toBe(pathOf(Success));
+  });
+
+  // The stop is offered where the page can keep its promise. Both queue-driven
+  // origins start the next item as soon as this job ends — the inbox drain and
+  // the bank drain each pick up the next queued row — so "stop this run" would
+  // leave the user reading "the rest stayed in the folder" while the next folder
+  // was already importing in a job this page never shows. The API still accepts
+  // a stop on any origin; this is the UI's own predicate.
+  test.each(["inbox", "bank_apply"] as const)(
+    "a %s run is not offered the stop — the queue picks up behind it",
+    async (origin) => {
+      server.use(
+        http.get(JOB_URL, () =>
+          HttpResponse.json(parkedJob({ origin, awaiting_decision: false })),
+        ),
+      );
+      renderAt("/import?job=job-1");
+
+      // The run view really rendered — otherwise the absence below is vacuous.
+      expect(await screen.findByText("OK Computer")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /stop this run/i }),
+      ).not.toBeInTheDocument();
+    },
+  );
+
+  // The control for the pair above, on the same active fixture: the exclusion
+  // is the origin's, not something that removed the button everywhere.
+  test("...and the manual run beside them still has it", async () => {
+    server.use(http.get(JOB_URL, () => HttpResponse.json(parkedJob())));
+    renderAt("/import?job=job-1");
+
+    expect(
+      await screen.findByRole("button", { name: "Stop this run" }),
+    ).toBeInTheDocument();
+  });
+
+  test("while stopping, the run says so and the feed stops offering decisions", async () => {
+    server.use(
+      // Accepted, still unwinding: an ACTIVE phase with the flag set.
+      http.get(JOB_URL, () => HttpResponse.json(parkedJob({ stopped: true }))),
+    );
+    renderAt("/import?job=job-1");
+
+    // The header said the run was ending while the line under it counted on and
+    // named the decision the run was parked on.
+    //
+    // Two visible nodes read "Stopping…" now — the button's own label and this
+    // line — so the query names the element: StatusLine wraps its text in a
+    // span, the Button holds its label as a direct text child.
+    const line = await screen.findByText("Stopping…", { selector: "span" });
+    expect(
+      screen.queryByText(/album needs review/),
+    ).not.toBeInTheDocument();
+    // Spinning: the server accepted the stop and the worker is unwinding, and a
+    // parked run has `working` false — the one moment the line must not look
+    // idle.
+    expect(spinnerOf(line)).toHaveClass("animate-spin");
+    // ...and the row no longer offers a decision the released slot cannot take.
+    expect(screen.getByText("Kid A")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Review" })).not.toBeInTheDocument();
+  });
+
+  // The control for the test above: the same run, unstopped, keeps its counting
+  // line and its live button.
+  test("...and an unstopped run keeps both", async () => {
+    server.use(http.get(JOB_URL, () => HttpResponse.json(parkedJob())));
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText(/1 album needs review/)).toBeInTheDocument();
+    expect(
+      screen.queryByText("Stopping…", { selector: "span" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Review" })).toBeInTheDocument();
+  });
+
+  test("an accepted stop is announced at once, without waiting out the throttle", async () => {
+    // The announcer is throttled to 4s so a 1s poll cannot spam it, and at mount
+    // that window holds it on the "Loading the import." placeholder. Pressing
+    // Stop is user-initiated — the person is owed an answer — so it bypasses the
+    // window, as the sweep's Pause and the terminal states already do.
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(parkedJob({ stopped: true }))),
+    );
+    renderAt("/import?job=job-1");
+
+    // waitFor's default ceiling is 1000ms, a quarter of the throttle window, so
+    // a pass cannot be the window simply elapsing. Anchored: the bypass is
+    // sticky, so this is what the announcer holds for the rest of the run and
+    // role="status" is atomic.
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(
+        /^Stopping the import\.$/,
+      ),
+    );
+  });
+
+  test("...and the throttle is still in force for a run nobody stopped", async () => {
+    // The control the test above needs: without it, a throttle holding nothing
+    // back at all would produce the same pass.
+    server.use(http.get(JOB_URL, () => HttpResponse.json(parkedJob())));
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText(/1 album needs review/)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Loading the import.");
+  });
+
+  test("when the run ends under the presser, focus lands on the heading", async () => {
+    // The `aria-disabled` posture holds focus for the pending window; this is
+    // its end. The button lives in the live branch only, so the poll that
+    // reports `done` unmounts the element holding focus and the browser drops it
+    // on <body> — the next Tab would restart at "Skip to content".
+    let stopped = false;
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          stopped
+            ? makeJob({ phase: "done", stopped: true, set_aside: 1 })
+            : parkedJob(),
+        ),
+      ),
+      http.post(STOP_URL, () => {
+        stopped = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt("/import?job=job-1");
+
+    const stop = await screen.findByRole("button", { name: "Stop this run" });
+    stop.focus();
+    expect(document.activeElement).toBe(stop);
+    await user.click(stop);
+
+    // The next poll takes the job terminal and the control goes with it.
+    expect(await screen.findByText("Import stopped")).toBeInTheDocument();
+    expect(stop.isConnected).toBe(false);
+    // By identity, not `!== body`: the weak oracle passes against any patch
+    // that happens to leave focus somewhere.
+    expect(document.activeElement).toBe(
+      screen.getByRole("heading", { level: 1, name: "Add from folder" }),
+    );
+  });
+
+  test("...and never takes focus from something that holds it", async () => {
+    // The control: the hand-off is for a focus the page DROPPED, never one
+    // something live is holding. The holder is rendered OUTSIDE the page,
+    // because a terminal transition unmounts the whole feed subtree — the
+    // chrome survives it but carries no focusable of its own once the run is
+    // over.
+    let stopped = false;
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          stopped
+            ? makeJob({ phase: "done", stopped: true, set_aside: 1 })
+            : parkedJob(),
+        ),
+      ),
+      http.post(STOP_URL, () => {
+        stopped = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    renderWithProviders(
+      <>
+        <a href="/artists">Elsewhere</a>
+        <ImportPage />
+      </>,
+      { route: "/import?job=job-1", path: "/import" },
+    );
+
+    // fireEvent, not userEvent: it does not move focus, so the stop is in flight
+    // while the user tabs away.
+    fireEvent.click(await screen.findByRole("button", { name: "Stop this run" }));
+    const elsewhere = screen.getByRole("link", { name: "Elsewhere" });
+    elsewhere.focus();
+
+    expect(await screen.findByText("Import stopped")).toBeInTheDocument();
+    expect(document.activeElement).toBe(elsewhere);
+  });
+
+  test("...and a run that ends on its own hands off without scrolling", async () => {
+    // The trigger is wider than the presser: a reader with focus on <body>,
+    // scrolled down a long feed, watching a run finish by itself gets the same
+    // hand-off. `focus()` scrolls its target into view by default, so that
+    // reader would be pulled to the top of the page at the moment the outcome
+    // panel appears. jsdom does no layout, so the oracle is the option passed,
+    // not a scroll position — the in-page convention (SearchPage,
+    // ArtistAlbumsPage, BrowsePage) is `{ preventScroll: true }`.
+    let finished = false;
+    server.use(
+      http.get(JOB_URL, () => {
+        const body = finished
+          ? makeJob({ phase: "done", set_aside: 1 })
+          : // Working, not parked: this run polls at 1s, so the second read is
+            // the end. `stopped` stays false — nobody pressed anything.
+            parkedJob({ awaiting_decision: false });
+        finished = true;
+        return HttpResponse.json(body);
+      }),
+    );
+    renderAt("/import?job=job-1");
+
+    // The same element before and after: ImportRun is mounted without a key, so
+    // a terminal poll reconciles the chrome in place and only the panel below
+    // it remounts.
+    const heading = await screen.findByRole("heading", {
+      level: 1,
+      name: "Add from folder",
+    });
+    const focus = vi.spyOn(heading, "focus");
+    expect(document.activeElement).toBe(document.body);
+
+    expect(
+      await screen.findByText("Import finished", undefined, { timeout: 3000 }),
+    ).toBeInTheDocument();
+    expect(document.activeElement).toBe(heading);
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    focus.mockRestore();
+  });
+
+  test("...and a 404 end takes the focus the vanished control dropped", async () => {
+    // The other end this page knows and the phase does not: the job expired or
+    // the server restarted, so the poll 404s, JobNotFound replaces the whole run
+    // view and the Stop button goes with it. `phase` never reaches a terminal
+    // value here — it is the page's `terminal` boolean that covers this.
+    let gone = false;
+    server.use(
+      http.get(JOB_URL, () => {
+        if (gone) return HttpResponse.json({ detail: "gone" }, { status: 404 });
+        gone = true;
+        return HttpResponse.json(parkedJob({ awaiting_decision: false }));
+      }),
+    );
+    renderAt("/import?job=job-1");
+
+    const stop = await screen.findByRole("button", { name: "Stop this run" });
+    stop.focus();
+    expect(document.activeElement).toBe(stop);
+
+    expect(
+      await screen.findByText(/no longer available/i, undefined, {
+        timeout: 3000,
+      }),
+    ).toBeInTheDocument();
+    expect(stop.isConnected).toBe(false);
+    // By identity, not `!== body`: the weak oracle passes against any patch
+    // that happens to leave focus somewhere.
+    expect(document.activeElement).toBe(
+      screen.getByRole("heading", { level: 1, name: "Add from folder" }),
+    );
+  });
+
+  test("...and a stopped bank apply's Review link drops the solid fill", async () => {
+    // The reading the stopped manual panel already takes: a solid CTA under
+    // "Import stopped" reads as a success panel. The link stays — the banked
+    // rows are owed to Review either way. Reachable through the API only, since
+    // this page offers no stop on a bank apply.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "done",
+            origin: "bank_apply",
+            stopped: true,
+            set_aside: 1,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(
+      await screen.findByRole("link", { name: "Review banked albums" }),
+    ).toHaveAttribute("data-variant", "outline");
+  });
+
+  test("a stopped all-known run offers the folder, not beets' -I", async () => {
+    // A stop in the first seconds, while beets is still skipping folders its
+    // history already has: the counters read "nothing new" and the run has not
+    // established that — it did not get that far. `set_aside` is 0 because the
+    // stop landed at the top of `choose_match`, before any row exists.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "done",
+            stopped: true,
+            albums: [],
+            set_aside: 0,
+            path: "/music/incoming",
+            progress: {
+              applied: 0,
+              needs_review: 0,
+              skipped: 0,
+              not_landed: 0,
+              already_known: 2,
+            },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Import stopped")).toBeInTheDocument();
+    // "Import them again" is beets' `-I`: it re-imports the albums already in
+    // the library, directly under a sentence saying to add the folder again and
+    // leave them be.
+    expect(
+      screen.queryByRole("button", { name: /import them again/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Add from folder" }),
+    ).toHaveAttribute("href", "/import");
+  });
+
+  // The control for the arm above: the same all-known run, unstopped, still
+  // reaches the `-I` button.
+  test("...and an all-known run that FINISHED still offers it", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "done",
+            albums: [],
+            set_aside: 0,
+            path: "/music/incoming",
+            progress: {
+              applied: 0,
+              needs_review: 0,
+              skipped: 0,
+              not_landed: 0,
+              already_known: 2,
+            },
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Nothing new to import")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Import them again" }),
+    ).toBeInTheDocument();
+  });
+
+  test("a stopped run of another origin keeps the title, not the folder remedy", async () => {
+    // The API accepts a stop on any origin, so this panel is reachable without
+    // the button. What is true of any stop stays — the title, the glyph, the
+    // read-only feed. The remedy does not: an inbox run's rest is not a folder
+    // the user adds back, and the drain has already moved on.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({ phase: "done", origin: "inbox", stopped: true, set_aside: 1 }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Import stopped")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/The rest stayed in the folder/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Add from folder" }),
+    ).not.toBeInTheDocument();
+    // Still no button that would post into a released slot.
+    expect(screen.queryByRole("link", { name: "Review" })).not.toBeInTheDocument();
+  });
+
+  test("a read-only feed's badge drops the fill that claims an action", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({ phase: "done", stopped: true, set_aside: 1 }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    // The words stay true — that album really was never decided — but the
+    // primary fill is the app's "needs you" signal and the row has nothing left
+    // to press.
+    expect(await screen.findByText("Needs review")).toHaveAttribute(
+      "data-variant",
+      "outline",
+    );
+  });
+
+  test("...and a live feed's badge keeps it", async () => {
+    // The control: the fill pairs with the Review button, so it goes only where
+    // the button does.
+    server.use(http.get(JOB_URL, () => HttpResponse.json(parkedJob())));
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Needs review")).toHaveAttribute(
+      "data-variant",
+      "default",
+    );
+    expect(screen.getByRole("link", { name: "Review" })).toBeInTheDocument();
+  });
+
+  test("an unattended run that finished on its own keeps its live Review button", async () => {
+    // The control for the read-only rule above: `stopped`, not "done", is what
+    // strips the buttons. An inbox run banks and finishes while still holding an
+    // album for review, and that decision is still live.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({ phase: "done", origin: "inbox", set_aside: 1 }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Import finished")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Review" })).toBeInTheDocument();
   });
 });
 
@@ -2587,19 +3234,31 @@ describe("ImportPage — already known folders", () => {
         ),
       ),
     );
-    renderAt("/import?job=job-1");
+    // The element holding focus is rendered OUTSIDE the page. `ImportRun` is
+    // mounted without a key, so a `?job=` swap reconciles the chrome in place
+    // and the h1 is the SAME element before and after — what changed is that the
+    // chrome no longer carries a focusable of its own: the old "Start over" link
+    // served here, and the header slot is empty on every terminal panel. The
+    // panel below it does remount. The guard is about focus held anywhere on the
+    // document, so an element outside the page states that directly.
+    renderWithProviders(
+      <>
+        <a href="/artists">Elsewhere</a>
+        <ImportPage />
+      </>,
+      { route: "/import?job=job-1", path: "/import" },
+    );
 
     // fireEvent, not userEvent: it does not move focus, so the start is in
-    // flight while the user tabs on to the chrome's own link — which survives
-    // the job swap.
+    // flight while the user tabs away.
     fireEvent.click(
       await screen.findByRole("button", { name: /import them again/i }),
     );
-    const startOver = screen.getByRole("link", { name: /start over/i });
-    startOver.focus();
+    const elsewhere = screen.getByRole("link", { name: "Elsewhere" });
+    elsewhere.focus();
 
     expect(await screen.findByText(/scanning your folder/i)).toBeInTheDocument();
-    expect(document.activeElement).toBe(startOver);
+    expect(document.activeElement).toBe(elsewhere);
   });
 
   // Offered ONLY for a review run that did nothing but skip known folders.
@@ -2809,12 +3468,12 @@ describe("ImportPage — sweep & bank", () => {
               banked: 4,
               skipped_known: 2,
               current_folder: "/library/Adele/21",
-              paused: false,
+              stopped: false,
             },
           }),
         ),
       ),
-      http.post(SWEEP_PAUSE_URL, () => {
+      http.post(SWEEP_STOP_URL, () => {
         paused = true;
         return new HttpResponse(null, { status: 204 });
       }),
@@ -2848,12 +3507,12 @@ describe("ImportPage — sweep & bank", () => {
               banked: 4,
               skipped_known: 2,
               current_folder: "/library/Adele/21",
-              paused,
+              stopped: paused,
             },
           }),
         ),
       ),
-      http.post(SWEEP_PAUSE_URL, () => {
+      http.post(SWEEP_STOP_URL, () => {
         posts += 1;
         paused = true;
         return new HttpResponse(null, { status: 204 });
@@ -2866,7 +3525,7 @@ describe("ImportPage — sweep & bank", () => {
     await user.click(button);
 
     // The label carries the state, and it is keyed on the SAME expression as
-    // the aria state — keyed on `sweep.paused` alone it still read "Pause
+    // the aria state — keyed on `sweep.stopped` alone it still read "Pause
     // sweep" for the whole in-flight window.
     await waitFor(() => expect(button).toHaveTextContent("Pausing…"));
     expect(button).toHaveAttribute("aria-disabled", "true");
@@ -2897,7 +3556,7 @@ describe("ImportPage — sweep & bank", () => {
               banked: 4,
               skipped_known: 2,
               current_folder: "/library/Adele/21",
-              paused: false,
+              stopped: false,
             },
           }),
         ),
@@ -2920,13 +3579,18 @@ describe("ImportPage — sweep & bank", () => {
         HttpResponse.json(
           sweepJob({
             phase: "applying",
+            // Both flags: one request sets the job's `stopped` AND the sweep's
+            // (`registry.py` `request_stop`), and the throttle bypass reads the
+            // job's, so a fixture carrying only the sweep's would be testing a
+            // state the server cannot produce.
+            stopped: true,
             sweep: {
               processed: 6,
               auto_applied: 4,
               banked: 2,
               skipped_known: 0,
               current_folder: "/library/Adele/21",
-              paused: true,
+              stopped: true,
             },
           }),
         ),
@@ -2964,7 +3628,7 @@ describe("ImportPage — sweep & bank", () => {
               banked: 2,
               skipped_known: 0,
               current_folder: "/library/Adele/21",
-              paused: false,
+              stopped: false,
             },
           }),
         ),
@@ -2994,13 +3658,15 @@ describe("ImportPage — sweep & bank", () => {
           sweepJob({
             phase: "done",
             elapsed_seconds: 840,
+            // The job flag too — one request sets both.
+            stopped: true,
             sweep: {
               processed: 30,
               auto_applied: 20,
               banked: 10,
               skipped_known: 1,
               current_folder: null,
-              paused: true,
+              stopped: true,
             },
           }),
         ),
@@ -3063,7 +3729,7 @@ describe("ImportPage — sweep & bank", () => {
               banked: 0,
               skipped_known: 0,
               current_folder: null,
-              paused: false,
+              stopped: false,
             },
           }),
         ),
@@ -3145,7 +3811,7 @@ describe("ImportPage — sweep & bank", () => {
                 banked,
                 skipped_known,
                 current_folder: null,
-                paused: false,
+                stopped: false,
               },
             }),
           ),
@@ -3184,7 +3850,7 @@ describe("ImportPage — sweep & bank", () => {
               banked: 0,
               skipped_known: 0,
               current_folder: null,
-              paused: false,
+              stopped: false,
             },
           }),
         ),
@@ -3212,7 +3878,7 @@ describe("ImportPage — sweep & bank", () => {
             banked: 1,
             skipped_known: 0,
             current_folder: null,
-            paused: false,
+            stopped: false,
           },
         }),
       ),

@@ -67,6 +67,7 @@ _UNCONFIRMED_ERROR = (
 _NOTHING_IMPORTED_ERROR = (
     "the apply imported nothing (the lookup may have failed transiently) - decide again"
 )
+_STOPPED_ERROR = "the apply was stopped - decide again to retry"
 # A merge cannot be forced after the fact: beets rebuilds and re-imports the
 # combined album INSIDE its duplicate hook, and that hook never ran here. The
 # album is already in the library as a second copy, so "decide again" - the
@@ -544,6 +545,13 @@ class BankApplyRunner:
         — its cause is the row's own stored prompt, so its remedy is written onto
         the row before this classification (``_refresh_stored_duplicate``).
 
+        A STOPPED job changes the ERROR, never the verdict. ``state.stopped``
+        says a stop was accepted, not that anything was cut short — a stop
+        accepted while beets places the last album's files lands the whole
+        folder. So the landed evidence is read first, and the stop only
+        replaces the wording at the returns that already found nothing
+        (``test_a_stopped_apply_that_landed_an_album_is_still_done``).
+
         The note is read over EVERY album of the job, like ``album_id`` and
         ``dup_resolution_ran``, because a bank row is a FOLDER. One refusal
         therefore fails the whole row even if a sibling album landed: the row has
@@ -556,6 +564,11 @@ class BankApplyRunner:
         if note is not None:
             return "failed", note, None, True
         album_id = next((a.album_id for a in state.albums if a.album_id is not None), None)
+        # The stop endpoint takes any origin, so an apply can end mid-folder with
+        # no landed id. Where that happens, the stop is the cause — not a lookup
+        # that returned nothing (_NO_ALBUM_ERROR / _NOTHING_IMPORTED_ERROR).
+        nothing_landed = _STOPPED_ERROR if state.stopped else _NOTHING_IMPORTED_ERROR
+        no_album = _STOPPED_ERROR if state.stopped else _NO_ALBUM_ERROR
         decision = item.decided
         action = decision.action if decision is not None else "apply"
         dup_resolution_ran = any(
@@ -564,16 +577,20 @@ class BankApplyRunner:
         if action == "duplicate":
             dup_action = decision.duplicate_action if decision is not None else None
             return BankApplyRunner._classify_duplicate(
-                dup_action, album_id, dup_resolution_ran, replace_targets_gone
+                dup_action,
+                album_id,
+                dup_resolution_ran,
+                replace_targets_gone,
+                nothing_landed=nothing_landed,
             )
         if dup_resolution_ran:
             return "failed", _DUP_BLOCKED_ERROR, None, True
         if action == "astracks":
             if any(a.status is ImportAlbumStatus.applied for a in state.albums):
                 return "done", None, album_id, True
-            return "failed", _NOTHING_IMPORTED_ERROR, None, True
+            return "failed", nothing_landed, None, True
         if album_id is None:
-            return "failed", _NO_ALBUM_ERROR, None, True
+            return "failed", no_album, None, True
         return "done", None, album_id, True
 
     @staticmethod
@@ -582,8 +599,14 @@ class BankApplyRunner:
         album_id: int | None,
         dup_resolution_ran: bool,
         replace_targets_gone: bool,
+        *,
+        nothing_landed: str,
     ) -> tuple[BankStatus, str | None, int | None, bool]:
-        """The ``duplicate``-decision arm of ``_classify`` (same return contract)."""
+        """The ``duplicate``-decision arm of ``_classify`` (same return contract).
+
+        ``nothing_landed`` is the error for its empty-handed returns, which a
+        stopped run names differently (see :meth:`_classify`).
+        """
         landed_unresolved = album_id is not None and not dup_resolution_ran
         if dup_action is DuplicateAction.merge and landed_unresolved:
             # album_id stays off the row on purpose: ``album_id`` is the
@@ -596,6 +619,17 @@ class BankApplyRunner:
             # what landed is a copy the user may have to clean up, not a
             # "the apply landed THIS" success.
             return "failed", _REPLACE_NOT_REPLACED_ERROR, None, False
+        if dup_action is DuplicateAction.merge and album_id is None:
+            # A merge lands an album of its own - beets rebuilds the combined
+            # release and re-imports it - so `done` needs the id. The hook emits
+            # its needs_dup_resolution outcome BEFORE the directive answers MERGE
+            # (``import_session.get_duplicate_action``), so ``dup_resolution_ran``
+            # is true the moment merge is chosen: without this arm a merged task
+            # cut short at its own lookup, or one that resolved nothing and
+            # SKIPped, reads done with the old copy alone in the library.
+            return "failed", nothing_landed, None, True
         if dup_resolution_ran or album_id is not None:
+            # skip_new lands nothing by design ("kept your copy"), so the hook's
+            # own evidence is enough for it.
             return "done", None, album_id, True
-        return "failed", _NOTHING_IMPORTED_ERROR, None, True
+        return "failed", nothing_landed, None, True

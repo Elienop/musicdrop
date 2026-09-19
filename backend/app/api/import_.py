@@ -42,6 +42,8 @@ from app.models.import_models import (
 from app.wire import AmbiguousDisplayName, resolve_posted_path
 
 _IMPORT_ALBUM_NOT_FOUND = "Import album not found"
+#: The stop route's 409 body and the description its ``responses=`` block declares.
+_IMPORT_NOT_RUNNING = "That import is no longer running."
 
 router = APIRouter(tags=["import"])
 
@@ -364,9 +366,9 @@ async def get_import_duplicate(
     reg: Annotated[ImportJobRegistry, Depends(get_registry)],
 ) -> DuplicatePrompt:
     try:
-        return reg.duplicate_prompt(job_id, index)
+        return reg.parked_duplicate(job_id, index)
     except KeyError:
-        # Unknown job, or no duplicate parked at this index.
+        # Unknown job, no duplicate parked at this index, or the job is over.
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No duplicate to resolve"
         ) from None
@@ -402,34 +404,30 @@ async def post_import_duplicate_decision(
 
 
 @router.post(
-    "/import/{job_id}/pause",
+    "/import/{job_id}/stop",
     status_code=status.HTTP_204_NO_CONTENT,
     responses={
         404: _JOB_NOT_FOUND_RESPONSE,
         409: {
             "model": ErrorDetail,
-            "description": "That import is not a sweep, or the sweep is no longer running.",
+            "description": _IMPORT_NOT_RUNNING,
         },
     },
 )
-async def pause_import(
+async def stop_import(
     job_id: str, reg: Annotated[ImportJobRegistry, Depends(get_registry)]
 ) -> None:
-    """Ask the active sweep to stop at its next album boundary.
-
-    The session aborts via beets' native clean abort at its next decision
-    hook: the current album finishes its decision point, the session unwinds,
-    the job ends ``phase=done`` with ``sweep.paused`` set, and the
-    import slot frees. Resume = start a new sweep of the same root (beets'
-    incremental history skips everything already done or banked). 404 for an
-    unknown job; 409 when the job is not a sweep or is no longer active;
-    repeating a pause on a still-active sweep is idempotent (204).
-    """
+    """Stop the active import at the album it is on; what already landed stays."""
+    # Repeating a stop on an active job is idempotent (204). The 409 detail is
+    # the literal the responses= block declares, like every sibling route: a
+    # str(exc) here would publish whatever the next raise under request_stop says.
     try:
-        reg.request_pause(job_id)
+        reg.request_stop(job_id)
     except KeyError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Import job not found"
         ) from None
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    except RuntimeError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=_IMPORT_NOT_RUNNING
+        ) from None

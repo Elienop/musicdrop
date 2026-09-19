@@ -23,6 +23,7 @@ function job(overrides: Partial<ImportJobState> = {}): ImportJobState {
     set_aside: 0,
     elapsed_seconds: 0,
     awaiting_decision: false,
+    stopped: false,
     ...overrides,
   };
 }
@@ -41,13 +42,14 @@ function sweepState(overrides: Partial<ImportJobState> = {}): ImportJobState {
     elapsed_seconds: 0,
     // A sweep is unattended by definition — it never blocks on a person.
     awaiting_decision: false,
+    stopped: false,
     sweep: {
       processed: 0,
       auto_applied: 0,
       banked: 0,
       skipped_known: 0,
       current_folder: null,
-      paused: false,
+      stopped: false,
     },
     ...overrides,
   };
@@ -418,6 +420,95 @@ describe("announceMessage", () => {
     );
   });
 
+  // A stop reaches `done` without completing, and this is the one channel that
+  // said otherwise — the visible panel takes its title from the same flag.
+  test("a stopped run is not announced as complete", () => {
+    const speak = (data: ImportJobState) =>
+      announceMessage({ isPending: false, isError: false, notFound: false, data });
+    const done = {
+      phase: "done" as const,
+      progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0, already_known: 0 },
+      set_aside: 1,
+      elapsed_seconds: 840,
+    };
+    expect(speak(job({ ...done, stopped: true }))).toBe(
+      "Import stopped. Imported 1, skipped 0. Took 14 minutes.",
+    );
+    // The control: the same run, unstopped, still says complete — so the line
+    // above is about the flag and not about a dead branch.
+    expect(speak(job(done))).toBe(
+      "Import complete. Imported 1, skipped 0. Took 14 minutes.",
+    );
+  });
+
+  // The gap between the press and the end of the run: the stop is accepted
+  // immediately, the worker then unwinds, and this channel kept reading the
+  // counters for the whole of it while the button read "Stopping…". A
+  // screen-reader user heard nothing about the press for up to a parked poll
+  // (10s) plus the unwind.
+  test("an accepted stop is announced at once, as one fixed thing", () => {
+    const speak = (data: ImportJobState) =>
+      announceMessage({ isPending: false, isError: false, notFound: false, data });
+    // The control below has to carry BOTH the things the stopped string drops,
+    // so it is a WORKING run: a run parked on a person already suppresses the
+    // elapsed clause (it names its own wait), which would have left the control
+    // proving only half of this.
+    const parked = {
+      phase: "applying" as const,
+      progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
+      awaiting_decision: false,
+      elapsed_seconds: 840,
+    };
+    // A sentence, the register this channel keeps — the visible pair is the
+    // button's "Stopping…" and a status line echoing it. And no counters, no
+    // elapsed clause: the page's throttle is off on this same flag and
+    // role="status" is atomic, so anything that moves is re-read in full.
+    expect(speak(job({ ...parked, stopped: true }))).toBe("Stopping the import.");
+    // The control: the same run, unstopped, still counts — so the line above is
+    // about the flag and not about a dead branch.
+    expect(speak(job(parked))).toBe("Imported 1. Running for 14 minutes.");
+    // ...and it stays fixed while everything data-bearing moves underneath it:
+    // the counters keep going after a stop is accepted, and the clock crosses a
+    // minute AND an hour boundary during a long unwind.
+    expect(
+      speak(
+        job({
+          ...parked,
+          stopped: true,
+          phase: "applying",
+          progress: { applied: 4, needs_review: 0, skipped: 2, not_landed: 1, already_known: 3 },
+          elapsed_seconds: 3700,
+        }),
+      ),
+    ).toBe("Stopping the import.");
+  });
+
+  // A sweep says its own thing for the same moment, and its branch is reached
+  // first — the job flag is set for a paused sweep too (one request sets both),
+  // so without that ordering every paused sweep would announce the manual
+  // wording instead.
+  test("a paused sweep keeps its own stopping sentence", () => {
+    expect(
+      announceMessage({
+        isPending: false,
+        isError: false,
+        notFound: false,
+        data: sweepState({
+          phase: "applying",
+          stopped: true,
+          sweep: {
+            processed: 3,
+            auto_applied: 2,
+            banked: 1,
+            skipped_known: 0,
+            current_folder: "/in/x",
+            stopped: true,
+          },
+        }),
+      }),
+    ).toBe("Stopping after this album.");
+  });
+
   // The history skips reach no outcome record, so none of the three counters
   // holds them: without its own clause the one live region says "Imported 0,
   // skipped 0." for a run whose whole story is that it knew every folder.
@@ -497,7 +588,7 @@ describe("announceMessage", () => {
             banked: 40,
             skipped_known: 10,
             current_folder: null,
-            paused: false,
+            stopped: false,
           },
         }),
       ),
@@ -520,7 +611,7 @@ describe("announceMessage", () => {
             banked: 0,
             skipped_known: 20,
             current_folder: null,
-            paused: false,
+            stopped: false,
           },
         }),
       ),
@@ -535,7 +626,7 @@ describe("announceMessage", () => {
       banked: 10,
       skipped_known: 5,
       current_folder: null,
-      paused: false,
+      stopped: false,
     };
     expect(
       speak(sweepState({ phase: "scanning", elapsed_seconds: 840, sweep: running })),
@@ -592,7 +683,7 @@ describe("announceMessage", () => {
         banked: 4,
         skipped_known: 0,
         current_folder: "/in/x",
-        paused: false,
+        stopped: false,
       },
     });
     expect(
@@ -607,13 +698,18 @@ describe("announceMessage", () => {
   test("a pausing sweep is not announced as sweeping", () => {
     const data = sweepState({
       phase: "scanning",
+      // Both flags: one request sets the job's `stopped` AND the sweep's
+      // (`registry.py` `request_stop`). Carrying only the sweep's would test a
+      // state the server cannot produce — and would stop proving that the sweep
+      // branch is reached BEFORE the generic stopping one below it.
+      stopped: true,
       sweep: {
         processed: 12,
         auto_applied: 8,
         banked: 4,
         skipped_known: 0,
         current_folder: "/in/x",
-        paused: true,
+        stopped: true,
       },
     });
     const spoken = announceMessage({
@@ -646,13 +742,15 @@ describe("announceMessage", () => {
         data: sweepState({
           phase: "applying",
           elapsed_seconds: elapsed,
+          // The job flag too — one request sets both.
+          stopped: true,
           sweep: {
             processed: 6,
             auto_applied: 4,
             banked: 2,
             skipped_known: 0,
             current_folder: "/in/x",
-            paused: true,
+            stopped: true,
             ...over,
           },
         }),
@@ -683,7 +781,7 @@ describe("announceMessage", () => {
             banked: 2,
             skipped_known: 0,
             current_folder: "/in/x",
-            paused: false,
+            stopped: false,
             ...over,
           },
         }),
@@ -702,7 +800,7 @@ describe("announceMessage", () => {
         banked: 10,
         skipped_known: 0,
         current_folder: null,
-        paused: false,
+        stopped: false,
       },
     });
     expect(
@@ -710,13 +808,15 @@ describe("announceMessage", () => {
     ).toBe("Sweep complete. Processed 30, imported 20, banked 10.");
     const paused = sweepState({
       phase: "done",
+      // The job flag too — one request sets both.
+      stopped: true,
       sweep: {
         processed: 5,
         auto_applied: 3,
         banked: 2,
         skipped_known: 0,
         current_folder: null,
-        paused: true,
+        stopped: true,
       },
     });
     expect(

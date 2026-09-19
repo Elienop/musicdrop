@@ -14,7 +14,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 
-from app.beets.import_session import ImportBridge
+from app.beets.import_session import ImportAbortError, ImportBridge
 from app.models.bank import BankApplyDirective
 from app.models.import_models import (
     AlbumOutcome,
@@ -139,6 +139,11 @@ class FakeImportRunner:
                 # these, so they must not block or be reported as awaited.
                 for prompt in self._published_duplicates:
                     bridge.publish_duplicate(prompt)
+            except ImportAbortError:
+                # A stop, raised out of a park. beets' own run() catches this and
+                # returns normally, so this run ends the same way: on_finish
+                # below, phase done — not a failure.
+                pass
             # Broad by design: mirror the real worker's guard so a canned-data
             # bug surfaces as a failed job rather than a silent dead thread.
             except Exception as exc:

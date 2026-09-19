@@ -875,7 +875,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/import/{job_id}/pause": {
+    "/api/import/{job_id}/stop": {
         parameters: {
             query?: never;
             header?: never;
@@ -885,18 +885,10 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Pause Import
-         * @description Ask the active sweep to stop at its next album boundary.
-         *
-         *     The session aborts via beets' native clean abort at its next decision
-         *     hook: the current album finishes its decision point, the session unwinds,
-         *     the job ends ``phase=done`` with ``sweep.paused`` set, and the
-         *     import slot frees. Resume = start a new sweep of the same root (beets'
-         *     incremental history skips everything already done or banked). 404 for an
-         *     unknown job; 409 when the job is not a sweep or is no longer active;
-         *     repeating a pause on a still-active sweep is idempotent (204).
+         * Stop Import
+         * @description Stop the active import at the album it is on; what already landed stays.
          */
-        post: operations["pause_import_api_import__job_id__pause_post"];
+        post: operations["stop_import_api_import__job_id__stop_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3330,8 +3322,8 @@ export interface components {
          *     sweep-origin job: a new import replaces the slot (and this recap with
          *     it), and failed sweeps surface nothing. ``job_id`` targets the run page
          *     (``/import?job=…``), which lives exactly as long as this block does, so
-         *     the link can never dangle. ``paused`` distinguishes a paused sweep (it
-         *     ends ``phase=done`` with the flag set) from a completed one.
+         *     the link can never dangle. ``stopped`` distinguishes a sweep the user
+         *     paused (it ends ``phase=done`` with the flag set) from a completed one.
          */
         FinishedSweep: {
             /** Job Id */
@@ -3344,8 +3336,8 @@ export interface components {
             banked: number;
             /** Skipped Known */
             skipped_known: number;
-            /** Paused */
-            paused: boolean;
+            /** Stopped */
+            stopped: boolean;
         };
         /**
          * GroupDecision
@@ -3376,15 +3368,17 @@ export interface components {
          *
          *     ``apply`` selects a ranked option by index; ``search`` re-looks-up the album
          *     against a user-supplied release id/URL or a forced-non-VA name search and
-         *     re-parks (it never resolves the park); ``abort`` stops the whole import (the
-         *     session raises beets' ``ImportAbortError``, caught by ``run()``).
+         *     re-parks (it does not resolve the park).
          *
          *     ``rescan`` re-reads the album's folder from disk (the user changed the
          *     files on purpose) and re-runs beets' default lookup, re-parking like
          *     ``search``; it carries no payload.
+         *
+         *     Every action here answers ONE album. Ending the whole run is
+         *     ``POST /import/{job_id}/stop``, which the registry arms on the bridge.
          * @enum {string}
          */
-        ImportAction: "apply" | "skip" | "asis" | "astracks" | "abort" | "search" | "rescan";
+        ImportAction: "apply" | "skip" | "asis" | "astracks" | "search" | "rescan";
         /**
          * ImportAlbumStatus
          * @description Per-album state in the live feed.
@@ -3525,6 +3519,11 @@ export interface components {
              * @description True while the worker is blocked on a parked album awaiting a decision.
              */
             awaiting_decision: boolean;
+            /**
+             * Stopped
+             * @description True once a stop was accepted for this job; stays true when it ends.
+             */
+            stopped: boolean;
         };
         /**
          * ImportOptions
@@ -5016,10 +5015,10 @@ export interface components {
             /** Current Folder */
             current_folder?: string | null;
             /**
-             * Paused
+             * Stopped
              * @default false
              */
-            paused: boolean;
+            stopped: boolean;
         };
         /** Track */
         Track: {
@@ -8441,7 +8440,7 @@ export interface operations {
             };
         };
     };
-    pause_import_api_import__job_id__pause_post: {
+    stop_import_api_import__job_id__stop_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -8495,7 +8494,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description That import is not a sweep, or the sweep is no longer running. */
+            /** @description That import is no longer running. */
             409: {
                 headers: {
                     [name: string]: unknown;

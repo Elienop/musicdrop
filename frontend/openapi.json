@@ -4141,14 +4141,14 @@
         }
       }
     },
-    "/api/import/{job_id}/pause": {
+    "/api/import/{job_id}/stop": {
       "post": {
         "tags": [
           "import"
         ],
-        "summary": "Pause Import",
-        "description": "Ask the active sweep to stop at its next album boundary.\n\nThe session aborts via beets' native clean abort at its next decision\nhook: the current album finishes its decision point, the session unwinds,\nthe job ends ``phase=done`` with ``sweep.paused`` set, and the\nimport slot frees. Resume = start a new sweep of the same root (beets'\nincremental history skips everything already done or banked). 404 for an\nunknown job; 409 when the job is not a sweep or is no longer active;\nrepeating a pause on a still-active sweep is idempotent (204).",
-        "operationId": "pause_import_api_import__job_id__pause_post",
+        "summary": "Stop Import",
+        "description": "Stop the active import at the album it is on; what already landed stays.",
+        "operationId": "stop_import_api_import__job_id__stop_post",
         "parameters": [
           {
             "name": "job_id",
@@ -4175,7 +4175,7 @@
             }
           },
           "409": {
-            "description": "That import is not a sweep, or the sweep is no longer running.",
+            "description": "That import is no longer running.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12815,9 +12815,9 @@
             "type": "integer",
             "title": "Skipped Known"
           },
-          "paused": {
+          "stopped": {
             "type": "boolean",
-            "title": "Paused"
+            "title": "Stopped"
           }
         },
         "type": "object",
@@ -12827,10 +12827,10 @@
           "auto_applied",
           "banked",
           "skipped_known",
-          "paused"
+          "stopped"
         ],
         "title": "FinishedSweep",
-        "description": "The last finished sweep's recap \u2014 ``ActiveImportStatus.last_sweep``.\n\nPopulated only while the registry's single slot still holds a DONE\nsweep-origin job: a new import replaces the slot (and this recap with\nit), and failed sweeps surface nothing. ``job_id`` targets the run page\n(``/import?job=\u2026``), which lives exactly as long as this block does, so\nthe link can never dangle. ``paused`` distinguishes a paused sweep (it\nends ``phase=done`` with the flag set) from a completed one."
+        "description": "The last finished sweep's recap \u2014 ``ActiveImportStatus.last_sweep``.\n\nPopulated only while the registry's single slot still holds a DONE\nsweep-origin job: a new import replaces the slot (and this recap with\nit), and failed sweeps surface nothing. ``job_id`` targets the run page\n(``/import?job=\u2026``), which lives exactly as long as this block does, so\nthe link can never dangle. ``stopped`` distinguishes a sweep the user\npaused (it ends ``phase=done`` with the flag set) from a completed one."
       },
       "GroupDecision": {
         "properties": {
@@ -12888,12 +12888,11 @@
           "skip",
           "asis",
           "astracks",
-          "abort",
           "search",
           "rescan"
         ],
         "title": "ImportAction",
-        "description": "The decisions the user can return for a parked album.\n\n``apply`` selects a ranked option by index; ``search`` re-looks-up the album\nagainst a user-supplied release id/URL or a forced-non-VA name search and\nre-parks (it never resolves the park); ``abort`` stops the whole import (the\nsession raises beets' ``ImportAbortError``, caught by ``run()``).\n\n``rescan`` re-reads the album's folder from disk (the user changed the\nfiles on purpose) and re-runs beets' default lookup, re-parking like\n``search``; it carries no payload."
+        "description": "The decisions the user can return for a parked album.\n\n``apply`` selects a ranked option by index; ``search`` re-looks-up the album\nagainst a user-supplied release id/URL or a forced-non-VA name search and\nre-parks (it does not resolve the park).\n\n``rescan`` re-reads the album's folder from disk (the user changed the\nfiles on purpose) and re-runs beets' default lookup, re-parking like\n``search``; it carries no payload.\n\nEvery action here answers ONE album. Ending the whole run is\n``POST /import/{job_id}/stop``, which the registry arms on the bridge."
       },
       "ImportAlbumStatus": {
         "type": "string",
@@ -13260,6 +13259,11 @@
             "type": "boolean",
             "title": "Awaiting Decision",
             "description": "True while the worker is blocked on a parked album awaiting a decision."
+          },
+          "stopped": {
+            "type": "boolean",
+            "title": "Stopped",
+            "description": "True once a stop was accepted for this job; stays true when it ends."
           }
         },
         "type": "object",
@@ -13271,7 +13275,8 @@
           "error",
           "set_aside",
           "elapsed_seconds",
-          "awaiting_decision"
+          "awaiting_decision",
+          "stopped"
         ],
         "title": "ImportJobState",
         "description": "Response of ``GET /api/import/{job}``: phase + progress + the live feed."
@@ -16482,9 +16487,9 @@
             ],
             "title": "Current Folder"
           },
-          "paused": {
+          "stopped": {
             "type": "boolean",
-            "title": "Paused",
+            "title": "Stopped",
             "default": false
           }
         },

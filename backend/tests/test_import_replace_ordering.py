@@ -618,7 +618,7 @@ def _run_banked_replace(
         )
         try:
             run_import_worker(session, directive=directive)
-        except Exception as exc:  # reported, never swallowed
+        except Exception as exc:  # recorded for the assertions, not swallowed
             errors.append(f"{exc.__class__.__name__}: {exc}")
 
     thread = threading.Thread(target=worker, daemon=True)

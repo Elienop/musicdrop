@@ -11,7 +11,7 @@ import {
   RECOMMENDATION_LABEL,
   startErrorSentence,
   useImportJob,
-  usePauseSweep,
+  useStopImport,
   type FinishedSweep,
   type ImportAlbumSummary,
   type SweepStatus,
@@ -466,7 +466,9 @@ function RecentSection({
  * the current folder, Pause and a link into the run. Decisions below are
  * store writes and stay fully usable while the sweep owns the import slot. */
 function SweepBanner({ jobId, sweep }: Readonly<{ jobId: string; sweep: SweepStatus }>) {
-  const pause = usePauseSweep(jobId);
+  // One route stops every import; the sweep's own word for it stays "pause",
+  // because incremental history makes sweeping the same folder again a resume.
+  const pause = useStopImport(jobId);
   return (
     <StatusBanner
       tone="neutral"
@@ -476,7 +478,7 @@ function SweepBanner({ jobId, sweep }: Readonly<{ jobId: string; sweep: SweepSta
             type="button"
             variant="outline"
             size="sm"
-            aria-disabled={pause.isPending || sweep.paused}
+            aria-disabled={pause.isPending || sweep.stopped}
             // The app's recipe for an aria-disabled control: `disabled:` never
             // matches one, so without this the button swallows its click while
             // still looking pressable. This was the one site of the twenty that
@@ -487,12 +489,12 @@ function SweepBanner({ jobId, sweep }: Readonly<{ jobId: string; sweep: SweepSta
               // of disabling (a mid-flight disable strands keyboard focus on
               // <body> — the Pagination posture). Pause is an idempotent 204
               // server-side, so a slipped repeat is harmless anyway.
-              if (pause.isPending || sweep.paused) return;
+              if (pause.isPending || sweep.stopped) return;
               pause.mutate();
             }}
           >
             <Pause aria-hidden="true" />
-            {pause.isPending || sweep.paused ? "Pausing…" : "Pause"}
+            {pause.isPending || sweep.stopped ? "Pausing…" : "Pause"}
           </Button>
           <Button variant="ghost" size="sm" asChild>
             <Link to={`/import?job=${jobId}`}>View</Link>
@@ -505,12 +507,12 @@ function SweepBanner({ jobId, sweep }: Readonly<{ jobId: string; sweep: SweepSta
         <span className="min-w-0">
           Sweeping: {sweep.processed} processed · {sweep.auto_applied} imported ·{" "}
           {sweep.banked} banked.
-          {sweep.current_folder && !sweep.paused && (
+          {sweep.current_folder && !sweep.stopped && (
             <span className="text-muted-foreground font-normal">
               {" "}Now: {lastSegment(sweep.current_folder)}
             </span>
           )}
-          {sweep.paused && (
+          {sweep.stopped && (
             <span className="text-muted-foreground font-normal">
               {" "}Finishing the current album…
             </span>
@@ -560,10 +562,10 @@ function SweepRecap({ recap }: Readonly<{ recap: FinishedSweep }>) {
       }
     >
       <p className="min-w-0 font-medium">
-        {recap.paused ? "Sweep paused" : "Sweep finished"}: {recap.processed}{" "}
+        {recap.stopped ? "Sweep paused" : "Sweep finished"}: {recap.processed}{" "}
         processed · {recap.auto_applied} imported · {recap.banked} banked
         {recap.skipped_known > 0 ? ` · ${recap.skipped_known} already known` : ""}.
-        {recap.paused && (
+        {recap.stopped && (
           <span className="text-muted-foreground font-normal">
             {" "}
             Resume by sweeping the same folder again.

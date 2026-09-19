@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import type { ReactNode } from "react";
 import { describe, expect, test } from "vitest";
 
@@ -18,7 +18,7 @@ import {
   useDuplicatePrompt,
   useImportCandidate,
   useImportJob,
-  usePauseSweep,
+  useStopImport,
   useResolveImportDuplicate,
   useStartImport,
   useSubmitChoice,
@@ -301,40 +301,115 @@ describe("startImport 422 surfacing", () => {
   });
 });
 
-const PAUSE_URL = `${window.location.origin}/api/import/j1/pause`;
+const STOP_URL = `${window.location.origin}/api/import/j1/stop`;
 
-describe("usePauseSweep", () => {
-  test("posts the pause and resolves on 204", async () => {
+describe("useStopImport", () => {
+  test("posts the stop and resolves on 204", async () => {
     let hits = 0;
+    let pausePosts = 0;
     server.use(
-      http.post(PAUSE_URL, () => {
+      http.post(STOP_URL, () => {
         hits += 1;
+        return new HttpResponse(null, { status: 204 });
+      }),
+      // The route this replaces. Registered so a hook still posting to it
+      // fails loudly here instead of erroring as an unhandled request under
+      // whichever test happens to run first.
+      http.post(`${window.location.origin}/api/import/j1/pause`, () => {
+        pausePosts += 1;
         return new HttpResponse(null, { status: 204 });
       }),
     );
 
-    const { result } = renderHook(() => usePauseSweep("j1"), {
+    const { result } = renderHook(() => useStopImport("j1"), {
       wrapper: wrapper(),
     });
     result.current.mutate();
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(hits).toBe(1);
+    expect(pausePosts).toBe(0);
   });
 
-  test("409/404 (sweep already over) resolve quietly — the refetch shows done", async () => {
+  test("409/404 (the run is already over) resolve quietly — the refetch shows done", async () => {
     server.use(
-      http.post(PAUSE_URL, () =>
-        HttpResponse.json({ detail: "only a sweep import can be paused" }, { status: 409 }),
+      http.post(STOP_URL, () =>
+        HttpResponse.json({ detail: "import job is no longer active" }, { status: 409 }),
       ),
     );
 
-    const { result } = renderHook(() => usePauseSweep("j1"), {
+    const { result } = renderHook(() => useStopImport("j1"), {
       wrapper: wrapper(),
     });
     result.current.mutate();
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
+  });
+
+  test("a 500 is a hard failure — the caller must not read it as stopped", async () => {
+    server.use(
+      http.post(STOP_URL, () => new HttpResponse(null, { status: 500 })),
+    );
+
+    const { result } = renderHook(() => useStopImport("j1"), {
+      wrapper: wrapper(),
+    });
+    result.current.mutate();
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+  });
+
+  test("a transport failure is a hard failure too — a different path to isError", async () => {
+    // The other half of the pair, and a DIFFERENT mechanism: a 500 reaches
+    // `isError` through the hook's own `throw`, a dead connection through
+    // fetch's rejection, before any status exists to read. The 404/409 arm
+    // above swallows two statuses, so "the request did not happen at all" has
+    // to be shown not to fall into it.
+    server.use(http.post(STOP_URL, () => HttpResponse.error()));
+
+    const { result } = renderHook(() => useStopImport("j1"), {
+      wrapper: wrapper(),
+    });
+    result.current.mutate();
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+  });
+
+  test("isPending holds until the refreshed job state lands", async () => {
+    // `onSettled` RETURNS its invalidations. Fired and forgotten, the mutation
+    // resolved with the 204 and every control reading `isPending || stopped`
+    // fell back to its idle label ("Stop this run", pressable) for one GET
+    // round-trip.
+    let gets = 0;
+    server.use(
+      http.post(STOP_URL, () => new HttpResponse(null, { status: 204 })),
+      http.get(`${window.location.origin}/api/import/j1`, async () => {
+        gets += 1;
+        // Only the refetch is slow — the first load must not be, or the hooks
+        // never reach the state under test.
+        if (gets > 1) await delay(120);
+        return HttpResponse.json(
+          makeJob({ job_id: "j1", awaiting_decision: true, stopped: gets > 1 }),
+        );
+      }),
+    );
+
+    const { result } = renderHook(
+      () => ({ job: useImportJob("j1"), stop: useStopImport("j1") }),
+      { wrapper: wrapper() },
+    );
+    await waitFor(() => expect(result.current.job.data).toBeDefined());
+    act(() => {
+      result.current.stop.mutate();
+    });
+
+    // The refetch has started, so the POST is long since resolved.
+    await waitFor(() => expect(gets).toBe(2));
+    expect(result.current.stop.isPending).toBe(true);
+
+    await waitFor(() => expect(result.current.stop.isPending).toBe(false));
+    // ...and what it was waiting for is what the controls read.
+    expect(result.current.job.data?.stopped).toBe(true);
   });
 });
 
@@ -355,6 +430,8 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
     // set-aside feed row — a row status cannot answer this (an unattended
     // duplicate and a `search` re-lookup both wear one while beets works).
     awaiting_decision: false,
+    // Default: nobody pressed Stop.
+    stopped: false,
     ...overrides,
   };
 }

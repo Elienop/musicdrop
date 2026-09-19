@@ -18,8 +18,8 @@ import {
   isWorking,
   startErrorSentence,
   useImportJob,
-  usePauseSweep,
   useStartImport,
+  useStopImport,
 } from "@/api/useImport";
 import type { AlbumOrigin } from "@/components/albums/album-grid";
 import {
@@ -31,6 +31,7 @@ import {
   Resolved,
   Review as ReviewIcon,
   Spinner,
+  Stop,
   Success,
   Warning,
 } from "@/components/icons";
@@ -52,7 +53,6 @@ import {
   ELAPSED_AFTER_S,
   announceMessage,
   elapsedLabel,
-  isPausedSweep,
   pendingDuplicates,
   spokenElapsed,
 } from "@/pages/import/importStatus";
@@ -180,9 +180,63 @@ function useJobChangeH1Focus(jobId: string | undefined): void {
     const prior = previous.current;
     previous.current = jobId;
     if (prior === null || prior === jobId) return;
-    if (document.activeElement !== document.body) return;
-    document.querySelector<HTMLElement>('h1[tabindex="-1"]')?.focus();
+    focusH1IfNobodyHasFocus();
   }, [jobId]);
+}
+
+/** Move focus to the page h1, unless a live element is holding it.
+ *
+ * `activeElement === body` is what "the focused node was removed" looks like
+ * after the fact: the browser falls back to <body> the moment the element goes,
+ * and nothing in the app chose that. So the guard doubles as the condition —
+ * a focus HELD by something still mounted is never taken.
+ *
+ * `options` because the two callers want different scroll behaviour, and
+ * `focus()` scrolls its target into view by default. A job change is a
+ * navigation, so it takes the scroll (RouteAnnouncer's posture); a run ending
+ * under the reader is a data change on the page they are already on, so it
+ * passes `{ preventScroll: true }` — the in-page convention at
+ * `SearchPage.tsx`, `ArtistAlbumsPage.tsx` and `BrowsePage.tsx`. */
+function focusH1IfNobodyHasFocus(options?: FocusOptions): void {
+  if (document.activeElement !== document.body) return;
+  document.querySelector<HTMLElement>('h1[tabindex="-1"]')?.focus(options);
+}
+
+/** Catch keyboard focus when a run ends under the user's hands.
+ *
+ * The two controls that end a run live in the active branches only — the
+ * header's {@link StopRunButton} and {@link SweepRun}'s Pause — so the poll that
+ * reports the terminal phase unmounts the button the presser is standing on and
+ * focus lands on <body> (measured in Chromium (Orca), 2026-09-19: BODY on the
+ * first poll after `phase: "done"`, so the next Tab restarts at "Skip to
+ * content"). The `aria-disabled` posture protects the pending window and this
+ * protects its end.
+ *
+ * Keyed on the page's own `terminal` rather than the phase, so it covers the
+ * other two ends the run view has: a poll that 404s (the job expired, or the
+ * server restarted) and a poll that errors both unmount the control the same
+ * way, and both land on a panel of their own. `undefined` = the first poll is
+ * still in flight, so a cold load onto a finished job reads as a first reading
+ * and takes nothing; only false -> true is an end.
+ *
+ * {@link focusH1IfNobodyHasFocus} means a user reading the feed with focus on a
+ * row link keeps it, and it is passed `{ preventScroll: true }`: the trigger is
+ * wider than the presser (any end reached with focus on <body>, including a run
+ * that finishes on its own while the page is scrolled down a long feed), and a
+ * scrolling focus move would jump such a reader to the top.
+ *
+ * The h1 rather than the panel's CTA: the CTA is not on every terminal panel (a
+ * plain finished run has none), it is the target the page already uses for the
+ * same drop on a job change, and landing on the title leaves the whole outcome
+ * panel ahead of the cursor instead of behind it. */
+function useRunEndH1Focus(terminal: boolean | undefined): void {
+  const previous = useRef<boolean | undefined>(undefined);
+  useEffect(() => {
+    const prior = previous.current;
+    previous.current = terminal;
+    if (prior !== false || terminal !== true) return;
+    focusH1IfNobodyHasFocus({ preventScroll: true });
+  }, [terminal]);
 }
 
 export function ImportPage() {
@@ -463,6 +517,15 @@ function ImportRun({ jobId }: Readonly<{ jobId: string }>) {
       invalidateLibraryContent(queryClient);
     }
   }, [phase, queryClient]);
+  // Every end this page knows: an unknown job, a failed poll, or a terminal
+  // phase. Each renders a panel of its own and drops the header's control, and
+  // both readers below owe all three the same treatment.
+  const terminal =
+    notFound || isError || (data !== undefined && isTerminalPhase(data.phase));
+  // The end of a run unmounts whichever control ended it — see the hook.
+  // `undefined` while the first poll is in flight: nothing is known about the
+  // run yet, so the reading that follows it is not a transition.
+  useRunEndH1Focus(isPending ? undefined : terminal);
   // Mounted in every branch (incl. loading) so a screen reader has a stable
   // announcer; throttled so a fast scan's 1s poll doesn't spam it. Terminal
   // states announce immediately (bypass the throttle): the import won't change
@@ -470,30 +533,31 @@ function ImportRun({ jobId }: Readonly<{ jobId: string }>) {
   // would otherwise swallow the once-only outcome.
   const message = announceMessage({ isPending, isError, notFound, data });
   const throttled = useThrottledValue(message, 4000);
-  const terminal =
-    notFound || isError || (data !== undefined && isTerminalPhase(data.phase));
-  // A pause bypasses the throttle too. Pressing Pause changed the visible line
-  // within a poll but left the announcer up to ~5s behind it (a 1s poll plus
-  // the 4s window), and the button self-disables on click, so the one thing
-  // that acknowledged the press was silent the longest. It is a user-initiated
-  // change, and the person who just pressed a button is owed an answer.
+  // An accepted stop bypasses the throttle too. Pressing the button changed the
+  // visible line within a poll but left the announcer up to ~5s behind it (a 1s
+  // poll plus the 4s window), and the button goes inert on click, so the one
+  // thing that acknowledged the press was silent the longest. It is a
+  // user-initiated change, and the person who just pressed a button is owed an
+  // answer.
   //
-  // Read off the job rather than the mutation, so it needs no state from
-  // SweepRun: `paused` is set once, by `registry.pause_sweep`, and nothing
-  // clears it for the life of the job. That also makes the bypass STICKY
-  // instead of a one-render pulse — a pulse would hand the announcer back a
-  // stale throttled message on the very next render.
+  // `data.stopped` — the JOB's flag, not the sweep's and not the mutation's, so
+  // one term covers both controls (one request sets both flags,
+  // `registry.py` `request_stop`) and it needs no state from SweepRun or the
+  // header. It is set once, when the stop is accepted, and nothing clears it for
+  // the life of the job. That also makes the bypass STICKY instead of a
+  // one-render pulse — a pulse would hand the announcer back a stale throttled
+  // message on the very next render.
   //
   // Sticky means the throttle is OFF for the rest of the run, so what bounds
-  // the announcer after a pause is the message itself, not the window:
-  // `sweepMessage`'s paused branch drops the counters and `announceMessage`
-  // drops the elapsed clause, leaving "Stopping after this album." unchanged
-  // until a terminal phase. React writes the same string, the DOM does not
-  // change, and nothing is re-read. Carrying the counters here instead gave
-  // four announcements in ~5s, closest pair 974ms, because the last album's two
-  // outcome records keep the numbers moving after Pause is accepted.
-  const pausedSweep = isPausedSweep(data);
-  const status = terminal || pausedSweep ? message : throttled;
+  // the announcer after a stop is the message itself, not the window: both
+  // stopped branches in `announceMessage` are one fixed string, with no counters
+  // and no elapsed clause, so it cannot change until the run ends. React writes
+  // the same string, the DOM does not change, and nothing is re-read. Carrying
+  // the counters here instead gave four announcements in ~5s, closest pair
+  // 974ms, because the last album's two outcome records keep the numbers moving
+  // after the stop is accepted.
+  const stopping = data?.stopped === true;
+  const status = terminal || stopping ? message : throttled;
   const announcer = (
     <p className="sr-only" role="status" aria-live="polite">
       {status}
@@ -560,30 +624,137 @@ function ImportRun({ jobId }: Readonly<{ jobId: string }>) {
     );
   }
 
-  // scanning / reviewing / applying: the live feed.
+  // scanning / reviewing / applying: the live feed. This is the only branch
+  // that owns a header action — the one place a run is still going AND the
+  // sweep (which keeps its own Pause) has already been routed away above.
   return (
-    <ImportShell>
+    <ImportShell
+      action={
+        offersStop(data.origin) ? (
+          <StopRunButton jobId={jobId} stopped={data.stopped} />
+        ) : undefined
+      }
+    >
       {announcer}
       <LiveFeed state={data} jobId={jobId} />
     </ImportShell>
   );
 }
 
-/** Shared chrome for every run view: the page header + a Start-over action. */
-function ImportShell({ children }: Readonly<{ children: React.ReactNode }>) {
+/** Which runs the page offers a stop for: the ones a person started here.
+ *
+ * `manual` only. The API accepts a stop on any origin, but the two queue-driven
+ * origins start the next item as soon as this job ends — the inbox drain and the
+ * bank drain both pick up the next queued row (`apply_runner.py` `_drain`), and
+ * a stopped bank-apply row goes back to the bank to be decided again. "Stop this
+ * run" cannot keep its promise there: the user would read "the rest stayed in
+ * the folder" while the next folder was already importing in a job this page
+ * never shows. A sweep is routed away before this and keeps its own Pause.
+ *
+ * The same predicate gates the stopped panel's remedy — one origin makes that
+ * promise, one origin is told how to undo it ({@link stoppedFromThisPage}). */
+function offersStop(origin: ImportJobState["origin"]): boolean {
+  return origin === "manual";
+}
+
+/** Shared chrome for every run view: the page header plus whatever action that
+ * view owns. Only a live manual feed passes one ({@link StopRunButton},
+ * {@link offersStop}); the terminal panels carry their own CTA and leave the
+ * slot empty, and the sweep keeps its Pause inside {@link SweepRun}, so no view
+ * offers two ways to end the same run.
+ *
+ * `undefined`, not `null`: PageHeader tests the slot with `!== undefined`, so
+ * `null` would still paint the (empty) actions row. */
+function ImportShell({
+  children,
+  action,
+}: Readonly<{ children: React.ReactNode; action?: React.ReactNode }>) {
   return (
     <PageBody>
-      <PageHeader
-        title="Add from folder"
-        actions={
-          <Button variant="ghost" size="sm" asChild>
-            <Link to="/import">Start over</Link>
-          </Button>
-        }
-      />
+      <PageHeader title="Add from folder" actions={action} />
       {children}
     </PageBody>
   );
+}
+
+/** The run page's one stop control: end this import at the album it is on.
+ *
+ * Replaces the old "Start over" link, which only navigated back to the entry
+ * screen and left the run going. Stopping is reversible — nothing is deleted,
+ * what already landed stays, and adding the folder again asks about the rest —
+ * so there is no confirm step.
+ *
+ * `aria-disabled`, not `disabled` — the Pagination rule the Pause button
+ * records: this button holds focus when it is clicked, and disabling it on the
+ * click's own commit strands keyboard focus on <body>. The click is swallowed
+ * instead, and the stop is an idempotent 204 server-side so a slipped repeat is
+ * harmless. That posture holds focus for the pending window; the end of the run
+ * unmounts the control, and {@link useRunEndH1Focus} catches it there.
+ *
+ * `stopped` comes from the job, so a reload mid-stop reads pending too. A 404
+ * or 409 resolves quietly in the hook (the run already ended, and the poll
+ * shows it); only a transport failure reaches the sentence above the button. */
+function StopRunButton({
+  jobId,
+  stopped,
+}: Readonly<{ jobId: string; stopped: boolean }>) {
+  const stop = useStopImport(jobId);
+  const pending = stop.isPending || stopped;
+  return (
+    // The failure stacks ABOVE the button, the recipe {@link SweepRun} uses for
+    // the same sentence beside the same mutation. Inline-left of the button was
+    // a new placement, and it made the header's `shrink-0` slot as wide as
+    // sentence + gap + button; stacked, the slot is only as wide as the
+    // sentence. The header is `items-start`, so neither shape can move the h1.
+    // `items-end` because this slot is the page's right-aligned one.
+    <div className="flex flex-col items-end gap-1.5">
+      {stop.isError && (
+        <p className="text-destructive text-sm" role="alert">
+          Couldn&rsquo;t stop. Try again.
+        </p>
+      )}
+      <Button
+        type="button"
+        // Outline — the app's stop register. Every other Stop/Pause button is
+        // outline (the sweep's Pause, in this file, on this mutation); `ghost
+        // sm` is the navigation register here and all six of its other sites
+        // are links. It also gives the control a boundary of its own, which is
+        // what the glyph beside it no longer has to carry.
+        variant="outline"
+        size="sm"
+        aria-disabled={pending}
+        className="aria-disabled:opacity-50"
+        onClick={() => {
+          if (pending) return;
+          stop.mutate();
+        }}
+      >
+        <Stop aria-hidden="true" />
+        {pending ? "Stopping…" : "Stop this run"}
+      </Button>
+    </div>
+  );
+}
+
+/** What the live status line says INSTEAD of the counts, or null when the
+ * counts own it. The feed's twin of {@link sweepStatusLabel}.
+ *
+ * An accepted stop wins: without it the header read "Stopping…" over a line
+ * still counting and still naming the decision the run was parked on —
+ * asserting work the run had left.
+ *
+ * It echoes the button's own word rather than expanding on it. The sweep's
+ * pair adds information ("Pausing…" over "Pausing; finishing the current
+ * album…"); a manual stop abandons the album it is on, so the longer sentences
+ * that pair offers are not true here and the shortest honest line is the
+ * button's word. Two visible nodes now carry it, so a test that wants this one
+ * names its element.
+ *
+ * Then the empty feed: with nothing in it the count line reads "0 albums
+ * imported", so say what is actually happening instead. */
+function liveStatusCue(state: ImportJobState): string | null {
+  if (state.stopped) return "Stopping…";
+  return state.albums.length === 0 ? "Scanning your folder…" : null;
 }
 
 /** scanning/reviewing/applying: a working line + the growing feed. */
@@ -595,7 +766,7 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
   // exists leaves the state blocked with an empty feed, and `working` is false
   // there — which rendered the "0 albums imported" the branch below exists to
   // prevent. LiveFeed is only reached on an active phase.
-  const scanningEmpty = state.albums.length === 0;
+  const cue = liveStatusCue(state);
   // `progress` has no duplicate counter (backend), so derive the
   // duplicate-pending count from the feed rows for the cue line below. The
   // announcer's twin, not a second copy of the filter: the two disagreed about
@@ -604,11 +775,12 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
   const needsDup = pendingDuplicates(state);
   return (
     <div className="flex flex-col gap-4">
-      <StatusLine spinning={working}>
-        {/* With nothing in the feed yet, the count line would read
-            "0 albums imported" — say what's actually happening instead. */}
-        {scanningEmpty ? (
-          <>Scanning your folder&hellip;</>
+      {/* Spinning through a stop as well: the server accepts it and the worker
+          then unwinds, which is an active phase, and a parked run has `working`
+          false — the one moment the line must not look idle. */}
+      <StatusLine spinning={working || state.stopped}>
+        {cue !== null ? (
+          cue
         ) : (
           <>
             {/* No known total (the feed grows as the worker reads) — count
@@ -655,7 +827,11 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
         <FeedList
           albums={state.albums}
           jobId={jobId}
-          readOnly={feedIsReadOnly(state.origin)}
+          // `state.stopped` for the reason the done panel takes it: from the
+          // moment the stop is accepted the parked slot is released, so Review
+          // would open a decision the worker no longer consumes. The header
+          // said the run was ending while the row still offered a live button.
+          readOnly={feedIsReadOnly(state.origin) || state.stopped}
         />
       )}
     </div>
@@ -665,7 +841,7 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
 /** The sweep's whole progress surface: counters (StatTile, the cardless
  * stats dialect), the current folder, Pause, and the Review hand-off. Rides
  * the existing 1s job poll. A paused sweep finishes its current album, then
- * the job goes done with `sweep.paused` still true — that flag is what titles
+ * the job goes done with `sweep.stopped` still true — that flag is what titles
  * the panel below. */
 /** Derive the sweep's live-status line from paused / current-folder state. */
 function sweepStatusLabel(
@@ -708,7 +884,7 @@ function SweepTiles({ sweep }: Readonly<{ sweep: SweepStatus }>) {
  * gated on `!done`, so it vanished at the exact moment it applies. And four zero
  * tiles report that nothing happened without saying why. */
 function sweepDoneNote(sweep: SweepStatus): string | null {
-  if (sweep.paused) return "Resume later by sweeping the same folder again.";
+  if (sweep.stopped) return "Resume later by sweeping the same folder again.";
   const touched =
     sweep.processed + sweep.auto_applied + sweep.banked + sweep.skipped_known;
   return touched === 0 ? "No albums found in that folder." : null;
@@ -764,7 +940,10 @@ function SweepDoneCta({
 }
 
 function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: string }>) {
-  const pause = usePauseSweep(jobId);
+  // The same route the run page's Stop uses. A sweep asks its question at album
+  // boundaries only and incremental history makes a re-sweep a resume, so this
+  // surface still says "pause".
+  const pause = useStopImport(jobId);
   const sweep = state.sweep;
   if (sweep == null) {
     // Defensive only: the backend always sets the block on sweep jobs.
@@ -778,23 +957,23 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
           bordered
           // A user-interrupted sweep is not a completion, so it does not wear
           // the success check; the Pause glyph names what actually happened.
-          icon={sweep.paused ? Pause : Success}
-          title={sweep.paused ? "Sweep paused" : "Sweep finished"}
+          icon={sweep.stopped ? Pause : Success}
+          title={sweep.stopped ? "Sweep paused" : "Sweep finished"}
           // The tiles below ARE the counts, and they are the app's own labels.
           // This body used to restate all four ~24px above them in a server-
           // built string ("swept 30, auto-applied 20, …"), so the panel said
           // every number twice. What the tiles cannot say is how long it took
           // and what to do next; that is all this body is now. The pause is
-          // still in the title and on `sweep.paused`, so the word is not
+          // still in the title and on `sweep.stopped`, so the word is not
           // repeated either.
           body={sweepDoneBody(sweep, state.elapsed_seconds)}
           // The CTA points at what the run actually produced. Banked albums
           // are decisions waiting, so they win. A sweep that only auto-applied
-          // has no feed of its own and nothing to review, and sending it to
-          // /import just repeated the shell chrome's own "Start over" — so it
-          // goes to the library instead, newest first (`sort=added` is
-          // descending by date added). Nothing produced falls through to a
-          // fresh run.
+          // has no feed of its own and nothing to review, and at the time this
+          // was written the shell carried its own /import link, so sending it
+          // there said the same thing twice — it goes to the library instead,
+          // newest first (`sort=added` is descending by date added). Nothing
+          // produced falls through to a fresh run.
           action={<SweepDoneCta sweep={sweep} />}
         />
       ) : (
@@ -802,7 +981,7 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
         // terminal phase, which the branch above owns — so the spinner spins
         // throughout, unlike the feed's.
         <StatusLine spinning>
-          {sweepStatusLabel(sweep.paused, sweep.current_folder)}
+          {sweepStatusLabel(sweep.stopped, sweep.current_folder)}
           {/* A sweep is the longest-running import there is and it returns
               before LiveFeed ever renders, so this is the only place its
               duration shows while it runs. Same threshold and middot dialect
@@ -832,18 +1011,18 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
               // Pause, the same mutation on the same state, already reads this
               // way; the click is swallowed instead, and pause is an idempotent
               // 204 server-side so a slipped repeat is harmless.
-              aria-disabled={pause.isPending || sweep.paused}
+              aria-disabled={pause.isPending || sweep.stopped}
               className="aria-disabled:opacity-50"
               onClick={() => {
-                if (pause.isPending || sweep.paused) return;
+                if (pause.isPending || sweep.stopped) return;
                 pause.mutate();
               }}
             >
               <Pause aria-hidden="true" />
-              {/* Same expression as the state above: keyed on `sweep.paused`
+              {/* Same expression as the state above: keyed on `sweep.stopped`
                   alone the button read "Pause sweep" while already inert for
                   the whole in-flight window. */}
-              {pause.isPending || sweep.paused ? "Pausing…" : "Pause sweep"}
+              {pause.isPending || sweep.stopped ? "Pausing…" : "Pause sweep"}
             </Button>
           </div>
           <p className="text-muted-foreground text-xs">
@@ -875,8 +1054,10 @@ function feedIsReadOnly(origin: ImportJobState["origin"]): boolean {
 
 /** The feed listing — shared by the live run and the terminal panels. Carries
  * the `jobId` so each row's links can thread the run origin. `readOnly` drops
- * the per-row decision buttons: on a failed job, and on a bank-apply run,
- * nothing consumes a choice ({@link feedIsReadOnly}). */
+ * the per-row decision buttons, in the three cases where nothing consumes a
+ * choice: a failed job, a bank-apply run ({@link feedIsReadOnly}), and a run
+ * whose stop has been accepted. It also drops the badge's fill — see
+ * {@link badgeVariant}. */
 function FeedList({
   albums,
   jobId,
@@ -1090,7 +1271,7 @@ function FeedRow({
           // is correct — not a 0–1 fraction.
           `${Math.round(album.confidence)}%${SEGMENT_SEP}${RECOMMENDATION_LABEL[album.recommendation]}`
         }
-        badge={<StatusBadge album={album} />}
+        badge={<StatusBadge album={album} readOnly={readOnly} />}
         href={linked ? `/albums/${albumId}` : undefined}
         hrefState={linked ? origin : undefined}
       />
@@ -1120,12 +1301,19 @@ function FeedRow({
   );
 }
 
-/** Derive the badge variant from the album's per-status label. */
+/** Derive the badge variant from the album's per-status label.
+ *
+ * The primary fill is the app's "needs you" signal, so a read-only feed takes
+ * the outline instead: the words stay true — that album really was never decided
+ * — but the colour claims an action the row no longer offers. Scoped to the
+ * feeds that have no button at all ({@link FeedList}'s `readOnly`), so a live
+ * row keeps the cue that pairs with its Review button. */
 function badgeVariant(
   status: ImportAlbumSummary["status"],
+  readOnly: boolean,
 ): "default" | "outline" | "secondary" {
   if (status === "needs_review" || status === "needs_dup_resolution") {
-    return "default";
+    return readOnly ? "outline" : "default";
   }
   if (status === "skipped") return "outline";
   return "secondary";
@@ -1141,7 +1329,10 @@ function badgeVariant(
  * moment it is refused and not only once the job ends; else a row that DID
  * land (an album_id arrived) reads as the positive "Imported" chip, upgrading a
  * user-decided Apply from the vague "Decided"; else the per-status label. */
-function StatusBadge({ album }: Readonly<{ album: ImportAlbumSummary }>) {
+function StatusBadge({
+  album,
+  readOnly,
+}: Readonly<{ album: ImportAlbumSummary; readOnly: boolean }>) {
   if (album.did_not_land) {
     return (
       <Badge variant="destructive" className="shrink-0">
@@ -1165,7 +1356,7 @@ function StatusBadge({ album }: Readonly<{ album: ImportAlbumSummary }>) {
     needs_dup_resolution: "Already in library",
   };
   return (
-    <Badge variant={badgeVariant(status)} className="shrink-0">
+    <Badge variant={badgeVariant(status, readOnly)} className="shrink-0">
       {label[status]}
     </Badge>
   );
@@ -1414,6 +1605,11 @@ function ImportAgainButton({
  * multi-folder start or inbox run still reads this way with nothing to press:
  * those are the button's own terms, not the outcome's. */
 function doneTitle(state: ImportJobState): string {
+  // The stop wins over both: the person pressed a button and is owed the
+  // acknowledgement, and a run stopped early enough to have nothing but history
+  // skips behind it would otherwise be titled "Nothing new to import" — true of
+  // the counters, false about the run.
+  if (state.stopped) return "Import stopped";
   return onlySkippedKnown(state) ? "Nothing new to import" : "Import finished";
 }
 
@@ -1436,19 +1632,52 @@ function bankApplyNeedsReview(state: ImportJobState): boolean {
   );
 }
 
+/** A stopped run whose remedy this page can name: the manual one.
+ *
+ * `stopped` on its own is not enough. "The rest stayed in the folder. Add it
+ * again to continue." is only true where the folder IS the run and nothing picks
+ * up behind it — the same origin the control is offered for
+ * ({@link offersStop}). The API accepts a stop on any origin, so a stopped inbox
+ * or bank-apply job can reach this panel without the button ever having been
+ * shown; it keeps the title and the read-only feed, which are true of any stop,
+ * and not the remedy, which is not. */
+function stoppedFromThisPage(state: ImportJobState): boolean {
+  return state.stopped && offersStop(state.origin);
+}
+
 /** done: a legible outcome — imported/skipped counts (counting auto-applied
  * albums) + the feed list, whose applied rows now link straight to their
  * library pages (replaces the old blanket "View in library", spec §1). */
 function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: string }>) {
   const againPath = importAgainPath(state);
-  // The two are mutually exclusive by origin — `importAgainPath` is `manual`
-  // only, `bankApplyNeedsReview` is `bank_apply` only — so neither can hide the
-  // other, and the panel still ends up with at most one button.
+  // Three arms, at most one button. The first two are mutually exclusive by
+  // origin — `bankApplyNeedsReview` is `bank_apply` only, `stoppedFromThisPage`
+  // is `manual` only — so neither can hide the other.
+  //
+  // The stop outranks `againPath`, the same order {@link doneTitle} takes and
+  // for the same reason: a stopped run has not established that there is
+  // nothing new, it just did not get that far. Both read the counters, and a run
+  // stopped before it reached an unknown album has only history skips behind it
+  // — which offered "Import them again" (beets' `-I`) under a sentence saying to
+  // add the folder again, i.e. re-importing the albums already in the library
+  // the sentence was telling the user to leave alone.
   let doneAction: React.ReactNode | undefined;
   if (bankApplyNeedsReview(state)) {
     doneAction = (
-      <Button size="sm" asChild>
+      // Outline once the run was stopped, for the reason the arm below gives:
+      // a solid CTA under "Import stopped" reads as a success panel. The link
+      // itself stays either way — the banked rows are owed to Review whether
+      // the apply finished or was cut short.
+      <Button variant={state.stopped ? "outline" : undefined} size="sm" asChild>
         <Link to="/review">Review banked albums</Link>
+      </Button>
+    );
+  } else if (stoppedFromThisPage(state)) {
+    // The sentence below names this control. Outline, like the failed panel's:
+    // a solid CTA under a stop would read as a success panel.
+    doneAction = (
+      <Button variant="outline" size="sm" asChild>
+        <Link to="/import">Add from folder</Link>
       </Button>
     );
   } else if (againPath !== null) {
@@ -1460,7 +1689,10 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
     <div className="flex flex-col gap-4">
       <EmptyState
         bordered
-        icon={Success}
+        // A run the user ended is not a completion, so it does not wear the
+        // success check — the same reading {@link SweepRun} gives a paused
+        // sweep, with the app's Stop concept naming what happened.
+        icon={state.stopped ? Stop : Success}
         title={doneTitle(state)}
         body={
           <>
@@ -1469,6 +1701,14 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
                 at the finish line. */}
             {countsLine(state.progress)}
             <ElapsedSegment seconds={state.elapsed_seconds} />
+            {stoppedFromThisPage(state) && (
+              // What a stop leaves behind, and the way past it. The counts
+              // above cannot say either: an album the run never reached has no
+              // feed row and is in no counter. Manual only — see the predicate.
+              <span className="mt-1 block">
+                The rest stayed in the folder. Add it again to continue.
+              </span>
+            )}
           </>
         }
         action={doneAction}
@@ -1477,7 +1717,13 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
         <FeedList
           albums={state.albums}
           jobId={jobId}
-          readOnly={feedIsReadOnly(state.origin)}
+          // Read-only after a stop, for the reason {@link JobFailed} gives its
+          // own feed: the worker is gone, so a Review/Resolve button would open
+          // a decision whose POST 404s. A row left `needs_review` keeps its
+          // badge — it IS still undecided — it just stops offering an action
+          // this page cannot carry out. An unattended run that finished on its
+          // own is untouched: its set-aside row is still live work.
+          readOnly={feedIsReadOnly(state.origin) || state.stopped}
         />
       )}
     </div>
@@ -1554,14 +1800,15 @@ function JobFailed({
           // Same destinations as a finished sweep ({@link SweepDoneCta}): the
           // crash did not move the albums, and this panel already names the
           // counts. Outline, not solid — a solid CTA would read as a success
-          // panel. A non-sweep failure has no feed to send anyone to, and its
-          // label differs from the shell chrome's ghost "Start over" so the two
-          // aren't identical.
+          // panel. A non-sweep failure has no feed to send anyone to, so /import
+          // is the way on, under the one label the page uses for it: the nav
+          // item's and the h1's own words, which the stopped and not-found
+          // panels also carry.
           sweep !== null ? (
             <SweepDoneCta sweep={sweep} variant="outline" />
           ) : (
             <Button variant="outline" size="sm" asChild>
-              <Link to="/import">Import another folder</Link>
+              <Link to="/import">Add from folder</Link>
             </Button>
           )
         }
@@ -1586,10 +1833,12 @@ function JobNotFound() {
       bordered
       icon={Info}
       title="This import is no longer available"
-      body="It may have finished in another session, or the server restarted. Start a new import to continue."
+      // The closing clause names the button under it, so it takes the button's
+      // words — one label for /import across this page's three terminal panels.
+      body="It may have finished in another session, or the server restarted. Add the folder again to continue."
       action={
         <Button variant="outline" size="sm" asChild>
-          <Link to="/import">Start a new import</Link>
+          <Link to="/import">Add from folder</Link>
         </Button>
       }
     />

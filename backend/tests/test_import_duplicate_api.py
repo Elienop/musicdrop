@@ -173,6 +173,34 @@ def test_get_duplicate_404_when_not_parked() -> None:
     assert resp.status_code == 404
 
 
+def test_get_duplicate_404_after_the_run_is_over() -> None:
+    """A stop releases the prompt; the GET must follow the POST into 404.
+
+    Served, it renders a resolve screen for a job with no worker left to answer
+    - the cover read on the same row already 404s. The registry method behind
+    it stays open for the bank apply runner; the gate is on the route's own
+    read (``ImportJobRegistry.parked_duplicate``).
+    """
+    from app.import_jobs.registry import get_registry
+
+    client = _client([_prompt(0)])
+    job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
+    assert _poll_dup_prompt(client, job_id, 0).status_code == 200  # the live control
+
+    assert client.post(f"/api/import/{job_id}/stop").status_code == 204
+    _poll_client(client, job_id, lambda s: s["phase"] == "done")
+
+    assert client.get(f"/api/import/{job_id}/albums/0/duplicate").status_code == 404
+    assert (
+        client.post(
+            f"/api/import/{job_id}/albums/0/duplicate", json={"action": "keep_both"}
+        ).status_code
+        == 404
+    )
+    # The row still holds the prompt, and the runner's read still answers.
+    assert get_registry().duplicate_prompt(job_id, 0).album_index == 0
+
+
 def test_cover_streams_embedded_art_for_duplicate_row(monkeypatch: pytest.MonkeyPatch) -> None:
     # The "Importing (new)" panel of the duplicate-decision page fetches the
     # current-files cover via GET /albums/{i}/cover. That must serve for a

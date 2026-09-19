@@ -3,12 +3,19 @@ import type { ImportJobState, SweepStatus } from "@/api/useImport";
 /** A sweep that has accepted Pause and is still finishing its current album.
  *
  * One predicate for one concept: the announcer drops its elapsed clause on this,
- * and the page turns its announcement throttle off on it, and those two must not
- * be able to disagree. The origin check is redundant against today's backend —
- * `sweep` is only ever populated for a sweep origin — but the contract permits
- * the pair, and the message branch below reads the same two fields. */
-export function isPausedSweep(data: ImportJobState | undefined): boolean {
-  return data?.origin === "sweep" && data.sweep?.paused === true;
+ * and {@link sweepMessage}'s paused branch drops its counters, and those two
+ * must not be able to disagree. The origin check is redundant against today's
+ * backend — `sweep` is only ever populated for a sweep origin — but the contract
+ * permits the pair, and the message branch below reads the same two fields.
+ *
+ * The page's announcement throttle is NOT keyed on this: it reads the job's own
+ * `stopped`, which one request sets for both controls, so the bypass covers a
+ * manual stop too.
+ *
+ * The field is `stopped` because one route stops every import; a sweep's own
+ * word for it stays "pause" everywhere the user can read it. */
+function isPausedSweep(data: ImportJobState | undefined): boolean {
+  return data?.origin === "sweep" && data.sweep?.stopped === true;
 }
 
 /** The single spoken status for the whole run — it is the one `aria-live`
@@ -57,18 +64,41 @@ export function announceMessage(args: {
   }
   if (done) {
     const { applied, skipped, not_landed, already_known } = data.progress;
+    // A run the user stopped reached `done` without completing, so it must not
+    // be announced as complete — the counts after it are still the run's own.
+    // Same first two words as the panel title, and the whole string is longer,
+    // so an exact-text query still singles the title out (the "Sweep paused"
+    // workaround above).
+    const opening = data.stopped ? "Import stopped." : "Import complete.";
     // The done PANEL has always shown the lost count and the failed
     // announcement gained it; this channel was the one place it went missing.
     // `already_known` is in none of the three buckets either — beets skips
     // those folders before tagging, so they reach no outcome record — and the
     // panel's counts line names them, so this channel must too.
     return (
-      `Import complete. Imported ${applied}, skipped ${skipped}.` +
+      `${opening} Imported ${applied}, skipped ${skipped}.` +
       notLandedClause(not_landed) +
       knownClause(already_known) +
       clause
     );
   }
+  // An accepted stop, still unwinding — an active phase, and the one moment
+  // this channel said nothing about the press. It kept reading the counters
+  // ("Imported 1. 1 album awaiting review.") while the button read "Stopping…",
+  // so a screen-reader user heard nothing for up to a parked poll (10s) plus the
+  // unwind, then "Import stopped."
+  //
+  // One fixed string, the treatment the sweep's paused branch already has: no
+  // counters and no elapsed clause, so the announcement cannot change until the
+  // run ends. Both halves are needed — the page turns its throttle off on this
+  // same flag, and the counters keep moving after a stop is accepted (the last
+  // album emits two outcome records), so a data-bearing string would re-read the
+  // whole sentence on every poll.
+  //
+  // A full sentence, which is this channel's register — the visible pair is
+  // the button's "Stopping…" and a status line echoing it, and the done panel
+  // reads "Import stopped".
+  if (data.stopped) return "Stopping the import.";
   if (data.phase === "scanning" && data.albums.length === 0) {
     return "Scanning the folder for albums." + clause;
   }
@@ -128,7 +158,7 @@ function elapsedClause(
  * carry the numbers on screen and the terminal announcement repeats them. */
 function sweepMessage(sweep: SweepStatus, phase: ImportJobState["phase"]): string {
   if (phase !== "done") {
-    if (sweep.paused) return "Stopping after this album.";
+    if (sweep.stopped) return "Stopping after this album.";
     // The moving triple only. `role="status"` is atomic, so a live sweep
     // re-reads this whole string every poll for as long as it runs — the same
     // repetition the elapsed clause was gated to stop. `skipped_known` decides
@@ -137,7 +167,7 @@ function sweepMessage(sweep: SweepStatus, phase: ImportJobState["phase"]): strin
   }
   // Spoken once, and a claim about the whole run — so every category it holds.
   const counts = sweepCounts(sweep) + knownClause(sweep.skipped_known);
-  return sweep.paused ? `Sweep paused. ${counts}` : `Sweep complete. ${counts}`;
+  return sweep.stopped ? `Sweep paused. ${counts}` : `Sweep complete. ${counts}`;
 }
 
 /** The sweep's spoken counters. `skipped_known` joins only when it is nonzero:

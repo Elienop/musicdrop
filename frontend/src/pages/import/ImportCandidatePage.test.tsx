@@ -61,6 +61,7 @@ function makeJob(
     set_aside: 0,
     elapsed_seconds: 4,
     awaiting_decision: false,
+    stopped: false,
     ...overrides,
   };
 }

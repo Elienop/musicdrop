@@ -21,13 +21,18 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, Literal, NoReturn, TypeVar, cast
 
 from beets import config
 from beets.autotag.match import Recommendation as BeetsRec
 from beets.importer.actions import Action
 from beets.importer.actions import DuplicateAction as BeetsDuplicateAction
-from beets.importer.session import ImportAbortError, ImportSession
+
+# ``ImportAbortError as ImportAbortError`` is an explicit re-export (mypy --strict
+# has no implicit ones): the fake import runner models beets' run() catching it,
+# and must not import beets itself (CLAUDE.md rule 3).
+from beets.importer.session import ImportAbortError as ImportAbortError
+from beets.importer.session import ImportSession
 
 from app.bank import store as bank_store
 from app.bank.fingerprint import folder_fingerprint
@@ -117,6 +122,16 @@ class InLibraryCopyError(ValueError):
 _ReplyT = TypeVar("_ReplyT")
 
 
+class _StopRequested:
+    """What a blocked park is handed when a stop is requested — not a decision."""
+
+
+#: The one instance ``request_stop`` puts into every park it releases. ``park``
+#: and ``park_duplicate`` raise ``ImportAbortError`` on seeing it rather than
+#: handing it to beets as an answer.
+_STOP_REQUESTED = _StopRequested()
+
+
 @dataclass
 class _ReplySlot(Generic[_ReplyT]):
     """One park's rendezvous: the worker's reply queue plus whether it was answered.
@@ -127,10 +142,26 @@ class _ReplySlot(Generic[_ReplyT]):
     the slot: the queue is empty again there, yet the answer has landed and
     nobody is waiting on a person. A slot is released by identity when its park
     returns, so a re-park at the same index starts out unanswered again.
+
+    A stop is the second thing that can land here (``_STOP_REQUESTED``), which is
+    why the queue carries the sentinel as well as the decision type.
     """
 
-    reply: queue.Queue[_ReplyT]
+    reply: queue.Queue[_ReplyT | _StopRequested]
     answered: bool = False
+
+
+def _release_on_stop(slot: _ReplySlot[_ReplyT]) -> None:
+    """Wake the park blocked on ``slot`` so it can abort (caller holds the lock).
+
+    A slot that already holds a decision is left alone: that answer was accepted
+    first and the worker acts on it, then stops at its next abort point (a hook,
+    or the re-park a ``search``/``rescan`` answer leads back to).
+    """
+    if slot.answered:
+        return
+    slot.reply.put_nowait(_STOP_REQUESTED)
+    slot.answered = True
 
 
 def _answer(slot: _ReplySlot[_ReplyT], answer: _ReplyT, taken: str) -> None:
@@ -174,11 +205,19 @@ class ImportBridge:
         self._dup_replies: dict[int, _ReplySlot[DuplicateDecision]] = {}
         self._lock = threading.Lock()
         self._pending = 0
-        # Sweep pause flag: set by the registry's request_pause (consumer
-        # side), read by the session at the top of every decision hook (worker
-        # side). It lives on the bridge because the bridge is the one object
-        # both sides already share - the registry never holds the session.
-        self._pause = threading.Event()
+        # Stop flag: set by the registry's request_stop (consumer side), read by
+        # the session at the top of every decision hook and by the two parks
+        # (worker side). It lives on the bridge because the bridge is the one
+        # object both sides already share - the registry never holds the session.
+        self._stop = threading.Event()
+        # Set by abort_now() at every site that raises beets' abort, and by
+        # nothing else. Separate from _stop because the two answer different
+        # questions: _stop says a stop was ACCEPTED, this says the run was
+        # actually cut short. A stop accepted after the last abort point (the
+        # final album's placement, the post-run Trash pass) leaves this clear,
+        # and the verdict readers that would otherwise call a fully-landed run
+        # failed read this instead (ImportJobRegistry.job_aborted).
+        self._aborted = threading.Event()
         # Folders beets' task factory skipped as already imported (incremental
         # history). Monotone; every job state reports it, sweep or not.
         self._known_skips = 0
@@ -186,14 +225,27 @@ class ImportBridge:
     # ----- worker side -----
 
     def park(self, parked: ParkedAlbum, art_source: str | None = None) -> ImportChoice:
-        """Push a parked album and block until a choice arrives for it."""
+        """Push a parked album and block until a choice arrives for it.
+
+        Raises beets' ``ImportAbortError`` instead when a stop is in force. The
+        registration AND the queueing share ``request_stop``'s critical section,
+        so the two orderings are the only two: the stop is already set and this
+        park neither registers nor reaches the consumer, or both steps ran and
+        the stop releases the registered slot with ``_STOP_REQUESTED``. Queueing
+        outside the lock left a third: a stop landing in the gap released a slot
+        whose album the worker then handed to the consumer anyway.
+        """
         slot: _ReplySlot[ImportChoice] = _ReplySlot(queue.Queue(maxsize=1))
         with self._lock:
+            if self._stop.is_set():
+                self.abort_now()
             self._replies[parked.album_index] = slot
             if art_source is not None:
                 self._art_source[parked.album_index] = art_source
             self._pending += 1
-        self._out.put(parked)
+            # Unbounded queue with its own mutex below this lock, so the put
+            # cannot block and adds no ordering (see _answer's docstring).
+            self._out.put(parked)
         choice = slot.reply.get()  # blocks the worker thread
         with self._lock:
             # Release this slot by IDENTITY, not by key: the slot standing at
@@ -207,25 +259,35 @@ class ImportBridge:
             if self._replies.get(parked.album_index) is slot:
                 del self._replies[parked.album_index]
             self._pending -= 1
+        if isinstance(choice, _StopRequested):
+            self.abort_now()
         return choice
 
     def park_duplicate(
         self, prompt: DuplicatePrompt, art_source: str | None = None
     ) -> DuplicateDecision:
-        """Push a duplicate prompt and block until a decision arrives for it."""
+        """Push a duplicate prompt and block until a decision arrives for it.
+
+        Raises beets' ``ImportAbortError`` under a stop, both orderings, exactly
+        as :meth:`park` does — the duplicate question is a park like any other.
+        """
         slot: _ReplySlot[DuplicateDecision] = _ReplySlot(queue.Queue(maxsize=1))
         with self._lock:
+            if self._stop.is_set():
+                self.abort_now()
             self._dup_replies[prompt.album_index] = slot
             if art_source is not None:
                 self._art_source[prompt.album_index] = art_source
             self._pending += 1
-        self._dup_out.put(prompt)
+            self._dup_out.put(prompt)  # inside the lock, for park()'s reason
         decision = slot.reply.get()  # blocks the worker thread
         with self._lock:
             # By identity, for the reason spelled out in park().
             if self._dup_replies.get(prompt.album_index) is slot:
                 del self._dup_replies[prompt.album_index]
             self._pending -= 1
+        if isinstance(decision, _StopRequested):
+            self.abort_now()
         return decision
 
     def publish_duplicate(self, prompt: DuplicatePrompt) -> None:
@@ -279,9 +341,22 @@ class ImportBridge:
         except queue.Empty:
             return None
 
+    def _refuse_under_stop(self, album_index: int) -> None:
+        """Raise once a stop is in force (caller holds the lock).
+
+        A released park stays REGISTERED with an empty queue until the woken
+        worker retakes the lock to delete it, so without this a decision landing
+        in that gap is accepted: the registry marks the row ``decided`` for a
+        worker that is already unwinding. ``KeyError`` is what the late decision
+        gets once the slot is gone, and the API maps it to the same 404.
+        """
+        if self._stop.is_set():
+            raise KeyError(f"album {album_index}: the run is stopping")
+
     def push_choice(self, album_index: int, choice: ImportChoice) -> None:
         """Deliver a decision to the worker blocked on ``album_index``."""
         with self._lock:
+            self._refuse_under_stop(album_index)
             slot = self._replies.get(album_index)
             if slot is None:
                 raise KeyError(f"no album parked at index {album_index}")
@@ -290,6 +365,7 @@ class ImportBridge:
     def push_duplicate_decision(self, album_index: int, decision: DuplicateDecision) -> None:
         """Deliver a duplicate decision to the worker blocked on ``album_index``."""
         with self._lock:
+            self._refuse_under_stop(album_index)
             slot = self._dup_replies.get(album_index)
             if slot is None:
                 raise KeyError(f"no duplicate parked at index {album_index}")
@@ -308,9 +384,10 @@ class ImportBridge:
           working import as blocked. ``answered`` flips on the consumer's push
           instead, so the falling edge lands with the answer.
         * the park queues, which the consumer pops one-shot. Popping a park is
-          not proof its worker is still waiting: a choice pushed between the
-          registration and the queueing above is delivered to a live slot, and
-          the pop that follows then describes a worker that has already run on.
+          not proof its worker is still waiting: a choice pushed before that pop
+          is delivered to a live slot, and the pop then describes a worker that
+          has already run on
+          (``test_awaiting_decision_clears_when_a_choice_beats_the_drain_to_the_park``).
         """
         with self._lock:
             return any(not slot.answered for slot in self._replies.values()) or any(
@@ -321,12 +398,38 @@ class ImportBridge:
         with self._lock:
             return self._pending
 
-    def request_pause(self) -> None:
-        """Ask the worker to abort cleanly at its next decision hook."""
-        self._pause.set()
+    def request_stop(self) -> None:
+        """Stop the run: arm every abort point, then free a worker already parked.
 
-    def pause_requested(self) -> bool:
-        return self._pause.is_set()
+        Both steps hold the lock a park registers under, so a park cannot slip
+        between them and block forever. The event is what the decision hooks and
+        the two parks read; the release is for the worker that is ALREADY
+        blocked, which no flag on its own reaches.
+        """
+        with self._lock:
+            self._stop.set()
+            for slot in self._replies.values():
+                _release_on_stop(slot)
+            for dup_slot in self._dup_replies.values():
+                _release_on_stop(dup_slot)
+
+    def stop_requested(self) -> bool:
+        return self._stop.is_set()
+
+    def abort_now(self) -> NoReturn:
+        """Record that the run is being cut short, then raise beets' abort.
+
+        THE one raise site for ``ImportAbortError``, so the recording cannot be
+        forgotten at a new one. Three callers: the session's ``_check_stop``
+        (a worker between questions) and the two parks, each on both orderings
+        (the stop already set at registration, or the release sentinel).
+        """
+        self._aborted.set()
+        raise ImportAbortError
+
+    def abort_raised(self) -> bool:
+        """Whether ``abort_now`` fired — i.e. something was actually cut short."""
+        return self._aborted.is_set()
 
     def note_known_skip(self) -> None:
         """Count one folder beets skipped as already imported (worker side)."""
@@ -722,18 +825,34 @@ class WebImportSession(ImportSession):
         # Chunk 1 exposes nothing fancy: never resume interactively.
         return False
 
-    def _check_pause(self) -> None:
-        """Abort cleanly when a pause was requested (sweep pause).
+    def _check_stop(self) -> None:
+        """Abort cleanly when a stop was requested (the sweep's Pause, and Stop).
 
-        Raises beets' own ``ImportAbortError`` - the exact native abort the
-        abort choice already uses: beets' ``run()`` catches it and stops the
+        Raises beets' own ``ImportAbortError`` through ``bridge.abort_now``,
+        which records the cut-short: beets' ``run()`` catches it and stops the
         pipeline at this album boundary. The aborted task was never chosen, so
-        it is not finalized into incremental history and the next sweep picks
+        it is not finalized into incremental history and the next run picks
         it up again; any pending album-id follow-up still flushes because our
         ``run()`` override flushes after beets swallows the abort.
+
+        This is the arm that covers a worker BETWEEN questions (scanning, a
+        lookup in flight, an apply running). A worker parked on a question, or
+        about to park, is covered by the bridge's two parks instead.
         """
-        if self.bridge.pause_requested():
-            raise ImportAbortError
+        if self.bridge.stop_requested():
+            self.bridge.abort_now()
+
+    def _mid_astracks_expansion(self) -> bool:
+        """True while an "as tracks" album is being re-pipelined into singletons.
+
+        Either arm that reaches ``choose_item``: the attended choice
+        (``_astracks_in_flight``, armed by choose_match) or a banked astracks
+        directive. Singletons have no other source here - the import worker
+        forces ``import.singletons`` off on every run.
+        """
+        if self._astracks_in_flight:
+            return True
+        return self._directive is not None and self._directive.action == "astracks"
 
     def already_imported(self, toppath: Any, paths: Any) -> bool:
         """Count folders beets skips as already imported.
@@ -765,7 +884,17 @@ class WebImportSession(ImportSession):
         # worker forces import.singletons off on EVERY run so a singletons:yes
         # user config can never funnel files here and history-mark them done
         # without banking.
-        self._check_pause()
+        #
+        # A stop does NOT land here mid-expansion. beets re-pipelines each file
+        # as its own SingletonImportTask and runs it through the remaining
+        # stages on its own (stages.py:180-193, :368-385), so each track is
+        # placed and history-recorded separately: aborting between track 3 and
+        # track 4 leaves one album half in the library and half in the download
+        # folder, in move mode with the landed half already gone from the
+        # source. The window closes at the next choose_match, which checks the
+        # stop before it clears the flag.
+        if not self._mid_astracks_expansion():
+            self._check_stop()
         # A singleton task carries its one file in ``items`` too.
         self._source_files.note(task)
         if self._directive is not None and self._directive.action == "astracks":
@@ -794,8 +923,12 @@ class WebImportSession(ImportSession):
         skip_new→SKIP, keep_both→KEEP, merge→MERGE, and replace→KEEP once WE have
         disposed of the old copy (:meth:`_replace_duplicates_now`), else SKIP.
         """
-        self._check_pause()
-        if not task.is_album:
+        if task.is_album:
+            # Album tasks only: a singleton reaching this hook is one track of
+            # an "as tracks" expansion, and aborting between two of them splits
+            # the album across two locations (see choose_item).
+            self._check_stop()
+        else:
             # A singleton "as tracks" import whose track duplicates a library item.
             # beets 2.12 shares this hook for singletons, but passes Items — not
             # Albums (SingletonImportTask.find_duplicates, tasks.py) — and the
@@ -1300,8 +1433,8 @@ class WebImportSession(ImportSession):
         needs_review) so the API can show it in the live feed. Returns either an
         ``AlbumMatch`` (to apply) or an ``Action`` constant.
         """
-        # Pause lands here first: abort BEFORE this album claims a feed index.
-        self._check_pause()
+        # A stop lands here first: abort BEFORE this album claims a feed index.
+        self._check_stop()
         # The duplicate gate MUST be armed before beets' _resolve_duplicates runs
         # (a later stage in the same album task), because it reads
         # task.find_duplicates. Installed exactly ONCE per album task: this is the
@@ -1313,7 +1446,12 @@ class WebImportSession(ImportSession):
         self._install_dup_guard(task)
         # Record what this task is reading while it is still in the download
         # folder: every task passes this hook, landed or skipped, before beets
-        # places any file.
+        # places any file. AFTER the stop check on purpose - a stopped task is
+        # discarded before it reads anything, and note() stats every item, so
+        # the run's source set stays the set of files it actually touched. The
+        # one consumer that could want the wider set is the post-run replace
+        # disposal, whose seed (_seed_replace_from_directive) returns early
+        # unless an album landed.
         self._source_files.note(task)
         # Flush the PREVIOUS task's library album id (its task.add has run by
         # now — sequential pipeline) before this album claims the feed.
@@ -1522,7 +1660,7 @@ class WebImportSession(ImportSession):
         # in-range index still looks valid). The revision echo closes that
         # residual for revision-echoing clients; a None revision (a legacy/
         # non-echoing client) degrades to the length-only guard. Only apply
-        # is revision-checked — skip/asis/astracks/abort are list-independent
+        # is revision-checked — skip/asis/astracks are list-independent
         # decisions and must never be blocked by a stale revision.
         return choice.action is ImportAction.apply and (
             not self._apply_index_in_range(choice, candidates)
@@ -1940,12 +2078,10 @@ class WebImportSession(ImportSession):
     def _apply_choice(choice: ImportChoice, candidates: list[Any]) -> Any:
         """Translate a user ImportChoice into a beets match/Action.
 
-        Raises beets' own ``ImportAbortError`` for the abort action — beets'
-        ``run()`` catches it and stops the import cleanly (its native abort
-        path), so abort behaves exactly like a beets CLI abort.
+        Every action resolves THIS album. Ending the run is the stop endpoint,
+        which arms the bridge - a per-album abort action was a second, silent
+        stop that left ``ImportJobState.stopped`` false, so it was dropped.
         """
-        if choice.action is ImportAction.abort:
-            raise ImportAbortError
         if choice.action is ImportAction.apply:
             idx = choice.candidate_index or 0
             if 0 <= idx < len(candidates):

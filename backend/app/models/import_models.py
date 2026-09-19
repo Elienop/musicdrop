@@ -266,19 +266,20 @@ class ImportAction(StrEnum):
 
     ``apply`` selects a ranked option by index; ``search`` re-looks-up the album
     against a user-supplied release id/URL or a forced-non-VA name search and
-    re-parks (it never resolves the park); ``abort`` stops the whole import (the
-    session raises beets' ``ImportAbortError``, caught by ``run()``).
+    re-parks (it does not resolve the park).
 
     ``rescan`` re-reads the album's folder from disk (the user changed the
     files on purpose) and re-runs beets' default lookup, re-parking like
     ``search``; it carries no payload.
+
+    Every action here answers ONE album. Ending the whole run is
+    ``POST /import/{job_id}/stop``, which the registry arms on the bridge.
     """
 
     apply = "apply"
     skip = "skip"
     asis = "asis"
     astracks = "astracks"
-    abort = "abort"
     search = "search"
     rescan = "rescan"
 

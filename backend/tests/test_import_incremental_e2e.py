@@ -53,12 +53,12 @@ _ARTIST = "Radiohead"
 #: real imports, and the cost of being wrong is a suite that never finishes.
 _DEADLINE_S = 30.0
 #: The window the helper spends unwinding a worker that outlived the loop. A
-#: pause reaches the worker at its next decision hook, so this only has to cover
-#: one answer plus one hook — measured at ~0.1s per whole import here.
+#: stop reaches a parked worker at once and any other at its next decision hook,
+#: so this only has to cover one hook — measured at ~0.1s per whole import here.
 _UNWIND_S = 5.0
 
 
-def _source_folder(tmp_path: Path, name: str = "okc") -> Path:
+def _source_folder(tmp_path: Path, name: str = "okc", album: str = _ALBUM) -> Path:
     """Two tagged FLACs in their own folder — one album-shaped toppath."""
     from mediafile import MediaFile
 
@@ -71,7 +71,7 @@ def _source_folder(tmp_path: Path, name: str = "okc") -> Path:
         mf = MediaFile(str(dst))
         mf.artist = _ARTIST
         mf.albumartist = _ARTIST
-        mf.album = _ALBUM
+        mf.album = album
         mf.title = f"Airbag {i}"
         mf.track = i
         mf.save()
@@ -102,6 +102,44 @@ def _install_lookup(monkeypatch: pytest.MonkeyPatch, rec: BeetsRec) -> None:
             distance(item_list, info, pairs), info, dict(pairs), extra_items, extra_tracks
         )
         return (_ARTIST, _ALBUM, Proposal([match], rec))
+
+    def fake_tag_item(item: Any, search_ids: Any = None) -> Proposal:
+        return Proposal([], BeetsRec.none)
+
+    monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
+    monkeypatch.setattr(beets_tasks, "tag_item", fake_tag_item)
+
+
+def _install_lookup_per_album(monkeypatch: pytest.MonkeyPatch, recs: dict[str, BeetsRec]) -> None:
+    """Pin the lookup per album TAG: one folder auto-applies, another parks.
+
+    Same canned shape as :func:`_install_lookup`, except the match names the
+    folder's OWN album, so two folders in one run match two different releases
+    and neither reads as a duplicate of the other.
+    """
+
+    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
+        item_list = list(items)
+        album = str(item_list[0].album)
+        tracks = [
+            TrackInfo(title=f"Airbag {i}", track_id=f"{album}-t{i}", index=i, length=1.0)
+            for i in range(1, len(item_list) + 1)
+        ]
+        info = AlbumInfo(
+            tracks=tracks,
+            album=album,
+            artist=_ARTIST,
+            album_id=f"mb-{album}",
+            data_source="MusicBrainz",
+            data_url=f"https://mb/{album}",
+            year=1997,
+            va=False,
+        )
+        pairs, extra_items, extra_tracks = assign_items(item_list, info.tracks)
+        match = AlbumMatch(
+            distance(item_list, info, pairs), info, dict(pairs), extra_items, extra_tracks
+        )
+        return (_ARTIST, album, Proposal([match], recs[album]))
 
     def fake_tag_item(item: Any, search_ids: Any = None) -> Proposal:
         return Proposal([], BeetsRec.none)
@@ -147,6 +185,7 @@ def _import(
     trash_dir: Path | None = None,
     playlists_dir: Path | None = None,
     answer_for: float = _DEADLINE_S,
+    stop_at_park: bool = False,
     **kwargs: Any,
 ) -> _Run:
     """Run one import on its own thread, answering whatever it parks.
@@ -158,19 +197,20 @@ def _import(
 
     What the code does on the way out, whatever happened inside: if the worker
     is still running when the answering loop ends — its deadline, or a raise
-    from either push — the ``finally`` asks the bridge to pause and keeps
+    from either push — the ``finally`` asks the bridge to stop and keeps
     answering both channels for ``_UNWIND_S``. That matters because a worker
-    blocked in ``park`` holds the process-global config-force lock: an answer
-    releases the block, and ``_check_pause`` then raises beets' own
-    ``ImportAbortError`` at the next decision hook, which unwinds
-    ``_config_force_lock``. Without it every later import in the process
+    blocked in ``park`` holds the process-global config-force lock: the stop
+    releases that park with beets' own ``ImportAbortError``, which unwinds
+    ``_config_force_lock``; a worker between questions raises it at its next
+    decision hook instead. Without this, every later import in the process
     refuses with ``ImportConfigBusyError`` and one failure here reads as a file
     of unrelated ones. It is not a guarantee the thread ends — a worker wedged
     somewhere the bridge cannot reach stays wedged — so the assert below still
     stands.
 
     ``answer_for`` is the answering window; tests override it to build the
-    abandoned-park case deliberately.
+    abandoned-park case deliberately. ``stop_at_park`` is the Stop this run
+    route: the first park is recorded and then stopped instead of answered.
 
     ``trash_dir`` wires the post-run Replace pass; without BOTH it and its
     origin sibling the pass skips itself and a Replace leaves the old album in
@@ -198,18 +238,24 @@ def _import(
         )
         try:
             run_import_worker(session, **kwargs)
-        except Exception as exc:  # reported, never swallowed
+        except Exception as exc:  # recorded for the assertions, not swallowed
             result.errors.append(f"{exc.__class__.__name__}: {exc}")
 
     def answer_once() -> None:
         album = bridge.get_parked(timeout=0.05)
         if album is not None:
             result.parked.append(album)
+            if stop_at_park:
+                bridge.request_stop()
+                return
             bridge.push_choice(album.album_index, ImportChoice(action=choice))
             return
         prompt = bridge.get_parked_duplicate(timeout=0.05)
         if prompt is not None:
             result.duplicates.append(prompt)
+            if stop_at_park:
+                bridge.request_stop()
+                return
             bridge.push_duplicate_decision(prompt.album_index, DuplicateDecision(action=duplicate))
 
     thread = threading.Thread(target=worker, daemon=True)
@@ -220,7 +266,7 @@ def _import(
             answer_once()
     finally:
         if thread.is_alive():
-            bridge.request_pause()
+            bridge.request_stop()
             unwind = time.monotonic() + _UNWIND_S
             while thread.is_alive() and time.monotonic() < unwind:
                 # A push can raise here (the slot we are unblocking may already
@@ -469,6 +515,47 @@ def test_an_abandoned_park_leaves_no_worker_holding_the_config_lock(
     later = _import(lib, source, ImportBridge())
     assert later.errors == [], "a leaked config-force lock would have refused this"
     assert later.parked != []
+
+
+def test_a_stopped_run_keeps_what_landed_and_offers_the_rest_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B3 on a real session: two folders, one run, stopped on the second.
+
+    ``Amnesiac`` matches strongly and auto-applies; ``Kid A`` parks, and the
+    stop is what arrives. beets writes incremental history in ``finalize``, a
+    stage the aborted task never reaches, so run two meets ``Kid A`` again while
+    ``Amnesiac`` answers "already known". The library keeps what landed, and
+    both downloads are still on disk (hardlink).
+    """
+    _install_lookup_per_album(monkeypatch, {"Amnesiac": BeetsRec.strong, "Kid A": BeetsRec.medium})
+    lib = _library(tmp_path)
+    # beets walks the download folder in name order (sorted_walk), so "amnesiac"
+    # is processed before "kid-a" — which is what puts the strong match BEFORE
+    # the park the stop lands on. Renaming either folder reorders the run.
+    landed = _source_folder(tmp_path, name="amnesiac", album="Amnesiac")
+    stopped_on = _source_folder(tmp_path, name="kid-a", album="Kid A")
+    downloads = tmp_path / "downloads"
+
+    first_bridge = ImportBridge()
+    first = _import(lib, downloads, first_bridge, stop_at_park=True)
+    assert first.errors == []
+    assert [p.folder for p in first.parked] == [str(stopped_on)]
+    # What landed stays: the strong match is in the library, the stopped one is
+    # not, and neither download was consumed.
+    assert [a.album for a in lib.albums()] == ["Amnesiac"]
+    assert landed.exists()
+    assert stopped_on.exists()
+    assert first_bridge.known_skips() == 0
+
+    second_bridge = ImportBridge()
+    second = _import(lib, downloads, second_bridge, stop_at_park=True)
+    assert second.errors == []
+    # The album the run stopped on is asked about again...
+    assert [p.folder for p in second.parked] == [str(stopped_on)]
+    # ...and the one that landed is not: beets' history answers for it.
+    assert second_bridge.known_skips() == 1
+    assert [a.album for a in lib.albums()] == ["Amnesiac"]
 
 
 def test_a_hardlinked_folder_added_again_is_skipped_as_already_known(

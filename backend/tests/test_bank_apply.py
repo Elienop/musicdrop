@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import pytest
 from beets.library import Item
@@ -45,6 +45,9 @@ from app.models.import_models import (
     Recommendation,
 )
 from tests.conftest import beets_dir_for, build_library, make_test_handle
+
+if TYPE_CHECKING:  # annotation only — the models are imported inside the helpers
+    from app.models.import_api import ImportAlbumStatus, ImportAlbumSummary, ImportJobState
 
 T = TypeVar("T")
 
@@ -841,6 +844,62 @@ def test_a_not_retryable_row_becomes_retryable_again_after_a_redecide(tmp_path: 
         runner.stop()
 
 
+def test_a_stopped_merge_apply_is_failed_not_done(tmp_path: Path) -> None:
+    # Merge is the one duplicate action with an abort point AFTER the hook:
+    # keep_both and replace answer beets and the album lands, merge re-enters
+    # choose_match where the stop aborts. The hook's needs_dup_resolution
+    # outcome is already on the feed by then, so reading it as "the merge ran"
+    # reported done with the old copy alone in the library and the bank row gone.
+    fake = FakeImportRunner(duplicates=[_dup_prompt()])
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    item_id = _seed_dup_row(bank, _folder(tmp_path), DuplicateAction.merge)
+
+    runner = _make_runner(bank, reg)
+    runner.start()
+    try:
+        job_id = _poll(lambda: reg.active_status().job_id, lambda j: j is not None)
+        assert job_id is not None
+        _poll(lambda: reg.state(job_id).awaiting_decision, lambda v: v is True)
+        reg.request_stop(job_id)
+
+        got = _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status in ("done", "failed"),
+        )
+        assert got is not None
+        assert (got.status, got.album_id, got.error_retryable) == ("failed", None, True)
+        assert got.error == "the apply was stopped - decide again to retry"
+    finally:
+        runner.stop()
+
+
+def test_a_merge_apply_that_resolved_nothing_is_failed_not_done(tmp_path: Path) -> None:
+    # The no-stop twin: the merged task resolved zero candidates and beets
+    # SKIPped it, so the feed carries the hook's outcome and no album id. Same
+    # verdict, and the error names the ordinary transient cause.
+    fake = FakeImportRunner(applied=[_outcome(AlbumOutcomeStatus.needs_dup_resolution)])
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    item_id = _seed_dup_row(bank, _folder(tmp_path), DuplicateAction.merge)
+
+    runner = _make_runner(bank, reg)
+    runner.start()
+    try:
+        got = _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status in ("done", "failed"),
+        )
+        assert got is not None
+        assert (got.status, got.album_id, got.error_retryable) == ("failed", None, True)
+        assert (
+            got.error
+            == "the apply imported nothing (the lookup may have failed transiently) - decide again"
+        )
+    finally:
+        runner.stop()
+
+
 def test_merge_is_done_when_the_resolution_hook_ran(tmp_path: Path) -> None:
     # The control arm, and it must carry BOTH halves of a real merge: the
     # hook's evidence on the feed AND a landed album id (beets' merge rebuilds
@@ -1574,3 +1633,110 @@ def test_drain_moves_past_a_corrupt_queued_row(tmp_path: Path) -> None:
         assert item.album_id == 5
     finally:
         runner.stop()
+
+
+def _done_state(
+    *, stopped: bool, albums: "list[ImportAlbumSummary] | None" = None
+) -> "ImportJobState":
+    """A bank-apply job that ended done, stopped or not, carrying ``albums``."""
+    from app.models.import_api import ImportJobState, ImportPhase, ImportProgress
+
+    return ImportJobState(
+        job_id="j",
+        phase=ImportPhase.done,
+        progress=ImportProgress(applied=0, needs_review=0, skipped=0),
+        albums=albums or [],
+        error=None,
+        origin="bank_apply",
+        path="/x/A",
+        set_aside=0,
+        elapsed_seconds=0,
+        awaiting_decision=False,
+        stopped=stopped,
+    )
+
+
+def _feed_row(status: "ImportAlbumStatus", *, album_id: int | None = None) -> "ImportAlbumSummary":
+    """One finished feed row, the shape ``_classify`` reads for evidence."""
+    from app.models.import_api import ImportAlbumSummary
+
+    return ImportAlbumSummary(
+        index=0,
+        folder="/x/A",
+        artist="Radiohead",
+        album="Kid A",
+        recommendation=Recommendation.strong,
+        confidence=99.0,
+        status=status,
+        album_id=album_id,
+    )
+
+
+def test_a_stopped_apply_names_the_stop_not_the_lookup() -> None:
+    # The stop endpoint takes any origin, so an apply can end `done` with no
+    # landed id. That read as _NO_ALBUM_ERROR — "the release lookup may have
+    # returned nothing" — which names a cause that did not happen. The status
+    # (failed, retryable) was already right and stays right.
+    item = _queued_item(BankDecision(action="apply"))
+
+    status, error, album_id, retryable = BankApplyRunner._classify(
+        item, _done_state(stopped=True), False
+    )
+    assert (status, album_id, retryable) == ("failed", None, True)
+    assert error == "the apply was stopped - decide again to retry"
+
+    # The control: the same shape on a run that ended on its own still blames
+    # the lookup, so the new arm did not widen past the stop.
+    _s, control, _a, _r = BankApplyRunner._classify(item, _done_state(stopped=False), False)
+    assert control is not None
+    assert "release lookup" in control
+
+
+def test_a_stopped_apply_that_landed_an_album_is_still_done() -> None:
+    # ``stopped`` says a stop was ACCEPTED, not that anything was cut short: a
+    # stop posted while beets places the last album's files lands the folder.
+    # Reading it above the evidence failed a row whose album is in the library
+    # and dropped the landed id, so the row lost its "the apply landed THIS"
+    # link and re-deciding would re-import a folder whose files have moved.
+    from app.models.import_api import ImportAlbumStatus
+
+    item = _queued_item(BankDecision(action="apply"))
+    landed = [_feed_row(ImportAlbumStatus.applied, album_id=7)]
+
+    assert BankApplyRunner._classify(item, _done_state(stopped=True, albums=landed), False) == (
+        "done",
+        None,
+        7,
+        True,
+    )
+    # ...identical to the same state on a run nobody stopped.
+    assert BankApplyRunner._classify(item, _done_state(stopped=False, albums=landed), False) == (
+        "done",
+        None,
+        7,
+        True,
+    )
+
+
+def test_a_stopped_astracks_apply_that_landed_reads_exactly_like_an_unstopped_one() -> None:
+    # An astracks apply lands singletons, so it carries no album id - its
+    # evidence is the applied row itself (M-2: an expansion that starts reaches
+    # its last track, stop or not). Both verdicts must match.
+    from app.models.import_api import ImportAlbumStatus
+
+    item = _queued_item(BankDecision(action="astracks"))
+    applied = [_feed_row(ImportAlbumStatus.applied)]
+
+    stopped = BankApplyRunner._classify(item, _done_state(stopped=True, albums=applied), False)
+    ran = BankApplyRunner._classify(item, _done_state(stopped=False, albums=applied), False)
+    assert stopped == ran == ("done", None, None, True)
+
+    # ...and with nothing applied the stop is what the error names, on both the
+    # astracks branch and the duplicate one.
+    _s, astracks_error, _a, _r = BankApplyRunner._classify(item, _done_state(stopped=True), False)
+    assert astracks_error == "the apply was stopped - decide again to retry"
+    dup_item = _queued_item(
+        BankDecision(action="duplicate", duplicate_action=DuplicateAction.keep_both)
+    )
+    _s, dup_error, _a, _r = BankApplyRunner._classify(dup_item, _done_state(stopped=True), False)
+    assert dup_error == "the apply was stopped - decide again to retry"

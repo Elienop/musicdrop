@@ -31,6 +31,9 @@ from app.models.import_models import ImportOptions
 
 logger = logging.getLogger(__name__)
 
+#: Why a stopped inbox import is recorded as failed rather than imported.
+_STOPPED_BEFORE_FINISH = "The import was stopped before this folder finished."
+
 
 class AcquisitionQueue:
     """Thread-safe FIFO that serially imports inbox folders, deferring on a busy gate."""
@@ -210,6 +213,13 @@ class AcquisitionQueue:
         return None
 
     def _result_for(self, job_id: str) -> tuple[LedgerOutcome, str | None]:
+        # The abort flag is read FIRST, and the two reads are not interchangeable:
+        # this one answers False once the slot holds another job, while state()
+        # raises there and lands on _raced_handoff. Read the other way round, a
+        # start() between them ledgers a cut-short folder "imported". Safe to
+        # read early - the flag is final before the phase goes terminal, and
+        # this runs only on a terminal phase.
+        aborted = self._import_registry.job_aborted(job_id)
         try:
             state = self._import_registry.state(job_id)
         except KeyError:
@@ -218,6 +228,14 @@ class AcquisitionQueue:
             return self._raced_handoff()
         if state.phase == ImportPhase.failed:
             return ("failed", state.error)
+        if state.stopped and aborted:
+            # A stop that ACTUALLY aborted ended the run at the album it was on,
+            # so nothing says this folder was handled - recording "imported"
+            # would retire it in the ledger and no webhook retry would ever
+            # offer it again. "failed" is the bucket the inbox list annotates
+            # (_entry_outcome). A stop accepted after the last abort point
+            # raises nothing and the folder imported in full.
+            return ("failed", _STOPPED_BEFORE_FINISH)
         if state.set_aside > 0:
             return ("set_aside", None)
         return ("imported", None)

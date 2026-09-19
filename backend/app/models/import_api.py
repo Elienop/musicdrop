@@ -178,7 +178,9 @@ class SweepStatus(BaseModel):
     banked: int = 0
     skipped_known: int = 0
     current_folder: str | None = None
-    paused: bool = False
+    # A stop was accepted for this sweep. The UI calls it "Pause" because
+    # sweeping the same folder again resumes it (incremental history).
+    stopped: bool = False
 
 
 class FinishedSweep(BaseModel):
@@ -188,8 +190,8 @@ class FinishedSweep(BaseModel):
     sweep-origin job: a new import replaces the slot (and this recap with
     it), and failed sweeps surface nothing. ``job_id`` targets the run page
     (``/import?job=…``), which lives exactly as long as this block does, so
-    the link can never dangle. ``paused`` distinguishes a paused sweep (it
-    ends ``phase=done`` with the flag set) from a completed one.
+    the link can never dangle. ``stopped`` distinguishes a sweep the user
+    paused (it ends ``phase=done`` with the flag set) from a completed one.
     """
 
     job_id: str
@@ -197,7 +199,7 @@ class FinishedSweep(BaseModel):
     auto_applied: int
     banked: int
     skipped_known: int
-    paused: bool
+    stopped: bool
 
 
 class ImportJobState(BaseModel):
@@ -242,6 +244,13 @@ class ImportJobState(BaseModel):
     # works. Only the registry knows which, so it says so here.
     awaiting_decision: bool = Field(
         description="True while the worker is blocked on a parked album awaiting a decision.",
+    )
+    # True from the moment a stop is accepted, and still true once the job ends
+    # ``done`` — that is what titles the done view "Import stopped". For a sweep
+    # it carries the same value as ``sweep.stopped`` (one request sets both);
+    # the sweep block exists for the active probe, which has no job state.
+    stopped: bool = Field(
+        description="True once a stop was accepted for this job; stays true when it ends.",
     )
 
 

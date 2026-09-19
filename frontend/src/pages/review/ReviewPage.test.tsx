@@ -1196,10 +1196,10 @@ describe("ReviewPage", () => {
       http.get(ACTIVE, () =>
         HttpResponse.json({
           active: true, job_id: "s1", origin: "sweep", needs_review_count: 0,
-          sweep: { processed: 412, auto_applied: 268, banked: 144, skipped_known: 9, current_folder: "/library/Adele/21", paused: false },
+          sweep: { processed: 412, auto_applied: 268, banked: 144, skipped_known: 9, current_folder: "/library/Adele/21", stopped: false },
         }),
       ),
-      http.post(`${O}/api/import/s1/pause`, () => {
+      http.post(`${O}/api/import/s1/stop`, () => {
         paused = true;
         return new HttpResponse(null, { status: 204 });
       }),
@@ -1234,7 +1234,7 @@ describe("ReviewPage", () => {
       http.get(ACTIVE, () =>
         HttpResponse.json({
           active: true, job_id: "s1", origin: "sweep", needs_review_count: 0,
-          sweep: { processed: 7, auto_applied: 5, banked: 2, skipped_known: 0, current_folder: null, paused: false },
+          sweep: { processed: 7, auto_applied: 5, banked: 2, skipped_known: 0, current_folder: null, stopped: false },
         }),
       ),
       http.get(JOB, () => {
@@ -1316,7 +1316,7 @@ describe("ReviewPage", () => {
         auto_applied: 9,
         banked: 3,
         skipped_known: 2,
-        paused: false,
+        stopped: false,
       },
     };
 
@@ -1342,7 +1342,7 @@ describe("ReviewPage", () => {
         http.get(ACTIVE, () =>
           HttpResponse.json({
             ...doneSweep,
-            last_sweep: { ...doneSweep.last_sweep, skipped_known: 0, paused: true },
+            last_sweep: { ...doneSweep.last_sweep, skipped_known: 0, stopped: true },
           }),
         ),
       );
@@ -1391,7 +1391,7 @@ describe("ReviewPage", () => {
               banked: 2,
               skipped_known: 0,
               current_folder: null,
-              paused: false,
+              stopped: false,
             },
             last_sweep: {
               job_id: "s0",
@@ -1399,7 +1399,7 @@ describe("ReviewPage", () => {
               auto_applied: 14,
               banked: 6,
               skipped_known: 4,
-              paused: true,
+              stopped: true,
             },
           }),
         ),

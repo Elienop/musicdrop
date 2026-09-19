@@ -640,34 +640,46 @@ export function useResolveImportDuplicate(jobId: string) {
   });
 }
 
-async function pauseImport(jobId: string): Promise<void> {
-  const { error, response } = await client.POST("/api/import/{job_id}/pause", {
+async function stopImport(jobId: string): Promise<void> {
+  const { error, response } = await client.POST("/api/import/{job_id}/stop", {
     params: { path: { job_id: jobId } },
   });
-  // 404 (job gone) / 409 (not a sweep any more / already finished) both mean
-  // "there is nothing left to pause" — the refetch below shows the real state.
-  // A repeat pause on a still-active sweep is an idempotent 204 server-side.
+  // 404 (job gone) / 409 (already finished) both mean "there is nothing left to
+  // stop" — the refetch below shows the real state. A repeat stop on a still
+  // active job is an idempotent 204 server-side.
   if (response.status === 404 || response.status === 409) {
     return;
   }
   if (error || !response.ok) {
-    throw new Error("Failed to pause the sweep");
+    throw new Error("Failed to stop the import");
   }
 }
 
 /**
- * Ask the active sweep to stop at its next album boundary
- * (`POST /api/import/{job}/pause`). On settle, refresh the job state AND the
- * active probe so every sweep surface (run page, Review banner, activity row)
- * flips to "pausing"/done together.
+ * Ask the running import to stop (`POST /api/import/{job}/stop`). One route for
+ * both controls: the run page's "Stop this run" ends a manual import at the
+ * album it is on, and the sweep's "Pause sweep" is the same request — a sweep
+ * asks its question at album boundaries only, and beets' incremental history
+ * makes sweeping the same folder again a resume, which is why that surface
+ * still says "pause".
+ *
+ * On settle, refresh the job state AND the active probe so every surface (run
+ * page, Review banner, activity row) flips together.
+ *
+ * `onSettled` RETURNS the invalidations, so `isPending` holds until the refetched
+ * job state lands. Fired and forgotten, the mutation resolved first and every
+ * control that reads `isPending || stopped` fell back to its idle label for one
+ * GET round-trip — "Stop this run" / "Pause sweep", pressable, a few hundred ms
+ * after the press. Harmless (the repeat is an idempotent 204) and visible.
  */
-export function usePauseSweep(jobId: string) {
+export function useStopImport(jobId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => pauseImport(jobId),
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["import", "job", jobId] });
-      void queryClient.invalidateQueries({ queryKey: ["active-import"] });
-    },
+    mutationFn: () => stopImport(jobId),
+    onSettled: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["import", "job", jobId] }),
+        queryClient.invalidateQueries({ queryKey: ["active-import"] }),
+      ]),
   });
 }

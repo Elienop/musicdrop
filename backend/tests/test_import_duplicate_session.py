@@ -192,6 +192,49 @@ def test_resolve_duplicate_parks_and_emits_needs_dup_resolution(
     assert result["action"] is BeetsDuplicateAction.KEEP  # keep_both -> import alongside
 
 
+def test_a_stop_releases_a_worker_parked_on_the_duplicate_question(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B2(b): the run is parked on the duplicate question when the stop arrives.
+
+    What the released slot carries is not a resolution — ``DuplicateDecision``
+    has no abort action and beets' prompt offers none — so ``park_duplicate``
+    raises beets' own abort out of the hook, the unwind the match question takes.
+    """
+    from beets.importer.session import ImportAbortError
+
+    match = _match()
+    bridge = ImportBridge()
+    session = _session(bridge)
+    task = _task(match, monkeypatch)
+    task.md_album_index = 3  # type: ignore[attr-defined]  # choose_match's stash
+
+    raised: dict[str, bool] = {"abort": False}
+    done = threading.Event()
+
+    def worker() -> None:
+        try:
+            session.get_duplicate_action(task, [_FakeAlbum(1)])
+        except ImportAbortError:
+            raised["abort"] = True
+        finally:
+            done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    prompt = bridge.get_parked_duplicate(timeout=2.0)
+    assert prompt is not None
+    assert prompt.album_index == 3
+    assert bridge.has_unanswered_park() is True  # the worker IS blocked
+
+    bridge.request_stop()
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert raised["abort"] is True
+    assert bridge.pending_count() == 0
+    assert bridge.has_unanswered_park() is False
+
+
 def test_duplicate_prompt_carries_release_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     match = _match()  # AlbumInfo: data_source MusicBrainz, album_id "a1"
     bridge = ImportBridge()
@@ -363,6 +406,33 @@ def test_singleton_astracks_duplicate_skips_without_crashing() -> None:
     assert bridge.pending_count() == 0  # never parked (no album-shaped prompt)
     assert bridge.drain_outcomes() == []  # no album feed row flipped for a singleton
     assert session._replace_album_ids == set()  # no Item ids recorded as albums to trash
+
+
+def test_a_stop_does_not_abort_on_a_singleton_duplicate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This hook is an abort point for ALBUM tasks only.
+
+    A singleton reaching it is one track of an "as tracks" expansion, which
+    beets places and writes to incremental history track by track, so an abort
+    here splits one album across two locations (choose_item carries the twin).
+    """
+    from beets.importer.session import ImportAbortError
+
+    bridge = ImportBridge()
+    session = _session(bridge)
+    item = Item(artist="Radiohead", title="15 Step", path=b"/incoming/15 Step.flac")
+    task = SingletonImportTask(toppath=None, item=item)
+    task.set_choice(Action.ASIS)
+    dup = Item(artist="Radiohead", title="15 Step", path=b"/library/15 Step.flac")
+    dup.id = 501
+    bridge.request_stop()
+
+    assert session.get_duplicate_action(task, [dup]) is BeetsDuplicateAction.SKIP
+    assert bridge.pending_count() == 0  # nothing parked, nothing left blocked
+
+    # The control: an ALBUM task at the same hook, under the same stop, aborts.
+    album_task = _task(_match(), monkeypatch)
+    with pytest.raises(ImportAbortError):
+        session.get_duplicate_action(album_task, [_FakeAlbum(1)])
 
 
 def test_singleton_astracks_duplicate_ignores_replace_directive() -> None:

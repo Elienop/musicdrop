@@ -10,6 +10,7 @@ into teardown.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -17,13 +18,24 @@ from typing import TypeVar
 
 import pytest
 
+from app.acquisition.inbox import list_inbox
 from app.acquisition.ledger import AcquisitionLedger
 from app.acquisition.queue import AcquisitionQueue
+from app.beets.import_session import ImportAbortError, ImportBridge
 from app.import_jobs.fakes import FakeImportRunner
-from app.import_jobs.registry import ImportJobRegistry
+from app.import_jobs.registry import ImportJob, ImportJobRegistry
 from app.models.bank import BankApplyDirective
-from app.models.import_api import ImportPhase
-from app.models.import_models import ImportOptions, ImportOrigin
+from app.models.import_api import ImportJobState, ImportPhase
+from app.models.import_models import (
+    AlbumChange,
+    AlbumOutcome,
+    AlbumOutcomeStatus,
+    Candidate,
+    ImportOptions,
+    ImportOrigin,
+    ParkedAlbum,
+    Recommendation,
+)
 
 T = TypeVar("T")
 
@@ -324,3 +336,197 @@ def test_stop_is_idempotent_and_unblocks_drain(tmp_path: Path) -> None:
     q.enqueue(folder)
     assert len(q._dedupe) == 0
     assert q.status().queued == 0
+
+
+def _parked_album(index: int, folder: Path) -> ParkedAlbum:
+    """One canned park, so the fake blocks and the stop has a worker to release."""
+    album = AlbumChange(
+        artist="Radiohead", album="Kid A", year=2000, label=None, country=None, media=None
+    )
+    return ParkedAlbum(
+        album_index=index,
+        folder=str(folder),
+        candidate=Candidate(
+            recommendation=Recommendation.medium,
+            confidence=75.5,
+            data_source="MusicBrainz",
+            data_url="https://mb/a1",
+            cover_after_url=None,
+            has_current_art=False,
+            changed_fields=[],
+            album_before=album,
+            album_after=album,
+            tracks=[],
+            missing=[],
+            unmatched=[],
+            options=[],
+        ),
+    )
+
+
+class _HoldingRunner:
+    """A runner whose worker touches no abort point: it emits one applied album,
+    waits, then finishes. Models the window after the last hook, where a stop is
+    accepted but has nothing left to raise at."""
+
+    def __init__(self, release: threading.Event, folder: Path) -> None:
+        self._release = release
+        self._folder = folder
+        self.validate_forgiven: str | None = None
+
+    def validate(self, paths: list[str], options: ImportOptions | None = None) -> str | None:
+        return None
+
+    def run(
+        self,
+        paths: list[str],
+        bridge: ImportBridge,
+        on_finish: Callable[[], None],
+        on_error: Callable[[str], None],
+        options: ImportOptions | None = None,
+        directive: BankApplyDirective | None = None,
+    ) -> None:
+        def target() -> None:
+            outcome = AlbumOutcome(
+                album_index=0,
+                folder=str(self._folder),
+                artist="Radiohead",
+                album="Kid A",
+                recommendation=Recommendation.strong,
+                confidence=99.0,
+                status=AlbumOutcomeStatus.applied,
+                album_id=11,
+            )
+            bridge.note_outcome(outcome)
+            self._release.wait(5.0)
+            on_finish()
+
+        threading.Thread(target=target, name="holding-import", daemon=True).start()
+
+
+class _SlotStealingRegistry(ImportJobRegistry):
+    """A registry whose ``state()`` hands the single slot to another job.
+
+    Models a manual import (or the bank apply runner) claiming the slot in the
+    instant between ``_result_for``'s two registry reads — the terminal phase
+    that lets the queue read a result is the same phase that frees the slot.
+    """
+
+    def state(self, job_id: str) -> ImportJobState:
+        answer = super().state(job_id)
+        self._job = ImportJob(id="next-one", bridge=ImportBridge())
+        return answer
+
+
+def test_result_for_reads_the_abort_flag_before_the_slot_can_be_replaced(
+    tmp_path: Path,
+) -> None:
+    """A start() between the two reads must not turn a cut-short folder into "imported".
+
+    ``state()`` raises for a replaced slot (-> _raced_handoff) but ``job_aborted``
+    answers False for it, so the forgiving read has to come first.
+    """
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    bridge = ImportBridge()
+    bridge.request_stop()
+    with pytest.raises(ImportAbortError):  # the raise is what sets the abort flag
+        bridge.park(_parked_album(0, inbox / "Kid A"))
+
+    reg = _SlotStealingRegistry()
+    reg._job = ImportJob(id="ours", bridge=bridge, phase=ImportPhase.done, stopped=True)
+    led = AcquisitionLedger(inbox / ".musicdrop-ledger.json")
+    q = AcquisitionQueue(import_registry=reg, ledger=led, poll_interval=0.01, busy_backoff=0.02)
+
+    assert q._result_for("ours") == (
+        "failed",
+        "The import was stopped before this folder finished.",
+    )
+
+
+def test_a_stop_that_aborted_nothing_records_the_folder_as_it_landed(tmp_path: Path) -> None:
+    """A stop accepted after the last abort point leaves the folder fully imported.
+
+    ``state.stopped`` alone said "failed", which bumped the failure counter and
+    wrote an error sentence for a folder every track of which is in the library.
+    ``job_aborted`` is the signal that separates the two: nothing raised here.
+    """
+    inbox = tmp_path / "inbox"
+    folder = inbox / "Radiohead - Kid A"
+    folder.mkdir(parents=True)
+    (folder / "01 track.flac").write_bytes(b"\0")
+
+    release = threading.Event()
+    reg = ImportJobRegistry(runner=_HoldingRunner(release, folder))
+    led = AcquisitionLedger(inbox / ".musicdrop-ledger.json")
+    q = AcquisitionQueue(import_registry=reg, ledger=led, poll_interval=0.01, busy_backoff=0.02)
+
+    q.start()
+    try:
+        q.enqueue(folder)
+        job_id = _poll(lambda: reg.active_status().job_id, lambda j: j is not None)
+        assert job_id is not None
+        _poll(lambda: len(reg.state(job_id).albums), lambda n: n == 1)
+
+        reg.request_stop(job_id)
+        assert reg.job_aborted(job_id) is False  # no park, no hook: nothing raised
+        release.set()
+
+        _poll(lambda: q.status().processed, lambda n: n >= 1)
+        s = q.status()
+        assert (s.failed, s.processed, s.set_aside) == (0, 1, 0)
+        assert s.error is None
+        entry = next(e for e in led.entries() if e.path == str(folder))
+        assert entry.outcome == "imported"
+    finally:
+        release.set()
+        q.stop()
+
+
+def test_a_stopped_inbox_import_is_recorded_failed_not_imported(tmp_path: Path) -> None:
+    """A stop is not a result: the folder is still in the inbox, every track of it.
+
+    Classifying a stopped run by phase alone read ``done`` + nothing set aside as
+    ``imported``, which retires the drop in the ledger — no webhook retry, no
+    badge, and the user only notices the album is missing.
+    """
+    inbox = tmp_path / "inbox"
+    folder = inbox / "Radiohead - Kid A"
+    folder.mkdir(parents=True)
+    (folder / "01 track.flac").write_bytes(b"\0")
+
+    fake = FakeImportRunner(parked=[_parked_album(0, folder)])
+    reg = ImportJobRegistry(runner=fake)
+    led = AcquisitionLedger(inbox / ".musicdrop-ledger.json")
+    q = AcquisitionQueue(import_registry=reg, ledger=led, poll_interval=0.01, busy_backoff=0.02)
+
+    q.start()
+    try:
+        q.enqueue(folder)
+        job_id = _poll(lambda: reg.active_status().job_id, lambda j: j is not None)
+        assert job_id is not None
+        _poll(lambda: reg.state(job_id).awaiting_decision, lambda v: v is True)
+
+        reg.request_stop(job_id)
+
+        _poll(lambda: q.status().processed, lambda n: n >= 1)
+        s = q.status()
+        # "failed" is the needs-attention bucket, the same one the raced handoff
+        # uses: the run ended without saying this folder was handled.
+        assert (s.failed, s.processed, s.set_aside) == (1, 1, 0)
+        assert s.error == "The import was stopped before this folder finished."
+        entry = next(e for e in led.entries() if e.path == str(folder))
+        assert entry.outcome == "failed"
+
+        # The inbox list annotates it rather than dropping it, so the row the
+        # user re-imports by hand carries why it is there.
+        items = list_inbox(inbox, led)
+        assert [(i.name, i.outcome) for i in items] == [("Radiohead - Kid A", "failed")]
+        # MEASURED, and narrower than "importable again": a ledger row of ANY
+        # outcome blocks the automatic drain while the folder's (mtime, size) is
+        # unchanged, so a webhook retry is a no-op and the re-import is the
+        # user's, from the annotated row above.
+        q.enqueue(folder)
+        assert q._queue.qsize() == 0
+    finally:
+        q.stop()
