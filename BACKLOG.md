@@ -234,10 +234,18 @@ entry carries a dated correction block where the pass changed it._
      bare mountpoint, beets refused nothing under move, copy or hardlink — it re-created the root
      on the container's own disk and a `move` emptied the download. Now `BeetsImportRunner.validate`
      asks `require_library_root` (the one predicate) → 503 on `POST /api/import` and both inbox
-     routes; the shared gate both background drains poll asks it too, so the slskd drain and the
-     bank apply wait with zero row writes and zero folder walks (measured over 10 s at production
+     routes — except a fresh install: an EMPTY root with no item rows lets the first import start
+     (Docker hands every new install an empty `/music` and the app never creates it; the review
+     seat measured every new install refused before this arm was forgiven; Trash, Delete, Restore
+     and disk sync keep the stricter predicate); the shared gate both background drains poll asks
+     it too, so the slskd drain and the bank apply wait with zero row writes and zero folder walks (measured over 10 s at production
      intervals: 120 `scandir` + 120 `isdir` per minute, nothing else) and resume without a restart
-     — one WARNING when the wait starts, one INFO when it ends. Letting the refusal escape `start`
+     — one WARNING when the wait starts, one INFO when it ends; an OS error from the root question
+     inside the gate reads as "wait" too (measured: a raise there killed the acquisition thread
+     and failed the bank row). The posted path is capped at 4 096 characters (PATH_MAX): the
+     placeholder resolver is quadratic and runs on the event loop — 80 KB stalled it 210 s; at the
+     cap the worst case is ~325 ms (the cap counts characters, and U+FFFD is 3 bytes, so 2 048
+     components fit). Letting the refusal escape `start`
      instead killed the acquisition daemon thread and burned every queued bank row (measured), and
      catching-and-reverting cost ~120 row writes/min; no backoff cap was built because there is
      nothing left to cap. A NUL in the posted path is a 422 (it 500'd on copy through the
