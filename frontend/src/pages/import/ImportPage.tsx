@@ -390,9 +390,12 @@ function ImportEntry() {
         </label>
 
         {failure !== null && (
+          // `break-words`: these sentences carry repr'd filesystem paths, and
+          // Chromium gives no wrap opportunity at `/` or `_`. Measured for the
+          // same family on the Trash page (SettingsTrashPage.tsx).
           <p
             id={START_ERROR_ID}
-            className="text-destructive text-sm"
+            className="text-destructive text-sm break-words"
             role="alert"
           >
             {failure}
@@ -1344,9 +1347,13 @@ function ImportAgainButton({
   return (
     <div className="flex flex-col items-center gap-2">
       {failure !== null && (
+        // `w-full` as well as `break-words`: the column is `items-center`, so
+        // this <p> is sized fit-content and its min-content width would become
+        // the page's — a definite width is what a cross-axis item needs
+        // (SettingsTrashPage.tsx has the 320px numbers).
         <p
           id={IMPORT_AGAIN_ERROR_ID}
-          className="text-destructive text-sm"
+          className="text-destructive w-full text-sm break-words"
           role="alert"
         >
           {failure}

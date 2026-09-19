@@ -722,6 +722,19 @@ describe("AlbumDetailPage", () => {
     expect(path.querySelectorAll("wbr")).toHaveLength(1);
   });
 
+  test("the cover rail cannot outgrow a narrow viewport (max-w-full beside shrink-0)", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+    renderDetail(1);
+
+    // `shrink-0` alone holds the rail at its w-96 (384px) inside a 320px
+    // viewport and scrolls the whole document sideways — every 320px shot of
+    // this page shows that scrollbar. The skeleton has carried the pair since
+    // it was written; the live rail did not.
+    const heading = await screen.findByRole("heading", { name: "OK Computer" });
+    const rail = heading.closest("aside");
+    expect(rail).toHaveClass("w-96", "max-w-full", "shrink-0");
+  });
+
   test("a break opportunity follows every separator except the root one", async () => {
     // An 11-character first component is the case the root <wbr> spoils: at
     // 320px line 1 would end on a lone "/" with the component below it.

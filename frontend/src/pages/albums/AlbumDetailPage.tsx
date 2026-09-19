@@ -166,7 +166,10 @@ function AlbumDetailView({ album }: Readonly<{ album: AlbumDetail }>) {
           fade — with title/artist/meta and stacked actions below; the
           tracklist fills the right column. */}
       <div className="flex flex-col gap-8 lg:flex-row lg:items-start">
-        <aside className="w-96 shrink-0 max-lg:mx-auto lg:sticky lg:top-20">
+        {/* `max-w-full` pairs with `shrink-0`, which would otherwise hold the
+            rail at 384px inside a 320px viewport and scroll the document — the
+            skeleton below has carried it all along. */}
+        <aside className="w-96 max-w-full shrink-0 max-lg:mx-auto lg:sticky lg:top-20">
           {/* The rail is ONE bordered unit (Koito card treatment): the
               hairline wraps cover + title + stats + divider + actions
               together. The fade dissolves into the panel interior (page

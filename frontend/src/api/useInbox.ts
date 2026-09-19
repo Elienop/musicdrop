@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { client } from "@/api/client";
 import { unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
-import { throwIfUnavailable } from "@/api/useImport";
+import { throwIfRefused } from "@/api/useImport";
 
 /** One inbox backlog row (generated contract). */
 export type InboxItem = components["schemas"]["InboxItem"];
@@ -39,10 +39,9 @@ export function useInboxItems() {
  * Import ONE inbox folder by name (the per-item "Review" action).
  *
  * The server resolves + contains the name under the inbox; a started import
- * returns `{ started: true, job_id }` to navigate into. A 409 (an import already
- * running) or a 404 (the folder vanished) throws so the caller can react. A 503
- * carrying the library's own refusal throws that sentence instead of the
- * generic one — see {@link throwIfUnavailable}.
+ * returns `{ started: true, job_id }` to navigate into. A 404 (the folder
+ * vanished) throws so the caller can react. A 409 or 503 carrying the server's
+ * own sentence throws THAT, not the generic one — see {@link throwIfRefused}.
  */
 export function useImportInboxItem() {
   const qc = useQueryClient();
@@ -51,7 +50,7 @@ export function useImportInboxItem() {
       const result = await client.POST("/api/acquisition/inbox/items/import", {
         body: { name },
       });
-      throwIfUnavailable(result);
+      throwIfRefused(result);
       return unwrap(result, "Failed to start inbox review");
     },
     // Refresh the backlog + the import gate whatever the outcome: a start

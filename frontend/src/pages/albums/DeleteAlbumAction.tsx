@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 
 import type { AlbumDetail } from "@/api/useAlbum";
-import { useDeleteAlbum } from "@/api/useDeleteLibrary";
+import { deleteRecovery, useDeleteAlbum } from "@/api/useDeleteLibrary";
 import { Remove } from "@/components/icons";
 import { IconAction } from "@/components/system/IconAction";
 import {
@@ -57,8 +57,21 @@ export function DeleteAlbumAction({ album }: Readonly<{ album: AlbumDetail }>) {
           </AlertDialogDescription>
         </AlertDialogHeader>
         {del.isError && (
-          <p className="text-destructive text-sm" role="alert">
+          // `min-w-0` is the load-bearing half. This <p> is a GRID item of
+          // AlertDialogContent, so it defaults to `min-width: auto` — its
+          // min-content width, which a 150-character path makes larger than the
+          // dialog. Measured at 320px: the <p> used 365 and painted to x=406,
+          // clipping the title, body and buttons. `break-words` alone does not
+          // lower that floor; it only chooses where lines break.
+          <p className="text-destructive min-w-0 text-sm break-words" role="alert">
             {del.error.message}
+            {/* The server's recovery hint, when it sent one — a half-done
+                delete leaves files in Trash and says to retry BEFORE emptying
+                it. Inside the same alert so it is announced with the failure,
+                not as a second interruption. */}
+            {deleteRecovery(del.error) !== null && (
+              <span className="mt-1 block">{deleteRecovery(del.error)}</span>
+            )}
           </p>
         )}
         <AlertDialogFooter>

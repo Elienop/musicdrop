@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
 
-import { useDeleteArtist } from "@/api/useDeleteLibrary";
+import { deleteRecovery, useDeleteArtist } from "@/api/useDeleteLibrary";
 import { Remove } from "@/components/icons";
 import { IconAction } from "@/components/system/IconAction";
 import {
@@ -63,8 +63,15 @@ export function DeleteArtistAction({
           </AlertDialogDescription>
         </AlertDialogHeader>
         {del.isError && (
-          <p className="text-destructive text-sm" role="alert">
+          // The twin of the album dialog's alert — same grid-item floor, same
+          // measured overflow at 320px (DeleteAlbumAction.tsx has the numbers).
+          <p className="text-destructive min-w-0 text-sm break-words" role="alert">
             {del.error.message}
+            {/* The server's recovery hint, when it sent one — the twin of the
+                album dialog's (DeleteAlbumAction.tsx). */}
+            {deleteRecovery(del.error) !== null && (
+              <span className="mt-1 block">{deleteRecovery(del.error)}</span>
+            )}
           </p>
         )}
         <AlertDialogFooter>

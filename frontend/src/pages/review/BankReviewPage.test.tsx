@@ -664,6 +664,9 @@ describe("BankReviewPage", () => {
       "A library operation is in progress; import available when it finishes.",
     );
     expect(alert).toHaveAttribute("role", "alert");
+    // A 503 on this arm carries repr'd paths, which Chromium will not break
+    // at `/` (the Trash page measured the same family at 320px).
+    expect(alert).toHaveClass("break-words");
     expect(screen.queryByText(/an import is already running;/i)).not.toBeInTheDocument();
     // The button keeps focus through the failure, so the sentence describes it.
     expect(

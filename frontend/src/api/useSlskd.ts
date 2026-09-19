@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { client } from "@/api/client";
 import { unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
-import { throwIfUnavailable } from "@/api/useImport";
+import { throwIfRefused } from "@/api/useImport";
 
 export type SlskdSettings = components["schemas"]["SlskdSettings"];
 export type SlskdConnection = components["schemas"]["SlskdConnection"];
@@ -39,16 +39,15 @@ export function useTestSlskd() {
  *
  * The server resolves the inbox path — none is sent from the browser. A
  * non-empty inbox returns `started: true` with the `job_id` to navigate to; an
- * empty inbox returns `started: false` (a no-op, not an error). A 409 (an import
- * already running) surfaces as a thrown Error so the caller can show a retry. A
- * 503 carrying the library's own refusal throws that sentence instead of the
- * generic one — see {@link throwIfUnavailable}. */
+ * empty inbox returns `started: false` (a no-op, not an error). A 409 or 503
+ * carrying the server's own sentence throws THAT, not the generic one — see
+ * {@link throwIfRefused}; a bodyless refusal still surfaces as a plain Error. */
 export function useReviewInbox() {
   const qc = useQueryClient();
   return useMutation<ReviewInboxResponse, Error, void>({
     mutationFn: async () => {
       const result = await client.POST("/api/acquisition/review-inbox");
-      throwIfUnavailable(result);
+      throwIfRefused(result);
       return unwrap(result, "Failed to start inbox review");
     },
     // Refresh the backlog + the import gate whatever the outcome (a start changed

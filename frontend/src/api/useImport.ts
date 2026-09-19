@@ -88,21 +88,32 @@ export class ImportUnavailableError extends Error {
   }
 }
 
-/** Raise {@link ImportUnavailableError} for a 503 that carries the server's own
- * sentence, and do nothing otherwise — so a caller keeps `unwrap`'s generic
- * message for every other outcome. The two inbox routes refuse with the same
- * sentences `POST /api/import` does ("Is the music share mounted?"), and "try
- * again in a moment" is false advice for those: nothing changes until the share
- * comes back. The bodyless-503 rule is the class's, above. */
-export function throwIfUnavailable(result: {
+/** Raise the carrying class for a refusal that came with the server's own
+ * sentence — 409 → {@link ImportConflictError}, 503 →
+ * {@link ImportUnavailableError} — and do nothing otherwise, so a caller keeps
+ * `unwrap`'s generic message for every other outcome.
+ *
+ * This is `startImport`'s branch, shared: the two inbox routes refuse for the
+ * same reasons `POST /api/import` does. A 409 there is as often the swap lock
+ * or a backfill as another import, and naming the wrong one sends the user off
+ * to wait for an import that is not running (the defect BankReviewPage records
+ * for its own copy); a 503 means nothing changes until the share comes back, so
+ * "try again" is false for it.
+ *
+ * A BODYLESS refusal keeps the caller's own sentence: a 503 with no detail came
+ * from a proxy (see {@link ImportUnavailableError}), and a bodyless 409 has no
+ * reason to offer. */
+export function throwIfRefused(result: {
   error?: unknown;
   response: Response;
 }): void {
-  if (result.response.status !== 503) return;
+  const { status } = result.response;
+  if (status !== 409 && status !== 503) return;
   const reason = detailMessage(result.error);
-  if (reason !== null) {
-    throw new ImportUnavailableError(reason);
-  }
+  if (reason === null) return;
+  throw status === 409
+    ? new ImportConflictError(reason)
+    : new ImportUnavailableError(reason);
 }
 
 /** Thrown when a start is rejected with a 422 (e.g. the in-library guard

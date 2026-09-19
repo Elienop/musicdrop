@@ -301,6 +301,31 @@ describe("ReviewPage", () => {
       const alert = await screen.findByRole("alert");
       expect(alert).toHaveTextContent(SHARE_DOWN);
       expect(alert).not.toHaveTextContent(GENERIC);
+      // The 503 family carries repr'd paths; Chromium gives no break at `/`.
+      expect(alert).toHaveClass("break-words");
+    },
+  );
+
+  /** A 409 the generic sentence names WRONGLY — the beets swap lock, not
+   * another import. Served without a full stop, as the route sends it. */
+  const SWAP_LOCK = "A library operation is in progress; import available when it finishes";
+
+  test.each([
+    ["per-item Review", IMPORT_ITEM, /^review$/i],
+    ["Review all", REVIEW_ALL, /review all/i],
+  ])(
+    "%s shows the 409's own reason, not 'another import is running'",
+    async (_label, route, button) => {
+      serveRow(route, HttpResponse.json({ detail: SWAP_LOCK }, { status: 409 }));
+      renderWithProviders(<ReviewPage />);
+
+      await userEvent.click(await screen.findByRole("button", { name: button }));
+
+      // The generic copy would send the user off to wait for an import that is
+      // not running. `endStopped` supplies the full stop the route omits.
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(`${SWAP_LOCK}.`);
+      expect(alert).not.toHaveTextContent(GENERIC);
     },
   );
 
@@ -308,18 +333,15 @@ describe("ReviewPage", () => {
     ["per-item Review", IMPORT_ITEM, /^review$/i],
     ["Review all", REVIEW_ALL, /review all/i],
   ])(
-    "%s keeps the try-again copy for every other refusal",
+    "%s keeps the try-again copy for a bodyless 409",
     async (_label, route, button) => {
-      // A 409 IS retryable (another import is running), and a 503 carrying no
-      // sentence came from a proxy, not from us — both keep the generic copy.
-      serveRow(route, HttpResponse.json({ detail: "An import is running" }, { status: 409 }));
+      // No reason to give, so the page's own sentence is the honest one.
+      serveRow(route, new HttpResponse(null, { status: 409 }));
       renderWithProviders(<ReviewPage />);
 
       await userEvent.click(await screen.findByRole("button", { name: button }));
 
-      const alert = await screen.findByRole("alert");
-      expect(alert).toHaveTextContent(GENERIC);
-      expect(alert).not.toHaveTextContent(/An import is running/);
+      expect(await screen.findByRole("alert")).toHaveTextContent(GENERIC);
     },
   );
 

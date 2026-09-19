@@ -406,11 +406,12 @@ function InboxSection({
         {noOpMessage}
       </span>
       {(reviewOne.isError || reviewAll.isError) && (
-        <p className="text-destructive text-sm" role="alert">
-          {/* The generic sentence is only true of the outcomes it names. A 503
-              means the library itself is unreachable, where "try again in a
-              moment" is false — so the server's own sentence wins, through the
-              same helper every other start surface uses. */}
+        <p className="text-destructive text-sm break-words" role="alert">
+          {/* The generic sentence names two outcomes; a refusal that carries a
+              reason usually has a third (the swap lock, a backfill, the share
+              gone), so the server's own sentence wins — through the same helper
+              every other start surface uses. `break-words` because a carried
+              503 holds repr'd paths, which Chromium will not break at `/`. */}
           {startErrorSentence(
             reviewOne.error ?? reviewAll.error,
             true,

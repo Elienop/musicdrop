@@ -107,6 +107,53 @@ describe("DeleteAlbumAction", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
+  /** The 500's recovery arm that guards the only copy (delete.py `_recovery`).
+   * Its sentence ORDER is the measured part — retry BEFORE emptying Trash — so
+   * it has to reach the user whole. */
+  const RECOVERY =
+    "A delete that stops part-way can leave some or all of the files in Trash. " +
+    "Retry before emptying Trash: emptying now can destroy the only copy.";
+
+  async function failDelete(detail: unknown) {
+    vi.spyOn(client, "DELETE").mockResolvedValue({
+      data: undefined,
+      error: { detail },
+      response: { ok: false, status: 500 },
+    } as never);
+    renderAction();
+    await userEvent.click(screen.getByRole("button", { name: /delete album/i }));
+    await userEvent.click(screen.getByRole("button", { name: /move to trash/i }));
+    return screen.findByRole("alert");
+  }
+
+  it("shows the server's recovery hint under the failure message", async () => {
+    const alert = await failDelete({
+      message: "Delete failed: [Errno 28] No space left on device",
+      recovery: RECOVERY,
+    });
+    expect(alert).toHaveTextContent("Delete failed: [Errno 28] No space left on device");
+    // One alert, both lines: a screen reader hears the guard with the failure.
+    expect(alert).toHaveTextContent(RECOVERY);
+  });
+
+  it("keeps an unbroken 150-character path inside the dialog at 320", async () => {
+    // The real 500: a permission failure interpolates two absolute paths, and
+    // Chromium gives no wrap opportunity at `/` or `_`. The <p> is a GRID item
+    // of AlertDialogContent, so `min-width: auto` made it 365px wide inside a
+    // 288px dialog at 320 and clipped the buttons. jsdom lays nothing out, so
+    // the class pair is the tripwire; the browser pass is the oracle.
+    const path = `/mnt/${"z".repeat(150)}/01 Track.flac`;
+    const alert = await failDelete({ message: `Delete failed: ${path}` });
+    expect(alert).toHaveTextContent(path);
+    expect(alert).toHaveClass("min-w-0", "break-words");
+  });
+
+  it("adds no second line when the body carries no recovery", async () => {
+    const alert = await failDelete({ message: "Delete failed: boom" });
+    expect(alert).toHaveTextContent("Delete failed: boom");
+    expect(alert.querySelector("span")).toBeNull();
+  });
+
   it("does nothing when cancelled", async () => {
     const del = vi.spyOn(client, "DELETE");
     renderAction();

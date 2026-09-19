@@ -269,6 +269,8 @@ describe("ImportPage — entry", () => {
     expect(alert).toHaveTextContent(
       "A library backfill is in progress; import available when it finishes.",
     );
+    // These sentences carry repr'd paths, which Chromium will not break at `/`.
+    expect(alert).toHaveClass("break-words");
     expect(screen.queryByText(/try again in a moment/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/use resume above/i)).not.toBeInTheDocument();
     // Start keeps focus through a failure (only `aria-disabled` while pending),
@@ -2366,6 +2368,9 @@ describe("ImportPage — already known folders", () => {
     expect(alert).toHaveTextContent(
       "A library backfill is in progress; import available when it finishes",
     );
+    // `items-center` sizes this <p> fit-content, so it needs a definite width
+    // as well as the break rule or its min-content width becomes the page's.
+    expect(alert).toHaveClass("w-full", "break-words");
     expect(screen.queryByText(/an import is already running/i)).not.toBeInTheDocument();
     // The alert describes the control it belongs to, so a keyboard user who
     // comes back to the button hears why the last press failed.

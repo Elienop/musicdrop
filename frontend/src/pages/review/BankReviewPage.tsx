@@ -951,9 +951,11 @@ function StaleScreen({ item }: Readonly<{ item: BankItem }>) {
           409 opens on the same clause — the two stacked in one column repeated
           "an import is already running" twice, the alert first and shorter. */}
       {startError && !importActive && (
+        // `break-words`: a 503 here carries repr'd paths, which Chromium will
+        // not break at `/` (the Trash page's measured family).
         <p
           id={STALE_START_ERROR_ID}
-          className="text-destructive text-sm"
+          className="text-destructive text-sm break-words"
           role="alert"
         >
           {startError}
