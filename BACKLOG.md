@@ -234,7 +234,9 @@ entry carries a dated correction block where the pass changed it._
      bare mountpoint, beets refused nothing under move, copy or hardlink — it re-created the root
      on the container's own disk and a `move` emptied the download. Now `BeetsImportRunner.validate`
      asks `require_library_root` (the one predicate) → 503 on `POST /api/import` and both inbox
-     routes — except a fresh install: an EMPTY root with no item rows lets the first import start
+     routes — except a fresh install: an EMPTY root with no item rows (`SELECT 1 FROM items LIMIT
+     1`; a random one-album sample opened the gate 9 polls in 400 beside a pathless row) lets the
+     first import start
      (Docker hands every new install an empty `/music` and the app never creates it; the review
      seat measured every new install refused before this arm was forgiven; Trash, Delete, Restore
      and disk sync keep the stricter predicate); the shared gate both background drains poll asks
@@ -242,10 +244,22 @@ entry carries a dated correction block where the pass changed it._
      intervals: 120 `scandir` + 120 `isdir` per minute, nothing else) and resume without a restart
      — one WARNING when the wait starts, one INFO when it ends; an OS error from the root question
      inside the gate reads as "wait" too (measured: a raise there killed the acquisition thread
-     and failed the bank row). The posted path is capped at 4 096 characters (PATH_MAX): the
-     placeholder resolver is quadratic and runs on the event loop — 80 KB stalled it 210 s; at the
-     cap the worst case is ~325 ms (the cap counts characters, and U+FFFD is 3 bytes, so 2 048
-     components fit). Letting the refusal escape `start`
+     and failed the bank row; while the drains are parked the acquisition status endpoint still
+     reads `idle` with no error — residual). The posted path is capped at 4 096 characters
+     (PATH_MAX): the placeholder resolver is quadratic and runs on the event loop — 80 KB stalled
+     it 210 s. The cap bounds the string, not the time: a placeholder component that matches an
+     entry, alternated with `..`, re-scanned the same directory per repeat (17 s at 20 000 entries;
+     a health check queued behind it waited 16.8 s), and the inbox item `name` and Trash restore
+     `folder` reach the same resolver with no bound at all (25 s / 82 s from 64 KB). Second round:
+     the shared resolver refuses a `..` or `.` segment in a placeholder path (a displayed path
+     never carries one; the amplified case fell from 19.0 s to 0.1 ms), the two sibling fields are
+     capped at 255 characters (NAME_MAX; an over-long name is now a 422 where it was a 404), and
+     the import route resolves off the event loop because the densest 4 096-character path still
+     cost ~312 ms on it (the siblings resolve one component in ~4 ms and stay on it). Not
+     re-measured after that: the seat's real-socket "health check queued behind the POST" probe —
+     the off-loop claim rests on the resolver running in a worker thread (pinned), not on a
+     re-run. `DELETE /api/trash?folder=` is unbounded but query-line-capped, and the `..` refusal
+     covers it. Letting the refusal escape `start`
      instead killed the acquisition daemon thread and burned every queued bank row (measured), and
      catching-and-reverting cost ~120 row writes/min; no backoff cap was built because there is
      nothing left to cap. A NUL in the posted path is a 422 (it 500'd on copy through the
