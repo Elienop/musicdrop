@@ -10,6 +10,7 @@ import {
 import { Spinner } from "@/components/icons";
 import { SettingsSection } from "@/components/system/SettingsSection";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 
 /** Settings → Library maintenance: lyrics coverage + the library-wide backfill. */
 export function LyricsBackfillPanel() {
@@ -83,15 +84,27 @@ export function LyricsBackfillPanel() {
             )}
           </Button>
           <span className="text-muted-foreground text-sm">writes tags → Plex reads them</span>
-          <label className="flex w-full items-center gap-2 text-sm">
-            <input
-              type="checkbox"
+          {/* The app's Checkbox, not a native input (which paints the browser's
+              own blue). `w-full` moves to the wrapper so this still takes a
+              whole line of the wrapping row, as it did on the label.
+
+              `items-start`, not `items-center`: this label wraps to two lines at
+              360 (measured 239x40 in Chromium (Orca)), and centring put the box
+              on the boundary BETWEEN them, 10px below the first line's centre.
+              `mt-0.5` is the same arithmetic the status line's spinner uses —
+              (line-height 20px − size-4 16px) / 2 = 2px — and it carries the
+              24px tap target with it, since the pseudo is centred on the box. */}
+          <div className="flex w-full items-start gap-2 text-sm">
+            <Checkbox
+              id="lyrics-recheck-misses"
+              className="mt-0.5"
               checked={recheckMisses}
-              onChange={(e) => setRecheckMisses(e.target.checked)}
-              className="size-4"
+              onCheckedChange={(checked) => setRecheckMisses(checked === true)}
             />
-            <span>Re-check tracks already found to have no lyrics</span>
-          </label>
+            <label htmlFor="lyrics-recheck-misses" className="cursor-pointer">
+              Re-check tracks already found to have no lyrics
+            </label>
+          </div>
           {albumFetchRunning && (
             <span className="text-muted-foreground text-sm">A lyrics fetch is in progress.</span>
           )}

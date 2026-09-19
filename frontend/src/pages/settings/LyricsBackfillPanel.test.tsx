@@ -79,6 +79,38 @@ describe("LyricsBackfillPanel", () => {
     expect(startMock).toHaveBeenCalledWith({ recheckMisses: true });
   });
 
+  // The two things the swap from a native <input type="checkbox"> had to keep:
+  // the label text is the control's ONE accessible name, and clicking the words
+  // toggles it. The keyboard half is the primitive's own contract, pinned here
+  // because this is the call site a user reaches from Settings.
+  it("the recheck toggle: label clicks toggle it, Space toggles it", async () => {
+    const user = userEvent.setup();
+    await renderPanel();
+    const label = "Re-check tracks already found to have no lyrics";
+    const box = screen.getByRole("checkbox", { name: label });
+    expect(screen.getAllByText(label)).toHaveLength(1);
+    expect(box).not.toBeChecked();
+    // The row still claims a whole line of the wrapping flex container, as it
+    // did when `w-full` sat on the <label> that wrapped the native input. jsdom
+    // has no layout engine, so the class is what a test can hold; the measured
+    // line break is in the branch's browser pass.
+    expect(box.parentElement).toHaveClass("w-full");
+    // This label wraps to two lines at 360, and `items-center` put the box on
+    // the boundary between them — 10px below the first line's centre, measured.
+    // `items-start` plus (line-height 20 − size-4 16) / 2 = 2px puts it back on
+    // the first line, and carries the 24px tap target with it.
+    expect(box.parentElement).toHaveClass("items-start");
+    expect(box.parentElement).not.toHaveClass("items-center");
+    expect(box).toHaveClass("mt-0.5");
+
+    await user.click(screen.getByText(label));
+    expect(box).toBeChecked();
+
+    box.focus();
+    await user.keyboard("{ }");
+    expect(box).not.toBeChecked();
+  });
+
   it("shows a done result line and keeps the Backfill button", async () => {
     statusData = {
       ...baseStatus, phase: "done", found: 5, instrumental: 3, not_found: 2, failed: 1, skipped: 4,
