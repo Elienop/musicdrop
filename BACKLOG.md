@@ -262,6 +262,18 @@ entry carries a dated correction block where the pass changed it._
      `StatusBanner` forces `role="status"` and `items-center` (27 usages in 11 files; two
      static banners carry the live role today, three call sites work around the alignment) —
      a role opt-out plus top alignment is its own change.
+   - **Residual (security seat, 2026-09-19, Low): the physical second opinion is asked once per
+     lexically-outside ROW.** Measured: 12 `lstat` per row against 12 per album before the per-row
+     form; 5.16 ms at 200 rows against 0.027 ms flat. Off the event loop (`run_in_threadpool`), so the
+     loop is safe; the cost is a hung share, where every `lstat` can block for a mount timeout and
+     the worst case is the alias-spelled album the fix targets (it never short-circuits).
+     `library.py` caps its own presence sample at 5 for the same reason. Remedies, owner's pick:
+     hoist the root's `realpath` out of the per-row loop (about half the per-row cost); memoize the
+     answer per row FOLDER (rows of one album usually share one, so one or two chains per album; a
+     file-level symlink is the shape that would differ); or cap the rows asked like the presence
+     sample. Not changed on this branch. Same seat, informational: the forgiven-root record counts
+     ACCEPTED starts and its sentence says "filing this import there" — an accepted start that then
+     files nothing still leaves the record.
    - **An import refuses to start without the music folder, and a shown path posts back —
      BUILT 2026-09-19 on `feat/import-keep-downloads`** (PLAN §3 items 9, 10, 11, 12; each
      reproduced through the real route first). Measured before: with `directory:` missing or a
