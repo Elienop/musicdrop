@@ -252,7 +252,12 @@ entry carries a dated correction block where the pass changed it._
      drain (which has no catch-all); importing a Trash ENTRY under `move` files the album and
      leaves an empty entry listed, importing the Trash ROOT sweeps every trashed album into the
      library and orphans its origin records (noisy, nothing lost); a parent of the library — see
-     the `POST /import` footgun entry, now measured on a POPULATED library.
+     the `POST /import` footgun entry, now measured on a POPULATED library. The registry and
+     runner reach the library through one `cast` (`require_attached_library_root`) because
+     `import_jobs/` must not import beets; an adapter-exported `Protocol` with `directory: bytes`
+     type-checks against a real `Library` (seat, measured with mypy) and would retire the cast and
+     `validate`'s `getattr`/`noqa` — ~5 signatures + 2 registry tests that pass `object()`. Not
+     this branch.
      - **`aria-disabled:opacity-50` is copied onto ~20 buttons.** The pending recipe
        (`aria-disabled`, click swallowed) has no dim of its own, so each site adds the class,
        and a pending button keeps its hover fill. Lifting both into `buttonVariants` beside
@@ -826,7 +831,12 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `remove_replaced` — under `copy` as well, because an in-library source is force-corrected to
   `move`; the real download is then set aside as a "duplicate" of the album just manufactured
   from the user's files. `is_in_library_source` asks "source inside library"; the missing
-  question is "library inside source", one predicate. (2) There is no cheap pre-flight: nothing reports
+  question is "library inside source", one predicate. Which side dies is decided by the walk's
+  lexical order (security seat, measured): with the library folder sorting first, the library's
+  own album is applied at 29% confidence, its files moved, its folder and artist folder pruned,
+  its row dropped, and the real download is rejected as that album's duplicate; with the
+  download sorting first, the download imports and the library's own folder lands in the review
+  queue as a set-aside pointing inside the library. (2) There is no cheap pre-flight: nothing reports
   how many candidate folders a path contains before the slot is committed to it. Fix shape
   (smallest first): refuse — or interstitially confirm — a path that is a filesystem root
   or an ancestor of the configured music library; then a `dry_run` probe returning a
