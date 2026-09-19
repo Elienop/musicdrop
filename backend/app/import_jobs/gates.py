@@ -1,23 +1,16 @@
 """The import-gate union — ONE predicate for "may a new import start now?".
 
-Extracted from ``AcquisitionQueue._gate_clear`` so every background import
-producer (the acquisition drain, the bank apply runner) consumes the same
-gate without importing the api layer (``api.import_.ensure_import_can_start``
-is the HTTP-shaped twin of this check and stays where it is). The four-backfill
-union is delegated to ``app.library_busy.library_job_active`` (the one place it
-lives); that helper reads the live binding at call time so tests that
-monkeypatch the source modules' attributes keep working.
+Shared by the acquisition drain and the bank apply runner without importing the
+api layer (``api.import_.ensure_import_can_start`` is the HTTP-shaped twin). The
+four-backfill union lives in ``app.library_busy.library_job_active``, read at
+call time so monkeypatched tests keep working.
 
-It also answers the library root, which is not a busy-ness question but has the
-same consequence for a drain: while the music share is gone an import would file
-the album onto the container's own disk. Asked HERE rather than left to ``start``
-raising, because the bank runner CAS-claims its row and fingerprints the folder
-before it calls ``start``, so a refusal there cost two row writes and one folder
-walk per try; the acquisition drain commits nothing first, but has no catch-all
-on this path, so a raise killed its daemon thread outright.
-
-Which is why nothing this module asks may escape: :func:`import_gate_clear`
-never raises.
+The library root is answered here rather than left to ``start`` raising: the bank
+runner CAS-claims its row and fingerprints the folder first (two row writes and
+one folder walk per refusal), and the acquisition drain has no catch-all, so a
+raise killed its daemon thread. Nothing here escapes — :func:`import_gate_clear`
+never raises (``test_an_unexpected_raise_inside_the_gate_reads_as_wait``, two
+fault classes).
 """
 
 from __future__ import annotations
@@ -34,9 +27,9 @@ from app.import_jobs.registry import ImportJobRegistry
 #: dropped and a WARNING prints as a bare untagged line (both measured).
 operator_logger = logging.getLogger("uvicorn.error")
 
-#: Latched so the two drains polling twice a second each say it once. An Event
-#: rather than a module flag so there is no ``global``; two threads crossing the
-#: transition together can duplicate one record, which is the whole cost.
+#: Latched so the two drains, polling twice a second each, say it once
+#: (``test_the_wait_is_logged_once_and_its_end_is_logged_once``). Two threads
+#: crossing the transition together can duplicate one record.
 _root_wait = threading.Event()
 #: The same, for an unexpected failure of any question the gate asks.
 _gate_fault = threading.Event()
@@ -80,11 +73,11 @@ def import_gate_clear(import_registry: ImportJobRegistry, swap_lock: asyncio.Loc
 
 
 def _gate_answer(import_registry: ImportJobRegistry, swap_lock: asyncio.Lock | None) -> bool:
-    # The root question runs on EVERY poll, ahead of the in-memory ones, so the
-    # wait latch cannot go stale behind an early return — a second outage that
-    # began while a backfill held the gate would otherwise never be logged.
-    # ``None`` = no library attached (the fake-runner registries the suites
-    # build, and the window before lifespan wiring): nothing to ask.
+    # Asked on every poll, ahead of the in-memory checks, so the wait latch
+    # cannot go stale behind an early return
+    # (test_the_root_question_runs_even_when_another_check_would_close_the_gate).
+    # ``None`` = no library attached (fake-runner registries, and the window
+    # before lifespan wiring): nothing to ask.
     library = import_registry.library
     if library is not None and not _library_root_clear(library):
         return False

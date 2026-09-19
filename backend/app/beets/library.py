@@ -101,10 +101,10 @@ class LibraryRootUnavailableError(Exception):
     (``app.beets.trash``). A second, looser copy of the check is the failure this
     placement exists to prevent.
 
-    ``empty`` marks the one arm an empty library can legitimately be in — the
-    root is there and readable but holds nothing. Only the import side reads it
-    (:func:`require_importable_library_root`); every other caller treats all
-    three arms alike.
+    ``empty`` marks the arm where the root is there and readable but holds
+    nothing. :func:`require_importable_library_root` is its one reader (grep);
+    the other callers treat the three arms alike
+    (``test_trash_and_delete_keep_the_stricter_predicate``).
     """
 
     def __init__(self, message: str, *, empty: bool = False) -> None:

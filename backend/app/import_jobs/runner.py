@@ -28,8 +28,7 @@ from app.beets.import_session import (
     InLibraryCopyError as InLibraryCopyError,
 )
 
-# Re-exported so the two background drains can name the refusal without reaching
-# into the adapter, exactly as they name InLibraryCopyError through this module.
+# Re-exported so the two drains name the refusal without reaching into the adapter.
 from app.beets.library import (
     LibraryRootUnavailableError as LibraryRootUnavailableError,
 )
@@ -67,12 +66,10 @@ class ImportRunner(Protocol):
         """Refuse an invalid (paths, options) combination by raising.
 
         Called synchronously on the API thread BEFORE the registry allocates
-        the single job slot, so a refusal becomes a clean 4xx/5xx — never a
-        failed job or a stuck slot. Raises ``LibraryRootUnavailableError`` when
-        the music root is missing, empty or unreadable, and
-        ``InLibraryCopyError`` for copy-mode imports of sources inside the
-        library directory — the latter checked PER path, so one bad member
-        refuses the whole start rather than importing a subset.
+        the single job slot, so a refusal becomes a clean 4xx/5xx. Raises
+        ``LibraryRootUnavailableError`` (root missing, empty or unreadable) and
+        ``InLibraryCopyError`` (copy-mode source inside the library, checked PER
+        path, so one bad member refuses the whole start).
         """
         ...
 
@@ -98,8 +95,7 @@ class BeetsImportRunner:
         self._lib = lib
         self._trash_dir = trash_dir
         # Threaded session-ward as a PAIR with trash_dir (see WebImportSession):
-        # a Replace records where each trashed copy came from, so Restore can
-        # put it back.
+        # a Replace records where each trashed copy came from, for Restore.
         self._trash_origins_dir = trash_origins_dir
         # Where sweep runs write bank rows (<beets_dir>/bank by default),
         # threaded session-ward exactly like trash_dir. Non-sweep runs never
@@ -107,22 +103,17 @@ class BeetsImportRunner:
         self._bank_dir = bank_dir
         # The owned-playlist store, threaded session-ward like the two above so
         # a Replace can repair the `.m3u8` exports that named the replaced
-        # album's files (one re-export at the end of the run, covering both the
-        # duplicate hook and the banked pass). INJECTED rather than read from
+        # album's files (one re-export per run). INJECTED rather than read from
         # settings on the worker thread: a settings read would make a test import
         # list the developer's real playlist store.
         self._playlists_dir = playlists_dir
 
     def validate(self, paths: list[str], options: ImportOptions | None = None) -> None:
-        # Measured on this tree with the root missing and with a bare mountpoint,
-        # under move/copy/hardlink: beets refuses nothing. It re-creates the root,
+        # With the root missing or a bare mountpoint, beets re-creates the root,
         # files the album onto the container's own disk, and a move EMPTIES the
-        # download. Asked here, before the slot is claimed, so the start refuses.
-        # BOTH questions below read the library, so the guard is one early
-        # return rather than one per question: an unattached registry (a
-        # mis-wired one, or the window before lifespan wiring) used to 500 here
-        # instead of answering. Mirrors the gate, which also treats "no library"
-        # as nothing to ask.
+        # download (measured under move/copy/hardlink). Asked before the slot is
+        # claimed. The early return covers BOTH library reads below
+        # (test_validate_answers_rather_than_500ing_without_a_library).
         if self._lib is None:
             return
         require_importable_library_root(self._lib)
@@ -163,8 +154,8 @@ class BeetsImportRunner:
         # additionally banks each set-aside, so it gets the bank dir.
         unattended = options.unattended if options is not None else False
         sweep = options.sweep if options is not None else False
-        # None = the worker decides from the resolved file operation (a hardlink
-        # run goes incremental); False is beets' own ``-I``.
+        # None = the worker decides from the file operation (hardlink goes
+        # incremental); False is beets' own ``-I``.
         incremental = options.incremental if options is not None else None
         session = WebImportSession(
             self._lib,

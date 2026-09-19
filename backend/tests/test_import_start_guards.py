@@ -451,10 +451,8 @@ def _seed_a_library_row(lib: Library) -> None:
 def _drop_root(lib: Library, *, bare: bool, rows: bool = True) -> Path:
     """Make the music root look like a dropped share. Returns the root.
 
-    ``rows`` seeds one item row BEFORE dropping, because an EMPTY root is only a
-    dropped share when the library still lists files. With no rows it is the
-    empty bind mount Docker gives every new install, which must still import
-    (C1) — ``rows=False`` is how that case is spelled here.
+    ``rows`` seeds one item row first: an EMPTY root is a dropped share only
+    when the library lists files. ``rows=False`` is a new install's bind mount.
     """
     if rows:
         _seed_a_library_row(lib)
@@ -761,12 +759,8 @@ def test_an_unexpected_raise_inside_the_gate_reads_as_wait(
 def test_the_root_question_runs_even_when_another_check_would_close_the_gate(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Ordering: asked FIRST, so the wait latch cannot go stale behind an early return.
-
-    Without it a share that dropped while a backfill held the gate is never
-    logged, and its recovery never clears the latch, so the NEXT outage is
-    silent too.
-    """
+    """Asked FIRST, so a share that drops while a backfill holds the gate is still
+    logged and its recovery still clears the latch."""
     import logging
 
     from app.import_jobs import gates
@@ -964,11 +958,9 @@ def _gate_that_drops_the_root(
 ) -> None:
     """Drive the REAL TOCTOU window: the share goes right after the gate opens.
 
-    Nothing is stubbed on the way down. The wrapper restores the root before
-    each poll, so the drain's own ``import_gate_clear`` answers True on the
-    healthy root, then removes it — leaving the bare mountpoint of a library
-    that still lists files. ``start`` -> ``validate`` then raises on its own, so
-    the test sees the type the ``except`` arm actually has to name.
+    The wrapper restores the root before each poll, lets the drain's own
+    ``import_gate_clear`` answer, then removes it — so ``start`` -> ``validate``
+    raises the type the ``except`` arm has to name. Nothing is stubbed.
     """
     real = module.import_gate_clear
     root = Path(os.fsdecode(lib.directory))

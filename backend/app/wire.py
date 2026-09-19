@@ -240,11 +240,12 @@ def resolve_display_path(base: Path, rel: str) -> Path:
     undecodable bytes, so a result without a placeholder means the bytes were
     untouched — no second candidate can exist, and the scan would be waste.
 
-    A ``..`` or ``.`` segment gets the literal path too, unscanned — a bound on
-    the WORK, not a containment check (every caller has its own traversal
-    guard). ``..`` sends the walk back to a directory it already scanned, so one
-    input re-scans it per repeat: 18.8 s over 20 000 entries at the posted
-    path's 4096-character cap, and nothing the app displays carries one.
+    Containment is deliberately NOT checked here: every caller already has its
+    own traversal guard, and this must not become a second, weaker one.
+
+    A ``..``/``.`` segment gets the literal path too, unscanned: ``..`` re-scans
+    one directory per repeat — 18.8 s over 20 000 entries at the posted path's
+    cap (``test_resolve_display_path_does_not_scan_behind_a_dotdot_segment``).
     """
     if PLACEHOLDER not in rel or any(seg in {"..", "."} for seg in rel.split("/")):
         return base / rel
@@ -255,14 +256,8 @@ def resolve_display_path(base: Path, rel: str) -> Path:
 
 
 def resolve_posted_path(path: str) -> str:
-    """Map a WHOLE display-form path back onto the real one on disk.
-
-    :func:`resolve_display_path` takes a name under a server-owned base, which
-    is what the inbox and Trash send; ``POST /api/import`` sends a whole server
-    path the app itself displayed. Base is ``Path()``: pathlib drops it when the
-    joined part is absolute (measured). Returned unchanged without a
-    placeholder, so the spelling the user typed reaches beets intact.
-    """
+    """Map a WHOLE display-form server path back onto the real one (base
+    ``Path()``: pathlib drops it when the joined part is absolute)."""
     if PLACEHOLDER not in path:
         return path
     return str(resolve_display_path(Path(), path))

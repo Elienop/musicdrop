@@ -20,13 +20,8 @@ from app.models.import_models import ImportOptions, ImportOrigin, Recommendation
 
 
 def _without_a_nul(path: str) -> str:
-    """Refuse an embedded NUL, which no filesystem call can take.
-
-    Measured for the two this route reaches: ``os.path.realpath`` 500'd the
-    start from the runner's copy guard, and beets' own ``lstat`` failed the job.
-    Both raise ``ValueError`` rather than returning an error, so the refusal has
-    to sit above them; here it is a 422.
-    """
+    """Refuse an embedded NUL: ``os.path.realpath`` 500'd the start and beets'
+    ``lstat`` failed the job (``test_a_nul_in_the_posted_path_is_refused_before_any_job``)."""
     if "\x00" in path:
         raise ValueError("a folder path cannot contain a null character")
     return path
@@ -86,15 +81,11 @@ class StartImportRequest(BaseModel):
     # ``POST /api/config/save`` — so an allowlist here would restrict the owner
     # from their own feature while crossing no privilege boundary. Read the
     # BACKLOG entry before adding validation.
-    # ``max_length`` is PATH_MAX on Linux, so it refuses nothing that could name
-    # a real folder. It is a DoS bound, not an allowlist: ``resolve_posted_path``
-    # runs one ``os.scandir`` per placeholder component. Measured AT this cap —
-    # 2048 placeholder components, the densest path it admits — 314 ms; 32 KB
-    # was 4.8 s and 80 KB 3.5 minutes before it existed. The cap alone was not
-    # enough: a component that MATCHES an entry, alternated with ``..``,
-    # re-scanned the same directory per repeat (18.8 s over 20 000 entries), so
-    # ``resolve_display_path`` refuses a ``..``/``.`` segment, and the route
-    # runs the resolve in a worker thread.
+    # ``max_length`` is PATH_MAX, a DoS bound not an allowlist: the resolve is
+    # one ``os.scandir`` per placeholder component — 314 ms at the cap, 3.5 min
+    # at 80 KB without it. It bounds the string, not the TIME (a ``..``-amplified
+    # path: 18.8 s over 20 000 entries), so the resolver refuses that segment and
+    # the route resolves off the loop (test_the_posted_path_resolve_runs_off_the_event_loop).
     path: Annotated[
         str,
         StringConstraints(strip_whitespace=True, min_length=1, max_length=4096),
@@ -120,22 +111,13 @@ class ImportProgress(BaseModel):
     skipped: int
     # Albums resolved as an album-landing action (auto-apply / decided apply|asis
     # / dup keep_both|replace) for which no library album id ever arrived — the
-    # session died before reporting one (a stop during placement leaves the
-    # album row behind; the album page then names the folder outside the
-    # library). Mid-run only NOTED rows count (a note says the session imported
-    # nothing); the id-based reading waits for a TERMINAL (done/failed) job,
-    # where an id can no longer trail by one poll.
+    # session died before reporting one. Mid-run only NOTED rows count; the
+    # id-based reading waits for a TERMINAL job, where an id cannot trail a poll.
     not_landed: int = 0
-    # Disjoint from every other counter here: beets' task factory consults its
-    # history BEFORE any session hook fires, so a history-skipped folder emits
-    # no outcome and reaches no feed row (measured in
-    # tests/test_import_incremental_e2e.py). Nonzero means "the run had nothing
-    # to do here", which is what the UI offers a way past.
-    #
-    # Almost always the import history. beets' same check also answers "already
-    # imported" for a folder held by a RESUME record, which needs the user's own
-    # ``resume: yes`` on a run MusicDrop forces nothing for — every forcing arm
-    # pins ``resume: False``. Hence the wording here.
+    # Disjoint from every other counter: beets' task factory consults its history
+    # BEFORE any session hook, so a history-skipped folder emits no outcome and no
+    # feed row (tests/test_import_incremental_e2e.py). It also answers "already
+    # imported" for a RESUME record, which needs the user's own ``resume: yes``.
     already_known: int = Field(
         default=0,
         description="Album folders beets skipped as already imported.",
@@ -164,16 +146,12 @@ class ImportAlbumSummary(BaseModel):
     # trail its row by one poll; the first poll after done carries every id).
     album_id: int | None = None
     # True when this row was resolved as an album-landing action but no library
-    # album id ever arrived (the session died/aborted before reporting one) —
-    # or when the row carries a ``note``, which says so outright.
-    # Without a note the flag waits for a TERMINAL (done/failed) job, because
-    # mid-run the id may simply not have arrived yet. astracks and dup-merge do
-    # not flag on the id alone (they land without an id of their own).
+    # album id ever arrived (the session died/aborted), or the row carries a
+    # ``note``. Without a note it waits for a TERMINAL job; astracks and dup-merge
+    # do not flag on the id alone (they land without one).
     did_not_land: bool = False
-    # A short note (up to three short sentences) when a Replace the user asked
-    # for imported nothing, naming what stopped it (unreadable files, no Trash
-    # folder, a refused store layout, a failed move, and how many copies had
-    # already moved). The row's own status is untouched. None on every other row.
+    # Up to three short sentences when a Replace imported nothing, naming what
+    # stopped it and how many copies had moved. The row's status is untouched.
     note: str | None = None
 
 
@@ -230,19 +208,16 @@ class ImportJobState(BaseModel):
     # Where the import came from: "manual" (the web Start flow) or "inbox" (the
     # unattended acquisition seam). Defaulted so manual imports need no change.
     origin: ImportOrigin = "manual"
-    # The folder the job was started with, so a reloaded page can re-post it
-    # (the "Import them again" retry sends the same folder with
-    # ``incremental: false``). None for a multi-folder start — the inbox hands
-    # over its settled folders individually and there is no single one to name.
+    # So a reloaded page can re-post it ("Import them again" sends the same
+    # folder with ``incremental: false``). None for a multi-folder start.
     path: str | None = Field(
         default=None,
         description="The folder this import was started with, when it was exactly one.",
     )
     # Albums left in the source for a later manual pass: needs_review (uncertain)
     # + needs_dup_resolution (a library duplicate). For an unattended import this
-    # is everything that did not auto-apply. Disjoint from applied, skipped and
-    # not_landed (a needs_review row is also in progress.needs_review): a row
-    # carrying a ``note`` imported nothing and is counted by not_landed only.
+    # is everything that did not auto-apply, and a ``note`` row counts in
+    # not_landed only.
     set_aside: int
     # Sweep-origin jobs surface counters instead of the per-album feed (their
     # ``albums`` list stays empty by design). None for manual/inbox jobs.
@@ -290,8 +265,7 @@ class ActiveImportStatus(BaseModel):
     # idle ``{active: false}`` fallback type-checks against the same model.
     origin: ImportOrigin = "manual"
     # How many albums the active import has set aside (needs_review +
-    # needs_dup_resolution, minus any row carrying a ``note`` — it imported
-    # nothing) — the FE inbox cue's "N set aside for review".
+    # needs_dup_resolution, minus ``note`` rows) — the FE inbox cue's count.
     needs_review_count: int = 0
     # The active sweep's counters (None when the active job is not a sweep, or
     # idle) — the FE sweep banner reads this off the existing probe.

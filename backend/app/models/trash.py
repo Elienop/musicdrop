@@ -96,13 +96,9 @@ class TrashListing(BaseModel):
 class RestoreRequest(BaseModel):
     """Body of ``POST /api/trash/restore`` — the folder (relative to Trash)."""
 
-    # One entry name, never a path: the listing emits an immediate child of
-    # the Trash root. ``max_length`` is NAME_MAX (255) and counts CHARACTERS, while a
-    # name is at most 255 BYTES and the display form never has more characters
-    # than the name has bytes — so it refuses nothing a listing can emit. It is
-    # a DoS bound: ``resolve_display_path`` runs one ``os.scandir`` per
-    # placeholder component, and unbounded this field cost 75.9 s from a 64 KB
-    # body over a 20 000-entry directory (measured). At 255 it costs 3.5 ms.
+    # One Trash entry name; 255 CHARACTERS is NAME_MAX and admits every name (a
+    # display form has no more characters than the name has bytes). Unbounded:
+    # 73.2 s from 64 KB over 20 000 entries (test_the_sibling_name_fields_are_bounded).
     folder: Annotated[str, StringConstraints(max_length=255)]
 
 
