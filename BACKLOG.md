@@ -358,7 +358,11 @@ entry carries a dated correction block where the pass changed it._
        says to retry before emptying, a retry finishes the delete, and Empty refuses an entry
        the library still lists ("Delete the album again, then empty Trash."; a lone track gets
        "move that entry out of Trash"). The check is beets' own `path:` query (`PathQuery`),
-       shared by Empty and the delete-retry side through one helper (`protected.rows_under_any`)
+       shared by Empty and the delete-retry side through one helper (`protected.rows_under_any`),
+       asked over DIFFERENT roots — Empty's gate over every candidate spelling, the retry arm
+       over the current Trash alone (only the refusing half may be generous: the retry arm
+       drops rows without moving files, so widened it de-registered an album whose files sat
+       in an old default Trash the page does not list; measured paired, then narrowed)
        — three rounds of hand-rolled path SQL, root spellings and inode confirms were deleted
        for it (owner, 2026-09-19: do not over-engineer what beets already has). It is asked
        with four CANDIDATE spellings the app's own settings name for the current Trash — the
@@ -372,16 +376,22 @@ entry carries a dated correction block where the pass changed it._
        the only copy gone and the album still listed. Each now refuses, and the remedy clears
        it. RESIDUAL, recorded not guarded — beets has no identity beyond the path string: a
        Trash reachable only under some other spelling is not recognised and Empty removes the
-       entry (measured in `tests/probes/alias_rows.py`: a bind mount, a second symlink, a
-       path no setting names, NFD against NFC, `STRASSE` against `Straße`). A hand-built
+       entry (measured in `tests/probes/alias_rows.py`: a bind mount, a second symlink, NFD
+       against NFC, `STRASSE` against `Straße`). One such path needs no hand-edited row: the
+       same relocate-and-symlink done TWICE (`trash -> disk1-trash`, then `mv disk1-trash
+       disk2-trash && ln -sfn`) — nothing remembers `disk1`, no spelling list can name it, and
+       Empty answered 200 with the album still listed (review seats, measured through the
+       route; not in that probe). A hand-built
        `<trash>//Entry//01.mp3` row is matched by the root query (the retry arm treats it as
        in Trash) and not by the per-entry query (Empty removes the entry); `..` is matched by
        both; `Album.move` normpaths what it stores, so the app writes neither. beets probes
        case sensitivity per PATTERN, so the root query and an entry query can sit on
        differently flagged mounts (code-read, not built). Enumerating more spellings by hand
-       is the machinery that was deleted. Cost at 100 000 relative rows: 98 ms with one
-       spelling, +45 ms each (shared box; the seats measured ~30 ms on a quiet one). An item
-       row with a NULL `path` (hand-made only) is refused by name before anything moves:
+       is the machinery that was deleted. Cost at 100 000 relative rows, no hit, fresh
+       fixture: ~24 ms with one spelling, +11 to +17 ms per further one (two independent
+       runs; an earlier 98 ms figure came from a fixture directory reused across four builds).
+       An item row with a NULL or empty `path` (beets stores `b''` for a pathless item;
+       nothing in the app adds one) is refused by name before anything moves:
        "Nothing was moved. Fix the row in beets, then retry." The album-page notice built on
        this branch matches the failed-row-removal state when Trash is outside the music
        folder (rows naming files outside the library). The first attempt's lyric files are not recovered by the retry: they stay
