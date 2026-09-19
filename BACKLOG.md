@@ -603,6 +603,15 @@ entry carries a dated correction block where the pass changed it._
    outcomes, plus a readable log. Depends on the done-row dismiss under Open bugs, which is the
    small half of the same complaint.
 
+10. **Replace the six native `<select>`s with the shadcn Select** (owner, 2026-09-19, on the
+    candidate page: *"the check button is blue as well"* — the native dropdown's checked mark and
+    focus tint are the browser's blue, not the app's tokens; the two native checkboxes on the same
+    screens were swapped for the shadcn Checkbox on `feat/import-keep-downloads`). No Select
+    primitive is installed yet (`frontend/src/components/ui/` has no `select.tsx`;
+    `components.json` exists, so `npx shadcn add select`). Sites: `CandidateReview.tsx`,
+    `BankSection.tsx` (two), `BrowsePage.tsx`, `Pagination.tsx`, `PlexSettingsPanel.tsx`. One pass,
+    all six, so the family stays one shape; the Pagination one is the only page-size control.
+
 The 40 banked #143 Plex review Minors stay fully adjudicated (2026-08-25, every item
 re-verified against v0.44.0): 12 shipped as the triage fix slice (see Recently shipped), 12
 recorded below, 3 accepted as deliberate, 3 were already fixed. Of the 12 recorded, the
@@ -2938,6 +2947,35 @@ because a recorded decision is what stops the question being reopened from scrat
 scan here for something to pick up — scan *Open bugs / hardening*. Revisit an item only if
 the condition it names has changed.
 
+- **"Stop this run" — what it deliberately does not do** (2026-09-19, `feat/import-keep-downloads`,
+  replacing the run page's "Start over"). Stop is beets' own `ImportAbortError` raised at the next
+  session hook, so the album it lands on is asked again when the folder is added again; what
+  already landed stays. Decided, not bugs:
+  * **Offered on manual runs only.** The API accepts any origin, but an inbox or bank drain starts
+    the next queued item as soon as the stopped one ends, so a Stop there would read as "nothing
+    happened". The page shows the control for `origin === "manual"`.
+  * **"Stopping…" has no bound.** A lookup already in flight finishes first, and an "as tracks"
+    expansion in flight is one abort point for the whole album (every remaining track is looked up
+    and resolved), because the alternative splits one album across two locations.
+  * **A stop accepted after the last abort point reads like an unstopped run.** `stopped` says a stop
+    was accepted; the internal `job_aborted` says the abort raised. Every verdict (ledger outcome,
+    bank row status, applied count) reads the landed evidence first; the stop only renames the
+    empty-handed error. The one window left: a stop accepted after the last hook on a run that then
+    genuinely imports nothing names the stop, not the lookup.
+  * **One merged album counts as two applied** — the merge row and the merged task's row are both
+    counted, pinned by `test_a_merge_that_landed_before_the_stop_still_counts_imported`. Pre-branch
+    behaviour; whoever revisits the merge exemption moves the count with it.
+  * **The Stop glyph is the filled Phosphor square app-wide.** Light and regular read as a checkbox
+    at 16 px and 12 px. At 40 px on the stopped panel it is the heaviest mark on the page beside the
+    sibling panels' light Pause and Success; the owner's eye decides, and StopCircle light is the one
+    alternative that stays in the stroke register (side by side in
+    `docs/superpowers/reports/2026-09-19-final-review/browser-pass/stop-run-ux2-compare-x2.png`).
+    Revert is one line in `frontend/src/components/icons.ts`.
+  * **Smaller, left as read by the UI seat:** at 360 the error line above the button indents it
+    by the pair's right alignment; the pending label ("Stopping…") shrinks the button and shifts its
+    glyph, as the sweep's "Pausing…" already does; the done panel's two CTAs point at two homes
+    (`/import` and `/review`), now at one weight; "run" is the owner's word.
+
 - **The three app-owned writers are deliberately NOT descriptor-anchored** (2026-09-12,
   `fix/descriptor-anchored-library-writes`). `config.yaml`, the two artist-image toggle files and
   playlist artwork are written under the beets data dir and the playlists store, not below the
@@ -3549,6 +3587,23 @@ the condition it names has changed.
   not reproduced; end state is a refusal with an honest message, not damage.
 
 ## Deferred minors (cosmetic / self-healing — carried from earlier waves)
+
+- **The duplicate route's 404 sentence does not name the finished-job case** (2026-09-19). After a
+  stop releases a parked duplicate, `GET /import/{job}/albums/{i}/duplicate` 404s like the cover and
+  the decision routes; its OpenAPI description still reads "No import job has that id, or no
+  duplicate is parked at that index." — true once released, but silent on why. The candidate route
+  carries the same sentence. Reword both on the next contract-touching round (a regen of
+  `openapi.json` and `schema.d.ts`); wording only.
+- **The paused sweep's fallback CTA is solid while every other start-again CTA is outline**
+  (design seat, 2026-09-19). `SweepDoneCta` renders its `/import` "Import another folder" fallback
+  with the default variant; `JobFailed`, `JobNotFound` and the stopped panel all use outline. One
+  token; not on this branch's diff.
+- **The done panel's counts line omits set-aside** (UI seat, 2026-09-19): "1 album imported · 0
+  skipped" over a Needs-review row. Add the set-aside count to the line, or drop the line where a
+  row already says it.
+- **The stopped panel's "Add from folder" could prefill the path** (UI seat idea, 2026-09-19). The
+  run knows its folder; the CTA sends the user to an empty form. Small; only if the folder browser
+  of branch 2 does not make it moot.
 
 - **Settings → Trash's per-row Empty confirms with "Delete permanently?" / "Delete"** (2026-09-14,
   PR #227 browser pass). The trigger's accessible name is "Empty <album>", Empty all's dialog says
