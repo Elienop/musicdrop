@@ -77,13 +77,10 @@ class TrashRowUnreadableError(Exception):
     Not a shortfall to tolerate the way a missing FILE is: beets' own mover reads
     ``item.path`` to build the destination, so a row without one raises out of
     ``Album.move`` with rows already committed under the container. Refused in
-    :func:`trash_album` before the container is made — no container is created,
-    nothing moved, nothing dropped, which is what lets ``delete._recovery`` state
-    it as a fact rather than hedge. (The Trash DIRECTORY itself is made earlier
-    in the same request by the store-layout ensure step, as it is for every
-    delete; measured.) Alien rows only: nothing in the app adds a pathless item —
-    but beets' own ``lib.add(Item(title=...))`` writes ``b''`` rather than NULL,
-    so the predicate is falsy and both spellings are pinned
+    :func:`trash_album` before the container is made, so nothing moved and
+    nothing dropped. The predicate is FALSY, not ``is None``: beets' own
+    ``lib.add(Item(title=...))`` writes ``b''`` rather than NULL, and both
+    spellings are pinned
     (``test_an_album_with_a_null_path_row_refuses_before_anything_moves``).
     """
 
@@ -263,15 +260,11 @@ def trash_album(
     ``moved_audio``, when given, collects ``(old absolute path, new absolute
     path)`` for every item that really landed under the container — the only
     moment that mapping exists, since ``Album.move`` rewrites each stored path
-    and ``Album.remove`` then drops the row. Reported rather than acted on: what
-    ELSE travels with a track is the caller's policy, and the three callers do
-    not agree. ``app.beets.delete`` carries the lyric sidecars; import Replace
-    must not, and that is MEASURED rather than assumed: with the old album's
-    audio moved out from under it, the surviving ``01 T1.lrc`` sits at exactly
-    the stem ``item.destination()`` gives the new copy of the same album
-    (``Art/Alb/01 T1``), so the new album inherits its lyrics and carrying them
-    to Trash would lose them. Purely additive — pass nothing and this mover
-    behaves exactly as before.
+    and ``Album.remove`` then drops the row. Reported rather than acted on,
+    because the callers disagree: ``app.beets.delete`` carries the lyric
+    sidecars, import Replace must not — measured, the surviving ``01 T1.lrc``
+    sits at exactly the stem ``item.destination()`` gives the new copy of the
+    same album, which would lose the lyrics the user still has.
 
     Guarded on BOTH sides of the move, because neither half is enough alone.
     beets 2.12's ``Item.move`` silently skips a source file that is not there
@@ -298,12 +291,11 @@ def trash_album(
       the cause, :class:`TrashMoveIncompleteError` otherwise) and which one is
       tolerated.
 
-    **No undo of the ``album.remove`` window here, and it is a stated
-    residual.** A raise on that last line leaves an album the library still
-    LISTS whose item rows point inside the Trash container — the state
-    ``decisions.md`` 28 item 4 closed while a whole-folder mover existed, by
-    moving the one directory back. It is not closed here because the undo is not
-    one move. Measured on a two-track album sharing its folder: ``Album.move``
+    **No undo of the ``album.remove`` window here; a stated residual.** A raise
+    on that last line leaves an album the library still LISTS whose item rows
+    point inside the Trash container — the state ``decisions.md`` 28 item 4
+    closed while a whole-folder mover existed, by moving the one directory back.
+    The undo is not one move here. Measured on a two-track album: ``Album.move``
     re-files each item under the container by PATH TEMPLATE (``<container>/
     $albumartist/$album/$track $title``, not a copy of the source layout), moves
     ``album.artpath`` with it, commits each new path as it goes, and prunes the
@@ -322,24 +314,22 @@ def trash_album(
     # is the last moment the album's own folder can be read off the rows.
     pre_move_items = list(album.items())
     if not pre_move_items:
-        # No item rows means no files to relocate, so making a container would
-        # leave an empty Trash entry with no origin record — measured, it lists
-        # as a 0-track row, and ``delete._reached_trash`` read its path as
-        # "moved". Answering ``trash_dir`` says "nothing reached Trash" to every
-        # caller. Behind both guards above, because this arm DROPS A ROW.
+        # No item rows means no files to relocate, so a container would be an
+        # empty Trash entry with no origin record — measured, it listed as a
+        # 0-track row and ``delete._reached_trash`` read its path as "moved".
+        # Answering ``trash_dir`` says "nothing reached Trash". Behind both
+        # guards above, because this arm DROPS A ROW.
         album.remove(delete=False)
         return str(trash_dir)
     if any(not it.path for it in pre_move_items):
         # FALSY, not ``is None``: beets' own ``lib.add(Item(title=...))`` stores
         # ``b''`` for a pathless item, which reached beets' mover and answered
         # 500 ``"[Errno 2] No such file or directory: ''"`` with a container made
-        # and a temp file left (measured). Same predicate ``delete.py`` uses at
-        # both its skips, so one question has one answer.
+        # and a temp file left (measured). Same predicate ``delete.py`` uses.
         #
-        # Ahead of the ``mkdir``, for the same reason the two guards above are:
-        # every later step reads ``item.path`` — this file's own origin/audit
-        # readers and beets' mover alike — so the first one to meet the row
-        # would raise with a container on disk and rows already rewritten.
+        # Ahead of the ``mkdir``: every later step reads ``item.path``, so the
+        # first one to meet the row would raise with a container on disk and
+        # rows already rewritten.
         raise TrashRowUnreadableError("A track of this album has no file path in the library.")
     trash_dir.mkdir(parents=True, exist_ok=True)
     container = _unique_trash_dest(trash_dir, origins_dir, _trash_container_name(album))
@@ -362,11 +352,9 @@ def trash_album(
     if len(moved) != len(items):
         _require_move_happened(lib, album, container, items=items, moved=moved)
     if moved_audio is not None:
-        # What protects a caller carrying sidecars off an album still in place is
-        # the RAISE above, not this line's position: a refusal never returns, so
-        # the pairs are never read. Measured — moving this above the
-        # post-condition changes no test. Placed here because reading `moved`
-        # after it has been validated is the simpler thing to explain.
+        # A caller carrying sidecars is protected by the RAISE above, not by this
+        # line's position — a refusal never returns, so the pairs are never read
+        # (measured: moving this above the post-condition changes no test).
         moved_audio.extend((was_at[it.id], _abs_path(lib, it.path)) for it in moved)
     # ``moved[0]``, not ``items[0]``: with a skipped first item the latter still
     # points into the music dir, so the returned "Trash folder" would name the
@@ -403,12 +391,12 @@ def _album_root(lib: Library, items: list[Any], *, not_in: Path | None = None) -
     Single item -> that file's directory; multi-disc -> the common ancestor of
     the ``Disc N`` subfolders (their parent ``$album`` folder).
 
-    Rows under ``not_in`` are left out, and ``""`` when that is all of them. The
-    origin record passes Trash: a part-way move leaves rows at both ends, whose
-    commonpath is the parent of Trash AND music — ``/`` on the shipped layout,
-    which says nothing about where the album came from
+    Rows under ``not_in`` are left out, and ``""`` when that is all of them: a
+    part-way move leaves rows at both ends, whose commonpath is the parent of
+    Trash AND music — ``/`` on the shipped layout, which says nothing about where
+    the album came from
     (``test_a_retry_after_a_part_way_move_finishes_the_move``). Everything else
-    counts, music folder or not: ``in_place`` and a symlinked album folder are
+    counts, music folder or not — ``in_place`` and a symlinked album folder are
     both supported
     (``test_an_album_outside_the_music_folder_still_reaches_trash``).
     """

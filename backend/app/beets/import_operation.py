@@ -7,8 +7,7 @@ stage then takes ``copy`` when it is left, and tells reflink apart from
 ``reflink: auto`` (``importer/stages.py:278-291``); a copy with ``delete``
 removes the originals (``importer/tasks.py:326-333``), which is a move.
 ``tests/test_import_operation.py`` compares :func:`file_operation` with
-``set_config`` for every combination and asserts the ``delete`` clear directly,
-so a beets bump that changes either fails there.
+``set_config`` for every combination, so a beets bump that changes either fails.
 """
 
 from __future__ import annotations
@@ -19,9 +18,9 @@ from typing import Literal
 from beets import config
 
 FileOperation = Literal["move", "copy", "link", "hardlink", "reflink", "reflink_auto", "in_place"]
-#: The operations a caller may FORCE for one run. No ``hardlink``: the keep-downloads
-#: setting is one global switch written into beets' own ``import:`` keys and the app
-#: adds no per-import choice (``decisions`` #53), so nothing forces a hardlink.
+#: The operations a caller may FORCE for one run. No ``hardlink``: keep-downloads
+#: is one global switch written into beets' own ``import:`` keys, with no
+#: per-import choice (``decisions`` #53).
 ForcedOperation = Literal["move", "copy", "in_place"]
 
 _FILE_FLAGS = ("move", "copy", "link", "hardlink", "reflink")
@@ -58,13 +57,12 @@ def file_operation(
 def forced_file_operation(forced: Mapping[str, object]) -> FileOperation:
     """:func:`file_operation` of the live config with ``forced`` merged over it.
 
-    What beets will resolve for a run whose ``import`` overlay is ``forced``:
-    the keys ``forced`` names win, the rest fall through to the user's config.
-    Read BEFORE the overlay is installed, so a caller can decide on the
-    operation while its own ``forced`` dict is still being built.
+    The keys ``forced`` names win, the rest fall through to the user's config.
+    Read BEFORE the overlay is installed, so a caller can decide on the operation
+    while its own ``forced`` dict is still being built.
 
     Truthiness, not ``get(bool)``: ``set_config`` tests each flag with ``if``,
-    and ``delete: 1`` must not raise where beets would simply accept it.
+    and ``delete: 1`` must not raise where beets would accept it.
     """
     imp = config["import"]
 
@@ -87,8 +85,8 @@ def forced_file_operation(forced: Mapping[str, object]) -> FileOperation:
 def configured_file_operation() -> FileOperation:
     """:func:`file_operation` of the live ``config["import"]``, no overlay.
 
-    Defined as the empty-overlay case of :func:`forced_file_operation` rather
-    than a second reader of the same six flags, so the parity test covers both.
+    The empty-overlay case of :func:`forced_file_operation` rather than a second
+    reader of the same six flags, so the parity test covers both.
     """
     return forced_file_operation({})
 

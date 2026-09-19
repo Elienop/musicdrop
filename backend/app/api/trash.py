@@ -68,9 +68,8 @@ _TRASH_RESTORE_FAILED_RESPONSE: Final = {
 #: the containment check on what it resolved to, so every one of them can answer
 #: 503. The two EMPTY routes get this one, and it says nothing about what was
 #: left: ``DELETE /api/trash/all`` removes every unprotected entry BEFORE it
-#: refuses. "Kept" rather than "store-layout or identity", because the Empty
-#: routes also refuse an entry whose files the LIBRARY still lists, which is
-#: neither.
+#: refuses. "Kept" rather than "store-layout or identity", because these routes
+#: also refuse an entry whose files the LIBRARY still lists.
 _TRASH_LAYOUT_REFUSED_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": "The entry was kept; the message names the cause and what to do.",
@@ -276,13 +275,11 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
         except TrashEntryUnreadableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         # 409, not 503: this is the "a library operation is in progress" cause
-        # the declared conflict description already names, and it is transient
-        # in the caller's own terms -- an import owns the beets import config
-        # until its review finishes. Reaching it needs the check-then-act
-        # window ``library_busy`` documents against itself; before the refusal
-        # existed this thread blocked here for the length of that review while
-        # holding the swap lock, 409-ing every library route with no cause
-        # given. Adds no status and no OpenAPI change.
+        # the declared conflict description already names -- an import owns the
+        # beets import config until its review finishes. Reaching it needs the
+        # check-then-act window ``library_busy`` documents against itself, where
+        # this thread otherwise blocked for the length of that review while
+        # holding the swap lock, 409-ing every library route with no cause given.
         except ImportConfigBusyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
@@ -378,10 +375,9 @@ async def empty_trash_all(request: Request) -> EmptyResult:
             emit_library_changed(app)
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         # The twin of ``empty_trash_one``'s arm: the root open, or an origin
-        # record that could not be dropped after its entry went, raises out of
-        # here and used to fall into the blanket 500 with no declared body. The
-        # event fires first for the same reason the two above it do — entries
-        # this call already removed are gone from the page.
+        # record that could not be dropped after its entry went, otherwise falls
+        # into the blanket 500 with no declared body. The event fires first, like
+        # the two above it — entries this call removed are gone from the page.
         except OSError as exc:
             emit_library_changed(app)
             raise HTTPException(status_code=500, detail=f"Empty Trash: {exc}") from exc

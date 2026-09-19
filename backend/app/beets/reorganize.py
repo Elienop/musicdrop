@@ -13,9 +13,8 @@ just this feature: ``collisions_by_dest`` (would beets divert this move to a
 ``.N`` sibling?) and ``art_preflight`` (would beets silently rename the album
 art?). ``app/beets/edit.py`` imports both, because a tag edit that renames a file
 performs the same move under a different trigger, and a second copy of either
-would drift out of agreement. The third used to be ``carry_sidecars``; it moved
-to ``app/beets/sidecars.py`` when Delete became per-file and needed it too, and
-both this module and ``edit.py`` now import it from there.
+would drift out of agreement. The sidecar carry is the third such contract and
+lives in ``app/beets/sidecars.py``, which this module and ``edit.py`` import.
 """
 
 from __future__ import annotations

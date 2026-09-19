@@ -142,15 +142,11 @@ _NO_RECORD_NOTE = (
     " (the server log says which). Restoring re-imports it, so beets files it under your"
     " current naming rules rather than putting it back."
 )
-#: ``moved="items"``: the album's own files were moved out of their folder, one
-#: by one. That is EVERY album deleted since owner ruling ``decisions.md`` 58, not
-#: only one that shared a folder, so the sentence no longer says "shared" — it
-#: said so to every deleted album and was false for almost all of them. The
-#: constant was ``_SHARED_FOLDER_NOTE`` for the same reason and is not any more.
-#: What is
-#: true of all of them is what Restore does and what stays behind: the tracks are
-#: re-imported under the current naming, and the cover and lyric files beets does
-#: not track as items stay in the Trash entry.
+#: ``moved="items"``: the album's own files were moved out of their folder one by
+#: one. That is EVERY album deleted since owner ruling ``decisions.md`` 58, not
+#: only one that shared a folder, so the sentence says what is true of all of
+#: them — Restore re-imports the tracks under the current naming, and the cover
+#: and lyric files beets does not track stay in the Trash entry.
 _MOVED_ITEMS_NOTE = (
     "MusicDrop moved this album's files out of their folder one by one, so it cannot"
     " put them back exactly. Restoring re-imports the tracks under your current naming"
@@ -1499,11 +1495,9 @@ def empty_one(
     (:func:`_listed_entries`).
 
     ``folder_abs`` is the RESOLVED entry, and only the removal uses it. The
-    cross-check does not: the rows hold whichever spelling Delete moved with, so
-    it asks ``protected.trash_spellings`` — every spelling the app's own settings
-    give this Trash — through the same helper the sweep and the delete-side twin
-    use. One spelling was not enough: on a default Trash whose leaf is a link,
-    one click on Empty answered ``200`` and destroyed the album's only copy.
+    cross-check asks ``protected.trash_spellings`` instead, because the rows hold
+    whichever spelling Delete moved with: on a default Trash whose leaf is a
+    link, one spelling answered ``200`` and destroyed the album's only copy.
     """
     path = Path(folder_abs)
     kept = _listed_entries(lib, protected.trash_spellings, [path.name]).get(path.name)
@@ -1545,10 +1539,9 @@ _LISTED_ALBUM: Final = _Listed(
     "the library still lists files inside", "Delete the album again, then empty Trash."
 )
 
-#: The same refusal for an entry only ALBUM-LESS rows name. Round 3 stopped
-#: refusing those, because "delete the album again" names nothing a singleton's
-#: owner can press; the answer is a remedy that is true for them, not a removal.
-#: A wrong refusal costs a click and a wrong removal costs the only copy.
+#: The same refusal for an entry only ALBUM-LESS rows name: "delete the album
+#: again" names nothing a singleton's owner can press, so they get their own
+#: remedy. A wrong refusal costs a click; a wrong removal costs the only copy.
 _LISTED_TRACK: Final = _Listed(
     "the library still lists a track inside",
     "Move that entry out of Trash, or remove the track with beets.",
@@ -1572,43 +1565,34 @@ def _listed_entries(
 
     ``roots`` is every spelling the app's own settings give the current Trash
     (:func:`~app.beets.protected._trash_spellings`), because the rows hold the
-    one the mover used. Asked as one ``OrQuery`` so it stays one pass.
-
-    Only this side is generous. ``delete._all_rows_are_in_trash`` shares the
-    helper but asks over the current ``trash_dir`` alone: refusing keeps the
-    files, while that arm drops the rows, and a drop is safe only where the
-    listing can still reach them. A refusal raised here under another spelling
-    is cleared all the same — the remedy takes the ordinary move and leaves the
-    files in the Trash this page lists.
+    one the mover used. Asked as one ``OrQuery`` so it stays one pass. Only this
+    side is generous: ``delete._all_rows_are_in_trash`` shares the helper but
+    asks over the current ``trash_dir`` alone, because refusing keeps the files
+    while that arm drops the rows.
 
     ``lib.music_dir_context()`` because relative rows need beets' music dir bound
     (``test_empty_one_refuses_a_relative_row_with_the_music_dir_context_unbound``).
 
     Cost at 100 000 relative rows, no hit: **24 ms for one root spelling**, then
-    roughly +17 ms per further one (45 / 61 / 76 ms). Linear in the spellings, so
-    it is the LENGTH of ``trash_spellings`` that sets the bill, not the number of
-    entries (1 and 50 agree to 0.5 ms) — and that length is 1 on an ordinary
-    default Trash, 2-3 once a link is involved
-    (``protected._trash_spellings``). Absolute rows cost slightly MORE (29 ms),
-    so the in-library layout is not the slow one. Min of 15 against a fixture
-    built in a directory that did not exist: round 5's figures were ~4x high
-    because its script rebuilt into a reused one and accumulated 400 004 rows.
+    roughly +17 ms per further one (45 / 61 / 76 ms). Linear in the spellings,
+    not in the entries (1 and 50 agree to 0.5 ms), and that length is 1 on an
+    ordinary default Trash, 2-3 once a link is involved. Absolute rows cost
+    slightly MORE (29 ms). Min of 15, against a fixture built in a fresh
+    directory.
 
     Residual: beets compares path strings, so an alias none of ``roots`` spells —
-    a bind mount, a second symlink, a Trash re-pointed to a path no setting
-    names, NFD against NFC, ``STRASSE`` against ``Straße`` — is not recognised
-    and Empty removes the entry. Measured in ``tests/probes/alias_rows.py``,
-    recorded in BACKLOG with what IS covered.
+    a bind mount, a second symlink, NFD against NFC, ``STRASSE`` against
+    ``Straße`` — is not recognised and Empty removes the entry. Measured in
+    ``tests/probes/alias_rows.py``, recorded in BACKLOG with what IS covered.
     """
     if not names:
         return {}
     kept: dict[str, _Listed] = {}
     with lib.music_dir_context():
         hits = list(lib.items(rows_under_any(roots)))
-        # Cost only, and load-bearing at it: building the per-entry queries
-        # probes the filesystem for case sensitivity once per pattern — 20.6 ms
-        # for 500 entries at three spellings, measured — and a healthy Trash has
-        # no hit at all, which is every request but the ones that refuse.
+        # Cost only: building the per-entry queries probes the filesystem for
+        # case sensitivity once per pattern (20.6 ms for 500 entries at three
+        # spellings, measured), and a healthy Trash has no hit at all.
         if not hits:
             return {}
         inside = {name: rows_under_any([root / name for root in roots]) for name in names}
@@ -1864,9 +1848,8 @@ def _refused_clauses(refused: list[str]) -> tuple[str, str]:
     """The refused entries as one capped clause, and the pronoun for them.
 
     Already whole clauses ("'X' contains the inbox (…)"), so joined rather than
-    re-``repr``'d by :func:`_capped`. ONE definition, read by both 503s — the
-    listed refusal carries the protected entries too, and a second copy of the
-    cap drifts the moment one of them changes
+    re-``repr``'d by :func:`_capped`. ONE definition, read by both 503s, so the
+    cap cannot drift between them
     (``test_a_sixth_refused_entry_is_counted_not_named``).
     """
     more = f" and {len(refused) - 5} more" if len(refused) > 5 else ""
@@ -1898,12 +1881,12 @@ def empty_all(
     Each entry is pinned the same way by :func:`_remove_checked_entry`, which is
     where the guard and the removal are tied to one identity.
 
-    Three causes leave an entry behind, and every one of them is NAMED in the
-    single error this raises after the others are removed: the library still
-    lists files inside it (:func:`_listed_entries`), it is or holds one of the
-    app's own directories by inode, or its removal failed. The first two answer
-    503 through one message (:func:`_listed_message`, :func:`_refused_message`);
-    a sweep whose only fault is a failed removal answers 500.
+    Three causes leave an entry behind, each NAMED in the single error this
+    raises after the others are removed: the library still lists files inside it
+    (:func:`_listed_entries`), it is or holds one of the app's own directories by
+    inode, or its removal failed. The first two answer 503
+    (:func:`_listed_message`, :func:`_refused_message`); a sweep whose only fault
+    is a failed removal answers 500.
 
     A symlinked entry is acted on as the LINK: following it would ``rm -rf`` a
     directory merely pointed at, and ``rmtree`` refuses one, which used to wedge
@@ -1958,23 +1941,22 @@ def empty_all(
                 refused.append(f"{display_path(name)!r} {refusal.clause}{note}")
                 continue
             delete_trash_origin(origins_dir, name)
-            # The count is the number of top-level entries this Empty removed,
-            # and the ONE exception is the keep-file the app plants itself: a
-            # Trash inside the music library can hold one a killed delete left,
-            # which made one visible entry read as ``removed=2``. Skipping every
-            # dot-leading name instead read ``removed: 0`` while a hidden folder
-            # and its contents were destroyed (measured), and a zero also
-            # suppresses the orphan-record sweep below.
+            # The count is the top-level entries this Empty removed, with one
+            # exception: the app's own keep-file, which a killed delete can leave
+            # in a Trash inside the music library and which made one visible
+            # entry read as ``removed=2``. Skipping every dot-leading name
+            # instead read ``removed: 0`` while a hidden folder and its contents
+            # were destroyed (measured), and a zero also suppresses the
+            # orphan-record sweep below.
             if name != KEEP_NAME:
                 removed += 1
     finally:
         os.close(fd)
     if listed:
-        # First, because it is the only refusal here that is about LOSING data:
-        # those entries hold the album's one copy (see ``_LISTED_ALBUM``). It
-        # carries the other two causes with it — a raise that outranks them left
-        # an entry that could not be removed invisible on every retry, which is
-        # the bug the rung below documents against itself.
+        # First, because it is the only refusal here about LOSING data: those
+        # entries hold the album's one copy (see ``_LISTED_ALBUM``). It carries
+        # the other two causes with it — a raise that outranked them left an
+        # entry that could not be removed invisible on every retry.
         raise ProtectedTreeError(
             _listed_message(listed, refused=refused, removed=removed, failed=failed)
         )

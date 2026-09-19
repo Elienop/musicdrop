@@ -44,11 +44,9 @@ from app.models.import_models import DuplicateAction, ExistingAlbum, ImportOptio
 
 logger = logging.getLogger(__name__)
 
-#: Operator-facing records go to ``uvicorn.error``, not this module's logger:
-#: under the Dockerfile CMD uvicorn's LOGGING_CONFIG leaves app-namespace
-#: loggers at WARNING, so an app-namespace INFO record is dropped entirely
-#: and never reaches ``docker logs`` (``main._boot_log`` documents the same
-#: trap). ``logger`` keeps the warnings/exceptions, which do get through.
+#: Operator-facing records go to ``uvicorn.error``: under the Dockerfile CMD
+#: uvicorn's LOGGING_CONFIG leaves app-namespace loggers at WARNING, so an app
+#: INFO record never reaches ``docker logs`` (same trap as ``main._boot_log``).
 operator_logger = logging.getLogger("uvicorn.error")
 
 _STALE_CHANGED_ERROR = (
@@ -361,19 +359,16 @@ class BankApplyRunner:
     ) -> None:
         """Store the collision this apply saw, when a FAILED apply published one.
 
-        Two conditions, both local. The row must have failed - what a stored
-        prompt is for is deciding again, and a row that finished has nothing left
-        to decide; overwriting its prompt would park a collision on a ``done``
-        row (``test_a_successful_apply_leaves_the_stored_prompt_alone``). And a
-        live prompt must be on the feed for an album of this job - keyed on the
-        PROMPT, never on the note's wording. The session publishes one only where
-        the stored prompt is what refused the apply (stale consent); every other
-        refusal leaves the feed without one and this writes nothing.
+        Two conditions, both local. The row must have FAILED — overwriting a
+        finished row's prompt would park a collision on a ``done`` row
+        (``test_a_successful_apply_leaves_the_stored_prompt_alone``). And a live
+        prompt must be on the feed for an album of this job, keyed on the PROMPT
+        and never on the note's wording: the session publishes one only where the
+        stored prompt is what refused the apply (stale consent).
 
         Still inside the ``applying`` window, so the row cannot be decided or
-        rescanned between this write and the status flip that follows it. A
-        failure to read the prompt is not a failure of the apply: the row still
-        fails with its note, one retry short of a fresh prompt.
+        rescanned between this write and the status flip. A failure to read the
+        prompt still fails the row with its note, one retry short of a fresh one.
         """
         if status != "failed":
             return
@@ -542,23 +537,18 @@ class BankApplyRunner:
         * ``apply``/``asis`` without a landed album id failed (a pinned id
           that resolved nothing, an unreadable folder).
 
-        A feed row carrying a ``note`` outranks all of it: the session answered
-        the duplicate hook SKIP because the old copy could not be disposed of, so
-        nothing was imported and the note is the only channel that says which
-        reason applied. Retryable, but WHAT the retry needs differs by note: most
-        name an external cause the user fixes first (wire the Trash folder,
-        remount the share) and then decide again unchanged. Stale consent does
-        not — its cause is the row's own stored prompt, so deciding again on the
-        same payload refuses identically. That note's remedy is written onto the
-        row before this classification is applied
-        (``_refresh_stored_duplicate``).
+        A feed row carrying a ``note`` outranks all of it: nothing was imported,
+        and the note is the only channel that says why. Retryable, but WHAT the
+        retry needs differs by note: most name an external cause the user fixes
+        first (wire the Trash folder, remount the share). Stale consent does not
+        — its cause is the row's own stored prompt, so its remedy is written onto
+        the row before this classification (``_refresh_stored_duplicate``).
 
         The note is read over EVERY album of the job, like ``album_id`` and
-        ``dup_resolution_ran`` beside it, because a bank row is a FOLDER and a
-        folder can hold more than one album. One refusal therefore fails the
-        whole row even if a sibling album landed: the row has one status, and
-        reporting ``done`` would hide the refusal. Deciding again re-imports the
-        folder, where the sibling that landed now surfaces as a duplicate.
+        ``dup_resolution_ran``, because a bank row is a FOLDER. One refusal
+        therefore fails the whole row even if a sibling album landed: the row has
+        one status, and ``done`` would hide the refusal. Deciding again
+        re-imports the folder, where the landed sibling is now a duplicate.
         """
         if state.phase is ImportPhase.failed:
             return "failed", state.error or "import failed", None, True

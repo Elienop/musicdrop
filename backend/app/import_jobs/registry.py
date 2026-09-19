@@ -383,10 +383,9 @@ class ImportJobRegistry:
         `applied` outcome for the SAME reason — its singletons never form an
         Album row — so an idless applied row on such a job is exempt too.
 
-        A NOTE is the session saying so itself, and it is checked first: the only
-        emitter (``_replace_refused``) answers beets SKIP before ``task.add``, so
-        no id can follow and the row is true in every phase, not just at the
-        terminal gate (``test_a_noted_row_is_not_counted_as_imported_mid_run``)."""
+        A NOTE is the session saying so itself, checked first: its only emitter
+        (``_replace_refused``) answers beets SKIP before ``task.add``, so no id
+        can follow (``test_a_noted_row_is_not_counted_as_imported_mid_run``)."""
         if row.outcome.note is not None:
             return True
         if row.outcome.album_id is not None:
@@ -420,9 +419,8 @@ class ImportJobRegistry:
         the premature veto — otherwise the applied bucket transiently reads 0.
         The default (``terminal=True``) is state()'s post-finish reading, taken
         once _drain_locked has flushed every follow-up id — the point at which
-        asserting did-not-land is correct. A NOTED row is the exception the
-        optimism does not cover: it is already known not to have landed, so it is
-        vetoed in every phase."""
+        asserting did-not-land is correct. A NOTED row is already known not to
+        have landed, so it is vetoed in every phase."""
         if row.outcome.note is not None:
             return False
         if row.duplicate_action is not None:
@@ -441,11 +439,9 @@ class ImportJobRegistry:
     def _is_set_aside(row: _FeedAlbum) -> bool:
         """Awaiting a decision — and in none of applied, skipped or not_landed.
 
-        The page reads the buckets as disjoint (``ImportPage``: a set-aside row
-        "sits in none of the three counters"), and ``JobFailed`` renders the
-        counts line and a separate set-aside sentence, so a NOTED row counted
-        here as well as in not_landed reported one album twice. Both sites that
-        count set-aside rows — ``state()`` and the active probe — call this
+        The page reads the buckets as disjoint, so a NOTED row counted here as
+        well as in not_landed reported one album twice. Both sites that count
+        set-aside rows — ``state()`` and the active probe — call this
         (``test_a_noted_directive_row_did_not_land_in_both_phases``; the no-note
         control is ``test_a_set_aside_row_without_a_note_counts_as_set_aside``).
         """
@@ -456,9 +452,8 @@ class ImportJobRegistry:
         """The terminal complement of _is_imported for albums that landed nothing
         (auto-skip, a non-apply choice, or a skip_new duplicate).
 
-        Not every non-imported row is skipped: a NOTED row failed rather than
-        being skipped by choice, and is counted by not_landed instead — measured
-        ``skipped == 0`` in both noted shapes
+        A NOTED row failed rather than being skipped by choice, and is counted by
+        not_landed instead — measured ``skipped == 0`` in both noted shapes
         (``test_a_noted_row_is_not_counted_as_imported_mid_run``,
         ``test_a_noted_directive_row_did_not_land_in_both_phases``)."""
         if row.duplicate_action is not None:
@@ -504,10 +499,9 @@ class ImportJobRegistry:
             row = job.albums.get(outcome.album_index)
             if outcome.note is not None and row is not None:
                 # A Replace that imported nothing because the old copy was not
-                # disposed of. On an attended run the row reads ``decided`` by
-                # now (the user answered the prompt); on a directive run it
-                # reads needs_dup_resolution. Either way the decision stands and
-                # only the reason is new, so the status ladder is left alone.
+                # disposed of. The decision stands (``decided`` on an attended
+                # run, needs_dup_resolution on a directive one) and only the
+                # reason is new, so the status ladder is left alone.
                 row.outcome = row.outcome.model_copy(update={"note": outcome.note})
             elif row is None:
                 job.albums[outcome.album_index] = _FeedAlbum(
@@ -810,11 +804,10 @@ class ImportJobRegistry:
                     not_landed=not_landed,
                     # Read from the BRIDGE, like awaiting_decision below: a
                     # history-skipped folder emits no outcome, so the feed rows
-                    # this method counts can never show one. For a sweep, from
-                    # the counter the drain above just refreshed instead — the
-                    # bridge keeps counting between the two lock holds, and one
-                    # response must not carry the same number twice with two
-                    # values.
+                    # never show one. For a sweep, from the counter the drain
+                    # above just refreshed — the bridge keeps counting between
+                    # the two lock holds, and one response must not carry two
+                    # values for the same number.
                     already_known=(
                         job.sweep.skipped_known
                         if job.sweep is not None

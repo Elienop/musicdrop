@@ -166,13 +166,11 @@ class ImportSection(BaseModel):
         """A QUOTED boolean is the one value the editor must not accept.
 
         Pydantic's lax bool reads ``'no'``/``'off'``/``'false'``/``'0'`` as
-        False. beets does not: it tests these flags with a bare ``if`` on the
-        raw view, and a non-empty string is always truthy — so ``move: 'no'``
-        saved clean here, fired no advisory, and handed the user a MOVE they
-        believed they had turned off. Unquoted ``no`` parses to a real bool in
-        ruamel and never reaches this, so only the quoted spelling is refused.
-
-        ``reflink`` keeps ``"auto"``, which is a real beets value.
+        False. beets does not: it tests these flags with a bare ``if`` on the raw
+        view, and a non-empty string is truthy — so ``move: 'no'`` saved clean,
+        fired no advisory, and handed the user a MOVE they believed they had
+        turned off. Unquoted ``no`` parses to a real bool in ruamel and never
+        reaches this. ``reflink`` keeps ``"auto"``, a real beets value.
         """
         if isinstance(value, str) and not (info.field_name == "reflink" and value == "auto"):
             raise ValueError(f"must be a bool: write {value} without the quotes")
@@ -304,10 +302,9 @@ def _incremental_advisory(section: ImportSection) -> str | None:
 def _delete_advisory(section: ImportSection) -> str | None:
     # The predicate stays ``section.delete`` alone, not "delete AND copy": under
     # ``{hardlink: yes, delete: yes}`` beets clears ``delete`` itself, so the
-    # value would not have destroyed anything there — but it is still inert in
-    # the app, which is what the user needs told. Only the CAUSAL clause is
-    # qualified with "with copy on"; an earlier wording stated it flatly and was
-    # wrong for every non-copy config.
+    # value destroys nothing there — but it is still inert in the app, which is
+    # what the user needs told. Only the CAUSAL clause carries "with copy on",
+    # which is false for every non-copy config.
     if not section.delete:
         return None
     return (
@@ -321,17 +318,15 @@ def _delete_advisory(section: ImportSection) -> str | None:
 def _always_moves_advisory(key: str) -> Callable[[ImportSection], str | None]:
     """The rule for a filing flag that an inbox import overrides.
 
-    One message, three keys, because the loop validates one key at a time — so
-    a single rule reading all three would see two defaults. Keyed per flag also
-    means the advisory names the setting the user actually typed.
+    One message, three keys, because the loop validates one key at a time — so a
+    single rule reading all three would see two defaults, and keying per flag
+    names the setting the user actually typed.
 
-    This is the quieter half of the ``delete`` surprise, and it lands on exactly
-    the user the "keep downloads" work exists for: someone who sets
-    ``hardlink: yes`` because they seed their downloads gets a MOVE out of the
-    inbox when they click Import on an inbox row, and their file leaves the
+    The user it lands on is the one who sets ``hardlink: yes`` because they seed
+    their downloads: clicking Import on an INBOX row moves the file out of the
     seeding folder. It is honoured on a manual import, "Review now", a sweep and
-    a bank apply — verified — so the message says where it applies, not that it
-    is ignored.
+    a bank apply, so the message says where it applies rather than that it is
+    ignored.
     """
 
     # Only a hardlink forces the history keys (``run_import_worker``), and an
@@ -372,15 +367,11 @@ def _always_moves_advisory(key: str) -> Callable[[ImportSection], str | None]:
 #:
 #: ``link``/``hardlink``/``reflink`` are HONOURED on a manual import, a sweep
 #: and a bank apply, and overridden by the inbox routes and Trash restore, which
-#: name ``operation="move"``. Their advisory says which is which rather than
-#: claiming they are ignored: the surprise it exists for is a seeding user whose
-#: ``hardlink: yes`` does not survive an inbox import. It is worded per-key and
-#: per-PATH, not "MusicDrop overrides this", because the override is a property
-#: of the request rather than of the saved config. Nor does
-#: a config with every file operation off, which beets imports in place: the
-#: rules here are all "MusicDrop overrides this, the CLI still honours it", and
-#: in-place is beets' own behaviour with no escape hatch to name. What each
-#: import actually resolved to is LOGGED by ``run_import_worker`` instead.
+#: name ``operation="move"``. Their advisory is worded per-key and per-PATH, not
+#: "MusicDrop overrides this", because the override belongs to the request rather
+#: than to the saved config. A config with every file operation off has no rule
+#: at all — beets imports in place, which is its own behaviour with no override
+#: to name. What each import resolved to is LOGGED by ``run_import_worker``.
 _IMPORT_ADVISORY_RULES: Final[tuple[tuple[str, Callable[[ImportSection], str | None]], ...]] = (
     ("autotag", _autotag_advisory),
     ("duplicate_action", _duplicate_action_advisory),

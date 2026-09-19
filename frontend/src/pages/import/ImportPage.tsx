@@ -167,13 +167,11 @@ function importOrigin(jobId: string): { from: AlbumOrigin } {
  * The control that started the run unmounts with the panel it sat in, so
  * keyboard focus falls to <body> and the next Tab restarts at "Skip to content"
  * (measured in Chromium (Orca), 2026-09-18: document.activeElement is BODY
- * after "Import them again"). This lands it where a pathname navigation would,
- * so the app keeps one focus convention.
+ * after "Import them again").
  *
  * The {@link useDeferredH1Focus} shape: a ref sentinel skips the first run, so a
  * cold load keeps the browser's own focus, and a focus HELD by a live element is
- * never taken — by the time the new job commits with focus on a control, the
- * user is somewhere deliberate. */
+ * never taken. */
 function useJobChangeH1Focus(jobId: string | undefined): void {
   // null is "no effect has run yet" — distinct from an absent `?job=`, which is
   // `undefined` and is a real value to compare against.
@@ -860,12 +858,10 @@ function SweepRun({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
  *
  * No, on a bank-apply run: the banked decision IS the answer, so the session
  * answers every hook from its directive and never parks
- * (`import_session.py` `_directive_choice` returns on every arm, and the
- * directive branch of `resolve_duplicate` answers SKIP or the banked duplicate
- * action). `ReviewPage.tsx` already excludes the same origin from its decision
- * list for this reason. The entry screen's Resume links `/import?job=<id>`
- * whatever the origin, so such a feed IS reachable here — and a `Resolve`
- * button on it would open a decision nothing consumes, the same dead end
+ * (`import_session.py` `_directive_choice`), and `ReviewPage.tsx` excludes the
+ * same origin from its decision list. The entry screen's Resume links
+ * `/import?job=<id>` whatever the origin, so such a feed is reachable here and a
+ * `Resolve` button would open a decision nothing consumes — the dead end
  * {@link JobFailed} passes `readOnly` to avoid. Rows keep their badge and note.
  *
  * `origin` is the server's, not a guess from the rows: a directive run's
@@ -958,36 +954,24 @@ function feedRowAction(
  * The page's dialect for a row-level problem is SettingsTrashPage's
  * `RestoreOutlook` warning arm (`SettingsTrashPage.tsx:211-247`): an amber
  * `Warning` glyph beside `text-muted-foreground text-xs`, with the WORDS
- * carrying the meaning so the colour is never the only signal — amber, not
- * destructive, because this is the server's considered answer about the row and
- * not a request that failed (the same split that page states). What is dropped
- * from that shape is its bold run-in label: there it classifies a mode the note
- * cannot state ("Exact restore."), whereas these notes already carry their own
- * verdict — all but the stale-consent one end in "Nothing was imported.", which
- * is exactly what a run-in label would have said, twice.
+ * carrying the meaning so the colour is never the only signal. Its bold run-in
+ * label is dropped — these notes carry their own verdict.
  *
- * `min-w-0` on the inner span is load-bearing, not tidiness — it is a flex item
- * of the <p>, so it takes its floor from its longest unbreakable token; the note
- * is prose today, but this is the class that keeps a phone from panning
- * sideways if a path ever reaches it. Same reasoning at
- * `SettingsTrashPage.tsx:220-227`, where it was measured.
+ * `min-w-0` on the inner span is load-bearing: it is a flex item of the <p>, so
+ * it takes its floor from its longest unbreakable token (measured at
+ * `SettingsTrashPage.tsx:220-227`).
  *
  * No `role`/live region: the feed is polled list content read in order with its
  * row, and the page already owns one `role="status"` for the run.
  *
  * `mx-4`, so the glyph starts at the artwork's left edge (x=16) rather than the
- * title's (x=68 = px-4 16 + cover 40 + gap-3 12). That is the Trash line
- * translated, not a departure from it: there the glyph sits on the row's leading
- * edge too, and that row has no cover, so the two edges coincide. It is also the
- * inset the dropped action below already uses (`ml-4`), which makes this row's
- * second line one column rather than two.
+ * title's (x=68 = px-4 16 + cover 40 + gap-3 12), which is also the inset the
+ * dropped action below uses (`ml-4`).
  *
  * `col-span-full row-start-2` because the wrapper is a grid whenever this line
  * renders — see the placement note in {@link FeedRow}. Full-width, not
  * `col-start-1`: at 28rem and up the action sits in column 2, and a note
- * confined to column 1 would stop short of a track it is free to run under.
- * On a row with no action column 2 is 0 wide, so the span changes nothing
- * there. */
+ * confined to column 1 would stop short of a track it may run under. */
 function ReplaceNote({ note }: Readonly<{ note: string }>) {
   return (
     <p className="text-muted-foreground col-span-full row-start-2 mx-4 mb-3 flex min-w-0 items-start gap-1.5 text-xs">
@@ -1070,20 +1054,17 @@ function FeedRow({
     // block sibling it would be a second line inside the row's box, which
     // re-centres every `items-center` neighbour beside it.
     //
-    // A row can carry BOTH. `registry._drain_outcomes_locked` attaches the note
-    // without touching the status, and that status is `decided` on an attended
-    // run but `needs_dup_resolution` on a directive (bank-apply) one — for which
+    // A row can carry BOTH: the note is attached without touching the status,
+    // which on a directive (bank-apply) run is `needs_dup_resolution`, for which
     // `feedRowAction` returns Resolve. Two explicitly placed grid items in one
-    // area do not stack, they paint over each other, so the action takes row 3
-    // in the narrow arm whenever a note is present. That arm is conditional
-    // rather than unconditional on purpose: an empty `auto` row costs 0px only
-    // while the wrapper has no row-gap, and a row with no note must keep the
-    // exact tracks it took before this line existed.
+    // area paint over each other, so the action takes row 3 in the narrow arm
+    // whenever a note is present — conditionally, since a row with no note must
+    // keep the exact tracks it took before.
     //
-    // The tint is keyed on the ACTION, not on the status that used to imply
-    // one. It means "this row needs you", and a read-only feed has nothing to
-    // press on any row: a bank-apply duplicate wore it with no control, and so
-    // did every parked row on a failed job.
+    // The tint is keyed on the ACTION, not on the status: it means "this row
+    // needs you", and a read-only feed has nothing to press — a bank-apply
+    // duplicate wore it with no control, and so did every parked row on a
+    // failed job.
     <div
       className={cn(
         action !== undefined && "bg-primary/5",

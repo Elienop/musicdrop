@@ -24,11 +24,9 @@ from app.beets.library import LibraryHandle, close_library
 
 logger = logging.getLogger(__name__)
 
-#: Operator-facing records go to ``uvicorn.error``, not this module's logger:
-#: under the Dockerfile CMD uvicorn's LOGGING_CONFIG leaves app-namespace
-#: loggers at WARNING, so an app-namespace INFO record is dropped entirely
-#: and never reaches ``docker logs`` (``main._boot_log`` documents the same
-#: trap). ``logger`` keeps the warnings/exceptions, which do get through.
+#: Operator-facing records go to ``uvicorn.error``: under the Dockerfile CMD
+#: uvicorn's LOGGING_CONFIG leaves app-namespace loggers at WARNING, so an app
+#: INFO record never reaches ``docker logs`` (same trap as ``main._boot_log``).
 operator_logger = logging.getLogger("uvicorn.error")
 
 

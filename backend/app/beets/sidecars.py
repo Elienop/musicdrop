@@ -3,20 +3,16 @@
 
 MusicDrop writes Plex-readable lyric sidecars NEXT TO the audio file, named after
 the audio file's stem (``01 Song.flac`` -> ``01 Song.lrc``). Three features
-depend on that one rule — :mod:`app.beets.lyrics` writes and removes them,
-:mod:`app.beets.reorganize` and :mod:`app.beets.delete` carry them along when
-beets moves the audio — so the extension pair, the stem derivation and the carry
-live HERE and nowhere else. A second copy would drift, and the failure mode is
-silent data loss: beets moves audio + album art only, so a sidecar left behind
-sits in a now audio-empty folder that the post-reorganize orphan sweep moves to
-Trash.
+depend on that rule — :mod:`app.beets.lyrics` writes and removes them,
+:mod:`app.beets.reorganize` and :mod:`app.beets.delete` carry them when beets
+moves the audio — so the extension pair, the stem derivation and the carry live
+HERE. The failure mode of a second copy is silent data loss: beets moves audio +
+album art only, so a sidecar left behind sits in a now audio-empty folder that
+the post-reorganize orphan sweep moves to Trash.
 
-:func:`carry_sidecars` was written for reorganize and lived in that module until
-Delete became per-file and needed it too; ``delete`` importing ``reorganize``
-would be a dependency edge between two unrelated features, so it moved down here
-instead. It brings the two beets imports below with it: this module is still a
-leaf in the APP graph (it imports no ``app.beets`` module), which is the property
-its callers depend on.
+:func:`carry_sidecars` lives here rather than in ``reorganize`` so that
+``delete`` does not import it: this module stays a leaf in the APP graph (it
+imports no ``app.beets`` module), which is what its callers depend on.
 """
 
 from __future__ import annotations
@@ -60,10 +56,9 @@ def move_sidecars(old_audio: str | bytes | None, new_audio: str | bytes | None) 
     this runs, so no sidecar problem may rewrite that outcome — every skip and
     every error is logged instead, at WARNING with the traceback.
 
-    Never clobbers: a file already at the destination wins and the source stays.
-    Either way the source is only left where it IS, not left with the track — a
-    skip in a vacated folder makes that folder the reorganize orphan sweep's, so
-    the kept sidecar ends up in Trash.
+    Never clobbers: a file already at the destination wins and the source stays
+    where it is — in a vacated folder that makes it the orphan sweep's, so the
+    kept sidecar ends up in Trash.
 
     A source that is not a REGULAR file is skipped: measured, a DIRECTORY named
     ``01 Song.lrc`` was otherwise moved wholesale with its contents
@@ -104,29 +99,24 @@ def carry_sidecars(lib: Any, old_path: bytes | str, new_path: bytes | str) -> No
     """Move ONE relocated item's lyric sidecars to its new location, then re-prune.
 
     beets moves audio + album art and nothing else, so MusicDrop's own
-    ``.lrc``/``.txt`` sidecars (the files Plex actually reads) stay in the vacated
-    folder — which the post-run orphan sweep then classifies as an audio-empty
-    husk and moves to Trash, losing the lyrics while the job reports success. The
-    same stranding happens on an in-place rename, where there is no husk at all
-    and the sidecar simply stops matching its track.
+    ``.lrc``/``.txt`` sidecars (the files Plex reads) stay in the vacated folder —
+    which the post-run orphan sweep classifies as an audio-empty husk and moves
+    to Trash, losing the lyrics while the job reports success. An in-place rename
+    strands them the same way, with no husk at all.
 
     Keyed off the ACTUAL landing path rather than the computed destination, so a
     collision-diverted ``.1`` file keeps its lyrics.
 
     The re-prune is not cosmetic: beets prunes the vacated dir DURING the move,
-    while the sidecars are still sitting in it, so that prune is a no-op and the
-    now-empty dir would outlive every future sweep (``find_orphan_folders``
-    deliberately ignores empty dirs). Pruning again with beets' own arguments —
-    including the user's ``clutter:`` list, which the function default does not
-    match (``Thumbs.db`` against the config default's ``Thumbs.DB``,
-    case-sensitive on Linux) — makes the on-disk result identical to a
-    sidecar-free move.
+    while the sidecars are still in it, so that prune is a no-op and the now-empty
+    dir would outlive every future sweep (``find_orphan_folders`` ignores empty
+    dirs). Pruned again with beets' own arguments, including the user's
+    ``clutter:`` list, which the function default does not match (``Thumbs.db``
+    against the config default's ``Thumbs.DB``, case-sensitive on Linux).
 
-    Never raises, and the ``except`` is load-bearing rather than defensive:
-    ``prune_dirs`` wraps only its ``rmtree`` (beets ``util/__init__.py:336``), so
-    its ``os.listdir`` of an unreadable ancestor propagates. The audio has already
-    moved by the time this runs, so a tidy-up must not rewrite an outcome that is
-    already true — pinned for Delete by
+    Never raises: ``prune_dirs`` wraps only its ``rmtree`` (beets
+    ``util/__init__.py:336``), so its ``os.listdir`` of an unreadable ancestor
+    propagates, and the audio has already moved by the time this runs — pinned by
     ``tests/test_delete.py::test_a_prune_that_raises_does_not_fail_the_delete``.
     """
     if not move_sidecars(old_path, new_path):

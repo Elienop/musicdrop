@@ -149,13 +149,10 @@ function sweepCounts(sweep: SweepStatus): string {
   return `Processed ${sweep.processed}, imported ${sweep.auto_applied}, banked ${sweep.banked}.`;
 }
 
-/** The history-skip clause, for the announcements spoken once. Folders skipped
- * before tagging never reach `processed`, so a re-run that skipped twenty and
- * then crashed reported nothing while a tile read 20.
- *
- * Takes the count, not a job: a sweep passes `sweep.skipped_known` (its fourth
- * tile) and every other origin passes `progress.already_known`. One word for
- * one concept — the done panel's counts line uses the same one. */
+/** The history-skip clause. Folders skipped before tagging never reach
+ * `processed`, so a re-run that skipped twenty and then crashed reported nothing
+ * while a tile read 20. Takes the count, not a job: a sweep passes
+ * `sweep.skipped_known`, every other origin `progress.already_known`. */
 function knownClause(count: number): string {
   return count > 0 ? ` ${count} already known.` : "";
 }
@@ -172,11 +169,10 @@ function failedSweepCounts(sweep: SweepStatus): string {
   return sweepCounts(sweep) + knownClause(sweep.skipped_known);
 }
 
-/** The lost-album clause every FEED-COUNTING announcement owes — the two
- * terminal ones and, since a refused Replace is lost the moment it is refused
- * and stops counting as applied there and then, the live one. A sweep's three
- * announcements count on `sweep` instead and call none of this. Drops out of a
- * clean run. Straight apostrophe: this string is spoken, never seen. */
+/** The lost-album clause every FEED-COUNTING announcement owes, the live one
+ * included: a refused Replace stops counting as applied the moment it is
+ * refused. A sweep counts on `sweep` and calls none of this. Straight
+ * apostrophe: this string is spoken, never seen. */
 function notLandedClause(notLanded: number): string {
   return notLanded > 0 ? ` ${notLanded} didn't land.` : "";
 }
@@ -231,14 +227,12 @@ function failedMessage(data: ImportJobState): string {
  * it. Whether the worker is blocked is `awaiting_decision`; the spinner and the
  * poll cadence read that instead.
  *
- * Exported because the visible status line counts the same thing, and two
- * copies of this filter disagreed with the server: `did_not_land` rows are
- * excluded, because a refused Replace on a bank apply wears
- * `needs_dup_resolution` AND the flag, so status alone counted that one album
- * twice — once as lost, once as a duplicate awaiting a resolution nothing on
- * the page offers. The server's flag decides, never `note`: the registry's
- * `_is_set_aside` keeps the same row out of `set_aside` for the same reason.
- * An un-noted duplicate keeps its clause, flag clear, exactly as before. */
+ * Exported because the visible status line counts the same thing and two copies
+ * of the filter disagreed with the server. `did_not_land` rows are excluded: a
+ * refused Replace on a bank apply wears `needs_dup_resolution` AND the flag, so
+ * status alone counted that album twice, once as lost and once as a duplicate
+ * awaiting a resolution nothing on the page offers. The server's flag decides,
+ * never `note` — the registry's `_is_set_aside` does the same. */
 export function pendingDuplicates(data: ImportJobState): number {
   return data.albums.filter(
     (a) => a.status === "needs_dup_resolution" && !a.did_not_land,
@@ -257,11 +251,9 @@ function namesAWait(data: ImportJobState): boolean {
  * waiting on them.
  *
  * The lost clause belongs here as well as on the two terminal announcements: a
- * refused Replace leaves `applied` and joins `not_landed` while the run is
- * still going, so without it the album is announced by nobody — and this is the
- * channel that had been saying "Imported 1" over a row reading "Nothing was
- * imported." Same wording as the terminal pair; {@link notLandedClause} is the
- * one source. */
+ * refused Replace leaves `applied` and joins `not_landed` while the run is still
+ * going, so without it this channel said "Imported 1" over a row reading
+ * "Nothing was imported." {@link notLandedClause} is the one source. */
 function progressMessage(data: ImportJobState): string {
   const { applied, skipped, needs_review, not_landed } = data.progress;
   const needs_dup = pendingDuplicates(data);

@@ -41,18 +41,15 @@ class _RecordingSession:
     Empty ``paths`` -> the in-library guard no-ops. ``run()`` records the
     config values the pipeline would see.
 
-    BOTH trash attributes are needed, not just ``_trash_dir``: the post-run
-    pass reads ``_trash_origins_dir`` on the same line, BEFORE the
+    BOTH trash attributes are needed, not just ``_trash_dir``: the post-run pass
+    reads ``_trash_origins_dir`` on the same line, BEFORE the
     ``_replace_album_ids`` gate, so a stand-in carrying only one raised an
     AttributeError that ``run_import_worker``'s broad ``except Exception``
-    logged and swallowed. Every test here passed anyway, which is why the
-    omission survived — the docstring claimed an early return the pass never
-    reached.
+    swallowed while every test here still passed.
 
     ``_playlists_dir`` and ``_dropped_item_ids`` for the single re-export point,
-    which the worker now calls in a ``finally`` on EVERY run. That call is not
-    inside a broad ``except``, so the same omission failed all 20 tests in this
-    file loudly instead of one silently."""
+    which the worker calls in a ``finally`` on EVERY run — not inside a broad
+    ``except``, so the same omission fails this file loudly."""
 
     lib: ClassVar[Any] = _BindOnlyLib()
     paths: ClassVar[list[bytes]] = []
@@ -151,13 +148,11 @@ def test_in_library_copy_refusal_mutates_nothing(tmp_path: Path) -> None:
 def test_explicit_copy_pins_every_file_flag_and_never_deletes() -> None:
     """An explicit COPY must reach beets as a copy and nothing else.
 
-    beets resolves move > link > hardlink > reflink > copy, each arm clearing
-    the others, and keeps ``delete`` alive whenever copy is on
-    (beets/importer/session.py:118-138). The worker used to set only
-    move/copy, so under these user flags beets picked HARDLINK for a run the
-    app called a copy, and ``delete: yes`` turned that copy into a move -
-    removing the user's download. Every flag is pinned for the run and every
-    one is restored after it."""
+    beets resolves move > link > hardlink > reflink > copy, each arm clearing the
+    others, and keeps ``delete`` alive whenever copy is on
+    (beets/importer/session.py:118-138). With only move/copy set, beets picked
+    HARDLINK for a run the app called a copy, and ``delete: yes`` turned that
+    copy into a move. Every flag is pinned for the run and restored after it."""
     from app.beets.import_session import run_import_worker
 
     config["import"]["hardlink"] = True  # the user's config
@@ -203,21 +198,18 @@ def test_explicit_move_pins_every_file_flag() -> None:
 
 
 def test_default_operation_pins_delete_off_and_leaves_filing_to_the_user() -> None:
-    """The arm every UI path takes, and the one the flag-pinning commit missed.
+    """The arm every UI path takes: no request names an operation.
 
-    No UI request names an operation (a manual import and "Review now" send no
-    options, the sweep and bank apply send ``operation: "default"``), so
-    ``move=None`` is the real import path. Its five filing flags are the user's
-    to choose — copy vs move vs hardlink is a filing preference — but
-    ``delete`` is not a filing choice, it is a destroy-the-source choice: beets
-    keeps it alive whenever copy survives and then removes the originals, so a
-    "copy" under ``delete: yes`` silently moved the user's download into the
-    library. MusicDrop never destroys a source, so ``delete`` is pinned off
-    here too, and the user's own value is handed back afterwards.
+    A manual import and "Review now" send no options, the sweep and bank apply
+    send ``operation: "default"``, so ``move=None`` is the real import path. Its
+    five filing flags stay the user's, but ``delete`` is a destroy-the-source
+    choice: beets keeps it alive whenever copy survives and then removes the
+    originals, so a "copy" under ``delete: yes`` moved the user's download into
+    the library. It is pinned off here and handed back afterwards.
 
-    This is the only test that reaches the central pin: on the two explicit
-    arms ``file_flags`` pins ``delete`` as well, so dropping ``"delete": False``
-    from ``forced`` turns THIS test red and leaves those two green.
+    The only test that reaches the central pin: on the two explicit arms
+    ``file_flags`` pins ``delete`` as well, so dropping ``"delete": False`` from
+    ``forced`` turns THIS test red and leaves those two green.
     """
     from app.beets.import_session import run_import_worker
 

@@ -26,18 +26,15 @@ class ImportOptions(BaseModel):
     # only. ``unattended`` True is the inbox path: no human review — uncertain
     # and duplicate albums are set aside rather than parked. ``sweep`` True is
     # the banking sweep: an unattended, beets-incremental run that BANKS every
-    # set-aside album (with its candidate payload) instead of just skipping it,
-    # recorded as origin="sweep". A sweep is unattended by definition (the
-    # session enforces ``unattended or sweep``), so {"sweep": true} alone is a
-    # complete sweep request, and it forces no file operation: ``operation``
-    # behaves exactly as for a manual import (the in-library guard still
-    # force-corrects in-library sources to move).
+    # set-aside album (with its candidate payload), recorded as origin="sweep".
+    # A sweep is unattended by definition (the session enforces ``unattended or
+    # sweep``) and forces no file operation.
     #
     # ``incremental`` admits False and null only. False is ``beet import -I``.
     # There is no True: under a ``hardlink: yes`` config it would turn history on
     # WITHOUT the ``incremental_skip_later`` guard null installs, so it is weaker
-    # than sending nothing — and nothing sends it. Widening to bool later is a
-    # non-breaking contract change; narrowing after a release is not.
+    # than sending nothing. Widening to bool later is a non-breaking contract
+    # change; narrowing after a release is not.
     operation: Literal["default", "move", "copy"] = "default"
     unattended: bool = False
     sweep: bool = False
@@ -257,8 +254,8 @@ class AlbumOutcome(BaseModel):
     # and a non-applied follow-up status could regress a decided feed row.
     album_id: int | None = None
     # Why an album the user asked to Replace imported nothing: the old copy was
-    # not disposed of — unreadable, no Trash wired, a refused store layout, a
-    # failed move — so beets was answered SKIP. Carried on its own follow-up
+    # not disposed of (unreadable, no Trash wired, a refused store layout, a
+    # failed move), so beets was answered SKIP. Carried on its own follow-up
     # outcome (same album_index) and attached to the feed row without touching
     # its status. None on every other outcome.
     note: str | None = None

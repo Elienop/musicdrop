@@ -21,12 +21,11 @@ import {
  * Trash action for one album: confirm -> move the album's tracks, cover art and
  * MusicDrop's lyric files to Trash + drop the album from the library -> navigate
  * to the artist page (this album is gone). Anything else in the folder is left
- * alone, and the folder itself survives while something is still in it, so the
- * body must not promise the whole folder. Restore is not a put-back either: it
- * re-imports the tracks, and the cover and lyrics stay in Trash — hence "only
+ * alone, and the folder survives while something is still in it, so the body
+ * must not promise the whole folder. Restore is not a put-back either: it
+ * re-imports the tracks and leaves the cover and lyrics in Trash — hence "only
  * the tracks" (BACKLOG.md, open item). The Action button preventDefaults so the
- * dialog stays open showing "Moving…" until the move resolves, then closes on
- * success.
+ * dialog stays open showing "Moving…" until the move resolves.
  */
 export function DeleteAlbumAction({ album }: Readonly<{ album: AlbumDetail }>) {
   const navigate = useNavigate();

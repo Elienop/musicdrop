@@ -900,12 +900,11 @@ function StaleScreen({ item }: Readonly<{ item: BankItem }>) {
       {
         path: item.folder,
         // `incremental: false` is beets' own `-I`. The sweep that banked this
-        // folder recorded it in beets' import history (the docstring above:
-        // a re-sweep can never re-bank it), so without the override a run that
-        // keeps its files skips every album here — and the row is deleted on
-        // success either way, leaving the album in neither the bank nor the
-        // library. The other three fields are the manual default; the
-        // generated ImportOptions marks them required.
+        // folder recorded it in beets' import history, so without the override a
+        // run that keeps its files skips every album here — and the row is
+        // deleted on success either way, leaving the album in neither the bank
+        // nor the library. The other three fields are the manual default, which
+        // the generated ImportOptions marks required.
         options: {
           operation: "default",
           unattended: false,
