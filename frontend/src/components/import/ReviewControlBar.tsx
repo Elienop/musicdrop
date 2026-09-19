@@ -4,6 +4,7 @@ import type { ImportSearch } from "@/api/useImport";
 import { Expand, Refresh, Spinner, Success } from "@/components/icons";
 import { ReleaseSearchRow } from "@/components/import/ReleaseSearchRow";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 export type BarDecision = {
   key: string;
@@ -12,6 +13,11 @@ export type BarDecision = {
   onClick: () => void;
   disabled: boolean;
   hinted?: boolean;
+  /** Wear the pending posture — the spinner + `pendingLabel`. The decisions
+   * share one mutation, so the caller says which one was pressed; without it
+   * the primary was the only control that could report progress. */
+  pending?: boolean;
+  pendingLabel?: string;
 };
 
 export type BarPrimary = {
@@ -34,7 +40,7 @@ export function ReviewControlBar({
   rescan,
   search,
   cluster,
-  checking = false,
+  checking,
   hint,
   messages,
 }: Readonly<{
@@ -49,6 +55,9 @@ export function ReviewControlBar({
     defaultOpen?: boolean;
   };
   cluster?: (hintId: string | undefined) => React.ReactNode;
+  /** Whether the library check is in flight. Pass a boolean on every
+   * render of a screen that HAS this state (the region then mounts empty
+   * and only swaps text); omit it entirely on screens that never do. */
   checking?: boolean;
   hint?: string;
   messages?: React.ReactNode;
@@ -70,9 +79,18 @@ export function ReviewControlBar({
           />
         </div>
       )}
-      {checking && (
-        <output className="text-muted-foreground text-sm block">
-          Checking your library…
+      {/* Mounted from the first render on any screen that can ever say this,
+          `sr-only` while empty and only ever swapping its TEXT: a live region
+          that APPEARS already holding its sentence is not reliably announced.
+          `undefined` means the caller has no such state at all. */}
+      {checking !== undefined && (
+        <output
+          className={cn(
+            "text-sm block",
+            checking ? "text-muted-foreground" : "sr-only",
+          )}
+        >
+          {checking ? "Checking your library…" : ""}
         </output>
       )}
       {messages}
@@ -86,7 +104,14 @@ export function ReviewControlBar({
             aria-describedby={d.hinted && hint ? hintId : undefined}
             onClick={d.onClick}
           >
-            {d.label}
+            {d.pending && d.pendingLabel ? (
+              <>
+                <Spinner className="animate-spin" aria-hidden="true" />{" "}
+                {d.pendingLabel}
+              </>
+            ) : (
+              d.label
+            )}
           </Button>
         ))}
         <div className="ml-auto flex flex-wrap items-center gap-2">
@@ -95,6 +120,9 @@ export function ReviewControlBar({
               type="button"
               variant="outline"
               size="sm"
+              // The form under it is already locked by `busy`; locking the
+              // expander too stops the bar offering a dead panel.
+              disabled={search.busy}
               aria-expanded={searchOpen}
               aria-controls={formId}
               onClick={() => setSearchOpen((o) => !o)}

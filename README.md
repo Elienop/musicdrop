@@ -66,7 +66,7 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   through a symlink below the library root is skipped with a log line, and a bind mount is the
   supported way to put part of a library on another disk.
 - **Edit tags** — album & track, from the UI. A rename that would land the album's cover on a name another file already holds is refused before anything moves — the tag changes still write, the files stay put, and the preview says why (beets alone would silently rename the cover to a `.1` sibling).
-- **Import** — interactive candidate picker, resume, an import-time duplicate guard (duplicates always route to review, whatever `duplicate_action` says), and search-by-release-ID when the right match isn't offered. Unattended runs **bank** undecidable albums for later review instead of stalling, and the summary verifies each album actually **landed** in the library.
+- **Import** — interactive candidate picker, resume, an import-time duplicate guard (duplicates always route to review, whatever `duplicate_action` says — and when the match you apply is already in your library, the duplicate question opens next, on the same album), and search-by-release-ID when the right match isn't offered. Unattended runs **bank** undecidable albums for later review instead of stalling, and the summary verifies each album actually **landed** in the library.
 - **Duplicates** — find & resolve duplicate albums (resolve one, or resolve-all).
 - **Release identity** — which release an album is (source · label · country · media · disambiguation), with view-release links.
 - **Delete & Trash** — delete albums or artists into a Trash; restore or empty it under

@@ -269,6 +269,103 @@ export function isWorking(state: ImportJobState): boolean {
   return ACTIVE_PHASES.has(state.phase) && !state.awaiting_decision;
 }
 
+/** How long a decision screen holds still after a landing choice, waiting for
+ * the job feed to say whether beets has a second question for the SAME album.
+ *
+ * What the window actually reads: the hold arms {@link useImportJob} by
+ * flipping its `enabled` (the query is disabled until then), and a stale,
+ * newly-enabled query fetches at once — that first read, then four
+ * {@link IMPORT_POLL_MS} polls. The fifth poll is due AT the bound and has no
+ * reader. (The choice mutation's `onSettled` invalidation is NOT what fetches:
+ * @tanstack/query-core 5.102.2 runs hook-level `onSettled` before mutate-level
+ * `onSuccess` (mutation.js:107-109 -> mutationObserver.js:74-77), so at
+ * invalidation time this key still has no enabled observer, and
+ * `invalidateQueries` refetches `type: "active"` only (queryClient.js:143).)
+ *
+ * The window covers one pipeline step, not a lookup: beets asks the duplicate
+ * question in the same stage as the match, with nothing over the network in
+ * between (`user_query` runs `task.choose_match` at
+ * beets/importer/stages.py:163 and `_resolve_duplicates` at :188). Building the
+ * prompt reads the library and the incoming files, which is what the slack is
+ * for. On the bound the user goes back where they came from. */
+export const APPLY_NEXT_QUESTION_MS = 5 * IMPORT_POLL_MS;
+
+/** What should happen to a decision screen after its landing choice (apply /
+ * as-is) was accepted, read off one poll of the job feed. */
+export type PostApplyStep =
+  /** beets parked the duplicate question for this album — open it. */
+  | "duplicate"
+  /** The album re-parked for review (a stale submit) — hold this screen. */
+  | "stay"
+  /** Nothing more is owed here — go back to the list. */
+  | "leave"
+  /** The feed does not say yet. */
+  | "wait";
+
+/**
+ * Route the candidate screen after a landing choice, from the feed row alone.
+ *
+ * `decided` is NOT a leave signal and is the reason this reads more than the
+ * status: `ImportJobRegistry.record_choice` sets it under the same lock that
+ * pushes the choice (backend/app/import_jobs/registry.py), so the row already
+ * says `decided` when the 204 arrives — before beets has run
+ * `_resolve_duplicates`. What proves the duplicate question is behind us is
+ * `album_id`: the session flushes it at the NEXT album's `choose_match`
+ * (`_flush_album_ids`, backend/app/beets/import_session.py), and beets calls
+ * `task.add` at stages.py:319 from `_apply_choice` (:210), after
+ * `_resolve_duplicates` (:188).
+ *
+ * Terminal is read first: the backend gates `awaiting_decision` on an active
+ * phase, so a `needs_dup_resolution` row on a finished job is a set-aside
+ * nobody is blocked on, not a prompt to open.
+ */
+export function postApplyStep(
+  state: ImportJobState,
+  index: number,
+): PostApplyStep {
+  if (isTerminalPhase(state.phase)) return "leave";
+  const row = state.albums.find((album) => album.index === index);
+  if (row === undefined) return "leave";
+  if (row.status === "needs_dup_resolution") return "duplicate";
+  if (row.status === "needs_review") return "stay";
+  if (row.status === "applied" || row.status === "skipped") return "leave";
+  if (typeof row.album_id === "number") return "leave";
+  return "wait";
+}
+
+/** Everything that can end a hold, read together. */
+export interface HoldSignals {
+  /** What the latest feed read says about this album ({@link postApplyStep}),
+   * or "wait" when no feed fetched after the choice has arrived yet. */
+  step: PostApplyStep;
+  /** The job itself is gone — not a transient feed error, which the poll loop
+   * is built to ride out. */
+  feedGone: boolean;
+  /** The bound elapsed. */
+  expired: boolean;
+}
+
+/**
+ * The ONE ordered exit ladder for a hold. Every arm that can end the wait is
+ * resolved here so exactly one fires, rather than by two effects racing to
+ * call `navigate`.
+ *
+ * Precedence, highest first:
+ *
+ * 1. `duplicate` — the question the hold exists to catch. It outranks the
+ *    bound, so a prompt committed in the last scheduling gap still opens.
+ * 2. `leave` — the job is gone, or the row says nothing more is owed
+ *    (terminal phase / row gone / landed / applied / skipped).
+ * 3. the bound — `expired` also leaves, below `duplicate` and `leave` (a feed
+ *    `stay` sits BELOW it: clause 4).
+ * 4. `stay` — the album re-parked for review; release the screen in place.
+ */
+export function holdExit({ step, feedGone, expired }: HoldSignals): PostApplyStep {
+  if (step === "duplicate") return "duplicate";
+  if (feedGone || step === "leave" || expired) return "leave";
+  return step === "stay" ? "stay" : "wait";
+}
+
 async function fetchJob(jobId: string): Promise<ImportJobState> {
   const { data, error, response } = await client.GET("/api/import/{job_id}", {
     params: { path: { job_id: jobId } },

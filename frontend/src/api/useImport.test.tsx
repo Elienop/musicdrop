@@ -9,8 +9,10 @@ import {
   CandidateNotFoundError,
   ImportConflictError,
   ImportJobNotFoundError,
+  holdExit,
   ImportStartRejectedError,
   ImportUnavailableError,
+  postApplyStep,
   startErrorSentence,
   throwIfRefused,
   useDuplicatePrompt,
@@ -836,5 +838,125 @@ describe("useDuplicatePrompt / useResolveImportDuplicate", () => {
     result.current.mutate({ index: 0, decision: { action: "skip_new" } });
 
     await waitFor(() => expect(result.current.isError).toBe(true));
+  });
+});
+
+describe("postApplyStep", () => {
+  /** A feed row for a DIFFERENT album, so "this album" is a real question. */
+  function otherRow(status: ImportAlbumSummary["status"]): ImportAlbumSummary {
+    return { ...feedRow(status), index: 9 };
+  }
+
+  // `decided` is what ImportJobRegistry.record_choice writes under the same
+  // lock that pushes the choice, so the row already reads `decided` when the
+  // 204 arrives — before beets has reached _resolve_duplicates. Treating it as
+  // an answer would end every wait before the duplicate question is asked.
+  test("a decided row with nothing else on it is not an answer yet", () => {
+    expect(postApplyStep(makeJob({ albums: [feedRow("decided")] }), 0)).toBe(
+      "wait",
+    );
+  });
+
+  test("a parked duplicate for this album is the next question", () => {
+    const state = makeJob({
+      albums: [feedRow("needs_dup_resolution")],
+      awaiting_decision: true,
+    });
+    expect(postApplyStep(state, 0)).toBe("duplicate");
+  });
+
+  // beets calls task.add at stages.py:319 (from _apply_choice at :210), after
+  // _resolve_duplicates at :188; the session flushes the id it assigned at the
+  // next album's choose_match. So an id on the row places the album past the
+  // duplicate question even while the status still reads `decided`.
+  test("a library album id means the duplicate question is behind us", () => {
+    const landed: ImportAlbumSummary = { ...feedRow("decided"), album_id: 7 };
+    expect(postApplyStep(makeJob({ albums: [landed] }), 0)).toBe("leave");
+  });
+
+  test("applied and skipped rows owe nothing more", () => {
+    expect(postApplyStep(makeJob({ albums: [feedRow("applied")] }), 0)).toBe(
+      "leave",
+    );
+    expect(postApplyStep(makeJob({ albums: [feedRow("skipped")] }), 0)).toBe(
+      "leave",
+    );
+  });
+
+  test("a row that is no longer in the feed owes nothing more", () => {
+    expect(postApplyStep(makeJob({ albums: [otherRow("decided")] }), 0)).toBe(
+      "leave",
+    );
+  });
+
+  // The backend gates `awaiting_decision` on an active phase, so a
+  // needs_dup_resolution row on a finished job is a set-aside nobody is blocked
+  // on — there is no prompt to open there.
+  test("a terminal job outranks a set-aside duplicate row", () => {
+    const state = makeJob({
+      phase: "done",
+      albums: [feedRow("needs_dup_resolution")],
+    });
+    expect(postApplyStep(state, 0)).toBe("leave");
+  });
+
+  test("a row back at needs_review is a re-park, not a departure", () => {
+    expect(
+      postApplyStep(makeJob({ albums: [feedRow("needs_review")] }), 0),
+    ).toBe("stay");
+  });
+});
+
+// One ladder, so the arms cannot race. Before this, the bound owned a second
+// `navigate` in its own effect; a duplicate that committed in the last
+// scheduling gap before the deadline left both calls in flight, last one wins.
+describe("holdExit", () => {
+  const base = { step: "wait", feedGone: false, expired: false } as const;
+
+  test("nothing said yet is a wait", () => {
+    expect(holdExit(base)).toBe("wait");
+  });
+
+  test("each signal on its own", () => {
+    expect(holdExit({ ...base, step: "duplicate" })).toBe("duplicate");
+    expect(holdExit({ ...base, step: "leave" })).toBe("leave");
+    expect(holdExit({ ...base, step: "stay" })).toBe("stay");
+    expect(holdExit({ ...base, feedGone: true })).toBe("leave");
+    expect(holdExit({ ...base, expired: true })).toBe("leave");
+  });
+
+  // The precedence, read as pairs: each row is a state both arms can be true
+  // in, and names which one wins.
+  test("the duplicate question outranks every other exit", () => {
+    expect(holdExit({ step: "duplicate", feedGone: true, expired: false })).toBe(
+      "duplicate",
+    );
+    expect(holdExit({ step: "duplicate", feedGone: false, expired: true })).toBe(
+      "duplicate",
+    );
+    expect(holdExit({ step: "duplicate", feedGone: true, expired: true })).toBe(
+      "duplicate",
+    );
+  });
+
+  test("the bound outranks a re-park, and leaving outranks the bound's wording", () => {
+    expect(holdExit({ step: "stay", feedGone: false, expired: true })).toBe(
+      "leave",
+    );
+    expect(holdExit({ step: "stay", feedGone: true, expired: false })).toBe(
+      "leave",
+    );
+    expect(holdExit({ step: "leave", feedGone: false, expired: true })).toBe(
+      "leave",
+    );
+  });
+
+  // A wait that the bound has not reached and the feed has not answered stays
+  // a wait even when the feed is merely erroring — `feedGone` is the narrow
+  // signal, not `isError`.
+  test("a live feed with nothing to say keeps waiting", () => {
+    expect(holdExit({ step: "wait", feedGone: false, expired: false })).toBe(
+      "wait",
+    );
   });
 });

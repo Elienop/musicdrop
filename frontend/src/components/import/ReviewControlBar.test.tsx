@@ -5,7 +5,12 @@ import { expect, test, vi } from "vitest";
 import { ReviewControlBar } from "@/components/import/ReviewControlBar";
 
 function renderBar(over: Partial<React.ComponentProps<typeof ReviewControlBar>> = {}) {
-  render(
+  return render(bar(over));
+}
+
+/** The same element, so a test can rerender it and compare node identity. */
+function bar(over: Partial<React.ComponentProps<typeof ReviewControlBar>> = {}) {
+  return (
     <ReviewControlBar
       decisions={[
         { key: "ignore", label: "Ignore", variant: "ghost", onClick: vi.fn(), disabled: false },
@@ -30,7 +35,7 @@ function renderBar(over: Partial<React.ComponentProps<typeof ReviewControlBar>> 
       search={{ onSearch: vi.fn(), busy: false, feedback: null, error: false }}
       hint="Use as-is keeps your tags."
       {...over}
-    />,
+    />
   );
 }
 
@@ -90,6 +95,25 @@ test("checking renders the library-check status line", () => {
   expect(screen.getByRole("status")).toHaveTextContent(/checking your library/i);
 });
 
+// A live region that APPEARS already holding its sentence is not reliably
+// announced: it has to be on the page, empty, before there is anything to say.
+test("the library-check region is mounted before there is anything to say", () => {
+  const view = renderBar({ checking: false });
+  const region = screen.getByRole("status");
+  expect(region).toBeEmptyDOMElement();
+
+  view.rerender(bar({ checking: true }));
+  expect(screen.getByRole("status")).toBe(region);
+  expect(region).toHaveTextContent(/checking your library/i);
+});
+
+// The other half: a screen with no library check at all must not gain a second
+// status region — the import candidate screen owns one of its own.
+test("no checking prop mounts no library-check region", () => {
+  renderBar();
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
 test("a pending rescan shows Rescanning and disables itself", () => {
   renderBar({ rescan: { onClick: vi.fn(), pending: true, disabled: false } });
   expect(screen.getByRole("button", { name: /rescanning/i })).toBeDisabled();
@@ -127,4 +151,40 @@ test("a pending primary shows its pending label and messages render", () => {
   });
   expect(screen.getByRole("button", { name: /queuing/i })).toBeDisabled();
   expect(screen.getByRole("alert")).toHaveTextContent("boom");
+});
+
+// The decisions share one mutation with the primary, so the bar has to let the
+// caller say which control was pressed — otherwise the primary is the only one
+// that can report progress and it spins for somebody else's click.
+test("a pending decision wears the posture, and its neighbours do not", () => {
+  renderBar({
+    decisions: [
+      { key: "ignore", label: "Ignore", variant: "ghost", onClick: vi.fn(), disabled: true },
+      {
+        key: "asis",
+        label: "Use as-is",
+        variant: "secondary",
+        onClick: vi.fn(),
+        disabled: true,
+        pending: true,
+        pendingLabel: "Using as-is…",
+      },
+    ],
+  });
+  expect(screen.getByRole("button", { name: /using as-is…/i })).toBeDisabled();
+  expect(
+    screen.queryByRole("button", { name: /^use as-is$/i }),
+  ).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
+});
+
+// The form the toggle reveals is already locked by `busy`; the toggle itself
+// used to stay live, so the bar offered a dead panel.
+test("the Different release toggle locks with the search it opens", () => {
+  renderBar({
+    search: { onSearch: vi.fn(), busy: true, feedback: null, error: false },
+  });
+  expect(
+    screen.getByRole("button", { name: /different release/i }),
+  ).toBeDisabled();
 });

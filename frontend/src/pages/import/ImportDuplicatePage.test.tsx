@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useNavigationType } from "react-router";
 import { describe, expect, test } from "vitest";
 
 import type { DuplicatePrompt } from "@/api/useImport";
@@ -61,10 +61,22 @@ function renderWithOrigin(state?: unknown) {
             path="/import/albums/:index/duplicate"
             element={<ImportDuplicatePage />}
           />
-          <Route path="/review" element={<p>Review page probe</p>} />
+          <Route path="/review" element={<ReviewProbe />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
+  );
+}
+
+/** The Review list, reporting HOW the router got here so a push that should
+ * have been a replace is visible. */
+function ReviewProbe() {
+  const navigationType = useNavigationType();
+  return (
+    <>
+      <p>Review page probe</p>
+      <p>{`Arrived by ${navigationType}`}</p>
+    </>
   );
 }
 
@@ -212,5 +224,45 @@ describe("ImportDuplicatePage", () => {
     expect(
       screen.getByText(/replace moves the old copy to trash/i),
     ).toBeVisible();
+  });
+
+  // beets asks two questions per album — the match, then the duplicate. Apply
+  // now lands the user straight here, so the screen has to read as the SECOND
+  // question about one album rather than a new item to deal with.
+  test("the screen names itself as this album's next question, above the heading", async () => {
+    server.use(http.get(DUPLICATE_URL, () => HttpResponse.json(PROMPT)));
+    renderDuplicateAt();
+
+    const heading = await screen.findByRole("heading", {
+      level: 1,
+      name: /already in your library/i,
+    });
+    const line = screen.getByText("Next question for this album");
+    expect(line).toBeVisible();
+    // Above the h1 for a sighted reader…
+    expect(
+      line.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // …and ON the focus path for a screen reader, which is the half document
+    // order does NOT deliver: both announcers move focus to the h1, so a line
+    // that merely sits above it is reached only by reading backwards, and
+    // heading navigation skips it entirely.
+    expect(heading).toHaveAttribute("aria-describedby", line.id);
+    expect(line.id).not.toBe("");
+    expect(heading).toHaveAccessibleDescription("Next question for this album");
+  });
+
+  // Every post-decision exit in this flow replaces, so Back never returns to a
+  // screen whose album is already resolved.
+  test("resolving replaces the history entry", async () => {
+    server.use(
+      http.get(DUPLICATE_URL, () => HttpResponse.json(PROMPT)),
+      http.post(DUPLICATE_URL, () => new HttpResponse(null, { status: 204 })),
+    );
+    const user = userEvent.setup();
+    renderWithOrigin({ from: { label: "Review", to: "/review" } });
+
+    await user.click(await screen.findByRole("button", { name: /merge/i }));
+    expect(await screen.findByText("Arrived by REPLACE")).toBeInTheDocument();
   });
 });
