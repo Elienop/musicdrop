@@ -18,7 +18,7 @@ function track(id: number, title: string, overrides: Partial<Track> = {}): Track
 const baseAlbum: AlbumDetail = {
   id: 7, album_artist: "Radiohead", title: "In Rainbows", year: 2007,
   track_count: 2, genre: "Rock", mb_albumid: "rel-1",
-  folder_outside_library: null,
+  outside_library: null,
   tracks: [track(1, "15 Step", { has_lyrics: true }), track(2, "Bodysnatchers")],
 };
 /** 1 track with lyrics, 2 genuinely missing, 1 instrumental. */

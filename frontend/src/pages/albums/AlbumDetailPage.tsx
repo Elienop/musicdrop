@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -76,6 +76,10 @@ export function AlbumDetailPage() {
   return <AlbumDetailView album={data} />;
 }
 
+/** Links the h1 to the outside-library notice above it. One per page, so a
+ * constant is enough (the shape at ImportPage.tsx:319). */
+const OUTSIDE_NOTICE_ID = "album-outside-library";
+
 function AlbumDetailView({ album }: Readonly<{ album: AlbumDetail }>) {
   const missingQuery = useAlbumMissing(album.id, album.mb_albumid);
   const report = missingQuery.data;
@@ -150,13 +154,10 @@ function AlbumDetailView({ album }: Readonly<{ album: AlbumDetail }>) {
         />
       )}
 
-      {/* Above the rail, not inside the tracklist column: on a phone the
-          column stacks BELOW the whole cover panel, so a notice about the
-          album as a whole would arrive after the artwork and the actions.
-          Here it is the second thing read on every viewport and the rail's
-          own layout is untouched. */}
-      {album.folder_outside_library !== null && (
-        <OutsideLibraryNotice folder={album.folder_outside_library} />
+      {/* Above the rail: the tracklist column stacks BELOW the whole cover
+          panel on a phone, which would put this after the artwork. */}
+      {album.outside_library !== null && (
+        <OutsideLibraryNotice outside={album.outside_library} />
       )}
 
       {/* Rail layout (the artist-page idiom): the left side is dedicated to
@@ -194,6 +195,12 @@ function AlbumDetailView({ album }: Readonly<{ album: AlbumDetail }>) {
               <h1
                 id="album-detail-title"
                 tabIndex={-1}
+                // Route focus lands here, AFTER the notice above, so describe
+                // the h1 with it while it renders — otherwise the only way to
+                // meet it is to read backwards.
+                aria-describedby={
+                  album.outside_library === null ? undefined : OUTSIDE_NOTICE_ID
+                }
                 className="font-display text-display font-semibold tracking-tight break-words"
               >
                 {album.title}
@@ -356,39 +363,44 @@ function AlbumDetailView({ album }: Readonly<{ album: AlbumDetail }>) {
   );
 }
 
-/** States where some of the album's files are, when the backend reports one
- * that is not under the library folder.
- *
- * The field is a FACT, not a cause: an in-place import, an edited `directory:`
- * and rows left in a Trash outside the music folder all produce it, and so does
- * the case this exists for — an import that stopped part-way. So the sentence
- * states the fact and offers the remedy conditionally ("if"), and nothing is
- * lost either way: no destructive tone, no `role="alert"`.
- *
- * The recipe is the app's calm inline note — bordered box, muted text, leading
- * Info glyph — as used by CoverEditPanel's cover detail and
- * ArtistImageEditPanel's blocked sources. Deliberately NOT `StatusBanner`:
- * that primitive maps every tone to a live-region role (`status`/`alert`), and
- * this text is present at load and never changes, so a live region would
- * announce nothing while still adding a region to browse mode. A plain <p> is
- * read in document order; the glyph is decorative. */
-function OutsideLibraryNotice({ folder }: Readonly<{ folder: string }>) {
+/** A path with a `<wbr>` after each separator, so a line breaks after a `/`
+ * instead of mid-component. Adds no text, so `textContent` is the raw path. */
+function breakablePath(path: string) {
+  const parts = path.split(/(?<=\/)/);
+  return parts.map((part, i) => (
+    <Fragment key={`${i}:${part}`}>
+      {part}
+      {i < parts.length - 1 && <wbr />}
+    </Fragment>
+  ));
+}
+
+/** Where some of the album's files are, when the backend reports a folder
+ * outside the library. Not `StatusBanner`: that primitive maps every tone to a
+ * live-region role, and this text is present at load and never changes. The
+ * remedy is shown only where the server says that one folder holds every track
+ * — re-adding a folder that holds only part of the album sweeps the rest to
+ * Trash — so the client makes no judgement of its own. */
+function OutsideLibraryNotice({
+  outside,
+}: Readonly<{ outside: NonNullable<AlbumDetail["outside_library"]> }>) {
   return (
-    <p className="text-muted-foreground flex items-start gap-2 rounded-md border p-3 text-sm">
+    <p
+      id={OUTSIDE_NOTICE_ID}
+      className="text-muted-foreground flex items-start gap-2 rounded-xl border p-3 text-sm"
+    >
       <Info className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-      {/* `min-w-0` sets the floor, `break-words` chooses the line break — two
-       * different jobs and neither substitutes for the other. The span is a
-       * flex item of the <p>, so without `min-w-0` its min-width is the longest
-       * unbreakable token inside it and a path component with no separator
-       * pushes the page sideways; SettingsTrashPage.tsx's RestoreOutlook
-       * spells the pair out with the numbers measured at 320px. The wrap goes
-       * on the PATH span only, so the sentence around it keeps breaking at
-       * words, and `text-foreground` lifts the one datum the reader has to act
-       * on out of the muted prose (the PlexSettingsPanel folder idiom). */}
+      {/* The path needs both classes: `min-w-0` lowers this flex item's
+       * min-content floor, `break-words` splits the one component too long for
+       * a line (SettingsTrashPage's RestoreOutlook has the 320px numbers). */}
       <span className="min-w-0">
-        Some of this album’s files are outside your library folder:{" "}
-        <span className="text-foreground break-words">{folder}</span>. If an
-        import stopped part-way, import that folder again.
+        Some files are in{" "}
+        <span className="text-foreground font-mono break-words">
+          {breakablePath(outside.folder)}
+        </span>
+        , outside your library folder.
+        {outside.holds_every_track &&
+          " If an import stopped part-way, add that folder again."}
       </span>
     </p>
   );

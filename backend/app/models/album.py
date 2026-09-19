@@ -50,14 +50,29 @@ class ReleaseIdentity(BaseModel):
     release_url: str | None
 
 
+# The FACT, not a cause: an import stopped mid-placement produces it, and so do
+# an in_place import and rows left in a Trash outside the music folder (all
+# measured, test_album_outside_library). One object rather than two flat fields,
+# which could disagree. Kept out of the docstring: that becomes the OpenAPI
+# description, which is one sentence.
+class OutsideLibrary(BaseModel):
+    """Where an album file sits when it is not in the library folder."""
+
+    folder: str = Field(
+        description="The folder holding an album file that is not in the library folder.",
+    )
+    # The one shape where adding that folder again is measured safe under every
+    # file operation: beets excludes the album from find_duplicates and
+    # remove_replaced absorbs its rows, so no duplicate is asked and nothing
+    # reaches Trash. A straddle or a multi-folder album gets the fact alone.
+    holds_every_track: bool = Field(
+        description="True when every track of the album is a file in that one folder.",
+    )
+
+
 class AlbumDetail(Album):
     tracks: list[Track]
     release: ReleaseIdentity | None = None
-    # ONE field, not a flag plus a folder: two cannot then disagree, and the
-    # sentence needs the folder anyway. The fact, not a cause — an import that
-    # stopped mid-placement produces it (measured, test_import_incremental_e2e),
-    # and so do an in_place import, an edited ``directory:`` and rows left in a
-    # Trash outside the music folder.
-    folder_outside_library: str | None = Field(
-        description="The folder of one album file that is not under the library folder.",
+    outside_library: OutsideLibrary | None = Field(
+        description="Set when some of the album's files are not in the library folder.",
     )

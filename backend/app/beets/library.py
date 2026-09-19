@@ -32,7 +32,7 @@ from mediafile import MediaFile
 from app.artwork.normalize import normalize_artist_name
 from app.beets.release_identity import release_identity
 from app.etag import stat_etag
-from app.models.album import Album, AlbumDetail, Track
+from app.models.album import Album, AlbumDetail, OutsideLibrary, Track
 from app.models.artist import Artist
 from app.models.import_models import ExistingAlbum
 from app.models.search import SearchEntity, SearchResults, SearchTrack, TypedSearchPage
@@ -770,17 +770,48 @@ def _to_track(item: Any) -> Track:
     )
 
 
+def _row_path(item: Any) -> str:
+    """The item's file path, spelled the way the containment question judges it.
+
+    Judging and displaying one string keeps the folder shown from being a second
+    spelling of the folder judged: a row outside the music dir keeps its ``..``
+    through the DB (one under it is stored relative and beets re-normalises it).
+    """
+    return os.path.abspath(os.fsdecode(item.path))
+
+
 def _inside_library(lib: Library, item: Any) -> bool:
-    """True iff the item's file lives under the library dir. Reads no disk.
+    """True iff the item's file lives under the library dir.
 
     Mirrors beets' own guard in ``Item.try_sync`` (``library/models.py:1027``,
     ``self._db.directory in util.ancestry(self.path)``): a file outside the
-    library is never relocated. Pure string work, so an unmounted library
-    answers the same as a mounted one instead of raising.
+    library is never relocated. ``commonpath``, not a prefix test — ``<music>``
+    and ``<music>-inbox`` are different folders. String work only; no filesystem
+    read (pinned against stat/lstat/readlink/scandir/listdir/access/open), so an
+    unmounted library answers the same as a mounted one instead of raising.
     """
-    current = os.path.abspath(os.fsdecode(item.path))
     libdir = os.path.abspath(os.fsdecode(lib.directory))
-    return os.path.commonpath([current, libdir]) == libdir
+    return os.path.commonpath([_row_path(item), libdir]) == libdir
+
+
+def _outside_library(lib: Library, items: list[Any]) -> OutsideLibrary | None:
+    """The folder of the album's first outside row, and whether it holds them all.
+
+    ``holds_every_track`` is row-only and conservative — a pathless row, a row in
+    the library, or a row in another folder makes it false. That is the one shape
+    where adding the folder again asks no duplicate question and moves nothing to
+    Trash (measured, ``test_import_incremental_e2e``).
+    """
+    outside = next((it for it in items if it.path and not _inside_library(lib, it)), None)
+    if outside is None:
+        return None
+    folder = os.path.dirname(_row_path(outside))
+    return OutsideLibrary(
+        folder=folder,
+        holds_every_track=all(
+            bool(it.path) and os.path.dirname(_row_path(it)) == folder for it in items
+        ),
+    )
 
 
 def get_album_detail(lib: Library, album_id: int) -> AlbumDetail | None:
@@ -795,10 +826,6 @@ def get_album_detail(lib: Library, album_id: int) -> AlbumDetail | None:
         if album is None:
             return None
         items = list(album.items())
-        # A row with no path names no folder the user could act on, so it is not
-        # one. The string keeps its exact bytes: the app-wide
-        # ``SurrogateSafeJSONResponse`` sink degrades an undecodable one.
-        outside = next((it for it in items if it.path and not _inside_library(lib, it)), None)
         tracks = sorted(
             (_to_track(item) for item in items),
             key=lambda t: (t.disc, t.track),
@@ -807,9 +834,8 @@ def get_album_detail(lib: Library, album_id: int) -> AlbumDetail | None:
             **_album_fields(album, track_count=len(items), genre=_album_genre(album, items)),
             tracks=tracks,
             release=release_identity(album, album.mb_albumid),
-            folder_outside_library=(
-                None if outside is None else os.fsdecode(os.path.dirname(outside.path))
-            ),
+            # Not display_path: wire.py scrubs at the sink (main.py:459).
+            outside_library=_outside_library(lib, items),
         )
 
 

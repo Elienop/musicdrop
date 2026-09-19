@@ -10024,17 +10024,16 @@
               }
             ]
           },
-          "folder_outside_library": {
+          "outside_library": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/OutsideLibrary"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Folder Outside Library",
-            "description": "The folder of one album file that is not under the library folder."
+            "description": "Set when some of the album's files are not in the library folder."
           }
         },
         "type": "object",
@@ -10047,7 +10046,7 @@
           "genre",
           "mb_albumid",
           "tracks",
-          "folder_outside_library"
+          "outside_library"
         ],
         "title": "AlbumDetail"
       },
@@ -14212,6 +14211,27 @@
           "file_count"
         ],
         "title": "OrphanFolder"
+      },
+      "OutsideLibrary": {
+        "properties": {
+          "folder": {
+            "type": "string",
+            "title": "Folder",
+            "description": "The folder holding an album file that is not in the library folder."
+          },
+          "holds_every_track": {
+            "type": "boolean",
+            "title": "Holds Every Track",
+            "description": "True when every track of the album is a file in that one folder."
+          }
+        },
+        "type": "object",
+        "required": [
+          "folder",
+          "holds_every_track"
+        ],
+        "title": "OutsideLibrary",
+        "description": "Where an album file sits when it is not in the library folder."
       },
       "ParkedAlbum": {
         "properties": {

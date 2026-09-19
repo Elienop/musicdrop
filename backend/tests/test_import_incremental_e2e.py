@@ -34,6 +34,7 @@ from beets.autotag.match import Recommendation as BeetsRec
 
 from app.beets.import_session import ImportBridge, WebImportSession, run_import_worker
 from app.beets.library import _require_id, get_album_detail
+from app.models.album import OutsideLibrary
 from app.models.import_models import (
     DuplicateAction,
     DuplicateDecision,
@@ -270,6 +271,13 @@ def _stop_during_placement(
     return armed
 
 
+def _outside(lib: Library, album: Any) -> Any:
+    """The album detail's ``outside_library``, for an album object."""
+    detail = get_album_detail(lib, _require_id(album.id))
+    assert detail is not None
+    return detail.outside_library
+
+
 @pytest.mark.parametrize("nth", [2, 1])
 def test_a_stop_during_placement_leaves_rows_naming_the_download(
     nth: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -282,8 +290,9 @@ def test_a_stop_during_placement_leaves_rows_naming_the_download(
     after one track landed; ``nth=1`` is what a cross-device hardlink does, where
     every track fails so the first one does.
 
-    Measured here, not assumed: the run raises, no album is repaired, and the
-    detail endpoint's field names the download folder either way.
+    Measured here, not assumed: the run raises, no album is repaired, the detail
+    names the download folder either way, and only the ``nth=1`` shape — every
+    row in that one folder — may be offered the remedy.
     """
     _install_lookup(monkeypatch, BeetsRec.strong)
     lib = _library(tmp_path, "hardlink")
@@ -295,59 +304,116 @@ def test_a_stop_during_placement_leaves_rows_naming_the_download(
     assert "Cannot hard link across devices" in run.errors[0]
 
     (album,) = list(lib.albums())
-    outside = [p for p in _item_paths(lib) if source in p.parents]
-    assert len(outside) == 3 - nth  # nth=2 -> one row left behind, nth=1 -> both
+    outside_rows = [p for p in _item_paths(lib) if source in p.parents]
+    assert len(outside_rows) == 3 - nth  # nth=2 -> one row left behind, nth=1 -> both
     assert sorted(p.name for p in source.iterdir()) == ["01 Track 1.flac", "02 Track 2.flac"]
 
-    detail = get_album_detail(lib, _require_id(album.id))
-    assert detail is not None
-    assert detail.folder_outside_library == str(source)
+    outside = _outside(lib, album)
+    assert outside is not None
+    assert outside.folder == str(source)
+    assert outside.holds_every_track is (nth == 1)
 
 
-@pytest.mark.parametrize("operation", ["copy", "hardlink"])
-@pytest.mark.parametrize("nth", [2, 1])
-def test_re_importing_a_stopped_folder_and_answering_replace_finishes_it(
-    operation: str, nth: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("operation", ["move", "hardlink"])
+def test_a_straddling_stop_is_not_offered_the_remedy(
+    operation: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The remedy the UI offers: import that folder again, answer Replace.
+    """A stop AFTER a track landed leaves rows in two folders, so no remedy.
 
-    End state, under an operation that keeps the download: one album, every row
-    inside the library, the flag off, every file on disk, and the download
-    untouched. ``incremental: false`` is how the second run gets past the history
-    beets wrote for a kept import.
+    Under ``move`` the download then holds only the remainder — re-adding it and
+    answering Replace demotes the album to that remainder and sends the placed
+    track to Trash (security seat M-1). Rows alone cannot tell that from the
+    copy/hardlink straddle, so both are withheld.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, operation)
+    source = _source_folder(tmp_path)
+    _stop_during_placement(monkeypatch, operation, 2)
+
+    assert _import(lib, source, ImportBridge()).errors != []
+    (album,) = list(lib.albums())
+    both = ["01 Track 1.flac", "02 Track 2.flac"]
+    left = sorted(p.name for p in source.iterdir())
+    assert left == (["02 Track 2.flac"] if operation == "move" else both)
+
+    outside = _outside(lib, album)
+    assert outside is not None
+    assert outside.folder == str(source)
+    assert outside.holds_every_track is False
+
+
+@pytest.mark.parametrize("operation", ["move", "copy", "hardlink"])
+def test_the_offered_remedy_finishes_the_album_and_trashes_nothing(
+    operation: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where ``holds_every_track`` is true, adding that folder again is safe.
+
+    Started the way the UI's plain "Add from folder" starts it — no options. No
+    ``incremental`` override: a stopped run writes no history at all (beets only
+    records in ``finalize``, after placement), so there is nothing to get past.
+
+    End state under every file operation: no duplicate question, one whole album,
+    nothing in Trash, the notice off, no row naming a missing file — and the
+    download intact under the operations that keep it.
     """
     _install_lookup(monkeypatch, BeetsRec.strong)
     lib = _library(tmp_path, operation)
     source = _source_folder(tmp_path)
     trash = tmp_path / "trash"
     trash.mkdir()
-    armed = _stop_during_placement(monkeypatch, operation, nth)
+    armed = _stop_during_placement(monkeypatch, operation, 1)
 
     assert _import(lib, source, ImportBridge()).errors != []
+    (stopped,) = list(lib.albums())
+    assert _outside(lib, stopped).holds_every_track is True
     armed["on"] = False
 
-    run = _import(
-        lib,
-        source,
-        ImportBridge(),
-        incremental=False,
-        duplicate=DuplicateAction.replace,
-        trash_dir=trash,
-    )
+    run = _import(lib, source, ImportBridge(), trash_dir=trash)
     assert run.errors == []
-    # Measured, and it is beets' shape rather than ours: the prompt fires only
-    # when a track actually landed. With NO track placed every row names a file
-    # this task is importing, so ``find_duplicates`` excludes the album
-    # (``B/importer/tasks.py:387-397``) and ``remove_replaced`` (``:618-625``)
-    # drops those rows at ``task.add`` — nothing is asked, and nothing is lost.
-    assert (run.duplicates != []) is (nth == 2)
+    # beets' own shape: every row names a file this task is importing, so
+    # ``find_duplicates`` excludes the album (``B/importer/tasks.py:387-397``)
+    # and ``remove_replaced`` (``:618-625``) drops the rows at ``task.add``.
+    assert run.duplicates == []
     (album,) = list(lib.albums())
     detail = get_album_detail(lib, _require_id(album.id))
     assert detail is not None
-    assert detail.folder_outside_library is None
+    assert detail.outside_library is None
     assert len(detail.tracks) == 2
-    landed = _item_paths(lib)
-    assert [p for p in landed if not p.exists()] == []
+    assert [p for p in _item_paths(lib) if not p.exists()] == []
+    assert [p for p in trash.rglob("*") if p.is_file()] == []
+    if operation != "move":
+        assert sorted(p.name for p in source.iterdir()) == ["01 Track 1.flac", "02 Track 2.flac"]
+
+
+def test_adding_an_in_place_albums_folder_again_files_it_and_loses_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``in_place`` shape reads ``holds_every_track`` — and the remedy is harmless.
+
+    An ``in_place`` import files nothing, so every row sits in the source folder.
+    Adding that folder again through a plain import files the album into the
+    library: one album, both tracks, nothing in Trash, the download still there.
+    """
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "copy")
+    source = _source_folder(tmp_path)
+    trash = tmp_path / "trash"
+    trash.mkdir()
+
+    assert _import(lib, source, ImportBridge(), in_place=True).errors == []
+    (placed,) = list(lib.albums())
+    assert _outside(lib, placed) == OutsideLibrary(folder=str(source), holds_every_track=True)
+
+    run = _import(lib, source, ImportBridge(), trash_dir=trash)
+    assert run.errors == []
+    assert run.duplicates == []
+    (album,) = list(lib.albums())
+    detail = get_album_detail(lib, _require_id(album.id))
+    assert detail is not None
+    assert detail.outside_library is None
+    assert len(detail.tracks) == 2
+    assert [p for p in _item_paths(lib) if not p.exists()] == []
+    assert [p for p in trash.rglob("*") if p.is_file()] == []
     assert sorted(p.name for p in source.iterdir()) == ["01 Track 1.flac", "02 Track 2.flac"]
 
 

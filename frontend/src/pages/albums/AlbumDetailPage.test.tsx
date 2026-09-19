@@ -38,7 +38,7 @@ function makeDetail(overrides: Partial<AlbumDetail> = {}): AlbumDetail {
     genre: "Alternative Rock",
     mb_albumid: null,
     // The ordinary album: every file under the library folder.
-    folder_outside_library: null,
+    outside_library: null,
     tracks: [
       makeTrack({
         id: 1,
@@ -632,40 +632,64 @@ describe("AlbumDetailPage", () => {
 
   /** The notice's whole sentence — the test's own copy of the production
    * string, so a reworded half fails rather than a fragment still matching. */
-  const outsideNotice = (folder: string) =>
-    `Some of this album’s files are outside your library folder: ${folder}. ` +
-    `If an import stopped part-way, import that folder again.`;
+  const factOnly = (folder: string) =>
+    `Some files are in ${folder}, outside your library folder.`;
+  const withRemedy = (folder: string) =>
+    `${factOnly(folder)} If an import stopped part-way, add that folder again.`;
 
   /** One path component at Linux's NAME_MAX, with nothing to break at — the
    * string the wrapping classes exist for. */
   const TORTURE_FOLDER = `/downloads/${"z".repeat(255)}`;
 
-  test("names the folder when some of the album's files are outside the library", async () => {
-    const folder = "/downloads/Radiohead - OK Computer";
+  /** Serve one album whose files sit outside the library folder. */
+  function serveOutside(folder: string, holds_every_track: boolean) {
     server.use(
       http.get(DETAIL_URL, () =>
-        HttpResponse.json(makeDetail({ folder_outside_library: folder })),
+        HttpResponse.json(
+          makeDetail({ outside_library: { folder, holds_every_track } }),
+        ),
       ),
     );
+  }
+
+  test("states the fact AND the remedy when that folder holds every track", async () => {
+    const folder = "/downloads/Radiohead - OK Computer";
+    serveOutside(folder, true);
     renderDetail(1);
 
-    // The path sits in its own span for the wrap, so getByText's node text
-    // stops at the colon — textContent carries the assembled sentence.
+    // The path sits in its own span, so getByText's node text stops short of
+    // it — textContent carries the assembled sentence.
     const notice = await screen.findByText(/outside your library folder/);
-    expect(notice.textContent).toBe(outsideNotice(folder));
+    expect(notice.textContent).toBe(withRemedy(folder));
 
-    // A fact, not a failure: no live region anywhere above it (a StatusBanner
-    // would put role="status"/"alert" here) and the calm muted tone.
-    expect(notice.closest("[role]")).toBeNull();
-    expect(notice.parentElement).toHaveClass("text-muted-foreground");
+    // A fact, not a failure: nothing announces, and the calm muted tone.
+    expect(
+      notice.closest('[role="status"],[role="alert"],[aria-live],output'),
+    ).toBeNull();
+    expect(notice.closest(".text-muted-foreground")).not.toBeNull();
 
-    // Read BEFORE the tracklist, in document order — which is also the order a
-    // screen reader takes it in, since the notice carries no role of its own.
+    // Route focus lands on the h1, which comes after the notice, so the h1
+    // has to carry it — otherwise it is reachable only by reading backwards.
+    const heading = screen.getByRole("heading", { name: "OK Computer" });
+    expect(heading).toHaveAccessibleDescription(withRemedy(folder));
+
     const tracklist = screen.getByRole("region", { name: "Tracklist" });
     expect(
       notice.compareDocumentPosition(tracklist) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  test("states the fact ALONE when that folder holds only part of the album", async () => {
+    const folder = "/downloads/OK Computer/disc1";
+    serveOutside(folder, false);
+    renderDetail(1);
+
+    // Re-adding a part-folder sweeps the rest to Trash, so the remedy is the
+    // server's call to make, not a sentence the page always shows.
+    const notice = await screen.findByText(/outside your library folder/);
+    expect(notice.textContent).toBe(factOnly(folder));
+    expect(screen.queryByText(/add that folder again/)).toBeNull();
   });
 
   test("says nothing about the library folder when the album is wholly inside it", async () => {
@@ -674,32 +698,26 @@ describe("AlbumDetailPage", () => {
 
     // Wait for the loaded page first — on the skeleton this would pass for
     // the wrong reason.
-    await screen.findByRole("heading", { name: "OK Computer" });
+    const heading = await screen.findByRole("heading", { name: "OK Computer" });
     expect(screen.queryByText(/outside your library folder/)).toBeNull();
+    expect(heading).not.toHaveAttribute("aria-describedby");
   });
 
   test("a 255-character path component renders whole and keeps both wrapping classes", async () => {
-    server.use(
-      http.get(DETAIL_URL, () =>
-        HttpResponse.json(
-          makeDetail({ folder_outside_library: TORTURE_FOLDER }),
-        ),
-      ),
-    );
+    serveOutside(TORTURE_FOLDER, true);
     renderDetail(1);
 
     const notice = await screen.findByText(/outside your library folder/);
-    // Nothing clamped or truncated: the whole path is in the sentence.
-    expect(notice.textContent).toBe(outsideNotice(TORTURE_FOLDER));
+    // Nothing clamped or truncated, and the <wbr>s between the separators add
+    // no text of their own.
+    expect(notice.textContent).toBe(withRemedy(TORTURE_FOLDER));
 
-    // jsdom lays nothing out, so the classes are the oracle here. They are a
-    // PAIR doing different jobs: `min-w-0` lowers the flex item's min-content
-    // floor, `break-words` breaks the one token that has no separator. Either
-    // alone still scrolls the page sideways at 320px (measured on the Trash
-    // page's twin of this markup).
+    // jsdom lays nothing out, so these are tripwires, not the oracle: the
+    // 320px measurement is. `min-w-0` lowers the flex item's min-content
+    // floor; `break-words` splits the one component no line can hold.
     const path = screen.getByText(TORTURE_FOLDER);
     expect(path).toHaveClass("break-words");
-    expect(path.parentElement).toHaveClass("min-w-0");
-    expect(path.parentElement).toBe(notice);
+    expect(path.closest(".min-w-0")).not.toBeNull();
+    expect(path.querySelectorAll("wbr")).toHaveLength(2);
   });
 });

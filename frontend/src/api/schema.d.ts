@@ -2168,11 +2168,8 @@ export interface components {
             /** Tracks */
             tracks: components["schemas"]["Track"][];
             release?: components["schemas"]["ReleaseIdentity"] | null;
-            /**
-             * Folder Outside Library
-             * @description The folder of one album file that is not under the library folder.
-             */
-            folder_outside_library: string | null;
+            /** @description Set when some of the album's files are not in the library folder. */
+            outside_library: components["schemas"]["OutsideLibrary"] | null;
         };
         /**
          * AlbumDiffSide
@@ -3957,6 +3954,22 @@ export interface components {
             path: string;
             /** File Count */
             file_count: number;
+        };
+        /**
+         * OutsideLibrary
+         * @description Where an album file sits when it is not in the library folder.
+         */
+        OutsideLibrary: {
+            /**
+             * Folder
+             * @description The folder holding an album file that is not in the library folder.
+             */
+            folder: string;
+            /**
+             * Holds Every Track
+             * @description True when every track of the album is a file in that one folder.
+             */
+            holds_every_track: boolean;
         };
         /**
          * ParkedAlbum
