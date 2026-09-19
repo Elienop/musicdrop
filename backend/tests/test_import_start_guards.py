@@ -428,7 +428,12 @@ def test_a_posted_path_without_a_dotdot_segment_is_still_mapped(
     ],
 )
 def test_the_sibling_name_fields_are_bounded(
-    tmp_path: Path, method: str, url: str, field: str, in_query: bool
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    method: str,
+    url: str,
+    field: str,
+    in_query: bool,
 ) -> None:
     """All three take a RELATIVE PATH, and unbounded each re-scanned a directory
     per component.
@@ -456,29 +461,24 @@ def test_the_sibling_name_fields_are_bounded(
     complain about length.
     """
     _, lib = _real_registry(tmp_path)
-    prior = getattr(app.state, "beets_library", None)
-    app.state.beets_library = make_test_handle(lib, beets_dir_for(tmp_path))
-    try:
-        client = TestClient(app, raise_server_exceptions=False)
+    monkeypatch.setattr(
+        app.state, "beets_library", make_test_handle(lib, beets_dir_for(tmp_path)), raising=False
+    )
+    client = TestClient(app, raise_server_exceptions=False)
 
-        def call(value: str) -> Any:
-            if in_query:
-                return client.request(method, url, params={field: value})
-            return client.request(method, url, json={field: value})
+    def call(value: str) -> Any:
+        if in_query:
+            return client.request(method, url, params={field: value})
+        return client.request(method, url, json={field: value})
 
-        over = call("x" * 256)
-        assert over.status_code == 422, over.text
-        assert over.json()["detail"][0]["type"] == "string_too_long"
+    over = call("x" * 256)
+    assert over.status_code == 422, over.text
+    assert over.json()["detail"][0]["type"] == "string_too_long"
 
-        # The control: the longest name a listing can emit is NOT refused, and
-        # the route reaches its own lookup to say so.
-        at_bound = call("x" * 255)
-        assert at_bound.status_code == 404, at_bound.text
-    finally:
-        if prior is None:
-            del app.state.beets_library
-        else:
-            app.state.beets_library = prior
+    # The control: the longest name a listing can emit is NOT refused, and
+    # the route reaches its own lookup to say so.
+    at_bound = call("x" * 255)
+    assert at_bound.status_code == 404, at_bound.text
 
 
 def _seed_a_library_row(lib: Library) -> None:
