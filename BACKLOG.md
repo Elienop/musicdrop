@@ -180,9 +180,10 @@ entry carries a dated correction block where the pass changed it._
        else happened — so "1 imported · 2 already known" names no folder and offers no control.
        Future shape: known folders as read-only feed rows with a per-row "import anyway",
        bounded (a sweep skips thousands). Its own slice.
-     - **An attended run cannot be stopped.** Import them again on a parent of N kept albums
-       parks N duplicate questions and holds the single import slot; only a sweep has Pause.
-       Needs a design discussion.
+     - ~~**An attended run cannot be stopped.**~~ Import them again on a parent of N kept albums
+       parks N duplicate questions and holds the single import slot; **"Stop this run"**
+       (`feat/import-keep-downloads`, 2026-09-19) ends it at the question it is on. The
+       N-questions half stays true; its remedy is the Stop.
      - **beets' state file fails open, silently.** `ImportState._open` swallows any read error
        at DEBUG (`importer/state.py:73-85`, a missing file included) and `_save` then
        overwrites the file, so a truncated `state.pickle` loses the whole history with no
@@ -2950,18 +2951,28 @@ the condition it names has changed.
 - **"Stop this run" — what it deliberately does not do** (2026-09-19, `feat/import-keep-downloads`,
   replacing the run page's "Start over"). Stop is beets' own `ImportAbortError` raised at the next
   session hook, so the album it lands on is asked again when the folder is added again; what
-  already landed stays. Decided, not bugs:
+  already landed stays. "Asked again" holds under the two settings the app writes (`move`,
+  `hardlink`, vault `decisions` #53); a user-written `copy:`/`link:`/`reflink:` keeps no beets
+  history, so a re-add offers the landed albums again as duplicate questions, never as a second
+  import. Decided, not bugs:
   * **Offered on manual runs only.** The API accepts any origin, but an inbox or bank drain starts
     the next queued item as soon as the stopped one ends, so a Stop there would read as "nothing
     happened". The page shows the control for `origin === "manual"`.
   * **"Stopping…" has no bound.** A lookup already in flight finishes first, and an "as tracks"
     expansion in flight is one abort point for the whole album (every remaining track is looked up
-    and resolved), because the alternative splits one album across two locations.
-  * **A stop accepted after the last abort point reads like an unstopped run.** `stopped` says a stop
-    was accepted; the internal `job_aborted` says the abort raised. Every verdict (ledger outcome,
-    bank row status, applied count) reads the landed evidence first; the stop only renames the
-    empty-handed error. The one window left: a stop accepted after the last hook on a run that then
-    genuinely imports nothing names the stop, not the lookup.
+    and resolved), because the alternative splits one album across two locations. Each remaining
+    track is a MusicBrainz lookup of its own (beets' singleton pipeline calls `tag_item` per
+    track), so on a long album that "Stopping…" is minutes, not seconds; not timed.
+  * **A stop accepted after the last abort point ends the run whole, and the page says so.**
+    `stopped` says a stop was accepted; `aborted` (on the contract since the pre-push round) says the
+    stop reached the worker and ended the run early. Every verdict (ledger outcome, bank row status,
+    applied count) reads the landed evidence first, and the done panel keys its stop-specific copy
+    ("Import stopped", the rest stayed in the folder, the Add-from-folder CTA) on `aborted`, so a
+    stop that landed after the last album had been placed renders as the finished run it was, with
+    one muted line for the presser: "Nothing was left to stop." (manual runs only; one predicate
+    and two assertions to remove if the owner prefers silence). The
+    one window left: a stop accepted after the last hook on a run that then genuinely imports
+    nothing names the stop, not the lookup, in the bank row's error.
   * **One merged album counts as two applied** — the merge row and the merged task's row are both
     counted, pinned by `test_a_merge_that_landed_before_the_stop_still_counts_imported`. Pre-branch
     behaviour; whoever revisits the merge exemption moves the count with it.
