@@ -572,10 +572,16 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 - **Test-order flake: a SUBSET run of `backend/tests/test_import_start_guards.py` beside the
   trash test modules fails with `confuse.exceptions.NotFoundError: timeout not found`** raised from
   `build_library` after `reset_beets_globals` clears beets' process-global config
-  (`app/beets/setup.py`). Proved pre-existing 2026-09-19: the same five modules with their `6890bc1`
+  (`app/beets/setup.py`). Proved pre-existing 2026-09-19: the same five modules with their pre-round
   content failed `test_a_posted_path_without_a_dotdot_segment_is_still_mapped` (1 failed, 286 passed)
   while the edited tree failed a different test of the same module; the full suite is green. Not
   fixed. Search words: flake, subset, order-dependent, `timeout not found`.
+- **Timing flake: `test_import_duplicate_api.py::test_record_duplicate_decision_unblocks_and_marks`
+  failed once in a full `make coverage` run** (`KeyError: no duplicate parked at index 0` from
+  `ImportBridge.push_duplicate_decision`). The test polls only the album row, and the same file's
+  `_poll_dup_prompt` docstring names the race: the feed row lands a beat before the prompt is parked.
+  The test is unchanged since `main`; 0 of 10 module runs failed under coverage and load on either
+  tree (2026-09-19). Fix shape: poll the duplicate prompt, as `_poll_dup_prompt` does. Not fixed.
 
 - ~~**`/import`'s feed row starves its title exactly like the two `/review` rows did**~~ —
   **CLOSED 2026-09-11** (on `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at
