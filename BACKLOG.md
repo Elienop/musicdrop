@@ -3885,6 +3885,18 @@ Added by the 2026-08-28 sweeps:
   leftover `dark:` utilities; zero remain (the only two `dark` hits are a CodeMirror JS
   option, not utilities).
 
+- **Duplicate screen at 320 px: the page scrolls sideways by 10 px, and the "Importing (new)"
+  card's text column collapses beside the cover** (measured 2026-09-19 in Orca's browser on the
+  scratch server: docScrollW 315 vs clientW 305; the track-comparison table measures 449 px inside
+  its own scroll container, so the 10 px come from elsewhere on the page; the card's text shows two
+  to five characters per line — "D.", "C..", "1967 · 1 track" wrapped word by word). Seen while
+  verifying the post-Apply hop; not that change's element. `DuplicateReview.tsx`.
+- **Bank review page: two message lines mount WITH their text, so a screen reader may not
+  announce them** (`BankReviewPage.tsx` `messages` — the collision line and the unpinned-option
+  note). The same idiom was fixed on the candidate screen and in `ReviewControlBar`'s
+  "Checking your library…" region (always mounted, `sr-only` while empty, text swapped) in the
+  post-Apply hop change; this page was left as found. Same fix, one page.
+
 ## Recently shipped
 
 - **The Trash path resolves every link itself and refuses one whose target reaches into the
