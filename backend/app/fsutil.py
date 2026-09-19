@@ -367,3 +367,54 @@ def open_below(root: Path, rel: Path) -> int:
         os.close(fd)
         raise
     return fd
+
+
+def is_in_library_source(library_dir: bytes, source: str) -> bool:
+    """True when ``source`` is *physically* inside the beets library directory.
+
+    ``library_dir`` is ``lib.directory`` as beets stores it (bytes). Two checks,
+    both filesystem-aware (no beets calls):
+
+    1. **realpath prefix.** Both sides are resolved with ``os.path.realpath``
+       (not just ``abspath``) before the lexical prefix test, so a *symlink
+       alias* to the library dir collapses to the same canonical path. This is
+       the TrueNAS case where ``directory: /library`` is a symlink onto the real
+       dataset and a swept folder reaches the same files through a different
+       string: ``abspath`` left the two strings distinct and the guard missed
+       it; ``realpath`` makes them equal and the prefix check fires.
+
+    2. **samefile fallback.** ``realpath`` does NOT collapse bind mounts — two
+       distinct bind paths onto one directory keep distinct realpaths — so a
+       second, stronger check follows: walk the source's ancestor chain and
+       return True if any ancestor is the *same physical directory* as the
+       resolved library root (``os.path.samefile`` — identical st_dev/st_ino).
+       Every filesystem probe is guarded with ``try/except OSError`` so a
+       vanished or again-unreadable path can never raise; forcing move on any
+       same-dataset source is always the safe direction (a copy there would
+       duplicate the files).
+
+    Here rather than in ``app.beets.import_session`` since 2026-09-19: it reads
+    the disk and calls no beets API, and ``app.beets.library`` needs it as the
+    second opinion behind the album page's lexical notice — while
+    ``import_session`` already imports ``library``, so the arrow cannot be
+    reversed. ``import_session`` re-exports it, so its callers name the same
+    function.
+    """
+    lib_root = Path(os.path.realpath(os.fsdecode(library_dir)))
+    src = Path(os.path.realpath(source))
+    if src == lib_root or src.is_relative_to(lib_root):
+        return True
+    # Bind-mount / dataset-alias fallback: realpath keeps distinct strings for
+    # two bind paths onto one dir, but samefile sees through to st_dev/st_ino.
+    try:
+        if not lib_root.exists():
+            return False
+    except OSError:
+        return False
+    for ancestor in [src, *src.parents]:
+        try:
+            if ancestor.samefile(lib_root):
+                return True
+        except OSError:
+            continue
+    return False

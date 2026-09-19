@@ -19,6 +19,7 @@ marked.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import threading
@@ -412,30 +413,47 @@ def test_a_posted_path_without_a_dotdot_segment_is_still_mapped(
 
 
 @pytest.mark.parametrize(
-    ("url", "field"),
+    ("method", "url", "field", "in_query"),
     [
-        ("/api/acquisition/inbox/items/import", "name"),
-        ("/api/trash/restore", "folder"),
+        ("post", "/api/acquisition/inbox/items/import", "name", False),
+        ("post", "/api/trash/restore", "folder", False),
+        ("delete", "/api/trash", "folder", True),
     ],
 )
-def test_the_sibling_name_fields_are_bounded(tmp_path: Path, url: str, field: str) -> None:
-    """Both carry ONE entry name, and unbounded both re-scanned a directory per component.
+def test_the_sibling_name_fields_are_bounded(
+    tmp_path: Path, method: str, url: str, field: str, in_query: bool
+) -> None:
+    """All three take a RELATIVE PATH, and unbounded each re-scanned a directory
+    per component.
+
+    Not one entry name: ``resolve_display_path`` iterates ``Path(rel).parts`` and
+    ``resolve_trash_child`` splits on ``/``, so a multi-disc entry is genuinely
+    ``Album/Disc 1`` and 255 characters admit up to 127 components. The cap was
+    reasoned about as a NAME cap (255 is NAME_MAX) and applied to a PATH.
 
     Measured on a 20 000-entry directory before the bound: 75.9 s from a 64 KB
     body, paid before the 404 the route eventually returns. At 255 characters
-    (NAME_MAX, and a display form never has more characters than the name has
-    bytes) the same worst case costs 3.5 ms.
+    the same worst case costs 3.5 ms. The DELETE route carried no bound at all
+    until 2026-09-19: the security seat measured 3600 components at 2091 ms of
+    request time and 2083 ms of event-loop stall, against a 0.39 ms health
+    baseline. A query parameter needs its own case shape, which is why this is
+    parametrised over the SHAPE as well as the route.
     """
     _real_registry(tmp_path)
     client = TestClient(app, raise_server_exceptions=False)
 
-    over = client.post(url, json={field: "x" * 256})
+    def call(value: str) -> Any:
+        if in_query:
+            return client.request(method, url, params={field: value})
+        return client.request(method, url, json={field: value})
+
+    over = call("x" * 256)
     assert over.status_code == 422, over.text
     assert over.json()["detail"][0]["type"] == "string_too_long"
 
     # The control: the longest name a listing can emit is NOT refused. Whatever
     # this route then answers, it is not a length complaint.
-    at_bound = client.post(url, json={field: "x" * 255})
+    at_bound = call("x" * 255)
     assert at_bound.status_code != 422, at_bound.text
 
 
@@ -532,6 +550,53 @@ def test_a_fresh_install_with_an_empty_music_folder_can_import(
     assert len(list(lib.albums())) == 1
 
 
+def test_the_forgiven_arm_warns_which_root_it_is_about_to_file_into(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The hole is keyed on "``items`` holds no row", which an operator can reset.
+
+    A ``library:`` edited to a new path, a database restored from before any
+    import, or a repointed ``BEETSDIR`` each reach the forgiven arm on a
+    configured install, so the one record that makes a shadowed-mountpoint import
+    diagnosable afterwards is this line. The control below is the same route with
+    one row in ``items``: 503, no record.
+    """
+    _canned_lookup(monkeypatch)
+    _reg, lib = _real_registry(tmp_path)
+    root = Path(os.fsdecode(lib.directory))
+    root.joinpath(".keep").unlink()  # the bare bind mount
+    folder = _album_folder(tmp_path / "downloads", b"okc")
+
+    client = TestClient(app, raise_server_exceptions=False)
+    with caplog.at_level(logging.WARNING, logger="uvicorn.error"):
+        resp = client.post("/api/import", json={"path": str(folder)})
+        assert resp.status_code == 202, resp.text
+        _drive(client, resp.json()["job_id"])
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    filing = [m for m in warnings if "filing this import there" in m]
+    assert len(filing) == 1, warnings
+    assert str(root) in filing[0]
+
+
+def test_an_empty_root_with_rows_files_nothing_and_logs_nothing(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The control for the record above: the refusing arm writes no such line."""
+    _reg, lib = _real_registry(tmp_path)
+    root = Path(os.fsdecode(lib.directory))
+    root.joinpath(".keep").unlink()
+    _seed_a_library_row(lib)
+    folder = _album_folder(tmp_path / "downloads", b"okc")
+
+    client = TestClient(app, raise_server_exceptions=False)
+    with caplog.at_level(logging.WARNING, logger="uvicorn.error"):
+        resp = client.post("/api/import", json={"path": str(folder)})
+
+    assert resp.status_code == 503
+    assert [m for m in (r.getMessage() for r in caplog.records) if "filing this import" in m] == []
+
+
 def test_a_fresh_installs_empty_music_folder_leaves_the_gate_open(tmp_path: Path) -> None:
     """The drains must not wait for ever on a new install either."""
     from app.import_jobs.gates import import_gate_clear
@@ -602,11 +667,14 @@ def test_album_rows_with_no_tracks_are_still_a_fresh_install(tmp_path: Path) -> 
     assert [import_gate_clear(reg, None) for _ in range(20)] == [True] * 20
 
 
-def test_trash_and_delete_keep_the_stricter_predicate(tmp_path: Path) -> None:
-    """Invariant 4: the exemption is the IMPORT side's, not the predicate's.
+def test_the_strict_predicates_refuse_an_empty_root_with_an_empty_database(
+    tmp_path: Path,
+) -> None:
+    """Invariant 4, half one: the predicates themselves do not read the row count.
 
-    ``require_library_root`` is what Trash, Delete, Restore and disk sync ask,
-    and an empty root must still refuse them however empty the database is.
+    An empty root refuses ``require_library_root`` and ``require_library_present``
+    on exactly the fresh-install shape the import side forgives. Which callers ask
+    them is the twin below.
     """
     from app.beets.library import (
         LibraryRootUnavailableError,
@@ -621,6 +689,29 @@ def test_trash_and_delete_keep_the_stricter_predicate(tmp_path: Path) -> None:
         require_library_root(lib)
     with pytest.raises(LibraryRootUnavailableError, match="is empty"):
         require_library_present(lib)
+
+
+def test_only_the_import_job_gates_reach_the_forgiving_predicate() -> None:
+    """Invariant 4, half two: the exemption is the IMPORT side's, not the predicate's.
+
+    ``require_importable_library_root`` forgives the empty root when ``items``
+    holds no row. Trash, Delete, Restore and disk sync must keep asking the strict
+    one, so the forgiving name is read in ``app/import_jobs/`` and nowhere else.
+    Counted from the AST rather than by grep: a name in a docstring is not a call.
+    """
+    import ast
+
+    app_dir = Path(__file__).resolve().parents[1] / "app"
+    readers = set()
+    for source in sorted(app_dir.rglob("*.py")):
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id == "require_importable_library_root":
+                readers.add(source.relative_to(app_dir).as_posix())
+            elif isinstance(node, ast.Attribute) and node.attr == "require_importable_library_root":
+                readers.add(source.relative_to(app_dir).as_posix())
+
+    assert readers == {"import_jobs/gates.py", "import_jobs/runner.py"}, readers
 
 
 def test_the_inbox_review_refuses_while_the_library_root_is_unavailable(

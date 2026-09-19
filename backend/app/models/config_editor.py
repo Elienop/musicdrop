@@ -294,8 +294,8 @@ def _incremental_advisory(section: ImportSection) -> str | None:
     return (
         "MusicDrop honours import.incremental: a folder in beets' import history is"
         " skipped and counted as already known. A sweep or a hardlink import forces it"
-        " on and sets incremental_skip_later itself; a bank apply forces it off."
-        " `beet import` behaves the same way."
+        " on and sets incremental_skip_later itself; a bank apply and Import them again"
+        " force it off. `beet import` behaves the same way."
     )
 
 
@@ -344,9 +344,9 @@ def _always_moves_advisory(key: str) -> Callable[[ImportSection], str | None]:
         return (
             f"MusicDrop honours import.{key} on a manual import, a sweep and a bank apply."
             + history
-            + " Inbox imports and Trash restore always move, so it does not apply there —"
-            " a download filed from the inbox leaves the inbox. `beet import` from the"
-            " command line always honours it."
+            + " Inbox imports move and Trash restore imports in place, so a download filed"
+            " from the inbox leaves the inbox. `beet import` from the command line always"
+            " honours it."
         )
 
     return rule
@@ -362,12 +362,15 @@ def _always_moves_advisory(key: str) -> Callable[[ImportSection], str | None]:
 #: has no way to learn is that MusicDrop overrides it (``run_import_worker``
 #: snapshots, forces and restores these keys around every session —
 #: ``incremental`` excepted: it is honoured on the default review path and
-#: forced only for sweep, bank-apply and hardlink runs, which is what its
-#: advisory says).
+#: forced by four exclusive arms, sweep, bank-apply, hardlink and the per-run
+#: ``incremental: False`` that "Import them again" and Review send
+#: (``import_session.run_import_worker``), which is what its advisory says).
 #:
 #: ``link``/``hardlink``/``reflink`` are HONOURED on a manual import, a sweep
-#: and a bank apply, and overridden by the inbox routes and Trash restore, which
-#: name ``operation="move"``. Their advisory is worded per-key and per-PATH, not
+#: and a bank apply, and overridden by the inbox routes, which name
+#: ``operation="move"``, and by Trash restore, which names ``in_place=True``
+#: (``trash_manage._restore_to_origin``) — its folder is already at the
+#: destination. Their advisory is worded per-key and per-PATH, not
 #: "MusicDrop overrides this", because the override belongs to the request rather
 #: than to the saved config. A config with every file operation off has no rule
 #: at all — beets imports in place, which is its own behaviour with no override

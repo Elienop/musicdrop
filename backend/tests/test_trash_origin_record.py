@@ -882,8 +882,38 @@ def test_listing_marks_a_shared_folder_row_as_an_import_but_shows_its_origin(
     assert row.restore_note == (
         "MusicDrop moved this album's files out of their folder one by one, so it cannot"
         " put them back exactly. Restoring re-imports the tracks under your current naming"
-        " rules; the cover and lyric files stay in this Trash entry."
+        " rules."
     )
+
+
+def test_a_replace_written_entry_gets_a_note_claiming_no_sidecar_it_does_not_hold(
+    tmp_path: Path,
+) -> None:
+    """``trash_album`` on its own — the call shape import Replace makes.
+
+    Four callers write ``moved="items"`` and share this note. Only
+    ``app.beets.delete`` follows the move with ``_carry_the_sidecars``; Replace,
+    duplicates-resolve and ``duplicates`` deliberately do not, so the ``.lrc``
+    stays at the old stem. The note used to promise "the cover and lyric files
+    stay in this Trash entry" for all four.
+    """
+    lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
+    album = _dummy(lib)
+    lyric = Path(os.fsdecode(album.items()[0].path)).with_suffix(".lrc")
+    lyric.write_text("[00:00.00] one\n", encoding="utf-8")
+    with lib.transaction():
+        trash_album(lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+
+    # The entry cannot keep what never arrived in it.
+    assert lyric.exists()
+    assert list((tmp_path / "trash").rglob("*.lrc")) == []
+
+    (row,) = list_trashed_albums(
+        tmp_path / "trash", origins_dir=_origins(tmp_path), music_dir=str(tmp_path / "music")
+    )
+    assert row.restore_note is not None
+    assert "lyric" not in row.restore_note
+    assert "cover" not in row.restore_note
 
 
 def test_listing_marks_an_origin_outside_the_library_as_an_import(tmp_path: Path) -> None:

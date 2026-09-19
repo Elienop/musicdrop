@@ -12,6 +12,7 @@ in the mypy disallow_untyped_calls override because it constructs beets objects.
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from collections.abc import Callable
@@ -37,6 +38,11 @@ from app.beets.library import (
 )
 from app.models.bank import BankApplyDirective
 from app.models.import_models import ImportOptions
+
+#: Operator-facing records go to ``uvicorn.error``, for the reason
+#: ``import_jobs.gates`` states: under the Dockerfile CMD uvicorn leaves
+#: app-namespace loggers at WARNING.
+operator_logger = logging.getLogger("uvicorn.error")
 
 
 class ImportRunner(Protocol):
@@ -117,7 +123,18 @@ class BeetsImportRunner:
         # (test_validate_answers_rather_than_500ing_without_a_library).
         if self._lib is None:
             return
-        require_importable_library_root(self._lib)
+        # The forgiven arm is the one hole in that guard, and it is keyed on "the
+        # items table holds no row" rather than on "this install has never
+        # imported" — so say which root is about to receive the files. Here and
+        # not inside the predicate: the gate polls it at 2 Hz while another job
+        # holds the slot, this runs once per import start.
+        forgiven = require_importable_library_root(self._lib)
+        if forgiven is not None:
+            operator_logger.warning(
+                "import gate: %s is empty and the library holds no track; filing this"
+                " import there. Stop now if the music share is not mounted.",
+                forgiven,
+            )
         # Only explicit copy is a user-facing error here; default/None are
         # silently corrected to move by the worker guard (run_import_worker).
         if options is not None and options.operation == "copy":

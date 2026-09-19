@@ -32,6 +32,7 @@ from mediafile import MediaFile
 from app.artwork.normalize import normalize_artist_name
 from app.beets.release_identity import release_identity
 from app.etag import stat_etag
+from app.fsutil import is_in_library_source
 from app.models.album import Album, AlbumDetail, OutsideLibrary, Track
 from app.models.artist import Artist
 from app.models.import_models import ExistingAlbum
@@ -104,7 +105,7 @@ class LibraryRootUnavailableError(Exception):
     ``empty`` marks the arm where the root is there and readable but holds
     nothing. :func:`require_importable_library_root` is its one reader (grep);
     the other callers treat the three arms alike
-    (``test_trash_and_delete_keep_the_stricter_predicate``).
+    (``test_the_strict_predicates_refuse_an_empty_root_with_an_empty_database``).
     """
 
     def __init__(self, message: str, *, empty: bool = False) -> None:
@@ -168,14 +169,26 @@ def _library_has_any_item(lib: Library) -> bool:
         return bool(tx.query(_ANY_ITEM_SQL))
 
 
-def require_importable_library_root(lib: object) -> None:
+def require_importable_library_root(lib: object) -> str | None:
     """:func:`require_library_root` for the IMPORT side, which forgives a fresh install.
 
     Forgives the EMPTY arm when the items table holds no row (a new install's
     bare ``/music`` bind mount); missing and unreadable still refuse, and Trash,
-    Delete, Restore and disk sync keep :func:`require_library_root`. Residual: a
-    first import while the share is down lands on the mountpoint. The ``cast``
+    Delete, Restore and disk sync keep :func:`require_library_root`. The ``cast``
     is the only one — the registry and runner must not import beets.
+
+    Returns the music root it FORGAVE, or ``None`` when nothing was forgiven, and
+    logs nothing itself: the two callers disagree about what the fact is worth.
+    ``import_jobs.runner.validate`` runs once per import start and is about to
+    file into that root, so it WARNs; ``import_jobs.gates`` polls this at 2 Hz
+    while any other job holds the slot (``_gate_answer`` asks the root before
+    ``has_active_job``), so it would emit one record every 0.5 s for the length
+    of that job.
+
+    The forgiven arm's key is "the items table holds no row", which is not
+    "this install has never imported" — a ``library:`` edited to a new path, a
+    database restored from before any import, or a repointed ``BEETSDIR`` all
+    reach it on a configured install. BACKLOG records the three.
     """
     library = cast(Library, lib)
     try:
@@ -183,6 +196,8 @@ def require_importable_library_root(lib: object) -> None:
     except LibraryRootUnavailableError as exc:
         if not (exc.empty and not _library_has_any_item(library)):
             raise
+        return _music_dir(library)
+    return None
 
 
 #: How many DISTINCT albums :func:`require_library_present` asks about before it
@@ -834,9 +849,26 @@ def _outside_library(lib: Library, items: list[Any]) -> OutsideLibrary | None:
     ``holds_every_track`` is conservative: a pathless row, a row in the library
     or a row in another folder makes it false. Only that shape re-adds safely
     (``test_the_offered_remedy_finishes_the_album_and_trashes_nothing``).
+
+    TWO predicates, asked in that order. :func:`_inside_library` is lexical and
+    is beets' own guard, which ``app.beets.edit`` must predict byte for byte;
+    the question HERE is the opposite one — are these files really outside? —
+    and a library reachable at two spellings (a symlinked root, a bind mount)
+    answers it wrongly. Measured 2026-09-19: an album whose rows name the root
+    through a symlinked alias rendered the notice with ``holds_every_track:
+    true`` and the "add that folder again" remedy, which re-imports and re-tags
+    an album that was already filed.
+
+    :func:`~app.fsutil.is_in_library_source` is asked ONLY after the lexical
+    answer says "outside", so the ordinary album still records no filesystem
+    read (``test_the_containment_question_records_no_filesystem_read``). It
+    swallows every OSError and answers False, so an unmounted or unreadable root
+    leaves the notice showing — the safe direction for a notice.
     """
     outside = next((it for it in items if it.path and not _inside_library(lib, it)), None)
     if outside is None:
+        return None
+    if is_in_library_source(lib.directory, _row_path(outside)):
         return None
     folder = os.path.dirname(_row_path(outside))
     return OutsideLibrary(

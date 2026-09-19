@@ -905,6 +905,41 @@ def test_attach_library_threads_bank_dir_to_resolved_runner(
     }
 
 
+def test_a_banked_row_applied_after_a_trash_change_uses_the_new_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Replace banks a decision, the operator moves ``trash_dir``, then Apply.
+
+    Apply re-attaches the freshly resolved pair
+    (``test_config_apply_reattaches_the_trash_origin_store``); this is the other
+    half — the runner a LATER ``start`` builds must carry that pair, not the one
+    resolved when the row was banked. Pinned at the registry seam rather than
+    through a real bank apply: the chain from row to Replace is the apply
+    runner's, and only this link was unpinned.
+    """
+    import app.import_jobs.registry as registry_mod
+
+    seen: list[tuple[object, object]] = []
+
+    class _FakeRunner:
+        def __init__(self, lib: object, trash_dir: object = None, *a: object, **kw: object) -> None:
+            seen.append((trash_dir, kw.get("trash_origins_dir") or (a[0] if a else None)))
+
+    monkeypatch.setattr(registry_mod, "BeetsImportRunner", _FakeRunner)
+    reg = ImportJobRegistry()
+    lib = object()
+    reg.attach_library(lib, Path("/old/trash"), trash_origins_dir=Path("/old/origins"))
+    reg._resolve_runner()  # the row is banked against this pair
+
+    reg.attach_library(lib, Path("/new/trash"), trash_origins_dir=Path("/new/origins"))
+    reg._resolve_runner()  # the apply, later
+
+    assert seen == [
+        (Path("/old/trash"), Path("/old/origins")),
+        (Path("/new/trash"), Path("/new/origins")),
+    ]
+
+
 def test_start_forwards_directive_and_bank_apply_origin() -> None:
     from app.models.bank import BankApplyDirective
 

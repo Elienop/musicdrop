@@ -295,7 +295,9 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
         503: _TRASH_LAYOUT_REFUSED_RESPONSE,
     },
 )
-async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> EmptyResult:
+async def empty_trash_one(
+    request: Request, folder: Annotated[str, Query(max_length=255)]
+) -> EmptyResult:
     """Permanently remove one trashed album folder. 409 if busy, 404 if not in Trash."""
     app = request.app
     _gate(app)

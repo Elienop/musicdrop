@@ -678,7 +678,7 @@ def test_the_remedy_still_clears_a_refusal_raised_under_an_older_spelling(
     assert not landed.exists()
 
 
-def test_the_ordinary_layout_asks_beets_exactly_once(client: TestClient) -> None:
+def test_the_ordinary_layout_dedups_to_one_trash_spelling(client: TestClient) -> None:
     """The dedup, which was cost-only and unpinned.
 
     Four candidates collapse to ONE on a default Trash with no link, and the
@@ -1197,17 +1197,40 @@ def test_empty_unknown_folder_404(client: TestClient) -> None:
 
 
 def test_empty_overlong_folder_404_not_500(client: TestClient) -> None:
-    """A >255-byte folder name must hit the same 404 as any other unknown
-    folder. Path.exists() raises OSError(ENAMETOOLONG) on such a component
-    (it only swallows ENOENT/ENOTDIR/EBADF/ELOOP), which used to 500 the
-    endpoint from inside the resolver's not-found check. A sibling is seeded so
-    the base dir exists — the kernel only reports ENAMETOOLONG once every
-    leading component resolved (a missing base dir answers ENOENT instead)."""
+    """A >255-BYTE folder name must hit the same 404 as any other unknown folder.
+
+    Path.exists() raises OSError(ENAMETOOLONG) on such a component (it only
+    swallows ENOENT/ENOTDIR/EBADF/ELOOP), which used to 500 the endpoint from
+    inside the resolver's not-found check. A sibling is seeded so the base dir
+    exists — the kernel only reports ENAMETOOLONG once every leading component
+    resolved (a missing base dir answers ENOENT instead).
+
+    ``folder`` carries ``max_length=255`` since 2026-09-19, and pydantic counts
+    CHARACTERS while NAME_MAX counts BYTES, so the ENAMETOOLONG arm is still
+    reachable: 200 two-byte characters are 400 bytes and pass the model.
+    """
     trash = _trash_dir(client)
     (trash / "Album").mkdir(parents=True)
-    r = client.delete("/api/trash", params={"folder": "x" * 300})
+    name = "é" * 200
+    assert len(name) <= 255 < len(name.encode()), "the model must pass this to the kernel"
+    r = client.delete("/api/trash", params={"folder": name})
     assert r.status_code == 404
     assert (trash / "Album").exists()  # the overlong name must not drag it down
+
+
+def test_empty_over_the_character_bound_is_refused_not_resolved(client: TestClient) -> None:
+    """The DELETE route's own bound, which it carried none of until 2026-09-19.
+
+    Its three siblings were capped; this one was not, and the security seat
+    measured 3600 components at 2091 ms of event-loop stall (0.39 ms baseline).
+    The refusal lands before any resolver work, so nothing leaves Trash.
+    """
+    trash = _trash_dir(client)
+    (trash / "A").mkdir(parents=True)
+    r = client.delete("/api/trash", params={"folder": "x" * 256})
+    assert r.status_code == 422
+    assert r.json()["detail"][0]["type"] == "string_too_long"
+    assert (trash / "A").exists()
 
 
 def test_restore_overlong_folder_is_refused_not_500(client: TestClient) -> None:

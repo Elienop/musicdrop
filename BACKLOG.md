@@ -203,6 +203,21 @@ entry carries a dated correction block where the pass changed it._
      in-library rows are stored relative and follow it; measured). beets' `PathQuery` cannot
      ask it — the library root normalises to `.` and matches nothing (2.13.1) — so the read
      reuses `_inside_library`, the mirror of beets' own `Item.try_sync` guard; string work only.
+     **Two predicates since 2026-09-19, asked in order.** `_inside_library` is lexical because
+     `app/beets/edit.py` must predict beets' own lexical guard byte for byte, but the album
+     page asks the opposite question — *are these files really outside?* — and the security
+     seat measured an album whose rows spell the root through a symlinked alias rendering the
+     notice with `holds_every_track: true` and the remedy; following it re-imports and, with the
+     starter config's `import.write: yes`, re-tags an album that was already filed (not
+     destructive — measured: all four files stayed and Trash stayed empty). The physical
+     predicate `is_in_library_source` (realpath prefix, then `samefile` up the chain) is now a
+     second opinion asked ONLY when the lexical answer says "outside", so the ordinary album
+     still records no filesystem read, and it swallows every `OSError` → an unmounted or
+     unreadable root leaves a real notice showing. It moved from `app/beets/import_session.py`
+     to `app/fsutil.py` and is re-exported, because `import_session` already imports `library`
+     and that arrow cannot be reversed. Reachability, stated honestly: MusicDrop's own imports
+     always move or copy into `lib.directory`, so only a beets CLI add or an `in_place` import
+     through the alias produces such rows.
      **The app offers "add that folder again" only when every track row is a file in that one
      folder** (`holds_every_track`). That is the shape where beets asks no duplicate question —
      every row names a file the task is importing, so `find_duplicates` excludes the album and
@@ -240,13 +255,27 @@ entry carries a dated correction block where the pass changed it._
      first import start
      (Docker hands every new install an empty `/music` and the app never creates it; the review
      seat measured every new install refused before this arm was forgiven; Trash, Delete, Restore
-     and disk sync keep the stricter predicate); the shared gate both background drains poll asks
+     and disk sync keep the stricter predicate). **That arm's key is "the `items` table holds no
+     row", which is not "this install has never imported":** a `library:` edited to a path that
+     does not exist yet, a `library.db` lost or restored from before any import beside an intact
+     `config.yaml`, and a repointed `BEETSDIR`/`MUSICDROP_BEETS_DIR` each reach it on a configured
+     install, and the security seat measured an attended import filing four files onto a bare
+     mountpoint through it (2026-09-19). Narrowed rather than closed: `require_importable_library_root`
+     returns the root it forgave and `BeetsImportRunner.validate` WARNs it on `uvicorn.error`
+     once per import start, naming the root it is about to file into — the one record that makes a
+     shadowed-mountpoint import diagnosable afterwards. The log sits at the filing moment and not
+     inside the predicate because the gate polls the same predicate at 2 Hz while another job holds
+     the slot. A `?first_run` flag or a setup-screen gate would close the hole instead of
+     narrowing it; that is an owner call, not taken here. The shared gate both background drains poll asks
      it too, so the slskd drain and the bank apply wait with zero row writes and zero folder walks (measured over 10 s at production
      intervals: 120 `scandir` + 120 `isdir` per minute, nothing else) and resume without a restart
      — one WARNING when the wait starts, one INFO when it ends; an OS error from the root question
      inside the gate reads as "wait" too (measured: a raise there killed the acquisition thread
-     and failed the bank row; while the drains are parked the acquisition status endpoint still
-     reads `idle` with no error — residual). The posted path is capped at 4 096 characters
+     and failed the bank row; while the drains are parked the acquisition status endpoint reports
+     no wait — residual. Measured 2026-09-19 with the share renamed away: `phase: running` with
+     `current` set to the parked folder, not `idle`, because `_process_one` sets the phase before
+     `_wait_for_gate`. A third `waiting` phase is the honest shape and is a contract change, so it
+     is an owner call, not taken here). The posted path is capped at 4 096 characters
      (PATH_MAX): the placeholder resolver is quadratic and runs on the event loop — 80 KB stalled
      it 210 s. The cap bounds the string, not the time: a placeholder component that matches an
      entry, alternated with `..`, re-scanned the same directory per repeat (17 s at 20 000 entries;
@@ -257,11 +286,16 @@ entry carries a dated correction block where the pass changed it._
      resolved; the amplified case fell from 19.0 s to 0.1 ms), the two sibling fields are
      capped at 255 characters (NAME_MAX; an over-long name is now a 422 where it was a 404), and
      the import route resolves off the event loop because the densest 4 096-character path still
-     cost ~312 ms on it (the siblings resolve one component in ~4 ms and stay on it). Not
-     re-measured after that: the seat's real-socket "health check queued behind the POST" probe —
-     the off-loop claim rests on the resolver running in a worker thread (pinned), not on a
-     re-run. `DELETE /api/trash?folder=` is unbounded but query-line-capped, and the `..` refusal
-     covers it. Letting the refusal escape `start`
+     cost ~312 ms on it. Third round, all re-measured against a real uvicorn (2026-09-19): the
+     threadpool HALVES that stall rather than removing it — the dominant cost is pure-Python
+     `pathlib` joins, which hold the GIL, so 2048 components cost 413 ms of request time and
+     236 ms of loop stall against a 0.47 ms health baseline. And the siblings do not "resolve one
+     component": all of them consume their value as a RELATIVE path (`resolve_display_path`
+     iterates `Path(rel).parts`), so 255 characters admit up to 127 components — the cap was
+     reasoned about as a NAME cap and applied to a PATH. `DELETE /api/trash?folder=` had no bound
+     at all: 3600 components stalled the loop 2091 ms (2797 ms with one non-UTF-8 self-referential
+     symlink planted in the Trash), so it is capped at 255 like its siblings and the bound test is
+     parametrised over the query SHAPE as well as the two body ones. Letting the refusal escape `start`
      instead killed the acquisition daemon thread and burned every queued bank row (measured), and
      catching-and-reverting cost ~120 row writes/min; no backoff cap was built because there is
      nothing left to cap. A NUL in the posted path is a 422 (it 500'd on copy through the
@@ -534,6 +568,14 @@ three that sat under Open bugs shipped in #184; the nine under Deferred minors r
 Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 ## Open bugs / hardening
+
+- **Test-order flake: a SUBSET run of `backend/tests/test_import_start_guards.py` beside the
+  trash test modules fails with `confuse.exceptions.NotFoundError: timeout not found`** raised from
+  `build_library` after `reset_beets_globals` clears beets' process-global config
+  (`app/beets/setup.py`). Proved pre-existing 2026-09-19: the same five modules with their `6890bc1`
+  content failed `test_a_posted_path_without_a_dotdot_segment_is_still_mapped` (1 failed, 286 passed)
+  while the edited tree failed a different test of the same module; the full suite is green. Not
+  fixed. Search words: flake, subset, order-dependent, `timeout not found`.
 
 - ~~**`/import`'s feed row starves its title exactly like the two `/review` rows did**~~ —
   **CLOSED 2026-09-11** (on `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at

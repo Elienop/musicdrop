@@ -167,10 +167,12 @@ async def start_import(
     # scrub replaced any byte UTF-8 cannot carry. Map it back before beets sees
     # it; the ordinary path is returned untouched.
     try:
-        # In a worker thread: even at the 4096-character cap the resolve costs
-        # 314 ms of pure ``os.scandir`` (2048 placeholder components, measured),
-        # and on the loop that is 314 ms in which no other request is served.
-        # The two sibling routes resolve ONE component and stay on the loop.
+        # Off the loop, but only partly: the dominant cost is pure-Python
+        # pathlib joins, which hold the GIL. At the 4096-character cap (2048
+        # placeholder components) the request costs 413 ms and stalls the loop
+        # for 236 ms of it (security seat, measured 2026-09-19). The three
+        # sibling routes take a RELATIVE PATH too — up to 127 components inside
+        # their 255-character cap — and stay on the loop.
         path = await run_in_threadpool(resolve_posted_path, body.path)
     except AmbiguousDisplayName:
         raise HTTPException(

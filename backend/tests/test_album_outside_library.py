@@ -20,6 +20,7 @@ see ``test_an_edited_directory_keeps_a_whole_album_whole``.
 
 from __future__ import annotations
 
+import errno
 import os
 import sqlite3
 from collections.abc import Iterator
@@ -231,12 +232,17 @@ def test_the_answer_does_not_depend_on_an_inherited_music_dir_context(tmp_path: 
 def test_the_containment_question_records_no_filesystem_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The read makes none of the ``os`` calls in ``_DISK_READS``, so an unmounted
-    library answers the same as a mounted one instead of raising.
+    """The LEXICAL answer makes none of the ``os`` calls in ``_DISK_READS``, so an
+    unmounted library answers the same as a mounted one instead of raising.
 
     Each is RECORDED and still performed; the list must be empty. A raising stub
     would not do: ``realpath`` swallows the errors its ``lstat`` raises and
     answers anyway (code seat F4). Measured: the pristine read makes zero.
+
+    Narrowed to the lexically-INSIDE album on 2026-09-19. The outside branch now
+    asks a second, physical opinion (``fsutil.is_in_library_source``), which does
+    read the disk — the half below pins that it still cannot RAISE, which is the
+    property the unmounted library needed.
     """
     lib = _library(tmp_path)
     inside_id = _album(lib, _inside(lib, "Art/Alb/01 T1.mp3"))
@@ -253,10 +259,63 @@ def test_the_containment_question_records_no_filesystem_read(
         monkeypatch.setattr(os, name, spy)
 
     assert _outside(lib, inside_id) is None
-    outside = _outside(lib, outside_id)
     assert seen == []
+
+    # The outside branch: reads are expected, an exception is not.
+    outside = _outside(lib, outside_id)
     assert outside is not None
     assert outside.folder == str(tmp_path / "dl" / "Alb")
+
+
+def test_the_second_opinion_cannot_raise_on_an_unreadable_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The unmounted-library property, now that the outside branch reads the disk.
+
+    Every ``_DISK_READS`` call raises ``OSError(ESTALE)`` — what a dropped NFS
+    mount answers. ``is_in_library_source`` swallows each one and answers False,
+    so the notice still renders instead of 500ing.
+    """
+    lib = _library(tmp_path)
+    outside_id = _album(lib, os.fsencode(str(tmp_path / "dl" / "Alb" / "01 T1.mp3")))
+
+    def boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise OSError(errno.ESTALE, "Stale file handle")
+
+    for name in _DISK_READS:
+        monkeypatch.setattr(os, name, boom)
+
+    outside = _outside(lib, outside_id)
+    assert outside is not None
+    assert outside.folder == str(tmp_path / "dl" / "Alb")
+
+
+def test_an_album_reached_through_a_symlinked_root_is_not_outside(tmp_path: Path) -> None:
+    """The alias spelling of the SAME files, measured by the security seat.
+
+    ``directory:`` is the real music dir; the rows name it through a symlink
+    pointing at it (a beets CLI add or an ``in_place`` import through the alias
+    produces exactly this). The lexical ``commonpath`` calls them outside, and
+    the page then offers "add that folder again" on an album that is already
+    filed — re-importing and, with the starter config's ``import.write: yes``,
+    re-tagging the files on disk.
+    """
+    lib = _library(tmp_path)
+    real_music = Path(os.fsdecode(lib.directory))
+    (real_music / "Art" / "Alb").mkdir(parents=True)
+    (real_music / "Art" / "Alb" / "01 T1.mp3").write_bytes(b"\x00")
+    alias = tmp_path / "alias"
+    alias.symlink_to(real_music, target_is_directory=True)
+
+    album_id = _album(lib, os.fsencode(str(alias / "Art" / "Alb" / "01 T1.mp3")))
+
+    from app.beets.library import _inside_library
+
+    album = lib.get_album(album_id)
+    assert album is not None
+    (item,) = list(album.items())
+    assert _inside_library(lib, item) is False, "the lexical predicate must miss it"
+    assert _outside(lib, album_id) is None
 
 
 def test_a_relative_row_answers_instead_of_raising(tmp_path: Path) -> None:

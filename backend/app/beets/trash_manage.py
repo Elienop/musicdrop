@@ -145,12 +145,17 @@ _NO_RECORD_NOTE = (
 #: ``moved="items"``: the album's own files were moved out of their folder one by
 #: one. That is EVERY album deleted since owner ruling ``decisions.md`` 58, not
 #: only one that shared a folder, so the sentence says what is true of all of
-#: them — Restore re-imports the tracks under the current naming, and the cover
-#: and lyric files beets does not track stay in the Trash entry.
+#: them — Restore re-imports the tracks under the current naming.
+#:
+#: It names no sidecar: of ``trash.trash_album``'s four callers only ``delete``
+#: carries the lyric files (``delete._carry_the_sidecars``); import Replace and
+#: duplicates-resolve must not, since the new copy lands on the same stem and
+#: would lose lyrics the user still has (``trash.trash_album``, measured). The
+#: entry's listing says what it holds.
 _MOVED_ITEMS_NOTE = (
     "MusicDrop moved this album's files out of their folder one by one, so it cannot"
     " put them back exactly. Restoring re-imports the tracks under your current naming"
-    " rules; the cover and lyric files stay in this Trash entry."
+    " rules."
 )
 #: ``moved="files"``: loose files MusicDrop moved aside to replace them
 #: (``trash.trash_replaced_files`` — a curated poster, an uploaded portrait).

@@ -9378,6 +9378,7 @@
             "required": true,
             "schema": {
               "type": "string",
+              "maxLength": 255,
               "title": "Folder"
             }
           }

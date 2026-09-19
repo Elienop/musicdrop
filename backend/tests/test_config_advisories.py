@@ -296,18 +296,23 @@ def test_a_filing_flag_advisory_says_where_it_applies_not_that_it_is_ignored() -
     user the keep-downloads work exists for.
 
     `hardlink`/`link`/`reflink` ARE honoured on a manual import, a sweep and a
-    bank apply — verified on disk. They are overridden by the inbox routes and
-    Trash restore, which send `operation="move"`. So someone who sets
-    `hardlink: yes` because they seed their downloads gets a move out of the
-    inbox when they click Import on an inbox row, and nothing told them. The
-    message names both halves rather than claiming the flag is ignored.
+    bank apply — verified on disk. They are overridden by the inbox routes,
+    which send `operation="move"`, and by Trash restore, which sends
+    `in_place=True` (`trash_manage._restore_to_origin`) — a move-back has already
+    put the folder where it belongs, so the sentence says "in place" rather than
+    calling that a move. So someone who sets `hardlink: yes` because they seed
+    their downloads gets a move out of the inbox when they click Import on an
+    inbox row, and nothing told them. The message names both halves rather than
+    claiming the flag is ignored.
     """
     for key in ("link", "hardlink"):
         (advisory,) = _advise(f"import:\n  {key}: yes\n")
         assert advisory.key == f"import.{key}"
         assert f"import.{key}" in advisory.message  # names the setting they typed
         assert "manual import" in advisory.message  # ...where it DOES apply
-        assert "Inbox imports" in advisory.message  # ...and where it does not
+        # ...and where it does not, each named for what it really does
+        assert "Inbox imports move" in advisory.message
+        assert "Trash restore imports in place" in advisory.message
 
     # reflink's own real value counts as set
     (advisory,) = _advise("import:\n  reflink: auto\n")
@@ -334,8 +339,13 @@ def test_incremental_advisory_names_every_key_the_forcing_touches() -> None:
     The rule cannot DETECT the hardlink (``import_advisories`` validates one key
     at a time, so every sibling reads its default here), so the clause is
     stated; this is what pins it.
+
+    ``run_import_worker`` has FOUR exclusive arms, and the fourth — the per-run
+    ``incremental: False`` that "Import them again" and Review send — was missing
+    from this sentence while the other three were named.
     """
     msg = _message_for(_advise("import:\n  incremental: yes\n"), "import.incremental")
     assert "hardlink" in msg
     assert "incremental_skip_later" in msg
     assert "bank apply" in msg
+    assert "Import them again" in msg

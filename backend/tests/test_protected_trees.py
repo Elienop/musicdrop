@@ -1614,6 +1614,39 @@ def test_an_album_whose_folder_is_a_store_is_deleted_and_the_store_survives(
     assert not (inbox / "01 Track.mp3").exists()
 
 
+def test_the_climb_visits_no_directory_outside_the_library(tmp_path: Path) -> None:
+    """The ``is_relative_to(stop)`` bound, which was unpinned.
+
+    An ``in_place`` row can name a file outside ``lib.directory``. Without the
+    clause the ``while`` still terminates — ``dirname("/") == "/"`` lands in
+    ``seen`` — but only after collecting every ancestor up to ``/``, and each one
+    is then handed to ``_keep_our_dirs``/``open_if_one_of_ours``. Measured below
+    as the returned list, which IS the set of directories visited.
+    """
+    from tests.conftest import build_library
+
+    music = tmp_path / "music"
+    music.mkdir()
+    outside = tmp_path / "elsewhere" / "Art" / "Alb"
+    outside.mkdir(parents=True)
+    lib = build_library(str(beets_dir_for(tmp_path) / "library.db"), str(music))
+    _add_album(lib, outside)
+    items = list(next(iter(lib.albums())).items())
+    assert items, "the fixture must have rows to climb from"
+
+    assert delete_mod._dirs_the_prune_can_reach(lib, items) == []
+
+    # The control: the same helper on a row INSIDE the library does climb.
+    inside = music / "Art" / "Alb"
+    inside.mkdir(parents=True)
+    _add_album(lib, inside)
+    in_items = list(next(a for a in lib.albums() if a.id != items[0].album_id).items())
+    assert delete_mod._dirs_the_prune_can_reach(lib, in_items) == [
+        str(inside),
+        str(music / "Art"),
+    ]
+
+
 def test_a_multi_disc_album_whose_root_is_a_store_leaves_the_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
