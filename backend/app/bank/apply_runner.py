@@ -37,6 +37,7 @@ from app.bank.fingerprint import folder_fingerprint
 from app.beets.library import LibraryHandle, surviving_duplicate_album_ids
 from app.import_jobs.gates import import_gate_clear
 from app.import_jobs.registry import ImportJobRegistry
+from app.import_jobs.runner import LibraryRootUnavailableError
 from app.models.bank import BankApplyDirective, BankItem, BankStatus
 from app.models.import_api import ImportAlbumStatus, ImportJobState, ImportPhase
 from app.models.import_models import DuplicateAction, ExistingAlbum, ImportOptions
@@ -327,9 +328,11 @@ class BankApplyRunner:
                 origin="bank_apply",
                 directive=directive,
             )
-        except RuntimeError:
-            # The slot was claimed between the gate check and start() (TOCTOU,
-            # acquisition's defer posture): revert, back off, retry next pass.
+        except (RuntimeError, LibraryRootUnavailableError):
+            # The slot was claimed, or the music share dropped, between the gate
+            # check and start() (TOCTOU, acquisition's defer posture): revert,
+            # back off, retry next pass. Without the second arm the row failed
+            # permanently on a share that was merely unmounted (measured).
             bank_store.set_status(self._bank_dir, item.id, "queued")
             self._stop.wait(self._busy_backoff)
             return

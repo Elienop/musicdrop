@@ -27,6 +27,15 @@ from app.beets.import_session import (
 from app.beets.import_session import (
     InLibraryCopyError as InLibraryCopyError,
 )
+
+# Re-exported so the two background drains can name the refusal without reaching
+# into the adapter, exactly as they name InLibraryCopyError through this module.
+from app.beets.library import (
+    LibraryRootUnavailableError as LibraryRootUnavailableError,
+)
+from app.beets.library import (
+    require_attached_library_root,
+)
 from app.models.bank import BankApplyDirective
 from app.models.import_models import ImportOptions
 
@@ -58,10 +67,12 @@ class ImportRunner(Protocol):
         """Refuse an invalid (paths, options) combination by raising.
 
         Called synchronously on the API thread BEFORE the registry allocates
-        the single job slot, so a refusal becomes a clean 4xx — never a failed
-        job or a stuck slot. Raises ``InLibraryCopyError`` for copy-mode
-        imports of sources inside the library directory — checked PER path, so
-        one bad member refuses the whole start rather than importing a subset.
+        the single job slot, so a refusal becomes a clean 4xx/5xx — never a
+        failed job or a stuck slot. Raises ``LibraryRootUnavailableError`` when
+        the music root is missing, empty or unreadable, and
+        ``InLibraryCopyError`` for copy-mode imports of sources inside the
+        library directory — the latter checked PER path, so one bad member
+        refuses the whole start rather than importing a subset.
         """
         ...
 
@@ -103,6 +114,11 @@ class BeetsImportRunner:
         self._playlists_dir = playlists_dir
 
     def validate(self, paths: list[str], options: ImportOptions | None = None) -> None:
+        # Measured on this tree with the root missing and with a bare mountpoint,
+        # under move/copy/hardlink: beets refuses nothing. It re-creates the root,
+        # files the album onto the container's own disk, and a move EMPTIES the
+        # download. Asked here, before the slot is claimed, so the start refuses.
+        require_attached_library_root(self._lib)
         # Only explicit copy is a user-facing error here; default/None are
         # silently corrected to move by the worker guard (run_import_worker).
         if options is not None and options.operation == "copy":

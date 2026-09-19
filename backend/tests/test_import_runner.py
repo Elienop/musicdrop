@@ -6,7 +6,11 @@ import pytest
 from beets.library import Library
 
 from app.beets.import_session import ImportBridge, WebImportSession
-from app.import_jobs.runner import BeetsImportRunner, InLibraryCopyError
+from app.import_jobs.runner import (
+    BeetsImportRunner,
+    InLibraryCopyError,
+    LibraryRootUnavailableError,
+)
 from app.models.import_models import ImportOptions
 
 
@@ -325,8 +329,21 @@ def test_validate_refuses_when_ANY_list_member_is_in_library(tmp_path: Path) -> 
     runner.validate([str(outside)], ImportOptions(operation="copy"))
 
 
+def _library_with_a_mounted_root(tmp_path: Path) -> Library:
+    """A Library whose music root exists and has an entry.
+
+    ``validate`` now asks ``require_library_root`` first, and a missing or empty
+    root is what a dropped share looks like — so a test about the copy guard has
+    to get past that one.
+    """
+    music = tmp_path / "music"
+    music.mkdir(exist_ok=True)
+    (music / ".keep").write_bytes(b"")
+    return Library(str(tmp_path / "library.db"), directory=str(music))
+
+
 def test_validate_refuses_in_library_copy(tmp_path: Path) -> None:
-    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    lib = _library_with_a_mounted_root(tmp_path)
     runner = BeetsImportRunner(lib)
     folders = [str(tmp_path / "music" / "incoming")]
     options = ImportOptions(operation="copy")
@@ -346,9 +363,19 @@ def test_validate_refuses_in_library_copy(tmp_path: Path) -> None:
 def test_validate_passes_safe_combinations(
     tmp_path: Path, path_suffix: str, options: ImportOptions | None
 ) -> None:
-    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    lib = _library_with_a_mounted_root(tmp_path)
     runner = BeetsImportRunner(lib)
     runner.validate([str(tmp_path / path_suffix)], options)  # must not raise
+
+
+def test_validate_refuses_while_the_music_root_is_unavailable(tmp_path: Path) -> None:
+    """Measured: with the root gone beets re-created it and filed the album there,
+    and a move emptied the download. Refuse before the slot is claimed."""
+    lib = _library_with_a_mounted_root(tmp_path)
+    (tmp_path / "music" / ".keep").unlink()  # the bare-mountpoint shape
+    runner = BeetsImportRunner(lib)
+    with pytest.raises(LibraryRootUnavailableError):
+        runner.validate([str(tmp_path / "downloads" / "incoming")], None)
 
 
 def test_runner_forwards_directive_to_session_and_worker(

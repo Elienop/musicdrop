@@ -14,9 +14,21 @@ a browsable multi-album queue. There is no apply-ready shape.
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import AfterValidator, BaseModel, Field, StringConstraints
 
 from app.models.import_models import ImportOptions, ImportOrigin, Recommendation
+
+
+def _without_a_nul(path: str) -> str:
+    """Refuse an embedded NUL, which no filesystem call can take.
+
+    Every path syscall raises ``ValueError`` on one rather than returning an
+    error, so a NUL reaching the runner's copy guard 500'd the start and one
+    reaching beets failed the job. Refusing here keeps it a 422.
+    """
+    if "\x00" in path:
+        raise ValueError("a folder path cannot contain a null character")
+    return path
 
 
 class ImportPhase(StrEnum):
@@ -73,7 +85,11 @@ class StartImportRequest(BaseModel):
     # ``POST /api/config/save`` — so an allowlist here would restrict the owner
     # from their own feature while crossing no privilege boundary. Read the
     # BACKLOG entry before adding validation.
-    path: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    path: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1),
+        AfterValidator(_without_a_nul),
+    ]
     options: ImportOptions | None = None
 
 

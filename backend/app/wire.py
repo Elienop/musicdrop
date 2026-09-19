@@ -251,6 +251,28 @@ def resolve_display_path(base: Path, rel: str) -> Path:
     return resolved
 
 
+def resolve_posted_path(path: str) -> str:
+    """Map a WHOLE display-form path back onto the real one on disk.
+
+    :func:`resolve_display_path` takes a name under a server-owned base, which
+    is what the inbox and Trash send. ``POST /api/import`` sends a whole server
+    path instead — the one the app itself displayed (a job's ``path``, or the
+    album page's ``outside_library.folder``).
+
+    Returned unchanged when it carries no placeholder: the bytes were never
+    scrubbed, so the literal path is the only candidate, the spelling the user
+    typed reaches beets intact, and a scan would be waste on every import.
+
+    The base is an empty ``Path``: pathlib discards a base when the right
+    operand is absolute, and ``resolve_display_path`` walks the parts, so the
+    leading separator carries itself (measured identical to passing the anchor,
+    for an absolute and a relative argument alike).
+    """
+    if PLACEHOLDER not in path:
+        return path
+    return str(resolve_display_path(Path(), path))
+
+
 def _match_display_child(parent: Path, display_name: str) -> Path:
     """The child of ``parent`` whose display form is ``display_name``."""
     try:

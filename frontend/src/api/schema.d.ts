@@ -7931,7 +7931,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync holds the library. */
+            /** @description An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync holds the library, or two folders display under the same name. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -7958,7 +7958,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The store layout is refused, so no import can start. */
+            /** @description The store layout is refused or the library folder is unavailable. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -11888,7 +11888,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The store layout is refused, so no import can start. */
+            /** @description The store layout is refused or the library folder is unavailable. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -12022,7 +12022,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The store layout is refused, so no import can start. */
+            /** @description The store layout is refused or the library folder is unavailable. */
             503: {
                 headers: {
                     [name: string]: unknown;

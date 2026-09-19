@@ -215,6 +215,15 @@ class ImportJobRegistry:
         self._playlists_dir = playlists_dir
         self._refusal = refusal
 
+    @property
+    def library(self) -> object | None:
+        """The attached beets Library, or None before ``attach_library``.
+
+        Read by the import gate, which must ask the adapter whether the music
+        root is there before a background drain claims any work.
+        """
+        return self._lib
+
     def _resolve_runner(self) -> ImportRunner:
         if self._runner is not None:
             return self._runner

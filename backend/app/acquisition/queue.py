@@ -24,6 +24,7 @@ from app.acquisition.inbox import contain
 from app.acquisition.ledger import AcquisitionLedger
 from app.import_jobs.gates import import_gate_clear
 from app.import_jobs.registry import ImportJobRegistry
+from app.import_jobs.runner import LibraryRootUnavailableError
 from app.models.acquisition import AcquisitionQueueStatus, LedgerOutcome
 from app.models.import_api import ImportPhase
 from app.models.import_models import ImportOptions
@@ -154,8 +155,11 @@ class AcquisitionQueue:
                 options=ImportOptions(operation="move", unattended=True),
                 origin="inbox",
             )
-        except RuntimeError:
-            # The slot was claimed between the gate check and start() (TOCTOU).
+        except (RuntimeError, LibraryRootUnavailableError):
+            # The slot was claimed, or the music share dropped, between the gate
+            # check and start() (TOCTOU). Without the second arm the refusal
+            # escaped _drain and killed this daemon thread, stranding every later
+            # download for the process lifetime (measured).
             # Defer: back off briefly, requeue, leave dedupe + status as-is.
             self._stop.wait(self._busy_backoff)
             if not self._stop.is_set():

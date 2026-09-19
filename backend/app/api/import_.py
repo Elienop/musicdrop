@@ -18,7 +18,7 @@ from app.api.candidate_identity import selected_option_identity
 from app.api.http_cache import NO_SNIFF
 from app.artwork.images import FALLBACK_CONTENT_TYPE, header_safe_content_type
 from app.beets.duplicates import find_import_duplicates
-from app.beets.library import LibraryHandle
+from app.beets.library import LibraryHandle, LibraryRootUnavailableError
 from app.import_jobs.registry import (
     ImportJobRegistry,
     LibraryRefusedError,
@@ -39,6 +39,7 @@ from app.models.import_models import (
     DuplicatesCheckResponse,
     ImportChoice,
 )
+from app.wire import AmbiguousDisplayName, resolve_posted_path
 
 _IMPORT_ALBUM_NOT_FOUND = "Import album not found"
 
@@ -57,10 +58,11 @@ _JOB_NOT_FOUND_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": "No import job has that id.",
 }
-#: Set by Apply's backstop when beets loaded a layout the rule refuses.
+#: Set by Apply's backstop when beets loaded a layout the rule refuses, or by the
+#: music root being missing, empty or unreadable (an unmounted share).
 _LIBRARY_REFUSED_RESPONSE: Final = {
     "model": ErrorDetail,
-    "description": "The store layout is refused, so no import can start.",
+    "description": "The store layout is refused or the library folder is unavailable.",
 }
 #: ``reg.candidate`` / ``parked_album`` raise KeyError for BOTH an unknown job
 #: and an index with nothing parked on it, and the route cannot tell them apart.
@@ -139,7 +141,8 @@ def ensure_import_can_start(request: Request) -> None:
             "description": (
                 "An import is already running, or a beets swap (such as a config Apply or"
                 " duplicate resolve) or a lyrics backfill, an artist-art backfill, a"
-                " reorganize backfill, or a disk sync holds the library."
+                " reorganize backfill, or a disk sync holds the library, or two folders"
+                " display under the same name."
             ),
         },
         # The copy-in-library refusal is a well-formed request the importer
@@ -158,14 +161,29 @@ async def start_import(
     reg: Annotated[ImportJobRegistry, Depends(get_registry)],
 ) -> StartImportResponse:
     ensure_import_can_start(request)
+    # The posted path is the one the app DISPLAYED — a job's ``path`` re-posted
+    # by "Import them again", or the folder the album page names — and the wire
+    # scrub replaced any byte UTF-8 cannot carry. Map it back before beets sees
+    # it; the ordinary path is returned untouched.
     try:
-        job_id = reg.start(body.path, options=body.options)
+        path = resolve_posted_path(body.path)
+    except AmbiguousDisplayName:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Two folders display under the same name because their names are "
+                "not valid UTF-8. Rename one on disk to tell them apart."
+            ),
+        ) from None
+    try:
+        job_id = reg.start(path, options=body.options)
     except InLibraryCopyError as exc:
         # Guard refusal (validated before any slot was taken): actionable 422.
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    except LibraryRefusedError as exc:
-        # Apply loaded a refused layout: an import here would write into the root
-        # it refused. Ahead of the RuntimeError arm — this IS a RuntimeError.
+    except (LibraryRefusedError, LibraryRootUnavailableError) as exc:
+        # Apply loaded a refused layout, or the music share is not there: an
+        # import would write into a root the app refuses to file into. The
+        # refused-layout arm is a RuntimeError, so it stays ahead of that one.
         raise HTTPException(status_code=503, detail=str(exc)) from None
     except RuntimeError:
         # An import is already running (single-slot policy).

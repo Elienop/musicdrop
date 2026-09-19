@@ -26,6 +26,7 @@ from fastapi.concurrency import run_in_threadpool
 from app.acquisition.inbox import contain, count_pending, list_inbox, settled_folders
 from app.acquisition.ledger import AcquisitionLedger
 from app.api.import_ import ensure_import_can_start
+from app.beets.library import LibraryRootUnavailableError
 from app.config import settings
 from app.fsutil import is_dir
 from app.import_jobs.registry import (
@@ -51,10 +52,11 @@ router = APIRouter(tags=["acquisition"])
 #: at ``reg.start``.
 #: Declared with a named model because a description-only entry would drop the
 #: ``content`` block - see app/models/errors.py.
-#: Set by Apply's backstop when beets loaded a layout the rule refuses.
+#: Set by Apply's backstop when beets loaded a layout the rule refuses, or by the
+#: music root being missing, empty or unreadable (an unmounted share).
 _LIBRARY_REFUSED_RESPONSE: Final = {
     "model": ErrorDetail,
-    "description": "The store layout is refused, so no import can start.",
+    "description": "The store layout is refused or the library folder is unavailable.",
 }
 _IMPORT_SLOT_TAKEN_RESPONSE: Final = {
     "model": ErrorDetail,
@@ -139,7 +141,7 @@ async def review_inbox(
             options=ImportOptions(operation="move"),
             origin="inbox",
         )
-    except LibraryRefusedError as exc:
+    except (LibraryRefusedError, LibraryRootUnavailableError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     except RuntimeError:
         # An import is already running (single-slot policy) — TOCTOU after the gate.
@@ -229,7 +231,7 @@ async def import_inbox_item(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inbox item not found")
     try:
         job_id = reg.start(str(contained), options=ImportOptions(operation="move"), origin="inbox")
-    except LibraryRefusedError as exc:
+    except (LibraryRefusedError, LibraryRootUnavailableError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     except RuntimeError:
         raise HTTPException(

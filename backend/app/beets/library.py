@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from itertools import islice
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from beets.dbcore.query import MatchQuery, ParsingError
 from beets.dbcore.types import DelimitedString
@@ -142,6 +142,15 @@ def require_library_root(lib: Library) -> None:
         ) from exc
     if not has_entry:
         raise LibraryRootUnavailableError("Library folder is empty. Is the music share mounted?")
+
+
+def require_attached_library_root(lib: object) -> None:
+    """:func:`require_library_root` for a holder that carries the Library untyped.
+
+    The import registry and runner must not import beets, so they cannot name
+    ``Library``. This is the one cast, beside the predicate it delegates to.
+    """
+    require_library_root(cast(Library, lib))
 
 
 #: How many DISTINCT albums :func:`require_library_present` asks about before it
