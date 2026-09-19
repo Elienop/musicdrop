@@ -314,21 +314,26 @@ def test_a_stop_during_placement_leaves_rows_naming_the_download(
     assert outside.holds_every_track is (nth == 1)
 
 
-@pytest.mark.parametrize("operation", ["move", "hardlink"])
+@pytest.mark.parametrize("operation", ["move", "copy", "hardlink"])
 def test_a_straddling_stop_is_not_offered_the_remedy(
     operation: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A stop AFTER a track landed leaves rows in two folders, so no remedy.
 
-    Under ``move`` the download then holds only the remainder — re-adding it and
-    answering Replace demotes the album to that remainder and sends the placed
-    track to Trash (security seat M-1). Rows alone cannot tell that from the
-    copy/hardlink straddle, so both are withheld.
+    The withholding and its REASON, in one test. Re-adding the named folder here
+    reaches beets' duplicate question (the placed row is not one of the task's
+    source paths, so ``find_duplicates`` does not exclude the album), and Replace
+    disposes of the placed copy into Trash. Under ``move`` the download holds
+    only the remainder, so the album is demoted to one track with the notice off
+    (security seat M-1); under ``copy``/``hardlink`` it ends whole. Rows alone
+    cannot tell the two apart, so both are withheld.
     """
     _install_lookup(monkeypatch, BeetsRec.strong)
     lib = _library(tmp_path, operation)
     source = _source_folder(tmp_path)
-    _stop_during_placement(monkeypatch, operation, 2)
+    trash = tmp_path / "trash"
+    trash.mkdir()
+    armed = _stop_during_placement(monkeypatch, operation, 2)
 
     assert _import(lib, source, ImportBridge()).errors != []
     (album,) = list(lib.albums())
@@ -341,8 +346,27 @@ def test_a_straddling_stop_is_not_offered_the_remedy(
     assert outside.folder == str(source)
     assert outside.holds_every_track is False
 
+    # What the app therefore declines to offer, measured rather than asserted in
+    # prose: follow the remedy anyway and Replace trashes the placed track.
+    armed["on"] = False
+    run = _import(lib, source, ImportBridge(), duplicate=DuplicateAction.replace, trash_dir=trash)
+    assert run.errors == []
+    assert run.duplicates != [], "the straddle did not reach the duplicate question"
+    assert [p.name for p in trash.rglob("*") if p.is_file()] == ["01 Airbag 1.flac"]
+    (after,) = list(lib.albums())
+    detail = get_album_detail(lib, _require_id(after.id))
+    assert detail is not None
+    assert detail.outside_library is None, "the notice clears while the album may be short"
+    assert len(detail.tracks) == (1 if operation == "move" else 2)
 
-@pytest.mark.parametrize("operation", ["move", "copy", "hardlink"])
+
+#: beets' file operations, less ``reflink``: the optional ``reflink`` package is
+#: not installed here, so that arm cannot be measured (``in_place`` has its own
+#: test below).
+_MEASURABLE_OPERATIONS = ["move", "copy", "link", "hardlink"]
+
+
+@pytest.mark.parametrize("operation", _MEASURABLE_OPERATIONS)
 def test_the_offered_remedy_finishes_the_album_and_trashes_nothing(
     operation: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -352,9 +376,9 @@ def test_the_offered_remedy_finishes_the_album_and_trashes_nothing(
     ``incremental`` override: a stopped run writes no history at all (beets only
     records in ``finalize``, after placement), so there is nothing to get past.
 
-    End state under every file operation: no duplicate question, one whole album,
-    nothing in Trash, the notice off, no row naming a missing file — and the
-    download intact under the operations that keep it.
+    End state under move, copy, link and hardlink: no duplicate question, one
+    whole album, nothing in Trash, the notice off, no row naming a missing file
+    — and the download intact under the operations that keep it.
     """
     _install_lookup(monkeypatch, BeetsRec.strong)
     lib = _library(tmp_path, operation)

@@ -61,10 +61,11 @@ class OutsideLibrary(BaseModel):
     folder: str = Field(
         description="The folder holding an album file that is not in the library folder.",
     )
-    # The one shape where adding that folder again is measured safe under every
-    # file operation: beets excludes the album from find_duplicates and
-    # remove_replaced absorbs its rows, so no duplicate is asked and nothing
-    # reaches Trash. A straddle or a multi-folder album gets the fact alone.
+    # The one shape where adding that folder again is measured safe under move,
+    # copy, link and hardlink (reflink unmeasured: the package is absent): beets
+    # excludes the album from find_duplicates and remove_replaced absorbs its
+    # rows, so no duplicate is asked and nothing reaches Trash. A straddle or a
+    # multi-folder album gets the fact alone.
     holds_every_track: bool = Field(
         description="True when every track of the album is a file in that one folder.",
     )

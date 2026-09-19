@@ -408,8 +408,8 @@ def _album_root(lib: Library, items: list[Any], *, not_in: Path | None = None) -
     commonpath is the parent of Trash AND music — ``/`` on the shipped layout,
     which says nothing about where the album came from
     (``test_a_retry_after_a_part_way_move_finishes_the_move``). Everything else
-    counts, music folder or not: ``in_place``, an edited ``directory:`` and a
-    symlinked album folder are all supported
+    counts, music folder or not: ``in_place`` and a symlinked album folder are
+    both supported
     (``test_an_album_outside_the_music_folder_still_reaches_trash``).
     """
     dirs = [os.path.dirname(_abs_path(lib, it.path)) for it in items]

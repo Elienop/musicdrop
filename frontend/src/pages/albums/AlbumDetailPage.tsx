@@ -77,7 +77,7 @@ export function AlbumDetailPage() {
 }
 
 /** Links the h1 to the outside-library notice above it. One per page, so a
- * constant is enough (the shape at ImportPage.tsx:319). */
+ * constant is enough (the shape at ImportPage.tsx:338). */
 const OUTSIDE_NOTICE_ID = "album-outside-library";
 
 function AlbumDetailView({ album }: Readonly<{ album: AlbumDetail }>) {

@@ -1878,11 +1878,11 @@ def test_an_album_outside_the_music_folder_still_reaches_trash(
 ) -> None:
     """ "Outside the music folder" is not "not ours to move" — the contrast to S1.
 
-    Three supported ways an album's files live outside ``directory:``, none of
+    Two supported ways an album's files live outside ``directory:``, neither of
     them an accident: ``in_place`` is one of MusicDrop's own file operations
-    (all five beets flags off), ``directory:`` is editable and changing it moves
-    no files, and a symlinked album folder is how a library spans disks. Round 2
-    asked the LOCATION question, so all three had their rows silently dropped
+    (all five beets flags off), and a symlinked album folder is how a library
+    spans disks. Round 2
+    asked the LOCATION question, so both had their rows silently dropped
     on a successful Replace where the build before it moved them to Trash
     reversibly — no Trash entry, no note, and Disk Sync is disk-to-DB only, so
     the files became invisible everywhere.

@@ -38,10 +38,10 @@ from app.main import app
 from app.models.album import OutsideLibrary
 from tests.conftest import beets_dir_for, build_library, make_test_handle
 
-#: Every ``os`` filesystem read the containment question could plausibly grow.
-#: Recorded (not blocked) in the no-disk pin: ``abspath`` -> ``realpath`` calls
-#: ``lstat``/``readlink`` and swallows their errors, so a raising stub cannot
-#: catch it — counting the calls can.
+#: The ``os`` reads the no-disk pin records. Not exhaustive: ``os.getcwd`` (what
+#: ``abspath`` calls on a relative row) and builtin ``open`` are outside it.
+#: Recorded, not blocked: ``abspath`` -> ``realpath`` calls ``lstat``/``readlink``
+#: and swallows their errors, so a raising stub cannot catch it — counting can.
 _DISK_READS = ("stat", "lstat", "readlink", "scandir", "listdir", "access", "open")
 
 
@@ -161,9 +161,10 @@ def test_rows_left_in_a_trash_outside_the_music_folder_are_reported(tmp_path: Pa
     lib = _library(tmp_path)
     trashed = tmp_path / "data" / "trash" / "Art - Alb"
     aid = _album(lib, os.fsencode(str(trashed / "01 T1.mp3")))
-    outside = _outside(lib, aid)
-    assert outside is not None
-    assert outside.folder == str(trashed)
+    # One folder holding every row, so the remedy IS offered on a Trash entry —
+    # security L-1, a residual in BACKLOG. Slice 7's import-start refusal flips
+    # this line rather than discovering a silence.
+    assert _outside(lib, aid) == OutsideLibrary(folder=str(trashed), holds_every_track=True)
 
 
 def test_a_sibling_folder_sharing_the_librarys_name_as_a_prefix_is_outside(
@@ -182,18 +183,16 @@ def test_a_sibling_folder_sharing_the_librarys_name_as_a_prefix_is_outside(
 
 
 def test_the_folder_shown_is_the_path_the_predicate_judged(tmp_path: Path) -> None:
-    """A ``..`` in a row that beets does NOT re-normalise is normalised here.
+    """A ``..`` in a row beets stores verbatim is normalised on BOTH sides.
 
-    Measured: a ``..`` spelling UNDER the music dir is stored relative and beets
-    expands it normalised; one outside the music dir is stored verbatim and comes
-    back verbatim. Judging and displaying the same string keeps the shown folder
-    from being a second spelling of the one judged (security seat L-2).
+    A row outside the music dir is stored as written, so its ``..`` survives into
+    the read. The whole object is asserted, not just ``folder``: comparing the
+    raw dirname on the ``holds_every_track`` side would answer False here while
+    ``folder`` still looked right (security seat L-2, W3).
     """
     lib = _library(tmp_path)
     aid = _album(lib, os.fsencode(str(tmp_path / "x")) + b"/../dl/01.mp3")
-    outside = _outside(lib, aid)
-    assert outside is not None
-    assert outside.folder == str(tmp_path / "dl")
+    assert _outside(lib, aid) == OutsideLibrary(folder=str(tmp_path / "dl"), holds_every_track=True)
 
 
 def test_an_edited_directory_keeps_a_whole_album_whole(tmp_path: Path) -> None:
@@ -229,15 +228,15 @@ def test_the_answer_does_not_depend_on_an_inherited_music_dir_context(tmp_path: 
         assert _outside(lib, aid) is None
 
 
-def test_the_containment_question_never_touches_the_disk(
+def test_the_containment_question_records_no_filesystem_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An unmounted library must not change the answer or raise.
+    """The read makes none of the ``os`` calls in ``_DISK_READS``, so an unmounted
+    library answers the same as a mounted one instead of raising.
 
-    Every ``os`` filesystem read is RECORDED (and still performed) for the whole
-    call, and the list must be empty. A raising stub would not do: ``realpath``
-    swallows the errors its ``lstat`` raises and answers anyway (code seat F4).
-    Measured: the pristine read makes zero such calls.
+    Each is RECORDED and still performed; the list must be empty. A raising stub
+    would not do: ``realpath`` swallows the errors its ``lstat`` raises and
+    answers anyway (code seat F4). Measured: the pristine read makes zero.
     """
     lib = _library(tmp_path)
     inside_id = _album(lib, _inside(lib, "Art/Alb/01 T1.mp3"))

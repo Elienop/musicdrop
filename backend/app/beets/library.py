@@ -780,24 +780,17 @@ def _to_track(item: Any) -> Track:
 
 
 def _row_path(item: Any) -> str:
-    """The item's file path, spelled the way the containment question judges it.
-
-    Judging and displaying one string keeps the folder shown from being a second
-    spelling of the folder judged: a row outside the music dir keeps its ``..``
-    through the DB (one under it is stored relative and beets re-normalises it).
-    """
+    """The item's file path, normalised — the one spelling judged AND shown."""
     return os.path.abspath(os.fsdecode(item.path))
 
 
 def _inside_library(lib: Library, item: Any) -> bool:
-    """True iff the item's file lives under the library dir.
+    """True iff the item's file lives under the library dir; no filesystem read.
 
-    Mirrors beets' own guard in ``Item.try_sync`` (``library/models.py:1027``,
-    ``self._db.directory in util.ancestry(self.path)``): a file outside the
-    library is never relocated. ``commonpath``, not a prefix test — ``<music>``
-    and ``<music>-inbox`` are different folders. String work only; no filesystem
-    read (pinned against stat/lstat/readlink/scandir/listdir/access/open), so an
-    unmounted library answers the same as a mounted one instead of raising.
+    Mirrors beets' guard in ``Item.try_sync`` (``library/models.py:1027``).
+    ``commonpath``, not a prefix test: ``<music>`` and ``<music>-inbox`` are
+    different folders. No-disk pinned by
+    ``test_the_containment_question_records_no_filesystem_read``.
     """
     libdir = os.path.abspath(os.fsdecode(lib.directory))
     return os.path.commonpath([_row_path(item), libdir]) == libdir
@@ -806,10 +799,9 @@ def _inside_library(lib: Library, item: Any) -> bool:
 def _outside_library(lib: Library, items: list[Any]) -> OutsideLibrary | None:
     """The folder of the album's first outside row, and whether it holds them all.
 
-    ``holds_every_track`` is row-only and conservative — a pathless row, a row in
-    the library, or a row in another folder makes it false. That is the one shape
-    where adding the folder again asks no duplicate question and moves nothing to
-    Trash (measured, ``test_import_incremental_e2e``).
+    ``holds_every_track`` is conservative: a pathless row, a row in the library
+    or a row in another folder makes it false. Only that shape re-adds safely
+    (``test_the_offered_remedy_finishes_the_album_and_trashes_nothing``).
     """
     outside = next((it for it in items if it.path and not _inside_library(lib, it)), None)
     if outside is None:
