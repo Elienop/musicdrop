@@ -118,11 +118,14 @@ class BeetsImportRunner:
         # under move/copy/hardlink: beets refuses nothing. It re-creates the root,
         # files the album onto the container's own disk, and a move EMPTIES the
         # download. Asked here, before the slot is claimed, so the start refuses.
-        # ``is not None`` mirrors the gate's guard: before this question only the
-        # copy branch touched the library, so an unattached registry used to 500
-        # here instead of answering.
-        if self._lib is not None:
-            require_importable_library_root(self._lib)
+        # BOTH questions below read the library, so the guard is one early
+        # return rather than one per question: an unattached registry (a
+        # mis-wired one, or the window before lifespan wiring) used to 500 here
+        # instead of answering. Mirrors the gate, which also treats "no library"
+        # as nothing to ask.
+        if self._lib is None:
+            return
+        require_importable_library_root(self._lib)
         # Only explicit copy is a user-facing error here; default/None are
         # silently corrected to move by the worker guard (run_import_worker).
         if options is not None and options.operation == "copy":

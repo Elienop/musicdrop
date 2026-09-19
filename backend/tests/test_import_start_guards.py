@@ -314,6 +314,131 @@ def test_the_folder_the_album_page_serves_round_trips(
 # ----- the library root at import start -----
 
 
+# ----- the shared display-path resolver: what each of its three routes costs -----
+
+
+#: What ``_BAD_NAME`` looks like once it has crossed the wire.
+_BAD_DISPLAY = "Caf\ufffd"
+
+
+def test_the_posted_path_resolve_runs_off_the_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At the 4096-character cap the resolve costs 314 ms of ``os.scandir``.
+
+    On the loop that is 314 ms in which no other request is served — the health
+    check, the SSE feed and every other route. Pinned by asking the resolve
+    itself whether a loop is running where it executes.
+    """
+    import asyncio
+
+    _real_registry(tmp_path)
+    folder = _album_folder(tmp_path / "downloads", b"okc")
+    from app.wire import resolve_posted_path as real
+
+    on_loop: list[bool] = []
+
+    def spy(path: str) -> str:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            on_loop.append(False)
+        else:
+            on_loop.append(True)
+        return str(real(path))
+
+    monkeypatch.setattr("app.api.import_.resolve_posted_path", spy)
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post("/api/import", json={"path": str(folder)})
+
+    assert resp.status_code == 202, resp.text
+    assert on_loop == [False]
+
+
+def test_a_posted_path_with_a_dotdot_segment_is_not_mapped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The amplifier, through the route: ``..`` re-scans one directory per repeat.
+
+    Measured at the cap over a 20 000-entry directory: 18.8 s of whole-API
+    freeze, paid before the refusal the route eventually returns. Returned
+    unchanged means no directory was read — a mapped path is a scanned one.
+    """
+    _real_registry(tmp_path)
+    downloads = tmp_path / "downloads"
+    _album_folder(downloads, _BAD_NAME)  # the real folder the amplifier matches
+    amplifier = str(downloads) + f"/{_BAD_DISPLAY}/.." * 3
+
+    from app.wire import resolve_posted_path as real
+
+    seen: list[tuple[str, str]] = []
+
+    def spy(path: str) -> str:
+        out = str(real(path))
+        seen.append((path, out))
+        return out
+
+    monkeypatch.setattr("app.api.import_.resolve_posted_path", spy)
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post("/api/import", json={"path": amplifier})
+
+    assert seen == [(amplifier, amplifier)]
+    assert resp.status_code != 500, resp.text
+
+
+def test_a_posted_path_without_a_dotdot_segment_is_still_mapped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control: the refusal must not cost the route its ordinary mapping."""
+    _real_registry(tmp_path)
+    downloads = tmp_path / "downloads"
+    real_folder = _album_folder(downloads, _BAD_NAME)
+    displayed = str(downloads) + f"/{_BAD_DISPLAY}"
+
+    from app.wire import resolve_posted_path as real
+
+    seen: list[tuple[str, str]] = []
+
+    def spy(path: str) -> str:
+        out = str(real(path))
+        seen.append((path, out))
+        return out
+
+    monkeypatch.setattr("app.api.import_.resolve_posted_path", spy)
+    client = TestClient(app, raise_server_exceptions=False)
+    client.post("/api/import", json={"path": displayed})
+
+    assert seen == [(displayed, str(real_folder))]
+
+
+@pytest.mark.parametrize(
+    ("url", "field"),
+    [
+        ("/api/acquisition/inbox/items/import", "name"),
+        ("/api/trash/restore", "folder"),
+    ],
+)
+def test_the_sibling_name_fields_are_bounded(tmp_path: Path, url: str, field: str) -> None:
+    """Both carry ONE entry name, and unbounded both re-scanned a directory per component.
+
+    Measured on a 20 000-entry directory before the bound: 75.9 s from a 64 KB
+    body, paid before the 404 the route eventually returns. At 255 characters
+    (NAME_MAX, and a display form never has more characters than the name has
+    bytes) the same worst case costs 3.5 ms.
+    """
+    _real_registry(tmp_path)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    over = client.post(url, json={field: "x" * 256})
+    assert over.status_code == 422, over.text
+    assert over.json()["detail"][0]["type"] == "string_too_long"
+
+    # The control: the longest name a listing can emit is NOT refused. Whatever
+    # this route then answers, it is not a length complaint.
+    at_bound = client.post(url, json={field: "x" * 255})
+    assert at_bound.status_code != 422, at_bound.text
+
+
 def _seed_a_library_row(lib: Library) -> None:
     """One item row naming a file under the music root — a library with content."""
     from beets.library import Item
@@ -368,6 +493,7 @@ def test_an_import_does_not_start_while_the_library_root_is_unavailable(
     assert len(list(lib.albums())) == albums_before
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")
 def test_an_unreadable_root_refuses_even_with_no_rows(tmp_path: Path) -> None:
     """Invariant 3's other half: only the EMPTY arm is forgiven, never this one."""
     _reg, lib = _real_registry(tmp_path)
@@ -432,6 +558,50 @@ def test_an_empty_root_with_rows_is_still_a_dropped_share(tmp_path: Path) -> Non
     assert resp.status_code == 503
     assert resp.json()["detail"] == "Library folder is empty. Is the music share mounted?"
     assert import_gate_clear(reg, None) is False
+
+
+def test_a_row_naming_no_file_is_still_a_dropped_share(tmp_path: Path) -> None:
+    """The forgiveness asks the items table, not a random one-album sample.
+
+    Measured with the sample: one pathless row beside real albums forgave a
+    dropped share on 9 of 400 polls, and a single-row library on 400 of 400 —
+    the gate opened and the queued import filed onto the bare mountpoint. The
+    question is now ``SELECT 1 FROM items LIMIT 1``, so 200 polls agree.
+    """
+    from beets.library import Item
+
+    from app.import_jobs.gates import import_gate_clear
+
+    reg, lib = _real_registry(tmp_path)
+    _seed_a_library_row(lib)
+    blank = Item(album="Damaged", albumartist="Nobody", title="T1", track=1)
+    blank.path = b""
+    lib.add_album([blank])
+    (Path(os.fsdecode(lib.directory)) / ".keep").unlink()  # the share dropped
+    folder = _album_folder(tmp_path / "downloads", b"okc")
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post("/api/import", json={"path": str(folder)})
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Library folder is empty. Is the music share mounted?"
+    assert [import_gate_clear(reg, None) for _ in range(200)] == [False] * 200
+
+
+def test_album_rows_with_no_tracks_are_still_a_fresh_install(tmp_path: Path) -> None:
+    """The control for the row above: ALBUM rows alone do not name a file.
+
+    beets writes an album row with its tracks, so this is a partially-cleared
+    database, not an ordinary one — it is here because the predicate reads
+    ``items`` and a reader should see which table decides.
+    """
+    from beets.library import Album
+
+    from app.import_jobs.gates import import_gate_clear
+
+    reg, lib = _real_registry(tmp_path)
+    lib.add(Album(album="Ghost", albumartist="Nobody"))
+    (Path(os.fsdecode(lib.directory)) / ".keep").unlink()
+    assert [import_gate_clear(reg, None) for _ in range(20)] == [True] * 20
 
 
 def test_trash_and_delete_keep_the_stricter_predicate(tmp_path: Path) -> None:
@@ -525,23 +695,37 @@ def test_a_registry_with_no_library_leaves_the_gate_open(tmp_path: Path) -> None
 # ----- the gate is on the drains' un-caught path, so it must never raise -----
 
 
-def _make_the_root_question_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+#: The two shapes "never raises" has to cover: the gate's own filesystem work
+#: failing, and a defect inside the predicate it calls. Pinning only ``OSError``
+#: let ``except Exception`` -> ``except OSError`` survive (measured).
+_FAULTS = [OSError(5, "Input/output error"), AttributeError("'NoneType' has no attribute 'x'")]
+
+
+def _make_the_root_question_raise(
+    monkeypatch: pytest.MonkeyPatch, fault: BaseException | None = None
+) -> None:
     """Any unexpected failure of the gate's own filesystem work."""
     from app.import_jobs import gates
 
     def boom(_library: object) -> None:
-        raise OSError(5, "Input/output error")
+        raise fault if fault is not None else OSError(5, "Input/output error")
 
     monkeypatch.setattr(gates, "require_importable_library_root", boom)
 
 
+@pytest.mark.parametrize("fault", _FAULTS, ids=lambda f: type(f).__name__)
 def test_an_unexpected_raise_inside_the_gate_reads_as_wait(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    fault: BaseException,
 ) -> None:
     """Measured before the fix: the raise escaped and killed the drain thread.
 
     Also pins the latch: the drains poll this four times a second between them,
     so one failing episode is ONE record, and a later episode says so again.
+    The record carries its traceback — the message is fixed text, so a
+    ``.error`` call would leave the operator nothing that names the defect.
     """
     import logging
 
@@ -552,16 +736,26 @@ def test_an_unexpected_raise_inside_the_gate_reads_as_wait(
     assert gates.import_gate_clear(reg, None) is True  # control: healthy root, gate open
     with caplog.at_level(logging.INFO):
         with monkeypatch.context() as broken:
-            _make_the_root_question_raise(broken)
+            _make_the_root_question_raise(broken, fault)
             for _ in range(5):
                 assert gates.import_gate_clear(reg, None) is False
         assert gates.import_gate_clear(reg, None) is True  # the fault cleared
         with monkeypatch.context() as broken_again:
-            _make_the_root_question_raise(broken_again)
+            _make_the_root_question_raise(broken_again, fault)
             assert gates.import_gate_clear(reg, None) is False
     faults = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert len(faults) == 2, [r.getMessage() for r in faults]
     assert {r.name for r in faults} == {"uvicorn.error"}
+    assert [r.exc_info is not None for r in faults] == [True, True]
+    assert [type(r.exc_info[1]).__name__ for r in faults if r.exc_info] == [
+        type(fault).__name__
+    ] * 2
+    # The recovery says so once, like the root latch does — a drain that
+    # resumed after a transient defect is not a silent event.
+    backs = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(backs) == 1, [r.getMessage() for r in backs]
+    assert backs[0].name == "uvicorn.error"
+    assert "resume" in backs[0].getMessage()
 
 
 def test_the_root_question_runs_even_when_another_check_would_close_the_gate(

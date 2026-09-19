@@ -395,9 +395,18 @@ def test_validate_lets_a_fresh_install_through(tmp_path: Path) -> None:
     BeetsImportRunner(lib).validate([str(tmp_path / "downloads" / "incoming")], None)
 
 
-def test_validate_answers_rather_than_500ing_without_a_library(tmp_path: Path) -> None:
-    """A registry with no library attached must not AttributeError out of validate."""
-    BeetsImportRunner(None).validate([str(tmp_path / "downloads" / "incoming")], None)
+@pytest.mark.parametrize("options", [None, ImportOptions(operation="copy")])
+def test_validate_answers_rather_than_500ing_without_a_library(
+    tmp_path: Path, options: ImportOptions | None
+) -> None:
+    """A registry with no library attached must not AttributeError out of validate.
+
+    BOTH questions read the library: the root predicate, and the copy branch's
+    ``getattr(self._lib, "directory")``. Measured with only the first guarded:
+    ``validate(None, copy)`` -> ``AttributeError: 'NoneType' object has no
+    attribute 'directory'``.
+    """
+    BeetsImportRunner(None).validate([str(tmp_path / "downloads" / "incoming")], options)
 
 
 def test_runner_forwards_directive_to_session_and_worker(

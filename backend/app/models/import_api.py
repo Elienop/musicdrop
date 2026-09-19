@@ -88,10 +88,13 @@ class StartImportRequest(BaseModel):
     # BACKLOG entry before adding validation.
     # ``max_length`` is PATH_MAX on Linux, so it refuses nothing that could name
     # a real folder. It is a DoS bound, not an allowlist: ``resolve_posted_path``
-    # runs one ``os.scandir`` per placeholder component while rebuilding a
-    # growing Path, so its cost is quadratic in the component count and it runs
-    # on the event loop. Measured by the security seat: a 4 KB path stalls the
-    # whole API for ~157 ms, 32 KB for 4.8 s and 80 KB for 3.5 minutes.
+    # runs one ``os.scandir`` per placeholder component. Measured AT this cap —
+    # 2048 placeholder components, the densest path it admits — 314 ms; 32 KB
+    # was 4.8 s and 80 KB 3.5 minutes before it existed. The cap alone was not
+    # enough: a component that MATCHES an entry, alternated with ``..``,
+    # re-scanned the same directory per repeat (18.8 s over 20 000 entries), so
+    # ``resolve_display_path`` refuses a ``..``/``.`` segment, and the route
+    # runs the resolve in a worker thread.
     path: Annotated[
         str,
         StringConstraints(strip_whitespace=True, min_length=1, max_length=4096),

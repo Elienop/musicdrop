@@ -155,25 +155,33 @@ def require_library_root(lib: Library) -> None:
         )
 
 
+#: Does the library hold ANY track row? Deterministic and O(first hit) — no
+#: ``ORDER BY RANDOM()``, so two polls a second apart cannot disagree.
+_ANY_ITEM_SQL = """
+SELECT 1 FROM items LIMIT 1
+"""
+
+
+def _library_has_any_item(lib: Library) -> bool:
+    """True when the items table holds at least one row."""
+    with lib.transaction() as tx:
+        return bool(tx.query(_ANY_ITEM_SQL))
+
+
 def require_importable_library_root(lib: object) -> None:
     """:func:`require_library_root` for the IMPORT side, which forgives a fresh install.
 
-    Two jobs, both needed here. The registry and runner must not import beets, so
-    they cannot name ``Library``: this is the one cast, beside the predicate it
-    delegates to. And an EMPTY root means two opposite things — a dropped share,
-    or the empty ``/music`` bind mount Docker hands every new install, which the
-    app never creates. The database separates them: with no item rows there is
-    nothing a write could shadow and nothing to lose, so the first import starts.
-
-    Only this arm is forgiven. A missing or unreadable root still refuses, rows
-    or no rows, and Trash, Delete, Restore and disk sync keep the stricter
-    :func:`require_library_root` unchanged.
+    Forgives the EMPTY arm when the items table holds no row (a new install's
+    bare ``/music`` bind mount); missing and unreadable still refuse, and Trash,
+    Delete, Restore and disk sync keep :func:`require_library_root`. Residual: a
+    first import while the share is down lands on the mountpoint. The ``cast``
+    is the only one — the registry and runner must not import beets.
     """
     library = cast(Library, lib)
     try:
         require_library_root(library)
     except LibraryRootUnavailableError as exc:
-        if not (exc.empty and not _sampled_library_files(library, 1)):
+        if not (exc.empty and not _library_has_any_item(library)):
             raise
 
 

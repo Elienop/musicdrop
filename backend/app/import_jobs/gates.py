@@ -61,21 +61,21 @@ def import_gate_clear(import_registry: ImportJobRegistry, swap_lock: asyncio.Loc
     """True when the import slot, the beets swap lock, every library backfill
     and the music root are all clear. Best-effort (``Lock.locked()``), the
     established single-user TOCTOU posture — callers still handle ``start()``
-    raising.
-
-    Never raises. The acquisition drain reaches this from ``_drain`` with no
-    catch-all above it, so any escape kills that thread for the process
-    lifetime; the bank drain's catch-all survives but fails the row it holds.
-    An unexpected failure reads as "not now" instead, logged once per episode.
+    raising. Never raises (see the module docstring); an unexpected failure
+    reads as "not now", logged once per episode with its traceback.
     """
     try:
         clear = _gate_answer(import_registry, swap_lock)
     except Exception:
         if not _gate_fault.is_set():
             _gate_fault.set()
+            # ``.exception``, not ``.error``: the message is fixed text, so the
+            # traceback is the only thing that names the defect.
             operator_logger.exception("import gate: a check failed; queued imports wait for it")
         return False
-    _gate_fault.clear()
+    if _gate_fault.is_set():
+        _gate_fault.clear()
+        operator_logger.info("import gate: the failing check answered again; queued imports resume")
     return clear
 
 

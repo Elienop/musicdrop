@@ -1,8 +1,8 @@
 """Pydantic contract for the Trash management view (list / restore / empty)."""
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, StringConstraints
 
 #: What Restore will DO to a given Trash row.
 #:
@@ -96,7 +96,14 @@ class TrashListing(BaseModel):
 class RestoreRequest(BaseModel):
     """Body of ``POST /api/trash/restore`` — the folder (relative to Trash)."""
 
-    folder: str
+    # One entry name, never a path: the listing emits an immediate child of
+    # the Trash root. ``max_length`` is NAME_MAX (255) and counts CHARACTERS, while a
+    # name is at most 255 BYTES and the display form never has more characters
+    # than the name has bytes — so it refuses nothing a listing can emit. It is
+    # a DoS bound: ``resolve_display_path`` runs one ``os.scandir`` per
+    # placeholder component, and unbounded this field cost 75.9 s from a 64 KB
+    # body over a 20 000-entry directory (measured). At 255 it costs 3.5 ms.
+    folder: Annotated[str, StringConstraints(max_length=255)]
 
 
 class RestoreResult(BaseModel):

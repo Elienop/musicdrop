@@ -13172,6 +13172,7 @@
         "properties": {
           "name": {
             "type": "string",
+            "maxLength": 255,
             "title": "Name"
           }
         },
@@ -15952,6 +15953,7 @@
         "properties": {
           "folder": {
             "type": "string",
+            "maxLength": 255,
             "title": "Folder"
           }
         },

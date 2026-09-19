@@ -240,10 +240,13 @@ def resolve_display_path(base: Path, rel: str) -> Path:
     undecodable bytes, so a result without a placeholder means the bytes were
     untouched — no second candidate can exist, and the scan would be waste.
 
-    Containment is deliberately NOT checked here: every caller already has its
-    own traversal guard, and this must not become a second, weaker one.
+    A ``..`` or ``.`` segment gets the literal path too, unscanned — a bound on
+    the WORK, not a containment check (every caller has its own traversal
+    guard). ``..`` sends the walk back to a directory it already scanned, so one
+    input re-scans it per repeat: 18.8 s over 20 000 entries at the posted
+    path's 4096-character cap, and nothing the app displays carries one.
     """
-    if PLACEHOLDER not in rel:
+    if PLACEHOLDER not in rel or any(seg in {"..", "."} for seg in rel.split("/")):
         return base / rel
     resolved = base
     for part in Path(rel).parts:

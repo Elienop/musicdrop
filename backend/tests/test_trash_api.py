@@ -1210,11 +1210,16 @@ def test_empty_overlong_folder_404_not_500(client: TestClient) -> None:
     assert (trash / "Album").exists()  # the overlong name must not drag it down
 
 
-def test_restore_overlong_folder_404_not_500(client: TestClient) -> None:
+def test_restore_overlong_folder_is_refused_not_500(client: TestClient) -> None:
+    # Was a 404 (ENAMETOOLONG out of the containment predicate). ``folder`` now
+    # carries ``max_length=255`` — NAME_MAX, so it refuses no name the listing
+    # can emit — and the model answers first. The invariant this test holds is
+    # unchanged: never an unhandled 500, and nothing leaves Trash.
     trash = _trash_dir(client)
     (trash / "A").mkdir(parents=True)
     r = client.post("/api/trash/restore", json={"folder": "x" * 300})
-    assert r.status_code == 404
+    assert r.status_code == 422
+    assert r.json()["detail"][0]["type"] == "string_too_long"
     assert (trash / "A").exists()
 
 

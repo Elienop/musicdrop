@@ -169,16 +169,19 @@ def test_import_inbox_item_rejects_escape(tmp_path: Path) -> None:
 def test_import_inbox_item_rejects_overlong_name(tmp_path: Path) -> None:
     # A >255-byte name component trips OSError(ENAMETOOLONG) inside the
     # contain/is_dir predicates (Path.exists/is_dir only swallow
-    # ENOENT/ENOTDIR/EBADF/ELOOP). Such a name cannot be an inbox item, so it
-    # must take the endpoint's unknown-item 404 like "Does Not Exist" above —
-    # not surface as an unhandled 500.
+    # ENOENT/ENOTDIR/EBADF/ELOOP), so this used to reach the endpoint's
+    # unknown-item 404. The field now carries ``max_length=255`` — NAME_MAX, so
+    # it refuses nothing a listing can emit — and the model answers first. Still
+    # never an unhandled 500, which is what this test was written for, and the
+    # 422 names the real problem instead of saying "no such item".
     inbox = tmp_path / "inbox"
     inbox.mkdir()
     reset_registry(runner=FakeImportRunner(parked=[]))
     with _state(inbox):
         client = TestClient(app)
         resp = client.post("/api/acquisition/inbox/items/import", json={"name": "x" * 300})
-        assert resp.status_code == 404
+        assert resp.status_code == 422
+        assert resp.json()["detail"][0]["type"] == "string_too_long"
 
 
 def test_import_inbox_item_409_while_swap_lock_held(
