@@ -167,12 +167,15 @@ async def start_import(
     # scrub replaced any byte UTF-8 cannot carry. Map it back before beets sees
     # it; the ordinary path is returned untouched.
     try:
-        # Off the loop, but only partly: the dominant cost is pure-Python
-        # pathlib joins, which hold the GIL. At the 4096-character cap (2048
-        # placeholder components) the request costs 413 ms and stalls the loop
-        # for 236 ms of it (security seat, measured 2026-09-19). The three
-        # sibling routes take a RELATIVE PATH too — up to 127 components inside
-        # their 255-character cap — and stay on the loop.
+        # Off the loop reduces the stall; it does not remove it. The dominant
+        # cost is pure-Python ``pathlib``/``posixpath.join`` work, which holds
+        # the GIL — ``os.scandir`` profiled at ~0.5% of it. At the
+        # 4096-character cap (2048 placeholder components) the request costs
+        # ~331 ms and the loop serves nobody for 175-334 ms of that, across five
+        # runs with a 2 ms poller (security seat, measured 2026-09-19). The
+        # three sibling routes take a RELATIVE PATH too — 255 characters admit
+        # 128 components (``"x/" * 127 + "x"``, counted through
+        # ``resolve_display_path``) — and stay on the loop.
         path = await run_in_threadpool(resolve_posted_path, body.path)
     except AmbiguousDisplayName:
         raise HTTPException(

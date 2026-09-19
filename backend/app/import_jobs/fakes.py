@@ -58,6 +58,9 @@ class FakeImportRunner:
         # real runner; validate_calls records the (path, options) it saw.
         self.validate_error: Exception | None = None
         self.validate_calls: list[tuple[list[str], ImportOptions | None]] = []
+        # The forgiven-root seam: the real runner returns the empty library root
+        # it let through, and the registry logs it once the slot is claimed.
+        self.validate_forgiven: str | None = None
         # The paths the registry handed run() — the multi-path contract's seam.
         self.received_paths: list[str] | None = None
         # Spawn-failure seam: tests set run_error to make run() raise
@@ -65,10 +68,11 @@ class FakeImportRunner:
         # runner's threading.Thread(...).start() failing under exhaustion.
         self.run_error: Exception | None = None
 
-    def validate(self, paths: list[str], options: ImportOptions | None = None) -> None:
+    def validate(self, paths: list[str], options: ImportOptions | None = None) -> str | None:
         self.validate_calls.append((list(paths), options))
         if self.validate_error is not None:
             raise self.validate_error
+        return self.validate_forgiven
 
     def run(
         self,

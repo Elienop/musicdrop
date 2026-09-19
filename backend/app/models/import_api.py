@@ -82,13 +82,14 @@ class StartImportRequest(BaseModel):
     # from their own feature while crossing no privilege boundary. Read the
     # BACKLOG entry before adding validation.
     # ``max_length`` is PATH_MAX, a DoS bound not an allowlist: the resolve walks
-    # one component at a time — 413 ms at the cap, 3.5 min at 80 KB without it.
+    # one component at a time — ~331 ms at the cap, 3.5 min at 80 KB without it.
     # It bounds the string, not the TIME (a ``..``-amplified path: 18.8 s over
     # 20 000 entries), so the resolver refuses that segment and the route resolves
     # off the loop (test_the_posted_path_resolve_runs_off_the_event_loop). Off the
-    # loop is a HALVING, not a removal: the dominant cost is pure-Python pathlib
-    # joins holding the GIL, and the loop still stalls 236 ms of those 413
-    # (security seat, measured 2026-09-19).
+    # loop REDUCES the stall rather than removing it: the dominant cost is
+    # pure-Python pathlib joins holding the GIL, and the loop serves nobody for
+    # 175-334 ms of those ~331 across five runs (security seat, measured
+    # 2026-09-19).
     path: Annotated[
         str,
         StringConstraints(strip_whitespace=True, min_length=1, max_length=4096),

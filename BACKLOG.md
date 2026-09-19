@@ -211,13 +211,16 @@ entry carries a dated correction block where the pass changed it._
      starter config's `import.write: yes`, re-tags an album that was already filed (not
      destructive — measured: all four files stayed and Trash stayed empty). The physical
      predicate `is_in_library_source` (realpath prefix, then `samefile` up the chain) is now a
-     second opinion asked ONLY when the lexical answer says "outside", so the ordinary album
-     still records no filesystem read, and it swallows every `OSError` → an unmounted or
-     unreadable root leaves a real notice showing. It moved from `app/beets/import_session.py`
-     to `app/fsutil.py` and is re-exported, because `import_session` already imports `library`
-     and that arrow cannot be reversed. Reachability, stated honestly: MusicDrop's own imports
-     always move or copy into `lib.directory`, so only a beets CLI add or an `in_place` import
-     through the alias produces such rows.
+     second opinion asked per row, and only once THAT row's lexical answer says "outside", so a
+     lexically-inside row still records no filesystem read, and it swallows every `OSError` → an
+     unmounted or unreadable root leaves a real notice showing. Per row, not once: asking it about
+     the first lexically-outside row alone hid a genuinely-stranded second row behind an
+     alias-spelled first one (code seat F1, measured 2026-09-19). It moved from
+     `app/beets/import_session.py` to `app/fsutil.py` and is re-exported, because `import_session`
+     already imports `library` and that arrow cannot be reversed. Reachability, stated honestly:
+     MusicDrop's own imports file into `lib.directory` whatever the operation — move, copy,
+     hardlink, link or reflink — so only a beets CLI add or an `in_place` import through the alias
+     produces such rows.
      **The app offers "add that folder again" only when every track row is a file in that one
      folder** (`holds_every_track`). That is the shape where beets asks no duplicate question —
      every row names a file the task is importing, so `find_duplicates` excludes the album and
@@ -236,6 +239,22 @@ entry carries a dated correction block where the pass changed it._
      leaves a 0-track Trash row whose Restore can never succeed (no app-store refusal at
      import start on this branch); a hardlink that cannot cross filesystems stops the second
      run the same way until the operation or the mount changes.
+     OPEN, OWNER'S CALL — the physical predicate silences a staging folder INSIDE the music
+     root reached through a symlink. Measured 2026-09-19 (security seat L-4): `env/dlalias` ->
+     `env/music/_incoming`, one album's rows spelled through the alias. Two servers, same DB:
+     before the second opinion the notice named `.../env/dlalias/Ghost`, after it `null`. The row is
+     physically inside and lexically outside, so beets will not relativize or move it — the
+     album stays half-managed and the page says nothing. The alias shape the fix targets is the
+     common one and stays fixed; this is the row where the notice's CONDITION (now physical) and
+     its REMEDY (which predicts beets, whose guard is lexical `commonpath`) disagree. Two
+     options, neither taken this round: (1) narrow the suppression to the alias it was written
+     for — suppress only when the row's realpath differs from the row's own folder by the root
+     prefix alone, keeping the measured alias fix and restoring the notice for a staging folder;
+     (2) keep the physical condition and give the state its own sentence ("These files are in
+     your music folder under a different path spelling; beets will not manage them until the
+     spelling matches"), which is a third value on `AlbumDetail.outside_library` and therefore a
+     contract change. Whichever way it goes, `backend/tests/test_album_outside_library.py` should
+     carry a row spelling a folder INSIDE the root through a symlink; it has none today.
      OWNER'S CALLS: the failed run's panel does not point at the half album (its row reads "did
      not land" with no link, because the session reported no album id before it died); the
      notice has no "add this folder" control (`ImportAgainButton` already starts an import
@@ -287,11 +306,14 @@ entry carries a dated correction block where the pass changed it._
      capped at 255 characters (NAME_MAX; an over-long name is now a 422 where it was a 404), and
      the import route resolves off the event loop because the densest 4 096-character path still
      cost ~312 ms on it. Third round, all re-measured against a real uvicorn (2026-09-19): the
-     threadpool HALVES that stall rather than removing it — the dominant cost is pure-Python
-     `pathlib` joins, which hold the GIL, so 2048 components cost 413 ms of request time and
-     236 ms of loop stall against a 0.47 ms health baseline. And the siblings do not "resolve one
-     component": all of them consume their value as a RELATIVE path (`resolve_display_path`
-     iterates `Path(rel).parts`), so 255 characters admit up to 127 components — the cap was
+     threadpool REDUCES that stall rather than removing it — the dominant cost is pure-Python
+     `pathlib`/`posixpath.join` work, which holds the GIL (`os.scandir` profiled at ~0.5%), so
+     2048 components cost ~331 ms of request time and 175-334 ms of loop stall over five runs
+     with a 2 ms poller, against a ~0.25 ms health baseline (re-measured 2026-09-19; the earlier
+     413/236 ms pair came from a 10 ms poller too coarse to see the worst gap). And the siblings
+     do not "resolve one component": all of them consume their value as a RELATIVE path
+     (`resolve_display_path` iterates `Path(rel).parts`), so 255 characters admit 128 components
+     (`"x/" * 127 + "x"` is 255 characters and 128 components) — the cap was
      reasoned about as a NAME cap and applied to a PATH. `DELETE /api/trash?folder=` had no bound
      at all: 3600 components stalled the loop 2091 ms (2797 ms with one non-UTF-8 self-referential
      symlink planted in the Trash), so it is capped at 255 like its siblings and the bound test is

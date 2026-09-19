@@ -859,16 +859,31 @@ def _outside_library(lib: Library, items: list[Any]) -> OutsideLibrary | None:
     true`` and the "add that folder again" remedy, which re-imports and re-tags
     an album that was already filed.
 
-    :func:`~app.fsutil.is_in_library_source` is asked ONLY after the lexical
-    answer says "outside", so the ordinary album still records no filesystem
-    read (``test_the_containment_question_records_no_filesystem_read``). It
-    swallows every OSError and answers False, so an unmounted or unreadable root
-    leaves the notice showing — the safe direction for a notice.
+    :func:`~app.fsutil.is_in_library_source` is asked per row, and only once
+    that row's lexical answer says "outside", so a lexically-inside row records
+    no filesystem read (``test_the_containment_question_records_no_filesystem_read``).
+    It swallows every OSError and answers False, so an unmounted or unreadable
+    root leaves the notice showing — the safe direction for a notice.
+
+    A row counts as outside when BOTH answer so, which is why the physical
+    question lives in the search rather than after it. Measured 2026-09-19 (code
+    seat F1): asking it about the first lexically-outside row alone answered
+    ``None`` for a two-row album whose first row spelled the root through an
+    alias and whose second row was genuinely outside — the stranded row went
+    unreported. Cost is one ``realpath``/``samefile`` chain per lexically-outside
+    row, bounded by the album's track count.
     """
-    outside = next((it for it in items if it.path and not _inside_library(lib, it)), None)
+    outside = next(
+        (
+            it
+            for it in items
+            if it.path
+            and not _inside_library(lib, it)
+            and not is_in_library_source(lib.directory, _row_path(it))
+        ),
+        None,
+    )
     if outside is None:
-        return None
-    if is_in_library_source(lib.directory, _row_path(outside)):
         return None
     folder = os.path.dirname(_row_path(outside))
     return OutsideLibrary(

@@ -11,6 +11,7 @@ phase via callbacks while API threads read state and push the choice.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -45,6 +46,11 @@ from app.models.import_models import (
     ImportOrigin,
     ParkedAlbum,
 )
+
+#: Operator-facing records go to ``uvicorn.error``, for the reason
+#: ``import_jobs.gates`` states: under the Dockerfile CMD uvicorn leaves
+#: app-namespace loggers at WARNING.
+operator_logger = logging.getLogger("uvicorn.error")
 
 # Phases in which a job still owns the single import slot.
 _ACTIVE_PHASES = {ImportPhase.scanning, ImportPhase.reviewing, ImportPhase.applying}
@@ -281,7 +287,7 @@ class ImportJobRegistry:
             raise LibraryRefusedError(self._refusal)
         paths = [source] if isinstance(source, str) else list(source)
         runner = self._resolve_runner()
-        runner.validate(paths, options)
+        forgiven = runner.validate(paths, options)
         # options.sweep is the single source of truth for the sweep origin:
         # callers never pass origin="sweep" themselves, and the inbox/manual
         # call sites stay untouched.
@@ -312,6 +318,18 @@ class ImportJobRegistry:
                 directive_astracks=directive is not None and directive.action == "astracks",
             )
             self._job = job
+
+        # After the slot claim and the busy check, so the record is about a
+        # start that was ACCEPTED and is about to file. Logged in ``validate``
+        # it fired per start ATTEMPT: three starts, one of them a 409, wrote
+        # three records while nothing was filed (measured 2026-09-19, security
+        # seat L-1).
+        if forgiven is not None:
+            operator_logger.warning(
+                "import gate: %s is empty and the library holds no track; filing this"
+                " import there. Stop now if the music share is not mounted.",
+                forgiven,
+            )
 
         try:
             runner.run(

@@ -12,7 +12,6 @@ in the mypy disallow_untyped_calls override because it constructs beets objects.
 
 from __future__ import annotations
 
-import logging
 import os
 import threading
 from collections.abc import Callable
@@ -39,11 +38,6 @@ from app.beets.library import (
 from app.models.bank import BankApplyDirective
 from app.models.import_models import ImportOptions
 
-#: Operator-facing records go to ``uvicorn.error``, for the reason
-#: ``import_jobs.gates`` states: under the Dockerfile CMD uvicorn leaves
-#: app-namespace loggers at WARNING.
-operator_logger = logging.getLogger("uvicorn.error")
-
 
 class ImportRunner(Protocol):
     """Starts an import on its own thread, reporting completion via callbacks.
@@ -68,7 +62,7 @@ class ImportRunner(Protocol):
         directive: BankApplyDirective | None = None,
     ) -> None: ...
 
-    def validate(self, paths: list[str], options: ImportOptions | None = None) -> None:
+    def validate(self, paths: list[str], options: ImportOptions | None = None) -> str | None:
         """Refuse an invalid (paths, options) combination by raising.
 
         Called synchronously on the API thread BEFORE the registry allocates
@@ -77,6 +71,11 @@ class ImportRunner(Protocol):
         the library holds item rows) and
         ``InLibraryCopyError`` (copy-mode source inside the library, checked PER
         path, so one bad member refuses the whole start).
+
+        RETURNS the library root that was forgiven for being empty, or ``None``
+        when nothing was forgiven. Reported rather than logged here because this
+        runs before the slot claim, and the caller is the one that knows whether
+        the start was accepted (``ImportJobRegistry.start``).
         """
         ...
 
@@ -115,26 +114,22 @@ class BeetsImportRunner:
         # list the developer's real playlist store.
         self._playlists_dir = playlists_dir
 
-    def validate(self, paths: list[str], options: ImportOptions | None = None) -> None:
+    def validate(self, paths: list[str], options: ImportOptions | None = None) -> str | None:
         # With the root missing or a bare mountpoint, beets re-creates the root,
         # files the album onto the container's own disk, and a move EMPTIES the
         # download (measured under move/copy/hardlink). Asked before the slot is
         # claimed. The early return covers BOTH library reads below
         # (test_validate_answers_rather_than_500ing_without_a_library).
         if self._lib is None:
-            return
+            return None
         # The forgiven arm is the one hole in that guard, and it is keyed on "the
         # items table holds no row" rather than on "this install has never
-        # imported" — so say which root is about to receive the files. Here and
-        # not inside the predicate: the gate polls it at 2 Hz while another job
-        # holds the slot, this runs once per import start.
+        # imported" — so the root about to receive the files is REPORTED to the
+        # caller. Not logged here: this runs before the slot claim and before the
+        # busy check, so three starts (one of them a 409) produced three records
+        # and filed nothing — measured 2026-09-19, security seat L-1. Not inside
+        # the predicate either: the gate polls that at 2 Hz.
         forgiven = require_importable_library_root(self._lib)
-        if forgiven is not None:
-            operator_logger.warning(
-                "import gate: %s is empty and the library holds no track; filing this"
-                " import there. Stop now if the music share is not mounted.",
-                forgiven,
-            )
         # Only explicit copy is a user-facing error here; default/None are
         # silently corrected to move by the worker guard (run_import_worker).
         if options is not None and options.operation == "copy":
@@ -148,6 +143,7 @@ class BeetsImportRunner:
                     "This folder is inside your music library; a copy-import "
                     "would duplicate its files. Choose move instead."
                 )
+        return forgiven
 
     def run(
         self,

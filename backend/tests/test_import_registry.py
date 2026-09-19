@@ -1,3 +1,4 @@
+import logging
 import queue
 import threading
 import time
@@ -132,6 +133,45 @@ def test_second_start_while_active_raises() -> None:
     registry.start("/music/incoming")
     with pytest.raises(RuntimeError):
         registry.start("/music/other")
+
+
+def test_the_forgiven_root_record_counts_accepted_starts_not_attempts(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The record is about a filing, so a REFUSED start must not write one.
+
+    ``validate`` runs before the slot claim and before the busy check, so a
+    record written there counted attempts: three starts, one of them a 409,
+    wrote three records while nothing was filed (measured 2026-09-19, security
+    seat L-1). The second start below is that 409.
+    """
+    runner = FakeImportRunner(parked=[_parked(0, Recommendation.medium)])
+    runner.validate_forgiven = "/music"
+    registry = ImportJobRegistry(runner=runner)
+
+    with caplog.at_level(logging.WARNING, logger="uvicorn.error"):
+        registry.start("/music/incoming")
+        with pytest.raises(RuntimeError):
+            registry.start("/music/other")
+
+    messages = [r.getMessage() for r in caplog.records]
+    filing = [m for m in messages if "filing this import there" in m]
+    assert len(filing) == 1, messages
+    assert "/music" in filing[0]
+    # The refused start still reached the predicate — it is the RECORD that is
+    # withheld, not the check.
+    assert len(runner.validate_calls) == 2
+
+
+def test_an_unforgiven_start_writes_no_record(caplog: pytest.LogCaptureFixture) -> None:
+    """The control: the ordinary arm reports ``None`` and logs nothing."""
+    runner = FakeImportRunner(parked=[_parked(0, Recommendation.medium)])
+    registry = ImportJobRegistry(runner=runner)
+
+    with caplog.at_level(logging.WARNING, logger="uvicorn.error"):
+        registry.start("/music/incoming")
+
+    assert [r.getMessage() for r in caplog.records if "filing this import" in r.getMessage()] == []
 
 
 def test_drain_builds_feed_with_applied_then_the_current_parked() -> None:

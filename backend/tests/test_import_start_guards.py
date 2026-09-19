@@ -39,7 +39,7 @@ from fastapi.testclient import TestClient
 
 from app.import_jobs.registry import ImportJobRegistry, reset_registry
 from app.main import app
-from tests.conftest import build_library
+from tests.conftest import beets_dir_for, build_library, make_test_handle
 
 _ARTIST = "Radiohead"
 _ALBUM = "OK Computer"
@@ -173,7 +173,10 @@ def test_a_path_longer_than_PATH_MAX_is_refused(tmp_path: Path) -> None:
 
     Measured unbounded by the security seat: 80 KB of path stalled the whole
     API for 210 s, on the event loop, uncancellable. At the bound the densest
-    path (2048 placeholder components, U+FFFD being one character) costs 314 ms.
+    path (2048 placeholder components, U+FFFD being one character) costs ~331 ms
+    (re-measured 2026-09-19; the resolve now runs off the loop, which leaves
+    175-334 ms of stall — see
+    ``test_the_posted_path_resolve_runs_off_the_event_loop``).
     """
     _real_registry(tmp_path)
     client = TestClient(app, raise_server_exceptions=False)
@@ -325,11 +328,15 @@ _BAD_DISPLAY = "Caf\ufffd"
 def test_the_posted_path_resolve_runs_off_the_event_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """At the 4096-character cap the resolve costs 314 ms of ``os.scandir``.
+    """At the 4096-character cap the resolve costs ~331 ms, mostly pure Python.
 
-    On the loop that is 314 ms in which no other request is served — the health
-    check, the SSE feed and every other route. Pinned by asking the resolve
-    itself whether a loop is running where it executes.
+    The cost is ``pathlib``/``posixpath.join`` work holding the GIL, not the
+    filesystem: ``os.scandir`` profiled at ~0.5% of it. Running it in a
+    threadpool therefore REDUCES the stall rather than removing it — the loop
+    still serves nobody for 175-334 ms across five runs (security seat, measured
+    2026-09-19). On the loop the whole ~331 ms is time in which no other request
+    is served: the health check, the SSE feed, every other route. Pinned by
+    asking the resolve itself whether a loop is running where it executes.
     """
     import asyncio
 
@@ -428,8 +435,10 @@ def test_the_sibling_name_fields_are_bounded(
 
     Not one entry name: ``resolve_display_path`` iterates ``Path(rel).parts`` and
     ``resolve_trash_child`` splits on ``/``, so a multi-disc entry is genuinely
-    ``Album/Disc 1`` and 255 characters admit up to 127 components. The cap was
-    reasoned about as a NAME cap (255 is NAME_MAX) and applied to a PATH.
+    ``Album/Disc 1`` and 255 characters admit 128 components — ``"x/" * 127 + "x"``
+    is 255 characters and resolves to 128 components below the base (counted
+    through ``resolve_display_path``, 2026-09-19). The cap was reasoned about as a
+    NAME cap (255 is NAME_MAX) and applied to a PATH.
 
     Measured on a 20 000-entry directory before the bound: 75.9 s from a 64 KB
     body, paid before the 404 the route eventually returns. At 255 characters
@@ -438,23 +447,38 @@ def test_the_sibling_name_fields_are_bounded(
     request time and 2083 ms of event-loop stall, against a 0.39 ms health
     baseline. A query parameter needs its own case shape, which is why this is
     parametrised over the SHAPE as well as the route.
+
+    The library handle is attached because the CONTROL needs a real answer.
+    Without it the two Trash routes 500 at 255 characters (``'State' object has
+    no attribute beets_library``, measured 2026-09-19, code seat F5), so a bare
+    ``!= 422`` passed on a fixture that had failed before reaching the length
+    check. Attached, all three answer 404 — the route looked, and did not
+    complain about length.
     """
-    _real_registry(tmp_path)
-    client = TestClient(app, raise_server_exceptions=False)
+    _, lib = _real_registry(tmp_path)
+    prior = getattr(app.state, "beets_library", None)
+    app.state.beets_library = make_test_handle(lib, beets_dir_for(tmp_path))
+    try:
+        client = TestClient(app, raise_server_exceptions=False)
 
-    def call(value: str) -> Any:
-        if in_query:
-            return client.request(method, url, params={field: value})
-        return client.request(method, url, json={field: value})
+        def call(value: str) -> Any:
+            if in_query:
+                return client.request(method, url, params={field: value})
+            return client.request(method, url, json={field: value})
 
-    over = call("x" * 256)
-    assert over.status_code == 422, over.text
-    assert over.json()["detail"][0]["type"] == "string_too_long"
+        over = call("x" * 256)
+        assert over.status_code == 422, over.text
+        assert over.json()["detail"][0]["type"] == "string_too_long"
 
-    # The control: the longest name a listing can emit is NOT refused. Whatever
-    # this route then answers, it is not a length complaint.
-    at_bound = call("x" * 255)
-    assert at_bound.status_code != 422, at_bound.text
+        # The control: the longest name a listing can emit is NOT refused, and
+        # the route reaches its own lookup to say so.
+        at_bound = call("x" * 255)
+        assert at_bound.status_code == 404, at_bound.text
+    finally:
+        if prior is None:
+            del app.state.beets_library
+        else:
+            app.state.beets_library = prior
 
 
 def _seed_a_library_row(lib: Library) -> None:

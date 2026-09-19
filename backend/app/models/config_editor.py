@@ -344,9 +344,9 @@ def _always_moves_advisory(key: str) -> Callable[[ImportSection], str | None]:
         return (
             f"MusicDrop honours import.{key} on a manual import, a sweep and a bank apply."
             + history
-            + " Inbox imports move and Trash restore imports in place, so a download filed"
-            " from the inbox leaves the inbox. `beet import` from the command line always"
-            " honours it."
+            + " Inbox imports move and Trash restore sets the file operation itself, so a"
+            " download filed from the inbox leaves the inbox. `beet import` from the command"
+            " line always honours it."
         )
 
     return rule
@@ -368,9 +368,12 @@ def _always_moves_advisory(key: str) -> Callable[[ImportSection], str | None]:
 #:
 #: ``link``/``hardlink``/``reflink`` are HONOURED on a manual import, a sweep
 #: and a bank apply, and overridden by the inbox routes, which name
-#: ``operation="move"``, and by Trash restore, which names ``in_place=True``
-#: (``trash_manage._restore_to_origin``) — its folder is already at the
-#: destination. Their advisory is worded per-key and per-PATH, not
+#: ``operation="move"``, and by Trash restore, whose two arms each name their
+#: own: ``move=True`` for the ordinary re-import (``trash_manage.restore_album``,
+#: the arm every album Delete reaches — ``_MOVED_ITEMS_NOTE``) and
+#: ``in_place=True`` for the move-back (``trash_manage._restore_to_origin``),
+#: whose folder is already at the destination. Their advisory is worded per-key
+#: and per-PATH, not
 #: "MusicDrop overrides this", because the override belongs to the request rather
 #: than to the saved config. A config with every file operation off has no rule
 #: at all — beets imports in place, which is its own behaviour with no override

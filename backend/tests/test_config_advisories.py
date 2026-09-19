@@ -297,10 +297,13 @@ def test_a_filing_flag_advisory_says_where_it_applies_not_that_it_is_ignored() -
 
     `hardlink`/`link`/`reflink` ARE honoured on a manual import, a sweep and a
     bank apply — verified on disk. They are overridden by the inbox routes,
-    which send `operation="move"`, and by Trash restore, which sends
-    `in_place=True` (`trash_manage._restore_to_origin`) — a move-back has already
-    put the folder where it belongs, so the sentence says "in place" rather than
-    calling that a move. So someone who sets `hardlink: yes` because they seed
+    which send `operation="move"`, and by Trash restore, whose TWO arms each
+    pick their own operation: the ordinary re-import sends `move=True`
+    (`trash_manage.restore_album`, the arm every album Delete reaches) and the
+    move-back sends `in_place=True` (`trash_manage._restore_to_origin`), its
+    folder being already at the destination. So the sentence says Trash restore
+    sets the operation itself — "imports in place" was true of the rarer arm
+    only (code seat F2). Someone who sets `hardlink: yes` because they seed
     their downloads gets a move out of the inbox when they click Import on an
     inbox row, and nothing told them. The message names both halves rather than
     claiming the flag is ignored.
@@ -312,7 +315,7 @@ def test_a_filing_flag_advisory_says_where_it_applies_not_that_it_is_ignored() -
         assert "manual import" in advisory.message  # ...where it DOES apply
         # ...and where it does not, each named for what it really does
         assert "Inbox imports move" in advisory.message
-        assert "Trash restore imports in place" in advisory.message
+        assert "Trash restore sets the file operation itself" in advisory.message
 
     # reflink's own real value counts as set
     (advisory,) = _advise("import:\n  reflink: auto\n")

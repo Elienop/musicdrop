@@ -318,6 +318,32 @@ def test_an_album_reached_through_a_symlinked_root_is_not_outside(tmp_path: Path
     assert _outside(lib, album_id) is None
 
 
+def test_a_stranded_row_behind_an_alias_row_is_still_reported(tmp_path: Path) -> None:
+    """The physical question is asked per lexically-outside row, not once.
+
+    Row 1 spells the library root through a symlinked alias (lexically outside,
+    physically inside); row 2 sits under ``dl/`` and is outside by both. Asking
+    the second opinion about the FIRST outside row alone answered ``None`` here
+    and hid row 2 (measured 2026-09-19, code seat F1). The notice names row 2's
+    folder, and ``holds_every_track`` is false because row 1 is elsewhere.
+    """
+    lib = _library(tmp_path)
+    real_music = Path(os.fsdecode(lib.directory))
+    (real_music / "Art" / "Alb").mkdir(parents=True)
+    (real_music / "Art" / "Alb" / "01 T1.mp3").write_bytes(b"\x00")
+    alias = tmp_path / "alias"
+    alias.symlink_to(real_music, target_is_directory=True)
+    stranded = tmp_path / "dl" / "Alb"
+
+    album_id = _album(
+        lib,
+        os.fsencode(str(alias / "Art" / "Alb" / "01 T1.mp3")),
+        os.fsencode(str(stranded / "02 T2.mp3")),
+    )
+
+    assert _outside(lib, album_id) == OutsideLibrary(folder=str(stranded), holds_every_track=False)
+
+
 def test_a_relative_row_answers_instead_of_raising(tmp_path: Path) -> None:
     """``os.path.abspath`` is what lets ``commonpath`` take an unexpanded row.
 
