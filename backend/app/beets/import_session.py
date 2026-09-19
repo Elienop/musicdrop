@@ -971,24 +971,8 @@ class WebImportSession(ImportSession):
             )
         if self.unattended:
             if self.sweep:
-                # Bank the prompt the attended flow would park: the user
-                # resolves skip/keep/replace/merge later from the Review page.
-                rec = task.rec if task.rec is not None else BeetsRec.none
-                recommendation = _REC_MAP.get(rec, Recommendation.none)
-                self._bank_row(
-                    task,
-                    reason="needs_dup_resolution",
-                    recommendation=recommendation,
-                    confidence=_confidence(task.match.distance) if task.match is not None else 0.0,
-                    duplicate=prompt,
-                    # ...and the release this album was MATCHED to, so the
-                    # apply replays it instead of re-running the lookup.
-                    parked=self._matched_release_payload(
-                        task,
-                        index=index,
-                        recommendation=recommendation,
-                        has_current_art=incoming.has_current_art,
-                    ),
+                self._bank_duplicate_row(
+                    task, index=index, prompt=prompt, has_current_art=incoming.has_current_art
                 )
             # Unattended: the outcome above records the set-aside; SKIP the new
             # album (keeps the library copy) without parking + blocking.
@@ -996,6 +980,37 @@ class WebImportSession(ImportSession):
         decision = self.bridge.park_duplicate(prompt, art_source=art_source)
         return self._beets_dup_action(
             decision.action, found_duplicates, task=task, index=index, prompt=prompt
+        )
+
+    def _bank_duplicate_row(
+        self,
+        task: ImportTask,
+        *,
+        index: int,
+        prompt: DuplicatePrompt,
+        has_current_art: bool,
+    ) -> None:
+        """Bank the collision a sweep has nobody to park it on.
+
+        The prompt the attended flow would park: the user resolves
+        skip/keep/replace/merge later from the Review page, and the release this
+        album MATCHED is banked with it so that decision replays the match
+        instead of re-running the lookup.
+        """
+        rec = task.rec if task.rec is not None else BeetsRec.none
+        recommendation = _REC_MAP.get(rec, Recommendation.none)
+        self._bank_row(
+            task,
+            reason="needs_dup_resolution",
+            recommendation=recommendation,
+            confidence=_confidence(task.match.distance) if task.match is not None else 0.0,
+            duplicate=prompt,
+            parked=self._matched_release_payload(
+                task,
+                index=index,
+                recommendation=recommendation,
+                has_current_art=has_current_art,
+            ),
         )
 
     def _beets_dup_action(

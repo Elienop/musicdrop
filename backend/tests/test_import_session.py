@@ -2063,10 +2063,12 @@ def test_a_stop_refuses_a_decision_into_the_park_it_released() -> None:
     assert (slot.reply.empty(), dup_slot.reply.empty()) == (True, True)
     assert (slot.answered, dup_slot.answered) == (True, True)  # registered and answered
 
+    choice = ImportChoice(action=ImportAction.apply)
+    decision = DuplicateDecision(action=DuplicateAction.merge)
     with pytest.raises(KeyError):
-        bridge.push_choice(0, ImportChoice(action=ImportAction.apply))
+        bridge.push_choice(0, choice)
     with pytest.raises(KeyError):
-        bridge.push_duplicate_decision(1, DuplicateDecision(action=DuplicateAction.merge))
+        bridge.push_duplicate_decision(1, decision)
     # No orphan decision left behind for a worker that is already unwinding.
     assert (slot.reply.empty(), dup_slot.reply.empty()) == (True, True)
 
@@ -2125,8 +2127,9 @@ def test_every_abort_raise_site_records_the_cut_short(
         bridge = ImportBridge()
         bridge.request_stop()
         assert bridge.abort_raised() is False
+        call = park_on(bridge, channel)
         with pytest.raises(ImportAbortError):
-            park_on(bridge, channel)()
+            call()
         assert bridge.abort_raised() is True, channel
 
     # 4 + 5. Both parks, released by the stop's sentinel (parked FIRST). The

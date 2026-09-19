@@ -430,8 +430,9 @@ def test_result_for_reads_the_abort_flag_before_the_slot_can_be_replaced(
     inbox.mkdir()
     bridge = ImportBridge()
     bridge.request_stop()
+    parked = _parked_album(0, inbox / "Kid A")
     with pytest.raises(ImportAbortError):  # the raise is what sets the abort flag
-        bridge.park(_parked_album(0, inbox / "Kid A"))
+        bridge.park(parked)
 
     reg = _SlotStealingRegistry()
     reg._job = ImportJob(id="ours", bridge=bridge, phase=ImportPhase.done, stopped=True)

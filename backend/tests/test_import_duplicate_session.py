@@ -431,8 +431,9 @@ def test_a_stop_does_not_abort_on_a_singleton_duplicate(monkeypatch: pytest.Monk
 
     # The control: an ALBUM task at the same hook, under the same stop, aborts.
     album_task = _task(_match(), monkeypatch)
+    album_duplicates = [_FakeAlbum(1)]
     with pytest.raises(ImportAbortError):
-        session.get_duplicate_action(album_task, [_FakeAlbum(1)])
+        session.get_duplicate_action(album_task, album_duplicates)
 
 
 def test_singleton_astracks_duplicate_ignores_replace_directive() -> None:

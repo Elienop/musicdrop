@@ -779,9 +779,7 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
           then unwinds, which is an active phase, and a parked run has `working`
           false — the one moment the line must not look idle. */}
       <StatusLine spinning={working || state.stopped}>
-        {cue !== null ? (
-          cue
-        ) : (
+        {cue ?? (
           <>
             {/* No known total (the feed grows as the worker reads) — count
                 what's applied + flag whether one album awaits a decision.

@@ -1007,10 +1007,9 @@ def test_a_finished_job_serves_no_parked_duplicate() -> None:
     assert job.albums[0].duplicate is not None
     with pytest.raises(KeyError):
         reg.parked_duplicate(job_id, 0)
+    decision = DuplicateDecision(action=DuplicateAction.keep_both)
     with pytest.raises(KeyError):  # ...and the decision was already refused
-        reg.record_duplicate_decision(
-            job_id, 0, DuplicateDecision(action=DuplicateAction.keep_both)
-        )
+        reg.record_duplicate_decision(job_id, 0, decision)
     # The runner's exemption: the same prompt, the same terminal job.
     assert reg.duplicate_prompt(job_id, 0).album_index == 0
 
@@ -1037,8 +1036,9 @@ def test_job_aborted_separates_an_accepted_stop_from_a_raised_abort() -> None:
     assert reg.job_aborted("stopping") is False
 
     # A park entered under that stop raises, and the flag follows.
+    parked = _parked(0, Recommendation.medium)
     with pytest.raises(ImportAbortError):
-        bridge.park(_parked(0, Recommendation.medium))
+        bridge.park(parked)
     assert reg.job_aborted("stopping") is True
 
 
@@ -1064,8 +1064,9 @@ def test_a_choice_after_a_stop_is_refused_and_the_row_stays_needs_review() -> No
 
     reg.request_stop("stopping")
 
+    choice = ImportChoice(action=ImportAction.apply)
     with pytest.raises(KeyError):  # the API maps this to the same 404
-        reg.record_choice("stopping", 0, ImportChoice(action=ImportAction.apply))
+        reg.record_choice("stopping", 0, choice)
     state = reg.state("stopping")
     assert state.phase is ImportPhase.reviewing
     assert state.albums[0].status is ImportAlbumStatus.needs_review
@@ -1087,10 +1088,9 @@ def test_a_duplicate_decision_after_a_stop_is_refused() -> None:
 
     reg.request_stop("dup-stopping")
 
+    decision = DuplicateDecision(action=DuplicateAction.merge)
     with pytest.raises(KeyError):
-        reg.record_duplicate_decision(
-            "dup-stopping", 0, DuplicateDecision(action=DuplicateAction.merge)
-        )
+        reg.record_duplicate_decision("dup-stopping", 0, decision)
     state = reg.state("dup-stopping")
     assert state.albums[0].status is ImportAlbumStatus.needs_dup_resolution
     assert state.albums[0].did_not_land is False
