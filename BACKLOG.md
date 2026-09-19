@@ -595,6 +595,14 @@ entry carries a dated correction block where the pass changed it._
    (TRaSH Guides: one dataset with subfolders). Say that instead of implying the split is the
    recommended shape.
 
+9. **Settings gets a Lidarr-style Tasks / Jobs / Logs section** (owner, 2026-09-19, parked:
+   *"lets leave this for after we finish what is important here"*). Today the activity popover
+   (`frontend/src/components/shell/ActivityPopover.tsx`) is the only surface for the six job
+   sources composed in `frontend/src/api/useActivity.ts`, and the operator log is terminal-only.
+   Shape to design, not decided: one Settings route listing running and finished jobs with their
+   outcomes, plus a readable log. Depends on the done-row dismiss under Open bugs, which is the
+   small half of the same complaint.
+
 The 40 banked #143 Plex review Minors stay fully adjudicated (2026-08-25, every item
 re-verified against v0.44.0): 12 shipped as the triage fix slice (see Recently shipped), 12
 recorded below, 3 accepted as deliberate, 3 were already fixed. Of the 12 recorded, the
@@ -603,6 +611,17 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 ## Open bugs / hardening
 
+- **Activity popover: a finished job's "Done" row cannot be dismissed and stays until the server
+  forgets the outcome.** Owner, 2026-09-19, from the TrueNAS instance: three Done rows (lyrics,
+  artist art, Reorganize) with *"no way to clear them"*. Cause: each job registry keeps its last
+  outcome until that job kind runs again or the process restarts, and the popover shows whatever the
+  server reports; `useActivity()` drops a dismissed row only when its state is `failed`
+  (`frontend/src/api/useActivity.ts`, the dismissed filter) and `ActivityPopover.tsx` draws the ✕
+  for failed rows only. Fix shape (frontend only): draw the ✕ on done rows and let the filter drop a
+  dismissed done row; safe because every run mints its own uuid id, so a dismissal cannot hide the
+  next run. Open choice: dismissals live in `sessionStorage`, so a dismissed row returns in a new
+  tab; `localStorage` would make a done row's dismissal stick, and would also make failed rows'
+  dismissals per-browser instead of per-tab. On `main`; not this branch's change.
 - **Test-order flake: a SUBSET run of `backend/tests/test_import_start_guards.py` beside the
   trash test modules fails with `confuse.exceptions.NotFoundError: timeout not found`** raised from
   `build_library` after `reset_beets_globals` clears beets' process-global config
