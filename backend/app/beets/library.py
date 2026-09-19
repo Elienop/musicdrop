@@ -179,8 +179,9 @@ def require_importable_library_root(lib: object) -> str | None:
 
     Returns the music root it FORGAVE, or ``None`` when nothing was forgiven, and
     logs nothing itself: the two callers disagree about what the fact is worth.
-    ``import_jobs.runner.validate`` runs once per import start and is about to
-    file into that root, so it WARNs; ``import_jobs.gates`` polls this at 2 Hz
+    ``import_jobs.registry.ImportJobRegistry.start`` WARNs it once per ACCEPTED
+    start, after the slot claim (a refused start records nothing — security seat
+    L-1, 2026-09-19); ``import_jobs.gates`` polls this at 2 Hz
     while any other job holds the slot (``_gate_answer`` asks the root before
     ``has_active_job``), so it would emit one record every 0.5 s for the length
     of that job.

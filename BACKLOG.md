@@ -280,11 +280,11 @@ entry carries a dated correction block where the pass changed it._
      `config.yaml`, and a repointed `BEETSDIR`/`MUSICDROP_BEETS_DIR` each reach it on a configured
      install, and the security seat measured an attended import filing four files onto a bare
      mountpoint through it (2026-09-19). Narrowed rather than closed: `require_importable_library_root`
-     returns the root it forgave and `BeetsImportRunner.validate` WARNs it on `uvicorn.error`
-     once per import start, naming the root it is about to file into — the one record that makes a
-     shadowed-mountpoint import diagnosable afterwards. The log sits at the filing moment and not
-     inside the predicate because the gate polls the same predicate at 2 Hz while another job holds
-     the slot. A `?first_run` flag or a setup-screen gate would close the hole instead of
+     returns the root it forgave and `ImportJobRegistry.start` WARNs it on `uvicorn.error` once per
+     ACCEPTED start, after the slot claim (a refused start records nothing), naming the root it is
+     about to file into — the one record that makes a shadowed-mountpoint import diagnosable
+     afterwards. The log sits there and not inside the predicate because the gate polls the same
+     predicate at 2 Hz while another job holds the slot. A `?first_run` flag or a setup-screen gate would close the hole instead of
      narrowing it; that is an owner call, not taken here. The shared gate both background drains poll asks
      it too, so the slskd drain and the bank apply wait with zero row writes and zero folder walks (measured over 10 s at production
      intervals: 120 `scandir` + 120 `isdir` per minute, nothing else) and resume without a restart
