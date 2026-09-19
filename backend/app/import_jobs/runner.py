@@ -67,7 +67,8 @@ class ImportRunner(Protocol):
 
         Called synchronously on the API thread BEFORE the registry allocates
         the single job slot, so a refusal becomes a clean 4xx/5xx. Raises
-        ``LibraryRootUnavailableError`` (root missing, empty or unreadable) and
+        ``LibraryRootUnavailableError`` (root missing or unreadable, or empty while
+        the library holds item rows) and
         ``InLibraryCopyError`` (copy-mode source inside the library, checked PER
         path, so one bad member refuses the whole start).
         """

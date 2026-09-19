@@ -192,7 +192,7 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   to a *folder* lists at zero tracks too, because nothing under it is read; a link a hand has
   placed at a media *file* is listed as that file and shows its tags. The hedge is dropped on
   the refusal, not on the count.
-- **beets config** — viewer + writable editor, with advisory notices for import keys MusicDrop forces (a saved value that only affects CLI runs is flagged, not silently accepted). `import.delete` is one of them: MusicDrop never deletes a source file, so a copy-mode import always leaves your download where it was.
+- **beets config** — viewer + writable editor, with advisory notices for import keys MusicDrop forces (a saved value that only affects CLI runs is flagged, not silently accepted). `import.delete` is one of them: MusicDrop forces it off, so a copy-mode import leaves your download where it was; a source already inside the library is moved instead.
 - **Naming** — edit beets path/replace rules with a live preview. **Reorganize** — re-apply them to existing files, and sweep emptied leftover folders into the Trash — the sweep offers only folders the walk found no audio beneath (it does not look inside dot-folders or through symlinks), and skips a live album's own art folder. A move that would silently rename an album's cover (a stray file already holds the cover's name at the destination) is refused instead: the preview flags it as an art conflict, and apply holds back just that album.
 - **Disk sync** — a `beet update` equivalent: preview-first removal of library entries whose files were deleted outside the app, plus tag refresh for files changed on disk.
 - **Library dashboard** — counts, duration, size, recently added.

@@ -59,7 +59,8 @@ _JOB_NOT_FOUND_RESPONSE: Final = {
     "description": "No import job has that id.",
 }
 #: Set by Apply's backstop when beets loaded a layout the rule refuses, or by the
-#: music root being missing, empty or unreadable (an unmounted share).
+#: music root being missing or unreadable, or empty while the library holds
+#: item rows (an unmounted share).
 _LIBRARY_REFUSED_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": "The store layout is refused or the library folder is unavailable.",
