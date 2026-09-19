@@ -72,14 +72,18 @@ logger = logging.getLogger(__name__)
 
 
 class TrashRowUnreadableError(Exception):
-    """An item row carries a NULL ``path``, so beets cannot move that track.
+    """An item row has no usable ``path`` — NULL or empty — so beets cannot move it.
 
     Not a shortfall to tolerate the way a missing FILE is: beets' own mover reads
     ``item.path`` to build the destination, so a row without one raises out of
     ``Album.move`` with rows already committed under the container. Refused in
-    :func:`trash_album` before the container is made — nothing is created, moved
-    or dropped, which is what lets ``delete._recovery`` state it as a fact rather
-    than hedge. Hand-made rows only: nothing in the app writes one
+    :func:`trash_album` before the container is made — no container is created,
+    nothing moved, nothing dropped, which is what lets ``delete._recovery`` state
+    it as a fact rather than hedge. (The Trash DIRECTORY itself is made earlier
+    in the same request by the store-layout ensure step, as it is for every
+    delete; measured.) Alien rows only: nothing in the app adds a pathless item —
+    but beets' own ``lib.add(Item(title=...))`` writes ``b''`` rather than NULL,
+    so the predicate is falsy and both spellings are pinned
     (``test_an_album_with_a_null_path_row_refuses_before_anything_moves``).
     """
 
@@ -325,10 +329,16 @@ def trash_album(
         # caller. Behind both guards above, because this arm DROPS A ROW.
         album.remove(delete=False)
         return str(trash_dir)
-    if any(it.path is None for it in pre_move_items):
+    if any(not it.path for it in pre_move_items):
+        # FALSY, not ``is None``: beets' own ``lib.add(Item(title=...))`` stores
+        # ``b''`` for a pathless item, which reached beets' mover and answered
+        # 500 ``"[Errno 2] No such file or directory: ''"`` with a container made
+        # and a temp file left (measured). Same predicate ``delete.py`` uses at
+        # both its skips, so one question has one answer.
+        #
         # Ahead of the ``mkdir``, for the same reason the two guards above are:
         # every later step reads ``item.path`` — this file's own origin/audit
-        # readers and beets' mover alike — so the first one to meet the NULL row
+        # readers and beets' mover alike — so the first one to meet the row
         # would raise with a container on disk and rows already rewritten.
         raise TrashRowUnreadableError("A track of this album has no file path in the library.")
     trash_dir.mkdir(parents=True, exist_ok=True)

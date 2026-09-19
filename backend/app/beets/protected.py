@@ -190,6 +190,10 @@ def protected_trees(
 def _trash_spellings(settings: Settings, beets_dir: Path, trash_dir: Path) -> tuple[Path, ...]:
     """Every spelling of the CURRENT Trash the app's own settings name, deduplicated.
 
+    **For the REFUSING side only** — Empty's gate. Delete's retry arm asks over
+    the current ``trash_dir`` alone, because it drops rows instead of keeping
+    them (``delete._all_rows_are_in_trash``).
+
     A row holds the spelling the MOVER used; a check asks with the one the
     settings resolve to NOW, and those differ after an ordinary ``mv trash
     bigdisk-trash && ln -s bigdisk-trash trash``, or after the operator writes
@@ -213,9 +217,11 @@ def _trash_spellings(settings: Settings, beets_dir: Path, trash_dir: Path) -> tu
     (``test_empty_one_refuses_after_the_operator_clears_a_configured_trash``).
     No new kind of I/O: ``resolve_trash_dir`` already resolves a configured path
     every request, so this only adds something for the default. Unguarded on
-    purpose — ``Path.resolve()`` is non-strict, so a missing or looping path
-    comes back best-effort rather than raising, and the value is only ever a
-    QUERY PATTERN: a wrong one can make the gate miss, never act.
+    purpose — ``Path.resolve()`` is non-strict, so a missing path comes back
+    best-effort rather than raising, and the layout check resolves the same path
+    first and answers a named 503 on every route when it cannot. What lands here
+    is only ever a QUERY PATTERN for the GATE, so a wrong one makes it miss,
+    never act; the twin does not read this list.
 
     Deliberately not exhaustive — a bind mount, or a Trash re-pointed somewhere
     none of these name, stays a recorded residual, because enumerating spellings
@@ -231,17 +237,21 @@ def _trash_spellings(settings: Settings, beets_dir: Path, trash_dir: Path) -> tu
 def rows_under_any(roots: Sequence[Path]) -> Query:
     """beets' ``path:`` predicate for a file that IS, or is inside, any of ``roots``.
 
-    One definition, because Empty's gate and Delete's retry arm must answer the
-    same question: a refusal whose remedy does not recognise the same rows cannot
-    be cleared. Still only ``PathQuery`` — beets' own relative-row, directory-arm
-    and case handling — with ``OrQuery`` so it stays ONE pass over the rows.
+    One definition, two callers, DIFFERENT roots. Empty's gate passes every
+    spelling (:func:`_trash_spellings`); Delete's retry arm passes the current
+    ``trash_dir`` alone, because it de-registers rather than refuses — see
+    ``delete._all_rows_are_in_trash``. Still only ``PathQuery`` — beets' own
+    relative-row, directory-arm and case handling — with ``OrQuery`` so a
+    multi-root ask stays ONE pass over the rows. Wrapped even for a single root:
+    ``OrQuery`` of one differs from the member only by a paren pair around the
+    same clause and the same parameters (measured), and the special case that
+    unwrapped it survived mutation against the whole Trash and Delete suites.
 
     Here rather than in ``library``: the roots it is asked with are
     ``ProtectedTrees.trash_spellings``, which every caller already holds, so the
     two halves of the question live together.
     """
-    queries: list[Query] = [PathQuery("path", os.fsencode(str(root))) for root in roots]
-    return queries[0] if len(queries) == 1 else OrQuery(queries)
+    return OrQuery([PathQuery("path", os.fsencode(str(root))) for root in roots])
 
 
 def _note_walk_error(exc: OSError) -> None:

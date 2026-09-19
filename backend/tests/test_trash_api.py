@@ -270,6 +270,39 @@ def _album_row_inside(
     return track
 
 
+def _bystander_album(client: TestClient) -> Path:
+    """A real album on disk in the music folder, so the ROOT guard is satisfied.
+
+    ``require_library_root`` refuses a library whose music folder is empty —
+    "Library folder is empty. Is the music share mounted?" — and the retry arm is
+    the one path that skips it. Any test that follows a refusal's remedy through
+    the ORDINARY move therefore needs a library that looks like a real one; a
+    fixture holding nothing but the entry already in Trash answers 503 for a
+    reason that has nothing to do with what it is testing.
+    """
+    from beets.library import Item
+
+    app: Any = client.app
+    lib = app.state.beets_library.lib
+    track = Path(os.fsdecode(lib.directory)) / "Bystander" / "Still Here" / "01 t.mp3"
+    track.parent.mkdir(parents=True, exist_ok=True)
+    track.write_bytes(b"\x00")
+    item = Item(album="Still Here", albumartist="Bystander", artist="Bystander", title="t", track=1)
+    item.path = os.fsencode(str(track))
+    lib.add_album([item]).store()
+    return track
+
+
+def _album_id(client: TestClient, name: str = "Alb") -> int:
+    app: Any = client.app
+    album = next(a for a in app.state.beets_library.lib.albums() if a.album == name)
+    return int(album.id)
+
+
+def _listed_folders(client: TestClient) -> list[str]:
+    return sorted(row["folder"] for row in client.get("/api/trash").json()["albums"])
+
+
 def test_empty_one_refuses_an_entry_the_library_still_lists(client: TestClient) -> None:
     """One Empty click used to destroy an album's only copy. MEASURED.
 
@@ -564,9 +597,12 @@ def test_empty_one_refuses_after_the_operator_clears_a_configured_trash(
     ``R``; Empty answered ``200`` and destroyed the album's only copy.
 
     The remedy is pinned here too, because a refusal is only worth having if its
-    sentence works: deleting the album again drops the rows and the next Empty
-    succeeds.
+    sentence works. It goes through the ORDINARY move, not the retry arm: that
+    arm drops rows without moving files, so it asks over the current
+    ``trash_dir`` alone and answers False here. The album is re-filed under the
+    Trash this page lists, and Empty then clears it.
     """
+    _bystander_album(client)
     default_leaf = _trash_dir(client)
     assert not default_leaf.exists(), "the default leaf has not been created yet"
     real = tmp_path / "bigdisk-trash"
@@ -578,7 +614,7 @@ def test_empty_one_refuses_after_the_operator_clears_a_configured_trash(
     monkeypatch.setattr("app.config.settings.trash_dir", "")
     default_leaf.symlink_to(real)
     app: Any = client.app
-    album_id = next(iter(app.state.beets_library.lib.albums())).id
+    album_id = _album_id(client)
 
     r = client.delete("/api/trash", params={"folder": "Art - Alb"})
 
@@ -588,13 +624,19 @@ def test_empty_one_refuses_after_the_operator_clears_a_configured_trash(
 
     again = client.delete(f"/api/albums/{album_id}")
     assert again.status_code == 200, again.text
-    assert list(app.state.beets_library.lib.albums()) == [], "the rows are gone"
-    assert track.is_file(), "and the files were left where they already are"
+    assert [a.album for a in app.state.beets_library.lib.albums()] == ["Still Here"]
+    landed = Path(again.json()["trash_path"])
+    # Spelled through the default leaf, which is the link: same real directory,
+    # and the spelling the page enumerates.
+    assert landed.is_relative_to(default_leaf), "under the Trash the page lists"
+    assert sorted(p.name for p in landed.rglob("*.mp3")) == ["01 T1.mp3"]
+    entry = _listed_folders(client)
+    assert "Art - Alb (1)" in entry, entry
 
-    emptied = client.delete("/api/trash", params={"folder": "Art - Alb"})
+    emptied = client.delete("/api/trash", params={"folder": "Art - Alb (1)"})
     assert emptied.status_code == 200
     assert emptied.json()["removed"] == 1
-    assert not track.exists()
+    assert not landed.exists()
 
 
 def test_the_remedy_still_clears_a_refusal_raised_under_an_older_spelling(
@@ -602,10 +644,11 @@ def test_the_remedy_still_clears_a_refusal_raised_under_an_older_spelling(
 ) -> None:
     """A refusal is only worth having if the sentence it prints works.
 
-    Delete's retry arm asks the same widened question from the same helper, so
-    "Delete the album again" drops the rows written under the previous spelling
-    and the next Empty succeeds.
+    "Delete the album again" takes the ORDINARY move, because the retry arm asks
+    over the current ``trash_dir`` alone and the rows hold the older spelling.
+    The album is re-filed under the Trash the page lists, and Empty clears it.
     """
+    _bystander_album(client)
     configured = tmp_path / "trash"
     configured.mkdir()
     monkeypatch.setattr("app.config.settings.trash_dir", str(configured))
@@ -614,20 +657,111 @@ def test_the_remedy_still_clears_a_refusal_raised_under_an_older_spelling(
     configured.rename(bigger)
     configured.symlink_to(bigger)
     app: Any = client.app
-    album_id = next(iter(app.state.beets_library.lib.albums())).id
+    album_id = _album_id(client)
 
     assert client.delete("/api/trash", params={"folder": "Art - Alb"}).status_code == 503
 
     again = client.delete(f"/api/albums/{album_id}")
     assert again.status_code == 200, again.text
     assert again.json()["trashed_albums"] == 1
-    assert list(app.state.beets_library.lib.albums()) == [], "the rows are gone"
-    assert track.is_file(), "and the files were left where they already are"
+    assert [a.album for a in app.state.beets_library.lib.albums()] == ["Still Here"]
+    landed = Path(again.json()["trash_path"])
+    assert landed.is_relative_to(bigger), "under the Trash the page lists"
+    assert sorted(p.name for p in landed.rglob("*.mp3")) == ["01 T1.mp3"]
+    assert not track.exists(), "the old spelling's copy was MOVED, not left behind"
+    entry = _listed_folders(client)
+    assert "Art - Alb (1)" in entry, entry
 
-    emptied = client.delete("/api/trash", params={"folder": "Art - Alb"})
+    emptied = client.delete("/api/trash", params={"folder": "Art - Alb (1)"})
     assert emptied.status_code == 200
     assert emptied.json()["removed"] == 1
-    assert not track.exists()
+    assert not landed.exists()
+
+
+def test_the_ordinary_layout_asks_beets_exactly_once(client: TestClient) -> None:
+    """The dedup, which was cost-only and unpinned.
+
+    Four candidates collapse to ONE on a default Trash with no link, and the
+    check is linear in that length (24 ms per spelling at 100 000 rows). Without
+    ``dict.fromkeys`` the ordinary request would ask the same question three
+    times; ``tuple(spellings)`` in its place survived the whole suite.
+    """
+    from app.beets import delete as delete_mod
+
+    app: Any = client.app  # TestClient.app is typed as a bare ASGI callable
+    _handle, trash_dir, _origins, protected = delete_mod._checked_store(app)
+
+    assert protected.trash_spellings == (trash_dir,)
+
+
+def test_the_remedy_moves_rows_from_an_old_default_into_the_configured_trash(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the REFUSING half may be generous. The security seat's paired case.
+
+    Rows under ``<beets_dir>/trash`` from a failed delete taken while the Trash
+    was default; the operator then configures a different one. With the retry arm
+    widened to ``trash_spellings`` it recognised those rows and DROPPED them
+    where they lay — the files stayed in a Trash ``list_trashed_albums`` does not
+    enumerate, so the page showed nothing and Restore could not reach them
+    (measured paired, ``page lists after: []``). A reversible delete made
+    irreversible through the UI.
+
+    Asked over the current ``trash_dir`` alone the arm answers False, the album
+    takes the ordinary move, and the files end up where the page can see them.
+    """
+    _bystander_album(client)
+    old_default = _trash_dir(client)
+    old_copy = _album_row_inside(client, old_default / "Art - Alb")
+    configured = tmp_path / "new-trash"
+    configured.mkdir()
+    monkeypatch.setattr("app.config.settings.trash_dir", str(configured))
+    album_id = _album_id(client)
+
+    again = client.delete(f"/api/albums/{album_id}")
+
+    assert again.status_code == 200, again.text
+    landed = Path(again.json()["trash_path"])
+    assert landed.is_relative_to(configured), landed
+    assert sorted(p.name for p in landed.rglob("*.mp3")) == ["01 T1.mp3"]
+    assert not old_copy.exists(), "nothing was left in the Trash the page cannot show"
+    assert _listed_folders(client) == ["Art - Alb"], "and the page lists it"
+
+
+def test_the_retry_arm_recognises_a_trash_inside_directory_with_the_context_unbound(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Delete's own ``music_dir_context`` bind, which had no reader. MEASURED.
+
+    The arm's rows are RELATIVE when Trash sits inside ``directory:``, and both
+    halves of that — the query's pattern and ``Item.path`` coming back out of the
+    DB — read beets' ``ContextVar``. The threadpool worker does not inherit it,
+    so ``delete_album`` binds it; with that bind removed the arm stops
+    recognising its own rows, takes the ordinary move and answers
+    ``500 "… did not move to Trash …"`` with the rows kept — the remedy the
+    refusal names stops working. Empty already had this pin and Delete did not.
+    """
+    from beets import context
+
+    trash = tmp_path / "music" / ".trash"
+    trash.mkdir(parents=True)
+    monkeypatch.setattr("app.config.settings.trash_dir", str(trash))
+    track = _album_row_inside(
+        client, trash / "Art - Alb", spelled=os.path.join(".trash", "Art - Alb", "01 T1.mp3")
+    )
+    _bystander_album(client)
+    app: Any = client.app
+    album_id = _album_id(client)
+
+    with context.music_dir(b""):
+        r = client.delete(f"/api/albums/{album_id}")
+
+    assert r.status_code == 200, r.text
+    assert [a.album for a in app.state.beets_library.lib.albums()] == ["Still Here"]
+    assert sorted(str(p.relative_to(trash)) for p in trash.rglob("*") if p.is_file()) == [
+        "Art - Alb/01 T1.mp3"
+    ], "the retry arm dropped the rows and moved nothing"
+    assert track.is_file()
 
 
 def test_empty_one_removes_an_entry_a_row_outside_every_spelling_names(
@@ -658,22 +792,30 @@ def test_a_same_named_entry_under_the_unused_default_trash_refuses_and_can_be_cl
     The operator configured a Trash elsewhere, and ``<beets_dir>/trash`` still
     holds an entry of the same name that a row names. That row is about a
     different directory, and this refuses anyway. Acceptable because the sentence
-    still works — deleting the album again drops the row and the next Empty
+    still works — the remedy takes the ORDINARY move, which carries the files
+    into the configured Trash where the page lists them, and the next Empty
     succeeds — and the opposite mistake destroys the only copy.
     """
+    _bystander_album(client)
     default_trash = _trash_dir(client)
     (default_trash / "Art - Alb").mkdir(parents=True)
-    _album_row_inside(client, default_trash / "Art - Alb")
+    old_copy = _album_row_inside(client, default_trash / "Art - Alb")
     configured = tmp_path / "other-trash"
     (configured / "Art - Alb").mkdir(parents=True)
     monkeypatch.setattr("app.config.settings.trash_dir", str(configured))
-    app: Any = client.app
-    album_id = next(iter(app.state.beets_library.lib.albums())).id
+    album_id = _album_id(client)
 
     r = client.delete("/api/trash", params={"folder": "Art - Alb"})
     assert r.status_code == 503, "a false refusal — the row is about the other directory"
 
-    assert client.delete(f"/api/albums/{album_id}").status_code == 200
+    again = client.delete(f"/api/albums/{album_id}")
+    assert again.status_code == 200, again.text
+    landed = Path(again.json()["trash_path"])
+    assert landed.is_relative_to(configured), "the files came INTO the configured Trash"
+    assert sorted(p.name for p in landed.rglob("*.mp3")) == ["01 T1.mp3"]
+    assert not old_copy.exists(), "and left the old default Trash"
+    assert _listed_folders(client) == ["Art - Alb", "Art - Alb (1)"]
+
     cleared = client.delete("/api/trash", params={"folder": "Art - Alb"})
     assert cleared.status_code == 200, "and the remedy the refusal names clears it"
     assert not (configured / "Art - Alb").exists()

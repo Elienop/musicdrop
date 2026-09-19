@@ -120,9 +120,11 @@ def test_the_pattern_keeps_a_symlink_spelling_rather_than_resolving_it(tmp_path:
     UNRESOLVED, so its mover writes rows through the link, while a configured one
     is resolved at the source and writes rows through the real path. One pattern
     answers for one of those, and the other entry is emptied with the album's
-    only copy in it. Should a bump start resolving, the second assertion below
-    goes green and both spellings become one — which is safe, but this file is
-    where that change should be noticed.
+    only copy in it. Should a bump start resolving, this is NOT a safe no-op: the
+    code seat simulated the drift and **five door tests in
+    ``tests/test_trash_api.py`` fail**, because a link-spelled row stops matching
+    the pattern it was written under. This file is where that has to be noticed
+    first.
     """
     lib = _library(tmp_path)
     real = tmp_path / "bigdisk-trash"

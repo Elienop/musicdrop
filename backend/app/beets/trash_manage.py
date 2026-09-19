@@ -1572,20 +1572,27 @@ def _listed_entries(
 
     ``roots`` is every spelling the app's own settings give the current Trash
     (:func:`~app.beets.protected._trash_spellings`), because the rows hold the
-    one the mover used. Asked as one ``OrQuery`` so it stays one pass;
-    ``delete._all_rows_are_in_trash`` asks the same set through the same helper,
-    so the remedy the refusal names still recognises the same rows.
+    one the mover used. Asked as one ``OrQuery`` so it stays one pass.
+
+    Only this side is generous. ``delete._all_rows_are_in_trash`` shares the
+    helper but asks over the current ``trash_dir`` alone: refusing keeps the
+    files, while that arm drops the rows, and a drop is safe only where the
+    listing can still reach them. A refusal raised here under another spelling
+    is cleared all the same — the remedy takes the ordinary move and leaves the
+    files in the Trash this page lists.
 
     ``lib.music_dir_context()`` because relative rows need beets' music dir bound
     (``test_empty_one_refuses_a_relative_row_with_the_music_dir_context_unbound``).
 
-    Cost, min of 15 on a shared box at 100 000 RELATIVE rows (the slowest shape —
-    beets expands each one): 98 ms for one root spelling, then +45 ms for each
-    further one (144 / 189 / 233 ms). Linear in the spellings, so it is the
-    LENGTH of ``trash_spellings`` that sets the bill, not the number of entries —
-    and that length is 1 on an ordinary default Trash, 2-3 once a link is
-    involved (``protected._trash_spellings``). All of it runs inside the swap
-    lock, where every other library route waits.
+    Cost at 100 000 relative rows, no hit: **24 ms for one root spelling**, then
+    roughly +17 ms per further one (45 / 61 / 76 ms). Linear in the spellings, so
+    it is the LENGTH of ``trash_spellings`` that sets the bill, not the number of
+    entries (1 and 50 agree to 0.5 ms) — and that length is 1 on an ordinary
+    default Trash, 2-3 once a link is involved
+    (``protected._trash_spellings``). Absolute rows cost slightly MORE (29 ms),
+    so the in-library layout is not the slow one. Min of 15 against a fixture
+    built in a directory that did not exist: round 5's figures were ~4x high
+    because its script rebuilt into a reused one and accumulated 400 004 rows.
 
     Residual: beets compares path strings, so an alias none of ``roots`` spells —
     a bind mount, a second symlink, a Trash re-pointed to a path no setting

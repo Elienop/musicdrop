@@ -1589,18 +1589,22 @@ def test_delete_album_500_does_not_read_the_answer_out_of_a_half_moved_album(
     assert (tmp_path / "music" / "Sharey" / "Both" / "03 B.mp3").is_file()
 
 
-def test_an_album_with_a_null_path_row_refuses_before_anything_moves(tmp_path: Path) -> None:
-    """A NULL ``path`` row is refused by name, not relayed as a Python message.
+@pytest.mark.parametrize("stored", ["NULL", "X''"])
+def test_an_album_with_a_null_path_row_refuses_before_anything_moves(
+    tmp_path: Path, stored: str
+) -> None:
+    """A row with no usable ``path`` is refused by name, not relayed as Python text.
 
-    Hand-made: nothing in the app writes a row without a path, and the column is
-    nullable, so this is the shape a hand-edited DB can hand the route. Measured
-    before the refusal existed: the retry twin's ``PathQuery`` match raised
-    ``AttributeError``, and with that guarded the prune walk raised ``TypeError:
-    expected str, bytes or os.PathLike object, not NoneType`` — both left the
-    wire carrying the interpreter's own words, and the second had already made a
-    Trash container.
+    Both spellings, because they are two different aliens. NULL needs a
+    hand-edited DB; the EMPTY one beets writes itself for
+    ``lib.add(Item(title=...))``, and a predicate reading ``is None`` let it
+    through — measured: ``500 "Delete failed: [Errno 2] No such file or
+    directory: \'\'"``, the container made, a temp file left and the good track
+    already moved out of the library. Earlier, NULL alone reached the wire twice:
+    the twin\'s ``PathQuery`` match raised ``AttributeError``, and with that
+    guarded the prune walk raised ``TypeError``.
 
-    Two things are pinned: the body is the app's sentences on both fields, and
+    Two things are pinned: the body is the app\'s sentences on both fields, and
     the state is untouched — rows kept, the good file where it was, Trash empty.
     """
     from beets.library import Item
@@ -1619,7 +1623,7 @@ def test_an_album_with_a_null_path_row_refuses_before_anything_moves(tmp_path: P
     album.store()
     album_id = _require_id(album.id)
     with lib.transaction() as tx:
-        tx.mutate("UPDATE items SET path = NULL WHERE track = 2", ())
+        tx.mutate(f"UPDATE items SET path = {stored} WHERE track = 2", ())
     trash = tmp_path / "trash"
     handle = make_test_handle(lib, beets_dir_for(tmp_path))
 

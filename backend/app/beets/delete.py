@@ -187,7 +187,8 @@ def _trash_one(
     refusal would only deny the operator a delete.
     """
     items = list(album.items())
-    if _all_rows_are_in_trash(lib, items, protected.trash_spellings):
+    # ``trash_dir`` alone, NOT ``protected.trash_spellings``: see the twin.
+    if _all_rows_are_in_trash(lib, items, (trash_dir,)):
         require_usable_store(origins_dir)
         album.remove(delete=False)
         return os.path.dirname(_abs_path(lib, items[0].path))
@@ -211,12 +212,20 @@ def _trash_one(
 def _all_rows_are_in_trash(lib: Library, items: list[Any], roots: Sequence[Path]) -> bool:
     """Whether every item row of this album names a regular file inside Trash.
 
-    The SAME question Empty asks, from the SAME helper and over the same
-    ``roots`` (``protected.rows_under_any``, ``trash_manage._listed_entries``).
-    Two implementations could disagree about one row, and this side IS the
-    remedy the refusal names — an entry Empty refuses that the retry arm does not
-    recognise leaves the user with no way out. It also inherits the engine's
-    directory-prefix, relative-row and case-sensitivity handling.
+    The same helper Empty's gate uses (``protected.rows_under_any``), so both
+    inherit the engine's directory-prefix, relative-row and case handling — but
+    asked over ONE root, the current ``trash_dir``, where the gate asks every
+    spelling. **Only the refusing half may be generous:** the gate keeps the
+    files, this arm DROPS THE ROWS without moving anything, and that is safe only
+    while the files are under the Trash ``list_trashed_albums`` enumerates.
+    Widened to ``trash_spellings`` it de-registered an album whose files sat in
+    an old default Trash the page does not list — a reversible delete made
+    irreversible through the UI (security seat, measured paired)
+    (``test_the_remedy_moves_rows_from_an_old_default_into_the_configured_trash``).
+
+    A refusal the gate raises under some other spelling still clears: this arm
+    answers False, the album takes the ORDINARY move, and the files end up in the
+    current Trash where the page lists them.
 
     ``it.path`` guarded: a row with a NULL path is one beets cannot interpret, so
     it is "not in Trash" and this album takes the ordinary move — which then
@@ -505,8 +514,7 @@ def _stems_in_use(lib: Library, directories: set[str]) -> set[str]:
     survived mutation both ways and is gone. The residual is the one Empty
     states: a hand-edited row spelled ``//`` is not matched, so its sidecar
     travels with the deleted track, which is the direction this errs in anyway.
-    (``..`` IS matched on both sides — pinned in
-    ``test_what_a_hand_built_row_spelling_answers``.)
+    Measured IN THIS function, ``..`` is not claimed either.
 
     NOT ``PathQuery``, unlike Empty's gate and the retry arm: this asks about the
     music ROOT as well, and beets' predicate answers nothing there.
