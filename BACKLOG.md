@@ -228,6 +228,31 @@ entry carries a dated correction block where the pass changed it._
      `StatusBanner` forces `role="status"` and `items-center` (27 usages in 11 files; two
      static banners carry the live role today, three call sites work around the alignment) —
      a role opt-out plus top alignment is its own change.
+   - **An import refuses to start without the music folder, and a shown path posts back —
+     BUILT 2026-09-19 on `feat/import-keep-downloads`** (PLAN §3 items 9, 10, 11, 12; each
+     reproduced through the real route first). Measured before: with `directory:` missing or a
+     bare mountpoint, beets refused nothing under move, copy or hardlink — it re-created the root
+     on the container's own disk and a `move` emptied the download. Now `BeetsImportRunner.validate`
+     asks `require_library_root` (the one predicate) → 503 on `POST /api/import` and both inbox
+     routes; the shared gate both background drains poll asks it too, so the slskd drain and the
+     bank apply wait with zero row writes and zero folder walks (measured over 10 s at production
+     intervals: 120 `scandir` + 120 `isdir` per minute, nothing else) and resume without a restart
+     — one WARNING when the wait starts, one INFO when it ends. Letting the refusal escape `start`
+     instead killed the acquisition daemon thread and burned every queued bank row (measured), and
+     catching-and-reverting cost ~120 row writes/min; no backoff cap was built because there is
+     nothing left to cap. A NUL in the posted path is a 422 (it 500'd on copy through the
+     in-library guard's `realpath`, and started-then-failed otherwise; `os.fsencode` does not
+     raise on it). A folder whose name UTF-8 cannot carry is shown with U+FFFD; posting that shown
+     path back — "Import them again", the album page's `outside_library.folder` — maps it onto the
+     real folder through the existing `resolve_display_path`, 409 when two folders display alike;
+     a path with no placeholder reaches beets byte-for-byte as typed. Review-all with one settled
+     folder vanished between listing and start was already harmless (pinned, no code).
+     NOT BUILT: a nonexistent path still starts and ends `done` with 0 albums ("a typo looks like
+     success") — ~22 lines because any new refusal at `start` needs an arm in the acquisition
+     drain (which has no catch-all); importing a Trash ENTRY under `move` files the album and
+     leaves an empty entry listed, importing the Trash ROOT sweeps every trashed album into the
+     library and orphans its origin records (noisy, nothing lost); a parent of the library — see
+     the `POST /import` footgun entry, now measured on a POPULATED library.
      - **`aria-disabled:opacity-50` is copied onto ~20 buttons.** The pending recipe
        (`aria-disabled`, click swallowed) has no dim of its own, so each site adds the class,
        and a pending button keeps its hover fill. Lifting both into `buttonVariants` beside
@@ -794,7 +819,14 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   for a manual import, and the shipped starter config is `copy: yes` / `move: no`
   (`app/beets/config.starter.yaml:20-21`), so a stock install fills the library disk with
   a copy of every music file it can reach — while an operator who set `move: yes` gets the
-  destructive version of the same typo. (2) There is no cheap pre-flight: nothing reports
+  destructive version of the same typo. **Measured again 2026-09-19 on a POPULATED library:**
+  a source that is a PARENT of the music folder (or the beets dir, which holds `music/`) makes
+  beets walk the library's own album folders as candidates — re-tagged by whatever the lookup
+  returns, files MOVED to the new tag's path, the old folder pruned, the old row dropped by
+  `remove_replaced` — under `copy` as well, because an in-library source is force-corrected to
+  `move`; the real download is then set aside as a "duplicate" of the album just manufactured
+  from the user's files. `is_in_library_source` asks "source inside library"; the missing
+  question is "library inside source", one predicate. (2) There is no cheap pre-flight: nothing reports
   how many candidate folders a path contains before the slot is committed to it. Fix shape
   (smallest first): refuse — or interstitially confirm — a path that is a filesystem root
   or an ancestor of the configured music library; then a `dry_run` probe returning a
