@@ -2160,13 +2160,23 @@ def test_every_abort_raise_site_records_the_cut_short(
         assert bridge.abort_raised() is True, channel
 
 
+def _raises_import_abort(node: ast.Raise) -> bool:
+    """The raised expression names ``ImportAbortError`` — bare, called, or as an
+    attribute (``importer.ImportAbortError()``). An import alias is not seen."""
+    exc = node.exc.func if isinstance(node.exc, ast.Call) else node.exc
+    if isinstance(exc, ast.Name):
+        return exc.id == "ImportAbortError"
+    return isinstance(exc, ast.Attribute) and exc.attr == "ImportAbortError"
+
+
 def test_beets_abort_is_raised_only_inside_abort_now() -> None:
     """What keeps the caller list above complete: one raise site, and it records.
 
     A ``raise ImportAbortError`` written anywhere else stops the run without
     setting the flag, and the acquisition ledger (``queue.py`` ``_result_for``)
     then files a folder that was cut short as fully imported. Read from the
-    files on disk rather than ``inspect.getsource``, which serves stale bytecode.
+    files on disk rather than ``inspect.getsource``, which serves stale bytecode;
+    matched on the exception node, not the statement's spelling.
     """
     app_root = Path(__file__).resolve().parents[1] / "app"
     sites: list[tuple[str, str]] = []
@@ -2183,8 +2193,7 @@ def test_beets_abort_is_raised_only_inside_abort_now() -> None:
         sites += [
             (str(path.relative_to(app_root)), holder.get(node, "<module>"))
             for node in ast.walk(tree)
-            if isinstance(node, ast.Raise)
-            and ast.unparse(node).startswith("raise ImportAbortError")
+            if isinstance(node, ast.Raise) and _raises_import_abort(node)
         ]
     assert sites == [("beets/import_session.py", "abort_now")]
 
