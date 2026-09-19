@@ -34,7 +34,7 @@ from app.beets.library import (
     LibraryRootUnavailableError as LibraryRootUnavailableError,
 )
 from app.beets.library import (
-    require_attached_library_root,
+    require_importable_library_root,
 )
 from app.models.bank import BankApplyDirective
 from app.models.import_models import ImportOptions
@@ -118,7 +118,11 @@ class BeetsImportRunner:
         # under move/copy/hardlink: beets refuses nothing. It re-creates the root,
         # files the album onto the container's own disk, and a move EMPTIES the
         # download. Asked here, before the slot is claimed, so the start refuses.
-        require_attached_library_root(self._lib)
+        # ``is not None`` mirrors the gate's guard: before this question only the
+        # copy branch touched the library, so an unattached registry used to 500
+        # here instead of answering.
+        if self._lib is not None:
+            require_importable_library_root(self._lib)
         # Only explicit copy is a user-facing error here; default/None are
         # silently corrected to move by the worker guard (run_import_worker).
         if options is not None and options.operation == "copy":

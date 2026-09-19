@@ -22,9 +22,10 @@ from app.models.import_models import ImportOptions, ImportOrigin, Recommendation
 def _without_a_nul(path: str) -> str:
     """Refuse an embedded NUL, which no filesystem call can take.
 
-    Every path syscall raises ``ValueError`` on one rather than returning an
-    error, so a NUL reaching the runner's copy guard 500'd the start and one
-    reaching beets failed the job. Refusing here keeps it a 422.
+    Measured for the two this route reaches: ``os.path.realpath`` 500'd the
+    start from the runner's copy guard, and beets' own ``lstat`` failed the job.
+    Both raise ``ValueError`` rather than returning an error, so the refusal has
+    to sit above them; here it is a 422.
     """
     if "\x00" in path:
         raise ValueError("a folder path cannot contain a null character")
@@ -85,9 +86,15 @@ class StartImportRequest(BaseModel):
     # ``POST /api/config/save`` — so an allowlist here would restrict the owner
     # from their own feature while crossing no privilege boundary. Read the
     # BACKLOG entry before adding validation.
+    # ``max_length`` is PATH_MAX on Linux, so it refuses nothing that could name
+    # a real folder. It is a DoS bound, not an allowlist: ``resolve_posted_path``
+    # runs one ``os.scandir`` per placeholder component while rebuilding a
+    # growing Path, so its cost is quadratic in the component count and it runs
+    # on the event loop. Measured by the security seat: a 4 KB path stalls the
+    # whole API for ~157 ms, 32 KB for 4.8 s and 80 KB for 3.5 minutes.
     path: Annotated[
         str,
-        StringConstraints(strip_whitespace=True, min_length=1),
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=4096),
         AfterValidator(_without_a_nul),
     ]
     options: ImportOptions | None = None

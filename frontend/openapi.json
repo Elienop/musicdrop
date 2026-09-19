@@ -16397,6 +16397,7 @@
         "properties": {
           "path": {
             "type": "string",
+            "maxLength": 4096,
             "minLength": 1,
             "title": "Path"
           },

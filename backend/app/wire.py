@@ -255,18 +255,10 @@ def resolve_posted_path(path: str) -> str:
     """Map a WHOLE display-form path back onto the real one on disk.
 
     :func:`resolve_display_path` takes a name under a server-owned base, which
-    is what the inbox and Trash send. ``POST /api/import`` sends a whole server
-    path instead — the one the app itself displayed (a job's ``path``, or the
-    album page's ``outside_library.folder``).
-
-    Returned unchanged when it carries no placeholder: the bytes were never
-    scrubbed, so the literal path is the only candidate, the spelling the user
-    typed reaches beets intact, and a scan would be waste on every import.
-
-    The base is an empty ``Path``: pathlib discards a base when the right
-    operand is absolute, and ``resolve_display_path`` walks the parts, so the
-    leading separator carries itself (measured identical to passing the anchor,
-    for an absolute and a relative argument alike).
+    is what the inbox and Trash send; ``POST /api/import`` sends a whole server
+    path the app itself displayed. Base is ``Path()``: pathlib drops it when the
+    joined part is absolute (measured). Returned unchanged without a
+    placeholder, so the spelling the user typed reaches beets intact.
     """
     if PLACEHOLDER not in path:
         return path

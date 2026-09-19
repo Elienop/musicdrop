@@ -100,7 +100,16 @@ class LibraryRootUnavailableError(Exception):
     (``app.beets.disk_sync``) and the Trash primitives' missing-folder handling
     (``app.beets.trash``). A second, looser copy of the check is the failure this
     placement exists to prevent.
+
+    ``empty`` marks the one arm an empty library can legitimately be in — the
+    root is there and readable but holds nothing. Only the import side reads it
+    (:func:`require_importable_library_root`); every other caller treats all
+    three arms alike.
     """
+
+    def __init__(self, message: str, *, empty: bool = False) -> None:
+        super().__init__(message)
+        self.empty = empty
 
 
 def _music_dir(lib: Library) -> str:
@@ -141,16 +150,31 @@ def require_library_root(lib: Library) -> None:
             f"Library folder is unreadable{reason}. Check its permissions and the mount."
         ) from exc
     if not has_entry:
-        raise LibraryRootUnavailableError("Library folder is empty. Is the music share mounted?")
+        raise LibraryRootUnavailableError(
+            "Library folder is empty. Is the music share mounted?", empty=True
+        )
 
 
-def require_attached_library_root(lib: object) -> None:
-    """:func:`require_library_root` for a holder that carries the Library untyped.
+def require_importable_library_root(lib: object) -> None:
+    """:func:`require_library_root` for the IMPORT side, which forgives a fresh install.
 
-    The import registry and runner must not import beets, so they cannot name
-    ``Library``. This is the one cast, beside the predicate it delegates to.
+    Two jobs, both needed here. The registry and runner must not import beets, so
+    they cannot name ``Library``: this is the one cast, beside the predicate it
+    delegates to. And an EMPTY root means two opposite things — a dropped share,
+    or the empty ``/music`` bind mount Docker hands every new install, which the
+    app never creates. The database separates them: with no item rows there is
+    nothing a write could shadow and nothing to lose, so the first import starts.
+
+    Only this arm is forgiven. A missing or unreadable root still refuses, rows
+    or no rows, and Trash, Delete, Restore and disk sync keep the stricter
+    :func:`require_library_root` unchanged.
     """
-    require_library_root(cast(Library, lib))
+    library = cast(Library, lib)
+    try:
+        require_library_root(library)
+    except LibraryRootUnavailableError as exc:
+        if not (exc.empty and not _sampled_library_files(library, 1)):
+            raise
 
 
 #: How many DISTINCT albums :func:`require_library_present` asks about before it

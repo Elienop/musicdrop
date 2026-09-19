@@ -1,3 +1,4 @@
+import os
 import threading
 from pathlib import Path
 from typing import Literal
@@ -370,12 +371,33 @@ def test_validate_passes_safe_combinations(
 
 def test_validate_refuses_while_the_music_root_is_unavailable(tmp_path: Path) -> None:
     """Measured: with the root gone beets re-created it and filed the album there,
-    and a move emptied the download. Refuse before the slot is claimed."""
+    and a move emptied the download. Refuse before the slot is claimed.
+
+    One row makes the bare mountpoint a DROPPED SHARE: with no rows it is the
+    empty bind mount a fresh install has, which the import side forgives.
+    """
+    from beets.library import Item
+
     lib = _library_with_a_mounted_root(tmp_path)
+    item = Item(album="A", albumartist="B", title="T", track=1)
+    item.path = os.fsencode(str(tmp_path / "music" / "B" / "A" / "01.flac"))
+    lib.add_album([item])
     (tmp_path / "music" / ".keep").unlink()  # the bare-mountpoint shape
     runner = BeetsImportRunner(lib)
     with pytest.raises(LibraryRootUnavailableError):
         runner.validate([str(tmp_path / "downloads" / "incoming")], None)
+
+
+def test_validate_lets_a_fresh_install_through(tmp_path: Path) -> None:
+    """An empty root with an empty database is a new install, not a dropped share."""
+    lib = _library_with_a_mounted_root(tmp_path)
+    (tmp_path / "music" / ".keep").unlink()
+    BeetsImportRunner(lib).validate([str(tmp_path / "downloads" / "incoming")], None)
+
+
+def test_validate_answers_rather_than_500ing_without_a_library(tmp_path: Path) -> None:
+    """A registry with no library attached must not AttributeError out of validate."""
+    BeetsImportRunner(None).validate([str(tmp_path / "downloads" / "incoming")], None)
 
 
 def test_runner_forwards_directive_to_session_and_worker(

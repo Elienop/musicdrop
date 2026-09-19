@@ -164,6 +164,32 @@ def test_an_ordinary_path_still_starts(tmp_path: Path) -> None:
     _drive(client, resp.json()["job_id"])
 
 
+# ----- the posted path is bounded (the resolver is quadratic, on the event loop) -----
+
+
+def test_a_path_longer_than_PATH_MAX_is_refused(tmp_path: Path) -> None:
+    """4097 characters can name no folder, and the resolver is quadratic.
+
+    Measured unbounded by the security seat: 80 KB of path stalled the whole
+    API for 210 s, on the event loop, uncancellable. At the bound the densest
+    path (2048 placeholder components, U+FFFD being one character) costs 314 ms.
+    """
+    _real_registry(tmp_path)
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post("/api/import", json={"path": "/" + "x" * 4096})
+    assert resp.status_code == 422
+    assert "4096" in resp.text
+
+
+def test_a_path_at_PATH_MAX_still_starts(tmp_path: Path) -> None:
+    """The control: the bound refuses nothing the feature can do."""
+    _real_registry(tmp_path)
+    client = TestClient(app)
+    resp = client.post("/api/import", json={"path": "/" + "x" * 4095})
+    assert resp.status_code == 202
+    _drive(client, resp.json()["job_id"])
+
+
 # ----- 11: a displayed path round-trips -----
 
 
@@ -288,8 +314,25 @@ def test_the_folder_the_album_page_serves_round_trips(
 # ----- the library root at import start -----
 
 
-def _drop_root(lib: Library, *, bare: bool) -> Path:
-    """Make the music root look like a dropped share. Returns the root."""
+def _seed_a_library_row(lib: Library) -> None:
+    """One item row naming a file under the music root — a library with content."""
+    from beets.library import Item
+
+    item = Item(album="The Wall", albumartist="Pink Floyd", title="T1", track=1)
+    item.path = os.fsencode(os.path.join(os.fsdecode(lib.directory), "Pink Floyd/The Wall/01.flac"))
+    lib.add_album([item])
+
+
+def _drop_root(lib: Library, *, bare: bool, rows: bool = True) -> Path:
+    """Make the music root look like a dropped share. Returns the root.
+
+    ``rows`` seeds one item row BEFORE dropping, because an EMPTY root is only a
+    dropped share when the library still lists files. With no rows it is the
+    empty bind mount Docker gives every new install, which must still import
+    (C1) — ``rows=False`` is how that case is spelled here.
+    """
+    if rows:
+        _seed_a_library_row(lib)
     root = Path(os.fsdecode(lib.directory))
     shutil.rmtree(root)
     if bare:
@@ -297,16 +340,24 @@ def _drop_root(lib: Library, *, bare: bool) -> Path:
     return root
 
 
-@pytest.mark.parametrize("bare", [False, True])
+@pytest.mark.parametrize(
+    ("bare", "rows"),
+    [
+        (False, True),  # the root is gone and the library lists files
+        (False, False),  # gone with no rows either: MISSING refuses regardless
+        (True, True),  # the bare mountpoint of a dropped share
+    ],
+)
 def test_an_import_does_not_start_while_the_library_root_is_unavailable(
-    tmp_path: Path, bare: bool
+    tmp_path: Path, bare: bool, rows: bool
 ) -> None:
     """Measured without the guard: beets re-created the root and filed the album
     onto it, and a ``move`` emptied the download."""
     _reg, lib = _real_registry(tmp_path)
     folder = _album_folder(tmp_path / "downloads", b"okc")
     before = sorted(p.name for p in folder.iterdir())
-    root = _drop_root(lib, bare=bare)
+    root = _drop_root(lib, bare=bare, rows=rows)
+    albums_before = len(list(lib.albums()))
 
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post("/api/import", json={"path": str(folder), "options": {"operation": "move"}})
@@ -314,7 +365,94 @@ def test_an_import_does_not_start_while_the_library_root_is_unavailable(
     assert "share mounted" in resp.json()["detail"]
     assert sorted(p.name for p in folder.iterdir()) == before
     assert list(root.iterdir()) == [] if bare else not root.exists()
+    assert len(list(lib.albums())) == albums_before
+
+
+def test_an_unreadable_root_refuses_even_with_no_rows(tmp_path: Path) -> None:
+    """Invariant 3's other half: only the EMPTY arm is forgiven, never this one."""
+    _reg, lib = _real_registry(tmp_path)
+    folder = _album_folder(tmp_path / "downloads", b"okc")
+    root = Path(os.fsdecode(lib.directory))
+    root.chmod(0o000)
+    try:
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.post("/api/import", json={"path": str(folder)})
+    finally:
+        root.chmod(0o755)
+    assert resp.status_code == 503
+    assert "unreadable" in resp.json()["detail"]
     assert len(list(lib.albums())) == 0
+
+
+# ----- C1: a fresh install's empty music folder must still import -----
+
+
+def test_a_fresh_install_with_an_empty_music_folder_can_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Docker creates ``/music`` empty and the app never creates it.
+
+    Measured before the fix: ``POST /api/import`` -> 503 "Library folder is
+    empty. Is the music share mounted?" on every new install.
+    """
+    _canned_lookup(monkeypatch)
+    _reg, lib = _real_registry(tmp_path)
+    (Path(os.fsdecode(lib.directory)) / ".keep").unlink()  # the bare bind mount
+    folder = _album_folder(tmp_path / "downloads", b"okc")
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post("/api/import", json={"path": str(folder)})
+    assert resp.status_code == 202, resp.text
+    state = _drive(client, resp.json()["job_id"])
+    assert state["phase"] == "done", state
+    assert len(list(lib.albums())) == 1
+
+
+def test_a_fresh_installs_empty_music_folder_leaves_the_gate_open(tmp_path: Path) -> None:
+    """The drains must not wait for ever on a new install either."""
+    from app.import_jobs.gates import import_gate_clear
+
+    reg, lib = _real_registry(tmp_path)
+    (Path(os.fsdecode(lib.directory)) / ".keep").unlink()
+    assert import_gate_clear(reg, None) is True
+
+
+def test_an_empty_root_with_rows_is_still_a_dropped_share(tmp_path: Path) -> None:
+    """The control for C1: one row is the difference between the two states."""
+    from app.import_jobs.gates import import_gate_clear
+
+    reg, lib = _real_registry(tmp_path)
+    root = Path(os.fsdecode(lib.directory))
+    root.joinpath(".keep").unlink()
+    _seed_a_library_row(lib)
+    folder = _album_folder(tmp_path / "downloads", b"okc")
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post("/api/import", json={"path": str(folder)})
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Library folder is empty. Is the music share mounted?"
+    assert import_gate_clear(reg, None) is False
+
+
+def test_trash_and_delete_keep_the_stricter_predicate(tmp_path: Path) -> None:
+    """Invariant 4: the exemption is the IMPORT side's, not the predicate's.
+
+    ``require_library_root`` is what Trash, Delete, Restore and disk sync ask,
+    and an empty root must still refuse them however empty the database is.
+    """
+    from app.beets.library import (
+        LibraryRootUnavailableError,
+        require_library_present,
+        require_library_root,
+    )
+
+    _reg, lib = _real_registry(tmp_path)
+    (Path(os.fsdecode(lib.directory)) / ".keep").unlink()
+    assert len(list(lib.items())) == 0  # the fresh-install shape the import side forgives
+    with pytest.raises(LibraryRootUnavailableError, match="is empty"):
+        require_library_root(lib)
+    with pytest.raises(LibraryRootUnavailableError, match="is empty"):
+        require_library_present(lib)
 
 
 def test_the_inbox_review_refuses_while_the_library_root_is_unavailable(
@@ -340,6 +478,29 @@ def test_the_inbox_review_refuses_while_the_library_root_is_unavailable(
         app.state.inbox_dir = None
 
 
+def test_the_per_item_inbox_import_refuses_while_the_library_root_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    """The sibling route's 503 arm, which no test reached.
+
+    Measured by the code seat: narrowing this ``except`` back survived its own
+    31 tests, and without the arm the refusal is a plain ``Exception`` the route
+    turns into a 500.
+    """
+    _reg, lib = _real_registry(tmp_path)
+    inbox = tmp_path / "inbox"
+    folder = _album_folder(inbox, b"okc")
+    _drop_root(lib, bare=True)
+    app.state.inbox_dir = inbox
+    try:
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.post("/api/acquisition/inbox/items/import", json={"name": folder.name})
+        assert resp.status_code == 503, resp.text
+        assert "share mounted" in resp.json()["detail"]
+    finally:
+        app.state.inbox_dir = None
+
+
 # ----- 10: the two automatic producers wait instead of burning their work -----
 
 
@@ -359,6 +520,138 @@ def test_a_registry_with_no_library_leaves_the_gate_open(tmp_path: Path) -> None
     from app.import_jobs.gates import import_gate_clear
 
     assert import_gate_clear(ImportJobRegistry(runner=FakeImportRunner(parked=[])), None) is True
+
+
+# ----- the gate is on the drains' un-caught path, so it must never raise -----
+
+
+def _make_the_root_question_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Any unexpected failure of the gate's own filesystem work."""
+    from app.import_jobs import gates
+
+    def boom(_library: object) -> None:
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(gates, "require_importable_library_root", boom)
+
+
+def test_an_unexpected_raise_inside_the_gate_reads_as_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Measured before the fix: the raise escaped and killed the drain thread.
+
+    Also pins the latch: the drains poll this four times a second between them,
+    so one failing episode is ONE record, and a later episode says so again.
+    """
+    import logging
+
+    from app.import_jobs import gates
+
+    reg, _lib = _real_registry(tmp_path)
+    gates._gate_fault.clear()
+    assert gates.import_gate_clear(reg, None) is True  # control: healthy root, gate open
+    with caplog.at_level(logging.INFO):
+        with monkeypatch.context() as broken:
+            _make_the_root_question_raise(broken)
+            for _ in range(5):
+                assert gates.import_gate_clear(reg, None) is False
+        assert gates.import_gate_clear(reg, None) is True  # the fault cleared
+        with monkeypatch.context() as broken_again:
+            _make_the_root_question_raise(broken_again)
+            assert gates.import_gate_clear(reg, None) is False
+    faults = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(faults) == 2, [r.getMessage() for r in faults]
+    assert {r.name for r in faults} == {"uvicorn.error"}
+
+
+def test_the_root_question_runs_even_when_another_check_would_close_the_gate(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Ordering: asked FIRST, so the wait latch cannot go stale behind an early return.
+
+    Without it a share that dropped while a backfill held the gate is never
+    logged, and its recovery never clears the latch, so the NEXT outage is
+    silent too.
+    """
+    import logging
+
+    from app.import_jobs import gates
+
+    reg, lib = _real_registry(tmp_path)
+    gates._root_wait.clear()
+    _drop_root(lib, bare=True)
+
+    class _HeldLock:
+        def locked(self) -> bool:
+            return True
+
+    with caplog.at_level(logging.INFO):
+        assert gates.import_gate_clear(reg, _HeldLock()) is False  # type: ignore[arg-type]
+    waits = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(waits) == 1, [r.getMessage() for r in waits]
+    assert waits[0].name == "uvicorn.error"
+
+
+def test_a_raising_gate_does_not_kill_the_inbox_drain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.acquisition.ledger import AcquisitionLedger
+    from app.acquisition.queue import AcquisitionQueue
+
+    reg, _lib = _real_registry(tmp_path)
+    folder = _album_folder(tmp_path / "inbox", b"okc")
+    _make_the_root_question_raise(monkeypatch)
+    ledger = AcquisitionLedger(tmp_path / "ledger")
+    queue = AcquisitionQueue(
+        import_registry=reg, ledger=ledger, poll_interval=0.01, busy_backoff=0.01
+    )
+    queue.start()
+    queue.enqueue(folder)
+    try:
+        time.sleep(0.4)
+        assert queue.status().processed == 0
+        assert not ledger.seen(folder)
+        alive = [t for t in threading.enumerate() if t.name == "musicdrop-acquisition"]
+        assert [t.is_alive() for t in alive] == [True]
+    finally:
+        queue.stop()
+
+
+def test_a_raising_gate_does_not_fail_a_bank_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.bank import store as bank_store
+    from app.bank.apply_runner import BankApplyRunner
+    from app.bank.fingerprint import folder_fingerprint
+    from app.models.bank import BankDecision
+
+    reg, _lib = _real_registry(tmp_path)
+    folder = _album_folder(tmp_path / "swept", b"okc")
+    bank_dir = tmp_path / "bank"
+    item = bank_store.create_item(
+        bank_dir,
+        folder=str(folder),
+        source="sweep",
+        reason="no_match",
+        fingerprint=folder_fingerprint(folder),
+    )
+    bank_store.decide_item(bank_dir, item.id, BankDecision(action="asis"))
+    _make_the_root_question_raise(monkeypatch)
+
+    drain = BankApplyRunner(
+        bank_dir=bank_dir,
+        import_registry=reg,
+        library=lambda: (_ for _ in ()).throw(AssertionError("no library read expected")),
+        poll_interval=0.01,
+        busy_backoff=0.01,
+        idle_poll=0.01,
+    )
+    drain.start()
+    try:
+        time.sleep(0.4)
+    finally:
+        drain.stop()
+    assert _bank_status(bank_dir, item.id) == "queued"
 
 
 def test_a_queued_bank_row_is_not_claimed_while_the_root_is_unavailable(
@@ -472,61 +765,73 @@ def test_the_inbox_drain_keeps_its_folder_queued_and_stays_alive(tmp_path: Path)
         queue.stop()
 
 
-def _refuse_start_after_the_gate(
-    reg: ImportJobRegistry, monkeypatch: pytest.MonkeyPatch, calls: list[int]
+def _gate_that_drops_the_root(
+    module: Any, lib: Library, monkeypatch: pytest.MonkeyPatch, drops: list[int]
 ) -> None:
-    """The TOCTOU shape: the gate is open, and the share drops before ``start``.
+    """Drive the REAL TOCTOU window: the share goes right after the gate opens.
 
-    The root is real here, so ``import_gate_clear`` lets the drain through; only
-    ``start`` refuses. That is the window the gate cannot close.
+    Nothing is stubbed on the way down. The wrapper restores the root before
+    each poll, so the drain's own ``import_gate_clear`` answers True on the
+    healthy root, then removes it — leaving the bare mountpoint of a library
+    that still lists files. ``start`` -> ``validate`` then raises on its own, so
+    the test sees the type the ``except`` arm actually has to name.
     """
-    from app.import_jobs.runner import LibraryRootUnavailableError
+    real = module.import_gate_clear
+    root = Path(os.fsdecode(lib.directory))
+    _seed_a_library_row(lib)  # rows: an empty root is a dropped share, not a new install
 
-    def refusing_start(*args: Any, **kwargs: Any) -> str:
-        calls.append(1)
-        raise LibraryRootUnavailableError("Library folder unavailable. Is the music share mounted?")
+    def wrapper(*args: Any, **kwargs: Any) -> bool:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / ".keep").write_bytes(b"")
+        answer = bool(real(*args, **kwargs))
+        if answer:
+            drops.append(1)
+            shutil.rmtree(root)
+            root.mkdir()
+        return answer
 
-    monkeypatch.setattr(reg, "start", refusing_start)
+    monkeypatch.setattr(module, "import_gate_clear", wrapper)
 
 
 def test_the_inbox_drain_survives_a_share_that_drops_after_the_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Measured: uncaught, the refusal killed the daemon thread outright."""
+    import app.acquisition.queue as queue_mod
     from app.acquisition.ledger import AcquisitionLedger
-    from app.acquisition.queue import AcquisitionQueue
 
-    reg, _lib = _real_registry(tmp_path)
+    reg, lib = _real_registry(tmp_path)
     folder = _album_folder(tmp_path / "inbox", b"okc")
-    calls: list[int] = []
-    _refuse_start_after_the_gate(reg, monkeypatch, calls)
+    drops: list[int] = []
+    _gate_that_drops_the_root(queue_mod, lib, monkeypatch, drops)
     ledger = AcquisitionLedger(tmp_path / "ledger")
-    queue = AcquisitionQueue(
+    queue = queue_mod.AcquisitionQueue(
         import_registry=reg, ledger=ledger, poll_interval=0.01, busy_backoff=0.01
     )
     queue.start()
     queue.enqueue(folder)
     try:
-        time.sleep(0.4)
-        assert len(calls) > 1  # retried, not abandoned
+        time.sleep(0.5)
+        assert len(drops) > 1  # the window opened and closed more than once
         assert queue.status().processed == 0
         assert not ledger.seen(folder)
         alive = [t for t in threading.enumerate() if t.name == "musicdrop-acquisition"]
         assert [t.is_alive() for t in alive] == [True]
     finally:
         queue.stop()
+    assert sorted(p.name for p in folder.iterdir()) == ["01 Track 1.flac", "02 Track 2.flac"]
 
 
 def test_a_bank_row_returns_to_queued_when_the_share_drops_after_the_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Measured: uncaught, the row failed permanently on a merely-unmounted share."""
+    import app.bank.apply_runner as apply_mod
     from app.bank import store as bank_store
-    from app.bank.apply_runner import BankApplyRunner
     from app.bank.fingerprint import folder_fingerprint
     from app.models.bank import BankDecision
 
-    reg, _lib = _real_registry(tmp_path)
+    reg, lib = _real_registry(tmp_path)
     folder = _album_folder(tmp_path / "swept", b"okc")
     bank_dir = tmp_path / "bank"
     item = bank_store.create_item(
@@ -537,10 +842,10 @@ def test_a_bank_row_returns_to_queued_when_the_share_drops_after_the_gate(
         fingerprint=folder_fingerprint(folder),
     )
     bank_store.decide_item(bank_dir, item.id, BankDecision(action="asis"))
-    calls: list[int] = []
-    _refuse_start_after_the_gate(reg, monkeypatch, calls)
+    drops: list[int] = []
+    _gate_that_drops_the_root(apply_mod, lib, monkeypatch, drops)
 
-    drain = BankApplyRunner(
+    drain = apply_mod.BankApplyRunner(
         bank_dir=bank_dir,
         import_registry=reg,
         library=lambda: (_ for _ in ()).throw(AssertionError("no library read expected")),
@@ -550,8 +855,8 @@ def test_a_bank_row_returns_to_queued_when_the_share_drops_after_the_gate(
     )
     drain.start()
     try:
-        time.sleep(0.4)
-        assert len(calls) > 1  # retried, not burned
+        time.sleep(0.5)
+        assert len(drops) > 1
     finally:
         drain.stop()
     assert _bank_status(bank_dir, item.id) == "queued"
@@ -566,7 +871,7 @@ def test_the_wait_is_logged_once_and_its_end_is_logged_once(
     from app.import_jobs import gates
 
     reg, lib = _real_registry(tmp_path)
-    gates.reset_root_wait_latch()
+    gates._root_wait.clear()  # the latch is process-wide; this file already reads privates
     root = _drop_root(lib, bare=True)
     with caplog.at_level(logging.INFO):
         for _ in range(5):
@@ -578,6 +883,10 @@ def test_the_wait_is_logged_once_and_its_end_is_logged_once(
     ends = [r for r in caplog.records if r.levelno == logging.INFO]
     assert len(starts) == 1, [r.getMessage() for r in starts]
     assert len(ends) == 1, [r.getMessage() for r in ends]
+    # BOTH on the operator logger: measured under uvicorn's own LOGGING_CONFIG,
+    # an app-namespace WARNING prints as a bare untagged line and an INFO is
+    # dropped outright, so a record an operator must read cannot live there.
+    assert {r.name for r in starts + ends} == {"uvicorn.error"}
 
 
 # ----- 12: Review all survives a folder that vanished since the listing -----
