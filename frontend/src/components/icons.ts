@@ -8,7 +8,7 @@
 // shell and by each route that renders outside it (the sign-in page, the
 // admission fallback). The only sanctioned local overrides: detail-rail
 // actions = thin (large size-10 glyphs), checkbox tick = bold (tiny control
-// glyph needs the stroke).
+// glyph needs the stroke). Stop carries its own (fill) — see below.
 // The one spinner is Spinner (CircleNotch) + className "animate-spin".
 // `Success` and `Online` intentionally share CheckCircle (spec's map; online
 // status always pairs the icon with text, never color alone).
@@ -50,7 +50,6 @@ export {
   PlusIcon as Add,
   TrashIcon as Remove,
   XIcon as Close,
-  StopIcon as Stop,
   PauseIcon as Pause,
   CaretLeftIcon as Back,
   CaretRightIcon as Forward,
@@ -80,7 +79,31 @@ export {
 // reaching past it into Phosphor for one and here for the other.
 export { IconContext } from "@phosphor-icons/react";
 
-import type { Icon } from "@phosphor-icons/react";
+import { StopIcon } from "@phosphor-icons/react";
+import type { Icon, IconProps } from "@phosphor-icons/react";
+import { createElement, forwardRef } from "react";
+
+/**
+ * Stop — the one concept that carries a weight of its own, the way the Checkbox
+ * indicator overrides to bold.
+ *
+ * At the app's light weight the glyph is a 1px-stroked rounded square: measured
+ * in Chromium (Orca) 2026-09-19, 10.75px of ink in the 16px button box beside
+ * the words "Stop this run", and 26.9px in the 40px panel box. Two review seats
+ * read it as an empty checkbox, on a page whose entry screen has real ones. A
+ * stop symbol carries its meaning in its fill.
+ *
+ * A wrapper, not a re-export, because the stopped panel passes the CONCEPT to
+ * EmptyState (`icon={Stop}`) and so has no prop to pass a weight through.
+ * `props` spread after the default, so the sanctioned detail-rail override
+ * (`ReorganizeControl`'s size-10 `weight="thin"`, in a rail of thin glyphs)
+ * still wins.
+ */
+export const Stop: Icon = forwardRef<SVGSVGElement, IconProps>(
+  function Stop(props, ref) {
+    return createElement(StopIcon, { weight: "fill", ...props, ref });
+  },
+);
 
 /**
  * ONE icon weight app-wide, as an IconContext value: every Phosphor glyph
