@@ -718,6 +718,32 @@ describe("AlbumDetailPage", () => {
     const path = screen.getByText(TORTURE_FOLDER);
     expect(path).toHaveClass("break-words");
     expect(path.closest(".min-w-0")).not.toBeNull();
+    // One break opportunity, after `/downloads/` — the root slash gets none.
+    expect(path.querySelectorAll("wbr")).toHaveLength(1);
+  });
+
+  test("a break opportunity follows every separator except the root one", async () => {
+    // An 11-character first component is the case the root <wbr> spoils: at
+    // 320px line 1 would end on a lone "/" with the component below it.
+    const folder = "/music-inbox/slskd/OK Computer";
+    serveOutside(folder, true);
+    renderDetail(1);
+
+    const notice = await screen.findByText(/outside your library folder/);
+    expect(notice.textContent).toBe(withRemedy(folder));
+
+    const path = screen.getByText(folder);
+    // Three separators, two break opportunities.
     expect(path.querySelectorAll("wbr")).toHaveLength(2);
+    // Everything before the FIRST opportunity is the root slash plus the whole
+    // first component, so a line can never end on the lone "/".
+    const nodes = [...path.childNodes];
+    const firstBreak = nodes.findIndex((n) => n.nodeName === "WBR");
+    expect(
+      nodes
+        .slice(0, firstBreak)
+        .map((n) => n.textContent)
+        .join(""),
+    ).toBe("/music-inbox/");
   });
 });

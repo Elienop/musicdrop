@@ -363,16 +363,23 @@ function AlbumDetailView({ album }: Readonly<{ album: AlbumDetail }>) {
   );
 }
 
-/** A path with a `<wbr>` after each separator, so a line breaks after a `/`
- * instead of mid-component. Adds no text, so `textContent` is the raw path. */
+/** A path with a `<wbr>` after each separator that has a component before it,
+ * so a line breaks after a `/` rather than mid-component, and the root slash
+ * is never stranded at a line end. Adds no text, so `textContent` is the raw
+ * path. Split on the string, not a lookbehind: Vite's default target promises
+ * Safari 16.0-16.3, which cannot parse one. */
 function breakablePath(path: string) {
-  const parts = path.split(/(?<=\/)/);
-  return parts.map((part, i) => (
-    <Fragment key={`${i}:${part}`}>
-      {part}
-      {i < parts.length - 1 && <wbr />}
-    </Fragment>
-  ));
+  const parts = path.split("/");
+  return parts.map((part, i) => {
+    const last = i === parts.length - 1;
+    const segment = last ? part : `${part}/`;
+    return (
+      <Fragment key={`${i}:${part}`}>
+        {segment}
+        {!last && segment !== "/" && <wbr />}
+      </Fragment>
+    );
+  });
 }
 
 /** Where some of the album's files are, when the backend reports a folder
