@@ -91,6 +91,23 @@ export class ImportUnavailableError extends Error {
   }
 }
 
+/** Raise {@link ImportUnavailableError} for a 503 that carries the server's own
+ * sentence, and do nothing otherwise — so a caller keeps `unwrap`'s generic
+ * message for every other outcome. The two inbox routes refuse with the same
+ * sentences `POST /api/import` does ("Is the music share mounted?"), and "try
+ * again in a moment" is false advice for those: nothing changes until the share
+ * comes back. The bodyless-503 rule is the class's, above. */
+export function throwIfUnavailable(result: {
+  error?: unknown;
+  response: Response;
+}): void {
+  if (result.response.status !== 503) return;
+  const reason = detailMessage(result.error);
+  if (reason !== null) {
+    throw new ImportUnavailableError(reason);
+  }
+}
+
 /** Thrown when a start is rejected with a 422 (e.g. the in-library guard
  * refusing copy-mode). Carries the backend's reason. The detail body is read
  * through detailMessage: our guards send `{detail: string}` while the OpenAPI

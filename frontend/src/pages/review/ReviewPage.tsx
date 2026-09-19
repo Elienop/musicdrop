@@ -9,6 +9,7 @@ import { useActiveImport } from "@/api/useActiveImport";
 import { useBankList } from "@/api/useBank";
 import {
   RECOMMENDATION_LABEL,
+  startErrorSentence,
   useImportJob,
   usePauseSweep,
   type FinishedSweep,
@@ -406,8 +407,15 @@ function InboxSection({
       </span>
       {(reviewOne.isError || reviewAll.isError) && (
         <p className="text-destructive text-sm" role="alert">
-          Couldn’t start; it may have just been imported, or another import is
-          running. Try again in a moment.
+          {/* The generic sentence is only true of the outcomes it names. A 503
+              means the library itself is unreachable, where "try again in a
+              moment" is false — so the server's own sentence wins, through the
+              same helper every other start surface uses. */}
+          {startErrorSentence(
+            reviewOne.error ?? reviewAll.error,
+            true,
+            "Couldn’t start; it may have just been imported, or another import is running. Try again in a moment.",
+          )}
         </p>
       )}
     </section>

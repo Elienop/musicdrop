@@ -269,6 +269,69 @@ describe("ReviewPage", () => {
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/import?job=jall"));
   });
 
+  /** The server's own refusal, served exactly as the route sends it. */
+  const SHARE_DOWN = "Library folder is empty. Is the music share mounted?";
+  const GENERIC = /try again in a moment/i;
+
+  /** One inbox row plus a canned answer from one of the two start routes. */
+  function serveRow(route: string, answer: Response) {
+    server.use(
+      http.get(ITEMS, () =>
+        HttpResponse.json({
+          items: [{ name: "Lost Tapes", mtime: 1, size: 10, track_count: 9, outcome: null }],
+        }),
+      ),
+      http.post(route, () => answer),
+    );
+  }
+
+  test.each([
+    ["per-item Review", IMPORT_ITEM, /^review$/i],
+    ["Review all", REVIEW_ALL, /review all/i],
+  ])(
+    "%s shows the library's own 503 sentence, not the try-again copy",
+    async (_label, route, button) => {
+      serveRow(route, HttpResponse.json({ detail: SHARE_DOWN }, { status: 503 }));
+      renderWithProviders(<ReviewPage />);
+
+      await userEvent.click(await screen.findByRole("button", { name: button }));
+
+      // Nothing changes until the share comes back, so "try again in a moment"
+      // is false advice — the sentence has to be the server's.
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(SHARE_DOWN);
+      expect(alert).not.toHaveTextContent(GENERIC);
+    },
+  );
+
+  test.each([
+    ["per-item Review", IMPORT_ITEM, /^review$/i],
+    ["Review all", REVIEW_ALL, /review all/i],
+  ])(
+    "%s keeps the try-again copy for every other refusal",
+    async (_label, route, button) => {
+      // A 409 IS retryable (another import is running), and a 503 carrying no
+      // sentence came from a proxy, not from us — both keep the generic copy.
+      serveRow(route, HttpResponse.json({ detail: "An import is running" }, { status: 409 }));
+      renderWithProviders(<ReviewPage />);
+
+      await userEvent.click(await screen.findByRole("button", { name: button }));
+
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(GENERIC);
+      expect(alert).not.toHaveTextContent(/An import is running/);
+    },
+  );
+
+  test("a bodyless 503 falls back to the try-again copy (a proxy's, not ours)", async () => {
+    serveRow(REVIEW_ALL, new HttpResponse(null, { status: 503 }));
+    renderWithProviders(<ReviewPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /review all/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(GENERIC);
+  });
+
   test("an in-flight inbox row warns before its per-row Review override", async () => {
     // The per-row button has no settle guard — it is an explicit "import THIS
     // one now". The row must therefore SAY the folder is still arriving, or the

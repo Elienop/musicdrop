@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { client } from "@/api/client";
 import { unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
+import { throwIfUnavailable } from "@/api/useImport";
 
 /** One inbox backlog row (generated contract). */
 export type InboxItem = components["schemas"]["InboxItem"];
@@ -39,18 +40,20 @@ export function useInboxItems() {
  *
  * The server resolves + contains the name under the inbox; a started import
  * returns `{ started: true, job_id }` to navigate into. A 409 (an import already
- * running) or a 404 (the folder vanished) throws so the caller can react.
+ * running) or a 404 (the folder vanished) throws so the caller can react. A 503
+ * carrying the library's own refusal throws that sentence instead of the
+ * generic one — see {@link throwIfUnavailable}.
  */
 export function useImportInboxItem() {
   const qc = useQueryClient();
   return useMutation<ReviewInboxResponse, Error, string>({
-    mutationFn: async (name) =>
-      unwrap(
-        await client.POST("/api/acquisition/inbox/items/import", {
-          body: { name },
-        }),
-        "Failed to start inbox review",
-      ),
+    mutationFn: async (name) => {
+      const result = await client.POST("/api/acquisition/inbox/items/import", {
+        body: { name },
+      });
+      throwIfUnavailable(result);
+      return unwrap(result, "Failed to start inbox review");
+    },
     // Refresh the backlog + the import gate whatever the outcome: a start
     // emptied/changed the inbox, a 404 means the folder vanished (drop the stale
     // row), a 409 means the slot is now busy (disable the actions).
