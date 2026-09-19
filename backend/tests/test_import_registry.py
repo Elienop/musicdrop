@@ -1070,8 +1070,9 @@ def test_state_carries_the_raised_abort_beside_the_accepted_stop() -> None:
     bridge = ImportBridge()
     cut._job = ImportJob(id="cut", bridge=bridge, phase=ImportPhase.reviewing)
     cut.request_stop("cut")
+    album = _parked(0, Recommendation.medium)
     with pytest.raises(ImportAbortError):
-        bridge.park(_parked(0, Recommendation.medium))
+        bridge.park(album)
     cut._job.phase = ImportPhase.done
     assert (cut.state("cut").stopped, cut.state("cut").aborted) == (True, True)
 
