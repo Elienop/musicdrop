@@ -24,6 +24,7 @@ function job(overrides: Partial<ImportJobState> = {}): ImportJobState {
     elapsed_seconds: 0,
     awaiting_decision: false,
     stopped: false,
+    aborted: false,
     ...overrides,
   };
 }
@@ -43,6 +44,7 @@ function sweepState(overrides: Partial<ImportJobState> = {}): ImportJobState {
     // A sweep is unattended by definition — it never blocks on a person.
     awaiting_decision: false,
     stopped: false,
+    aborted: false,
     sweep: {
       processed: 0,
       auto_applied: 0,
@@ -420,9 +422,9 @@ describe("announceMessage", () => {
     );
   });
 
-  // A stop reaches `done` without completing, and this is the one channel that
-  // said otherwise — the visible panel takes its title from the same flag.
-  test("a stopped run is not announced as complete", () => {
+  // An abort reaches `done` without completing, and this is the one channel
+  // that said otherwise — the visible panel takes its title from the same flag.
+  test("a run the stop cut short is not announced as complete", () => {
     const speak = (data: ImportJobState) =>
       announceMessage({ isPending: false, isError: false, notFound: false, data });
     const done = {
@@ -431,12 +433,18 @@ describe("announceMessage", () => {
       set_aside: 1,
       elapsed_seconds: 840,
     };
-    expect(speak(job({ ...done, stopped: true }))).toBe(
+    expect(speak(job({ ...done, stopped: true, aborted: true }))).toBe(
       "Import stopped. Imported 1, skipped 0. Took 14 minutes.",
     );
-    // The control: the same run, unstopped, still says complete — so the line
+    // The control: the same run, untouched, still says complete — so the line
     // above is about the flag and not about a dead branch.
     expect(speak(job(done))).toBe(
+      "Import complete. Imported 1, skipped 0. Took 14 minutes.",
+    );
+    // The third reading, and the whole point of the second flag: the press was
+    // accepted after the last abort point, so the run finished. `stopped` alone
+    // would announce a completed import as stopped.
+    expect(speak(job({ ...done, stopped: true, aborted: false }))).toBe(
       "Import complete. Imported 1, skipped 0. Took 14 minutes.",
     );
   });

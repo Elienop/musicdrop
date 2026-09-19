@@ -64,12 +64,16 @@ export function announceMessage(args: {
   }
   if (done) {
     const { applied, skipped, not_landed, already_known } = data.progress;
-    // A run the user stopped reached `done` without completing, so it must not
-    // be announced as complete — the counts after it are still the run's own.
-    // Same first two words as the panel title, and the whole string is longer,
-    // so an exact-text query still singles the title out (the "Sweep paused"
-    // workaround above).
-    const opening = data.stopped ? "Import stopped." : "Import complete.";
+    // A run the stop actually ended reached `done` without completing, so it
+    // must not be announced as complete — the counts after it are still the
+    // run's own. Same first two words as the panel title, and the whole string
+    // is longer, so an exact-text query still singles the title out (the
+    // "Sweep paused" workaround above).
+    //
+    // `aborted`, not `stopped`, so this channel agrees with the panel beside
+    // it: a stop accepted after the last abort point left the run to finish,
+    // and "Import stopped." over a full set of counts would contradict it.
+    const opening = data.aborted ? "Import stopped." : "Import complete.";
     // The done PANEL has always shown the lost count and the failed
     // announcement gained it; this channel was the one place it went missing.
     // `already_known` is in none of the three buckets either — beets skips

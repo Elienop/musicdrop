@@ -68,6 +68,12 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
     // Default: nobody pressed Stop. A test that means "the run was stopped"
     // says `stopped: true` — the job flag, not a row status.
     stopped: false,
+    // The two flags are separate answers and a terminal fixture owes both.
+    // `stopped` = the press was accepted; `aborted` = it reached the worker and
+    // ended the run early. `stopped: true, aborted: false` at a terminal phase
+    // is the real state where the stop arrived after the last album had landed,
+    // and the done panel keys on `aborted` for exactly that reason.
+    aborted: false,
     ...overrides,
   };
 }
@@ -87,6 +93,7 @@ function sweepJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
     // A sweep is unattended by definition — it never blocks on a person.
     awaiting_decision: false,
     stopped: false,
+    aborted: false,
     sweep: {
       processed: 0,
       auto_applied: 0,
@@ -2308,6 +2315,7 @@ describe("ImportPage — stop this run", () => {
           makeJob({
             phase: "done",
             stopped: true,
+            aborted: true,
             // The album the run stopped on stays `needs_review` on the server
             // (it was never decided and its files never moved), so it counts as
             // set aside.
@@ -2330,6 +2338,12 @@ describe("ImportPage — stop this run", () => {
     expect(
       screen.getByRole("link", { name: "Add from folder" }),
     ).toHaveAttribute("href", "/import");
+    // ...and it is the ONLY sentence here: the two body lines are exclusive, so
+    // a run cut short never also reads "Nothing was left to stop." over a
+    // remedy telling the user the rest is still in the folder.
+    expect(
+      screen.queryByText("Nothing was left to stop."),
+    ).not.toBeInTheDocument();
     // The row is still listed and still says it was never decided...
     expect(screen.getByText("Needs review")).toBeInTheDocument();
     // ...but the worker is gone, so the button that would post into the void
@@ -2343,6 +2357,56 @@ describe("ImportPage — stop this run", () => {
       ?.querySelector("svg path");
     expect(glyph?.getAttribute("d")).toBe(pathOf(Stop));
     expect(glyph?.getAttribute("d")).not.toBe(pathOf(Success));
+  });
+
+  test("...and a stop that arrived after the last album reads as finished", async () => {
+    // The window the second flag exists for: the press was accepted while the
+    // last album was being placed, so it never reached an abort point and the
+    // run ran out on its own. `stopped` alone titled this "Import stopped" and
+    // sent the user back to a folder with nothing left in it.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "done",
+            stopped: true,
+            aborted: false,
+            // Still live work, and the reason the feed must stay live here: a
+            // row set aside mid-run (an unattended duplicate, a `search`
+            // re-lookup) does not block the worker, so the run reached its own
+            // end with that row still owed a decision.
+            set_aside: 1,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(await screen.findByText("Import finished")).toBeInTheDocument();
+    expect(screen.queryByText("Import stopped")).not.toBeInTheDocument();
+    // The press, answered — and nothing else claimed about it.
+    expect(screen.getByText("Nothing was left to stop.")).toBeInTheDocument();
+    // No remedy: there is no rest, and no folder to send anyone back to.
+    expect(
+      screen.queryByText(/The rest stayed in the folder/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Add from folder" }),
+    ).not.toBeInTheDocument();
+    // The run finished, so it wears the success check.
+    const glyph = screen
+      .getByText("Import finished")
+      .closest("[data-slot='empty-state']")
+      ?.querySelector("svg path");
+    expect(glyph?.getAttribute("d")).toBe(pathOf(Success));
+    expect(glyph?.getAttribute("d")).not.toBe(pathOf(Stop));
+    // The feed stays live: the worker left by the front door, so the set-aside
+    // row's decision screen still has a server to post to.
+    expect(screen.getByRole("link", { name: "Review" })).toBeInTheDocument();
+    // ...and this channel agrees with the panel beside it.
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Import complete. Imported 1, skipped 0.",
+    );
   });
 
   // The stop is offered where the page can keep its promise. Both queue-driven
@@ -2460,7 +2524,7 @@ describe("ImportPage — stop this run", () => {
       http.get(JOB_URL, () =>
         HttpResponse.json(
           stopped
-            ? makeJob({ phase: "done", stopped: true, set_aside: 1 })
+            ? makeJob({ phase: "done", stopped: true, aborted: true, set_aside: 1 })
             : parkedJob(),
         ),
       ),
@@ -2498,7 +2562,7 @@ describe("ImportPage — stop this run", () => {
       http.get(JOB_URL, () =>
         HttpResponse.json(
           stopped
-            ? makeJob({ phase: "done", stopped: true, set_aside: 1 })
+            ? makeJob({ phase: "done", stopped: true, aborted: true, set_aside: 1 })
             : parkedJob(),
         ),
       ),
@@ -2609,6 +2673,7 @@ describe("ImportPage — stop this run", () => {
             phase: "done",
             origin: "bank_apply",
             stopped: true,
+            aborted: true,
             set_aside: 1,
           }),
         ),
@@ -2619,6 +2684,34 @@ describe("ImportPage — stop this run", () => {
     expect(
       await screen.findByRole("link", { name: "Review banked albums" }),
     ).toHaveAttribute("data-variant", "outline");
+  });
+
+  test("...and an apply whose stop arrived too late keeps the solid one", async () => {
+    // The third reading for this arm: accepted, never acted on, so the panel is
+    // the finished one and the CTA keeps the weight a finished panel earns.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({
+            phase: "done",
+            origin: "bank_apply",
+            stopped: true,
+            aborted: false,
+            set_aside: 1,
+          }),
+        ),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    expect(
+      await screen.findByRole("link", { name: "Review banked albums" }),
+    ).toHaveAttribute("data-variant", "default");
+    // The acknowledging line is origin-gated with the remedy: nobody pressed a
+    // button on this page for a bank apply, so there is no press to answer.
+    expect(
+      screen.queryByText("Nothing was left to stop."),
+    ).not.toBeInTheDocument();
   });
 
   test("a stopped all-known run offers the folder, not beets' -I", async () => {
@@ -2632,6 +2725,7 @@ describe("ImportPage — stop this run", () => {
           makeJob({
             phase: "done",
             stopped: true,
+            aborted: true,
             albums: [],
             set_aside: 0,
             path: "/music/incoming",
@@ -2698,7 +2792,13 @@ describe("ImportPage — stop this run", () => {
     server.use(
       http.get(JOB_URL, () =>
         HttpResponse.json(
-          makeJob({ phase: "done", origin: "inbox", stopped: true, set_aside: 1 }),
+          makeJob({
+            phase: "done",
+            origin: "inbox",
+            stopped: true,
+            aborted: true,
+            set_aside: 1,
+          }),
         ),
       ),
     );
@@ -2719,7 +2819,7 @@ describe("ImportPage — stop this run", () => {
     server.use(
       http.get(JOB_URL, () =>
         HttpResponse.json(
-          makeJob({ phase: "done", stopped: true, set_aside: 1 }),
+          makeJob({ phase: "done", stopped: true, aborted: true, set_aside: 1 }),
         ),
       ),
     );

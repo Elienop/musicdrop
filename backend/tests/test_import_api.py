@@ -100,6 +100,7 @@ def test_job_state_round_trips() -> None:
         elapsed_seconds=125,
         awaiting_decision=True,
         stopped=False,
+        aborted=False,
     )
     dumped = state.model_dump(mode="json")
     assert dumped["phase"] == "reviewing"
@@ -118,6 +119,8 @@ def test_job_state_round_trips() -> None:
     assert dumped["set_aside"] == 1
     # Required, never optional: the import page always has a number to show.
     assert dumped["elapsed_seconds"] == 125
+    # Both stop flags are required too: the done panel reads them together.
+    assert (dumped["stopped"], dumped["aborted"]) == (False, False)
     without_elapsed = {k: v for k, v in dumped.items() if k != "elapsed_seconds"}
     with pytest.raises(ValidationError):
         ImportJobState.model_validate(without_elapsed)
@@ -208,6 +211,7 @@ def test_job_state_sweep_block_round_trips() -> None:
         elapsed_seconds=0,
         awaiting_decision=False,
         stopped=False,
+        aborted=False,
         sweep=SweepStatus(processed=3, auto_applied=2, banked=1, current_folder="/library/x"),
     )
     dumped = state.model_dump(mode="json")
@@ -573,7 +577,9 @@ def test_stop_ends_a_manual_run_parked_on_a_question() -> None:
     """
     client = _client_with_fake(parked=[_api_parked(0, Recommendation.medium)])
     job_id = client.post("/api/import", json={"path": "/music/incoming"}).json()["job_id"]
-    _poll(client, job_id, lambda s: s["awaiting_decision"] is True)
+    live = _poll(client, job_id, lambda s: s["awaiting_decision"] is True)
+    # The control for the two stop flags below, on the same wire read.
+    assert (live["stopped"], live["aborted"]) == (False, False)
 
     assert client.post(f"/api/import/{job_id}/stop").status_code == 204
 
@@ -581,7 +587,9 @@ def test_stop_ends_a_manual_run_parked_on_a_question() -> None:
     # done, not failed: a stop is beets' clean abort. (_poll returns the last
     # state it saw rather than raising, so the phase is asserted here.)
     assert (state["phase"], state["error"]) == ("done", None)
-    assert state["stopped"] is True
+    # Accepted AND delivered: this stop reached a parked worker, so the done
+    # panel may say the rest stayed in the folder.
+    assert (state["stopped"], state["aborted"]) == (True, True)
     assert state["awaiting_decision"] is False
     assert state["albums"][0]["status"] == "needs_review"  # not decided, not imported
     assert state["set_aside"] == 1

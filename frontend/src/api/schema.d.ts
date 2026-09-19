@@ -3524,6 +3524,11 @@ export interface components {
              * @description True once a stop was accepted for this job; stays true when it ends.
              */
             stopped: boolean;
+            /**
+             * Aborted
+             * @description True when the stop reached the worker and ended the run early.
+             */
+            aborted: boolean;
         };
         /**
          * ImportOptions
@@ -3559,7 +3564,7 @@ export interface components {
          *     scanning  -> the worker is reading/grouping/looking up (nothing parked yet)
          *     reviewing -> an album is parked-and-waiting for a decision
          *     applying  -> reserved (beets exposes no signal to set it transiently)
-         *     done      -> the import finished (incl. a clean abort)
+         *     done      -> the import finished, whether it ran out or a stop ended it
          *     failed    -> the worker raised; ``error`` holds the message
          * @enum {string}
          */
@@ -8065,7 +8070,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description No import job has that id, or no album is parked at that index. */
+            /** @description No import job has that id, no album is parked at that index, or the import has finished. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8124,7 +8129,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description No import job has that id, no album is parked at that index, or the parked album has no embedded cover art. */
+            /** @description No import job has that id, no album is parked at that index, the import has finished, or the parked album has no embedded cover art. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8185,7 +8190,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description No import job has that id, or no album is parked at that index. */
+            /** @description No import job has that id, no album is parked at that index, or the import has finished. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8255,7 +8260,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description No import job has that id, or no album is parked at that index. */
+            /** @description No import job has that id, no album is parked at that index, or the import has finished. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8332,7 +8337,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description No import job has that id, or no duplicate is parked at that index. */
+            /** @description No import job has that id, no duplicate is parked at that index, or the import has finished. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8402,7 +8407,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description No import job has that id, or no duplicate is parked at that index. */
+            /** @description No import job has that id, no duplicate is parked at that index, or the import has finished. */
             404: {
                 headers: {
                     [name: string]: unknown;

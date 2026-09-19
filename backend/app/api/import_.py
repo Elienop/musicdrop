@@ -71,11 +71,16 @@ _LIBRARY_REFUSED_RESPONSE: Final = {
 #: and an index with nothing parked on it, and the route cannot tell them apart.
 _PARKED_ALBUM_NOT_FOUND_RESPONSE: Final = {
     "model": ErrorDetail,
-    "description": "No import job has that id, or no album is parked at that index.",
+    "description": (
+        "No import job has that id, no album is parked at that index, or the import has finished."
+    ),
 }
 _PARKED_DUPLICATE_NOT_FOUND_RESPONSE: Final = {
     "model": ErrorDetail,
-    "description": "No import job has that id, or no duplicate is parked at that index.",
+    "description": (
+        "No import job has that id, no duplicate is parked at that index, or the import"
+        " has finished."
+    ),
 }
 
 
@@ -244,8 +249,8 @@ async def get_import_album(
         404: {
             "model": ErrorDetail,
             "description": (
-                "No import job has that id, no album is parked at that index, or"
-                " the parked album has no embedded cover art."
+                "No import job has that id, no album is parked at that index, the import"
+                " has finished, or the parked album has no embedded cover art."
             ),
         },
     },

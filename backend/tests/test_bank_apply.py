@@ -1653,6 +1653,9 @@ def _done_state(
         elapsed_seconds=0,
         awaiting_decision=False,
         stopped=stopped,
+        # _classify reads the landed evidence and `stopped`, never this — the
+        # bank row's verdict does not depend on where the stop landed.
+        aborted=stopped,
     )
 
 

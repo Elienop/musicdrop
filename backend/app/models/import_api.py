@@ -33,7 +33,7 @@ class ImportPhase(StrEnum):
     scanning  -> the worker is reading/grouping/looking up (nothing parked yet)
     reviewing -> an album is parked-and-waiting for a decision
     applying  -> reserved (beets exposes no signal to set it transiently)
-    done      -> the import finished (incl. a clean abort)
+    done      -> the import finished, whether it ran out or a stop ended it
     failed    -> the worker raised; ``error`` holds the message
     """
 
@@ -251,6 +251,14 @@ class ImportJobState(BaseModel):
     # the sweep block exists for the active probe, which has no job state.
     stopped: bool = Field(
         description="True once a stop was accepted for this job; stays true when it ends.",
+    )
+    # What ``stopped`` cannot say: whether the stop reached the worker. A stop
+    # accepted after the last album's placement has no abort point left to land
+    # on, so the run finishes whole — and at a terminal phase ``stopped and not
+    # aborted`` is exactly that case, which the done panel must not describe as
+    # "the rest stayed in the folder".
+    aborted: bool = Field(
+        description="True when the stop reached the worker and ended the run early.",
     )
 
 

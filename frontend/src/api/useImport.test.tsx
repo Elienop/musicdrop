@@ -432,6 +432,7 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
     awaiting_decision: false,
     // Default: nobody pressed Stop.
     stopped: false,
+    aborted: false,
     ...overrides,
   };
 }

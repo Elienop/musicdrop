@@ -1042,6 +1042,40 @@ def test_job_aborted_separates_an_accepted_stop_from_a_raised_abort() -> None:
     assert reg.job_aborted("stopping") is True
 
 
+def test_state_carries_the_raised_abort_beside_the_accepted_stop() -> None:
+    """The done panel reads both: ``stopped`` titles it, ``aborted`` says the
+    run was cut short.
+
+    Between them sits the window this field exists for - a stop accepted once
+    the last album is past its abort points ends ``done`` with everything
+    landed, so the panel may not say the rest stayed in the folder.
+    """
+    from app.beets.import_session import ImportBridge
+    from app.import_jobs.registry import ImportJob
+
+    reg = ImportJobRegistry()
+    reg._job = ImportJob(id="landed", bridge=ImportBridge(), phase=ImportPhase.reviewing)
+    before = reg.state("landed")
+    assert (before.stopped, before.aborted) == (False, False)
+
+    # Accepted with no hook left to reach, then the worker runs out on its own
+    # (on_finish sets the phase for a real run). This is the window.
+    reg.request_stop("landed")
+    reg._job.phase = ImportPhase.done
+    whole = reg.state("landed")
+    assert (whole.stopped, whole.aborted) == (True, False)
+
+    # The other side: a run still holding an abort point when the stop lands.
+    cut = ImportJobRegistry()
+    bridge = ImportBridge()
+    cut._job = ImportJob(id="cut", bridge=bridge, phase=ImportPhase.reviewing)
+    cut.request_stop("cut")
+    with pytest.raises(ImportAbortError):
+        bridge.park(_parked(0, Recommendation.medium))
+    cut._job.phase = ImportPhase.done
+    assert (cut.state("cut").stopped, cut.state("cut").aborted) == (True, True)
+
+
 def test_a_choice_after_a_stop_is_refused_and_the_row_stays_needs_review() -> None:
     """The bridge refuses from the stop on, so no row is marked decided for a
     worker that is already unwinding.
@@ -1373,7 +1407,8 @@ def test_the_merge_exemption_asks_the_next_row_not_the_stop() -> None:
     assert ImportJobRegistry._is_imported(merged, next_landed=True) is True  # type: ignore[arg-type]
     # astracks keeps BOTH its exemptions with nothing behind it: the two hooks an
     # expansion's singletons reach hold a stop back until the next album's
-    # choose_match (test_a_stop_does_not_split_an_as_tracks_expansion).
+    # choose_match
+    # (test_an_astracks_expansion_holds_the_stop_until_the_next_albums_hook).
     astracks = _decided_row(ImportAction.astracks)
     assert ImportJobRegistry._did_not_land(astracks, next_landed=None) is False  # type: ignore[arg-type]
     assert ImportJobRegistry._is_imported(astracks, next_landed=None) is True  # type: ignore[arg-type]

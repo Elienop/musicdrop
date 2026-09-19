@@ -1,3 +1,4 @@
+import ast
 import contextlib
 import logging
 import os
@@ -1846,7 +1847,9 @@ def test_a_stop_aborts_at_top_of_each_hook(monkeypatch: pytest.MonkeyPatch) -> N
     assert bridge.drain_outcomes() == []
 
 
-def test_a_stop_does_not_split_an_as_tracks_expansion(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_astracks_expansion_holds_the_stop_until_the_next_albums_hook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A stop waits out an "as tracks" album rather than cutting it in half.
 
     beets re-pipelines each file of an astracks choice as its own singleton and
@@ -2155,6 +2158,35 @@ def test_every_abort_raise_site_records_the_cut_short(
         worker_thread.join(2.0)
         assert outcome.get("r") == "abort", channel
         assert bridge.abort_raised() is True, channel
+
+
+def test_beets_abort_is_raised_only_inside_abort_now() -> None:
+    """What keeps the caller list above complete: one raise site, and it records.
+
+    A ``raise ImportAbortError`` written anywhere else stops the run without
+    setting the flag, and the acquisition ledger (``queue.py`` ``_result_for``)
+    then files a folder that was cut short as fully imported. Read from the
+    files on disk rather than ``inspect.getsource``, which serves stale bytecode.
+    """
+    app_root = Path(__file__).resolve().parents[1] / "app"
+    sites: list[tuple[str, str]] = []
+    for path in sorted(app_root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        # ast.walk is breadth-first, so a nested def overwrites the outer one
+        # and every node ends up under the def that encloses it most closely.
+        holder = {
+            child: node.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            for child in ast.walk(node)
+        }
+        sites += [
+            (str(path.relative_to(app_root)), holder.get(node, "<module>"))
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Raise)
+            and ast.unparse(node).startswith("raise ImportAbortError")
+        ]
+    assert sites == [("beets/import_session.py", "abort_now")]
 
 
 @pytest.mark.parametrize("channel", ["candidate", "duplicate"])

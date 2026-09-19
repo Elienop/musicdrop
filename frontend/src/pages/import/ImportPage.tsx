@@ -652,7 +652,9 @@ function ImportRun({ jobId }: Readonly<{ jobId: string }>) {
  * never shows. A sweep is routed away before this and keeps its own Pause.
  *
  * The same predicate gates the stopped panel's remedy — one origin makes that
- * promise, one origin is told how to undo it ({@link stoppedFromThisPage}). */
+ * promise, one origin is told how to undo it ({@link abortedFromThisPage}) —
+ * and the line that answers a press nothing came of ({@link
+ * stopCutNothingShort}). */
 function offersStop(origin: ImportJobState["origin"]): boolean {
   return origin === "manual";
 }
@@ -825,10 +827,13 @@ function LiveFeed({ state, jobId }: Readonly<{ state: ImportJobState; jobId: str
         <FeedList
           albums={state.albums}
           jobId={jobId}
-          // `state.stopped` for the reason the done panel takes it: from the
-          // moment the stop is accepted the parked slot is released, so Review
-          // would open a decision the worker no longer consumes. The header
-          // said the run was ending while the row still offered a live button.
+          // `state.stopped` — the ACCEPTED flag, not `aborted`. This is the
+          // live branch: from the moment the stop is accepted the parked slot
+          // is released, so Review would open a decision the worker no longer
+          // consumes, and whether the abort ends up landing is not settled
+          // until the run is over. The header said the run was ending while the
+          // row still offered a live button. The done panel reads `aborted`
+          // instead, because by then the answer exists.
           readOnly={feedIsReadOnly(state.origin) || state.stopped}
         />
       )}
@@ -1603,11 +1608,16 @@ function ImportAgainButton({
  * multi-folder start or inbox run still reads this way with nothing to press:
  * those are the button's own terms, not the outcome's. */
 function doneTitle(state: ImportJobState): string {
-  // The stop wins over both: the person pressed a button and is owed the
-  // acknowledgement, and a run stopped early enough to have nothing but history
-  // skips behind it would otherwise be titled "Nothing new to import" — true of
-  // the counters, false about the run.
-  if (state.stopped) return "Import stopped";
+  // `aborted`, not `stopped` — the flag that says the stop actually ended the
+  // run early (backend `registry.py`, from the worker's own abort event). A
+  // stop accepted while the last album was being placed sets `stopped` and
+  // never reaches an abort point: the run finished, so this titles it as one.
+  //
+  // It wins over both of the arms below: the person pressed a button and is
+  // owed the acknowledgement, and a run cut short early enough to have nothing
+  // but history skips behind it would otherwise be titled "Nothing new to
+  // import" — true of the counters, false about the run.
+  if (state.aborted) return "Import stopped";
   return onlySkippedKnown(state) ? "Nothing new to import" : "Import finished";
 }
 
@@ -1630,17 +1640,38 @@ function bankApplyNeedsReview(state: ImportJobState): boolean {
   );
 }
 
-/** A stopped run whose remedy this page can name: the manual one.
+/** A run cut short whose remedy this page can name: the manual one.
  *
- * `stopped` on its own is not enough. "The rest stayed in the folder. Add it
- * again to continue." is only true where the folder IS the run and nothing picks
- * up behind it — the same origin the control is offered for
- * ({@link offersStop}). The API accepts a stop on any origin, so a stopped inbox
- * or bank-apply job can reach this panel without the button ever having been
- * shown; it keeps the title and the read-only feed, which are true of any stop,
- * and not the remedy, which is not. */
-function stoppedFromThisPage(state: ImportJobState): boolean {
-  return state.stopped && offersStop(state.origin);
+ * Two terms, and each drops a different false promise.
+ *
+ * `aborted` rather than `stopped`: "The rest stayed in the folder" needs there
+ * to BE a rest. A stop accepted after the last abort point leaves nothing
+ * behind, and pointing that user back at an empty folder is the bug this
+ * predicate was re-keyed to fix.
+ *
+ * And the origin, because the sentence is only true where the folder IS the run
+ * and nothing picks up behind it — the same origin the control is offered for
+ * ({@link offersStop}). The API accepts a stop on any origin, so an aborted
+ * inbox or bank-apply job can reach this panel without the button ever having
+ * been shown; it keeps the title and the read-only feed, which are true of any
+ * abort, and not the remedy, which is not. */
+function abortedFromThisPage(state: ImportJobState): boolean {
+  return state.aborted && offersStop(state.origin);
+}
+
+/** The stop that changed nothing: accepted, but the run reached its own end
+ * before the worker could act on it, so every album it had went in.
+ *
+ * The panel is the finished one — title, glyph, counts, no remedy — because
+ * that is what the run did. This adds the one thing the finished panel cannot
+ * say: that the press was seen. Without it the only answer the presser gets is
+ * a panel identical to one they never touched, which reads as the button having
+ * been ignored.
+ *
+ * Origin-gated for the same reason the remedy is: a stop posted through the API
+ * on an inbox or bank-apply run had no presser on this page to answer. */
+function stopCutNothingShort(state: ImportJobState): boolean {
+  return state.stopped && !state.aborted && offersStop(state.origin);
 }
 
 /** done: a legible outcome — imported/skipped counts (counting auto-applied
@@ -1649,30 +1680,31 @@ function stoppedFromThisPage(state: ImportJobState): boolean {
 function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: string }>) {
   const againPath = importAgainPath(state);
   // Three arms, at most one button. The first two are mutually exclusive by
-  // origin — `bankApplyNeedsReview` is `bank_apply` only, `stoppedFromThisPage`
+  // origin — `bankApplyNeedsReview` is `bank_apply` only, `abortedFromThisPage`
   // is `manual` only — so neither can hide the other.
   //
-  // The stop outranks `againPath`, the same order {@link doneTitle} takes and
-  // for the same reason: a stopped run has not established that there is
+  // The abort outranks `againPath`, the same order {@link doneTitle} takes and
+  // for the same reason: a run cut short has not established that there is
   // nothing new, it just did not get that far. Both read the counters, and a run
-  // stopped before it reached an unknown album has only history skips behind it
-  // — which offered "Import them again" (beets' `-I`) under a sentence saying to
-  // add the folder again, i.e. re-importing the albums already in the library
+  // cut short before it reached an unknown album has only history skips behind
+  // it — which offered "Import them again" (beets' `-I`) under a sentence saying
+  // to add the folder again, i.e. re-importing the albums already in the library
   // the sentence was telling the user to leave alone.
   let doneAction: React.ReactNode | undefined;
   if (bankApplyNeedsReview(state)) {
     doneAction = (
-      // Outline once the run was stopped, for the reason the arm below gives:
-      // a solid CTA under "Import stopped" reads as a success panel. The link
-      // itself stays either way — the banked rows are owed to Review whether
-      // the apply finished or was cut short.
-      <Button variant={state.stopped ? "outline" : undefined} size="sm" asChild>
+      // Outline once the run was cut short, for the reason the arm below gives:
+      // a solid CTA under "Import stopped" reads as a success panel. On
+      // `aborted`, so an apply whose stop arrived too late keeps the solid CTA
+      // its panel earned. The link itself stays either way — the banked rows are
+      // owed to Review whichever way the apply ended.
+      <Button variant={state.aborted ? "outline" : undefined} size="sm" asChild>
         <Link to="/review">Review banked albums</Link>
       </Button>
     );
-  } else if (stoppedFromThisPage(state)) {
+  } else if (abortedFromThisPage(state)) {
     // The sentence below names this control. Outline, like the failed panel's:
-    // a solid CTA under a stop would read as a success panel.
+    // a solid CTA under a run cut short would read as a success panel.
     doneAction = (
       <Button variant="outline" size="sm" asChild>
         <Link to="/import">Add from folder</Link>
@@ -1687,10 +1719,11 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
     <div className="flex flex-col gap-4">
       <EmptyState
         bordered
-        // A run the user ended is not a completion, so it does not wear the
-        // success check — the same reading {@link SweepRun} gives a paused
-        // sweep, with the app's Stop concept naming what happened.
-        icon={state.stopped ? Stop : Success}
+        // A run the stop actually ended is not a completion, so it does not
+        // wear the success check — the same reading {@link SweepRun} gives a
+        // paused sweep, with the app's Stop concept naming what happened. A run
+        // that finished before its stop landed keeps the check: it finished.
+        icon={state.aborted ? Stop : Success}
         title={doneTitle(state)}
         body={
           <>
@@ -1699,13 +1732,19 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
                 at the finish line. */}
             {countsLine(state.progress)}
             <ElapsedSegment seconds={state.elapsed_seconds} />
-            {stoppedFromThisPage(state) && (
-              // What a stop leaves behind, and the way past it. The counts
+            {abortedFromThisPage(state) && (
+              // What an abort leaves behind, and the way past it. The counts
               // above cannot say either: an album the run never reached has no
               // feed row and is in no counter. Manual only — see the predicate.
               <span className="mt-1 block">
                 The rest stayed in the folder. Add it again to continue.
               </span>
+            )}
+            {stopCutNothingShort(state) && (
+              // The press, answered — see the predicate. No remedy clause
+              // because there is nothing to remedy, and no claim about what
+              // landed: the counts line above already says that.
+              <span className="mt-1 block">Nothing was left to stop.</span>
             )}
           </>
         }
@@ -1715,13 +1754,14 @@ function JobDone({ state, jobId }: Readonly<{ state: ImportJobState; jobId: stri
         <FeedList
           albums={state.albums}
           jobId={jobId}
-          // Read-only after a stop, for the reason {@link JobFailed} gives its
-          // own feed: the worker is gone, so a Review/Resolve button would open
-          // a decision whose POST 404s. A row left `needs_review` keeps its
-          // badge — it IS still undecided — it just stops offering an action
-          // this page cannot carry out. An unattended run that finished on its
-          // own is untouched: its set-aside row is still live work.
-          readOnly={feedIsReadOnly(state.origin) || state.stopped}
+          // Read-only after an abort, for the reason {@link JobFailed} gives
+          // its own feed: the worker left mid-run, so a Review/Resolve button
+          // would open a decision whose POST 404s. A row left `needs_review`
+          // keeps its badge — it IS still undecided — it just stops offering an
+          // action this page cannot carry out. An unattended run that finished
+          // on its own is untouched: its set-aside row is still live work, and
+          // a run whose stop arrived after the last album is one of those.
+          readOnly={feedIsReadOnly(state.origin) || state.aborted}
         />
       )}
     </div>

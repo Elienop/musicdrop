@@ -448,7 +448,8 @@ class ImportJobRegistry:
         The astracks exemptions are unconditional: ``choose_item`` and the
         singleton arm of ``get_duplicate_action`` hold a stop back while an
         expansion is in flight, so a started expansion reaches its last track
-        (``test_a_stop_does_not_split_an_as_tracks_expansion``) and its idless
+        (``test_an_astracks_expansion_holds_the_stop_until_the_next_albums_hook``)
+        and its idless
         row did land."""
         if row.outcome.note is not None:
             return True
@@ -895,11 +896,13 @@ class ImportJobRegistry:
     def job_aborted(self, job_id: str) -> bool:
         """Whether this job's worker actually raised beets' abort.
 
-        NOT on ``ImportJobState``: it answers an internal question — did the
-        stop cut anything short — that no client needs. ``ImportJob.stopped``
-        only says a stop was accepted, and a stop accepted after the last abort
-        point leaves the folder fully imported. False for an unknown job, which
-        is the same "nothing to blame the stop for" reading.
+        The same bridge flag ``ImportJobState.aborted`` carries, read on its own
+        because the acquisition ledger MUST read it before ``state()``: this
+        answers False for a job no longer in the slot, where ``state()`` raises
+        and lands on ``_raced_handoff``
+        (``test_result_for_reads_the_abort_flag_before_the_slot_can_be_replaced``).
+        ``ImportJob.stopped`` only says a stop was accepted, and a stop accepted
+        after the last abort point leaves the folder fully imported.
         """
         job = self.get(job_id)
         return job is not None and job.bridge.abort_raised()
@@ -970,6 +973,10 @@ class ImportJobRegistry:
                 # and nobody waiting.
                 awaiting_decision=job.phase in _ACTIVE_PHASES and job.bridge.has_unanswered_park(),
                 stopped=job.stopped,
+                # From the bridge, the same flag :meth:`job_aborted` reads: the
+                # worker sets it at its one raise site, before on_finish, so a
+                # terminal job's answer is settled.
+                aborted=job.bridge.abort_raised(),
             )
 
     def active_status(self) -> ActiveImportStatus:
