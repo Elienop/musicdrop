@@ -752,6 +752,12 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   line inside the traceback, bypassing the `%r` on the format argument. Reachability through
   `_apply_one` is thin (DB reads and JSON writes), so this is a residual rather than a demonstrated
   hole. Search words: log injection, traceback, logger.exception, FilesystemError, beets.
+  **Sharper since 2026-09-21** (security seat, PR pending): `_row_error`'s OSError arm now tells
+  the operator to "check the server log", so this stream is the remedy the app points at rather
+  than a residual nobody reads. And now that app records carry uvicorn's `LEVEL:` prefix, a forged
+  line reading `WARNING:  ...` sits among genuine ones. Still Low under this threat model - the
+  actor is an unauthenticated remote peer gaining a deception / anti-forensics primitive in
+  `docker logs`, not code execution or data access.
 - **A pre-existing flaky test, with a control.** `beets.config["timeout"]` raises
   `confuse.NotFoundError` inside `build_library` during test SETUP in
   `test_import_start_guards.py`. It needs NO particular file pairing and NO particular order —
@@ -3798,6 +3804,77 @@ the condition it names has changed.
   not reproduced; end state is a refusal with an honest message, not damage.
 
 ## Deferred minors (cosmetic / self-healing — carried from earlier waves)
+
+### From the 2026-09-21 pre-push review of `feat/import-keep-downloads`
+
+Three seats reviewed that round's diff. Everything Critical/High/Medium was fixed on the branch;
+these are what was left, with the measurement that produced each.
+
+- **The failed-row banner sits ABOVE the `h1` the app focuses** (UI seat). On all three bank
+  screens `FailedBanner` renders before the heading, and both `useDeferredH1Focus` and
+  `RouteAnnouncer` put focus on `h1[tabindex="-1"]`. A screen-reader user arriving cold reads
+  forward from the heading and never reaches the banner; heading navigation skips it because it
+  sits under no heading. `role="alert"` should rescue it, but the region and its text enter the
+  DOM in the same commit and an effect moves focus immediately after — the classic live-region
+  miss. Nothing focuses this banner (verified: `useFocusAfterMutation` has one caller,
+  `PlaylistDetailPage`, and no `StatusBanner` is focusable). Cheapest candidate is
+  `aria-describedby` from the h1 to the banner; cost is that the long strerror gets spelled into
+  the heading's description. **Needs a real screen-reader pass before choosing.** Preexisting;
+  this round sharpened it by withholding the duplicate strip, which removed the only
+  forward-of-h1 trace that something was wrong on the no-match screen.
+- **The sticky control bar pins a doomed CTA while the instruction scrolls away** (UI seat). On a
+  `fix_folder` no-match row, Use as-is / As tracks all queue an apply that fails identically until
+  the folder is fixed, and `makeSubmit` navigates to `/review` on success so the failure arrives
+  minutes later on another page. `ReviewControlBar` is `sticky bottom-0`; the banner is not. Do
+  NOT fix by disabling them — Ignore must stay live, and a disabled bar plus a flag that only a
+  rescan clears is a lockout. Now that a rescan discharges the row, "Fix the folder, then rescan."
+  became an honest sentence; that is the likely fix.
+- **`unreadable_reason` is safe by caller convention, not by type** (security seat).
+  `app/import_jobs/runner.py` — every docstring in the chain justifies safety with "`str(OSError)`
+  interpolates `exc.filename`", but `filename` is the wrong slot: for `OSError(errno, strerror,
+  filename)` the CALLER chooses `strerror`. Measured: `OSError(EACCES, f"cannot read {path}")`
+  returns `(cannot read /tmp/…/album)` — leaks. It is safe today because every raise site in the
+  app passes a fixed strerror and puts the path in the third slot, and installed beets 2.13.1 has
+  zero `raise OSError` with a custom strerror. `os.strerror(exc.errno)` would make it structural
+  and also fixes the next item. Search words: strerror, caller convention, unreadable_reason.
+- **`unreadable_reason` degrades to `errno None`** (security seat). `shutil.Error`,
+  `shutil.SameFileError` and `urllib.error.URLError` are `OSError` subclasses built with one
+  argument, so both `strerror` and `errno` are None and the operator reads "the server could not
+  complete this row (errno None)". No leak, no information either. Reachability through
+  `_apply_one` is thin. Covered by the `os.strerror` fix above.
+- **Two registers in one slot** (UI seat). `FailedBanner`'s muted line takes lower-case
+  dash-joined continuations from `_row_error` AND capitalised standalone sentences from
+  `unreadable_source_sentence` ("That folder can't be read. Permission denied."). `_row_error`'s
+  docstring claims the slot reads "lower-case and dash-joined", which is now false for the arm
+  this round added. beets' own `state.error` lands there too, so the mixing predates this round;
+  the docstring is the part worth correcting.
+- **`FAILED_HEADLINE[item.error_recovery]` has no fallback** (UI seat). The old `!== false`
+  predicate was undefined-safe; a direct index is not. Only triggerable in dev against a stale
+  separate backend — one Docker image ships both halves, and the legacy validator fills old rows
+  on read — and the failure is a blank headline with the muted reason still shown. `??
+  FAILED_HEADLINE.decide_again` is one token if it ever bites.
+- **`--sidebar-ring` is an unconsumed third copy of the ring violet** (`styles.css`). Declared and
+  mapped to `--color-sidebar-ring`, used by no utility; staged for the Phase 2 sidebar per its own
+  comment. It is the token a future ring change silently misses — the 2026-09-21 alpha sweep did.
+  Either delete it or note that it must track `--ring`.
+- **The ring-alpha pin test matches class names in COMMENTS, not just class strings**
+  (`ui/checkbox.test.tsx`). It scans source bytes through `?raw`, so a comment quoting
+  `focus-visible:ring-ring/70` counts as a site (13 seen, 11 real). Harmless today and the
+  `>= 10` control is satisfied by real sites alone, but a future comment mentioning `/50` fails
+  the test confusingly. Comment-stripping across TS+CSS was judged more complexity than it buys.
+  Related trap, measured the same day: spelling a utility literally in a comment makes Tailwind's
+  scanner EMIT it — a dead `.focus-visible\:ring-destructive\/20` rule reached `dist` that way.
+- **`_SUMMARY_EXCLUDE`'s comment reads as a complete list and is not** (`app/bank/store.py`).
+  `_summary_of` builds `BankItemSummary(**item.model_dump(exclude=_SUMMARY_EXCLUDE))`, so
+  `error_recovery` is passed as an unknown kwarg and dropped by pydantic's `extra="ignore"` —
+  exactly what `error_retryable` did before, so no regression. The comment ("the heavy fields a
+  summary drops") is what misleads.
+- **The 503 sentence sends a benign concurrent start to inspect a healthy share** (quality seat).
+  `import_.py` — the comment states the server cannot tell a second start from a stat that never
+  returned, then optimises the copy for the wedged branch alone. Two genuinely concurrent starts
+  (the inbox route plus a manual POST, the first finishing normally) now yield only "Check that
+  your music share is responding." The owner chose this wording deliberately on 2026-09-20
+  ("name what's true"); recorded because the justification in the comment argues both ways.
 
 - **The duplicate route's 404 sentence does not name the finished-job case** (2026-09-19). After a
   stop releases a parked duplicate, `GET /import/{job}/albums/{i}/duplicate` 404s like the cover and
