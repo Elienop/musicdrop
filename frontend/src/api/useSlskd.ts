@@ -39,9 +39,12 @@ export function useTestSlskd() {
  *
  * The server resolves the inbox path — none is sent from the browser. A
  * non-empty inbox returns `started: true` with the `job_id` to navigate to; an
- * empty inbox returns `started: false` (a no-op, not an error). A 409 or 503
- * carrying the server's own sentence throws THAT, not the generic one — see
- * {@link throwIfRefused}; a bodyless refusal still surfaces as a plain Error. */
+ * empty inbox returns `started: false` (a no-op, not an error). A 409, 422 or
+ * 503 carrying the server's own sentence throws THAT, not the generic one — see
+ * {@link throwIfRefused}; a bodyless refusal still surfaces as a plain Error.
+ * The 422 (added 2026-09-20) is every folder handed over being gone, OR one of
+ * them being there but unreadable — a permissions fault on the share carries
+ * its own sentence rather than the plural one. */
 export function useReviewInbox() {
   const qc = useQueryClient();
   return useMutation<ReviewInboxResponse, Error, void>({

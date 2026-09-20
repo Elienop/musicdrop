@@ -40,8 +40,10 @@ export function useInboxItems() {
  *
  * The server resolves + contains the name under the inbox; a started import
  * returns `{ started: true, job_id }` to navigate into. A 404 (the folder
- * vanished) throws so the caller can react. A 409 or 503 carrying the server's
- * own sentence throws THAT, not the generic one — see {@link throwIfRefused}.
+ * vanished) throws so the caller can react. A 409, 422 or 503 carrying the
+ * server's own STRING sentence throws THAT, not the generic one — see
+ * {@link throwIfRefused}. This route takes a body, so it can also send
+ * FastAPI's array-shaped 422, which stays machine copy and falls through.
  */
 export function useImportInboxItem() {
   const qc = useQueryClient();

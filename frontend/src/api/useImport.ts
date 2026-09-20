@@ -88,17 +88,59 @@ export class ImportUnavailableError extends Error {
   }
 }
 
+/** Thrown when a start is rejected with a 422 (e.g. the in-library guard
+ * refusing copy-mode, or every handed-over folder having gone between the
+ * listing and the start). Carries the backend's reason.
+ *
+ * `POST /api/import` reads its detail through `detailMessage`: our guards send
+ * `{detail: string}` while the OpenAPI schema declares the array shape — both
+ * must surface (carry-forward). The shared {@link throwIfRefused} is narrower;
+ * {@link ourRefusalSentence} says why. */
+export class ImportStartRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ImportStartRejectedError";
+  }
+}
+
+/** The server's OWN refusal sentence out of an error body — the `{detail:
+ * "..."}` shape and nothing else. Null for every other shape, so the caller
+ * keeps its generic copy.
+ *
+ * Narrower than `detailMessage`, and only the 422 arm needs it: `POST
+ * /acquisition/inbox/items/import` takes a body, so FastAPI can answer with its
+ * OWN validation 422, whose `detail` is an array of validator objects.
+ * `detailMessage` reads that array's first `msg`, which is machine copy
+ * ("Input should be a valid string") — accurate, and not a sentence anyone
+ * wrote for a person. The shape IS the test: only our guards send a string.
+ *
+ * Blankness stays `detailMessage`'s rule (a whitespace detail is no detail)
+ * rather than a second copy of it here. */
+function ourRefusalSentence(body: unknown): string | null {
+  if (body === null || typeof body !== "object" || !("detail" in body)) {
+    return null;
+  }
+  return typeof (body as { detail: unknown }).detail === "string"
+    ? detailMessage(body)
+    : null;
+}
+
 /** Raise the carrying class for a refusal that came with the server's own
- * sentence — 409 → {@link ImportConflictError}, 503 →
- * {@link ImportUnavailableError} — and do nothing otherwise, so a caller keeps
- * `unwrap`'s generic message for every other outcome.
+ * sentence — 409 → {@link ImportConflictError}, 422 →
+ * {@link ImportStartRejectedError}, 503 → {@link ImportUnavailableError} — and
+ * do nothing otherwise, so a caller keeps `unwrap`'s generic message for every
+ * other outcome.
  *
  * This is `startImport`'s branch, shared: the two inbox routes refuse for the
  * same reasons `POST /api/import` does. A 409 there is as often the swap lock
  * or a backfill as another import, and naming the wrong one sends the user off
  * to wait for an import that is not running (the defect BankReviewPage records
  * for its own copy); a 503 means nothing changes until the share comes back, so
- * "try again" is false for it.
+ * "try again" is false for it; a 422 is the source having gone since the
+ * listing OR being unreadable, and "try again" is false for both. A sentence the server wrote
+ * for the user has to reach the user on EVERY route that sends it — while this
+ * helper ignored 422 the two inbox routes fell through to `unwrap` and showed
+ * "Failed to start inbox review" over it.
  *
  * A BODYLESS refusal keeps the caller's own sentence: a 503 with no detail came
  * from a proxy (see {@link ImportUnavailableError}), and a bodyless 409 has no
@@ -108,23 +150,22 @@ export function throwIfRefused(result: {
   response: Response;
 }): void {
   const { status } = result.response;
+  // 422 first, and through the narrower reader: it is the one status whose body
+  // can come from FastAPI rather than from us, and only our own string detail
+  // may be shown — see {@link ourRefusalSentence}.
+  if (status === 422) {
+    const rejection = ourRefusalSentence(result.error);
+    if (rejection !== null) {
+      throw new ImportStartRejectedError(rejection);
+    }
+    return;
+  }
   if (status !== 409 && status !== 503) return;
   const reason = detailMessage(result.error);
   if (reason === null) return;
   throw status === 409
     ? new ImportConflictError(reason)
     : new ImportUnavailableError(reason);
-}
-
-/** Thrown when a start is rejected with a 422 (e.g. the in-library guard
- * refusing copy-mode). Carries the backend's reason. The detail body is read
- * through detailMessage: our guards send `{detail: string}` while the OpenAPI
- * schema declares the array shape — both must surface (carry-forward). */
-export class ImportStartRejectedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ImportStartRejectedError";
-  }
 }
 
 /** The one sentence a failed start can take, for every surface that starts an

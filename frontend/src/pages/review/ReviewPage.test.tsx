@@ -329,6 +329,55 @@ describe("ReviewPage", () => {
     },
   );
 
+  /** The source-missing refusal (2026-09-20). The batch route says it in the
+   * plural: it never shows the browser which inbox folders it handed over. */
+  const GONE_ONE = "That folder doesn't exist.";
+  const GONE_ALL = "Those folders are no longer there.";
+
+  test.each([
+    ["per-item Review", IMPORT_ITEM, /^review$/i, GONE_ONE],
+    ["Review all", REVIEW_ALL, /review all/i, GONE_ALL],
+  ])(
+    "%s shows the 422 source-missing sentence, not the try-again copy",
+    async (_label, route, button, sentence) => {
+      serveRow(route, HttpResponse.json({ detail: sentence }, { status: 422 }));
+      renderWithProviders(<ReviewPage />);
+
+      await userEvent.click(await screen.findByRole("button", { name: button }));
+
+      // The refusal exists to name what to fix. The generic copy would send the
+      // user back to retry a folder that is not there, or a permissions problem
+      // that retrying cannot clear.
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(sentence);
+      expect(alert).not.toHaveTextContent(GENERIC);
+    },
+  );
+
+  test("the per-item route's validation 422 keeps the page's own copy", async () => {
+    // That route takes a body, so FastAPI can send the ARRAY-shaped 422 whose
+    // `msg` is validator copy. The control for the test above: without it, a
+    // helper that forwards every 422 passes both.
+    serveRow(
+      IMPORT_ITEM,
+      HttpResponse.json(
+        {
+          detail: [
+            { loc: ["body", "name"], msg: "Input should be a valid string", type: "string_type" },
+          ],
+        },
+        { status: 422 },
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /^review$/i }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(GENERIC);
+    expect(alert).not.toHaveTextContent("Input should be");
+  });
+
   test.each([
     ["per-item Review", IMPORT_ITEM, /^review$/i],
     ["Review all", REVIEW_ALL, /review all/i],

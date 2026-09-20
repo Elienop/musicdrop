@@ -174,7 +174,7 @@ describe("useStartImport", () => {
   });
 });
 
-// The helper the two inbox routes share. It speaks for exactly two statuses —
+// The helper the two inbox routes share. It speaks for exactly three statuses —
 // the ones whose bodies are OUR route's own refusal sentences — and returns for
 // everything else, so any other failure keeps the caller's generic copy through
 // `unwrap`. That narrowing was true and pinned by nothing: widening it to every
@@ -191,7 +191,6 @@ describe("throwIfRefused", () => {
   test.each([
     [500, { detail: "Empty Trash: [Errno 13] Permission denied: '/srv/music/incoming'" }],
     [404, { detail: "No such import job" }],
-    [422, { detail: [{ msg: "path is not a directory" }] }],
   ])(
     "a %i carrying a detail does not throw, so the caller's own sentence stands",
     (status, body) => {
@@ -214,9 +213,33 @@ describe("throwIfRefused", () => {
     expect(call).toThrow("the music folder is not mounted");
   });
 
+  // The 422 both inbox routes answer when every folder handed over has gone
+  // since the listing. Ignored here until 2026-09-20, which left the user
+  // reading the caller's "Failed to start inbox review" over a sentence the
+  // server had written for them.
+  test("a 422 with OUR detail throws ImportStartRejectedError carrying it", () => {
+    const call = () =>
+      throwIfRefused(refusal(422, { detail: "Those folders are no longer there" }));
+    expect(call).toThrow(ImportStartRejectedError);
+    expect(call).toThrow("Those folders are no longer there");
+  });
+
+  // The other direction, and the reason the 422 arm reads the STRING shape
+  // rather than `detailMessage`: `/acquisition/inbox/items/import` carries a
+  // body, so FastAPI can answer with its own validation 422. Its detail is an
+  // array of validator objects, and the `detailMessage` control proves that
+  // body IS readable — the message just isn't one to show anybody, so the
+  // caller's own sentence has to stand.
+  test("a FastAPI validation 422 stays machine copy and falls through", () => {
+    const body = { detail: [{ msg: "Input should be a valid string" }] };
+    expect(detailMessage(body)).toBe("Input should be a valid string");
+    expect(() => throwIfRefused(refusal(422, body))).not.toThrow();
+  });
+
   // A bodyless 503 came from a proxy, where "try again" IS right; a bodyless
-  // 409 has no reason to offer. Both fall through to the caller's sentence.
-  test.each([409, 503])("a bodyless %i falls through as well", (status) => {
+  // 409 has no reason to offer; a bodyless 422 names nothing that went wrong.
+  // All three fall through to the caller's sentence.
+  test.each([409, 422, 503])("a bodyless %i falls through as well", (status) => {
     expect(() => throwIfRefused(refusal(status))).not.toThrow();
   });
 });
