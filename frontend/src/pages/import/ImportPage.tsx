@@ -13,6 +13,7 @@ import type {
 import {
   ImportConflictError,
   ImportJobNotFoundError,
+  ImportStartRejectedError,
   RECOMMENDATION_LABEL,
   isTerminalPhase,
   isWorking,
@@ -316,6 +317,16 @@ function ImportEntry() {
         "Couldn’t start the import. Check the path and the backend, then try again.",
       );
 
+  // A refusal must not outlive the input it was about. `start.error` survives
+  // until the next `mutate`, so after "That folder doesn't exist." the user
+  // fixed the typo and the field stayed red with the stale sentence still wired
+  // into Start's aria-describedby. Same shape as RenameArtistAction's
+  // `onNameChange`, which drops a preview the moment its target changes.
+  function onPathChange(value: string) {
+    setPath(value);
+    if (start.isError) start.reset();
+  }
+
   function onSubmit(e: React.SubmitEvent) {
     e.preventDefault();
     if (trimmed.length === 0) {
@@ -436,20 +447,36 @@ function ImportEntry() {
           <Input
             type="text"
             value={path}
-            onChange={(e) => setPath(e.target.value)}
+            onChange={(e) => onPathChange(e.target.value)}
             placeholder="/music/incoming"
             aria-label="Folder path"
-            aria-invalid={start.isError}
+            // The contract's own bound (`StartImportRequest.path`,
+            // max_length=4096 — Linux PATH_MAX, so no real path reaches it).
+            // Past it the server answers FastAPI's array-shaped 422, which is
+            // machine copy and falls through to the page's generic sentence
+            // (see ImportStartRejectedError): a refusal that never says the
+            // word "long". The field refuses the overlong paste instead.
+            maxLength={4096}
+            // Only a 422 is about what is IN this field ("That folder doesn't
+            // exist.", the in-library guard). A 409, a 503 or a dead backend
+            // says nothing is wrong with the path, and reddening it there sends
+            // the user off to edit the one thing that was fine.
+            aria-invalid={start.error instanceof ImportStartRejectedError}
           />
         </label>
 
         {failure !== null && (
           // `break-words`: these sentences carry repr'd filesystem paths, and
           // Chromium gives no wrap opportunity at `/` or `_`. Measured for the
-          // same family on the Trash page (SettingsTrashPage.tsx).
+          // same family on the Trash page (SettingsTrashPage.tsx), which also
+          // caps the measure — this form is a stretched child of a full-shell
+          // PageBody, so without `max-w-prose` a carried path runs the whole
+          // pane. No `w-full` beside it: the Trash sibling needs one because
+          // its parent is `items-start`, and a stretched flex item is already
+          // full width.
           <p
             id={START_ERROR_ID}
-            className="text-destructive text-sm break-words"
+            className="text-destructive max-w-prose text-sm break-words"
             role="alert"
           >
             {failure}

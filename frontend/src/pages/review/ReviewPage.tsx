@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 
 import {
@@ -25,6 +25,7 @@ import { useReviewInbox } from "@/api/useSlskd";
 import type { AlbumOrigin } from "@/components/albums/album-grid";
 import { Close, Pause, Spinner, Success, Warning } from "@/components/icons";
 import { AlbumRow } from "@/components/system/AlbumRow";
+import { ErrorState } from "@/components/system/ErrorState";
 import { PageBody, PageHeader } from "@/components/system/PageHeader";
 import { SectionLabel } from "@/components/system/SectionLabel";
 import { StatusBanner } from "@/components/system/StatusBanner";
@@ -71,6 +72,15 @@ export function ReviewPage() {
       : undefined,
   );
   const inboxQuery = useInboxItems();
+  // The two inbox start mutations live at PAGE level, not inside the section
+  // they belong to — see {@link useInboxStart} for the defect that forced it.
+  // The listing itself goes IN because the focus rescue is decided by it: the
+  // query's structural sharing hands back the SAME array while nothing changes,
+  // so the effect only re-runs on a listing that actually moved.
+  const inbox = useInboxStart(
+    (jobId) => navigate(`/import?job=${jobId}`),
+    inboxQuery.data?.items,
+  );
   const { data: status } = useAcquisitionStatus();
   // Bank backlog count — a limit-1 probe so the header meta + empty state
   // reflect banked decisions whatever the section's filter shows.
@@ -93,9 +103,16 @@ export function ReviewPage() {
   // (BankSection surfaces the bank failure itself, with a retry).
   const probesErrored =
     activeQuery.isError || inboxQuery.isError || bankPending.isError;
+  // A refusal the user has not dismissed is the opposite of an all-clear: the
+  // misconfiguration it names ("That folder can't be read.") is also what drops
+  // that folder from the listing, so the backlog under it is UNDERSTATED by at
+  // least one. Both the verdict and the count are gated on it — a count of 0
+  // beside a red sentence is the same all-clear one element up.
+  const unreadRefusal = inbox.refusal !== null;
   const nothingPending =
     settled &&
     !probesErrored &&
+    !unreadRefusal &&
     decisions.length === 0 &&
     items.length === 0 &&
     bankPendingTotal === 0;
@@ -106,7 +123,7 @@ export function ReviewPage() {
       <PageHeader
         title="Review"
         meta={
-          settled && !probesErrored
+          settled && !probesErrored && !unreadRefusal
             ? `${pendingCount} awaiting a decision`
             : undefined
         }
@@ -115,6 +132,61 @@ export function ReviewPage() {
         Downloads and imports that need your decision, from every source, in
         one place.
       </p>
+
+      {/* The inbox start refusal, ABOVE every section and outside all of them.
+          It takes focus when the control that produced it VANISHED
+          (useInboxStart), which is what makes it perceivable from a Review
+          button ten rows down: `role="alert"` alone only serves screen readers,
+          and nothing else scrolled or moved.
+
+          Dismiss is the refusal's expiry. It has none of its own: a mutation
+          error stands until that mutation re-runs, and the only controls that
+          re-run it are the two start buttons — which is exactly what an
+          unreadable folder takes off the page with the row. Without it the page
+          has no way back: the count and "Nothing to review." stay gated for the
+          session, and a folder fixed on the server comes back listed under a
+          red sentence saying it cannot be read. An automatic expiry was weighed
+          and rejected: the per-item refusal names no folder ("That folder can't
+          be read.", import_jobs/runner.py), so "a listing that no longer names
+          it" is not a predicate this page can evaluate — and the listing that
+          DOES drop it is the very refetch the sentence has to survive.
+
+          `max-w-prose` caps the measure: this is PageBody's DEFAULT width, the
+          full shell, wider than the ~770px pane the Trash page capped for the
+          same reason (SettingsTrashPage). No `w-full` beside it — that sibling
+          needs one because its parent is `items-start`, and a stretched flex
+          item is already full width. Measured 584.48px at a 1036px viewport.
+          `break-words` because a carried 503 holds repr'd paths, which Chromium
+          will not break at `/`: measured docScrollWidth 1036 at viewport 1036
+          with a 96-character unbroken path. */}
+      {inbox.refusal !== null && (
+        <div className="flex max-w-prose items-start gap-2">
+          <p
+            ref={inbox.alertRef}
+            tabIndex={-1}
+            role="alert"
+            id={INBOX_REFUSAL_ID}
+            className="text-destructive focus-ring min-w-0 text-sm break-words"
+          >
+            {inbox.refusal}
+          </p>
+          {/* Outside the alert node, so it is not read out as part of the
+              sentence. `-mt-1.5` is HALF the 12px by which a size-sm button
+              (h-8, 32px) exceeds the 20px line it sits on, so the two labels
+              share a centre; `items-start` keeps it on the FIRST line when the
+              sentence wraps. Measured in Chromium: line centre 34 / button
+              centre 34 on one line, 84 / 84 on three. */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="-mt-1.5 shrink-0"
+            onClick={inbox.dismissRefusal}
+          >
+            Dismiss
+          </Button>
+        </div>
+      )}
 
       {/* Sweep banner — counters ride the active probe's 5s cadence. */}
       {active?.active && active.origin === "sweep" && active.sweep && active.job_id && (
@@ -138,11 +210,39 @@ export function ReviewPage() {
         <ImportingNowSection status={status} />
       )}
 
-      <InboxSection
-        items={items}
-        importActive={importActive}
-        onStarted={(jobId) => navigate(`/import?job=${jobId}`)}
-      />
+      {inboxQuery.isError && (
+        // The listing probe can fail now, and a silent failure here reads as an
+        // empty backlog. One line, one retry — the house error recipe. The
+        // section below is called "Waiting in the inbox", so the sentence says
+        // that and not "the inbox backlog", which is our word, not the user's.
+        <ErrorState
+          variant="inline"
+          message="Couldn’t load what’s waiting in the inbox."
+          onRetry={() => void inboxQuery.refetch()}
+        />
+      )}
+
+      <InboxSection items={items} importActive={importActive} inbox={inbox} />
+
+      {/* The no-op result, at PAGE level and immediately after the section, so
+          it keeps the position it had inside it and survives the section's own
+          unmount. Its "Nothing left to import; the inbox just cleared." branch
+          fires exactly when the inbox emptied, which is what the start's
+          `onSettled` refetch is about to discover — so nested it painted and
+          was destroyed inside one round trip. The empty state only replaces the
+          section when the bank and decision lists are empty too, so with one
+          banked row pending the user watched the rows vanish with no sentence
+          ever readable. Always mounted (the text toggles, never the element):
+          a region created together with its text reads inconsistently. */}
+      <span
+        role="status"
+        aria-live="polite"
+        className={
+          inbox.noOpMessage ? "text-muted-foreground text-sm" : "sr-only"
+        }
+      >
+        {inbox.noOpMessage}
+      </span>
 
       {nothingPending && (
         <output className="text-muted-foreground text-sm block">
@@ -309,27 +409,87 @@ function inboxReviewLabel(starting: boolean, inFlight: boolean): string {
   return "Review";
 }
 
-/** "Waiting in the inbox" — the per-item set-aside backlog. Each row imports its
- * own folder; "Review all" imports the whole inbox. Both are disabled while an
- * import runs (the single slot is busy) — the visible helper line below carries
- * the reason (no disabled-button `title`, per the spec §4 rule). */
-function InboxSection({
-  items,
-  importActive,
-  onStarted,
-}: Readonly<{
-  items: InboxItem[];
-  importActive: boolean;
-  onStarted: (jobId: string) => void;
-}> ) {
+/** The generic start-failure sentence both inbox actions fall back to. It names
+ * two outcomes; a refusal that carries a reason usually has a third (the swap
+ * lock, a backfill, the share gone, the folder unreadable), so the server's own
+ * sentence wins through {@link startErrorSentence}, the helper every other start
+ * surface uses. */
+const INBOX_START_GENERIC =
+  "Couldn’t start; it may have just been imported, or another import is running. Try again in a moment.";
+
+/** The id the refusal alert carries, so both start buttons can point their
+ * `aria-describedby` at it — the shape ImportPage's Start and BankReviewPage's
+ * "Review now" already use. A control that survives its own refusal keeps
+ * focus, and this is what a keyboard user hears on coming back to it. */
+const INBOX_REFUSAL_ID = "inbox-start-error";
+
+/** The two inbox start actions as ONE surface: which one is running, what the
+ * last one answered, and the single alert slot they share. */
+interface InboxStart {
+  /** "Review all" is running. */
+  readonly allPending: boolean;
+  /** The row name a per-item start is running for, or null. */
+  readonly oneStarting: string | null;
+  /** The sentence the LAST start failed with, or null. */
+  readonly refusal: string | null;
+  /** The no-op result, or "" when the last start was not a no-op. */
+  readonly noOpMessage: string;
+  /** The page-level alert node, focused when the pressed control vanished. */
+  readonly alertRef: RefObject<HTMLParagraphElement | null>;
+  readonly startOne: (name: string) => void;
+  readonly startAll: () => void;
+  /** Clear the refusal. The only way back once the listing it was about has
+   * emptied and taken both start buttons with it. */
+  readonly dismissRefusal: () => void;
+}
+
+/**
+ * Both inbox start mutations, owned by the PAGE rather than by the section.
+ *
+ * Three defects forced the lift, and all three are about the alert slot:
+ *
+ * 1. {@link InboxSection} returns null on an empty list, and both mutations
+ *    invalidate `["inbox-items"]` in `onSettled` — on failure too. The backend
+ *    omits a folder it cannot walk from the listing, so the one misconfiguration
+ *    the 422 was added to diagnose ("That folder can't be read.") is also the
+ *    one that empties the list: the sentence rendered, the refetch landed, the
+ *    section unmounted with the alert inside it, and the page finished on
+ *    "Nothing to review." — an all-clear for the fault just reported.
+ * 2. The alert sat several hundred px from the control that produced it, with
+ *    nothing scrolling and nothing moving. It is focused here instead — but
+ *    ONLY when the pressed control vanished with its row, which is the case
+ *    defect 1 describes. Both start buttons are `aria-disabled` rather than
+ *    `disabled` while they run, so a surviving one still holds focus and a
+ *    focus move would be a theft: a 409 or a 503 leaves the whole list
+ *    standing, and the walk back from a page-level alert is the rest of the
+ *    page (the bank alone pages 48 rows). `aria-describedby` carries the
+ *    sentence to the button in that case instead, the shape ImportPage's Start
+ *    already uses.
+ * 3. One slot, two mutations: TanStack keeps a mutation's error until THAT
+ *    mutation re-runs, so `reviewOne.error ?? reviewAll.error` took the stale
+ *    non-null first. Each start resets its SIBLING, so at most one of the two is
+ *    ever non-null and the `??` below can only read the last press.
+ *
+ * `listing` is the inbox query's own array. It is a DEPENDENCY, not data: the
+ * refusal lands before the refetch it triggers does, so at that first commit the
+ * pressed button is still mounted and still focused — the rescue can only be
+ * decided once the listing has moved. The query's structural sharing hands back
+ * the same reference while nothing changes, so a refusal that left the list
+ * intact never re-runs the effect at all.
+ */
+function useInboxStart(
+  onStarted: (jobId: string) => void,
+  listing: readonly InboxItem[] | undefined,
+): InboxStart {
   const reviewOne = useImportInboxItem();
   const reviewAll = useReviewInbox();
   // null = no no-op yet. Otherwise the number of folders the backend SKIPPED as
   // still-arriving: 0 means the inbox really did clear, >0 means "not yet".
   const [noOpInFlight, setNoOpInFlight] = useState<number | null>(null);
-  const busy = importActive || reviewOne.isPending || reviewAll.isPending;
-
-  if (items.length === 0) return null;
+  // Bumped on every failure so a SECOND press answering the same sentence still
+  // re-focuses the alert — the string alone would not change.
+  const [failures, setFailures] = useState(0);
+  const alertRef = useRef<HTMLParagraphElement>(null);
 
   // A started import navigates away. A no-op has TWO causes and they must not
   // read the same: the inbox emptied since the last poll (nothing left), or every
@@ -340,12 +500,77 @@ function InboxSection({
       if (res.started && res.job_id) onStarted(res.job_id);
       else setNoOpInFlight(res.in_flight ?? 0);
     },
+    onError: () => setFailures((n) => n + 1),
   };
-  const start = (run: () => void) => {
-    setNoOpInFlight(null);
-    run();
+
+  const refusal = startErrorSentence(
+    reviewOne.error ?? reviewAll.error,
+    reviewOne.isError || reviewAll.isError,
+    INBOX_START_GENERIC,
+  );
+
+  // Three dependencies: the tick and the sentence can land in either order (and
+  // usually in one commit), the alert only exists once `refusal` is set, and the
+  // listing is what tells the gate below whether the pressed control survived.
+  useEffect(() => {
+    if (refusal === null) return;
+    // `<body>` is the tell that the control the user pressed is GONE: it holds
+    // focus while it lives (its pending half is aria-disabled, not disabled),
+    // so anything else holding focus means there is still something to go back
+    // to — and `aria-describedby` has already carried the sentence to it.
+    if (document.activeElement !== document.body) return;
+    alertRef.current?.focus();
+  }, [refusal, failures, listing]);
+
+  return {
+    allPending: reviewAll.isPending,
+    oneStarting: reviewOne.isPending ? (reviewOne.variables ?? null) : null,
+    refusal,
+    noOpMessage: noOpInFlightMessage(noOpInFlight),
+    alertRef,
+    startOne: (name) => {
+      setNoOpInFlight(null);
+      reviewAll.reset();
+      reviewOne.mutate(name, mutateOpts);
+    },
+    startAll: () => {
+      setNoOpInFlight(null);
+      reviewOne.reset();
+      reviewAll.mutate(undefined, mutateOpts);
+    },
+    // `reset()` on both, not a second piece of "dismissed" state: the error IS
+    // the refusal, and clearing it is what the next start would do anyway. The
+    // alert unmounts on this click and takes focus with it, so hand focus to
+    // the page h1 — the landing useDeferredH1Focus uses, and the one element
+    // guaranteed to be on the page.
+    dismissRefusal: () => {
+      reviewOne.reset();
+      reviewAll.reset();
+      document.querySelector<HTMLElement>('h1[tabindex="-1"]')?.focus();
+    },
   };
-  const noOpMessage = noOpInFlightMessage(noOpInFlight);
+}
+
+/** "Waiting in the inbox" — the per-item set-aside backlog. Each row imports its
+ * own folder; "Review all" imports the whole inbox. Both are unavailable while an
+ * import runs (the single slot is busy) — the visible helper line below carries
+ * the reason (no disabled-button `title`, per the spec §4 rule). NEITHER answer
+ * a start can give lives here — the refusal alert and the no-op status line are
+ * both the page's, because this section unmounts itself the moment the list
+ * empties, which is the state both of them describe ({@link useInboxStart}). */
+function InboxSection({
+  items,
+  importActive,
+  inbox,
+}: Readonly<{
+  items: InboxItem[];
+  importActive: boolean;
+  inbox: InboxStart;
+}> ) {
+  const busy =
+    importActive || inbox.allPending || inbox.oneStarting !== null;
+
+  if (items.length === 0) return null;
 
   return (
     <section aria-label="Waiting in the inbox" className="flex flex-col gap-3">
@@ -355,17 +580,36 @@ function InboxSection({
           type="button"
           variant="outline"
           size="sm"
-          disabled={busy}
-          onClick={() => start(() => reviewAll.mutate(undefined, mutateOpts))}
+          // Two states, two attributes — the shape ImportPage's Start and
+          // BankReviewPage's "Review now" already carry the measurement for. A
+          // running import and the OTHER start are reasons this control cannot
+          // be used at all, so they stay `disabled`; its OWN pending half would
+          // disable the element on its own commit and strand keyboard focus on
+          // <body>, so that half is `aria-disabled` and the click is swallowed.
+          disabled={importActive || inbox.oneStarting !== null}
+          aria-disabled={inbox.allPending}
+          className="aria-disabled:opacity-50"
+          // This button keeps focus through a failed start, so the sentence
+          // saying why the last press failed is what a keyboard user hears on
+          // coming back to it (ImportPage's Start, BankReviewPage's "Review
+          // now"). It is also the return trip the page-level alert cannot
+          // offer: it names no control and links to none.
+          aria-describedby={
+            inbox.refusal !== null ? INBOX_REFUSAL_ID : undefined
+          }
+          onClick={() => {
+            if (busy) return;
+            inbox.startAll();
+          }}
         >
-          {reviewAll.isPending ? "Starting…" : "Review all"}
+          {inbox.allPending ? "Starting…" : "Review all"}
         </Button>
       </div>
       <ul className="border-border divide-border divide-y overflow-hidden rounded-xl border">
         {items.map((item) => {
-          const starting =
-            reviewOne.isPending && reviewOne.variables === item.name;
+          const starting = inbox.oneStarting === item.name;
           const subtitle = inboxSubtitle(item);
+          const label = inboxReviewLabel(starting, item.in_flight);
           return (
             <li key={item.name}>
               <AlbumRow
@@ -377,12 +621,32 @@ function InboxSection({
                   <Button
                     type="button"
                     size="sm"
-                    disabled={busy}
-                    onClick={() =>
-                      start(() => reviewOne.mutate(item.name, mutateOpts))
+                    // Same split as "Review all" above: everything that makes
+                    // this row unusable stays `disabled`, and only THIS row's
+                    // own in-flight start is `aria-disabled`, so the button the
+                    // user pressed keeps focus through the answer.
+                    disabled={
+                      importActive ||
+                      inbox.allPending ||
+                      (inbox.oneStarting !== null && !starting)
                     }
+                    aria-disabled={starting}
+                    className="aria-disabled:opacity-50"
+                    // The row name, as the bank rows two sections up already do
+                    // (`Ignore ${title}`): without it a screen-reader user hears
+                    // a refusal naming a folder and then a list of buttons all
+                    // called "Review". The visible label leads, so the
+                    // accessible name still CONTAINS it (2.5.3 Label in Name).
+                    aria-label={`${label} ${item.name}`}
+                    aria-describedby={
+                      inbox.refusal !== null ? INBOX_REFUSAL_ID : undefined
+                    }
+                    onClick={() => {
+                      if (busy) return;
+                      inbox.startOne(item.name);
+                    }}
                   >
-                    {inboxReviewLabel(starting, item.in_flight)}
+                    {label}
                   </Button>
                 }
               />
@@ -394,29 +658,6 @@ function InboxSection({
         <p className="text-muted-foreground text-xs">
           An import is already running; wait for it to finish before reviewing
           another.
-        </p>
-      )}
-      {/* Always-mounted polite region so the no-op result is announced reliably
-          (a region created together with its text reads inconsistently). */}
-      <span
-        role="status"
-        aria-live="polite"
-        className={noOpMessage ? "text-muted-foreground text-sm" : "sr-only"}
-      >
-        {noOpMessage}
-      </span>
-      {(reviewOne.isError || reviewAll.isError) && (
-        <p className="text-destructive text-sm break-words" role="alert">
-          {/* The generic sentence names two outcomes; a refusal that carries a
-              reason usually has a third (the swap lock, a backfill, the share
-              gone), so the server's own sentence wins — through the same helper
-              every other start surface uses. `break-words` because a carried
-              503 holds repr'd paths, which Chromium will not break at `/`. */}
-          {startErrorSentence(
-            reviewOne.error ?? reviewAll.error,
-            true,
-            "Couldn’t start; it may have just been imported, or another import is running. Try again in a moment.",
-          )}
         </p>
       )}
     </section>

@@ -200,6 +200,18 @@ describe("ImportPage — entry", () => {
     ).toBeInTheDocument();
   });
 
+  test("the path field carries the contract's own length bound", () => {
+    // `StartImportRequest.path` is max_length=4096. Past it the server answers
+    // FastAPI's array-shaped 422, which this page deliberately does NOT show
+    // (it is machine copy) — so an overlong paste got a generic refusal that
+    // never says the word "long". The field refuses it instead.
+    renderAt("/import");
+    expect(screen.getByLabelText("Folder path")).toHaveAttribute(
+      "maxlength",
+      "4096",
+    );
+  });
+
   test("Start is disabled until a path is typed (blank-path guard)", async () => {
     const user = userEvent.setup();
     renderAt("/import");
@@ -414,6 +426,68 @@ describe("ImportPage — entry", () => {
     // it is the one case where the screen can name a control it has.
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "An import is already running; use Resume above.",
+    );
+  });
+
+  test("editing the path clears the refusal it was about", async () => {
+    // `start.error` survives until the next mutate, so the field stayed red and
+    // the stale sentence stayed wired into Start's aria-describedby while the
+    // user typed the correction.
+    server.use(
+      http.post(IMPORT_URL, () =>
+        HttpResponse.json(
+          { detail: "That folder doesn't exist." },
+          { status: 422 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderAt("/import");
+
+    const field = screen.getByLabelText("Folder path");
+    await user.type(field, "/music/incmoing");
+    await user.click(screen.getByRole("button", { name: /start import/i }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("That folder doesn't exist.");
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(
+      screen.getByRole("button", { name: /start import/i }),
+    ).toHaveAttribute("aria-describedby", alert.id);
+
+    await user.type(field, "x");
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(field).toHaveAttribute("aria-invalid", "false");
+    expect(
+      screen.getByRole("button", { name: /start import/i }),
+    ).not.toHaveAttribute("aria-describedby");
+  });
+
+  test("a 409 shows its sentence without reddening the path field", async () => {
+    // The path is fine — the library is busy. `aria-invalid` on this field says
+    // "what you typed is wrong", which sends the user off to edit the one thing
+    // that was not the problem.
+    server.use(
+      http.post(IMPORT_URL, () =>
+        HttpResponse.json(
+          { detail: "A library operation is in progress" },
+          { status: 409 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderAt("/import");
+
+    await user.type(screen.getByLabelText("Folder path"), "/music/incoming");
+    await user.click(screen.getByRole("button", { name: /start import/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "A library operation is in progress.",
+    );
+    expect(screen.getByLabelText("Folder path")).toHaveAttribute(
+      "aria-invalid",
+      "false",
     );
   });
 });

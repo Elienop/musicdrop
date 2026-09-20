@@ -301,11 +301,24 @@ describe("startImport 422 surfacing", () => {
     });
   });
 
-  test("an array-detail 422 (FastAPI validation) still throws with a human message", async () => {
+  test("an array-detail 422 (FastAPI validation) keeps the page's own copy", async () => {
+    // This route takes a body too, so FastAPI can answer with its OWN
+    // array-shaped 422 — and `StartImportRequest.path` carries max_length=4096,
+    // so a pasted long path is how a real user meets it. The validator's `msg`
+    // is machine copy: the two inbox routes already refuse to show it, and one
+    // body shape must not be user copy here and machine copy there.
     server.use(
       http.post(IMPORT_URL, () =>
         HttpResponse.json(
-          { detail: [{ loc: ["body", "path"], msg: "Field required", type: "missing" }] },
+          {
+            detail: [
+              {
+                loc: ["body", "path"],
+                msg: "String should have at most 4096 characters",
+                type: "string_too_long",
+              },
+            ],
+          },
           { status: 422 },
         ),
       ),
@@ -314,13 +327,14 @@ describe("startImport 422 surfacing", () => {
     const { result } = renderHook(() => useStartImport(), {
       wrapper: wrapper(),
     });
-    result.current.mutate({ path: "" });
+    result.current.mutate({ path: "/x".repeat(2500) });
 
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(result.current.error).toMatchObject({
       name: "ImportStartRejectedError",
-      message: "Field required",
+      message: "The import was rejected. Check the path and options.",
     });
+    expect((result.current.error as Error).message).not.toMatch(/4096 char/);
   });
 });
 

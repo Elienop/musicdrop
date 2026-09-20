@@ -71,10 +71,14 @@ export class ImportConflictError extends Error {
   }
 }
 
-/** Thrown when `POST /api/import` answers 503 WITH a reason: the attached
- * library sits under a layout Apply refused, so no import can start. Carries
- * the refusal's own sentence — a "try again" is false for it, since nothing
- * changes until the layout does.
+/** Thrown when `POST /api/import` answers 503 WITH a reason. Carries the
+ * refusal's own sentence, which is the only part that says whether retrying is
+ * worth anything — the status has three causes and they do not agree. A layout
+ * Apply refused and a music share that is not there change nothing until the
+ * operator acts; the third, a start that waited out the one start token
+ * (backend/app/api/import_.py `_START_BUSY_DETAIL`), is transient and says
+ * "Try again in a moment" itself. So: show the sentence, and do not read a
+ * retry policy off the class.
  *
  * `detail` is REQUIRED, so this class can only speak for a 503 our route sent:
  * the route's own always carries a sentence (backend/app/api/import_.py
@@ -92,10 +96,14 @@ export class ImportUnavailableError extends Error {
  * refusing copy-mode, or every handed-over folder having gone between the
  * listing and the start). Carries the backend's reason.
  *
- * `POST /api/import` reads its detail through `detailMessage`: our guards send
- * `{detail: string}` while the OpenAPI schema declares the array shape — both
- * must surface (carry-forward). The shared {@link throwIfRefused} is narrower;
- * {@link ourRefusalSentence} says why. */
+ * Every route that can send this reads the body through the SAME reader,
+ * {@link ourRefusalSentence}: the `{detail: string}` shape our guards write, and
+ * nothing else. `POST /api/import` used to read it through `detailMessage`,
+ * which also unwraps FastAPI's ARRAY shape — so one body shape was user copy
+ * here and machine copy on the two inbox routes. `StartImportRequest.path`
+ * carries `max_length=4096`, so pasting a longer path showed the user "String
+ * should have at most 4096 characters.": accurate, and not a sentence anyone
+ * wrote for a person. It takes the generic fallback below instead. */
 export class ImportStartRejectedError extends Error {
   constructor(message: string) {
     super(message);
@@ -107,12 +115,16 @@ export class ImportStartRejectedError extends Error {
  * "..."}` shape and nothing else. Null for every other shape, so the caller
  * keeps its generic copy.
  *
- * Narrower than `detailMessage`, and only the 422 arm needs it: `POST
- * /acquisition/inbox/items/import` takes a body, so FastAPI can answer with its
- * OWN validation 422, whose `detail` is an array of validator objects.
- * `detailMessage` reads that array's first `msg`, which is machine copy
- * ("Input should be a valid string") — accurate, and not a sentence anyone
- * wrote for a person. The shape IS the test: only our guards send a string.
+ * Narrower than `detailMessage`, and only the 422 arm needs it. `POST
+ * /acquisition/inbox/items/import` and `POST /api/import` both take a body, so
+ * FastAPI can answer with its OWN validation 422, whose `detail` is an array of
+ * validator objects. `detailMessage` reads that array's first `msg`, which is
+ * machine copy ("Input should be a valid string", "String should have at most
+ * 4096 characters") — accurate, and not a sentence anyone wrote for a person.
+ * The shape IS the test: only our guards send a string.
+ *
+ * Every 422 arm in this module goes through here, so one body shape can never
+ * be user copy on one route and machine copy on its sibling.
  *
  * Blankness stays `detailMessage`'s rule (a whitespace detail is no detail)
  * rather than a second copy of it here. */
@@ -135,9 +147,11 @@ function ourRefusalSentence(body: unknown): string | null {
  * same reasons `POST /api/import` does. A 409 there is as often the swap lock
  * or a backfill as another import, and naming the wrong one sends the user off
  * to wait for an import that is not running (the defect BankReviewPage records
- * for its own copy); a 503 means nothing changes until the share comes back, so
- * "try again" is false for it; a 422 is the source having gone since the
- * listing OR being unreadable, and "try again" is false for both. A sentence the server wrote
+ * for its own copy); a 503 is a refused layout, a share that is not there, or a
+ * start still waiting for the one start token, which is the one of the three
+ * where trying again IS the advice — see {@link ImportUnavailableError}; a 422
+ * is the source having gone since the listing OR being unreadable, and "try
+ * again" is false for both. A sentence the server wrote
  * for the user has to reach the user on EVERY route that sends it — while this
  * helper ignored 422 the two inbox routes fell through to `unwrap` and showed
  * "Failed to start inbox review" over it.
@@ -231,13 +245,17 @@ async function startImport(
   const { data, error, response } = await client.POST("/api/import", { body });
   // Each refusal carries the server's own sentence (the route declares an
   // ErrorDetail body for all three); for 409 and 422 a bodyless answer falls
-  // back to a class sentence, which is why detailMessage's null passes through.
+  // back to a class sentence, which is why the reader's null passes through.
+  // 422 reads through the NARROW reader, exactly as the inbox routes do: this
+  // route takes a body, so FastAPI can answer with its own array-shaped
+  // validation 422, which is machine copy wherever it lands.
   if (response.status === 409) {
     throw new ImportConflictError(detailMessage(error));
   }
   if (response.status === 422) {
     throw new ImportStartRejectedError(
-      detailMessage(error) ?? "The import was rejected. Check the path and options.",
+      ourRefusalSentence(error) ??
+        "The import was rejected. Check the path and options.",
     );
   }
   // 503 is the exception: only throw the carrying class when there is a

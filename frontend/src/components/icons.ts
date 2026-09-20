@@ -7,8 +7,9 @@
 // from ONE constant (ICON_WEIGHT below), fed to an IconContext by App for the
 // shell and by each route that renders outside it (the sign-in page, the
 // admission fallback). The sanctioned local overrides are keyed on the glyph's
-// SIZE, not on where it sits: at the large step it takes thin, and at the
-// smallest control it takes bold.
+// SIZE, not on where it sits, and they PERMIT rather than oblige: `thin` is
+// only ever used at the large step, `bold` only at the smallest control. A
+// large glyph is free to stay light, and some deliberately do.
 // Stop is StopCircle, not the bare Stop square: at the app's light weight
 // that square reads as an unchecked checkbox on the 40px stopped panel
 // (owner's call 2026-09-20, made from the rendered page). The ring carries
@@ -93,14 +94,24 @@ import type { Icon } from "@phosphor-icons/react";
  * Deliberate overrides stay local, and the rule behind them is SIZE, not
  * place. Phosphor's stroke is a fraction of the viewBox, so it scales with the
  * box (Stop: light = 12 of 256 units, thin = 8) — a weight that reads right at
- * 16px reads heavy at 40. So a glyph at the LARGE step takes `thin`, and the
- * smallest control glyph takes `bold`.
+ * 16px reads heavy at 40.
+ *
+ * The rule runs ONE WAY: `thin` implies the large step, and `bold` implies the
+ * smallest control. It does NOT run the other way — a glyph at the large step
+ * MAY take `thin`, it is not required to. Read as a two-way rule it becomes an
+ * instruction to go and flip every unweighted large glyph, which would change
+ * two shared surfaces nobody asked about.
  *
  * Census of all 18 `weight=` sites, 2026-09-20: every thin one renders at
  * `size-10` or `size-14`, and they are NOT all detail-rail actions — StatTile
  * (56px, the biggest in the app), the topbar's Activity and Sign out, and
  * Add-to-playlist's rail-sized trigger are not. The one bold is the checkbox's
  * 14px tick, where the light stroke thins away.
+ *
+ * That census enumerates sites CARRYING a `weight=`, so it structurally cannot
+ * see the ones that lack it. Counted the other way (2026-09-20), the `size-10`
+ * glyphs with NO weight are EmptyState's and ErrorState's heroes — both light,
+ * both shared by many pages, both deliberate until someone measures otherwise.
  *
  * A module constant so the provider value stays referentially stable across
  * re-renders, and it lives HERE rather than in App because App's provider no
