@@ -24,7 +24,7 @@ from app.import_jobs.registry import (
     LibraryRefusedError,
     get_registry,
 )
-from app.import_jobs.runner import InLibraryCopyError
+from app.import_jobs.runner import InLibraryCopyError, SourcePathMissingError
 from app.models.errors import ErrorDetail, validation_or_detail_422
 from app.models.import_api import (
     ActiveImportStatus,
@@ -153,12 +153,13 @@ def ensure_import_can_start(request: Request) -> None:
                 " display under the same name."
             ),
         },
-        # The copy-in-library refusal is a well-formed request the importer
-        # declines on its merits, so it stays 422 - which means this route
-        # returns BOTH 422 bodies (see app/models/errors.py).
+        # Two refusals of a well-formed request the importer declines on its
+        # merits, so they stay 422 - which means this route returns BOTH 422
+        # bodies (see app/models/errors.py).
         422: validation_or_detail_422(
-            "A copy-mode import was asked for a folder inside the music library,"
-            " or the request failed validation."
+            "The source folder does not exist, or a copy-mode import was asked"
+            " for a folder inside the music library, or the request failed"
+            " validation."
         ),
         503: _LIBRARY_REFUSED_RESPONSE,
     },
@@ -194,8 +195,10 @@ async def start_import(
         ) from None
     try:
         job_id = reg.start(path, options=body.options)
-    except InLibraryCopyError as exc:
-        # Guard refusal (validated before any slot was taken): actionable 422.
+    except (SourcePathMissingError, InLibraryCopyError) as exc:
+        # Guard refusals (validated before any slot was taken): actionable 422.
+        # Kept as two types so a caller can tell the missing source from the
+        # in-library copy; the status and the body shape are the same.
         raise HTTPException(status_code=422, detail=str(exc)) from None
     except (LibraryRefusedError, LibraryRootUnavailableError) as exc:
         # Apply loaded a refused layout, or the music share is not there: an

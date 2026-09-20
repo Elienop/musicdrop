@@ -39,6 +39,21 @@ from app.models.bank import BankApplyDirective
 from app.models.import_models import ImportOptions
 
 
+class SourcePathMissingError(Exception):
+    """A start was asked for a source path that is not on disk.
+
+    Its own type, never a widened ``InLibraryCopyError``: the two refusals carry
+    different sentences and different remedies, so the route maps them apart.
+
+    Measured on 2026-09-20: a path truncated at a space named no folder, and
+    beets took it down the branch a single FILE takes
+    (``ImportTaskFactory.paths``, beets/importer/tasks.py:1055 —
+    ``if not os.path.isdir(syspath(self.toppath))``). ``read_item`` found
+    nothing, zero tasks were produced, and the session ended normally: the app
+    created a job and reported "Import finished - 0 albums imported".
+    """
+
+
 class ImportRunner(Protocol):
     """Starts an import on its own thread, reporting completion via callbacks.
 
@@ -68,7 +83,8 @@ class ImportRunner(Protocol):
         Called synchronously on the API thread BEFORE the registry allocates
         the single job slot, so a refusal becomes a clean 4xx/5xx. Raises
         ``LibraryRootUnavailableError`` (root missing or unreadable, or empty while
-        the library holds item rows) and
+        the library holds item rows), ``SourcePathMissingError`` (a source path
+        that is not on disk) and
         ``InLibraryCopyError`` (copy-mode source inside the library, checked PER
         path, so one bad member refuses the whole start).
 
@@ -118,10 +134,9 @@ class BeetsImportRunner:
         # With the root missing or a bare mountpoint, beets re-creates the root,
         # files the album onto the container's own disk, and a move EMPTIES the
         # download (measured under move/copy/hardlink). Asked before the slot is
-        # claimed. The early return covers BOTH library reads below
-        # (test_validate_answers_rather_than_500ing_without_a_library).
-        if self._lib is None:
-            return None
+        # claimed, and FIRST: an unmounted share must keep reporting itself
+        # rather than calling every inbox folder missing.
+        #
         # The forgiven arm is the one hole in that guard, and it is keyed on "the
         # items table holds no row" rather than on "this install has never
         # imported" — so the root about to receive the files is REPORTED to the
@@ -129,7 +144,35 @@ class BeetsImportRunner:
         # busy check, so three starts (one of them a 409) produced three records
         # and filed nothing — measured 2026-09-19, security seat L-1. Not inside
         # the predicate either: the gate polls that at 2 Hz.
-        forgiven = require_importable_library_root(self._lib)
+        #
+        # Skipped, not early-returned, without a library: both library reads
+        # below need one, but the source-existence check does not
+        # (test_validate_answers_rather_than_500ing_without_a_library).
+        forgiven: str | None = None
+        if self._lib is not None:
+            forgiven = require_importable_library_root(self._lib)
+        # EXISTENCE, not ``is_dir``: beets imports a single FILE as one track, so
+        # an is_dir guard would take away something it can do. A path that is not
+        # there takes that same branch, reads no item, produces zero tasks and
+        # ends the session normally — the "0 albums imported" this refuses.
+        # One ``stat`` per path and no walk, because this runs on the event loop.
+        # ``os.path.exists`` ANSWERS (never raises) for a path the OS rejects: it
+        # catches both the ValueError an embedded NUL raises and the OSError an
+        # over-long path raises.
+        #
+        # The refusal is "nothing to import", NOT "every member is present". A
+        # member that goes missing after the inbox derived the list is a TOCTOU
+        # this check cannot close - it can only move it, since the folder is as
+        # free to vanish after the stat as before it. beets already answers that
+        # one: a missing toppath takes the single-FILE branch, ``read_item``
+        # returns None (beets/importer/tasks.py:1142-1147), and that toppath
+        # contributes nothing while the rest import. What has no answer below is
+        # a start where NO source is there - the typed path that was wrong, which
+        # otherwise runs to "Import finished - 0 albums imported".
+        if paths and not any(os.path.exists(path) for path in paths):
+            raise SourcePathMissingError("That folder doesn't exist.")
+        if self._lib is None:
+            return None
         # Only explicit copy is a user-facing error here; default/None are
         # silently corrected to move by the worker guard (run_import_worker).
         if options is not None and options.operation == "copy":

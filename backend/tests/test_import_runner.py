@@ -11,6 +11,7 @@ from app.import_jobs.runner import (
     BeetsImportRunner,
     InLibraryCopyError,
     LibraryRootUnavailableError,
+    SourcePathMissingError,
 )
 from app.models.import_models import ImportOptions
 
@@ -346,7 +347,9 @@ def _library_with_a_mounted_root(tmp_path: Path) -> Library:
 def test_validate_refuses_in_library_copy(tmp_path: Path) -> None:
     lib = _library_with_a_mounted_root(tmp_path)
     runner = BeetsImportRunner(lib)
-    folders = [str(tmp_path / "music" / "incoming")]
+    source = tmp_path / "music" / "incoming"
+    source.mkdir(parents=True)  # the source-existence guard runs ahead of this one
+    folders = [str(source)]
     options = ImportOptions(operation="copy")
     with pytest.raises(InLibraryCopyError):
         runner.validate(folders, options)
@@ -366,7 +369,9 @@ def test_validate_passes_safe_combinations(
 ) -> None:
     lib = _library_with_a_mounted_root(tmp_path)
     runner = BeetsImportRunner(lib)
-    runner.validate([str(tmp_path / path_suffix)], options)  # must not raise
+    source = tmp_path / path_suffix
+    source.mkdir(parents=True, exist_ok=True)  # past the source-existence guard
+    runner.validate([str(source)], options)  # must not raise
 
 
 def test_validate_refuses_while_the_music_root_is_unavailable(tmp_path: Path) -> None:
@@ -392,7 +397,9 @@ def test_validate_lets_a_fresh_install_through(tmp_path: Path) -> None:
     """An empty root with an empty database is a new install, not a dropped share."""
     lib = _library_with_a_mounted_root(tmp_path)
     (tmp_path / "music" / ".keep").unlink()
-    BeetsImportRunner(lib).validate([str(tmp_path / "downloads" / "incoming")], None)
+    source = tmp_path / "downloads" / "incoming"
+    source.mkdir(parents=True)
+    BeetsImportRunner(lib).validate([str(source)], None)
 
 
 @pytest.mark.parametrize("options", [None, ImportOptions(operation="copy")])
@@ -406,7 +413,22 @@ def test_validate_answers_rather_than_500ing_without_a_library(
     ``validate(None, copy)`` -> ``AttributeError: 'NoneType' object has no
     attribute 'directory'``.
     """
-    BeetsImportRunner(None).validate([str(tmp_path / "downloads" / "incoming")], options)
+    source = tmp_path / "downloads" / "incoming"
+    source.mkdir(parents=True)
+    BeetsImportRunner(None).validate([str(source)], options)
+
+
+@pytest.mark.parametrize("options", [None, ImportOptions(operation="copy")])
+def test_validate_still_refuses_a_missing_source_without_a_library(
+    tmp_path: Path, options: ImportOptions | None
+) -> None:
+    """The no-library early return must not take the source guard with it.
+
+    The two library reads above it need a library; asking whether the folder is
+    on disk does not, and a registry with no library still creates jobs.
+    """
+    with pytest.raises(SourcePathMissingError, match=r"^That folder doesn't exist\.$"):
+        BeetsImportRunner(None).validate([str(tmp_path / "downloads" / "gone")], options)
 
 
 def test_runner_forwards_directive_to_session_and_worker(

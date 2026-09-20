@@ -7953,7 +7953,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description A copy-mode import was asked for a folder inside the music library, or the request failed validation. */
+            /** @description The source folder does not exist, or a copy-mode import was asked for a folder inside the music library, or the request failed validation. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -11892,6 +11892,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description Every folder handed over no longer exists. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
             /** @description The store layout is refused or the library folder is unavailable. */
             503: {
                 headers: {
@@ -12017,13 +12026,13 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Validation Error */
+            /** @description The folder no longer exists, or the request failed validation. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
                 };
             };
             /** @description The store layout is refused or the library folder is unavailable. */

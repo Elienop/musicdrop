@@ -24,7 +24,7 @@ from app.acquisition.inbox import contain
 from app.acquisition.ledger import AcquisitionLedger
 from app.import_jobs.gates import import_gate_clear
 from app.import_jobs.registry import ImportJobRegistry
-from app.import_jobs.runner import LibraryRootUnavailableError
+from app.import_jobs.runner import LibraryRootUnavailableError, SourcePathMissingError
 from app.models.acquisition import AcquisitionQueueStatus, LedgerOutcome
 from app.models.import_api import ImportPhase
 from app.models.import_models import ImportOptions
@@ -167,6 +167,14 @@ class AcquisitionQueue:
             self._stop.wait(self._busy_backoff)
             if not self._stop.is_set():
                 self._queue.put(folder)
+            return
+        except SourcePathMissingError as exc:
+            # The folder went away between the gate check and start(). Terminal,
+            # not deferred: a requeue would poll a path that is gone. Caught for
+            # the reason the arm above exists — an escape kills this daemon
+            # thread and strands every later download. Not ledgered: nothing was
+            # handled, and a folder that is gone cannot be re-offered.
+            self._finish(key, "failed", str(exc))
             return
 
         result = self._wait_for_import(job_id)

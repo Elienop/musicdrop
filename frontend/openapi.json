@@ -3434,7 +3434,7 @@
             }
           },
           "422": {
-            "description": "A copy-mode import was asked for a folder inside the music library, or the request failed validation.",
+            "description": "The source folder does not exist, or a copy-mode import was asked for a folder inside the music library, or the request failed validation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8261,6 +8261,16 @@
               }
             }
           },
+          "422": {
+            "description": "Every folder handed over no longer exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "503": {
             "description": "The store layout is refused or the library folder is unavailable.",
             "content": {
@@ -8395,22 +8405,29 @@
               }
             }
           },
+          "422": {
+            "description": "The folder no longer exists, or the request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
           "409": {
             "description": "An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync holds the library, or two inbox folders display under the same name.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorDetail"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }

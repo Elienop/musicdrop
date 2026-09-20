@@ -34,13 +34,14 @@ from app.import_jobs.registry import (
     LibraryRefusedError,
     get_registry,
 )
+from app.import_jobs.runner import SourcePathMissingError
 from app.models.acquisition import (
     AcquisitionQueueStatus,
     ImportInboxItemRequest,
     InboxListing,
     ReviewInboxResponse,
 )
-from app.models.errors import ErrorDetail
+from app.models.errors import ErrorDetail, validation_or_detail_422
 from app.models.import_models import ImportOptions
 from app.wire import AmbiguousDisplayName, resolve_display_path
 
@@ -94,7 +95,20 @@ async def get_acquisition_status(request: Request) -> AcquisitionQueueStatus:
 
 @router.post(
     "/acquisition/review-inbox",
-    responses={409: _IMPORT_SLOT_TAKEN_RESPONSE, 503: _LIBRARY_REFUSED_RESPONSE},
+    responses={
+        409: _IMPORT_SLOT_TAKEN_RESPONSE,
+        # Only when EVERY settled folder was removed in the window between the
+        # listing and the start. One of them going missing is left to beets,
+        # which contributes nothing for that toppath and imports the rest.
+        # ``ErrorDetail`` alone, not ``validation_or_detail_422``: this
+        # operation has no body and no parameters, so FastAPI generates no
+        # validation arm for it to add to (tests/test_openapi_overlay.py).
+        422: {
+            "model": ErrorDetail,
+            "description": "Every folder handed over no longer exists.",
+        },
+        503: _LIBRARY_REFUSED_RESPONSE,
+    },
 )
 async def review_inbox(
     request: Request,
@@ -142,6 +156,10 @@ async def review_inbox(
             options=ImportOptions(operation="move"),
             origin="inbox",
         )
+    except SourcePathMissingError as exc:
+        # Every settled folder was removed between the listing and the start.
+        # Mapped here so the race answers rather than 500ing.
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     except (LibraryRefusedError, LibraryRootUnavailableError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     except RuntimeError:
@@ -184,6 +202,11 @@ async def list_inbox_items(request: Request) -> InboxListing:
                 " folder sitting directly inside the inbox."
             ),
         },
+        # The folder can be removed between this route's own is_dir check and
+        # the start; the import refuses rather than filing nothing.
+        422: validation_or_detail_422(
+            "The folder no longer exists, or the request failed validation."
+        ),
         # The shared refusal PLUS this route's own ambiguous-name guard, which
         # answers with the same status.
         409: {
@@ -232,6 +255,8 @@ async def import_inbox_item(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inbox item not found")
     try:
         job_id = reg.start(str(contained), options=ImportOptions(operation="move"), origin="inbox")
+    except SourcePathMissingError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     except (LibraryRefusedError, LibraryRootUnavailableError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     except RuntimeError:

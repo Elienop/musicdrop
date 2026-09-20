@@ -158,7 +158,9 @@ def test_an_ordinary_path_still_starts(tmp_path: Path) -> None:
     """The control: the refusal is about the NUL, not about every path."""
     _real_registry(tmp_path)
     client = TestClient(app)
-    resp = client.post("/api/import", json={"path": str(tmp_path / "dl")})
+    source = tmp_path / "dl"
+    source.mkdir()  # past the source-existence guard
+    resp = client.post("/api/import", json={"path": str(source)})
     assert resp.status_code == 202
     # Drained before returning: a worker thread outliving the test reads beets'
     # config after the autouse reset and raises confuse.NotFoundError elsewhere.
@@ -185,12 +187,35 @@ def test_a_path_longer_than_PATH_MAX_is_refused(tmp_path: Path) -> None:
     assert "4096" in resp.text
 
 
+def _directory_whose_path_is(root: Path, length: int) -> Path:
+    """A directory that EXISTS and whose absolute path is ``length`` characters.
+
+    Components of 100 characters, well inside NAME_MAX (255), and the whole
+    path inside PATH_MAX (4096) so every ``mkdir`` along the way succeeds.
+    """
+    deficit = length - len(str(root))
+    assert deficit >= 2, "the root already reaches that length"
+    path = root
+    while deficit > 102:
+        path = path / ("x" * 100)
+        deficit -= 101
+    path = path / ("x" * (deficit - 1))
+    assert len(str(path)) == length
+    path.mkdir(parents=True)
+    return path
+
+
 def test_a_path_at_PATH_MAX_still_starts(tmp_path: Path) -> None:
-    """The control: the bound refuses nothing the feature can do."""
+    """The control: the bound refuses nothing the feature can do.
+
+    A real directory 4095 characters deep, so this proves the start, not merely
+    that the length refusal was skipped.
+    """
     _real_registry(tmp_path)
     client = TestClient(app)
-    resp = client.post("/api/import", json={"path": "/" + "x" * 4095})
-    assert resp.status_code == 202
+    source = _directory_whose_path_is(tmp_path, 4095)
+    resp = client.post("/api/import", json={"path": str(source)})
+    assert resp.status_code == 202, resp.text
     _drive(client, resp.json()["job_id"])
 
 
@@ -249,7 +274,9 @@ def test_a_path_with_no_placeholder_is_not_scanned(
 
     monkeypatch.setattr(os, "scandir", counting_scandir)
     client = TestClient(app)
-    ordinary = str(tmp_path / "downloads" / "plain")
+    plain = tmp_path / "downloads" / "plain"
+    plain.mkdir(parents=True)
+    ordinary = str(plain)
     resp = client.post("/api/import", json={"path": ordinary})
     assert resp.status_code == 202
     assert [s for s in scans if s.startswith(str(tmp_path / "downloads"))] == []
@@ -1062,6 +1089,41 @@ def test_the_inbox_drain_keeps_its_folder_queued_and_stays_alive(tmp_path: Path)
         queue.stop()
 
 
+def test_the_inbox_drain_survives_a_folder_that_is_no_longer_there(tmp_path: Path) -> None:
+    """The source-missing refusal reaches ``start`` from the drain too.
+
+    Terminal for the drop, not deferred: a requeue would poll a path that is
+    gone. Uncaught it would kill this daemon thread and strand every later
+    download, which is the defect the share-drop arm beside it was written for.
+    """
+    from app.acquisition.ledger import AcquisitionLedger
+    from app.acquisition.queue import AcquisitionQueue
+
+    reg, _lib = _real_registry(tmp_path)
+    (tmp_path / "inbox").mkdir()
+    gone = tmp_path / "inbox" / "gone"  # never created
+    ledger = AcquisitionLedger(tmp_path / "ledger")
+    queue = AcquisitionQueue(
+        import_registry=reg, ledger=ledger, poll_interval=0.01, busy_backoff=0.01
+    )
+    queue.start()
+    queue.enqueue(gone)
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and queue.status().processed == 0:
+            time.sleep(0.02)
+        status = queue.status()
+        assert status.processed == 1
+        assert status.failed == 1
+        assert status.error == "That folder doesn't exist."
+        assert not ledger.seen(gone)  # nothing was handled, so nothing is retired
+        alive = [t for t in threading.enumerate() if t.name == "musicdrop-acquisition"]
+        assert [t.is_alive() for t in alive] == [True]
+        assert reg.active_job_id() is None
+    finally:
+        queue.stop()
+
+
 def _gate_that_drops_the_root(
     module: Any, lib: Library, monkeypatch: pytest.MonkeyPatch, drops: list[int]
 ) -> None:
@@ -1184,7 +1246,7 @@ def test_the_wait_is_logged_once_and_its_end_is_logged_once(
     assert {r.name for r in starts + ends} == {"uvicorn.error"}
 
 
-# ----- 12: Review all survives a folder that vanished since the listing -----
+# ----- 12: Review all refuses when a folder vanished since the listing -----
 
 
 def test_review_all_survives_a_folder_that_vanished_since_the_listing(
@@ -1192,9 +1254,13 @@ def test_review_all_survives_a_folder_that_vanished_since_the_listing(
 ) -> None:
     """One settled folder removed between the listing and the start.
 
-    The current tree holds no source-missing refusal, so the batch must simply
-    import what is still there. This pins that — a refusal added later must not
-    make one vanished member refuse the whole click.
+    The batch imports what is still there. The source-missing refusal added on
+    2026-09-20 deliberately does NOT fire here: it asks "is there nothing to
+    import", not "is every member present". The window between the server's own
+    ``settled_folders`` call and ``start`` cannot be closed by a stat - the
+    folder is as free to vanish after it as before - and beets already answers
+    the case, contributing nothing for a toppath whose ``read_item`` returns
+    None (beets/importer/tasks.py:1142-1147) while the rest import.
     """
     _canned_lookup(monkeypatch)
     _reg, lib = _real_registry(tmp_path)
@@ -1222,3 +1288,202 @@ def test_review_all_survives_a_folder_that_vanished_since_the_listing(
     assert not gone.exists()
     assert len(list(lib.albums())) == 1
     assert not stays.exists() or sorted(p.name for p in stays.iterdir()) == []
+
+
+def test_review_all_refuses_when_EVERY_settled_folder_vanished(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing left to import, so the click is refused rather than run hollow.
+
+    The route arm's only reader: without the mapping this race is a 500, and
+    without the refusal it is a job that finishes having filed nothing.
+    """
+    _canned_lookup(monkeypatch)
+    _reg, lib = _real_registry(tmp_path)
+    inbox = tmp_path / "inbox"
+    first = _album_folder(inbox, b"first")
+    second = _album_folder(inbox, b"second")
+
+    def settle_then_vanish(*args: Any, **kwargs: Any) -> list[Path]:
+        """Both settle, then both are removed before the start."""
+        shutil.rmtree(first)
+        shutil.rmtree(second)
+        return [first, second]
+
+    import app.api.acquisition as acq_api
+
+    monkeypatch.setattr(acq_api, "settled_folders", settle_then_vanish)
+    monkeypatch.setattr(acq_api, "count_pending", lambda _d: 2)
+    monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
+    client = TestClient(app)
+    resp = client.post("/api/acquisition/review-inbox")
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == "That folder doesn't exist."
+    assert list(lib.albums()) == []
+    assert _reg.active_job_id() is None
+
+
+# ----- 13: a source path that is not on disk -----
+#
+# Measured 2026-09-20: a path typed into the import box was truncated at a space
+# (".../stop-test/Courtney" for ".../stop-test/Courtney Barnett"). beets takes a
+# missing toppath down the branch a single FILE takes (ImportTaskFactory.paths,
+# beets/importer/tasks.py:1055), reads no item, produces zero tasks and ends the
+# session normally - so the app created a job, ran it, and said "Import finished
+# - 0 albums imported". Nothing refused.
+
+_MISSING = "That folder doesn't exist."
+
+
+def test_a_source_that_does_not_exist_is_refused_before_any_job(tmp_path: Path) -> None:
+    """The reported defect: a truncated path became a job that imported nothing."""
+    reg, lib = _real_registry(tmp_path)
+    real = _album_folder(tmp_path / "downloads", b"Courtney Barnett")
+    truncated = str(real)[: str(real).rindex(" ")]  # what the box was left holding
+    assert not os.path.exists(truncated)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post("/api/import", json={"path": truncated})
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == _MISSING
+    assert "job_id" not in resp.json()
+    # No slot was claimed, so there is no job to poll and nothing to resume.
+    assert reg.active_job_id() is None
+    probe = client.get("/api/imports/active").json()
+    assert probe["active"] is False
+    assert probe["job_id"] is None
+    assert list(lib.albums()) == []
+
+
+def test_a_source_that_is_a_FILE_is_not_refused_by_the_existence_guard(tmp_path: Path) -> None:
+    """The control that makes this guard EXISTENCE and not ``is_dir``.
+
+    beets imports a single file as one track (the same tasks.py:1055 branch), so
+    an ``is_dir`` guard would take away something the engine can do. Mutating
+    ``os.path.exists`` to ``os.path.isdir`` must fail this test.
+    """
+    _real_registry(tmp_path)
+    folder = _album_folder(tmp_path / "downloads", b"single")
+    one_track = next(p for p in sorted(folder.iterdir()) if p.suffix == ".flac")
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post("/api/import", json={"path": str(one_track)})
+
+    assert resp.status_code == 202, resp.text
+    _drive(client, resp.json()["job_id"])
+
+
+def test_a_list_refuses_only_when_NO_member_is_there(tmp_path: Path) -> None:
+    """``validate`` takes a LIST, and the question it asks is "is there nothing
+    to import" - not "is every member present".
+
+    Both directions, because one alone is satisfied by the wrong predicate: a
+    list that still holds one folder starts (an ``all`` check would refuse it),
+    and a list where every member is gone refuses (no check at all would let it
+    run hollow). The PRESENT member is second in the passing case, so a check
+    that stops at the first member cannot pass this.
+    """
+    from app.import_jobs.runner import BeetsImportRunner, SourcePathMissingError
+
+    _reg, lib = _real_registry(tmp_path)
+    here = _album_folder(tmp_path / "downloads", b"here")
+    gone = tmp_path / "downloads" / "gone"
+    other = tmp_path / "downloads" / "other-gone"
+    assert not gone.exists()
+    assert not other.exists()
+
+    runner = BeetsImportRunner(lib)
+    runner.validate([str(gone), str(here)], None)
+    with pytest.raises(SourcePathMissingError, match=r"^That folder doesn't exist\.$"):
+        runner.validate([str(gone), str(other)], None)
+
+
+def test_the_per_item_inbox_import_answers_a_folder_that_vanished(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The route's own ``is_dir`` check leaves a window before ``start``.
+
+    Drives the REAL window: ``is_dir`` answers True, then the folder goes. Left
+    unmapped the refusal is a 500.
+    """
+    _reg, _lib = _real_registry(tmp_path)
+    inbox = tmp_path / "inbox"
+    folder = _album_folder(inbox, b"vanishes")
+
+    from app.fsutil import is_dir as real_is_dir
+
+    def is_dir_then_remove(path: Path) -> bool:
+        answer = bool(real_is_dir(path))
+        if answer and Path(path) == folder:
+            shutil.rmtree(folder)
+        return answer
+
+    monkeypatch.setattr("app.api.acquisition.is_dir", is_dir_then_remove)
+    monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post("/api/acquisition/inbox/items/import", json={"name": "vanishes"})
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == _MISSING
+    assert _reg.active_job_id() is None
+
+
+def test_the_unmounted_share_still_reports_ITSELF_not_the_missing_folder(tmp_path: Path) -> None:
+    """A better diagnosis wins: with the share gone every inbox folder reads as
+    missing, and the sentence the user needs is the one about the mount."""
+    _reg, lib = _real_registry(tmp_path)
+    _drop_root(lib, bare=False, rows=True)
+    missing = str(tmp_path / "downloads" / "never-existed")
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post("/api/import", json={"path": missing})
+
+    assert resp.status_code == 503, resp.text
+    assert "share mounted" in resp.json()["detail"]
+    assert resp.json()["detail"] != _MISSING
+
+
+def test_a_hostile_path_is_answered_rather_than_raised(tmp_path: Path) -> None:
+    """Paths the OS rejects reach this guard from the disk-side callers.
+    ``os.path.exists`` answers False for each instead of propagating."""
+    from app.import_jobs.runner import BeetsImportRunner, SourcePathMissingError
+
+    _reg, lib = _real_registry(tmp_path)
+    runner = BeetsImportRunner(lib)
+    for hostile in (
+        os.fsdecode(b"/downloads/Caf\xe9/album"),  # a surrogate-bearing path
+        "/downloads/" + "x" * 4096,  # past NAME_MAX and PATH_MAX -> OSError
+        "/downloads/a\x00b",  # an embedded NUL -> ValueError
+    ):
+        with pytest.raises(SourcePathMissingError):
+            runner.validate([hostile], None)
+
+
+def test_the_existence_check_costs_one_stat_and_no_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``validate`` runs on the event loop, so it must not list the source."""
+    from app.import_jobs.runner import BeetsImportRunner
+
+    _reg, lib = _real_registry(tmp_path)
+    source = _album_folder(tmp_path / "downloads", b"counted")
+    scans: list[str] = []
+    stats: list[str] = []
+    real_scandir = os.scandir
+    real_stat = os.stat
+
+    def counting_scandir(path: Any = ".") -> Any:
+        scans.append(str(path))
+        return real_scandir(path)
+
+    def counting_stat(path: Any, **kwargs: Any) -> Any:
+        stats.append(str(path))
+        return real_stat(path, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", counting_scandir)
+    monkeypatch.setattr(os, "stat", counting_stat)
+    BeetsImportRunner(lib).validate([str(source)], None)
+
+    assert [s for s in scans if s.startswith(str(source))] == []
+    assert [s for s in stats if s.startswith(str(source))] == [str(source)]
