@@ -396,7 +396,7 @@ export function PageSizeSelect({
     <span className="relative shrink-0">
       <select
         aria-label="Results per page"
-        className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-8 appearance-none rounded-md border px-2 pr-7 text-sm shadow-xs focus-visible:ring-[3px] focus-visible:outline-none"
+        className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/70 h-8 appearance-none rounded-md border px-2 pr-7 text-sm shadow-xs focus-visible:ring-[3px] focus-visible:outline-none"
         value={value}
         onChange={(e) => onChange(Number(e.target.value) as PageSize)}
       >

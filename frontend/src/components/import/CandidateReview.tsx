@@ -235,7 +235,7 @@ function CandidateSwitcher({
           onChange={(e) => onSelect(Number(e.target.value))}
           disabled={disabled}
           aria-label="Candidate release"
-          className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-9 w-full appearance-none rounded-md border px-3 py-2 pr-9 text-sm shadow-xs focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+          className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/70 h-9 w-full appearance-none rounded-md border px-3 py-2 pr-9 text-sm shadow-xs focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
         >
           {options.map((opt) => {
             const disambig = cleanDisambiguation(opt.disambiguation);
