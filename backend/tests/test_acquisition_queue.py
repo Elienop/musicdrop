@@ -10,6 +10,7 @@ into teardown.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -24,6 +25,7 @@ from app.acquisition.queue import AcquisitionQueue
 from app.beets.import_session import ImportAbortError, ImportBridge
 from app.import_jobs.fakes import FakeImportRunner
 from app.import_jobs.registry import ImportJob, ImportJobRegistry
+from app.import_jobs.runner import SourcePathMissingError
 from app.models.bank import BankApplyDirective
 from app.models.import_api import ImportJobState, ImportPhase
 from app.models.import_models import (
@@ -257,6 +259,34 @@ def test_queue_refuses_inbox_root_itself(tmp_path: Path) -> None:
     q.enqueue(inside)
     assert q._queue.qsize() == 1
     assert q.status().queued == 1
+
+
+def test_the_drop_log_escapes_a_folder_name_that_was_never_on_disk(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The dropped folder's NAME is caller-supplied, so the record must escape it.
+
+    ``enqueue`` checks containment and dedupe but NOT existence, so a name that
+    never named anything reaches this log. Under ``%s`` a newline in it produced
+    a second, fully-formed record attributed to another module at another
+    severity, through the real route with only the slskd webhook secret (which
+    is gate-exempt - no session cookie needed).
+    """
+    q, fake, _reg, _led = _make_queue(tmp_path)
+    fake.validate_error = SourcePathMissingError("That folder doesn't exist.")
+    forged = tmp_path / (
+        "Album\n2026-09-20 12:00:00 CRITICAL app.auth.gate: session gate DISABLED by operator"
+    )
+    caplog.set_level(logging.WARNING, logger="app.acquisition.queue")
+
+    q._process_one(forged)
+
+    records = [r for r in caplog.records if r.name == "app.acquisition.queue"]
+    assert len(records) == 1, records
+    message = records[0].getMessage()
+    assert "\n" not in message, message
+    # Escaped, not dropped: the operator still gets to see what was refused.
+    assert "session gate DISABLED" in message
 
 
 def test_failed_inbox_import_marks_failed_not_imported(tmp_path: Path) -> None:

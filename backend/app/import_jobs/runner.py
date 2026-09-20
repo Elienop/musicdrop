@@ -12,11 +12,12 @@ in the mypy disallow_untyped_calls override because it constructs beets objects.
 
 from __future__ import annotations
 
+import errno
 import os
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import Protocol
+from typing import Final, Protocol
 
 from app.beets.import_session import (
     ImportBridge,
@@ -40,18 +41,101 @@ from app.models.import_models import ImportOptions
 
 
 class SourcePathMissingError(Exception):
-    """A start was asked for a source path that is not on disk.
+    """A start was asked for a source the OS does not hand back.
 
     Its own type, never a widened ``InLibraryCopyError``: the two refusals carry
     different sentences and different remedies, so the route maps them apart.
 
+    ``unreadable`` splits the two shapes this one type covers — absent, and
+    there but refused (the sentence then names the OS reason). Read by the batch
+    route, whose plural copy is about folders that VANISHED and would misreport
+    a permissions problem.
+
     Measured on 2026-09-20: a path truncated at a space named no folder, and
     beets took it down the branch a single FILE takes
-    (``ImportTaskFactory.paths``, beets/importer/tasks.py:1055 —
-    ``if not os.path.isdir(syspath(self.toppath))``). ``read_item`` found
-    nothing, zero tasks were produced, and the session ended normally: the app
-    created a job and reported "Import finished - 0 albums imported".
+    (``ImportTaskFactory.paths`` —
+    ``if not os.path.isdir(util.syspath(self.toppath))``, importer/tasks.py:1041
+    in beets 2.13.1, the version ``.venv`` runs; :1055 in the 2.12.0 reference
+    checkout). ``read_item`` found nothing, zero tasks were produced, and the
+    session ended normally: the app created a job and reported "Import finished
+    - 0 albums imported".
     """
+
+    def __init__(self, message: str, *, unreadable: bool = False) -> None:
+        super().__init__(message)
+        self.unreadable = unreadable
+
+
+#: What ``stat`` answers when there is nothing at the path, as opposed to
+#: something being there that it would not answer for. ENAMETOOLONG belongs here
+#: because a name the filesystem cannot hold names nothing.
+#:
+#: Public because three sites now split on it - this guard, the inbox per-item
+#: route's resolve step and the bank apply runner's fingerprint - and a second
+#: copy of the set would drift. (``app/beets/store_layout.py`` keeps its own,
+#: narrower set for a different question: what a MISSING store looks like.)
+ABSENT_ERRNOS: Final = frozenset({errno.ENOENT, errno.ENOTDIR, errno.ENAMETOOLONG})
+
+
+def unreadable_source_sentence(exc: OSError) -> str:
+    """What every caller says about a path the OS refused to answer for.
+
+    ONE sentence for all five sites - this guard, the inbox per-item route's
+    resolve step, the bank apply runner's fingerprint and its start arm, and the
+    rescan route - so the same fault cannot be worded five ways. ``strerror`` is
+    the OS's own summary and carries no path, which is what makes surfacing it
+    safe (the same reasoning as the unreadable-root arm in
+    ``app/beets/library.py``) - unlike ``str(exc)`` on the OSError itself, which
+    interpolates ``exc.filename``. The errno keeps the sentence complete if a
+    platform ever leaves ``strerror`` unset.
+    """
+    reason = exc.strerror or f"errno {exc.errno}"
+    return f"That folder can't be read. {reason}."
+
+
+def unreadable_source_error(exc: OSError) -> SourcePathMissingError:
+    """``unreadable_source_sentence`` as the refusal the import routes map to 422."""
+    return SourcePathMissingError(unreadable_source_sentence(exc), unreadable=True)
+
+
+def missing_source_error(paths: list[str]) -> SourcePathMissingError | None:
+    """The refusal for a start with nothing to import; ``None`` if one path answers.
+
+    One ``os.stat`` per path, no walk, stopping at the first path that answers.
+    An empty list is "nothing to import" too, and refuses.
+
+    ``os.path.exists`` returned False for a folder under a parent chmod'd 0o600
+    exactly as for an absent one, while ``os.stat`` reported errno 13, Permission
+    denied (measured 2026-09-20) — so a PUID/GID mismatch on a downloads share
+    read as a typo. Splitting on errno keeps the absent sentence and gives the
+    rest ``unreadable_source_error`` above.
+
+    ANSWERS rather than propagates for a path the OS rejects outright: an
+    embedded NUL raises ValueError and a LONE surrogate raises
+    UnicodeEncodeError (a ValueError subclass). Neither names anything on disk,
+    so both read as absent. A surrogate PAIR does not reach that arm at all:
+    CPython folds two such escapes in a source literal into the single astral
+    code point they denote, which encodes fine and stats ENOENT (measured from a
+    written file 2026-09-20; a shell heredoc folds it the same way).
+    """
+    refused: OSError | None = None
+    for path in paths:
+        try:
+            os.stat(path)
+        except ValueError:
+            continue
+        except OSError as exc:
+            # The FIRST non-absent errno decides the sentence; a later one does
+            # not overwrite it. One unreadable member anywhere in the list
+            # promotes the whole refusal, which is the useful direction - and
+            # ENOENT never sets this, so an all-absent list still says absent.
+            if refused is None and exc.errno not in ABSENT_ERRNOS:
+                refused = exc
+            continue
+        return None
+    if refused is not None:
+        return unreadable_source_error(refused)
+    return SourcePathMissingError("That folder doesn't exist.")
 
 
 class ImportRunner(Protocol):
@@ -80,11 +164,14 @@ class ImportRunner(Protocol):
     def validate(self, paths: list[str], options: ImportOptions | None = None) -> str | None:
         """Refuse an invalid (paths, options) combination by raising.
 
-        Called synchronously on the API thread BEFORE the registry allocates
-        the single job slot, so a refusal becomes a clean 4xx/5xx. Raises
+        Called synchronously BEFORE the registry allocates the single job slot,
+        so a refusal becomes a clean 4xx/5xx — but never on the event loop: it
+        stats a caller-named path, so the three routes hand ``start`` to
+        ``run_in_threadpool``. Raises
         ``LibraryRootUnavailableError`` (root missing or unreadable, or empty while
-        the library holds item rows), ``SourcePathMissingError`` (a source path
-        that is not on disk) and
+        the library holds item rows), ``SourcePathMissingError`` (no source could
+        be stat'd — absent OR there and refused; one missing member of a list
+        does NOT refuse the start) and
         ``InLibraryCopyError`` (copy-mode source inside the library, checked PER
         path, so one bad member refuses the whole start).
 
@@ -137,13 +224,9 @@ class BeetsImportRunner:
         # claimed, and FIRST: an unmounted share must keep reporting itself
         # rather than calling every inbox folder missing.
         #
-        # The forgiven arm is the one hole in that guard, and it is keyed on "the
-        # items table holds no row" rather than on "this install has never
-        # imported" — so the root about to receive the files is REPORTED to the
-        # caller. Not logged here: this runs before the slot claim and before the
-        # busy check, so three starts (one of them a 409) produced three records
-        # and filed nothing — measured 2026-09-19, security seat L-1. Not inside
-        # the predicate either: the gate polls that at 2 Hz.
+        # The forgiven root is REPORTED, not logged here:
+        # ``require_importable_library_root`` logs nothing, and its docstring
+        # holds that arm's key, the L-1 measurement and the 2 Hz gate poll.
         #
         # Skipped, not early-returned, without a library: both library reads
         # below need one, but the source-existence check does not
@@ -152,25 +235,22 @@ class BeetsImportRunner:
         if self._lib is not None:
             forgiven = require_importable_library_root(self._lib)
         # EXISTENCE, not ``is_dir``: beets imports a single FILE as one track, so
-        # an is_dir guard would take away something it can do. A path that is not
-        # there takes that same branch, reads no item, produces zero tasks and
-        # ends the session normally — the "0 albums imported" this refuses.
-        # One ``stat`` per path and no walk, because this runs on the event loop.
-        # ``os.path.exists`` ANSWERS (never raises) for a path the OS rejects: it
-        # catches both the ValueError an embedded NUL raises and the OSError an
-        # over-long path raises.
+        # an is_dir guard would take away something it can do (what a missing
+        # path does instead is in ``SourcePathMissingError``).
         #
         # The refusal is "nothing to import", NOT "every member is present". A
         # member that goes missing after the inbox derived the list is a TOCTOU
         # this check cannot close - it can only move it, since the folder is as
         # free to vanish after the stat as before it. beets already answers that
         # one: a missing toppath takes the single-FILE branch, ``read_item``
-        # returns None (beets/importer/tasks.py:1142-1147), and that toppath
-        # contributes nothing while the rest import. What has no answer below is
-        # a start where NO source is there - the typed path that was wrong, which
-        # otherwise runs to "Import finished - 0 albums imported".
-        if paths and not any(os.path.exists(path) for path in paths):
-            raise SourcePathMissingError("That folder doesn't exist.")
+        # returns None (importer/tasks.py:1128-1155 in beets 2.13.1, the
+        # installed tree; :1142-1169 in the 2.12.0 reference checkout), and that
+        # toppath contributes nothing while the rest import. What has no answer
+        # below is a start where NO source is there - the typed path that was
+        # wrong, which otherwise runs to "Import finished - 0 albums imported".
+        refusal = missing_source_error(paths)
+        if refusal is not None:
+            raise refusal
         if self._lib is None:
             return None
         # Only explicit copy is a user-facing error here; default/None are

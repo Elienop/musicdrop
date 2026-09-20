@@ -7953,7 +7953,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The source folder does not exist, or a copy-mode import was asked for a folder inside the music library, or the request failed validation. */
+            /** @description The source folder does not exist or cannot be read, or a copy-mode import was asked for a folder inside the music library, or the request failed validation. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -11892,7 +11892,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Every folder handed over no longer exists. */
+            /** @description Every folder handed over no longer exists, or cannot be read. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -12026,7 +12026,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The folder no longer exists, or the request failed validation. */
+            /** @description The folder no longer exists or cannot be read, or the request failed validation. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -12351,7 +12351,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The row is not an undecided match row, so the search was refused (it is already decided, or its folder went stale). */
+            /** @description The row is not an undecided match row, so the search was refused (it is already decided, or its folder went stale or cannot be read). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -12436,7 +12436,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The row cannot be rescanned (already decided, its folder is gone, or it holds no audio files). */
+            /** @description The row cannot be rescanned (already decided, its folder is gone or cannot be read, or it holds no audio files). */
             409: {
                 headers: {
                     [name: string]: unknown;

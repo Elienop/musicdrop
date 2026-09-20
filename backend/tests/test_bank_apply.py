@@ -12,6 +12,8 @@ raising default getter, which is itself an assertion — see ``_no_library``.
 """
 
 import asyncio
+import os
+import shutil
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -1743,3 +1745,158 @@ def test_a_stopped_astracks_apply_that_landed_reads_exactly_like_an_unstopped_on
     )
     _s, dup_error, _a, _r = BankApplyRunner._classify(dup_item, _done_state(stopped=True), False)
     assert dup_error == "the apply was stopped - decide again to retry"
+
+
+def test_a_folder_that_goes_after_the_fingerprint_is_stale_not_a_retryable_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``reg.start``'s fifth call site needs its own arm for the source refusal.
+
+    Drives the REAL window — the fingerprint answers, then the folder goes, so
+    ``validate`` refuses at ``start``. The fake's ``validate`` is a no-op, so it
+    borrows the guard's own predicate rather than a canned exception.
+
+    ``fake.validate_calls`` is what separates this from the FileNotFoundError arm
+    beside it: there the import is never started. Measured without the arm: the
+    row fell to ``_drain``'s blanket ``except`` as ``failed`` + retryable=True
+    ("The apply failed. Decide again to retry.") plus a logged traceback, for a
+    folder that is permanently gone.
+    """
+    import app.bank.apply_runner as apply_mod
+    from app.import_jobs.runner import missing_source_error
+
+    class _CheckingRunner(FakeImportRunner):
+        """The real guard's predicate, on the fake's seam."""
+
+        def validate(self, paths: list[str], options: ImportOptions | None = None) -> str | None:
+            forgiven = super().validate(paths, options)
+            refusal = missing_source_error(paths)
+            if refusal is not None:
+                raise refusal
+            return forgiven
+
+    fake = _CheckingRunner()
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    folder = _folder(tmp_path)
+    item_id = _seed_queued(bank, folder)
+
+    def fingerprint_then_remove(path: Path) -> str:
+        digest = folder_fingerprint(path)
+        shutil.rmtree(path)  # banked, CAS-claimed, unchanged — then gone
+        return digest
+
+    monkeypatch.setattr(apply_mod, "folder_fingerprint", fingerprint_then_remove)
+
+    runner = _make_runner(bank, reg)
+    runner.start()
+    try:
+        item = _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status in ("stale", "failed", "done"),
+        )
+        assert item is not None
+        assert item.status == "stale"
+        assert item.error == "the banked folder no longer exists - nothing was imported"
+        assert fake.validate_calls != []  # the import WAS started; not the fingerprint arm
+    finally:
+        runner.stop()
+
+
+_UNREADABLE = "That folder can't be read. Permission denied."
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")
+def test_a_source_that_cannot_be_READ_after_the_fingerprint_keeps_its_own_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A permissions fault must not report as a deleted download.
+
+    The same window as the test above — the fingerprint answers, then
+    ``validate`` refuses at ``start`` — for the OTHER shape that refusal covers.
+    One constant for both told the operator a folder that is STILL THERE had been
+    deleted; that is the defect the errno split exists to remove, reproduced one
+    layer up. Measured across three scenarios (removed, unsearchable parent,
+    symlink loop), all three read "no longer exists".
+
+    Terminal like its twin, and deliberately NOT deferred: EACCES does not clear
+    itself, so a requeue would poll forever. Left retryable, though, because the
+    folder is there and fixing the permissions makes "decide again" work.
+    """
+    import app.bank.apply_runner as apply_mod
+    from app.import_jobs.runner import missing_source_error
+
+    class _CheckingRunner(FakeImportRunner):
+        """The real guard's predicate, on the fake's seam."""
+
+        def validate(self, paths: list[str], options: ImportOptions | None = None) -> str | None:
+            forgiven = super().validate(paths, options)
+            refusal = missing_source_error(paths)
+            if refusal is not None:
+                raise refusal
+            return forgiven
+
+    fake = _CheckingRunner()
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    folder = _folder(tmp_path)
+    item_id = _seed_queued(bank, folder)
+
+    def fingerprint_then_lock(path: Path) -> str:
+        digest = folder_fingerprint(path)
+        path.parent.chmod(0o600)  # banked, CAS-claimed, unchanged — then refused
+        return digest
+
+    monkeypatch.setattr(apply_mod, "folder_fingerprint", fingerprint_then_lock)
+
+    runner = _make_runner(bank, reg)
+    runner.start()
+    try:
+        item = _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status in ("stale", "failed", "done"),
+        )
+        assert item is not None
+        assert item.status == "failed"
+        assert item.error == _UNREADABLE
+        assert item.error_retryable is True
+        assert fake.validate_calls != []  # the import WAS started; not the fingerprint arm
+    finally:
+        runner.stop()
+        folder.parent.chmod(0o755)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")
+def test_a_banked_folder_the_owner_cannot_read_fails_without_naming_the_path(
+    tmp_path: Path,
+) -> None:
+    """The fingerprint's own refusal, one screen above the start arm.
+
+    ``folder_fingerprint`` asks ``Path.is_dir``, which swallows ENOENT/ENOTDIR
+    but re-raises EACCES. Caught as ``FileNotFoundError`` only, that fell to the
+    drain's catch-all and stored ``str(exc)`` — and ``str`` on an OSError
+    interpolates ``exc.filename``, so an absolute server path landed in a row the
+    browser renders (measured 2026-09-20).
+    """
+    fake = FakeImportRunner()
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    folder = _folder(tmp_path)
+    item_id = _seed_queued(bank, folder)  # fingerprinted while still readable
+    folder.parent.chmod(0o600)
+
+    runner = _make_runner(bank, reg)
+    runner.start()
+    try:
+        item = _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status in ("stale", "failed", "done"),
+        )
+        assert item is not None
+        assert item.status == "failed"
+        assert item.error == _UNREADABLE
+        assert str(folder) not in (item.error or "")
+        assert fake.validate_calls == []  # refused before any import was started
+    finally:
+        runner.stop()
+        folder.parent.chmod(0o755)

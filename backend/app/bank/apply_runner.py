@@ -37,7 +37,12 @@ from app.bank.fingerprint import folder_fingerprint
 from app.beets.library import LibraryHandle, surviving_duplicate_album_ids
 from app.import_jobs.gates import import_gate_clear
 from app.import_jobs.registry import ImportJobRegistry
-from app.import_jobs.runner import LibraryRootUnavailableError
+from app.import_jobs.runner import (
+    ABSENT_ERRNOS,
+    LibraryRootUnavailableError,
+    SourcePathMissingError,
+    unreadable_source_sentence,
+)
 from app.models.bank import BankApplyDirective, BankItem, BankStatus
 from app.models.import_api import ImportAlbumStatus, ImportJobState, ImportPhase
 from app.models.import_models import DuplicateAction, ExistingAlbum, ImportOptions
@@ -300,7 +305,24 @@ class BankApplyRunner:
         try:
             current = folder_fingerprint(Path(claimed.folder))
         except FileNotFoundError:
+            # ``folder_fingerprint``'s own "the folder is gone" signal. Raised by
+            # hand, so its errno is UNSET and the errno test below would miss it.
             bank_store.set_status(self._bank_dir, item.id, "stale", error=_STALE_GONE_ERROR)
+            return
+        except OSError as exc:
+            # Widened from FileNotFoundError alone: ``Path.is_dir`` inside the
+            # fingerprint swallows ENOENT/ENOTDIR/ELOOP but re-raises EACCES,
+            # which fell to ``_drain``'s catch-all and stored ``str(exc)`` - and
+            # ``str`` on an OSError interpolates ``exc.filename``, so an absolute
+            # server path landed in a row the browser reads (measured
+            # 2026-09-20). ``ABSENT_ERRNOS`` is the import guard's own set,
+            # imported rather than re-spelled so the two splits cannot drift.
+            if exc.errno in ABSENT_ERRNOS:
+                bank_store.set_status(self._bank_dir, item.id, "stale", error=_STALE_GONE_ERROR)
+            else:
+                bank_store.set_status(
+                    self._bank_dir, item.id, "failed", error=unreadable_source_sentence(exc)
+                )
             return
         if current != claimed.fingerprint:
             bank_store.set_status(self._bank_dir, item.id, "stale", error=_STALE_CHANGED_ERROR)
@@ -334,6 +356,31 @@ class BankApplyRunner:
             # permanently on a share that was merely unmounted (measured).
             bank_store.set_status(self._bank_dir, item.id, "queued")
             self._stop.wait(self._busy_backoff)
+            return
+        except SourcePathMissingError as exc:
+            # The source stopped answering between the fingerprint above and the
+            # start. Its own arm, terminal for BOTH shapes, and NOT folded into
+            # the defer tuple: a requeue would poll a gone folder forever, and an
+            # unreadable one does not start answering on its own either - EACCES
+            # needs the operator, not a retry. Left to _drain's catch-all the row
+            # read ``failed`` + retryable=True with a logged traceback for an
+            # ordinary race (measured 2026-09-20).
+            #
+            # WHICH sentence follows ``unreadable``, because the type covers two
+            # faults: a removed folder, an unsearchable parent and a symlink loop
+            # all reach this arm, and one constant for all three would tell the
+            # operator a folder that is still there had been deleted.
+            #
+            # gone -> ``stale`` + the sentence the OSError arm one screen up uses
+            # for the same physical condition, which routes the Bank page to its
+            # stale screen. Unreadable -> ``failed``, left retryable: the folder
+            # IS there, so "fix the permissions, then decide again" is a real
+            # remedy, while the stale screen's "re-sweep or remove the row" is
+            # not. ``str(exc)`` here is our own sentence and carries no path.
+            if exc.unreadable:
+                bank_store.set_status(self._bank_dir, item.id, "failed", error=str(exc))
+            else:
+                bank_store.set_status(self._bank_dir, item.id, "stale", error=_STALE_GONE_ERROR)
             return
         try:
             state = self._wait_for_result(job_id)

@@ -4,6 +4,7 @@ research_folder is stubbed at the router's import site; folders/fingerprints
 are real so the stale gate is exercised for real.
 """
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -178,6 +179,36 @@ def test_search_flips_stale_when_the_folder_is_gone(
     reread = store.get_item(bank_api.get_bank_dir(), item_id)
     assert reread is not None
     assert reread.status == "stale"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")
+def test_search_409s_a_folder_it_cannot_read_without_flipping_it_stale(
+    client: TestClient, bank_dir: Path, tmp_path: Path
+) -> None:
+    """A folder the OS refuses to answer for did not go stale.
+
+    ``folder_fingerprint`` asks ``Path.is_dir``, which re-raises EACCES; caught
+    as ``FileNotFoundError`` only, that escaped as an unhandled 500. Flipping the
+    row stale would be a false claim about a folder that is still there and
+    unchanged, and ``str(exc)`` on the OSError would have put an absolute server
+    path in the body.
+    """
+    parent = tmp_path / "shut"
+    parent.mkdir()
+    folder = _folder(parent)
+    item_id = _seed_no_match(bank_dir, folder)
+    parent.chmod(0o600)
+    try:
+        r = client.post(f"/api/bank/{item_id}/search", json=BODY)
+    finally:
+        parent.chmod(0o755)
+
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == "That folder can't be read. Permission denied."
+    assert str(folder) not in r.json()["detail"]
+    reread = store.get_item(bank_api.get_bank_dir(), item_id)
+    assert reread is not None
+    assert reread.status == "needs_review"
 
 
 @pytest.mark.parametrize("action", ["asis"])

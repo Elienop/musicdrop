@@ -106,7 +106,9 @@ class AcquisitionQueue:
         # root is rejected here too. Belt-and-suspenders behind the webhook's guard.
         if self._inbox_dir is not None:
             if contain(str(folder), self._inbox_dir, strict=True) is None:
-                logger.warning("acquisition: refusing non-descendant inbox path %s", folder)
+                # ``%r``: the value is caller-supplied (the webhook posts it), and a
+                # name carrying a newline forges a whole log record under ``%s``.
+                logger.warning("acquisition: refusing non-descendant inbox path %r", folder)
                 return
         key = str(folder.resolve())
         with self._lock:
@@ -172,8 +174,23 @@ class AcquisitionQueue:
             # The folder went away between the gate check and start(). Terminal,
             # not deferred: a requeue would poll a path that is gone. Caught for
             # the reason the arm above exists — an escape kills this daemon
-            # thread and strands every later download. Not ledgered: nothing was
-            # handled, and a folder that is gone cannot be re-offered.
+            # thread and strands every later download.
+            #
+            # Not ledgered, because ``mark`` REPLACES any prior entry for that
+            # path (ledger.py): recording this one would store (0.0, 0) over a
+            # genuine earlier record for the same folder. (It is not that a gone
+            # folder cannot be re-offered — a re-download re-enqueues, since
+            # ``enqueue`` gates on ``seen()``, which is keyed on path AND
+            # identity.) So this is the one terminal outcome in the class with no
+            # durable row: log the drop. The realistic case is a RENAMED folder —
+            # slskd finalising a temp name after the webhook fired — where
+            # nothing else records which download was lost.
+            # ``%r``, like the webhook's own refusal (app/api/slskd.py): ``enqueue``
+            # checks containment and dedupe but never EXISTENCE, so a folder name
+            # that never existed reaches this line. Measured through the route with
+            # only the webhook secret: under ``%s`` a newline in the name forged a
+            # complete record attributed to another module at another severity.
+            logger.warning("inbox drain: %r is no longer there; dropped (%r)", folder, exc)
             self._finish(key, "failed", str(exc))
             return
 

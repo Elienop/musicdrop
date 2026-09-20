@@ -6,6 +6,13 @@ without a cookie, which means everything in its body is readable by anyone who
 can reach the port. It used to carry the running version, handing an
 unauthenticated caller the exact build to go look up known issues for; that
 moved to ``/api/version``, which is gated like every other ``/api/`` route.
+
+This route answers on the event loop and touches no filesystem, so a 200 is
+liveness ONLY - it does not say the app can serve a route that does touch one.
+With anyio's 40 worker threads all stuck on a hung mount it answered 200 in
+0.7 ms while ``GET /api/imports/active`` timed out at 20 s (measured
+2026-09-20); ``app/api/import_.py::start_import_off_loop`` is what caps the
+import-start path's share of that pool.
 """
 
 from fastapi import APIRouter

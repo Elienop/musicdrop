@@ -9,8 +9,11 @@ registry/bridge exceptions to HTTP codes.
 No beets imports: the registry + models are the whole surface here.
 """
 
-from typing import Annotated, Final
+from collections.abc import Callable
+from functools import partial
+from typing import Annotated, Final, TypeVar
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
 
@@ -102,6 +105,46 @@ async def get_active_import(
     return reg.active_status()
 
 
+_T = TypeVar("_T")
+
+#: How many import STARTS may occupy anyio's worker pool at once.
+#:
+#: That pool is PROCESS-WIDE and holds 40 tokens (anyio 4.13.0, measured), and
+#: it is not this path's to spend: FastAPI runs every sync ``Depends`` callable
+#: there - all 18 of this app's are plain ``def`` - and so does the scrypt
+#: derive behind sign-in. A start stats the caller's path, and a stat on a hung
+#: mount does not return, so 40 concurrent starts against one took every token:
+#: ``POST /api/auth/login`` timed out at 20 s while ``GET /api/health`` still
+#: answered 200 in 0.7 ms (measured 2026-09-20).
+_IMPORT_START_SLOTS: Final = anyio.CapacityLimiter(1)
+
+
+async def start_import_off_loop(start: Callable[[], _T]) -> _T:
+    """Run ONE import start on a worker thread, capped at ``_IMPORT_START_SLOTS``.
+
+    Admission is taken BY HAND and released in a ``finally`` - the shape
+    ``app/api/auth.py::_one_derive_at_a_time`` arrived at, where handing the
+    limiter to anyio instead let a cancelled caller release its token while the
+    worker thread was still stuck. ``run_in_threadpool`` does not abandon on
+    cancel (``anyio.to_thread.run_sync`` defaults ``abandon_on_cancel=False``),
+    so the ``finally`` lands after the worker returns rather than when a client
+    disconnects; that is what
+    ``test_a_cancelled_import_start_keeps_its_slot_until_the_thread_returns``
+    measures.
+
+    The wait is unbounded on purpose: a waiter holds no worker thread, and the
+    single import slot already refuses a concurrent start with 409, so a new
+    refusal status would say nothing the queueing does not.
+    """
+    await _IMPORT_START_SLOTS.acquire()
+    # No await between the acquire returning and the try, so a token can never be
+    # held without the finally that releases it.
+    try:
+        return await run_in_threadpool(start)
+    finally:
+        _IMPORT_START_SLOTS.release()
+
+
 def ensure_import_can_start(request: Request) -> None:
     """Raise 409 if a beets mutation or backfill currently blocks a new import.
 
@@ -157,9 +200,9 @@ def ensure_import_can_start(request: Request) -> None:
         # merits, so they stay 422 - which means this route returns BOTH 422
         # bodies (see app/models/errors.py).
         422: validation_or_detail_422(
-            "The source folder does not exist, or a copy-mode import was asked"
-            " for a folder inside the music library, or the request failed"
-            " validation."
+            "The source folder does not exist or cannot be read, or a copy-mode"
+            " import was asked for a folder inside the music library, or the"
+            " request failed validation."
         ),
         503: _LIBRARY_REFUSED_RESPONSE,
     },
@@ -183,7 +226,9 @@ async def start_import(
         # runs with a 2 ms poller (security seat, measured 2026-09-19). The
         # three sibling routes take a RELATIVE PATH too — 255 characters admit
         # 128 components (``"x/" * 127 + "x"``, counted through
-        # ``resolve_display_path``) — and stay on the loop.
+        # ``resolve_display_path``). Two of them (``POST /api/trash/restore``,
+        # ``DELETE /api/trash``) still resolve on the loop; the inbox per-item
+        # import moved off it on 2026-09-20 together with its start.
         path = await run_in_threadpool(resolve_posted_path, body.path)
     except AmbiguousDisplayName:
         raise HTTPException(
@@ -194,7 +239,30 @@ async def start_import(
             ),
         ) from None
     try:
-        job_id = reg.start(path, options=body.options)
+        # ``reg.start`` -> ``runner.validate`` stats the caller's path, and a stat on
+        # a hung mount does not return: on a FUSE filesystem whose ``getattr`` sleeps,
+        # ``start`` took 10000.6 ms and the event loop served nobody for 10002.7 ms
+        # against a 2.1 ms idle baseline (security seat, measured 2026-09-20). Off the
+        # loop it genuinely goes away rather than shrinking — ``os.stat`` releases the
+        # GIL, unlike the pure-Python resolve above.
+        #
+        # Safe on a worker thread because two daemon threads already call it
+        # (``AcquisitionQueue._process_one``, ``BankApplyRunner._apply_one``); every
+        # lock it TAKES is a ``threading`` one, and the one it READS is an
+        # ``asyncio.Lock`` it only asks ``locked()`` of
+        # (``claim_slot`` -> ``library_busy._swap_in_progress``, the lock created at
+        # app/main.py:231) — on CPython 3.12.13 that method is ``return self._locked``
+        # and touches no loop, which is what makes the read safe rather than the lock's
+        # type. An ``await lock.acquire()`` in that place would not be.
+        # ``claim_slot`` is entered AFTER ``validate`` returns and is held only across
+        # the O(1) check+claim, so a stuck stat cannot wedge the gate for the other job
+        # types.
+        #
+        # The trade-off: a hung mount holds a worker thread for as long as it hangs,
+        # instead of the loop. ``start_import_off_loop`` bounds that at ONE of anyio's
+        # 40 process-wide tokens - shared with every sync ``Depends`` and the sign-in
+        # derive - so the rest of the app keeps 39.
+        job_id = await start_import_off_loop(partial(reg.start, path, options=body.options))
     except (SourcePathMissingError, InLibraryCopyError) as exc:
         # Guard refusals (validated before any slot was taken): actionable 422.
         # Kept as two types so a caller can tell the missing source from the

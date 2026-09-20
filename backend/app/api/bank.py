@@ -22,6 +22,7 @@ from app.beets.duplicates import find_import_duplicates
 from app.beets.library import LibraryHandle
 from app.beets.research import NoAudioFilesError, rescan_folder, research_folder
 from app.config import BANK_STORE, settings, store_dir
+from app.import_jobs.runner import ABSENT_ERRNOS, SourcePathMissingError, unreadable_source_error
 from app.models.bank import (
     BankBulkDeleteRequest,
     BankBulkDeleteResponse,
@@ -142,7 +143,8 @@ async def bank_item_duplicates(
             "model": ErrorDetail,
             "description": (
                 "The row is not an undecided match row, so the search was refused"
-                " (it is already decided, or its folder went stale)."
+                " (it is already decided, or its folder went stale or cannot be"
+                " read)."
             ),
         },
     },
@@ -176,8 +178,19 @@ async def search_bank_item(item_id: str, search: ImportSearch) -> BankSearchResp
             return folder_fingerprint(Path(item.folder))
         except FileNotFoundError:
             return None
+        except OSError as exc:
+            # The rescan route's split, on the site beside it: a folder the OS
+            # refuses to answer for did not go stale, so it must not be flipped
+            # stale below, and ``str(exc)`` on the OSError would carry
+            # ``exc.filename`` - an absolute server path - into the body.
+            if exc.errno in ABSENT_ERRNOS:
+                return None
+            raise unreadable_source_error(exc) from None
 
-    current = await run_in_threadpool(_current_fingerprint)
+    try:
+        current = await run_in_threadpool(_current_fingerprint)
+    except SourcePathMissingError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     if current is None or current != item.fingerprint:
         error = _STALE_GONE_ERROR if current is None else _STALE_CHANGED_ERROR
         await run_in_threadpool(lambda: store.set_status(bank_dir, item_id, "stale", error=error))
@@ -218,8 +231,8 @@ async def search_bank_item(item_id: str, search: ImportSearch) -> BankSearchResp
         409: {
             "model": ErrorDetail,
             "description": (
-                "The row cannot be rescanned (already decided, its folder is gone,"
-                " or it holds no audio files)."
+                "The row cannot be rescanned (already decided, its folder is gone"
+                " or cannot be read, or it holds no audio files)."
             ),
         },
     },
@@ -250,9 +263,23 @@ async def rescan_bank_item(item_id: str) -> BankItem:
         try:
             return folder_fingerprint(Path(item.folder))
         except FileNotFoundError:
+            # ``folder_fingerprint``'s own "gone" signal, raised by hand with no
+            # errno - the 409 below. The errno test would miss it.
             return None
+        except OSError as exc:
+            # Anything else the OS refused to answer for is a different fault:
+            # caught as ``FileNotFoundError`` only, a PermissionError escaped this
+            # route as a 500. The shared sentence rather than ``str(exc)``, which
+            # on an OSError interpolates ``exc.filename`` - an absolute server
+            # path.
+            if exc.errno in ABSENT_ERRNOS:
+                return None
+            raise unreadable_source_error(exc) from None
 
-    fingerprint = await run_in_threadpool(_current_fingerprint)
+    try:
+        fingerprint = await run_in_threadpool(_current_fingerprint)
+    except SourcePathMissingError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     if fingerprint is None:
         raise HTTPException(
             status_code=409, detail="the banked folder no longer exists; remove the row"

@@ -19,6 +19,7 @@ marked.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import shutil
@@ -27,7 +28,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+import anyio
 import beets.importer.tasks as beets_tasks
+import httpx
 import pytest
 from beets import config
 from beets.autotag import AlbumInfo, AlbumMatch, TrackInfo
@@ -37,9 +40,15 @@ from beets.autotag.match import Recommendation as BeetsRec
 from beets.library import Library
 from fastapi.testclient import TestClient
 
+from app.auth.session import SESSION_COOKIE_NAME
 from app.import_jobs.registry import ImportJobRegistry, reset_registry
 from app.main import app
-from tests.conftest import beets_dir_for, build_library, make_test_handle
+from tests.conftest import (
+    beets_dir_for,
+    build_library,
+    make_test_handle,
+    session_cookie_value,
+)
 
 _ARTIST = "Radiohead"
 _ALBUM = "OK Computer"
@@ -1089,13 +1098,16 @@ def test_the_inbox_drain_keeps_its_folder_queued_and_stays_alive(tmp_path: Path)
         queue.stop()
 
 
-def test_the_inbox_drain_survives_a_folder_that_is_no_longer_there(tmp_path: Path) -> None:
+def test_the_inbox_drain_survives_a_folder_that_is_no_longer_there(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """The source-missing refusal reaches ``start`` from the drain too.
 
     Terminal for the drop, not deferred: a requeue would poll a path that is
     gone. Uncaught it would kill this daemon thread and strand every later
     download, which is the defect the share-drop arm beside it was written for.
     """
+    caplog.set_level(logging.WARNING, logger="app.acquisition.queue")
     from app.acquisition.ledger import AcquisitionLedger
     from app.acquisition.queue import AcquisitionQueue
 
@@ -1116,7 +1128,14 @@ def test_the_inbox_drain_survives_a_folder_that_is_no_longer_there(tmp_path: Pat
         assert status.processed == 1
         assert status.failed == 1
         assert status.error == "That folder doesn't exist."
-        assert not ledger.seen(gone)  # nothing was handled, so nothing is retired
+        # The RAW entries, not ``seen()``: ``seen`` stats the folder first and
+        # answers False for one that is gone whether ``mark`` ran or not, so it
+        # cannot see this at all (adding a ``mark`` to the drain arm left the
+        # whole suite green — measured 2026-09-20). ``mark`` on a gone folder
+        # writes (mtime=0.0, size=0), which the entries DO show.
+        assert [e.path for e in ledger.entries()] == []
+        # The one durable trace of the drop, since no row is written.
+        assert [r.message for r in caplog.records if "no longer there" in r.message] != []
         alive = [t for t in threading.enumerate() if t.name == "musicdrop-acquisition"]
         assert [t.is_alive() for t in alive] == [True]
         assert reg.active_job_id() is None
@@ -1318,7 +1337,10 @@ def test_review_all_refuses_when_EVERY_settled_folder_vanished(
     client = TestClient(app)
     resp = client.post("/api/acquisition/review-inbox")
     assert resp.status_code == 422, resp.text
-    assert resp.json()["detail"] == "That folder doesn't exist."
+    # This route's OWN copy: it hands over folders the browser is never shown,
+    # and only refuses when every one of them went. The shared singular sentence
+    # would be about a folder the caller typed.
+    assert resp.json()["detail"] == "Those folders are no longer there."
     assert list(lib.albums()) == []
     assert _reg.active_job_id() is None
 
@@ -1444,26 +1466,16 @@ def test_the_unmounted_share_still_reports_ITSELF_not_the_missing_folder(tmp_pat
     assert resp.json()["detail"] != _MISSING
 
 
-def test_a_hostile_path_is_answered_rather_than_raised(tmp_path: Path) -> None:
-    """Paths the OS rejects reach this guard from the disk-side callers.
-    ``os.path.exists`` answers False for each instead of propagating."""
-    from app.import_jobs.runner import BeetsImportRunner, SourcePathMissingError
-
-    _reg, lib = _real_registry(tmp_path)
-    runner = BeetsImportRunner(lib)
-    for hostile in (
-        os.fsdecode(b"/downloads/Caf\xe9/album"),  # a surrogate-bearing path
-        "/downloads/" + "x" * 4096,  # past NAME_MAX and PATH_MAX -> OSError
-        "/downloads/a\x00b",  # an embedded NUL -> ValueError
-    ):
-        with pytest.raises(SourcePathMissingError):
-            runner.validate([hostile], None)
-
-
 def test_the_existence_check_costs_one_stat_and_no_walk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``validate`` runs on the event loop, so it must not list the source."""
+    """One stat per source, never a walk — the guard must not pay for the folder.
+
+    ``validate`` moved OFF the loop this round, so the loop is no longer the
+    reason: a walk on a hung mount holds a WORKER thread for as long as the mount
+    hangs, and the start path is capped at one of those
+    (``app/api/import_.py::start_import_off_loop``).
+    """
     from app.import_jobs.runner import BeetsImportRunner
 
     _reg, lib = _real_registry(tmp_path)
@@ -1487,3 +1499,541 @@ def test_the_existence_check_costs_one_stat_and_no_walk(
 
     assert [s for s in scans if s.startswith(str(source))] == []
     assert [s for s in stats if s.startswith(str(source))] == [str(source)]
+
+
+# ----- 14: "doesn't exist" must not also be what a PERMISSIONS problem says -----
+#
+# Measured 2026-09-20: a real album folder under a parent chmod'd 0o600 ->
+# ``os.path.exists`` False, exactly as for an absent one, while ``os.stat``
+# reported errno 13, Permission denied. The container drops to the operator's
+# PUID via gosu, so a downloads share owned by another uid is a real shape, and
+# a PUID/GID mismatch is the commonest self-hosted misconfiguration.
+
+_UNREADABLE = "That folder can't be read. Permission denied."
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")
+def test_a_source_the_owner_cannot_read_says_so_rather_than_missing(tmp_path: Path) -> None:
+    """The refusal's whole value is naming what to fix.
+
+    The absent case keeps the owner-approved sentence (its own test above); this
+    is the other side, and one of the two must fail whichever way the errno
+    split is removed.
+    """
+    _reg, lib = _real_registry(tmp_path)
+    parent = tmp_path / "downloads"
+    folder = _album_folder(parent, b"okc")
+    parent.chmod(0o600)  # searchable by nobody: the stat below is refused
+    try:
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.post("/api/import", json={"path": str(folder)})
+    finally:
+        parent.chmod(0o755)
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == _UNREADABLE
+    # ``strerror`` is the OS's own summary and names no path, which is what makes
+    # surfacing it safe.
+    assert str(folder) not in resp.json()["detail"]
+    assert _reg.active_job_id() is None
+    assert list(lib.albums()) == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")
+def test_review_all_keeps_the_reason_when_the_settled_folders_are_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The batch route's plural copy must not overwrite an actionable diagnosis.
+
+    The state is CONSTRUCTED, not observed: ``settled_folders`` answers ``[]`` on
+    any ``OSError``, so the real system cannot hand this route a folder out of an
+    inbox it cannot read — it reports "nothing to review" instead (pre-existing,
+    recorded in BACKLOG, deliberately not changed here). The patch is what puts a
+    folder in the caller's hands with the stat still refused, which is the only
+    way to reach the branch under test: ``exc.unreadable`` deciding the 422's
+    sentence, the defect the errno split exists to remove re-introduced one layer
+    up.
+    """
+    _reg, _lib = _real_registry(tmp_path)
+    inbox = tmp_path / "inbox"
+    folder = _album_folder(inbox, b"unreadable")
+
+    import app.api.acquisition as acq_api
+
+    monkeypatch.setattr(acq_api, "settled_folders", lambda *a, **k: [folder])
+    monkeypatch.setattr(acq_api, "count_pending", lambda _d: 1)
+    monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
+    inbox.chmod(0o600)
+    try:
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.post("/api/acquisition/review-inbox")
+    finally:
+        inbox.chmod(0o755)
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == _UNREADABLE
+    assert _reg.active_job_id() is None
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")
+def test_the_per_item_import_answers_a_permissions_fault_rather_than_500ing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The third route has to say what the other two say about the same fault.
+
+    ``app.fsutil.is_dir`` swallows only ENAMETOOLONG, so ``Path.is_dir`` re-raises
+    EACCES from the resolve step — BEFORE ``reg.start``, where the route's own
+    ``except`` clauses could not see it. Measured on a pristine HEAD tree as an
+    unhandled 500; pre-existing, and in scope because a PUID/GID mismatch reading
+    as a crash is what this round exists to end.
+
+    The fake runner, so the control below starts a job without beets touching the
+    folder: what is under test is the resolve step, not the import.
+    """
+    from app.import_jobs.fakes import FakeImportRunner
+
+    inbox = tmp_path / "inbox"
+    folder = inbox / "locked"
+    folder.mkdir(parents=True)
+    monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    reset_registry(runner=FakeImportRunner(parked=[]))
+    ok = client.post("/api/acquisition/inbox/items/import", json={"name": "locked"})
+    assert ok.status_code == 200, ok.text  # the control: readable, and accepted
+
+    reg = reset_registry(runner=FakeImportRunner(parked=[]))  # the single slot, free again
+    inbox.chmod(0o600)  # searchable by nobody: the stat is refused
+    try:
+        resp = client.post("/api/acquisition/inbox/items/import", json={"name": "locked"})
+    finally:
+        inbox.chmod(0o755)
+
+    assert resp.status_code == 422, resp.text
+    # Not "Inbox item not found", which would call a folder that is right there
+    # missing, and not a 500.
+    assert resp.json()["detail"] == _UNREADABLE
+    assert str(folder) not in resp.json()["detail"]
+    assert reg.active_job_id() is None
+
+
+def test_every_hostile_path_still_reaches_a_verdict(tmp_path: Path) -> None:
+    """Paths the OS rejects reach this guard from the disk-side callers.
+
+    ``os.stat`` RAISES where ``os.path.exists`` swallowed, so each shape has to
+    be caught and classified rather than propagated. Everything that names
+    nothing on disk reads as absent; a link loop is something the OS refused to
+    answer for, so it takes the other sentence — and both are verdicts.
+    """
+    from app.import_jobs.runner import BeetsImportRunner, SourcePathMissingError
+
+    _reg, lib = _real_registry(tmp_path)
+    runner = BeetsImportRunner(lib)
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)  # ELOOP on every stat
+    track = tmp_path / "track.mp3"
+    track.write_bytes(b"x")
+
+    absent = (
+        os.fsdecode(b"/downloads/Caf\xe9/album"),  # a surrogateescape byte (encodes)
+        # A LONE surrogate. The escaped PAIR that stood here reached no arm at
+        # all: CPython folds it into U+10000, which encodes fine and stats ENOENT
+        # (measured from a written file 2026-09-20 — a shell heredoc folds it the
+        # same way, which is how it read as confirmed).
+        "/downloads/\ud800",  # -> UnicodeEncodeError
+        "/downloads/" + "x" * 4096,  # past NAME_MAX and PATH_MAX -> ENAMETOOLONG
+        "/downloads/a\x00b",  # an embedded NUL -> ValueError
+        f"{track}/x",  # a FILE with a child component -> ENOTDIR
+    )
+    for hostile in absent:
+        with pytest.raises(SourcePathMissingError) as caught:
+            runner.validate([hostile], None)
+        assert str(caught.value) == _MISSING, hostile
+        assert caught.value.unreadable is False, hostile
+
+    with pytest.raises(SourcePathMissingError) as looped:
+        runner.validate([str(loop)], None)
+    assert looped.value.unreadable is True
+    assert str(looped.value).startswith("That folder can't be read. ")
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")
+def test_the_first_unreadable_member_decides_the_sentence(tmp_path: Path) -> None:
+    """Two members the OS refuses differently, and the FIRST one is quoted.
+
+    The short-circuit is what makes it the first rather than the last, and with
+    two unreadables it is the only thing that does: dropping it left the file
+    green. Both orders are asserted, so a mutant keeping the last one cannot pass
+    by happening to agree.
+    """
+    from app.import_jobs.runner import missing_source_error
+
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)  # ELOOP
+    parent = tmp_path / "shut"
+    folder = parent / "album"
+    folder.mkdir(parents=True)
+    parent.chmod(0o600)  # EACCES on the stat below
+    try:
+        loop_first = missing_source_error([str(loop), str(folder)])
+        folder_first = missing_source_error([str(folder), str(loop)])
+    finally:
+        parent.chmod(0o755)
+
+    assert loop_first is not None
+    assert folder_first is not None
+    assert str(loop_first) == "That folder can't be read. Too many levels of symbolic links."
+    assert str(folder_first) == _UNREADABLE
+    assert loop_first.unreadable is True
+    assert folder_first.unreadable is True
+
+
+def test_an_empty_source_list_is_nothing_to_import(tmp_path: Path) -> None:
+    """``validate([])`` used to return None and ``start([])`` to finish at phase
+    ``done``, 0 albums, no error — the reported defect, reached through the
+    guard. Not reachable from a route today (every caller hands over at least
+    one source), so the predicate is what pins it: "no source exists" is exactly
+    what an empty list means.
+    """
+    from app.import_jobs.runner import BeetsImportRunner, SourcePathMissingError
+
+    _reg, lib = _real_registry(tmp_path)
+    with pytest.raises(SourcePathMissingError, match=r"^That folder doesn\'t exist\.$"):
+        BeetsImportRunner(lib).validate([], None)
+
+
+# ----- 15: the start must not park a request thread on the source's filesystem -----
+
+
+def _on_the_loop() -> bool:
+    """Whether the CALLING thread is running the event loop.
+
+    ``asyncio.get_running_loop()`` answers for the calling thread and raises in
+    an anyio threadpool worker, so it is an exact discriminator for "this
+    blocking call was offloaded" — where ``threading.main_thread()`` is not
+    (the test client runs the loop in a portal thread, so neither side is main).
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+@pytest.mark.anyio
+async def test_a_start_whose_source_stat_blocks_leaves_the_loop_serving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A caller-named path's filesystem must not decide the loop's availability.
+
+    Measured on the previous commit against a FUSE filesystem whose ``getattr``
+    sleeps: ``reg.start`` took 10000.6 ms and produced a 10002.7 ms event-loop
+    gap against a 2.1 ms idle baseline (security seat, 2026-09-20). Reproduced
+    here without FUSE by blocking inside ``validate``, which is where the stat
+    is: the second request must be SERVED while the first is still in ``start``.
+    """
+    reg, lib = _real_registry(tmp_path)
+    # A path that is not there, so the blocked ``validate`` ends in the ordinary
+    # refusal and no beets session runs: this test is about the loop, not the
+    # import.
+    folder = tmp_path / "downloads" / "hung"
+    entered = threading.Event()
+    release = threading.Event()
+    on_loop: list[bool] = []
+
+    from app.import_jobs.runner import BeetsImportRunner
+
+    real_validate = BeetsImportRunner.validate
+
+    def blocking_validate(self: Any, paths: list[str], options: Any = None) -> str | None:
+        on_loop.append(_on_the_loop())
+        entered.set()
+        release.wait(10)
+        return real_validate(self, paths, options)
+
+    monkeypatch.setattr(BeetsImportRunner, "validate", blocking_validate)
+    transport = httpx.ASGITransport(app=app)
+    # ``TestClient`` is stamped with a session cookie suite-wide (conftest); an
+    # ``httpx.AsyncClient`` is not, and the session gate is secure by default.
+    jar = {SESSION_COOKIE_NAME: session_cookie_value()}
+    started: list[int] = []
+
+    def client() -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=transport, base_url="http://testserver", cookies=jar)
+
+    async def start_it() -> None:
+        async with client() as c:
+            started.append((await c.post("/api/import", json={"path": str(folder)})).status_code)
+
+    async with anyio.create_task_group() as group:
+        group.start_soon(start_it)
+        await anyio.to_thread.run_sync(entered.wait, 10)
+        assert entered.is_set(), "the start never reached validate"
+        began = time.monotonic()
+        async with client() as c:
+            probe = await c.get("/api/imports/active")
+        served = time.monotonic() - began
+        release.set()
+
+    assert probe.status_code == 200, probe.text
+    # A generous ceiling: on the loop this waits out the whole block (10 s here,
+    # 10 s measured on the hung mount), so the margin is two orders of magnitude.
+    assert served < 2.0, served
+    # ...and the blocking call did not run on the loop thread at all. Asserted
+    # as a LIST, so it doubles as a call-count pin.
+    assert on_loop == [False]
+    assert started == [422], started  # the blocked start still answered normally
+    assert reg.active_job_id() is None
+    assert list(lib.albums()) == []
+
+
+def _loop_recording_runner(on_loop: list[bool], threads: list[int] | None = None) -> Any:
+    """A ``FakeImportRunner`` recording whether ``validate`` ran on the loop.
+
+    The fake, not the real runner, so the routes below answer without beets:
+    what is under test is WHERE the caller-path work happens, not what it finds.
+    ``threads`` collects the recorded ident when a caller compares the halves.
+    """
+    from app.import_jobs.fakes import FakeImportRunner
+
+    class _Recording(FakeImportRunner):
+        def validate(self, paths: list[str], options: Any = None) -> str | None:
+            on_loop.append(_on_the_loop())
+            if threads is not None:
+                threads.append(threading.get_ident())
+            return super().validate(paths, options)
+
+    return _Recording(parked=[])
+
+
+@pytest.mark.anyio
+async def test_review_all_starts_off_the_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``start`` -> ``validate`` stats every settled folder; the loop must not wait."""
+    import app.api.acquisition as acq_api
+
+    inbox = tmp_path / "inbox"
+    folder = inbox / "okc"
+    folder.mkdir(parents=True)
+    started_on_loop: list[bool] = []
+    reset_registry(runner=_loop_recording_runner(started_on_loop))
+    monkeypatch.setattr(acq_api, "settled_folders", lambda *a, **k: [folder])
+    monkeypatch.setattr(acq_api, "count_pending", lambda _d: 1)
+    monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
+
+    transport = httpx.ASGITransport(app=app)
+    jar = {SESSION_COOKIE_NAME: session_cookie_value()}
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver", cookies=jar
+    ) as c:
+        resp = await c.post("/api/acquisition/review-inbox")
+
+    assert resp.status_code == 200, resp.text
+    assert started_on_loop == [False]
+
+
+@pytest.mark.anyio
+async def test_the_per_item_import_does_its_whole_path_block_off_the_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """This route resolves, CONTAINS and stats the name before it ever starts.
+
+    ``contain`` calls ``Path.resolve`` and ``is_dir`` is a real stat, so moving
+    only ``start`` would leave the route parked on the same filesystem it was
+    parked on before. Both recorders have to come back off-loop.
+    """
+    import app.api.acquisition as acq_api
+    from app.fsutil import is_dir as real_is_dir
+
+    inbox = tmp_path / "inbox"
+    folder = inbox / "okc"
+    folder.mkdir(parents=True)
+    started_on_loop: list[bool] = []
+    stat_on_loop: list[bool] = []
+    hop_threads: list[int] = []
+
+    def recording_is_dir(path: Path) -> bool:
+        stat_on_loop.append(_on_the_loop())
+        hop_threads.append(threading.get_ident())
+        return real_is_dir(path)
+
+    reset_registry(runner=_loop_recording_runner(started_on_loop, hop_threads))
+    monkeypatch.setattr(acq_api, "is_dir", recording_is_dir)
+    monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
+
+    transport = httpx.ASGITransport(app=app)
+    jar = {SESSION_COOKIE_NAME: session_cookie_value()}
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver", cookies=jar
+    ) as c:
+        resp = await c.post("/api/acquisition/inbox/items/import", json={"name": "okc"})
+
+    assert resp.status_code == 200, resp.text
+    assert stat_on_loop == [False]
+    assert started_on_loop == [False]
+    # Both halves on ONE worker thread. Weak on its own — an idle pool hands the
+    # second hop the same thread straight back — so the test below it is what
+    # measures the property this only pins the shape of.
+    assert len(hop_threads) == 2, hop_threads
+    assert hop_threads[0] == hop_threads[1], hop_threads
+
+
+@pytest.mark.anyio
+async def test_the_per_item_import_does_not_queue_for_a_thread_between_check_and_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gap between the containment check and the start must not grow with load.
+
+    Nothing re-validates containment before beets opens the resolved path, so
+    that string is trusted across the gap either way — what matters is its size.
+    One synchronous block on HEAD, it was 0.003-0.010 ms and did not move with
+    load; split into two threadpool hops it has to queue for a fresh token, and
+    with 39 stuck and 12 contenders its MINIMUM was 3002.9 ms (measured
+    2026-09-20). The named non-adversarial case is slskd finalising a temp
+    directory name inside the window.
+
+    Reproduced with the shared pool shrunk to ONE token: a competitor queues for
+    it while the route's own hop holds it. In one hop the start never asks for a
+    token again and the answer does not wait for the competitor; in two it lines
+    up behind it.
+    """
+    import app.api.acquisition as acq_api
+    from app.fsutil import is_dir as real_is_dir
+
+    inbox = tmp_path / "inbox"
+    folder = inbox / "okc"
+    folder.mkdir(parents=True)
+    entered = threading.Event()
+    release = threading.Event()
+    competitor_block = 2.0
+
+    def blocking_is_dir(path: Path) -> bool:
+        entered.set()
+        release.wait(10)
+        return real_is_dir(path)
+
+    reset_registry(runner=_loop_recording_runner([]))
+    monkeypatch.setattr(acq_api, "is_dir", blocking_is_dir)
+    monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
+
+    transport = httpx.ASGITransport(app=app)
+    jar = {SESSION_COOKIE_NAME: session_cookie_value()}
+    answered: list[tuple[int, float]] = []
+    finished = anyio.Event()
+
+    async def import_it() -> None:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver", cookies=jar
+        ) as c:
+            began = time.monotonic()
+            resp = await c.post("/api/acquisition/inbox/items/import", json={"name": "okc"})
+            answered.append((resp.status_code, time.monotonic() - began))
+        finished.set()
+
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    original = limiter.total_tokens
+    limiter.total_tokens = 1
+    try:
+        async with anyio.create_task_group() as group:
+            group.start_soon(import_it)
+            # Waited on the LOOP, never through ``to_thread``: the one token is
+            # held by the hop under test, so waiting in the pool would deadlock.
+            await anyio.sleep(0.25)
+            assert entered.is_set(), "the route never reached the containment check"
+            group.start_soon(anyio.to_thread.run_sync, time.sleep, competitor_block)
+            await anyio.sleep(0.1)  # let the competitor reach the acquire
+            released = time.monotonic()
+            release.set()
+            await finished.wait()
+            waited = time.monotonic() - released
+    finally:
+        limiter.total_tokens = original
+
+    assert answered[0][0] == 200, answered
+    # A generous ceiling against a 2 s competitor: two hops would spend the whole
+    # of it queued behind it.
+    assert waited < 1.0, (waited, answered)
+
+
+# ----- 16: the start path's share of the PROCESS-WIDE thread pool -----
+
+
+@pytest.mark.anyio
+async def test_the_import_start_path_takes_one_worker_thread_however_many_callers() -> None:
+    """anyio's pool is process-wide and holds 40; sign-in draws from the same one.
+
+    With the slot claimed only AFTER ``validate``, nothing bounded how many stats
+    were in flight: 40 concurrent starts against a hung mount took every token,
+    ``POST /api/auth/login`` timed out at 20 s, and ``GET /api/health`` answered
+    200 in 0.7 ms throughout (measured 2026-09-20).
+    """
+    from app.api.import_ import start_import_off_loop
+
+    lock = threading.Lock()
+    release = threading.Event()
+    inside = 0
+    peak = 0
+    done: list[str] = []
+
+    def blocking() -> str:
+        nonlocal inside, peak
+        with lock:
+            inside += 1
+            peak = max(peak, inside)
+        release.wait(10)
+        with lock:
+            inside -= 1
+        return "ok"
+
+    async def call() -> None:
+        done.append(await start_import_off_loop(blocking))
+
+    async with anyio.create_task_group() as group:
+        for _ in range(5):
+            group.start_soon(call)
+        await anyio.sleep(0.2)  # every caller has queued by now
+        with lock:
+            concurrent = inside
+        borrowed = anyio.to_thread.current_default_thread_limiter().borrowed_tokens
+        release.set()
+
+    assert concurrent == 1, concurrent
+    assert peak == 1, peak
+    # ...and the app keeps the other 39 for its sync ``Depends`` and its derive.
+    assert borrowed == 1, borrowed
+    assert done == ["ok"] * 5
+
+
+@pytest.mark.anyio
+async def test_a_cancelled_import_start_keeps_its_slot_until_the_thread_returns() -> None:
+    """A client disconnect must not hand the slot on while the worker is stuck.
+
+    The reason admission is taken by hand rather than passed to anyio as
+    ``limiter=``: ``app/api/auth.py::_one_derive_at_a_time`` measured peak 3
+    concurrent derives at a cap of 1 that way, because unwinding released the
+    token while the un-interruptible thread kept going.
+    """
+    from app.api.import_ import _IMPORT_START_SLOTS, start_import_off_loop
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking() -> str:
+        entered.set()
+        release.wait(10)
+        return "ok"
+
+    async def gives_up() -> None:
+        with anyio.move_on_after(0.05):
+            await start_import_off_loop(blocking)
+
+    async with anyio.create_task_group() as group:
+        group.start_soon(gives_up)
+        await anyio.to_thread.run_sync(entered.wait, 10)
+        await anyio.sleep(0.3)  # six times the caller's own deadline
+        held_after_giving_up = _IMPORT_START_SLOTS.borrowed_tokens
+        release.set()
+
+    assert held_after_giving_up == 1, held_after_giving_up
+    assert _IMPORT_START_SLOTS.borrowed_tokens == 0

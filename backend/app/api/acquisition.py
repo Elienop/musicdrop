@@ -25,7 +25,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.acquisition.inbox import contain, count_pending, list_inbox, settled_folders
 from app.acquisition.ledger import AcquisitionLedger
-from app.api.import_ import ensure_import_can_start
+from app.api.import_ import ensure_import_can_start, start_import_off_loop
 from app.beets.library import LibraryRootUnavailableError
 from app.config import settings
 from app.fsutil import is_dir
@@ -34,7 +34,11 @@ from app.import_jobs.registry import (
     LibraryRefusedError,
     get_registry,
 )
-from app.import_jobs.runner import SourcePathMissingError
+from app.import_jobs.runner import (
+    ABSENT_ERRNOS,
+    SourcePathMissingError,
+    unreadable_source_error,
+)
 from app.models.acquisition import (
     AcquisitionQueueStatus,
     ImportInboxItemRequest,
@@ -46,6 +50,65 @@ from app.models.import_models import ImportOptions
 from app.wire import AmbiguousDisplayName, resolve_display_path
 
 router = APIRouter(tags=["acquisition"])
+
+#: The batch route's own refusal copy. The shared sentence is singular and about
+#: a folder the caller typed; this route hands over folders the browser is never
+#: shown, and only refuses when EVERY one of them vanished. An unreadable folder
+#: keeps the guard's own sentence instead — it names something to fix.
+_BATCH_SOURCES_GONE: Final = "Those folders are no longer there."
+
+
+def _resolve_inbox_folder(inbox_dir: Path, name: str) -> Path | None:
+    """Map a display name onto the real entry, contain it, and require a folder.
+
+    Blocking throughout: ``resolve_display_path`` lists the inbox, ``contain``
+    calls ``Path.resolve`` and ``is_dir`` stats — each takes as long as the
+    filesystem takes to answer, so this runs on a worker thread as part of
+    ``_start_inbox_item``.
+
+    Three failure modes, and the third is why ``_start_inbox_item`` wraps this
+    one: ``AmbiguousDisplayName`` (409), ``None`` for a name that resolves to
+    nothing under the inbox (404), and an ``OSError`` for a path the OS refuses
+    to answer for — ``app.fsutil.is_dir`` swallows only ENAMETOOLONG, so an
+    unreadable parent re-raises EACCES from here.
+    """
+    target = resolve_display_path(inbox_dir, name)
+    contained = contain(str(target), inbox_dir, strict=True)
+    if contained is None or not is_dir(contained):
+        return None
+    return contained
+
+
+def _start_inbox_item(reg: ImportJobRegistry, inbox_dir: Path, name: str) -> str | None:
+    """Resolve, contain, stat and START one inbox folder — in ONE threadpool hop.
+
+    One hop, not two: nothing re-validates containment before beets opens the
+    resolved path, so the string is trusted across whatever gap sits between the
+    check and the start. Synchronous on HEAD, that gap was 0.003-0.010 ms and did
+    not move with load; split over two hops with a real suspension point between,
+    it reached a MINIMUM of 3002.9 ms with anyio's pool saturated (measured
+    2026-09-20). The non-adversarial case is slskd finalising a temp directory
+    name inside the window.
+
+    ``None`` is the route's 404 — the name resolves to nothing under the inbox,
+    or the inbox itself is gone. An OS refusal that is NOT absence becomes the
+    guard's own unreadable refusal (422) instead of escaping as a 500, so all
+    three import-start routes say the same thing about a PUID/GID mismatch.
+    """
+    try:
+        contained = _resolve_inbox_folder(inbox_dir, name)
+    except OSError as exc:
+        if exc.errno in ABSENT_ERRNOS:
+            return None
+        raise unreadable_source_error(exc) from None
+    if contained is None:
+        return None
+    return reg.start(
+        str(contained),
+        options=ImportOptions(operation="move"),
+        origin="inbox",
+    )
+
 
 #: Both import-starting routes below refuse with the SAME 409 for the same two
 #: reasons: ``ensure_import_can_start`` (a beets swap, a library backfill, or
@@ -105,7 +168,7 @@ async def get_acquisition_status(request: Request) -> AcquisitionQueueStatus:
         # validation arm for it to add to (tests/test_openapi_overlay.py).
         422: {
             "model": ErrorDetail,
-            "description": "Every folder handed over no longer exists.",
+            "description": "Every folder handed over no longer exists, or cannot be read.",
         },
         503: _LIBRARY_REFUSED_RESPONSE,
     },
@@ -151,15 +214,25 @@ async def review_inbox(
     total = await run_in_threadpool(count_pending, inbox_dir)
     in_flight = max(0, total - pending)
     try:
-        job_id = reg.start(
-            [str(folder) for folder in folders],
-            options=ImportOptions(operation="move"),
-            origin="inbox",
+        # Off the loop: ``start`` -> ``validate`` stats each handed-over folder,
+        # and a stat on a hung mount does not return (see the same call in
+        # app/api/import_.py for the measurement and the thread-safety).
+        # Capped at one concurrent start (see ``start_import_off_loop``): a stat
+        # that never returns must cost one of anyio's 40 process-wide tokens, not
+        # all of them.
+        job_id = await start_import_off_loop(
+            partial(
+                reg.start,
+                [str(folder) for folder in folders],
+                options=ImportOptions(operation="move"),
+                origin="inbox",
+            )
         )
     except SourcePathMissingError as exc:
         # Every settled folder was removed between the listing and the start.
         # Mapped here so the race answers rather than 500ing.
-        raise HTTPException(status_code=422, detail=str(exc)) from None
+        detail = str(exc) if exc.unreadable else _BATCH_SOURCES_GONE
+        raise HTTPException(status_code=422, detail=detail) from None
     except (LibraryRefusedError, LibraryRootUnavailableError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     except RuntimeError:
@@ -205,7 +278,7 @@ async def list_inbox_items(request: Request) -> InboxListing:
         # The folder can be removed between this route's own is_dir check and
         # the start; the import refuses rather than filing nothing.
         422: validation_or_detail_422(
-            "The folder no longer exists, or the request failed validation."
+            "The folder no longer exists or cannot be read, or the request failed validation."
         ),
         # The shared refusal PLUS this route's own ambiguous-name guard, which
         # answers with the same status.
@@ -239,9 +312,11 @@ async def import_inbox_item(
     # ``name`` is the display-safe value the listing emitted, so a folder whose
     # name is not valid UTF-8 comes back carrying placeholders; map it onto the
     # real entry before containing it, and refuse rather than guess when two
-    # folders display alike.
+    # folders display alike. Resolve and start are ONE hop (see
+    # ``_start_inbox_item``), capped at one concurrent start (see
+    # ``start_import_off_loop``).
     try:
-        target = resolve_display_path(inbox_dir, body.name)
+        job_id = await start_import_off_loop(partial(_start_inbox_item, reg, inbox_dir, body.name))
     except AmbiguousDisplayName:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -250,12 +325,10 @@ async def import_inbox_item(
                 "not valid UTF-8. Rename one on disk to tell them apart."
             ),
         ) from None
-    contained = contain(str(target), inbox_dir, strict=True)
-    if contained is None or not is_dir(contained):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inbox item not found")
-    try:
-        job_id = reg.start(str(contained), options=ImportOptions(operation="move"), origin="inbox")
     except SourcePathMissingError as exc:
+        # 422, not the route's own 404: with the errno split this sentence is
+        # accurate about WHICH condition hit, including the unreadable one that
+        # "Inbox item not found" would misreport.
         raise HTTPException(status_code=422, detail=str(exc)) from None
     except (LibraryRefusedError, LibraryRootUnavailableError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
@@ -263,4 +336,6 @@ async def import_inbox_item(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="An import is already running"
         ) from None
+    if job_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inbox item not found")
     return ReviewInboxResponse(started=True, job_id=job_id, pending=1)
