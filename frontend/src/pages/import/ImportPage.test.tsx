@@ -436,7 +436,7 @@ describe("ImportPage — entry", () => {
     server.use(
       http.post(IMPORT_URL, () =>
         HttpResponse.json(
-          { detail: "That folder doesn't exist." },
+          { detail: "That folder doesn’t exist." },
           { status: 422 },
         ),
       ),
@@ -449,7 +449,7 @@ describe("ImportPage — entry", () => {
     await user.click(screen.getByRole("button", { name: /start import/i }));
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("That folder doesn't exist.");
+    expect(alert).toHaveTextContent("That folder doesn’t exist.");
     expect(field).toHaveAttribute("aria-invalid", "true");
     expect(
       screen.getByRole("button", { name: /start import/i }),

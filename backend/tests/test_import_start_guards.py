@@ -1129,7 +1129,7 @@ def test_the_inbox_drain_survives_a_folder_that_is_no_longer_there(
         status = queue.status()
         assert status.processed == 1
         assert status.failed == 1
-        assert status.error == "That folder doesn't exist."
+        assert status.error == "That folder doesn’t exist."
         # The RAW entries, not ``seen()``: ``seen`` stats the folder first and
         # answers False for one that is gone whether ``mark`` ran or not, so it
         # cannot see this at all (adding a ``mark`` to the drain arm left the
@@ -1360,7 +1360,7 @@ def test_review_all_refuses_when_EVERY_settled_folder_vanished(
 # session normally - so the app created a job, ran it, and said "Import finished
 # - 0 albums imported". Nothing refused.
 
-_MISSING = "That folder doesn't exist."
+_MISSING = "That folder doesn’t exist."
 
 
 def test_a_source_that_does_not_exist_is_refused_before_any_job(tmp_path: Path) -> None:
@@ -1424,7 +1424,7 @@ def test_a_list_refuses_only_when_NO_member_is_there(tmp_path: Path) -> None:
 
     runner = BeetsImportRunner(lib)
     runner.validate([str(gone), str(here)], None)
-    with pytest.raises(SourcePathMissingError, match=r"^That folder doesn't exist\.$"):
+    with pytest.raises(SourcePathMissingError, match=r"^That folder doesn’t exist\.$"):
         runner.validate([str(gone), str(other)], None)
 
 
@@ -1516,7 +1516,7 @@ def test_the_existence_check_costs_one_stat_and_no_walk(
 # PUID via gosu, so a downloads share owned by another uid is a real shape, and
 # a PUID/GID mismatch is the commonest self-hosted misconfiguration.
 
-_UNREADABLE = "That folder can't be read. Permission denied."
+_UNREADABLE = "That folder can’t be read. Permission denied."
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")
@@ -1584,7 +1584,7 @@ def test_review_all_keeps_the_reason_when_the_settled_folders_are_unreadable(
 
     assert resp.status_code == 422, resp.text
     detail = resp.json()["detail"]
-    assert detail == "\u201cunreadable\u201d can't be read. Permission denied.", detail
+    assert detail == "\u201cunreadable\u201d can’t be read. Permission denied.", detail
     # The BASENAME only - the listing already ships it as ``InboxItem.name``, so
     # this discloses nothing new, and the absolute path stays server-side.
     assert str(folder) not in detail
@@ -1671,7 +1671,7 @@ def test_every_hostile_path_still_reaches_a_verdict(tmp_path: Path) -> None:
     with pytest.raises(SourcePathMissingError) as looped:
         runner.validate([str(loop)], None)
     assert looped.value.unreadable is True
-    assert str(looped.value).startswith("That folder can't be read. ")
+    assert str(looped.value).startswith("That folder can’t be read. ")
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")
@@ -1699,7 +1699,7 @@ def test_the_first_unreadable_member_decides_the_sentence(tmp_path: Path) -> Non
 
     assert loop_first is not None
     assert folder_first is not None
-    assert str(loop_first) == "That folder can't be read. Too many levels of symbolic links."
+    assert str(loop_first) == "That folder can’t be read. Too many levels of symbolic links."
     assert str(folder_first) == _UNREADABLE
     assert loop_first.unreadable is True
     assert folder_first.unreadable is True
@@ -1715,7 +1715,7 @@ def test_an_empty_source_list_is_nothing_to_import(tmp_path: Path) -> None:
     from app.import_jobs.runner import BeetsImportRunner, SourcePathMissingError
 
     _reg, lib = _real_registry(tmp_path)
-    with pytest.raises(SourcePathMissingError, match=r"^That folder doesn\'t exist\.$"):
+    with pytest.raises(SourcePathMissingError, match=r"^That folder doesn’t exist\.$"):
         BeetsImportRunner(lib).validate([], None)
 
 
@@ -2239,7 +2239,7 @@ def test_the_batch_refusal_names_an_undecodable_folder_the_way_the_listing_does(
 
     assert resp.status_code == 422, resp.text
     detail = resp.json()["detail"]
-    assert detail == "\u201cbad\ufffdname\u201d can't be read. Permission denied.", detail
+    assert detail == "\u201cbad\ufffdname\u201d can’t be read. Permission denied.", detail
     # The listing's own spelling of the same name, so the two agree.
     assert "bad\ufffdname" == display_path(os.fsdecode(os.fsencode(folder.name)))
 
@@ -2278,7 +2278,7 @@ def test_a_hostile_folder_name_cannot_forge_the_refusal_it_is_quoted_in() -> Non
     # Exactly the two delimiters - the name contributed none.
     assert forged.count("\u201c") == 1, forged
     assert forged.count("\u201d") == 1, forged
-    assert forged.endswith("can't be read. Permission denied."), forged
+    assert forged.endswith("can’t be read. Permission denied."), forged
 
     for hostile in ("\u202eevil", "a\nWARNING forged line", "\x1b[31mRED", "\u2066flip"):
         sentence = _refusal_for(hostile)
@@ -2288,7 +2288,7 @@ def test_a_hostile_folder_name_cannot_forge_the_refusal_it_is_quoted_in() -> Non
     # The control: a name that only LOOKS like the sentence is still named in
     # full, which is what the quoting is for.
     assert _refusal_for("Permission denied") == (
-        "\u201cPermission denied\u201d can't be read. Permission denied."
+        "\u201cPermission denied\u201d can’t be read. Permission denied."
     )
 
 
@@ -2318,7 +2318,7 @@ def test_a_folder_with_no_nameable_basename_falls_back_to_the_singular() -> None
 
     for filename in ("/", ""):
         exc = unreadable_source_error(PermissionError(errno.EACCES, "Permission denied", filename))
-        assert _batch_unreadable_sentence(exc) == "That folder can't be read. Permission denied."
+        assert _batch_unreadable_sentence(exc) == "That folder can’t be read. Permission denied."
 
 
 def test_a_crash_message_is_cut_at_its_first_absolute_path() -> None:

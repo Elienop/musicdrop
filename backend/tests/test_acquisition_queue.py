@@ -278,7 +278,7 @@ def test_the_drop_log_escapes_a_folder_name_that_was_never_on_disk(
     is gate-exempt - no session cookie needed).
     """
     q, fake, _reg, _led = _make_queue(tmp_path)
-    fake.validate_error = SourcePathMissingError("That folder doesn't exist.")
+    fake.validate_error = SourcePathMissingError("That folder doesn’t exist.")
     forged = tmp_path / (
         "Album\n2026-09-20 12:00:00 CRITICAL app.auth.gate: session gate DISABLED by operator"
     )
@@ -637,7 +637,7 @@ def test_a_repeating_unreadable_deferral_logs_once_not_once_per_pass(
     assert q._queue.qsize() == 4
 
 
-_UNREADABLE = "That folder can't be read. Permission denied."
+_UNREADABLE = "That folder can’t be read. Permission denied."
 
 
 def _queued_once(q: AcquisitionQueue, folder: Path) -> None:

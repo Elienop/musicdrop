@@ -342,7 +342,7 @@ describe("ReviewPage", () => {
 
   /** The source-missing refusal (2026-09-20). The batch route says it in the
    * plural: it never shows the browser which inbox folders it handed over. */
-  const GONE_ONE = "That folder doesn't exist.";
+  const GONE_ONE = "That folder doesn’t exist.";
   const GONE_ALL = "Those folders are no longer there.";
 
   test.each([
@@ -490,7 +490,7 @@ describe("ReviewPage", () => {
    * folder cannot be walked. The backend omits exactly that folder from the
    * listing (it cannot count its tracks), so the refetch both mutations fire in
    * `onSettled` empties the list the user pressed. */
-  const UNREADABLE = "That folder can't be read. Permission denied.";
+  const UNREADABLE = "That folder can’t be read. Permission denied.";
 
   /** The listing the Review page polls: the row once, then nothing — the shape
    * an unreadable folder produces the moment the probe runs again.

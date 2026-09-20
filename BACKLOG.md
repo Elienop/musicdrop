@@ -764,6 +764,26 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `backend/tests/conftest.py` already describes. Not fixed: resetting confuse deterministically is
   a design question and touching the shared conftest could destabilise the suite. Search words:
   confuse, LazyConfig, NotFoundError, timeout, flaky, build_library.
+- **Backend user-facing copy is half-curly: sweep the rest.** Owner's call 2026-09-20 — app copy
+  uses TYPOGRAPHIC punctuation, because the user never sees a `.py` file, they see one page, and
+  the frontend already uses `’` (153 sites) and quotes user data with `“ ”`
+  (`Results for “jazz”`). This round converted the three sentences it added
+  (`That folder can’t be read.`, `That folder doesn’t exist.`, the batch
+  `“<name>” can’t be read.`) and their pins. **Not swept**: the other user-facing
+  backend sentences still use straight apostrophes, so the same alert can show both dialects —
+  e.g. `Couldn't reach the slskd server.` (`app/slskd/service.py`), `Couldn't reach the Plex
+  server.` (`app/plex/service.py`), `Couldn't read the library files.` /
+  `Couldn't save this playlist.` (`app/api/playlists.py`), `Rescan isn't available for this
+  album.` (`app/beets/import_session.py`). Measured: an AST pass over `backend/app` finds 175
+  string literals containing a straight apostrophe, but the large majority are DOCSTRINGS, which
+  are not in scope — the sweep is only the sentences that reach a response body or a rendered
+  field, on the order of 30-40. Each has test pins, so it is mechanical but not trivial.
+  **The lint blocker is already cleared**: ruff's `RUF001/2/3` flag `’` as confusable with
+  `'` (20 errors on this round's three sentences alone), so `backend/pyproject.toml` now sets
+  `allowed-confusables = ["\u2019", "\u201c", "\u201d"]` — the rule stays live for what it is
+  for (a Cyrillic `а` or Greek `ο` in an identifier still fails), so the sweep needs no
+  further config. Search words: apostrophe, curly, typographic, U+2019, copy dialect,
+  straight quote, RUF001, allowed-confusables.
 - **The acquisition queue's dedupe key is recomputed through `resolve()` twice, so a symlink that
   disappears leaks a `_dedupe` entry and the queued count never returns to zero.** Measured
   2026-09-20 (security seat, while auditing the drain): `enqueue` and `_process_one` each compute

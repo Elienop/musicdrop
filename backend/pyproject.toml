@@ -45,6 +45,15 @@ target-version = "py311"
 # the server scan is the only net for that one.
 select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF", "PT001", "PT012", "PT018", "PIE790", "S324"]
 
+# App copy uses TYPOGRAPHIC punctuation (owner's call 2026-09-20): the user
+# never sees a .py file, they see one page, and the frontend already renders
+# `’` and quotes user data with `“ ”`. RUF001/2/3 flag those as confusable
+# with `'` and `"`, which is the right default for identifiers and the wrong
+# one for a sentence in a response body. Allowing exactly these three keeps
+# the rule live for what it is actually for — a Cyrillic `а` or Greek `ο`
+# smuggled into a name still fails. NOT a blanket ignore of the rule.
+allowed-confusables = ["\u2019", "\u201c", "\u201d"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true

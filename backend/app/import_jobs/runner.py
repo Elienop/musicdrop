@@ -151,7 +151,7 @@ def unreadable_source_sentence(exc: OSError) -> str:
     ``app/beets/library.py``) - unlike ``str(exc)`` on the OSError itself, which
     interpolates ``exc.filename``.
     """
-    return f"That folder can't be read. {unreadable_reason(exc)}."
+    return f"That folder can’t be read. {unreadable_reason(exc)}."
 
 
 def unreadable_source_error(exc: OSError) -> SourcePathMissingError:
@@ -210,7 +210,7 @@ def missing_source_error(paths: list[str]) -> SourcePathMissingError | None:
         return None
     if refused is not None:
         return unreadable_source_error(refused)
-    return SourcePathMissingError("That folder doesn't exist.")
+    return SourcePathMissingError("That folder doesn’t exist.")
 
 
 class ImportRunner(Protocol):

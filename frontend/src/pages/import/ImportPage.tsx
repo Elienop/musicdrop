@@ -318,7 +318,7 @@ function ImportEntry() {
       );
 
   // A refusal must not outlive the input it was about. `start.error` survives
-  // until the next `mutate`, so after "That folder doesn't exist." the user
+  // until the next `mutate`, so after "That folder doesn’t exist." the user
   // fixed the typo and the field stayed red with the stale sentence still wired
   // into Start's aria-describedby. Same shape as RenameArtistAction's
   // `onNameChange`, which drops a preview the moment its target changes.

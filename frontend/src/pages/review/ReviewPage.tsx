@@ -104,7 +104,7 @@ export function ReviewPage() {
   const probesErrored =
     activeQuery.isError || inboxQuery.isError || bankPending.isError;
   // A refusal the user has not dismissed is the opposite of an all-clear: the
-  // misconfiguration it names ("That folder can't be read.") is also what drops
+  // misconfiguration it names ("That folder can’t be read.") is also what drops
   // that folder from the listing, so the backlog under it is UNDERSTATED by at
   // least one. Both the verdict and the count are gated on it — a count of 0
   // beside a red sentence is the same all-clear one element up.
@@ -451,7 +451,7 @@ interface InboxStart {
  * 1. {@link InboxSection} returns null on an empty list, and both mutations
  *    invalidate `["inbox-items"]` in `onSettled` — on failure too. The backend
  *    omits a folder it cannot walk from the listing, so the one misconfiguration
- *    the 422 was added to diagnose ("That folder can't be read.") is also the
+ *    the 422 was added to diagnose ("That folder can’t be read.") is also the
  *    one that empties the list: the sentence rendered, the refetch landed, the
  *    section unmounted with the alert inside it, and the page finished on
  *    "Nothing to review." — an all-clear for the fault just reported.

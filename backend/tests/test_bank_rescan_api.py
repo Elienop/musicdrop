@@ -182,7 +182,7 @@ def test_rescan_409_names_a_permissions_fault_rather_than_500ing(
         parent.chmod(0o755)
 
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == "That folder can't be read. Permission denied."
+    assert r.json()["detail"] == "That folder can’t be read. Permission denied."
     assert str(folder) not in r.json()["detail"]
 
 

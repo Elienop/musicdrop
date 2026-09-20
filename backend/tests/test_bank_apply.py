@@ -1805,7 +1805,7 @@ def test_a_folder_that_goes_after_the_fingerprint_is_stale_not_a_retryable_failu
         runner.stop()
 
 
-_UNREADABLE = "That folder can't be read. Permission denied."
+_UNREADABLE = "That folder can’t be read. Permission denied."
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")

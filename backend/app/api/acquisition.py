@@ -135,7 +135,7 @@ _BATCH_SOURCES_GONE: Final = "Those folders are no longer there."
 #: filename may contain and ``display_path`` replaces only bytes UTF-8 cannot
 #: carry. Measured through the route: a folder named
 #: ``X\u201d is fine. The folder \u201cY`` produced
-#: ``\u201cX\u201d is fine. The folder \u201cY\u201d can't be read.`` - a
+#: ``\u201cX\u201d is fine. The folder \u201cY\u201d can’t be read.`` - a
 #: complete forged clause in the operator's own sentence. Delimiters cannot
 #: contain a value that may spell the delimiter.
 _QUOTES: Final = "\u201c\u201d"
@@ -212,7 +212,7 @@ def _batch_unreadable_sentence(exc: SourcePathMissingError) -> str:
     name = _nameable(display_path(Path(os_error.filename).name))
     if not name:
         return str(exc)
-    return f"\u201c{name}\u201d can't be read. {unreadable_reason(os_error)}."
+    return f"\u201c{name}\u201d can’t be read. {unreadable_reason(os_error)}."
 
 
 def _resolve_inbox_folder(inbox_dir: Path, name: str) -> Path | None:

@@ -204,7 +204,7 @@ def test_search_409s_a_folder_it_cannot_read_without_flipping_it_stale(
         parent.chmod(0o755)
 
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == "That folder can't be read. Permission denied."
+    assert r.json()["detail"] == "That folder can’t be read. Permission denied."
     assert str(folder) not in r.json()["detail"]
     reread = store.get_item(bank_api.get_bank_dir(), item_id)
     assert reread is not None
