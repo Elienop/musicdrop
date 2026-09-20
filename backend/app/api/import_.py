@@ -74,7 +74,7 @@ _LIBRARY_REFUSED_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": (
         "The store layout is refused, the library folder is unavailable, or"
-        " another import is still starting."
+        " a start is taking longer than usual."
     ),
 }
 #: ``reg.candidate`` / ``parked_album`` raise KeyError for BOTH an unknown job
@@ -141,11 +141,13 @@ _IMPORT_START_SLOTS: Final = anyio.CapacityLimiter(1)
 #: refusal under load rather than under a fault, which is what the 503 says.
 _START_WAIT_SECONDS: Final = 30.0
 
-#: Short and human: the operator cannot tell a wedged start from a slow one, so
-#: the sentence says what to do rather than what happened.
+#: The server knows exactly one thing here: the slot has been held for
+#: ``_START_WAIT_SECONDS``. It cannot tell a second start from a stat that never
+#: returned, so the sentence claims only the wait and names the one thing worth
+#: checking. It deliberately does NOT say "try again": when a wedged share holds
+#: the token, the next attempt costs another full wait.
 _START_BUSY_DETAIL: Final = (
-    "Another import is still starting. Try again in a moment, or check that your"
-    " music share is responding."
+    "An import is taking longer than usual to start. Check that your music share is responding."
 )
 
 

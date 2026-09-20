@@ -178,7 +178,7 @@ _LIBRARY_REFUSED_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": (
         "The store layout is refused, the library folder is unavailable, or"
-        " another import is still starting."
+        " a start is taking longer than usual."
     ),
 }
 _IMPORT_SLOT_TAKEN_RESPONSE: Final = {

@@ -2109,10 +2109,11 @@ async def test_a_start_queued_behind_a_wedged_one_answers_instead_of_waiting_for
         release.set()
 
     assert caught.value.status_code == 503, caught.value.status_code
-    # Short, human, and it names what to check rather than what happened.
+    # Claims only what the server knows (the wait), and names the one thing worth
+    # checking. No "try again" - a wedged share makes the next attempt cost the
+    # same wait again.
     assert caught.value.detail == (
-        "Another import is still starting. Try again in a moment, or check that"
-        " your music share is responding."
+        "An import is taking longer than usual to start. Check that your music share is responding."
     )
     assert import_api._IMPORT_START_SLOTS.borrowed_tokens == 0
 
