@@ -2,26 +2,37 @@
 
 The shipped container runs bare ``uvicorn app.main:app`` (``Dockerfile:61``), so
 uvicorn's own ``LOGGING_CONFIG`` configures logging — and it leaves the root
-logger at WARNING with no handlers. An app-namespace INFO record is therefore
+logger at WARNING with no handlers. An app-namespace INFO record was therefore
 dropped entirely: not mis-tagged, not unformatted, absent. A WARNING from the
-same logger does get out, through logging's ``lastResort`` handler, which is
-what makes the gap easy to miss — ``logger.exception`` beside a
-``logger.info`` works, so the failure path is visible and the success path is
-not.
+same logger did get out, through logging's ``lastResort`` handler, which is
+what made the gap easy to miss — ``logger.exception`` beside a
+``logger.info`` worked, so the failure path was visible and the success path
+was not.
 
-``app/main.py``'s ``_boot_log`` already documented this for startup refusals.
-The rule was still broken in five places, one of which a commit had just
-described as "the only record of what beets did to the user's files".
+``app/main.py``'s ``_boot_log`` documented this for startup refusals; the rule
+was still broken in five places, one of which a commit had just described as
+"the only record of what beets did to the user's files".
 
-AST, not grep, so ``logger .info(...)`` and a commented-out line are judged
-correctly. Checked by attribute name rather than by resolving the logger object:
-the convention this pins is the NAME — ``logger`` for warnings and exceptions,
-``operator_logger`` for anything an operator must be able to read.
+``main.wire_app_log_namespace`` now closes the gap for the whole namespace, and
+``test_the_app_namespace_reaches_a_real_uvicorns_output`` below measures that.
+It runs in the LIFESPAN, so two windows stay open and the convention below is
+what covers them: a record emitted while a module is still being imported (the
+wiring has not run yet), and any run that is not under uvicorn — where there is
+no handler to borrow and ``lastResort`` behaves exactly as it did.
+
+The AST test is AST and not grep, so ``logger .info(...)`` and a commented-out
+line are judged correctly. Checked by attribute name rather than by resolving
+the logger object: the convention it pins is the NAME — ``logger`` for warnings
+and exceptions, ``operator_logger`` for anything an operator must be able to
+read.
 """
 
 from __future__ import annotations
 
 import ast
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 APP = Path(__file__).resolve().parent.parent / "app"
@@ -82,3 +93,70 @@ def test_the_walk_can_actually_see_the_calls_it_is_judging() -> None:
     # ...and that it would flag the banned shape if one existed
     planted = ast.parse("logger.info('x')\noperator_logger.info('y')\n")
     assert ("logger", "info", 1) in _calls(planted)
+
+
+#: The child that measures the namespace. In a SUBPROCESS because
+#: ``dictConfig`` is destructive — non-incremental it closes every existing
+#: handler, which under pytest are the capture handlers the rest of the run
+#: needs. uvicorn's REAL ``LOGGING_CONFIG``, imported not transcribed, so a
+#: change upstream is measured rather than mirrored.
+#:
+#: It runs the real LIFESPAN rather than calling the wiring by hand: the call
+#: site is half the fix, and a test that reaches past it passes on an app that
+#: never wires anything.
+_PROBE = """
+import logging, logging.config
+from uvicorn.config import LOGGING_CONFIG
+
+logging.config.dictConfig(LOGGING_CONFIG)
+log = logging.getLogger("app.probe")
+log.info("BEFORE-INFO")
+
+from fastapi.testclient import TestClient
+
+from app.main import app
+
+with TestClient(app):
+    print("LIFESPAN-RAN", flush=True)
+    log.info("AFTER-INFO")
+    log.warning("AFTER-WARNING")
+"""
+
+
+def test_the_app_namespace_reaches_a_real_uvicorns_output(tmp_path: Path) -> None:
+    """An ``app.*`` INFO record must arrive, level-tagged, under uvicorn's config.
+
+    The BEFORE half is the control, and it is the whole point: without the
+    wiring the INFO record is not merely unformatted, it produces no output at
+    all, so an assertion on the AFTER half alone would pass on a formatter that
+    was already there.
+
+    Level, not logger name: uvicorn's own formatter is ``%(levelprefix)s
+    %(message)s``, so app records read exactly like uvicorn's — which is the
+    same trade ``operator_logger`` already makes.
+    """
+    backend = Path(__file__).resolve().parents[1]
+    env = {
+        **os.environ,
+        # The child is not under the conftest BEETSDIR floor: aim every path it
+        # may touch at a throwaway dir, and pin the auth clause's input so a
+        # real local hash cannot change its output.
+        "MUSICDROP_BEETS_DIR": str(tmp_path / "beets"),
+        "MUSICDROP_STATIC_DIR": "",
+        "MUSICDROP_PASSWORD_HASH": "",
+    }
+    done = subprocess.run(
+        [sys.executable, "-c", _PROBE],
+        cwd=backend,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    out = done.stdout + done.stderr
+    assert done.returncode == 0, out
+
+    assert "LIFESPAN-RAN" in out, out
+    assert "BEFORE-INFO" not in out, out
+    assert "INFO:     AFTER-INFO" in out, out
+    assert "WARNING:  AFTER-WARNING" in out, out

@@ -103,6 +103,55 @@ def _boot_log() -> logging.Logger:
     return logging.getLogger("uvicorn.error")
 
 
+def wire_app_log_namespace() -> None:
+    """Give the ``app.*`` loggers the handler uvicorn writes its own records on.
+
+    Under the shipped CMD (``Dockerfile``, no ``--log-config``) uvicorn
+    configures only ``uvicorn``/``uvicorn.error``/``uvicorn.access`` and leaves
+    root at WARNING with no handler, so every ``app.*`` record reached stderr
+    through logging's ``lastResort``: no level, no timestamp, no logger name -
+    and INFO dropped entirely. ``_boot_log`` works around it for boot refusals
+    by logging to ``uvicorn.error``; this is the same fix for the namespace.
+
+    The ``uvicorn``/``uvicorn.error`` pair ONLY, and the walk STOPS there
+    (measured: ``uvicorn.error`` carries no handler of its own - it propagates
+    to ``uvicorn``, which owns the one that prints, so reading
+    ``getLogger("uvicorn.error").handlers`` finds nothing and this no-ops).
+    Not ``uvicorn.access``, whose formatter reads each record's args as the
+    access tuple and would raise on an ordinary one; and never root, which off
+    uvicorn is where pytest's own capture handlers live.
+
+    What arrives is uvicorn's own line, ``<LEVEL>: <message>`` - its formatter
+    prints no logger name, so an app record reads exactly like uvicorn's. That
+    is the same trade the ``operator_logger`` convention already makes; a
+    name-carrying format would mean a second formatter, not this handler.
+
+    Propagation stays on: root has no handler under that config, so nothing
+    double-prints, and ``caplog`` (a root handler) keeps seeing app records.
+    Adding each handler at most once makes repeat calls (a second app in one
+    test process) idempotent.
+
+    Does NOTHING when uvicorn's loggers have no handler, which is every run
+    that is not under uvicorn (pytest, another ASGI server): nothing is touched
+    and ``lastResort`` behaves exactly as before.
+    """
+    handlers: list[logging.Handler] = []
+    for name in ("uvicorn.error", "uvicorn"):
+        source = logging.getLogger(name)
+        handlers.extend(h for h in source.handlers if h not in handlers)
+        if not source.propagate:
+            break
+    if not handlers:
+        return
+    app_logger = logging.getLogger("app")
+    for handler in handlers:
+        if handler not in app_logger.handlers:
+            app_logger.addHandler(handler)
+    # Without this the effective level is root's WARNING and INFO stays dropped
+    # even with a handler attached. uvicorn's own, so ``--log-level`` carries.
+    app_logger.setLevel(logging.getLogger("uvicorn.error").getEffectiveLevel())
+
+
 def _refuse_boot(message: str, *args: object) -> None:
     """The one ERROR line a refusal to start writes: which setting, and why.
 
@@ -158,6 +207,9 @@ def _build_artist_image_service(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # FIRST, so every record below reaches the operator level-tagged rather
+    # than through ``lastResort`` (see the helper). No-op off uvicorn.
+    wire_app_log_namespace()
     # Open the beets library once at startup (a SQLite connection we keep for
     # the process lifetime) and close it on shutdown. setup_beets always returns
     # a handle — missing BEETSDIR / config.yaml are created from the starter —
