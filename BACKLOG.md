@@ -3836,12 +3836,32 @@ these are what was left, with the measurement that produced each.
   returns `(cannot read /tmp/…/album)` — leaks. It is safe today because every raise site in the
   app passes a fixed strerror and puts the path in the third slot, and installed beets 2.13.1 has
   zero `raise OSError` with a custom strerror. `os.strerror(exc.errno)` would make it structural
-  and also fixes the next item. Search words: strerror, caller convention, unreadable_reason.
+  and also fixes the next item. **Corrected 2026-09-21 — the shape written here first was wrong:**
+  bare `os.strerror(exc.errno)` raises `TypeError: 'NoneType' object cannot be interpreted as an
+  integer` on exactly the errno-less subclasses the next bullet names (measured), turning a cosmetic
+  string into a crash. It needs the guard:
+  `os.strerror(exc.errno) if exc.errno is not None else "the reason was not reported"`.
+  Search words: strerror, caller convention, unreadable_reason, os.strerror errno None TypeError.
 - **`unreadable_reason` degrades to `errno None`** (security seat). `shutil.Error`,
   `shutil.SameFileError` and `urllib.error.URLError` are `OSError` subclasses built with one
   argument, so both `strerror` and `errno` are None and the operator reads "the server could not
   complete this row (errno None)". No leak, no information either. Reachability through
-  `_apply_one` is thin. Covered by the `os.strerror` fix above.
+  `_apply_one` is thin. Covered by the `os.strerror` fix above **only in its guarded form**.
+- **A non-`OSError` escapes both fingerprint guards on a non-UTF-8 filename** (security seat,
+  2026-09-21; PREEXISTING — the arms are unchanged by the Sonar round). `app/bank/fingerprint.py:40`
+  does `f"{rel}\n{size}\n{mtime_ns}\n".encode()`, but `os.walk` returns names decoded with
+  `surrogateescape`, so an audio file with a non-UTF-8 name raises `UnicodeEncodeError` — not an
+  `OSError`, so it escapes every `except` arm of both `api/bank.py::_current_fingerprint` and
+  `bank/apply_runner.py::_row_stopped_by_folder_check`. Measured end to end through the rescan route
+  with `raise_server_exceptions=False`: **500 `Internal Server Error`, and the folder path is NOT in
+  the body** (`str(UnicodeEncodeError)` names the offending character and position, never the
+  string), and `main.py` sets no `debug=True`, so no traceback is returned. So this is robustness —
+  a 500 where a 409 was designed, plus a cryptic row error on the apply side — **not disclosure**.
+  Remediation is one call, not a mechanism: `digest.update(os.fsencode(...))`, measured to round-trip
+  the exact bytes the OS gave (`os.fsencode("02 tr\udcffack.mp3")` -> `b'02 tr\xffack.mp3'`) so the
+  digest stays stable. NOT verified: the search route and a live apply drain were reasoned from the
+  identical arm structure, not driven. Search words: surrogateescape, UnicodeEncodeError,
+  fsencode, fingerprint, non-UTF-8 filename.
 - **Two registers in one slot** (UI seat). `FailedBanner`'s muted line takes lower-case
   dash-joined continuations from `_row_error` AND capitalised standalone sentences from
   `unreadable_source_sentence` ("That folder can't be read. Permission denied."). `_row_error`'s
