@@ -67,32 +67,27 @@ const CONCEPTS = [
   "MoveDown",
 ] as const satisfies readonly (keyof typeof icons)[];
 
-test("Stop is the FILLED glyph, not the app's light default", () => {
-  // The one concept that carries its own weight. Compared against Phosphor
-  // directly, in both directions: equal to the fill weight, and NOT equal to
-  // what the same page renders without one — without the second half the
-  // assertion passes against a plain re-export, which is what this replaced.
+test("Stop takes the app's one weight, like every other concept", () => {
+  // It forced `fill` through a wrapper until the owner's call on 2026-09-20
+  // put it back on the app's light stroke, so every job's Stop button matches
+  // the rest of the shell. Asserted in BOTH directions: equal to light inside
+  // the provider, and not equal to the fill it used to render — without the
+  // second half a re-added fill wrapper still passes.
   const d = (node: ReactElement) => {
     const { container, unmount } = render(node);
     const path = container.querySelector("path")?.getAttribute("d") ?? "";
     unmount();
     return path;
   };
-  // The control has to be rendered where the app renders its glyphs: an
-  // unweighted Phosphor icon outside the context takes Phosphor's own
-  // `regular`, so comparing against that measures a weight the app never ships.
+  // Measured where the app renders its glyphs: an unweighted Phosphor icon
+  // outside the context takes Phosphor's own `regular`, a weight we never ship.
   const inApp = (node: ReactElement) =>
     createElement(icons.IconContext.Provider, { value: icons.ICON_WEIGHT }, node);
-  expect(d(createElement(icons.Stop))).toBe(
-    d(createElement(StopIcon, { weight: "fill" })),
-  );
-  // The premise the title rests on: inside the app's provider an unweighted
-  // glyph really is the light one.
-  expect(d(inApp(createElement(StopIcon)))).toBe(
+  expect(d(inApp(createElement(icons.Stop)))).toBe(
     d(createElement(StopIcon, { weight: "light" })),
   );
   expect(d(inApp(createElement(icons.Stop)))).not.toBe(
-    d(inApp(createElement(StopIcon))),
+    d(createElement(StopIcon, { weight: "fill" })),
   );
   // A call site may still ask for another weight — the detail rail's size-10
   // Stop does, in a rail of thin glyphs.
