@@ -18,9 +18,7 @@ import asyncio
 import logging
 import queue
 import threading
-import time
 from pathlib import Path
-from typing import Final
 
 from app.acquisition.inbox import contain
 from app.acquisition.ledger import AcquisitionLedger
@@ -37,26 +35,6 @@ logger = logging.getLogger(__name__)
 #: Why a stopped inbox import is recorded as failed rather than imported.
 _STOPPED_BEFORE_FINISH = "The import was stopped before this folder finished."
 
-#: How long ONE folder may keep deferring on an unreadable source before the
-#: drain gives up on it and records the fault terminally.
-#:
-#: A bound is needed because the producer is unauthenticated: the slskd webhook
-#: is in ``app/auth/gate.py``'s exempt set (secret-only, unrated), ``enqueue``
-#: never checks EXISTENCE, and under the very misconfiguration this arm exists
-#: for - an inbox the app cannot search - ``os.stat`` answers EACCES for names
-#: that were never there. Unbounded, each fabricated name became a permanent
-#: ``_dedupe`` + ``_unreadable_since`` entry retrying once per ``busy_backoff``
-#: forever (measured by a review seat: 50 names, 50 entries, neither draining).
-#:
-#: 300 s rather than an attempt count, so the window does not move with
-#: ``busy_backoff``. Long enough for the transient shapes (a remount, a
-#: container restarting under the right PUID, an operator already running the
-#: chmod) and short enough that a flood drains in five minutes instead of never.
-#: Giving up is not losing the download: the folder is still on disk, the reason
-#: lands in the ``status.error`` the Review page renders, and no ledger row is
-#: written - so a later webhook re-enqueues it.
-_UNREADABLE_DEFER_SECONDS: Final = 300.0
-
 
 class AcquisitionQueue:
     """Thread-safe FIFO that serially imports inbox folders, deferring on a busy gate."""
@@ -70,7 +48,6 @@ class AcquisitionQueue:
         swap_lock: asyncio.Lock | None = None,
         poll_interval: float = 0.5,
         busy_backoff: float = 1.0,
-        unreadable_defer_seconds: float = _UNREADABLE_DEFER_SECONDS,
     ) -> None:
         self._import_registry = import_registry
         self._ledger = ledger
@@ -82,18 +59,10 @@ class AcquisitionQueue:
         self._swap_lock = swap_lock
         self._poll_interval = poll_interval
         self._busy_backoff = busy_backoff
-        self._unreadable_defer_seconds = unreadable_defer_seconds
 
         # ``None`` is the shutdown sentinel that unblocks a parked ``get()``.
         self._queue: queue.Queue[Path | None] = queue.Queue()
         self._dedupe: set[str] = set()
-        # Folders currently deferring on an unreadable source, each mapped to the
-        # monotonic clock of its FIRST deferral. One dict answers both questions:
-        # present means "already logged", so a deferral repeating every
-        # ``busy_backoff`` seconds logs ONCE instead of once per pass, and the
-        # value is what ``_UNREADABLE_DEFER_SECONDS`` is measured against. An
-        # entry is dropped as soon as the folder starts, or when it gives up.
-        self._unreadable_since: dict[str, float] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -217,34 +186,24 @@ class AcquisitionQueue:
             self._defer(folder, error=reason)
             return
         except SourcePathMissingError as exc:
-            if exc.unreadable:
-                self._unreadable(folder, key, exc)
-                return
-            # The folder went away between the gate check and start(). Terminal,
-            # not deferred: a requeue would poll a path that is gone. Caught for
-            # the reason the RuntimeError arm above exists — an escape kills this
-            # thread and strands every later download.
+            # Two faults, ONE terminal outcome, and they must not share a
+            # sentence: a folder the OS will not let us search is sitting right
+            # there, and logged as gone an operator greps for it and finds it.
             #
-            # Not ledgered, because ``mark`` REPLACES any prior entry for that
-            # path (ledger.py): recording this one would store (0.0, 0) over a
-            # genuine earlier record for the same folder. (It is not that a gone
-            # folder cannot be re-offered — a re-download re-enqueues, since
-            # ``enqueue`` gates on ``seen()``, which is keyed on path AND
-            # identity.) So this is the one terminal outcome in the class with no
-            # durable row: log the drop. The realistic case is a RENAMED folder —
-            # slskd finalising a temp name after the webhook fired — where
-            # nothing else records which download was lost.
-            # ``%r``, like the webhook's own refusal (app/api/slskd.py): ``enqueue``
-            # checks containment and dedupe but never EXISTENCE, so a folder name
-            # that never existed reaches this line. Measured through the route with
-            # only the webhook secret: under ``%s`` a newline in the name forged a
-            # complete record attributed to another module at another severity.
-            logger.warning("inbox drain: %r is no longer there; dropped (%r)", folder, exc)
-            self._unreadable_since.pop(key, None)
+            # Terminal for both: while either fault stands ``has_audio`` answers
+            # False so the folder is in no listing anyway, and the moment it is
+            # fixed "Review all" imports it ATTENDED. No ledger row, because
+            # ``mark`` REPLACES any prior entry for that path - ``_finish`` is
+            # the durable record, and a re-download re-enqueues.
+            #
+            # ``%r`` because ``enqueue`` never checks EXISTENCE, so a peer-chosen
+            # name that never existed reaches this line; under ``%s`` a newline
+            # in it forged a complete log record at another severity (measured).
+            fault = "cannot be read" if exc.unreadable else "is no longer there"
+            logger.warning("inbox drain: %r %s; dropped (%r)", folder, fault, exc)
             self._finish(key, "failed", str(exc))
             return
 
-        self._unreadable_since.pop(key, None)
         result = self._wait_for_import(job_id)
         if result is None:
             return  # shutting down before the import finished
@@ -277,48 +236,6 @@ class AcquisitionQueue:
         self._stop.wait(self._busy_backoff)
         if not self._stop.is_set():
             self._queue.put(folder)
-
-    def _unreadable(self, folder: Path, key: str, exc: SourcePathMissingError) -> None:
-        """The source is THERE and the OS will not let us search it.
-
-        NOT the same fault as the gone arm, and it must not borrow its sentence:
-        the folder is sitting right there (a PUID/GID mismatch on the downloads
-        share, a symlink loop). Logged as gone, an operator greps for a missing
-        folder and finds it present.
-
-        Defer first, because a chmod makes the next pass succeed - then give up
-        after ``_UNREADABLE_DEFER_SECONDS``, because the producer is
-        unauthenticated and an unbounded requeue is a growth path (see the
-        constant). Either way the fault is VISIBLE: deferring puts the refusal
-        in ``status.error``, and giving up records it through ``_finish``.
-
-        ``%r`` on the folder for the reason the gone arm gives - the name is
-        chosen by a remote peer, and under ``%s`` a newline in it forged a whole
-        log record. ``repr`` of the exception is its own sentence, which carries
-        no path; ``exc.os_error`` would, and is never logged.
-        """
-        now = time.monotonic()
-        since = self._unreadable_since.get(key)
-        if since is None:
-            since = now
-            self._unreadable_since[key] = now
-            logger.warning(
-                "inbox drain: %r cannot be read; left queued until it can (%r)", folder, exc
-            )
-        if now - since >= self._unreadable_defer_seconds:
-            logger.warning(
-                "inbox drain: %r stayed unreadable for %.0fs; dropped (%r)",
-                folder,
-                now - since,
-                exc,
-            )
-            del self._unreadable_since[key]
-            # No ledger row, for the reason the gone arm gives: ``mark``
-            # REPLACES any prior entry for that path. ``_finish`` is the durable
-            # record here.
-            self._finish(key, "failed", str(exc))
-            return
-        self._defer(folder, error=str(exc))
 
     def _wait_for_gate(self) -> bool:
         """Block until the import slot + gates are free. ``False`` if shutting down."""

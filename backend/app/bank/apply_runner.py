@@ -41,7 +41,6 @@ from app.import_jobs.runner import (
     ABSENT_ERRNOS,
     LibraryRootUnavailableError,
     SourcePathMissingError,
-    path_free_message,
     unreadable_reason,
     unreadable_source_sentence,
 )
@@ -207,14 +206,14 @@ def _row_error(exc: Exception) -> str:
     opening the beets SQLite lands in the catch-all, not at a raiser we could
     annotate. So the split is at the CATCH.
 
-    ``strerror`` is the OS's own summary and carries no path (the same reasoning
-    as ``unreadable_source_sentence``). The non-OSError arm does NOT get to keep
-    ``str(exc)`` on the grounds that it has no ``filename`` to interpolate - an
-    earlier version of this docstring said exactly that, and it pinned a false
-    universal: beets' own exception family is a plain ``Exception`` whose
-    ``__str__`` puts absolute paths in the message by hand. The predicate is
-    "does this message carry a path", which is ``path_free_message``'s job, and
-    the import worker's catch-all asks it too.
+    ``strerror`` is the OS's own summary, and it is also all an OSError's
+    ``str`` adds to what the row already shows. The non-OSError arm keeps
+    ``str(exc)`` VERBATIM, paths and all: beets' own family is a plain
+    ``Exception`` whose ``__str__`` writes absolute paths and a MusicBrainz
+    search URL into the message by hand, and cutting the message at the first
+    of those threw the diagnosis away with them ("try https://musicbrainz.org/
+    search for it" became "try https"). The server path is not a secret here -
+    `/import` takes an arbitrary one by ruling.
 
     The wording does not repeat "The apply failed", which ``BankReviewPage``
     already prints as the headline directly above this string; it reads as the
@@ -222,7 +221,7 @@ def _row_error(exc: Exception) -> str:
     """
     if isinstance(exc, OSError):
         return f"the system refused - {unreadable_reason(exc)}"
-    return path_free_message(str(exc)) or exc.__class__.__name__
+    return str(exc) or exc.__class__.__name__
 
 
 class BankApplyRunner:

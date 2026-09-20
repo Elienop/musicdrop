@@ -20,7 +20,6 @@ marked.
 from __future__ import annotations
 
 import asyncio
-import errno
 import logging
 import os
 import shutil
@@ -44,7 +43,6 @@ from fastapi.testclient import TestClient
 from app.auth.session import SESSION_COOKIE_NAME
 from app.import_jobs.registry import ImportJobRegistry, reset_registry
 from app.main import app
-from app.wire import display_path
 from tests.conftest import (
     beets_dir_for,
     build_library,
@@ -1561,10 +1559,11 @@ def test_review_all_keeps_the_reason_when_the_settled_folders_are_unreadable(
     sentence, the defect the errno split exists to remove re-introduced one layer
     up.
 
-    The sentence NAMES the folder. The shared one says "That folder", which is
-    right when the caller typed a path and names nothing here - this route hands
-    over folders the browser is never shown, and ``strerror`` carries no path by
-    design, so a batch of N used to promise a specificity it did not have.
+    The SHARED singular, not a folder name. Naming one was measured to name the
+    wrong one: ``os.stat`` succeeds on a folder at every mode, so a batch EACCES
+    can only come from the inbox prefix losing ``+x``, and then every child
+    refuses identically and ``missing_source_error`` reports whichever came
+    first - an arbitrary healthy folder for the operator to go and fix.
     """
     _reg, _lib = _real_registry(tmp_path)
     inbox = tmp_path / "inbox"
@@ -1584,9 +1583,8 @@ def test_review_all_keeps_the_reason_when_the_settled_folders_are_unreadable(
 
     assert resp.status_code == 422, resp.text
     detail = resp.json()["detail"]
-    assert detail == "\u201cunreadable\u201d can’t be read. Permission denied.", detail
-    # The BASENAME only - the listing already ships it as ``InboxItem.name``, so
-    # this discloses nothing new, and the absolute path stays server-side.
+    assert detail == _UNREADABLE, detail
+    # No path, and no folder name either: ``strerror`` is the OS's own summary.
     assert str(folder) not in detail
     assert str(inbox) not in detail
     assert _reg.active_job_id() is None
@@ -2209,177 +2207,46 @@ async def test_a_wedged_start_does_not_block_the_polledinbox_read() -> None:
     assert answered == "the inbox still answers"
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")
-def test_the_batch_refusal_names_an_undecodable_folder_the_way_the_listing_does(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The name goes through the same ``display_path`` the listing uses.
-
-    A folder whose name is not valid UTF-8 reaches this sentence as lone
-    surrogates. Interpolated raw they would make the JSON body non-encodable;
-    through ``display_path`` they become the same U+FFFD the browser already
-    holds for that row, so the refusal names exactly what the operator sees in
-    the list.
-    """
-    _reg, _lib = _real_registry(tmp_path)
-    inbox = tmp_path / "inbox"
-    folder = _album_folder(inbox, b"bad\xffname")
-
-    import app.api.acquisition as acq_api
-
-    monkeypatch.setattr(acq_api, "settled_folders", lambda *a, **k: [folder])
-    monkeypatch.setattr(acq_api, "count_pending", lambda _d: 1)
-    monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
-    inbox.chmod(0o600)
-    try:
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.post("/api/acquisition/review-inbox")
-    finally:
-        inbox.chmod(0o755)
-
-    assert resp.status_code == 422, resp.text
-    detail = resp.json()["detail"]
-    assert detail == "\u201cbad\ufffdname\u201d can’t be read. Permission denied.", detail
-    # The listing's own spelling of the same name, so the two agree.
-    assert "bad\ufffdname" == display_path(os.fsdecode(os.fsencode(folder.name)))
-
-
-# ----- the name the batch refusal quotes, and the message a crash renders -----
-
-
-def _refusal_for(name: str) -> str:
-    """The batch refusal for a folder called ``name``, straight from the sink."""
-    from app.api.acquisition import _batch_unreadable_sentence
-    from app.import_jobs.runner import unreadable_source_error
-
-    return _batch_unreadable_sentence(
-        unreadable_source_error(
-            PermissionError(errno.EACCES, "Permission denied", f"/srv/inbox/{name}")
-        )
-    )
-
-
-def test_a_hostile_folder_name_cannot_forge_the_refusal_it_is_quoted_in() -> None:
-    """Quoting is only a delimiter if the value cannot spell the delimiter.
-
-    The name is chosen by a REMOTE Soulseek peer - slskd names the local
-    download directory after the peer's directory - and U+201C/U+201D are
-    ordinary characters a POSIX filename may hold, which ``display_path``
-    (bytes UTF-8 cannot carry) does not touch. Measured through the route
-    before this guard: a folder named ``X" is fine. The folder "Y`` (curly)
-    produced a complete forged clause, a leading U+202E rendered the server's
-    own tail reversed, and a raw newline and an ESC both survived into the body.
-
-    This round chose ``%r`` for the LOG sinks because repr escapes exactly this
-    class of character, then shipped the same value unescaped into a response
-    body. One rationale, both sinks.
-    """
-    forged = _refusal_for("X\u201d is fine. The folder \u201cY")
-    # Exactly the two delimiters - the name contributed none.
-    assert forged.count("\u201c") == 1, forged
-    assert forged.count("\u201d") == 1, forged
-    assert forged.endswith("can’t be read. Permission denied."), forged
-
-    for hostile in ("\u202eevil", "a\nWARNING forged line", "\x1b[31mRED", "\u2066flip"):
-        sentence = _refusal_for(hostile)
-        unprintable = [hex(ord(c)) for c in sentence if not c.isprintable() and c != " "]
-        assert not unprintable, (hostile, unprintable)
-
-    # The control: a name that only LOOKS like the sentence is still named in
-    # full, which is what the quoting is for.
-    assert _refusal_for("Permission denied") == (
-        "\u201cPermission denied\u201d can’t be read. Permission denied."
-    )
-
-
-def test_the_quoted_folder_name_is_capped() -> None:
-    """A 255-character name made a 291-character red sentence read out in full.
-
-    NAME_MAX admits 255, so the cap bites; the frame is 36 characters at this
-    reason, so a capped refusal is 116 - about two lines at the banner's width.
-    """
-    from app.api.acquisition import _NAME_CAP
-
-    sentence = _refusal_for("x" * 255)
-    quoted = sentence.split("\u201c", 1)[1].split("\u201d", 1)[0]
-    assert len(quoted) == _NAME_CAP, len(quoted)
-    assert quoted.endswith("\u2026"), quoted
-    assert len(sentence) == _NAME_CAP + 36, len(sentence)
-
-
-def test_a_folder_with_no_nameable_basename_falls_back_to_the_singular() -> None:
-    """``Path("/").name`` and ``Path("").name`` are both "".
-
-    Uncapped and unguarded that reads as an empty quoted span - "" can't be
-    read. - which names less than the shared singular does.
-    """
-    from app.api.acquisition import _batch_unreadable_sentence
-    from app.import_jobs.runner import unreadable_source_error
-
-    for filename in ("/", ""):
-        exc = unreadable_source_error(PermissionError(errno.EACCES, "Permission denied", filename))
-        assert _batch_unreadable_sentence(exc) == "That folder can’t be read. Permission denied."
-
-
-def test_a_crash_message_is_cut_at_its_first_absolute_path() -> None:
-    """``isinstance(exc, OSError)`` is not the question "does this carry a path".
-
-    It is true about ``OSError.filename`` and false about disclosure:
-    ``beets.util.FilesystemError``, ``beets.library.ReadError`` and
-    ``WriteError`` are plain ``Exception``s whose ``__str__`` interpolates
-    absolute paths raw, and beets' family is the commonest carrier at the two
-    sinks that render one.
-    """
-    from app.import_jobs.runner import path_free_message
-
-    beets_style = (
-        "Permission denied while moving /srv/downloads/inbox/Album to /srv/music/Artist/Album"
-    )
-    assert path_free_message(beets_style) == "Permission denied while moving"
-    # A path with SPACES in it is why this cuts rather than redacting token by
-    # token: a per-token redaction leaves "Floyd/The Wall" behind.
-    assert path_free_message("error copying /srv/a/Pink Floyd/The Wall") == "error copying"
-    assert path_free_message("[Errno 13] Permission denied: '/srv/x.db'") == (
-        "[Errno 13] Permission denied"
-    )
-    # The controls: an ordinary message is untouched, and a slash inside a word
-    # is not a path.
-    assert path_free_message("No album found") == "No album found"
-    assert path_free_message("matched 24/7 and/or nothing") == "matched 24/7 and/or nothing"
-    # A message that IS a path leaves nothing; both sinks fall back to the class.
-    assert path_free_message("/srv/only") == ""
-
-
-def test_the_import_worker_catch_all_renders_no_absolute_path(
+def test_the_import_worker_catch_all_reports_the_crash_message_whole(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The LIVE sink: ``run_import_worker`` does not wrap ``session.run()``.
 
     So a beets filesystem error escapes straight into the runner's catch-all,
     which reaches ``ImportJobState.error`` and is rendered by ImportPage.
+
+    WHOLE, not cut at its first absolute path. beets puts the actionable half
+    AFTER one - "try https://musicbrainz.org/search for it" cut down to "try
+    https" - and `/import` takes an arbitrary server path by ruling, so the path
+    is not a secret from this operator. Only an exception with no message at all
+    falls back to its class name.
     """
     from app.import_jobs.runner import BeetsImportRunner
 
     monkeypatch.setattr("app.import_jobs.runner.WebImportSession", lambda *a, **k: object())
 
-    def explode(*_a: object, **_k: object) -> None:
-        # A plain Exception, exactly beets' own shape - no ``filename``.
-        raise Exception("Permission denied while moving /srv/downloads/Album to /srv/music/A")
+    def reported(raised: BaseException) -> list[str]:
+        def explode(*_a: object, **_k: object) -> None:
+            raise raised
 
-    monkeypatch.setattr("app.import_jobs.runner.run_import_worker", explode)
+        monkeypatch.setattr("app.import_jobs.runner.run_import_worker", explode)
+        seen: list[str] = []
+        done = threading.Event()
 
-    seen: list[str] = []
-    done = threading.Event()
+        def on_error(message: str) -> None:
+            seen.append(message)
+            done.set()
 
-    def on_error(message: str) -> None:
-        seen.append(message)
-        done.set()
+        BeetsImportRunner(None).run(
+            ["/srv/downloads/Album"],
+            bridge=None,  # type: ignore[arg-type]  # the stubbed session never reads it
+            on_finish=done.set,
+            on_error=on_error,
+        )
+        assert done.wait(5), "the worker thread never reported"
+        return seen
 
-    BeetsImportRunner(None).run(
-        ["/srv/downloads/Album"],
-        bridge=None,  # type: ignore[arg-type]  # the stubbed session never reads it
-        on_finish=done.set,
-        on_error=on_error,
-    )
-    assert done.wait(5), "the worker thread never reported"
-    assert seen == ["Permission denied while moving"], seen
+    # A plain Exception, exactly beets' own shape - no ``filename``.
+    crash = "Permission denied while moving /srv/downloads/Album to /srv/music/A"
+    assert reported(Exception(crash)) == [crash]
+    assert reported(Exception()) == ["Exception"]

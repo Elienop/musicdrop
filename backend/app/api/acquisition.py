@@ -36,12 +36,7 @@ from app.import_jobs.registry import (
     LibraryRefusedError,
     get_registry,
 )
-from app.import_jobs.runner import (
-    ABSENT_ERRNOS,
-    SourcePathMissingError,
-    unreadable_reason,
-    unreadable_source_error,
-)
+from app.import_jobs.runner import SourcePathMissingError, refuse_unless_absent
 from app.models.acquisition import (
     AcquisitionQueueStatus,
     ImportInboxItemRequest,
@@ -50,12 +45,7 @@ from app.models.acquisition import (
 )
 from app.models.errors import ErrorDetail, validation_or_detail_422
 from app.models.import_models import ImportOptions
-from app.wire import (
-    PLACEHOLDER,
-    AmbiguousDisplayName,
-    display_path,
-    resolve_display_path,
-)
+from app.wire import AmbiguousDisplayName, resolve_display_path
 
 router = APIRouter(tags=["acquisition"])
 
@@ -99,120 +89,26 @@ async def inbox_read(read: Callable[[], _T]) -> _T:
     Public because the slskd webhook's three hops are inbox reads too, and that
     route is the unauthenticated one - see its own comment.
 
-    Admission first, then the read on anyio's DEFAULT limiter - the shape
-    ``app/api/auth.py::_one_derive_at_a_time`` and ``start_import_off_loop``
-    both use. Handing the cap to anyio as ``limiter=`` instead REPLACES the
-    default limiter rather than nesting under it: the reads then stop drawing
-    from the 40 altogether and the process can run 44 concurrent worker threads
-    (measured 2026-09-20 - the default limiter's ``borrowed_tokens`` stayed 0
-    while four reads were in flight). Nesting keeps ONE global bound, which is
-    what makes the "35 remain" arithmetic above true.
-
-    Admission is taken BY HAND and released in a ``finally`` for the reason
-    ``start_import_off_loop`` gives: passing it to anyio lets a cancelled caller
-    release its token while the worker thread is still stuck.
+    Admission first, then the read on anyio's DEFAULT limiter. Handing the cap
+    to anyio as ``limiter=`` instead REPLACES the default limiter rather than
+    nesting under it: the reads then stop drawing from the 40 altogether and the
+    process can run 44 concurrent worker threads (measured 2026-09-20 - the
+    default limiter's ``borrowed_tokens`` stayed 0 while four reads were in
+    flight). Nesting keeps ONE global bound, which is what makes the "35 remain"
+    arithmetic above true.
     """
-    await _INBOX_SCAN_SLOTS.acquire()
-    # No await between the acquire returning and the try, so a token can never
-    # be held without the finally that releases it.
-    try:
+    async with _INBOX_SCAN_SLOTS:
         return await run_in_threadpool(read)
-    finally:
-        _INBOX_SCAN_SLOTS.release()
 
 
-#: The batch route's own refusal copy. The shared sentence is singular and about
-#: a folder the caller typed; this route hands over folders the browser is never
-#: shown, and only refuses when EVERY one of them vanished. An unreadable folder
-#: gets ``_batch_unreadable_sentence`` below, which names WHICH folder refused -
-#: the guard's own sentence cannot, since ``strerror`` carries no path.
+#: The batch route's own refusal copy, for the case it can actually reach: this
+#: route hands over folders the browser is never shown, and only refuses when
+#: EVERY one of them vanished. An unreadable batch keeps the shared singular -
+#: naming WHICH folder refused was measured to name the wrong one. ``os.stat``
+#: succeeds on a folder at every mode (0o000, 0o444, 0o111), so a batch EACCES
+#: only ever comes from the INBOX PREFIX losing ``+x``, and then every child
+#: refuses identically while the guard reports an arbitrary healthy one.
 _BATCH_SOURCES_GONE: Final = "Those folders are no longer there."
-
-
-#: The two curly quotes the refusal below delimits a folder name with.
-#:
-#: Stripped from the name itself, because they are ordinary characters a POSIX
-#: filename may contain and ``display_path`` replaces only bytes UTF-8 cannot
-#: carry. Measured through the route: a folder named
-#: ``X\u201d is fine. The folder \u201cY`` produced
-#: ``\u201cX\u201d is fine. The folder \u201cY\u201d can’t be read.`` - a
-#: complete forged clause in the operator's own sentence. Delimiters cannot
-#: contain a value that may spell the delimiter.
-_QUOTES: Final = "\u201c\u201d"
-
-#: How much of a folder name the refusal may carry.
-#:
-#: NAME_MAX admits 255 characters, so the cap bites: uncapped, a 255-character
-#: name made a 291-character red sentence that the page also moves focus to and
-#: reads out in full. The frame around the name is 36 characters at the common
-#: reason ("Permission denied"), so a capped refusal is 116 - about two lines at
-#: the banner's width, inside the standing "error text is three short lines"
-#: rule. A real download directory name ("Artist - Album (Year) [FLAC]" is 28)
-#: is well under half of it, so nothing realistic is truncated.
-_NAME_CAP: Final = 80
-
-
-def _nameable(name: str) -> str:
-    """``name`` reduced to something that cannot forge structure in a sentence.
-
-    The value is chosen by a REMOTE Soulseek peer - slskd names the local
-    download directory after the peer's directory - and this sentence is read
-    by an operator, so the name must not be able to end the quoted span, start a
-    new clause, re-order the server's own words, or carry a terminal escape.
-    Measured through the route: a leading U+202E reversed the sentence's tail,
-    a raw newline survived into the body, and an ESC introducing an ANSI colour
-    sequence survived too.
-
-    ``str.isprintable()`` is the same predicate ``%r`` uses in the log sinks -
-    False for C0/C1 controls, for U+2028/U+2029, and for the whole Cf class,
-    which is every bidi override and isolate (U+202A-U+202E, U+2066-U+2069,
-    U+200E/U+200F). This round chose ``%r`` for the log sink for exactly that
-    reason and then shipped the same value unescaped into a response body; one
-    rationale, both sinks. The quotes are Pi/Pf, printable, and stripped
-    separately.
-
-    REPLACED with ``wire_safe``'s own U+FFFD rather than dropped, so the app has
-    one placeholder dialect and two words do not silently join into a third.
-
-    ``""`` when nothing nameable survives - including the degenerate
-    ``Path("/").name`` and ``Path("").name``, both of which are already empty.
-    """
-    kept = "".join(c if c.isprintable() and c not in _QUOTES else PLACEHOLDER for c in name).strip()
-    if len(kept) > _NAME_CAP:
-        kept = kept[: _NAME_CAP - 1].rstrip() + "\u2026"
-    return kept
-
-
-def _batch_unreadable_sentence(exc: SourcePathMissingError) -> str:
-    """The unreadable refusal, naming WHICH handed-over folder refused.
-
-    The shared sentence says "That folder", which is right when the caller
-    typed a path and wrong here: this route hands over folders the browser is
-    never shown, so in a batch of N the singular names nothing at all and the
-    operator has nothing to act on - while ``strerror`` carries no path by
-    design, so it cannot supply one either.
-
-    The BASENAME only, through the same ``display_path`` the listing already
-    uses for ``InboxItem.name``, so this discloses nothing the browser does not
-    already hold; the absolute path stays server-side. Quoted so a folder called
-    "Permission denied" is still readable in the middle of a sentence - and run
-    through ``_nameable`` first, because quoting an arbitrary value is only a
-    delimiter if the value cannot spell the delimiter.
-
-    Falls back to the shared singular when nothing nameable is left, rather than
-    emitting an empty quoted span.
-
-    ``missing_source_error`` stops at the FIRST non-absent errno, so this names
-    one folder even when several refused. That is still something to fix, and
-    the next click reports the next one.
-    """
-    os_error = exc.os_error
-    if os_error is None or not isinstance(os_error.filename, str):
-        return str(exc)  # nothing to name; the singular is all we have
-    name = _nameable(display_path(Path(os_error.filename).name))
-    if not name:
-        return str(exc)
-    return f"\u201c{name}\u201d can’t be read. {unreadable_reason(os_error)}."
 
 
 def _resolve_inbox_folder(inbox_dir: Path, name: str) -> Path | None:
@@ -255,9 +151,8 @@ def _start_inbox_item(reg: ImportJobRegistry, inbox_dir: Path, name: str) -> str
     try:
         contained = _resolve_inbox_folder(inbox_dir, name)
     except OSError as exc:
-        if exc.errno in ABSENT_ERRNOS:
-            return None
-        raise unreadable_source_error(exc) from None
+        refuse_unless_absent(exc)
+        return None
     if contained is None:
         return None
     return reg.start(
@@ -405,7 +300,7 @@ async def review_inbox(
     except SourcePathMissingError as exc:
         # Every settled folder was removed between the listing and the start.
         # Mapped here so the race answers rather than 500ing.
-        detail = _batch_unreadable_sentence(exc) if exc.unreadable else _BATCH_SOURCES_GONE
+        detail = str(exc) if exc.unreadable else _BATCH_SOURCES_GONE
         raise HTTPException(status_code=422, detail=detail) from None
     except (LibraryRefusedError, LibraryRootUnavailableError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None

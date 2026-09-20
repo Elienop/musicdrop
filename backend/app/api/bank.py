@@ -22,7 +22,7 @@ from app.beets.duplicates import find_import_duplicates
 from app.beets.library import LibraryHandle
 from app.beets.research import NoAudioFilesError, rescan_folder, research_folder
 from app.config import BANK_STORE, settings, store_dir
-from app.import_jobs.runner import ABSENT_ERRNOS, SourcePathMissingError, unreadable_source_error
+from app.import_jobs.runner import SourcePathMissingError, refuse_unless_absent
 from app.models.bank import (
     BankBulkDeleteRequest,
     BankBulkDeleteResponse,
@@ -183,9 +183,8 @@ async def search_bank_item(item_id: str, search: ImportSearch) -> BankSearchResp
             # refuses to answer for did not go stale, so it must not be flipped
             # stale below, and ``str(exc)`` on the OSError would carry
             # ``exc.filename`` - an absolute server path - into the body.
-            if exc.errno in ABSENT_ERRNOS:
-                return None
-            raise unreadable_source_error(exc) from None
+            refuse_unless_absent(exc)
+            return None
 
     try:
         current = await run_in_threadpool(_current_fingerprint)
@@ -272,9 +271,8 @@ async def rescan_bank_item(item_id: str) -> BankItem:
             # route as a 500. The shared sentence rather than ``str(exc)``, which
             # on an OSError interpolates ``exc.filename`` - an absolute server
             # path.
-            if exc.errno in ABSENT_ERRNOS:
-                return None
-            raise unreadable_source_error(exc) from None
+            refuse_unless_absent(exc)
+            return None
 
     try:
         fingerprint = await run_in_threadpool(_current_fingerprint)

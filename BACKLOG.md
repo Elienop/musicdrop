@@ -719,30 +719,26 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   are this project's additions, not shadcn's canonical four, so changing that token is fixing a
   local default and not overriding a primitive.
   Search words: icon scale, xs, icon-xs, hairline, sub-pixel, twMerge, size-3.
-- **The "Review all" refusal that NAMES a folder is TOCTOU-only on the live route.** Measured
-  2026-09-20 with a positive control: `settled_folders` skips every persistently-unreadable shape
-  (folder `0o000`/`0o444`/`0o111`, inbox `0o600` all yield `settled=[]`; a readable control yields
-  the folder), so only a readable folder is ever handed to `validate`. The route therefore reaches
-  the unreadable arm only when the folder or inbox loses searchability between the scan and the
-  stat, or the mount goes stale. Both route-level tests monkeypatch `settled_folders` to get there.
-  The hardening was kept (the name is still peer-chosen, the mount-drop race is plausible and
-  non-adversarial, the guard is ~10 lines) but nothing was widened to make the branch reachable.
-  **The queue's unreadable arm is a different case and IS directly reachable** — `enqueue` never
-  checks existence and the webhook is auth-exempt. Search words: reachability, TOCTOU, settled,
-  monkeypatch, positive control.
-- **A deferred unreadable folder is named only in the log.** `status.error` carries the shared
+- **The "Review all" refusal no longer NAMES a folder — do not rebuild it.** Deleted 2026-09-20
+  (~90 app lines, 4 tests), because it named the WRONG folder in every scenario it can reach.
+  Measured three ways: `os.stat` on a folder SUCCEEDS at `0o000`, `0o444` and `0o111`, so a
+  folder's own permissions can never raise the `EACCES` this arm needed; the only shape that does
+  is the INBOX PREFIX losing `+x`, and then every child refuses identically; end to end,
+  `missing_source_error` stops at the first non-absent errno, so the sentence read
+  `“Artist - Album A” can’t be read. Permission denied.` for a healthy folder. The batch 422 now
+  uses the shared singular. The forged-clause sanitiser (`_nameable`, `_QUOTES`, `_NAME_CAP`) went
+  with it — that hole existed only because a peer-chosen string was interpolated into operator
+  prose. Unsettled: ESTALE on a child that is itself a mountpoint might single one child out; not
+  reproducible without NFS. Search words: Review all, names the folder, _nameable, forged clause.
+- **A dropped unreadable folder is named only in the log.** `status.error` carries the shared
   path-free sentence, deliberately: interpolating the basename there would open a second forge
   surface for one line of text. But `has_audio` returns False for that folder, so it appears in no
   listing — the operator has only the WARNING line (`%r`) to identify which folder. Reversible if
-  the sanitized basename is wanted there too. Search words: defer, status.error, which folder.
-- **Two new constants are reasoned, not measured.** `Retry-After: 5` on the start-busy 503, and
-  `_UNREADABLE_DEFER_SECONDS = 300.0` (how long the queue retries an unreadable folder before
-  going terminal with its reason visible). Both are judgement calls; neither has a measurement
-  behind it. Search words: Retry-After, defer seconds, unmeasured constant.
-- **The queue's GLOBAL defer arm is deliberately unbounded.** The unreadable arm now ages out at
-  300 s, but the `RuntimeError` / `LibraryRootUnavailableError` arm does not, because its condition
-  is global rather than per-folder: bounding it would drop every queued download during a long NAS
-  outage. Deliberate, not an oversight. Search words: defer, unbounded, share outage, NAS.
+  the sanitized basename is wanted there too. Search words: drop, status.error, which folder.
+- **The queue's GLOBAL defer arm is deliberately unbounded.** The unreadable arm is terminal (a
+  drop, not a retry), but the `RuntimeError` / `LibraryRootUnavailableError` arm defers, because
+  its condition is global rather than per-folder: bounding it would drop every queued download
+  during a long NAS outage. Deliberate, not an oversight. Search words: defer, unbounded, share outage, NAS.
 - **The Review page's refusal has no automatic expiry.** A folder whose permissions are fixed on
   the server reappears in the listing with the stale red sentence above it until the operator
   presses Dismiss. Auto-clearing on any refetch was rejected because the refetch that drops the
@@ -757,20 +753,23 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `_apply_one` is thin (DB reads and JSON writes), so this is a residual rather than a demonstrated
   hole. Search words: log injection, traceback, logger.exception, FilesystemError, beets.
 - **A pre-existing flaky test, with a control.** `beets.config["timeout"]` raises
-  `confuse.NotFoundError` inside `build_library` during test SETUP when `test_bank_api.py` and
-  `test_import_start_guards.py` run in certain orders. Control measured 2026-09-20: with the
-  round's new tests DESELECTED it failed 3 of 8 runs; with them included, 1 of 5 — higher without
-  them, so it is not this round's. It is the confuse `LazyConfig.clear()` / `_materialized` hazard
-  `backend/tests/conftest.py` already describes. Not fixed: resetting confuse deterministically is
+  `confuse.NotFoundError` inside `build_library` during test SETUP in
+  `test_import_start_guards.py`. It needs NO particular file pairing and NO particular order —
+  re-measured 2026-09-20 during the simplification round, it failed **2 of 10** runs of a
+  0.3 s subset holding only the file's first 18 tests, none of which that round touched (the
+  earliest test it edited is collected 57th, so it cannot be upstream of the failure). The
+  victim varies between `test_a_posted_path_with_a_dotdot_segment_is_not_mapped` and
+  `test_the_sibling_name_fields_are_bounded`; the exception is identical. It is the confuse
+  `LazyConfig.clear()` / `_materialized` hazard `backend/tests/conftest.py` already describes. Not fixed: resetting confuse deterministically is
   a design question and touching the shared conftest could destabilise the suite. Search words:
   confuse, LazyConfig, NotFoundError, timeout, flaky, build_library.
 - **Backend user-facing copy is half-curly: sweep the rest.** Owner's call 2026-09-20 — app copy
   uses TYPOGRAPHIC punctuation, because the user never sees a `.py` file, they see one page, and
   the frontend already uses `’` (153 sites) and quotes user data with `“ ”`
-  (`Results for “jazz”`). This round converted the three sentences it added
-  (`That folder can’t be read.`, `That folder doesn’t exist.`, the batch
-  `“<name>” can’t be read.`) and their pins. **Not swept**: the other user-facing
-  backend sentences still use straight apostrophes, so the same alert can show both dialects —
+  (`Results for “jazz”`). That round converted the two sentences it added
+  (`That folder can’t be read.`, `That folder doesn’t exist.`) and their pins; its third, the
+  batch `“<name>” can’t be read.`, has since been deleted with the naming feature.
+  **Not swept**: the other user-facing backend sentences still use straight apostrophes, so the same alert can show both dialects —
   e.g. `Couldn't reach the slskd server.` (`app/slskd/service.py`), `Couldn't reach the Plex
   server.` (`app/plex/service.py`), `Couldn't read the library files.` /
   `Couldn't save this playlist.` (`app/api/playlists.py`), `Rescan isn't available for this

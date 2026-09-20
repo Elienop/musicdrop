@@ -116,42 +116,29 @@ _T = TypeVar("_T")
 
 #: How many import STARTS may occupy anyio's worker pool at once.
 #:
-#: That pool is PROCESS-WIDE and holds 40 tokens (anyio 4.13.0, measured), and
-#: it is not this path's to spend: FastAPI runs every sync ``Depends`` callable
-#: there - all 18 of this app's are plain ``def`` - and so does the scrypt
-#: derive behind sign-in. A start stats the caller's path, and a stat on a hung
-#: mount does not return, so 40 concurrent starts against one took every token:
-#: ``POST /api/auth/login`` timed out at 20 s while ``GET /api/health`` still
-#: answered 200 in 0.7 ms (measured 2026-09-20).
+#: That pool is PROCESS-WIDE (40 tokens, anyio 4.13.0) and shared with every
+#: sync ``Depends`` and the scrypt derive behind sign-in. A start stats the
+#: caller's path, and a stat on a hung mount does not return: 40 concurrent
+#: starts against one took every token and ``POST /api/auth/login`` timed out at
+#: 20 s while ``GET /api/health`` still answered in 0.7 ms (measured).
 _IMPORT_START_SLOTS: Final = anyio.CapacityLimiter(1)
 
 #: How long a start may wait for that one token before it refuses.
 #:
-#: The wait used to be unbounded, justified by "the single import slot already
-#: refuses a concurrent start with 409". That is false in exactly the case this
-#: limiter exists for: ``runner.validate`` runs at
-#: ``ImportJobRegistry.start`` BEFORE its ``claim_slot``, so a start wedged in
-#: ``validate``'s ``os.stat`` holds this token while ``has_active_job()`` still
-#: reads idle - the 409 can never fire, and every later start used to wait
-#: forever with no status and no sentence.
+#: Bounded, because "the single import slot already 409s a concurrent start" is
+#: false in exactly the case this limiter exists for: ``runner.validate`` runs
+#: in ``ImportJobRegistry.start`` BEFORE its ``claim_slot``, so a start wedged
+#: in ``validate``'s ``os.stat`` holds this token while ``has_active_job()``
+#: still reads idle.
 #:
-#: 30 s because ONE legitimate start is one ``os.stat`` per handed-over folder
-#: plus one library-root read: 200 paths cost 0.099 ms locally (0.49 us/stat,
-#: measured 2026-09-20), and what actually costs anything is the round trip to a
-#: remote share - at a pessimistic 10 ms per cold stat, 200 folders is ~2 s. 30 s
-#: is an order of magnitude above that, so a working share does not refuse a
-#: start it is alone in making, while a mount that never answers stops being an
-#: infinite wait. (``app/api/auth.py`` bounds its sibling wait at 2.0 s, which is
-#: right for a ~0.35 s scrypt derive and far too short here.)
-#:
-#: What it is NOT is a per-caller guarantee, and the sentence above used to read
-#: as one. anyio's ``CapacityLimiter`` is strict FIFO with no barging, so a
-#: waiter's deadline covers everyone ahead of it as well as its own turn: at the
-#: 4096-character path cap a single start costs ~331 ms in the pure-Python
-#: resolve alone (measured, see the call site), so roughly 91 queued max-length
-#: posts push the tail caller past 30 s on a perfectly healthy share. That is a
-#: refusal under load, not under a fault - which is what the 503 says, and why it
-#: carries ``Retry-After``.
+#: 30 s is an order of magnitude above a legitimate start (one ``os.stat`` per
+#: handed-over folder plus one library-root read - ~2 s for 200 folders at a
+#: pessimistic 10 ms per cold remote stat), so a working share is never refused
+#: while a mount that never answers stops being an infinite wait. It is NOT a
+#: per-caller guarantee: anyio's limiter is strict FIFO with no barging, so a
+#: waiter's deadline covers everyone ahead of it too, and enough queued
+#: max-length posts push the tail caller past it on a healthy share. That is a
+#: refusal under load rather than under a fault, which is what the 503 says.
 _START_WAIT_SECONDS: Final = 30.0
 
 #: Short and human: the operator cannot tell a wedged start from a slow one, so
@@ -163,33 +150,13 @@ _START_BUSY_DETAIL: Final = (
 
 
 async def start_import_off_loop(start: Callable[[], _T]) -> _T:
-    """Run ONE import start on a worker thread, capped at ``_IMPORT_START_SLOTS``.
+    """Run ONE import start on a worker thread, under ``import_start_admission``.
 
-    Admission is taken BY HAND and released in a ``finally`` - the shape
-    ``app/api/auth.py::_one_derive_at_a_time`` arrived at, where handing the
-    limiter to anyio instead let a cancelled caller release its token while the
-    worker thread was still stuck.
-
-    The token is held until the WORKER RETURNS, not until the caller gives up -
-    but only against an anyio cancel scope. ``run_in_threadpool`` defaults
-    ``abandon_on_cancel=False``, and that shield is implemented by anyio and
-    honoured only by anyio's own scopes: under ``anyio.move_on_after`` the
-    ``finally`` ran AFTER the worker (1.001 s against a 0.1 s deadline), while a
-    raw ``asyncio.Task.cancel()`` unwound at 0.100 s and left
-    ``borrowed_tokens == 0`` with the thread still running (anyio 4.13.0,
-    measured 2026-09-20). Nothing reaches this function that way today: every
-    caller is a FastAPI handler, and Starlette 1.1.0's ``request_response``
-    awaits the handler directly - no disconnect watcher, no task group - so the
-    "client disconnected" case the old docstring named cannot arise at all.
-    ``test_a_cancelled_import_start_keeps_its_slot_until_the_thread_returns``
-    measures the anyio half, which is the half that can happen.
-
-    A waiter that never gets the token answers instead of hanging - see
-    ``_START_WAIT_SECONDS``. ``admitted`` rather than ``scope.cancel_called``
-    decides that, because the two can disagree: the token can be handed over just
-    as the deadline fires, and only ``admitted`` says whether there is something
-    to release. A cancelled ``acquire`` never takes a token (anyio pops the
-    waiter and re-notifies the next one), so both directions are covered.
+    The token is held until the WORKER RETURNS, not until the caller gives up,
+    because ``run_in_threadpool`` defaults ``abandon_on_cancel=False``. That
+    shield is anyio's and only anyio's own scopes honour it; no caller can reach
+    this any other way today (every one is a FastAPI handler, and Starlette
+    awaits handlers directly - no disconnect watcher, no task group).
     """
     async with import_start_admission():
         return await run_in_threadpool(start)
@@ -200,27 +167,23 @@ async def import_start_admission() -> AsyncIterator[None]:
     """Hold the one start token across EVERY blocking hop of a start handler.
 
     A context manager and not just ``start_import_off_loop`` because a route is
-    bounded by its FIRST unbounded blocking hop, not by the one the comment
-    annotates: ``start_import`` resolves the posted path on a worker thread
-    BEFORE it starts anything, so capping only the start left N concurrent
-    callers holding N tokens in the resolve. Wrapping the whole sequence makes
-    the handler cost ONE token, which is what the trade-off note at the
-    ``reg.start`` call site claims.
+    bounded by its FIRST unbounded blocking hop: ``start_import`` resolves the
+    posted path on a worker thread BEFORE it starts anything, so capping only
+    the start left N concurrent callers holding N tokens in the resolve.
+
+    Admission is taken BY HAND rather than passed to anyio as ``limiter=``,
+    which would let a cancelled caller release its token while the worker thread
+    is still stuck.
     """
     admitted = False
     with anyio.move_on_after(_START_WAIT_SECONDS):
         await _IMPORT_START_SLOTS.acquire()
-        # No await between the acquire returning and this line, so the flag
-        # cannot disagree with whether the token is held.
+        # ``admitted`` and not ``scope.cancel_called``: the token can be handed
+        # over just as the deadline fires, and only this flag says whether there
+        # is one to release. No await between the acquire and this line.
         admitted = True
     if not admitted:
-        # The copy says "try again in a moment"; the header says the same thing
-        # to anything that is not a person. 5 s because the token is released the
-        # moment the holder's worker returns, and the common holder is a start
-        # that is merely slow rather than wedged.
-        raise HTTPException(
-            status_code=503, detail=_START_BUSY_DETAIL, headers={"Retry-After": "5"}
-        )
+        raise HTTPException(status_code=503, detail=_START_BUSY_DETAIL)
     try:
         yield
     finally:
