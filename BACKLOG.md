@@ -680,8 +680,17 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `restart: unless-stopped`, which acts on exit rather than on `unhealthy`, so nothing auto-restarts
   either way today — the cost is to operator monitoring and to any autoheal/k8s liveness probe.
   There is no `--limit-concurrency` (`Dockerfile:61`) and no inbound rate limiting anywhere
-  (`TokenBucketLimiter` is the OUTBOUND artwork fetcher). A cap on the import-start path is being
-  added; this entry stays for the health-signal half, which a cap does not fix.
+  (`TokenBucketLimiter` is the OUTBOUND artwork fetcher). Caps SHIPPED 2026-09-20: a 1-token limiter on the
+  import-start path (bounded at 30 s, then 503) and a 4-token limiter on the inbox filesystem
+  reads, which the slskd webhook's three hops now also take. This entry stays for the two halves a
+  cap does not fix: the healthcheck still answers 200 on the loop while the app cannot serve a
+  route that touches a disk, and **the inbox reads' WAIT is unbounded** — a hung mount parks
+  `GET /acquisition/status`, `GET /acquisition/inbox/items` and `POST /acquisition/review-inbox`
+  at the limiter with no answer and no sentence. Two seats rated that High; it is recorded rather
+  than fixed because the same callers hung inside `os.walk` before the cap existed (so it is not
+  a regression) and bounding it means a 503 on two polled GETs — a contract change plus new UI
+  handling. Fix shape if taken: `anyio.move_on_after(~5s)` around the acquire, mirroring
+  `import_start_admission`, with a short sentence naming the share.
   Search words: anyio, thread limiter, 40 tokens, saturation, healthcheck lies, liveness.
 - **`POST /api/acquisition/review-inbox` reports an UNREADABLE inbox as "nothing to review".**
   `app/acquisition/inbox.py:219-222` (`settled_folders`) and `:154-157` (`count_pending`) both
@@ -702,10 +711,59 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   256 units) is **0.563px** — sub-pixel on a 1x display, a grey hairline rather than a line. The
   spec's steps are inline 16 / banner 20 / hero 40. Two live sites were moved to 16px on
   2026-09-20 by the owner's call (the Activity popover's dismiss glyph and the job row's View
-  caret, both by an explicit `size-4` on the glyph so the buttons keep their own box). **Not
-  swept**: any other `xs`/`icon-xs` button carrying an unsized outline glyph has the same hairline.
-  A sweep needs a design pass, not a find-and-replace, since some of them may want the smaller box.
+  caret, both by an explicit `size-4` on the glyph so the buttons keep their own box). **The sweep has an EMPTY population** — measured
+  2026-09-20 (UI seat): those two WERE the only `xs`/`icon-xs` buttons in the app (`size="xs"` →
+  `JobProgress.tsx`, `size="icon-xs"` → `ActivityPopover.tsx`), and both now opt out with an
+  explicit `size-4`. So the `size-3` rule currently governs nothing and is a trap armed for the
+  next `xs` button rather than a live defect. Note `xs`/`icon-xs`/`icon-sm`/`icon-lg`/`icon-xl`
+  are this project's additions, not shadcn's canonical four, so changing that token is fixing a
+  local default and not overriding a primitive.
   Search words: icon scale, xs, icon-xs, hairline, sub-pixel, twMerge, size-3.
+- **The "Review all" refusal that NAMES a folder is TOCTOU-only on the live route.** Measured
+  2026-09-20 with a positive control: `settled_folders` skips every persistently-unreadable shape
+  (folder `0o000`/`0o444`/`0o111`, inbox `0o600` all yield `settled=[]`; a readable control yields
+  the folder), so only a readable folder is ever handed to `validate`. The route therefore reaches
+  the unreadable arm only when the folder or inbox loses searchability between the scan and the
+  stat, or the mount goes stale. Both route-level tests monkeypatch `settled_folders` to get there.
+  The hardening was kept (the name is still peer-chosen, the mount-drop race is plausible and
+  non-adversarial, the guard is ~10 lines) but nothing was widened to make the branch reachable.
+  **The queue's unreadable arm is a different case and IS directly reachable** — `enqueue` never
+  checks existence and the webhook is auth-exempt. Search words: reachability, TOCTOU, settled,
+  monkeypatch, positive control.
+- **A deferred unreadable folder is named only in the log.** `status.error` carries the shared
+  path-free sentence, deliberately: interpolating the basename there would open a second forge
+  surface for one line of text. But `has_audio` returns False for that folder, so it appears in no
+  listing — the operator has only the WARNING line (`%r`) to identify which folder. Reversible if
+  the sanitized basename is wanted there too. Search words: defer, status.error, which folder.
+- **Two new constants are reasoned, not measured.** `Retry-After: 5` on the start-busy 503, and
+  `_UNREADABLE_DEFER_SECONDS = 300.0` (how long the queue retries an unreadable folder before
+  going terminal with its reason visible). Both are judgement calls; neither has a measurement
+  behind it. Search words: Retry-After, defer seconds, unmeasured constant.
+- **The queue's GLOBAL defer arm is deliberately unbounded.** The unreadable arm now ages out at
+  300 s, but the `RuntimeError` / `LibraryRootUnavailableError` arm does not, because its condition
+  is global rather than per-folder: bounding it would drop every queued download during a long NAS
+  outage. Deliberate, not an oversight. Search words: defer, unbounded, share outage, NAS.
+- **The Review page's refusal has no automatic expiry.** A folder whose permissions are fixed on
+  the server reappears in the listing with the stale red sentence above it until the operator
+  presses Dismiss. Auto-clearing on any refetch was rejected because the refetch that drops the
+  folder is exactly the one the sentence must survive; the only honest predicate found was "a later
+  listing gained a row it did not have while the refusal stood", which over-clears when an
+  unrelated download lands. Search words: refusal, expiry, dismiss, stale sentence.
+- **`logger.exception`'s traceback re-opens log injection for beets' own errors.**
+  `app/bank/apply_runner.py` — all three `item.folder` sites now use `%r`, and `str(OSError)`
+  renders `filename` with `%r` so a newline is escaped there. But `str(beets.util.FilesystemError)`
+  interpolates the path RAW, so a folder named `Album\n<forged record>` produces a complete forged
+  line inside the traceback, bypassing the `%r` on the format argument. Reachability through
+  `_apply_one` is thin (DB reads and JSON writes), so this is a residual rather than a demonstrated
+  hole. Search words: log injection, traceback, logger.exception, FilesystemError, beets.
+- **A pre-existing flaky test, with a control.** `beets.config["timeout"]` raises
+  `confuse.NotFoundError` inside `build_library` during test SETUP when `test_bank_api.py` and
+  `test_import_start_guards.py` run in certain orders. Control measured 2026-09-20: with the
+  round's new tests DESELECTED it failed 3 of 8 runs; with them included, 1 of 5 — higher without
+  them, so it is not this round's. It is the confuse `LazyConfig.clear()` / `_materialized` hazard
+  `backend/tests/conftest.py` already describes. Not fixed: resetting confuse deterministically is
+  a design question and touching the shared conftest could destabilise the suite. Search words:
+  confuse, LazyConfig, NotFoundError, timeout, flaky, build_library.
 - **The acquisition queue's dedupe key is recomputed through `resolve()` twice, so a symlink that
   disappears leaks a `_dedupe` entry and the queued count never returns to zero.** Measured
   2026-09-20 (security seat, while auditing the drain): `enqueue` and `_process_one` each compute
