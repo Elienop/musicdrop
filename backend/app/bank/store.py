@@ -42,6 +42,7 @@ from pathlib import Path
 
 from app.models.bank import (
     BankDecision,
+    BankFailureRecovery,
     BankItem,
     BankItemSummary,
     BankReason,
@@ -390,6 +391,12 @@ def decide_item(bank_dir: Path, item_id: str, decision: BankDecision) -> BankIte
         item.decided = decision
         item.decided_at = _now()
         item.error = None
+        # Cleared WITH the error it belongs to, here and in every other reset
+        # (``upsert_by_folder``, ``rescan_item``, ``reconcile_interrupted``):
+        # ``set_status`` rewriting it on each of its own transitions makes it
+        # true only while the runner owns the row, which is not the same as the
+        # promise ``set_status``'s docstring makes.
+        item.error_recovery = "decide_again"
         if decision.action == "ignore":
             item.status = "ignored"
             item.resolved_at = _now()
@@ -462,9 +469,18 @@ def rescan_item(
 
     ``parked`` None means the default lookup matched nothing — the row
     honestly becomes a ``no_match`` row. Any old duplicate prompt is cleared
-    (the up-front collision check re-flags it if still real). A ``stale`` row
-    resets to ``needs_review`` with ``decided``/``error`` cleared (the
-    re-bank precedent); ``needs_review``/``failed`` keep their status.
+    (the up-front collision check re-flags it if still real).
+
+    Two rows RESET to ``needs_review`` with ``decided``/``error``/
+    ``error_recovery`` cleared (the re-bank precedent), because reaching here
+    disproves what their banner says: a ``stale`` row (the folder changed —
+    this rescan just re-read it and blessed a fresh fingerprint) and a
+    ``fix_folder`` failure (the folder would not answer — the route
+    fingerprinted it and read its audio files before calling this, or it 409ed
+    instead). Every other row KEEPS its status: a rescan disproves nothing
+    else. It emphatically does not un-import the second copy a
+    ``remove_duplicate`` row is waiting on, and an ordinary ``decide_again``
+    failure's banner stays true.
     """
     with _LOCK:
         item = get_item(bank_dir, item_id)
@@ -480,10 +496,12 @@ def rescan_item(
         item.album = album
         item.recommendation = recommendation
         item.confidence = confidence
-        if item.status == "stale":
+        folder_answered = item.status == "failed" and item.error_recovery == "fix_folder"
+        if item.status == "stale" or folder_answered:
             item.status = "needs_review"
             item.decided = None
             item.error = None
+            item.error_recovery = "decide_again"
         _write(bank_dir, item)
         return item
 
@@ -495,17 +513,20 @@ def set_status(
     *,
     error: str | None = None,
     album_id: int | None = None,
-    error_retryable: bool = True,
+    error_recovery: BankFailureRecovery = "decide_again",
     expected: BankStatus | None = None,
 ) -> BankItem | None:
     """Bookkeeping transition (chunk 4's apply runner + reconciliation use it).
 
     ``album_id`` is only ever supplied with ``done`` (the apply landed an
     album); None leaves the field untouched so failure paths never erase a
-    previously recorded id. ``error_retryable`` is the opposite: it is written
-    on EVERY transition and defaults True, so a row that once failed
-    un-retryably cannot carry that False into its next decision. ``expected``
-    makes the write a compare-and-set:
+    previously recorded id. ``error_recovery`` is the opposite: it is written on
+    EVERY transition here and defaults to ``decide_again``. That alone does not
+    stop a row carrying a recovery into its next decision — the writers that
+    reset a row without going through here (``decide_item``,
+    ``upsert_by_folder``, ``rescan_item``, ``reconcile_interrupted``) clear it
+    beside the error, which is what makes it true.
+    ``expected`` makes the write a compare-and-set:
     when given and the row's current status differs, return None WITHOUT
     writing — the apply runner's queued->applying claim uses it so a row
     re-banked under a stale reference (reset to needs_review, decided=None)
@@ -519,7 +540,7 @@ def set_status(
             return None
         item.status = status
         item.error = error
-        item.error_retryable = error_retryable
+        item.error_recovery = error_recovery
         if album_id is not None:
             item.album_id = album_id
         if status in ("done", "failed", "ignored"):
@@ -682,6 +703,7 @@ def upsert_by_folder(
                     "status": "needs_review",
                     "decided": None,
                     "error": None,
+                    "error_recovery": "decide_again",
                     "banked_at": _now(),
                     "decided_at": None,
                     "resolved_at": None,
@@ -727,6 +749,7 @@ def reconcile_interrupted(bank_dir: Path) -> int:
                 continue
             fresh.status = "needs_review"
             fresh.error = "apply interrupted by a restart - decide again"
+            fresh.error_recovery = "decide_again"
             _write(bank_dir, fresh)
             flipped += 1
     return flipped

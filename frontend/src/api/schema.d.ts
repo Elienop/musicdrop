@@ -2622,10 +2622,11 @@ export interface components {
             /** Error */
             error?: string | null;
             /**
-             * Error Retryable
-             * @default true
+             * Error Recovery
+             * @default decide_again
+             * @enum {string}
              */
-            error_retryable: boolean;
+            error_recovery: "decide_again" | "remove_duplicate" | "fix_folder";
             /** Album Id */
             album_id?: number | null;
             /**
@@ -7962,7 +7963,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The store layout is refused, the library folder is unavailable, or another import is still starting. */
+            /** @description The store layout is refused, the library folder is unavailable, or a start is taking longer than usual. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -11901,7 +11902,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The store layout is refused, the library folder is unavailable, or another import is still starting. */
+            /** @description The store layout is refused, the library folder is unavailable, or a start is taking longer than usual. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -12035,7 +12036,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The store layout is refused, the library folder is unavailable, or another import is still starting. */
+            /** @description The store layout is refused, the library folder is unavailable, or a start is taking longer than usual. */
             503: {
                 headers: {
                     [name: string]: unknown;

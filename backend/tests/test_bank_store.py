@@ -263,7 +263,7 @@ def test_decide_rejects_wrong_state(tmp_path: Path) -> None:
         store.decide_item(bank, item_id, decision)
 
 
-def test_decide_failed_row_is_retryable(tmp_path: Path) -> None:
+def test_deciding_a_failed_row_queues_it_and_clears_the_failure(tmp_path: Path) -> None:
     item_id = _create(tmp_path)
     store.set_status(_bank(tmp_path), item_id, "failed", error="boom")
     item = store.decide_item(_bank(tmp_path), item_id, BankDecision(action="asis"))
@@ -945,6 +945,121 @@ def test_rescan_item_preserves_failed_status(tmp_path: Path) -> None:
     assert updated is not None
     assert updated.status == "failed"
     assert updated.error == "boom"  # failed rows keep their banner
+    # The CONTROL for the two tests below: an ordinary decide_again failure is
+    # what a rescan must NOT discharge, so this is the arm that proves the new
+    # branch is selective rather than clearing every failure it meets.
+    assert updated.error_recovery == "decide_again"
+
+
+def _failed_row_needing(tmp_path: Path, recovery: str) -> str:
+    """A row that failed an apply and needs ``recovery`` (the runner's shape)."""
+    row = store.create_item(
+        tmp_path,
+        folder="/inbox/x",
+        source="sweep",
+        reason="needs_review",
+        fingerprint="f" * 64,
+        parked=_parked_payload(),
+    )
+    store.decide_item(tmp_path, row.id, BankDecision(action="asis"))
+    store.set_status(tmp_path, row.id, "applying")
+    store.set_status(
+        tmp_path,
+        row.id,
+        "failed",
+        error="boom",
+        error_recovery=recovery,  # type: ignore[arg-type]  # test passes literal strings
+    )
+    return row.id
+
+
+def _rescan(tmp_path: Path, item_id: str) -> BankItem:
+    updated = store.rescan_item(
+        tmp_path,
+        item_id,
+        fingerprint="a" * 64,
+        parked=_parked_payload(),
+        artist="A",
+        album="B",
+        recommendation="strong",
+        confidence=90.0,
+    )
+    assert updated is not None
+    return updated
+
+
+def test_rescan_discharges_a_fix_folder_failure(tmp_path: Path) -> None:
+    """The route only reaches here having fingerprinted the folder and read its
+    audio files, so "the folder will not answer" has been disproved — and that
+    sentence is the row's whole banner. Left standing, the operator fixes the
+    folder, presses Rescan and gets the identical red banner back.
+    """
+    item_id = _failed_row_needing(tmp_path, "fix_folder")
+
+    updated = _rescan(tmp_path, item_id)
+
+    assert updated.status == "needs_review"
+    assert updated.error is None
+    assert updated.error_recovery == "decide_again"
+    assert updated.decided is None
+
+
+def test_rescan_keeps_a_remove_duplicate_failure(tmp_path: Path) -> None:
+    """A rescan re-reads the FOLDER. It does not un-import the second copy the
+    library is now carrying, so that banner (and its Duplicates link) stands.
+    """
+    item_id = _failed_row_needing(tmp_path, "remove_duplicate")
+
+    updated = _rescan(tmp_path, item_id)
+
+    assert updated.status == "failed"
+    assert updated.error == "boom"
+    assert updated.error_recovery == "remove_duplicate"
+
+
+def test_a_row_reset_by_another_writer_drops_its_recovery(tmp_path: Path) -> None:
+    """``set_status`` rewriting the field on its OWN transitions is not enough.
+
+    Measured against the real store before this was fixed: a row that failed
+    needing ``remove_duplicate`` was re-banked by ``upsert_by_folder`` (status
+    ``needs_review``, error None) and then decided (``queued``, error None) —
+    and carried ``remove_duplicate`` through both, because each reset lists the
+    fields it clears and this one was missing from the list. Latent only
+    because the field is read under ``failed``; the docstring promised more.
+    """
+    item_id = _failed_row_needing(tmp_path, "remove_duplicate")
+
+    rebanked = store.upsert_by_folder(
+        tmp_path, folder="/inbox/x", source="sweep", reason="no_match", fingerprint="b" * 64
+    )
+    assert rebanked.id == item_id
+    assert rebanked.status == "needs_review"
+    assert rebanked.error_recovery == "decide_again"
+
+    # And decide_item's own arm, from a failed row this time (the retry path).
+    failed_again = _failed_row_needing(tmp_path, "fix_folder")
+    decided = store.decide_item(tmp_path, failed_again, BankDecision(action="asis"))
+    assert decided is not None
+    assert decided.status == "queued"
+    assert decided.error_recovery == "decide_again"
+
+
+def test_reconcile_clears_the_recovery_of_an_interrupted_row(tmp_path: Path) -> None:
+    """Third reset, same rule. The ``applying`` row is forced to carry the
+    value (``set_status`` is the only way to write one, so no ordinary sequence
+    produces it) — what is pinned is that the revert clears whatever is there,
+    the way it clears ``error``.
+    """
+    item_id = _failed_row_needing(tmp_path, "fix_folder")
+    store.decide_item(tmp_path, item_id, BankDecision(action="asis"))
+    store.set_status(tmp_path, item_id, "applying", error_recovery="fix_folder")
+
+    assert store.reconcile_interrupted(tmp_path) == 1
+
+    item = store.get_item(tmp_path, item_id)
+    assert item is not None
+    assert item.status == "needs_review"
+    assert item.error_recovery == "decide_again"
 
 
 def test_rescan_item_rejects_settled_statuses(tmp_path: Path) -> None:

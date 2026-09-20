@@ -3451,7 +3451,7 @@
             }
           },
           "503": {
-            "description": "The store layout is refused, the library folder is unavailable, or another import is still starting.",
+            "description": "The store layout is refused, the library folder is unavailable, or a start is taking longer than usual.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8272,7 +8272,7 @@
             }
           },
           "503": {
-            "description": "The store layout is refused, the library folder is unavailable, or another import is still starting.",
+            "description": "The store layout is refused, the library folder is unavailable, or a start is taking longer than usual.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8386,7 +8386,7 @@
             }
           },
           "503": {
-            "description": "The store layout is refused, the library folder is unavailable, or another import is still starting.",
+            "description": "The store layout is refused, the library folder is unavailable, or a start is taking longer than usual.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11112,10 +11112,15 @@
             ],
             "title": "Error"
           },
-          "error_retryable": {
-            "type": "boolean",
-            "title": "Error Retryable",
-            "default": true
+          "error_recovery": {
+            "type": "string",
+            "enum": [
+              "decide_again",
+              "remove_duplicate",
+              "fix_folder"
+            ],
+            "title": "Error Recovery",
+            "default": "decide_again"
           },
           "album_id": {
             "anyOf": [

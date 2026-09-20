@@ -44,7 +44,7 @@ from app.import_jobs.runner import (
     unreadable_reason,
     unreadable_source_sentence,
 )
-from app.models.bank import BankApplyDirective, BankItem, BankStatus
+from app.models.bank import BankApplyDirective, BankFailureRecovery, BankItem, BankStatus
 from app.models.import_api import ImportAlbumStatus, ImportJobState, ImportPhase
 from app.models.import_models import DuplicateAction, ExistingAlbum, ImportOptions
 
@@ -79,9 +79,10 @@ _STOPPED_ERROR = "the apply was stopped - decide again to retry"
 # album is already in the library as a second copy, so "decide again" - the
 # guidance every other failure gives - would import a third. Steer to removing
 # one copy instead; the Duplicates page keeps one and trashes the rest (it does
-# not merge). One of the two errors carried with ``error_retryable=False`` (the
-# other is the un-replaced replace below), so the banner above it drops the
-# "decide again to retry" headline it contradicts.
+# not merge). One of the two errors carried with
+# ``error_recovery="remove_duplicate"`` (the other is the un-replaced replace
+# below), so the banner drops the "decide again to retry" headline it
+# contradicts and offers the Duplicates link in its place.
 _MERGE_NOT_MERGED_ERROR = (
     "the album landed in your library as a second copy and the merge never ran (your "
     "library copy no longer matched it) - deciding again would import it a third time; "
@@ -94,8 +95,9 @@ _MERGE_NOT_MERGED_ERROR = (
 # (no ``needs_dup_resolution`` on the feed). What actually happened is "the new
 # album was imported and nothing was replaced", so reporting ``done`` would
 # render the Review page's "Replaced - the old copy was moved to Trash": a false
-# claim about a DESTRUCTIVE operation. Same not-retryable posture as the merge
-# arm - the album is already in the library, so a re-decide imports another.
+# claim about a DESTRUCTIVE operation. Same ``remove_duplicate`` posture as the
+# merge arm - the album is already in the library, so a re-decide imports
+# another.
 _REPLACE_NOT_REPLACED_ERROR = (
     "the album was imported but your old copy was not moved to Trash (it was gone, or it no "
     "longer matched the copy you decided about) - deciding again would import another copy; "
@@ -218,9 +220,29 @@ def _row_error(exc: Exception) -> str:
     The wording does not repeat "The apply failed", which ``BankReviewPage``
     already prints as the headline directly above this string; it reads as the
     continuation its siblings above are, lower-case and dash-joined.
+
+    The OSError arm used to read "the system refused - <strerror>", which named
+    no system and no thing and was the only reason line here with no remedy
+    half. Its remedy is the SERVER LOG, not the row: this arm is reached by an
+    OSError from anywhere in the row's bookkeeping, so nothing here knows WHICH
+    file refused - and the traceback ``_drain`` logs one line earlier is the
+    only place that does, which is the gap that keeping the path OUT of this
+    string opens. So it refines the ``decide_again`` headline rather than
+    repeating it ("check the log FIRST").
+
+    It deliberately does not blame the banked folder. The two paths that refuse
+    BEFORE an import starts - the fingerprint's own EACCES and the start-time
+    refusal - already answer ``fix_folder`` in ``_apply_one``, so what lands
+    here is whatever is left, and "fix the folder" would be a guess about it.
+    (Only those two were measured. Both gates STAT the folder rather than
+    opening its files, so this does not claim every unreadable-folder fault is
+    caught up there.)
     """
     if isinstance(exc, OSError):
-        return f"the system refused - {unreadable_reason(exc)}"
+        return (
+            f"the server could not complete this row ({unreadable_reason(exc)}) - "
+            "check the server log, then decide again"
+        )
     return str(exc) or exc.__class__.__name__
 
 
@@ -321,12 +343,27 @@ class BankApplyRunner:
                 # everything ``str.isprintable()`` is False for, U+2028 and U+202E
                 # included.
                 logger.exception("bank apply failed for %r", item.folder)
-                bank_store.set_status(
-                    self._bank_dir,
-                    item.id,
-                    "failed",
-                    error=_row_error(exc),
-                )
+                try:
+                    bank_store.set_status(
+                        self._bank_dir,
+                        item.id,
+                        "failed",
+                        error=_row_error(exc),
+                    )
+                # The SAME guard the pick above carries, for the same reason:
+                # recording the failure is itself a write to the bank directory,
+                # so the fault that failed the row (ENOSPC, EROFS, EIO) is the
+                # fault that can fail this write. Unguarded it escaped the loop
+                # and killed the drain - measured with the guard reverted: the
+                # thread died on the crashed row and the NEXT queued row never
+                # ran, while the pick's guarded control kept looping.
+                # The row is left mid-flight (``applying`` if the claim landed,
+                # ``queued`` if it did not); startup reconciliation reverts an
+                # ``applying`` one, and the back-off is what stops a re-picked
+                # ``queued`` one tight-spinning on a persistent fault.
+                except Exception:
+                    logger.exception("bank apply: recording the failure for %r failed", item.folder)
+                    self._stop.wait(self._busy_backoff)
 
     def _apply_one(self, item: BankItem) -> None:
         if not self._wait_for_gate():
@@ -355,8 +392,15 @@ class BankApplyRunner:
             if exc.errno in ABSENT_ERRNOS:
                 bank_store.set_status(self._bank_dir, item.id, "stale", error=_STALE_GONE_ERROR)
             else:
+                # ``fix_folder``: the folder IS there and the operator can make
+                # it readable, so the banner has to say that rather than the bare
+                # "decide again to retry" a retry would fail identically on.
                 bank_store.set_status(
-                    self._bank_dir, item.id, "failed", error=unreadable_source_sentence(exc)
+                    self._bank_dir,
+                    item.id,
+                    "failed",
+                    error=unreadable_source_sentence(exc),
+                    error_recovery="fix_folder",
                 )
             return
         if current != claimed.fingerprint:
@@ -398,7 +442,7 @@ class BankApplyRunner:
             # the defer tuple: a requeue would poll a gone folder forever, and an
             # unreadable one does not start answering on its own either - EACCES
             # needs the operator, not a retry. Left to _drain's catch-all the row
-            # read ``failed`` + retryable=True with a logged traceback for an
+            # read ``failed`` + ``decide_again`` with a logged traceback for an
             # ordinary race (measured 2026-09-20).
             #
             # WHICH sentence follows ``unreadable``, because the type covers two
@@ -408,12 +452,21 @@ class BankApplyRunner:
             #
             # gone -> ``stale`` + the sentence the OSError arm one screen up uses
             # for the same physical condition, which routes the Bank page to its
-            # stale screen. Unreadable -> ``failed``, left retryable: the folder
-            # IS there, so "fix the permissions, then decide again" is a real
-            # remedy, while the stale screen's "re-sweep or remove the row" is
-            # not. ``str(exc)`` here is our own sentence and carries no path.
+            # stale screen. Unreadable -> ``failed`` + ``fix_folder``, the same
+            # recovery that arm writes: the folder IS there, so deciding again is
+            # the remedy - but only AFTER the operator makes it readable, and a
+            # bare "decide again to retry" headline would send them straight back
+            # into an identical failure. The stale screen's "re-sweep or remove
+            # the row" is not a remedy for it either. ``str(exc)`` here is our own
+            # sentence and carries no path.
             if exc.unreadable:
-                bank_store.set_status(self._bank_dir, item.id, "failed", error=str(exc))
+                bank_store.set_status(
+                    self._bank_dir,
+                    item.id,
+                    "failed",
+                    error=str(exc),
+                    error_recovery="fix_folder",
+                )
             else:
                 bank_store.set_status(self._bank_dir, item.id, "stale", error=_STALE_GONE_ERROR)
             return
@@ -426,7 +479,7 @@ class BankApplyRunner:
             return
         if state is None:
             return  # shutting down mid-apply; startup reconciliation reverts
-        status, error, album_id, retryable = self._classify(claimed, state, replace_targets_gone)
+        status, error, album_id, recovery = self._classify(claimed, state, replace_targets_gone)
         self._refresh_stored_duplicate(claimed, job_id, state, status)
         bank_store.set_status(
             self._bank_dir,
@@ -434,7 +487,7 @@ class BankApplyRunner:
             status,
             error=error,
             album_id=album_id,
-            error_retryable=retryable,
+            error_recovery=recovery,
         )
 
     def _refresh_stored_duplicate(
@@ -577,7 +630,7 @@ class BankApplyRunner:
     @staticmethod
     def _classify(
         item: BankItem, state: ImportJobState, replace_targets_gone: bool
-    ) -> tuple[BankStatus, str | None, int | None, bool]:
+    ) -> tuple[BankStatus, str | None, int | None, BankFailureRecovery]:
         """Map the finished apply job onto the row's terminal status.
 
         ``replace_targets_gone`` is ``_replace_targets_are_gone``'s pre-import
@@ -585,12 +638,15 @@ class BankApplyRunner:
         has landed an album, "no stored copy survives" and "the survivor IS the
         album we just imported" are indistinguishable.
 
-        Returns ``(status, error, album_id, error_retryable)``. The last is
-        False for exactly TWO outcomes - the merge that landed a second copy and
-        the replace that replaced nothing, both below - because those are the
-        only failures whose error tells the user NOT to decide again; every
-        other outcome's recovery IS a re-decide, so the banner's "decide again
-        to retry" headline stays true.
+        Returns ``(status, error, album_id, error_recovery)``. The last is
+        ``remove_duplicate`` for exactly TWO outcomes - the merge that landed a
+        second copy and the replace that replaced nothing, both below - because
+        those are the only failures whose error tells the user NOT to decide
+        again; every other outcome's recovery IS a re-decide, so the banner's
+        "decide again to retry" headline stays true. The third recovery
+        (``fix_folder``) is not returned here: the two paths that refuse BEFORE
+        an import starts write it themselves in ``_apply_one``, and this
+        classifies a job that RAN, on what it landed.
 
         Decision-aware, and ``done`` always needs POSITIVE evidence (a
         transient lookup failure makes the session SKIP while the job still
@@ -641,10 +697,10 @@ class BankApplyRunner:
         re-imports the folder, where the landed sibling is now a duplicate.
         """
         if state.phase is ImportPhase.failed:
-            return "failed", state.error or "import failed", None, True
+            return "failed", state.error or "import failed", None, "decide_again"
         note = next((a.note for a in state.albums if a.note is not None), None)
         if note is not None:
-            return "failed", note, None, True
+            return "failed", note, None, "decide_again"
         album_id = next((a.album_id for a in state.albums if a.album_id is not None), None)
         # The stop endpoint takes any origin, so an apply can end mid-folder with
         # no landed id. Where that happens, the stop is the cause — not a lookup
@@ -666,14 +722,14 @@ class BankApplyRunner:
                 nothing_landed=nothing_landed,
             )
         if dup_resolution_ran:
-            return "failed", _DUP_BLOCKED_ERROR, None, True
+            return "failed", _DUP_BLOCKED_ERROR, None, "decide_again"
         if action == "astracks":
             if any(a.status is ImportAlbumStatus.applied for a in state.albums):
-                return "done", None, album_id, True
-            return "failed", nothing_landed, None, True
+                return "done", None, album_id, "decide_again"
+            return "failed", nothing_landed, None, "decide_again"
         if album_id is None:
-            return "failed", no_album, None, True
-        return "done", None, album_id, True
+            return "failed", no_album, None, "decide_again"
+        return "done", None, album_id, "decide_again"
 
     @staticmethod
     def _classify_duplicate(
@@ -683,7 +739,7 @@ class BankApplyRunner:
         replace_targets_gone: bool,
         *,
         nothing_landed: str,
-    ) -> tuple[BankStatus, str | None, int | None, bool]:
+    ) -> tuple[BankStatus, str | None, int | None, BankFailureRecovery]:
         """The ``duplicate``-decision arm of ``_classify`` (same return contract).
 
         ``nothing_landed`` is the error for its empty-handed returns, which a
@@ -695,12 +751,12 @@ class BankApplyRunner:
             # store's "the apply landed THIS" field, only ever written with
             # ``done``, and what landed here is the copy the user has to
             # clean up - the error string is where that belongs.
-            return "failed", _MERGE_NOT_MERGED_ERROR, None, False
+            return "failed", _MERGE_NOT_MERGED_ERROR, None, "remove_duplicate"
         if dup_action is DuplicateAction.replace and landed_unresolved and replace_targets_gone:
             # Same reasoning as the merge arm for keeping album_id off the row:
             # what landed is a copy the user may have to clean up, not a
             # "the apply landed THIS" success.
-            return "failed", _REPLACE_NOT_REPLACED_ERROR, None, False
+            return "failed", _REPLACE_NOT_REPLACED_ERROR, None, "remove_duplicate"
         if dup_action is DuplicateAction.merge and album_id is None:
             # A merge lands an album of its own - beets rebuilds the combined
             # release and re-imports it - so `done` needs the id. The hook emits
@@ -709,9 +765,9 @@ class BankApplyRunner:
             # is true the moment merge is chosen: without this arm a merged task
             # cut short at its own lookup, or one that resolved nothing and
             # SKIPped, reads done with the old copy alone in the library.
-            return "failed", nothing_landed, None, True
+            return "failed", nothing_landed, None, "decide_again"
         if dup_resolution_ran or album_id is not None:
             # skip_new lands nothing by design ("kept your copy"), so the hook's
             # own evidence is enough for it.
-            return "done", None, album_id, True
-        return "failed", nothing_landed, None, True
+            return "done", None, album_id, "decide_again"
+        return "failed", nothing_landed, None, "decide_again"

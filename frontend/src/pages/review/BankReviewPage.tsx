@@ -218,35 +218,42 @@ function RescanControl({
 
 const NO_HIT_FEEDBACK = "No release found. Showing your previous matches.";
 
+/** One sentence per recovery the runner names, never the error TEXT — the same
+ * stance the strip below takes. `remove_duplicate` drops the retry instruction
+ * its own reason forbids (deciding again would import a third copy);
+ * `fix_folder` keeps it, behind the step that has to come first.
+ *
+ * `fix_folder` names the share as well as the folder because the runner's arm
+ * is "any OSError whose errno is NOT ENOENT/ENOTDIR/ENAMETOOLONG" — that also
+ * catches ESTALE, EIO, EROFS and EHOSTDOWN, which on a self-hosted box most
+ * often mean the share dropped rather than the folder being wrong. */
+const FAILED_HEADLINE: Record<BankItem["error_recovery"], string> = {
+  decide_again: "The apply failed. Decide again to retry.",
+  remove_duplicate: "The apply failed.",
+  fix_folder: "The apply failed. Fix the folder or its share, then decide again.",
+};
+
 /** The failed-apply banner. role=alert via StatusBanner's destructive tone.
  *
- * The headline branches on the row's `error_retryable` flag, never on the
- * error TEXT — the same stance the strip below takes, for the same reason.
- * The runner marks a row not-retryable when deciding again would import a
- * THIRD copy, so the emphasized line must not instruct the retry that the
- * muted reason under it forbids; recovery is removing one of the two copies,
- * which the Duplicates link reaches. Absent or true keeps the retry headline —
- * rows banked before the flag existed are retryable. */
+ * Headline and action read `error_recovery` independently. The link is an
+ * affirmative test for `remove_duplicate`: the Duplicates page is the recovery
+ * for that failure alone, so a recovery added later gets no link until someone
+ * decides it should have one. */
 function FailedBanner({ item }: Readonly<{ item: BankItem }>) {
-  const retryable = item.error_retryable !== false;
   const failure = (item.error ?? "").trim();
   return (
     <StatusBanner
       tone="destructive"
       icon={Warning}
       action={
-        retryable ? undefined : (
+        item.error_recovery === "remove_duplicate" ? (
           <Button variant="outline" size="sm" asChild>
             <Link to="/duplicates">Open Duplicates</Link>
           </Button>
-        )
+        ) : undefined
       }
     >
-      <p className="font-medium">
-        {retryable
-          ? "The apply failed. Decide again to retry."
-          : "The apply failed."}
-      </p>
+      <p className="font-medium">{FAILED_HEADLINE[item.error_recovery]}</p>
       {/* This is the diagnosis surface, so the string is NOT clamped — only
           stopped from painting out of its column. `break-words` breaks the
           unbroken paths beets puts in these messages; it lowers no ancestor's
@@ -262,11 +269,18 @@ function FailedBanner({ item }: Readonly<{ item: BankItem }>) {
   );
 }
 
-/** Duplicate-resolution strip for FAILED rows. The apply runner fails a row
- * that meets an unanticipated library duplicate with "decide again with a
- * duplicate action" — `{action: "duplicate"}` is accepted on any decidable
- * row, so the strip is offered on every failed row (harmless otherwise)
- * rather than sniffing the error string. */
+/** Duplicate-resolution strip for FAILED rows on the no-match screen — its one
+ * render site, not every failed row (the candidate and duplicate screens show
+ * `FailedBanner` without it). The apply runner fails a row that meets an
+ * unanticipated library duplicate with "decide again with a duplicate action",
+ * and `{action: "duplicate"}` is accepted on any decidable row, so the offer
+ * keys on `error_recovery` rather than sniffing the error string.
+ *
+ * Withheld from a `fix_folder` row for one reason only: its copy says the
+ * album is already in your library, which that failure explicitly is not. The
+ * other actions stay enabled — the banner tells a `fix_folder` row to decide
+ * again, so "a retry would fail identically" is NOT the argument here (it
+ * would apply equally to Use as-is, As tracks and Ignore). */
 function FailedDuplicateStrip({
   busy,
   pending,
@@ -379,7 +393,18 @@ function BankCandidateScreen({ item }: Readonly<{ item: BankItem }>) {
   // Offer the four duplicate actions on a real collision OR — as a fallback —
   // when the re-check ERRORS on an already-failed row, so the failed-banner's
   // "decide again with a duplicate action" instruction stays followable.
-  const showDupActions = hasCollision || (dups.isError && item.status === "failed");
+  //
+  // The collision arm is NOT gated on `error_recovery`: a listed collision is
+  // real whatever made the apply fail. The error arm IS, for the same reason
+  // FailedDuplicateStrip is withheld — it can only assert the album is already
+  // in the library, which a `fix_folder` failure explicitly is not. Gating it
+  // also keeps Apply/Use as-is/As tracks on the bar, which is the remedy that
+  // row's own banner names.
+  const showDupActions =
+    hasCollision ||
+    (dups.isError &&
+      item.status === "failed" &&
+      item.error_recovery !== "fix_folder");
 
   const submit = makeSubmit(decide, navigate, setPendingDup);
 
@@ -672,7 +697,7 @@ function NoMatchScreen({ item }: Readonly<{ item: BankItem }>) {
         <p className="text-muted-foreground font-mono text-xs" title={item.folder}>
           {item.folder}
         </p>
-        {item.status === "failed" && (
+        {item.status === "failed" && item.error_recovery !== "fix_folder" && (
           <FailedDuplicateStrip
             busy={busyAll}
             pending={pendingDup}

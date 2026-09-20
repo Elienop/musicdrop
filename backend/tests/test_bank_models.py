@@ -91,23 +91,62 @@ def test_bank_item_roundtrip_minimal() -> None:
     assert again.duplicate is None
 
 
-def test_a_row_persisted_without_error_retryable_reads_as_retryable() -> None:
-    # Every bank row on disk predates this field, and rows are re-read (never
-    # migrated). The default has to be the SAFE side: "decide again to retry" is
-    # the banner's headline, and a legacy failed row must still offer it.
+def _legacy_failed_row(**extra: object) -> dict[str, object]:
+    """A ``failed`` bank row exactly as it was written to disk before
+    ``error_recovery`` existed: ``error_retryable`` present, the new key
+    absent."""
+    return {
+        "id": "a" * 32,
+        "folder": "/library/Artist/Album",
+        "source": "sweep",
+        "reason": "no_match",
+        "fingerprint": "deadbeef",
+        "status": "failed",
+        "error": "the apply imported nothing",
+        "banked_at": "2026-06-12T00:00:00+00:00",
+        **extra,
+    }
+
+
+def test_a_row_persisted_without_error_recovery_reads_as_decide_again() -> None:
+    # Rows are re-read, never migrated, so a row banked before this field
+    # existed must still render what it renders today: "decide again to retry"
+    # and no Duplicates link. Both legacy spellings - the flag absent entirely,
+    # and the flag explicitly True - are that row.
+    bare = BankItem.model_validate(_legacy_failed_row())
+    assert bare.error_recovery == "decide_again"
+
+    flagged = BankItem.model_validate(_legacy_failed_row(error_retryable=True))
+    assert flagged.error_recovery == "decide_again"
+
+
+def test_a_row_persisted_with_error_retryable_false_reads_as_remove_duplicate() -> None:
+    # The other half of the same on-disk shape, and the one that would REGRESS
+    # silently: ``False`` was only ever written for the two failures whose album
+    # is already in the library twice, and it is what puts the Duplicates link
+    # on the banner. Defaulting it to ``decide_again`` would take that link away
+    # from a row on disk AND tell the operator to import a third copy.
+    item = BankItem.model_validate(_legacy_failed_row(error_retryable=False))
+    assert item.error_recovery == "remove_duplicate"
+
+
+def test_a_stored_error_recovery_outranks_the_legacy_flag() -> None:
+    # The control for the mapping above: it may only fill a GAP. A row written
+    # since the change carries ``error_recovery`` and, for one transition,
+    # could still carry a stale ``error_retryable`` beside it - the new key
+    # decides, or the shape would be pinned to whichever writer ran last.
     item = BankItem.model_validate(
-        {
-            "id": "a" * 32,
-            "folder": "/library/Artist/Album",
-            "source": "sweep",
-            "reason": "no_match",
-            "fingerprint": "deadbeef",
-            "status": "failed",
-            "error": "the apply imported nothing",
-            "banked_at": "2026-06-12T00:00:00+00:00",
-        }
+        _legacy_failed_row(error_retryable=False, error_recovery="fix_folder")
     )
-    assert item.error_retryable is True
+    assert item.error_recovery == "fix_folder"
+
+
+def test_the_legacy_flag_is_not_carried_onto_the_wire() -> None:
+    # ``BankItem`` does not forbid extras, so pydantic drops the stale key; the
+    # row the API serialises must not ship a second, contradicting field for the
+    # page to read.
+    item = BankItem.model_validate(_legacy_failed_row(error_retryable=False))
+    assert "error_retryable" not in item.model_dump()
 
 
 def test_bank_item_rejects_garbage_timestamps() -> None:

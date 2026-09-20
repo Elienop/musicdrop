@@ -773,16 +773,18 @@ def test_merge_that_never_merged_fails_honestly(tmp_path: Path) -> None:
         assert "third time" in got.error  # steers away from a blind retry
         assert "Duplicates page" in got.error
         # ...and the banner must not contradict that error with its own
-        # "decide again to retry" headline. The ONE row that says no.
-        assert got.error_retryable is False
+        # "decide again to retry" headline. Deciding again is NOT the
+        # recovery here; removing one of the two copies is, and
+        # ``remove_duplicate`` is what puts the Duplicates link on the row.
+        assert got.error_recovery == "remove_duplicate"
     finally:
         runner.stop()
 
 
-def test_merge_that_imported_nothing_keeps_the_retryable_error(tmp_path: Path) -> None:
+def test_merge_that_imported_nothing_keeps_its_decide_again_error(tmp_path: Path) -> None:
     # The honest-failure arm is scoped to "an album LANDED but was not merged".
     # A merge run that imported nothing at all is the ordinary transient
-    # failure, and must keep its own retryable wording — widening the merge arm
+    # failure, and must keep its own decide-again wording — widening the merge arm
     # to every un-merged run would tell the user to go delete a copy that does
     # not exist.
     fake = FakeImportRunner(applied=[_outcome(AlbumOutcomeStatus.skipped)])
@@ -801,19 +803,23 @@ def test_merge_that_imported_nothing_keeps_the_retryable_error(tmp_path: Path) -
         assert got.status == "failed"
         assert got.error is not None
         assert "imported nothing" in got.error
-        # The retryability control: widening the not-retryable flag past the
-        # landed-a-second-copy arm would hide "decide again" from a row whose
-        # only recovery IS deciding again.
-        assert got.error_retryable is True
+        # The recovery control: widening the ``remove_duplicate`` arm past
+        # landed-a-second-copy would hide "decide again" from a row whose only
+        # recovery IS deciding again, and point it at the Duplicates page for a
+        # copy that does not exist.
+        assert got.error_recovery == "decide_again"
     finally:
         runner.stop()
 
 
-def test_a_not_retryable_row_becomes_retryable_again_after_a_redecide(tmp_path: Path) -> None:
-    # error_retryable describes THIS failure, not the row forever. A merge that
-    # landed a second copy parks False; the user removes a copy and decides
-    # again, and the next transition must clear it — a row stuck False would
-    # permanently hide the banner's retry guidance from every later failure.
+def test_a_row_needing_another_recovery_resets_to_decide_again_after_a_redecide(
+    tmp_path: Path,
+) -> None:
+    # error_recovery describes THIS failure, not the row forever. A merge that
+    # landed a second copy parks ``remove_duplicate``; the user removes a copy
+    # and decides again, and the next transition must rewrite it — a row stuck
+    # there would permanently hide the banner's retry guidance from every later
+    # failure, and keep offering a Duplicates link nothing needs.
     fake = FakeImportRunner(applied=[_outcome(AlbumOutcomeStatus.applied, album_id=55)])
     reg = ImportJobRegistry(runner=fake)
     bank = _bank(tmp_path)
@@ -828,7 +834,7 @@ def test_a_not_retryable_row_becomes_retryable_again_after_a_redecide(tmp_path: 
             lambda i: i is not None and i.status == "failed",
         )
         assert failed is not None
-        assert failed.error_retryable is False
+        assert failed.error_recovery == "remove_duplicate"
     finally:
         runner.stop()
 
@@ -843,7 +849,7 @@ def test_a_not_retryable_row_becomes_retryable_again_after_a_redecide(tmp_path: 
         )
         assert done is not None
         assert done.status == "done"
-        assert done.error_retryable is True
+        assert done.error_recovery == "decide_again"
     finally:
         runner.stop()
 
@@ -872,7 +878,11 @@ def test_a_stopped_merge_apply_is_failed_not_done(tmp_path: Path) -> None:
             lambda i: i is not None and i.status in ("done", "failed"),
         )
         assert got is not None
-        assert (got.status, got.album_id, got.error_retryable) == ("failed", None, True)
+        assert (got.status, got.album_id, got.error_recovery) == (
+            "failed",
+            None,
+            "decide_again",
+        )
         assert got.error == "the apply was stopped - decide again to retry"
     finally:
         runner.stop()
@@ -895,7 +905,11 @@ def test_a_merge_apply_that_resolved_nothing_is_failed_not_done(tmp_path: Path) 
             lambda i: i is not None and i.status in ("done", "failed"),
         )
         assert got is not None
-        assert (got.status, got.album_id, got.error_retryable) == ("failed", None, True)
+        assert (got.status, got.album_id, got.error_recovery) == (
+            "failed",
+            None,
+            "decide_again",
+        )
         assert (
             got.error
             == "the apply imported nothing (the lookup may have failed transiently) - decide again"
@@ -966,8 +980,9 @@ def test_replace_that_replaced_nothing_fails_honestly(tmp_path: Path) -> None:
         assert "another copy" in got.error  # steers away from a blind retry
         assert "Duplicates page" in got.error
         # The album really is in the library, so the banner must not offer
-        # "decide again to retry" — the second row that says no.
-        assert got.error_retryable is False
+        # "decide again to retry" — the second row whose recovery is removing a
+        # copy, not re-deciding.
+        assert got.error_recovery == "remove_duplicate"
     finally:
         runner.stop()
 
@@ -1005,7 +1020,7 @@ def test_a_replace_that_could_not_reach_trash_fails_the_row_with_its_own_sentenc
         assert got.status == "failed"
         assert got.error == note
         assert got.album_id is None
-        assert got.error_retryable is True
+        assert got.error_recovery == "decide_again"
     finally:
         runner.stop()
 
@@ -1052,7 +1067,7 @@ def test_a_published_prompt_refreshes_the_failed_rows_collision(tmp_path: Path) 
         assert got is not None
         assert got.status == "failed"
         assert got.error == _STALE_CONSENT
-        assert got.error_retryable is True
+        assert got.error_recovery == "decide_again"
         assert got.duplicate is not None
         assert [e.album_id for e in got.duplicate.existing] == [ids[0], ids[1]], (
             "the row still carries the prompt that refused it, so deciding again refuses again"
@@ -1267,7 +1282,7 @@ def test_duplicate_decision_pins_banked_release_end_to_end(tmp_path: Path) -> No
         runner.stop()
 
 
-def test_failed_import_is_recorded_retryable(tmp_path: Path) -> None:
+def test_failed_import_is_recorded_as_a_decide_again_failure(tmp_path: Path) -> None:
     fake = FakeImportRunner(fail_with="boom")
     reg = ImportJobRegistry(runner=fake)
     bank = _bank(tmp_path)
@@ -1284,19 +1299,20 @@ def test_failed_import_is_recorded_retryable(tmp_path: Path) -> None:
         assert item.error == "boom"
     finally:
         runner.stop()
-    # Retryable per the as-built store: a failed row accepts a new decision.
+    # Decide again per the as-built store: a failed row accepts a new decision.
     requeued = store.decide_item(bank, item_id, BankDecision(action="asis"))
     assert requeued is not None
     assert requeued.status == "queued"
 
 
-def test_a_crashing_row_records_a_retryable_failure(tmp_path: Path) -> None:
-    # The drain's per-row catch-all writes only `error=str(exc)` and LEANS on
-    # `set_status(error_retryable=True)`'s default — as does the _UNCONFIRMED
-    # write. Every other asserting test passes the value explicitly, so nothing
-    # observed that default and flipping it to False was invisible. A row that
-    # crashed mid-apply is precisely one whose recovery IS deciding again, so
-    # the banner must keep its retry headline.
+def test_a_crashing_row_records_a_decide_again_failure(tmp_path: Path) -> None:
+    # The drain's per-row catch-all writes only `error=_row_error(exc)` and
+    # LEANS on `set_status(error_recovery="decide_again")`'s default — as does
+    # the _UNCONFIRMED write. Every other asserting test passes the value
+    # explicitly, so nothing observed that default and changing it was
+    # invisible. A row that crashed mid-apply is precisely one whose recovery IS
+    # deciding again, so the banner must keep its retry headline — and must not
+    # send it to Duplicates or blame a folder that answered fine.
     def exploding_library() -> LibraryHandle:
         raise RuntimeError("the library could not be opened")
 
@@ -1316,7 +1332,7 @@ def test_a_crashing_row_records_a_retryable_failure(tmp_path: Path) -> None:
         )
         assert got is not None
         assert got.error == "the library could not be opened"
-        assert got.error_retryable is True
+        assert got.error_recovery == "decide_again"
         assert fake.validate_calls == []  # it crashed before starting anything
     finally:
         runner.stop()
@@ -1683,13 +1699,13 @@ def test_a_stopped_apply_names_the_stop_not_the_lookup() -> None:
     # The stop endpoint takes any origin, so an apply can end `done` with no
     # landed id. That read as _NO_ALBUM_ERROR — "the release lookup may have
     # returned nothing" — which names a cause that did not happen. The status
-    # (failed, retryable) was already right and stays right.
+    # (failed, decide_again) was already right and stays right.
     item = _queued_item(BankDecision(action="apply"))
 
-    status, error, album_id, retryable = BankApplyRunner._classify(
+    status, error, album_id, recovery = BankApplyRunner._classify(
         item, _done_state(stopped=True), False
     )
-    assert (status, album_id, retryable) == ("failed", None, True)
+    assert (status, album_id, recovery) == ("failed", None, "decide_again")
     assert error == "the apply was stopped - decide again to retry"
 
     # The control: the same shape on a run that ended on its own still blames
@@ -1714,14 +1730,14 @@ def test_a_stopped_apply_that_landed_an_album_is_still_done() -> None:
         "done",
         None,
         7,
-        True,
+        "decide_again",
     )
     # ...identical to the same state on a run nobody stopped.
     assert BankApplyRunner._classify(item, _done_state(stopped=False, albums=landed), False) == (
         "done",
         None,
         7,
-        True,
+        "decide_again",
     )
 
 
@@ -1736,7 +1752,7 @@ def test_a_stopped_astracks_apply_that_landed_reads_exactly_like_an_unstopped_on
 
     stopped = BankApplyRunner._classify(item, _done_state(stopped=True, albums=applied), False)
     ran = BankApplyRunner._classify(item, _done_state(stopped=False, albums=applied), False)
-    assert stopped == ran == ("done", None, None, True)
+    assert stopped == ran == ("done", None, None, "decide_again")
 
     # ...and with nothing applied the stop is what the error names, on both the
     # astracks branch and the duplicate one.
@@ -1749,7 +1765,7 @@ def test_a_stopped_astracks_apply_that_landed_reads_exactly_like_an_unstopped_on
     assert dup_error == "the apply was stopped - decide again to retry"
 
 
-def test_a_folder_that_goes_after_the_fingerprint_is_stale_not_a_retryable_failure(
+def test_a_folder_that_goes_after_the_fingerprint_is_stale_not_a_decide_again_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``reg.start``'s fifth call site needs its own arm for the source refusal.
@@ -1760,7 +1776,7 @@ def test_a_folder_that_goes_after_the_fingerprint_is_stale_not_a_retryable_failu
 
     ``fake.validate_calls`` is what separates this from the FileNotFoundError arm
     beside it: there the import is never started. Measured without the arm: the
-    row fell to ``_drain``'s blanket ``except`` as ``failed`` + retryable=True
+    row fell to ``_drain``'s blanket ``except`` as ``failed`` + ``decide_again``
     ("The apply failed. Decide again to retry.") plus a logged traceback, for a
     folder that is permanently gone.
     """
@@ -1822,8 +1838,11 @@ def test_a_source_that_cannot_be_READ_after_the_fingerprint_keeps_its_own_reason
     symlink loop), all three read "no longer exists".
 
     Terminal like its twin, and deliberately NOT deferred: EACCES does not clear
-    itself, so a requeue would poll forever. Left retryable, though, because the
-    folder is there and fixing the permissions makes "decide again" work.
+    itself, so a requeue would poll forever. ``fix_folder``, not ``decide_again``:
+    the folder is there, so re-deciding IS the recovery, but only once the
+    operator has made it readable — a bare "decide again to retry" headline sends
+    them back into an identical failure — and it is not ``remove_duplicate``
+    either, so no Duplicates link may appear.
     """
     import app.bank.apply_runner as apply_mod
     from app.import_jobs.runner import missing_source_error
@@ -1861,7 +1880,7 @@ def test_a_source_that_cannot_be_READ_after_the_fingerprint_keeps_its_own_reason
         assert item is not None
         assert item.status == "failed"
         assert item.error == _UNREADABLE
-        assert item.error_retryable is True
+        assert item.error_recovery == "fix_folder"
         assert fake.validate_calls != []  # the import WAS started; not the fingerprint arm
     finally:
         runner.stop()
@@ -1897,6 +1916,9 @@ def test_a_banked_folder_the_owner_cannot_read_fails_without_naming_the_path(
         assert item is not None
         assert item.status == "failed"
         assert item.error == _UNREADABLE
+        # Same fault one layer earlier, so the same recovery: the two arms must
+        # not word one permissions failure two ways.
+        assert item.error_recovery == "fix_folder"
         assert str(folder) not in (item.error or "")
         assert fake.validate_calls == []  # refused before any import was started
     finally:
@@ -1904,8 +1926,13 @@ def test_a_banked_folder_the_owner_cannot_read_fails_without_naming_the_path(
         folder.parent.chmod(0o755)
 
 
-def test_a_crashing_row_never_puts_an_absolute_server_path_in_its_error(tmp_path: Path) -> None:
+def test_a_row_crashing_with_an_oserror_keeps_its_path_out_of_the_error(tmp_path: Path) -> None:
     """``str`` on an OSError interpolates ``exc.filename``.
+
+    Scoped to the OSError arm, which is the only one this drives. The OTHER arm
+    of ``_row_error`` keeps ``str(exc)`` VERBATIM by design - a beets
+    ``FilesystemError`` through it returns two absolute paths - so a name
+    promising no crashing row ever carries one would be false.
 
     Fixed this round at the ``folder_fingerprint`` raiser, which has its own
     arm. The catch-all two screens below was the OTHER way in, and the wider
@@ -1937,16 +1964,125 @@ def test_a_crashing_row_never_puts_an_absolute_server_path_in_its_error(tmp_path
             lambda i: i is not None and i.status == "failed",
         )
         assert got is not None
-        assert got.error == "the system refused - Permission denied"
+        assert got.error == (
+            "the server could not complete this row (Permission denied) - "
+            "check the server log, then decide again"
+        )
         # And it does not repeat the headline BankReviewPage prints directly
-        # above it ("The apply failed. Decide again to retry.").
+        # above it ("The apply failed. Decide again to retry.") — it refines it:
+        # the log is the only place that names the file, precisely because this
+        # string may not.
         assert "apply failed" not in got.error
+        # An unattributed server-side OSError is NOT the banked folder, which
+        # has its own ``fix_folder`` arms before any import starts.
+        assert got.error_recovery == "decide_again"
         # The whole point: neither the path nor any ancestor of it.
         assert str(secret) not in (got.error or "")
         assert str(tmp_path) not in (got.error or "")
         assert "library.db" not in (got.error or "")
     finally:
         runner.stop()
+
+
+def test_a_failing_failure_write_does_not_kill_the_drain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recovery write is a write to the same bank directory that failed.
+
+    ENOSPC/EROFS/EIO on the bank dir fails the row AND fails the ``set_status``
+    that records it, and unguarded that raise escaped the loop: the daemon
+    died, stranding every later queued row until a restart while the API kept
+    accepting decisions (measured: alive False after ONE iteration; the pick's
+    guarded control at the top of the same loop stayed alive for 60).
+
+    The ORACLE is the later row draining, not the crashed one: a dead thread
+    leaves it ``queued`` forever.
+    """
+
+    def exploding_library() -> LibraryHandle:
+        raise PermissionError(errno.EACCES, "Permission denied", str(tmp_path / "library.db"))
+
+    bank = _bank(tmp_path)
+    # A skip_new row with a banked collision is the shape that reads the
+    # library, so the stubbed getter raises INSIDE _apply_one - after the claim,
+    # which is what sends the row to the catch-all's recovery write.
+    doomed = _seed_dup_row(bank, _folder(tmp_path, "Doomed"), DuplicateAction.skip_new)
+    later = _seed_queued(bank, _folder(tmp_path, "Later"))
+
+    real_set_status = store.set_status
+
+    def refusing_set_status(
+        bank_dir: Path, item_id: str, status: str, **kwargs: object
+    ) -> BankItem | None:
+        if item_id == doomed and status == "failed":
+            raise OSError(errno.ENOSPC, "No space left on device", str(bank_dir))
+        # ``**kwargs: object`` widens the real signature's keyword types, which
+        # is what lets one stub stand in for every call the drain makes.
+        return real_set_status(bank_dir, item_id, status, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(store, "set_status", refusing_set_status)
+
+    fake = FakeImportRunner(applied=[_outcome(AlbumOutcomeStatus.applied, album_id=7)])
+    reg = ImportJobRegistry(runner=fake)
+    runner = _make_runner(bank, reg, exploding_library)
+    runner.start()
+    try:
+        got = _poll(
+            lambda: store.get_item(bank, later),
+            lambda i: i is not None and i.status in ("done", "failed"),
+            timeout=5.0,
+        )
+        assert got is not None
+        assert got.status == "done"
+        assert got.album_id == 7
+    finally:
+        runner.stop()
+
+    # The crashed row is left mid-flight, which the brief allows and startup
+    # reconciliation reverts. What it must NOT be is the reason nothing else ran.
+    stranded = store.get_item(bank, doomed)
+    assert stranded is not None
+    assert stranded.status == "applying"
+
+
+def test_a_row_whose_every_write_refuses_does_not_tight_spin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of the guard: surviving must not mean burning a core.
+
+    A fault that fails the CLAIM leaves the row ``queued``, so the next pass
+    picks the same row again — and with the recovery write failing too, nothing
+    in the row's handling ever sleeps. The back-off in the guard's ``except``
+    is what bounds that loop, exactly as the pick's guard bounds its own.
+
+    A RATE, with a wide margin either side of the 200 below. ``busy_backoff``
+    is 0.02s here and each pass attempts two writes (the claim, then the
+    recovery), so 0.3s of bounded looping is ~30 - measured 30, against 2292
+    with the back-off line reverted.
+    """
+    attempts = 0
+
+    def refusing_set_status(
+        bank_dir: Path, item_id: str, status: str, **kwargs: object
+    ) -> BankItem | None:
+        nonlocal attempts
+        attempts += 1
+        raise OSError(errno.ENOSPC, "No space left on device", str(bank_dir))
+
+    bank = _bank(tmp_path)
+    _seed_queued(bank, _folder(tmp_path, "Doomed"))
+    monkeypatch.setattr(store, "set_status", refusing_set_status)
+
+    reg = ImportJobRegistry(runner=FakeImportRunner())
+    runner = _make_runner(bank, reg)
+    runner.start()
+    try:
+        time.sleep(0.3)
+    finally:
+        runner.stop()
+
+    assert attempts > 0, "the drain never reached the row - the test proves nothing"
+    assert attempts < 200, f"the drain is spinning on a permanent fault ({attempts} writes)"
 
 
 _FORGED_TAIL = "2026-09-20 12:00:00 CRITICAL app.auth.gate: session gate DISABLED by operator"
