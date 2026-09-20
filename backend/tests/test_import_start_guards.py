@@ -20,6 +20,7 @@ marked.
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import os
 import shutil
@@ -43,6 +44,7 @@ from fastapi.testclient import TestClient
 from app.auth.session import SESSION_COOKIE_NAME
 from app.import_jobs.registry import ImportJobRegistry, reset_registry
 from app.main import app
+from app.wire import display_path
 from tests.conftest import (
     beets_dir_for,
     build_library,
@@ -1279,7 +1281,9 @@ def test_review_all_survives_a_folder_that_vanished_since_the_listing(
     ``settled_folders`` call and ``start`` cannot be closed by a stat - the
     folder is as free to vanish after it as before - and beets already answers
     the case, contributing nothing for a toppath whose ``read_item`` returns
-    None (beets/importer/tasks.py:1142-1147) while the rest import.
+    None (``ImportTaskFactory.read_item``, beets/importer/tasks.py:1128 in beets
+    2.13.1, the version ``.venv`` runs; :1142 in the 2.12.0 reference checkout)
+    while the rest import.
     """
     _canned_lookup(monkeypatch)
     _reg, lib = _real_registry(tmp_path)
@@ -1349,8 +1353,10 @@ def test_review_all_refuses_when_EVERY_settled_folder_vanished(
 #
 # Measured 2026-09-20: a path typed into the import box was truncated at a space
 # (".../stop-test/Courtney" for ".../stop-test/Courtney Barnett"). beets takes a
-# missing toppath down the branch a single FILE takes (ImportTaskFactory.paths,
-# beets/importer/tasks.py:1055), reads no item, produces zero tasks and ends the
+# missing toppath down the branch a single FILE takes
+# (``ImportTaskFactory.paths`` -> ``if not os.path.isdir(util.syspath(self.toppath))``,
+# beets/importer/tasks.py:1041 in beets 2.13.1, the version ``.venv`` runs; :1055 in
+# the 2.12.0 reference checkout), reads no item, produces zero tasks and ends the
 # session normally - so the app created a job, ran it, and said "Import finished
 # - 0 albums imported". Nothing refused.
 
@@ -1381,7 +1387,8 @@ def test_a_source_that_does_not_exist_is_refused_before_any_job(tmp_path: Path) 
 def test_a_source_that_is_a_FILE_is_not_refused_by_the_existence_guard(tmp_path: Path) -> None:
     """The control that makes this guard EXISTENCE and not ``is_dir``.
 
-    beets imports a single file as one track (the same tasks.py:1055 branch), so
+    beets imports a single file as one track (the same
+    ``ImportTaskFactory.paths`` ``isdir`` branch cited above), so
     an ``is_dir`` guard would take away something the engine can do. Mutating
     ``os.path.exists`` to ``os.path.isdir`` must fail this test.
     """
@@ -1553,6 +1560,11 @@ def test_review_all_keeps_the_reason_when_the_settled_folders_are_unreadable(
     way to reach the branch under test: ``exc.unreadable`` deciding the 422's
     sentence, the defect the errno split exists to remove re-introduced one layer
     up.
+
+    The sentence NAMES the folder. The shared one says "That folder", which is
+    right when the caller typed a path and names nothing here - this route hands
+    over folders the browser is never shown, and ``strerror`` carries no path by
+    design, so a batch of N used to promise a specificity it did not have.
     """
     _reg, _lib = _real_registry(tmp_path)
     inbox = tmp_path / "inbox"
@@ -1571,7 +1583,12 @@ def test_review_all_keeps_the_reason_when_the_settled_folders_are_unreadable(
         inbox.chmod(0o755)
 
     assert resp.status_code == 422, resp.text
-    assert resp.json()["detail"] == _UNREADABLE
+    detail = resp.json()["detail"]
+    assert detail == "\u201cunreadable\u201d can't be read. Permission denied.", detail
+    # The BASENAME only - the listing already ships it as ``InboxItem.name``, so
+    # this discloses nothing new, and the absolute path stays server-side.
+    assert str(folder) not in detail
+    assert str(inbox) not in detail
     assert _reg.active_job_id() is None
 
 
@@ -2007,12 +2024,23 @@ async def test_the_import_start_path_takes_one_worker_thread_however_many_caller
 
 @pytest.mark.anyio
 async def test_a_cancelled_import_start_keeps_its_slot_until_the_thread_returns() -> None:
-    """A client disconnect must not hand the slot on while the worker is stuck.
+    """An ANYIO cancel scope must not hand the slot on while the worker is stuck.
 
     The reason admission is taken by hand rather than passed to anyio as
     ``limiter=``: ``app/api/auth.py::_one_derive_at_a_time`` measured peak 3
     concurrent derives at a cap of 1 that way, because unwinding released the
     token while the un-interruptible thread kept going.
+
+    The scope is narrower than "a client disconnect", which is what this
+    docstring used to claim, and both halves of that were wrong. The shield is
+    ``abandon_on_cancel=False``, which anyio implements and only anyio's own
+    scopes honour: under ``move_on_after`` the ``finally`` ran AFTER the worker
+    (1.001 s against a 0.1 s deadline), while a raw ``asyncio.Task.cancel()``
+    unwound at 0.100 s leaving ``borrowed_tokens == 0`` with the thread still
+    running (anyio 4.13.0, measured 2026-09-20). And no disconnect reaches it
+    anyway: Starlette 1.1.0's ``request_response`` awaits the handler directly,
+    with no disconnect watcher and no task group. So this measures the anyio
+    half - the only half that can happen.
     """
     from app.api.import_ import _IMPORT_START_SLOTS, start_import_off_loop
 
@@ -2037,3 +2065,321 @@ async def test_a_cancelled_import_start_keeps_its_slot_until_the_thread_returns(
 
     assert held_after_giving_up == 1, held_after_giving_up
     assert _IMPORT_START_SLOTS.borrowed_tokens == 0
+
+
+@pytest.mark.anyio
+async def test_a_start_queued_behind_a_wedged_one_answers_instead_of_waiting_forever(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A waiter must eventually get an answer.
+
+    The unbounded wait was justified by "the single import slot already refuses
+    a concurrent start with 409". That is false in exactly the case the limiter
+    exists for: ``ImportJobRegistry.start`` runs ``runner.validate`` BEFORE
+    ``claim_slot``, so a start wedged in ``validate``'s ``os.stat`` holds the
+    token while ``has_active_job()`` still reads idle - the 409 can never fire,
+    and every later start used to wait forever with no status and no sentence.
+
+    ``fail_after`` and not a bare await: with the bound reverted this hangs
+    rather than fails, and a hang with no deadline takes the suite with it.
+    """
+    from fastapi import HTTPException
+
+    from app.api import import_ as import_api
+
+    monkeypatch.setattr(import_api, "_START_WAIT_SECONDS", 0.05)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def wedged() -> str:
+        entered.set()
+        release.wait(10)
+        return "ok"
+
+    async def holds_the_token() -> None:
+        await import_api.start_import_off_loop(wedged)
+
+    try:
+        async with anyio.create_task_group() as group:
+            group.start_soon(holds_the_token)
+            await anyio.to_thread.run_sync(entered.wait, 10)
+            with anyio.fail_after(5):  # the mutation's hang becomes a failure
+                with pytest.raises(HTTPException) as caught:
+                    await import_api.start_import_off_loop(lambda: "never runs")
+            release.set()
+    finally:
+        release.set()
+
+    assert caught.value.status_code == 503, caught.value.status_code
+    # Short, human, and it names what to check rather than what happened.
+    assert caught.value.detail == (
+        "Another import is still starting. Try again in a moment, or check that"
+        " your music share is responding."
+    )
+    assert import_api._IMPORT_START_SLOTS.borrowed_tokens == 0
+
+
+@pytest.mark.anyio
+async def test_theinbox_reads_take_at_most_their_own_share_of_the_pool() -> None:
+    """A route is bounded by its FIRST unbounded blocking hop.
+
+    ``review_inbox`` runs ``settled_folders`` - scandir plus a ``has_audio`` and
+    a ``_newest_mtime`` walk PER folder - before it reaches the 1-token start,
+    and the two GETs the UI polls read the inbox with nothing in front of them.
+    Unbounded, N concurrent callers took N of anyio's 40 process-wide tokens,
+    which are shared with every sync ``Depends`` and the scrypt derive behind
+    sign-in.
+    """
+    from app.api.acquisition import _INBOX_SCAN_SLOTS, inbox_read
+
+    lock = threading.Lock()
+    release = threading.Event()
+    inside = 0
+    peak = 0
+    done: list[str] = []
+
+    def blocking() -> str:
+        nonlocal inside, peak
+        with lock:
+            inside += 1
+            peak = max(peak, inside)
+        release.wait(10)
+        with lock:
+            inside -= 1
+        return "read"
+
+    async def call() -> None:
+        done.append(await inbox_read(blocking))
+
+    callers = 12
+    try:
+        async with anyio.create_task_group() as group:
+            for _ in range(callers):
+                group.start_soon(call)
+            await anyio.sleep(0.2)  # every caller has queued by now
+            with lock:
+                concurrent = inside
+            borrowed = anyio.to_thread.current_default_thread_limiter().borrowed_tokens
+            release.set()
+    finally:
+        release.set()
+
+    cap = int(_INBOX_SCAN_SLOTS.total_tokens)
+    assert concurrent == cap, concurrent
+    assert peak == cap, peak
+    # 12 callers, and the app still keeps 40 - cap for everything else.
+    assert borrowed == cap, borrowed
+    assert done == ["read"] * callers
+
+
+@pytest.mark.anyio
+async def test_a_wedged_start_does_not_block_the_polledinbox_read() -> None:
+    """The reads get their OWN limiter, never ``_IMPORT_START_SLOTS``.
+
+    The status GET is the UI's only liveness signal. Serialised behind a start
+    wedged on a hung mount, the whole page would hang instead of just the
+    import - so bounding the reads must not be done by folding them into the
+    start's cap. Mutating ``inbox_read`` to use ``_IMPORT_START_SLOTS`` must
+    fail this test.
+    """
+    from app.api.acquisition import inbox_read
+    from app.api.import_ import start_import_off_loop
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def wedged() -> str:
+        entered.set()
+        release.wait(10)
+        return "ok"
+
+    async def holds_the_start_token() -> None:
+        await start_import_off_loop(wedged)
+
+    try:
+        async with anyio.create_task_group() as group:
+            group.start_soon(holds_the_start_token)
+            await anyio.to_thread.run_sync(entered.wait, 10)
+            with anyio.fail_after(5):  # a serialised read hangs; make it fail
+                answered = await inbox_read(lambda: "the inbox still answers")
+            release.set()
+    finally:
+        release.set()
+
+    assert answered == "the inbox still answers"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")
+def test_the_batch_refusal_names_an_undecodable_folder_the_way_the_listing_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The name goes through the same ``display_path`` the listing uses.
+
+    A folder whose name is not valid UTF-8 reaches this sentence as lone
+    surrogates. Interpolated raw they would make the JSON body non-encodable;
+    through ``display_path`` they become the same U+FFFD the browser already
+    holds for that row, so the refusal names exactly what the operator sees in
+    the list.
+    """
+    _reg, _lib = _real_registry(tmp_path)
+    inbox = tmp_path / "inbox"
+    folder = _album_folder(inbox, b"bad\xffname")
+
+    import app.api.acquisition as acq_api
+
+    monkeypatch.setattr(acq_api, "settled_folders", lambda *a, **k: [folder])
+    monkeypatch.setattr(acq_api, "count_pending", lambda _d: 1)
+    monkeypatch.setattr(app.state, "inbox_dir", inbox, raising=False)
+    inbox.chmod(0o600)
+    try:
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.post("/api/acquisition/review-inbox")
+    finally:
+        inbox.chmod(0o755)
+
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert detail == "\u201cbad\ufffdname\u201d can't be read. Permission denied.", detail
+    # The listing's own spelling of the same name, so the two agree.
+    assert "bad\ufffdname" == display_path(os.fsdecode(os.fsencode(folder.name)))
+
+
+# ----- the name the batch refusal quotes, and the message a crash renders -----
+
+
+def _refusal_for(name: str) -> str:
+    """The batch refusal for a folder called ``name``, straight from the sink."""
+    from app.api.acquisition import _batch_unreadable_sentence
+    from app.import_jobs.runner import unreadable_source_error
+
+    return _batch_unreadable_sentence(
+        unreadable_source_error(
+            PermissionError(errno.EACCES, "Permission denied", f"/srv/inbox/{name}")
+        )
+    )
+
+
+def test_a_hostile_folder_name_cannot_forge_the_refusal_it_is_quoted_in() -> None:
+    """Quoting is only a delimiter if the value cannot spell the delimiter.
+
+    The name is chosen by a REMOTE Soulseek peer - slskd names the local
+    download directory after the peer's directory - and U+201C/U+201D are
+    ordinary characters a POSIX filename may hold, which ``display_path``
+    (bytes UTF-8 cannot carry) does not touch. Measured through the route
+    before this guard: a folder named ``X" is fine. The folder "Y`` (curly)
+    produced a complete forged clause, a leading U+202E rendered the server's
+    own tail reversed, and a raw newline and an ESC both survived into the body.
+
+    This round chose ``%r`` for the LOG sinks because repr escapes exactly this
+    class of character, then shipped the same value unescaped into a response
+    body. One rationale, both sinks.
+    """
+    forged = _refusal_for("X\u201d is fine. The folder \u201cY")
+    # Exactly the two delimiters - the name contributed none.
+    assert forged.count("\u201c") == 1, forged
+    assert forged.count("\u201d") == 1, forged
+    assert forged.endswith("can't be read. Permission denied."), forged
+
+    for hostile in ("\u202eevil", "a\nWARNING forged line", "\x1b[31mRED", "\u2066flip"):
+        sentence = _refusal_for(hostile)
+        unprintable = [hex(ord(c)) for c in sentence if not c.isprintable() and c != " "]
+        assert not unprintable, (hostile, unprintable)
+
+    # The control: a name that only LOOKS like the sentence is still named in
+    # full, which is what the quoting is for.
+    assert _refusal_for("Permission denied") == (
+        "\u201cPermission denied\u201d can't be read. Permission denied."
+    )
+
+
+def test_the_quoted_folder_name_is_capped() -> None:
+    """A 255-character name made a 291-character red sentence read out in full.
+
+    NAME_MAX admits 255, so the cap bites; the frame is 36 characters at this
+    reason, so a capped refusal is 116 - about two lines at the banner's width.
+    """
+    from app.api.acquisition import _NAME_CAP
+
+    sentence = _refusal_for("x" * 255)
+    quoted = sentence.split("\u201c", 1)[1].split("\u201d", 1)[0]
+    assert len(quoted) == _NAME_CAP, len(quoted)
+    assert quoted.endswith("\u2026"), quoted
+    assert len(sentence) == _NAME_CAP + 36, len(sentence)
+
+
+def test_a_folder_with_no_nameable_basename_falls_back_to_the_singular() -> None:
+    """``Path("/").name`` and ``Path("").name`` are both "".
+
+    Uncapped and unguarded that reads as an empty quoted span - "" can't be
+    read. - which names less than the shared singular does.
+    """
+    from app.api.acquisition import _batch_unreadable_sentence
+    from app.import_jobs.runner import unreadable_source_error
+
+    for filename in ("/", ""):
+        exc = unreadable_source_error(PermissionError(errno.EACCES, "Permission denied", filename))
+        assert _batch_unreadable_sentence(exc) == "That folder can't be read. Permission denied."
+
+
+def test_a_crash_message_is_cut_at_its_first_absolute_path() -> None:
+    """``isinstance(exc, OSError)`` is not the question "does this carry a path".
+
+    It is true about ``OSError.filename`` and false about disclosure:
+    ``beets.util.FilesystemError``, ``beets.library.ReadError`` and
+    ``WriteError`` are plain ``Exception``s whose ``__str__`` interpolates
+    absolute paths raw, and beets' family is the commonest carrier at the two
+    sinks that render one.
+    """
+    from app.import_jobs.runner import path_free_message
+
+    beets_style = (
+        "Permission denied while moving /srv/downloads/inbox/Album to /srv/music/Artist/Album"
+    )
+    assert path_free_message(beets_style) == "Permission denied while moving"
+    # A path with SPACES in it is why this cuts rather than redacting token by
+    # token: a per-token redaction leaves "Floyd/The Wall" behind.
+    assert path_free_message("error copying /srv/a/Pink Floyd/The Wall") == "error copying"
+    assert path_free_message("[Errno 13] Permission denied: '/srv/x.db'") == (
+        "[Errno 13] Permission denied"
+    )
+    # The controls: an ordinary message is untouched, and a slash inside a word
+    # is not a path.
+    assert path_free_message("No album found") == "No album found"
+    assert path_free_message("matched 24/7 and/or nothing") == "matched 24/7 and/or nothing"
+    # A message that IS a path leaves nothing; both sinks fall back to the class.
+    assert path_free_message("/srv/only") == ""
+
+
+def test_the_import_worker_catch_all_renders_no_absolute_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The LIVE sink: ``run_import_worker`` does not wrap ``session.run()``.
+
+    So a beets filesystem error escapes straight into the runner's catch-all,
+    which reaches ``ImportJobState.error`` and is rendered by ImportPage.
+    """
+    from app.import_jobs.runner import BeetsImportRunner
+
+    monkeypatch.setattr("app.import_jobs.runner.WebImportSession", lambda *a, **k: object())
+
+    def explode(*_a: object, **_k: object) -> None:
+        # A plain Exception, exactly beets' own shape - no ``filename``.
+        raise Exception("Permission denied while moving /srv/downloads/Album to /srv/music/A")
+
+    monkeypatch.setattr("app.import_jobs.runner.run_import_worker", explode)
+
+    seen: list[str] = []
+    done = threading.Event()
+
+    def on_error(message: str) -> None:
+        seen.append(message)
+        done.set()
+
+    BeetsImportRunner(None).run(
+        ["/srv/downloads/Album"],
+        bridge=None,  # type: ignore[arg-type]  # the stubbed session never reads it
+        on_finish=done.set,
+        on_error=on_error,
+    )
+    assert done.wait(5), "the worker thread never reported"
+    assert seen == ["Permission denied while moving"], seen

@@ -12,13 +12,15 @@ raising default getter, which is itself an assertion — see ``_no_library``.
 """
 
 import asyncio
+import errno
+import logging
 import os
 import shutil
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, TypeVar, cast
 
 import pytest
 from beets.library import Item
@@ -1900,3 +1902,129 @@ def test_a_banked_folder_the_owner_cannot_read_fails_without_naming_the_path(
     finally:
         runner.stop()
         folder.parent.chmod(0o755)
+
+
+def test_a_crashing_row_never_puts_an_absolute_server_path_in_its_error(tmp_path: Path) -> None:
+    """``str`` on an OSError interpolates ``exc.filename``.
+
+    Fixed this round at the ``folder_fingerprint`` raiser, which has its own
+    arm. The catch-all two screens below was the OTHER way in, and the wider
+    one: ANY OSError from ``set_status``, ``refresh_duplicate`` or opening the
+    beets SQLite lands there rather than at a raiser we could annotate, so the
+    split belongs at the CATCH. ``BankReviewPage`` renders this field straight
+    into the browser.
+
+    ``strerror`` is kept - it is the OS's own summary and names no path, the
+    same reasoning ``unreadable_source_sentence`` uses.
+    """
+    secret = tmp_path / "srv" / "music-library" / "library.db"
+
+    def exploding_library() -> LibraryHandle:
+        raise PermissionError(errno.EACCES, "Permission denied", str(secret))
+
+    fake = FakeImportRunner()
+    reg = ImportJobRegistry(runner=fake)
+    bank = _bank(tmp_path)
+    # A skip_new row with a banked collision is the shape that reads the
+    # library, so the stubbed getter raises INSIDE _apply_one.
+    item_id = _seed_dup_row(bank, _folder(tmp_path), DuplicateAction.skip_new)
+
+    runner = _make_runner(bank, reg, exploding_library)
+    runner.start()
+    try:
+        got = _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status == "failed",
+        )
+        assert got is not None
+        assert got.error == "the system refused - Permission denied"
+        # And it does not repeat the headline BankReviewPage prints directly
+        # above it ("The apply failed. Decide again to retry.").
+        assert "apply failed" not in got.error
+        # The whole point: neither the path nor any ancestor of it.
+        assert str(secret) not in (got.error or "")
+        assert str(tmp_path) not in (got.error or "")
+        assert "library.db" not in (got.error or "")
+    finally:
+        runner.stop()
+
+
+_FORGED_TAIL = "2026-09-20 12:00:00 CRITICAL app.auth.gate: session gate DISABLED by operator"
+
+
+def test_the_crash_log_escapes_a_forged_folder_name(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``item.folder`` is inbox-derived, so the record must escape it.
+
+    Under ``%s`` a newline in a folder name produced a second, fully-formed
+    record attributed to another module at another severity (measured through
+    the slskd webhook route, which is gate-exempt - see the queue's own test).
+    ``%r`` escapes everything ``str.isprintable()`` is False for, U+2028 and
+    U+202E included.
+    """
+
+    def exploding_library() -> LibraryHandle:
+        raise RuntimeError("boom")
+
+    reg = ImportJobRegistry(runner=FakeImportRunner())
+    bank = _bank(tmp_path)
+    folder = _folder(tmp_path, f"Album\n{_FORGED_TAIL}")
+    item_id = _seed_dup_row(bank, folder, DuplicateAction.skip_new)
+    caplog.set_level(logging.ERROR, logger="app.bank.apply_runner")
+
+    runner = _make_runner(bank, reg, exploding_library)
+    runner.start()
+    try:
+        _poll(
+            lambda: store.get_item(bank, item_id),
+            lambda i: i is not None and i.status == "failed",
+        )
+    finally:
+        runner.stop()
+
+    records = [r for r in caplog.records if r.name == "app.bank.apply_runner"]
+    assert records, caplog.records
+    message = records[0].getMessage()
+    assert "\n" not in message, message
+    # Escaped, not dropped: the operator still sees which folder crashed.
+    assert "session gate DISABLED" in message
+
+
+def test_the_operator_log_escapes_a_forged_folder_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The same hazard on the two ``operator_logger`` lines.
+
+    Both fire when NONE of the banked library copies survive, which is a
+    routine shape (the user trashed the copy themselves between the sweep and
+    the apply) - so a forged folder name reaches them on an ordinary path, not
+    an adversarial one.
+    """
+    import app.bank.apply_runner as apply_mod
+
+    monkeypatch.setattr(apply_mod, "surviving_duplicate_album_ids", lambda *a, **k: [])
+    reg = ImportJobRegistry(runner=FakeImportRunner())
+    bank = _bank(tmp_path)
+    runner = _make_runner(bank, reg, lambda: cast(LibraryHandle, object()))
+    caplog.set_level(logging.INFO, logger="uvicorn.error")
+
+    for action, probe in (
+        (DuplicateAction.skip_new, "skip_new"),
+        (DuplicateAction.replace, "replace"),
+    ):
+        folder = _folder(tmp_path, f"Album {probe}\n{_FORGED_TAIL}")
+        item_id = _seed_dup_row(bank, folder, action)
+        item = store.get_item(bank, item_id)
+        assert item is not None
+        if action is DuplicateAction.skip_new:
+            assert runner._skip_new_is_enforced(item) is False
+        else:
+            assert runner._replace_targets_are_gone(item) is True
+
+    records = [r for r in caplog.records if r.name == "uvicorn.error"]
+    assert len(records) == 2, [r.getMessage() for r in records]
+    for record in records:
+        message = record.getMessage()
+        assert "\n" not in message, message
+        assert "session gate DISABLED" in message

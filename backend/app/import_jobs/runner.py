@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import errno
 import os
+import re
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -61,41 +62,105 @@ class SourcePathMissingError(Exception):
     - 0 albums imported".
     """
 
-    def __init__(self, message: str, *, unreadable: bool = False) -> None:
+    def __init__(
+        self, message: str, *, unreadable: bool = False, os_error: OSError | None = None
+    ) -> None:
         super().__init__(message)
         self.unreadable = unreadable
+        #: The OS refusal this was built from, so a caller that hands over
+        #: folders the user never typed can say WHICH one refused.
+        #: SERVER-SIDE ONLY - ``str()`` on an OSError interpolates
+        #: ``exc.filename``, an absolute path. Surface the BASENAME through
+        #: ``app.wire.display_path`` and nothing else.
+        self.os_error = os_error
 
 
 #: What ``stat`` answers when there is nothing at the path, as opposed to
 #: something being there that it would not answer for. ENAMETOOLONG belongs here
 #: because a name the filesystem cannot hold names nothing.
 #:
-#: Public because three sites now split on it - this guard, the inbox per-item
-#: route's resolve step and the bank apply runner's fingerprint - and a second
-#: copy of the set would drift. (``app/beets/store_layout.py`` keeps its own,
-#: narrower set for a different question: what a MISSING store looks like.)
+#: Public because EVERY site that must tell absence from refusal splits on this
+#: one set rather than re-spelling it, and two copies would drift. The live list
+#: is whatever ``grep -rn ABSENT_ERRNOS app/`` returns - deliberately not
+#: enumerated here, because the last enumeration said three and a grep found
+#: five. (``app/beets/store_layout.py`` keeps its own, narrower set for a
+#: different question: what a MISSING store looks like.)
 ABSENT_ERRNOS: Final = frozenset({errno.ENOENT, errno.ENOTDIR, errno.ENAMETOOLONG})
+
+
+def unreadable_reason(exc: OSError) -> str:
+    """The OS's own one-phrase summary of a refusal. Carries no path.
+
+    The errno keeps it complete if a platform ever leaves ``strerror`` unset.
+    Split out so a caller composing its OWN sentence (the batch inbox route,
+    which must name WHICH folder refused) words the reason identically.
+    """
+    return exc.strerror or f"errno {exc.errno}"
+
+
+#: Where an absolute path starts inside a free-form error message.
+#:
+#: The lookbehind keeps "and/or" and "24/7" out of it (a word character or a dot
+#: before the slash is not a path start); the lookahead keeps a bare "/" and a
+#: "//" out.
+_ABSOLUTE_PATH: Final = re.compile(r"(?<![\w.])/(?=[^\s/])")
+
+
+def path_free_message(text: str) -> str:
+    """``text`` cut at its first absolute path; unchanged when it carries none.
+
+    The question a crash message has to answer before it reaches a browser is
+    "does this carry a path", and ``isinstance(exc, OSError)`` is not that
+    question. It is true about ``OSError.filename``, and false about disclosure:
+    ``beets.util.FilesystemError``, ``beets.library.ReadError`` and ``WriteError``
+    are plain ``Exception``s whose ``__str__`` interpolates absolute paths raw
+    ("Permission denied while moving /srv/downloads/... to /srv/music/..."), and
+    beets' own family is the commonest carrier at both sinks that render one -
+    ``BeetsImportRunner``'s worker catch-all below and the bank apply runner's
+    row error. ``run_import_worker`` does not wrap ``session.run()``, so those
+    escape straight into the first of them.
+
+    CUT rather than redacted in place: a redaction that replaces each path token
+    leaves the tail of a path with spaces in it behind ("... /srv/music/Pink
+    Floyd/The Wall" keeps "Floyd/The Wall"). Cutting keeps the diagnosis, which
+    beets puts first, and drops everything after it. A message that IS a path
+    becomes "", which both sinks turn into the exception class name.
+
+    Conservative on purpose: a URL is cut too (the "//" is not matched, the host's
+    first "/" is). No caller needs one, and over-cutting loses text while
+    under-cutting loses a path.
+    """
+    match = _ABSOLUTE_PATH.search(text)
+    if match is None:
+        return text
+    return text[: match.start()].rstrip(" \t\n\r:;,-'\"([{/")
 
 
 def unreadable_source_sentence(exc: OSError) -> str:
     """What every caller says about a path the OS refused to answer for.
 
-    ONE sentence for all five sites - this guard, the inbox per-item route's
-    resolve step, the bank apply runner's fingerprint and its start arm, and the
-    rescan route - so the same fault cannot be worded five ways. ``strerror`` is
-    the OS's own summary and carries no path, which is what makes surfacing it
-    safe (the same reasoning as the unreadable-root arm in
+    ONE sentence wherever a source path refuses to answer, so the same fault
+    cannot be worded differently in each place; ``grep -rn
+    unreadable_source_error app/`` is the live list of those places. Not
+    enumerated here: the last enumeration named the bank apply runner's START
+    arm, which consumes an already-built exception via ``str(exc)`` and never
+    calls this, and missed the bank SEARCH route, which does.
+
+    ``strerror`` is the OS's own summary and carries no path, which is what
+    makes surfacing it safe (the same reasoning as the unreadable-root arm in
     ``app/beets/library.py``) - unlike ``str(exc)`` on the OSError itself, which
-    interpolates ``exc.filename``. The errno keeps the sentence complete if a
-    platform ever leaves ``strerror`` unset.
+    interpolates ``exc.filename``.
     """
-    reason = exc.strerror or f"errno {exc.errno}"
-    return f"That folder can't be read. {reason}."
+    return f"That folder can't be read. {unreadable_reason(exc)}."
 
 
 def unreadable_source_error(exc: OSError) -> SourcePathMissingError:
-    """``unreadable_source_sentence`` as the refusal the import routes map to 422."""
-    return SourcePathMissingError(unreadable_source_sentence(exc), unreadable=True)
+    """``unreadable_source_sentence`` as the refusal the import routes map to 422.
+
+    ``os_error`` rides along unrendered; only the batch inbox route reads it, to
+    name the folder its caller was never shown.
+    """
+    return SourcePathMissingError(unreadable_source_sentence(exc), unreadable=True, os_error=exc)
 
 
 def missing_source_error(paths: list[str]) -> SourcePathMissingError | None:
@@ -111,12 +176,19 @@ def missing_source_error(paths: list[str]) -> SourcePathMissingError | None:
     rest ``unreadable_source_error`` above.
 
     ANSWERS rather than propagates for a path the OS rejects outright: an
-    embedded NUL raises ValueError and a LONE surrogate raises
-    UnicodeEncodeError (a ValueError subclass). Neither names anything on disk,
-    so both read as absent. A surrogate PAIR does not reach that arm at all:
-    CPython folds two such escapes in a source literal into the single astral
-    code point they denote, which encodes fine and stats ENOENT (measured from a
-    written file 2026-09-20; a shell heredoc folds it the same way).
+    embedded NUL raises ValueError, and a surrogate OUTSIDE U+DC80..U+DCFF
+    raises UnicodeEncodeError (a ValueError subclass). Neither names anything on
+    disk, so both read as absent.
+
+    The range matters, and an earlier note here got it wrong by saying any lone
+    surrogate raises. U+DC80..U+DCFF is exactly what ``surrogateescape``
+    produces from a real undecodable filename (see ``app/wire.py``), so those
+    encode back to the original bytes and stat NORMALLY - the whole point, since
+    a genuinely undecodable folder name must be importable. Measured 2026-09-20:
+    U+DC80 and U+DCFF answered ENOENT for an absent path, a real ``\xff``
+    filename read back from ``os.listdir`` stat'd SUCCESSFULLY, while U+DC7F
+    (one below the range), U+DD00 (one above), U+D800 and U+DFFF all raised
+    UnicodeEncodeError. So this arm catches malformed input, never a real file.
     """
     refused: OSError | None = None
     for path in paths:
@@ -125,10 +197,13 @@ def missing_source_error(paths: list[str]) -> SourcePathMissingError | None:
         except ValueError:
             continue
         except OSError as exc:
-            # The FIRST non-absent errno decides the sentence; a later one does
-            # not overwrite it. One unreadable member anywhere in the list
-            # promotes the whole refusal, which is the useful direction - and
-            # ENOENT never sets this, so an all-absent list still says absent.
+            # The FIRST non-absent errno decides WHICH SENTENCE a refusal uses;
+            # a later one does not overwrite it. It does not promote anything:
+            # the loop returns None on the first path that answers, so a list
+            # with one readable member is not refused at all, however many of
+            # the others were unreadable. This only picks the wording for the
+            # case where NOTHING answered - and ENOENT never sets it, so an
+            # all-absent list still says absent.
             if refused is None and exc.errno not in ABSENT_ERRNOS:
                 refused = exc
             continue
@@ -321,7 +396,11 @@ class BeetsImportRunner:
             # Broad by design: any worker crash must become a failed job, never
             # an unhandled thread exception (which the API could not surface).
             except Exception as exc:
-                on_error(str(exc) or exc.__class__.__name__)
+                # ``path_free_message`` because beets' own exception family
+                # interpolates absolute paths into ``str(exc)`` and this string
+                # is rendered by ImportPage; ``run_import_worker`` does not wrap
+                # ``session.run()``, so they arrive here unwrapped.
+                on_error(path_free_message(str(exc)) or exc.__class__.__name__)
             else:
                 on_finish()
 

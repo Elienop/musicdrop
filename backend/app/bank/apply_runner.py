@@ -41,6 +41,8 @@ from app.import_jobs.runner import (
     ABSENT_ERRNOS,
     LibraryRootUnavailableError,
     SourcePathMissingError,
+    path_free_message,
+    unreadable_reason,
     unreadable_source_sentence,
 )
 from app.models.bank import BankApplyDirective, BankItem, BankStatus
@@ -195,6 +197,34 @@ def _replace_existing(
     return list(prompt.existing)
 
 
+def _row_error(exc: Exception) -> str:
+    """What a crashed apply row shows the browser - never an absolute path.
+
+    ``str`` on an OSError interpolates ``exc.filename``, so the catch-all used
+    to put a server path in a row ``BankReviewPage`` renders. The fingerprint
+    raiser was fixed at its own raise site; this is the OTHER way in, and the
+    wider one - ANY OSError from ``set_status``, ``refresh_duplicate`` or
+    opening the beets SQLite lands in the catch-all, not at a raiser we could
+    annotate. So the split is at the CATCH.
+
+    ``strerror`` is the OS's own summary and carries no path (the same reasoning
+    as ``unreadable_source_sentence``). The non-OSError arm does NOT get to keep
+    ``str(exc)`` on the grounds that it has no ``filename`` to interpolate - an
+    earlier version of this docstring said exactly that, and it pinned a false
+    universal: beets' own exception family is a plain ``Exception`` whose
+    ``__str__`` puts absolute paths in the message by hand. The predicate is
+    "does this message carry a path", which is ``path_free_message``'s job, and
+    the import worker's catch-all asks it too.
+
+    The wording does not repeat "The apply failed", which ``BankReviewPage``
+    already prints as the headline directly above this string; it reads as the
+    continuation its siblings above are, lower-case and dash-joined.
+    """
+    if isinstance(exc, OSError):
+        return f"the system refused - {unreadable_reason(exc)}"
+    return path_free_message(str(exc)) or exc.__class__.__name__
+
+
 class BankApplyRunner:
     """Single-thread FIFO drain of queued bank rows behind the import slot."""
 
@@ -285,12 +315,18 @@ class BankApplyRunner:
             # Broad by design: every per-row crash must land in the row's
             # error, never kill the drain thread.
             except Exception as exc:
-                logger.exception("bank apply failed for %s", item.folder)
+                # ``%r``, not ``%s``: ``item.folder`` is an inbox-derived name, and
+                # under ``%s`` a newline in it forged a complete record attributed
+                # to another module at another severity (measured through the
+                # webhook route, app/acquisition/queue.py). ``repr`` escapes
+                # everything ``str.isprintable()`` is False for, U+2028 and U+202E
+                # included.
+                logger.exception("bank apply failed for %r", item.folder)
                 bank_store.set_status(
                     self._bank_dir,
                     item.id,
                     "failed",
-                    error=str(exc) or exc.__class__.__name__,
+                    error=_row_error(exc),
                 )
 
     def _apply_one(self, item: BankItem) -> None:
@@ -465,7 +501,7 @@ class BankApplyRunner:
         surviving = surviving_duplicate_album_ids(self._library(), prompt.existing)
         if not surviving:
             operator_logger.info(
-                "bank apply skip_new: none of the %d banked library copies survive for %s; "
+                "bank apply skip_new: none of the %d banked library copies survive for %r; "
                 "letting the import run",
                 len(prompt.existing),
                 item.folder,
@@ -511,7 +547,7 @@ class BankApplyRunner:
         if surviving:
             return False
         operator_logger.info(
-            "bank apply replace: none of the %d banked library copies survive for %s; "
+            "bank apply replace: none of the %d banked library copies survive for %r; "
             "the import will land a copy that replaces nothing",
             len(prompt.existing),
             item.folder,

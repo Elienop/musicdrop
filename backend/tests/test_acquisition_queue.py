@@ -10,6 +10,7 @@ into teardown.
 
 from __future__ import annotations
 
+import errno
 import logging
 import threading
 import time
@@ -25,7 +26,11 @@ from app.acquisition.queue import AcquisitionQueue
 from app.beets.import_session import ImportAbortError, ImportBridge
 from app.import_jobs.fakes import FakeImportRunner
 from app.import_jobs.registry import ImportJob, ImportJobRegistry
-from app.import_jobs.runner import SourcePathMissingError
+from app.import_jobs.runner import (
+    LibraryRootUnavailableError,
+    SourcePathMissingError,
+    unreadable_source_error,
+)
 from app.models.bank import BankApplyDirective
 from app.models.import_api import ImportJobState, ImportPhase
 from app.models.import_models import (
@@ -561,3 +566,233 @@ def test_a_stopped_inbox_import_is_recorded_failed_not_imported(tmp_path: Path) 
         assert q._queue.qsize() == 0
     finally:
         q.stop()
+
+
+def test_an_unreadable_folder_is_deferred_not_dropped_as_gone(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``SourcePathMissingError`` covers two faults; one handler must not flatten them.
+
+    A container running as a PUID that cannot search the inbox used to get the
+    gone arm: the row finished terminally and the record said "is no longer
+    there" for a folder sitting right where the operator left it.
+
+    DEFER and not terminal, and the split is a property of the DURABLE RECORD
+    this handler keeps, not of the fault. The bank apply runner may drop an
+    EACCES row terminally because a visible, retryable bank row stays on screen.
+    This queue writes no ledger row for the drop, and ``_finish`` stores a
+    single ``self._error`` slot the next finish overwrites - so terminal here
+    loses the download with nothing left naming it. A chmod makes the next pass
+    succeed, which is the same shape as the unmounted-share arm above it.
+    """
+    q, fake, _reg, _led = _make_queue(tmp_path)
+    folder = tmp_path / "inbox" / "Album"
+    folder.mkdir(parents=True)
+    fake.validate_error = unreadable_source_error(
+        PermissionError(errno.EACCES, "Permission denied", str(folder))
+    )
+    caplog.set_level(logging.WARNING, logger="app.acquisition.queue")
+
+    q._process_one(folder)
+
+    # Deferred: back on the queue, and nothing was counted or finished.
+    assert q._queue.qsize() == 1
+    status = q.status()
+    assert status.processed == 0
+    assert status.failed == 0
+
+    records = [r for r in caplog.records if r.name == "app.acquisition.queue"]
+    assert len(records) == 1, records
+    message = records[0].getMessage()
+    assert "no longer there" not in message, message
+    assert "cannot be read" in message, message
+    # The refusal's own sentence rides along; it carries no path (``os_error``
+    # does, and is never logged).
+    assert "Permission denied" in message, message
+
+
+def test_a_repeating_unreadable_deferral_logs_once_not_once_per_pass(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A deferral that retries every ``busy_backoff`` must not flood the log.
+
+    The requeue is what keeps the download from being lost, but it means this
+    arm runs again roughly once a second for as long as the permissions stay
+    wrong. Logged unconditionally that is a 1 Hz flood; the folder is reported
+    once and reported again only after it has started.
+    """
+    q, fake, _reg, _led = _make_queue(tmp_path)
+    folder = tmp_path / "inbox" / "Album"
+    folder.mkdir(parents=True)
+    fake.validate_error = unreadable_source_error(
+        PermissionError(errno.EACCES, "Permission denied", str(folder))
+    )
+    caplog.set_level(logging.WARNING, logger="app.acquisition.queue")
+
+    for _ in range(4):
+        q._process_one(folder)
+
+    records = [r for r in caplog.records if r.name == "app.acquisition.queue"]
+    assert len(records) == 1, [r.getMessage() for r in records]
+    assert q._queue.qsize() == 4
+
+
+_UNREADABLE = "That folder can't be read. Permission denied."
+
+
+def _queued_once(q: AcquisitionQueue, folder: Path) -> None:
+    """Put ``folder`` in the state the drain sees it in: deduped, and taken off.
+
+    ``_process_one`` alone leaves ``_dedupe`` empty, so ``status().queued``
+    would read 0 for reasons that have nothing to do with what is under test.
+    """
+    q.enqueue(folder)
+    assert q._queue.get() == folder
+
+
+def test_a_deferred_unreadable_folder_stops_claiming_an_import_is_running(
+    tmp_path: Path,
+) -> None:
+    """A defer must release the status, and leave the fault where the page looks.
+
+    ``_process_one`` sets ``_phase``/``_current`` and ONLY ``_finish`` used to
+    clear them, so a folder deferring forever left the probe reporting
+    ``current`` naming it, ``failed`` at 0 and ``error`` at None - the Review
+    page rendered "Importing <folder>" behind a spinner for an import that was
+    never started, while ``has_audio`` answers False on OSError so the folder
+    appeared in no listing at all.
+
+    Cleared, the same section renders "Waiting for the import slot - 1 queued",
+    which is true, and ``status.error`` (RecentSection) names the fault.
+    """
+    q, fake, _reg, _led = _make_queue(tmp_path)
+    folder = tmp_path / "inbox" / "Album"
+    folder.mkdir(parents=True)
+    fake.validate_error = unreadable_source_error(
+        PermissionError(errno.EACCES, "Permission denied", str(folder))
+    )
+    _queued_once(q, folder)
+
+    q._process_one(folder)
+
+    s = q.status()
+    assert s.current is None  # nothing is being imported
+    assert s.phase == "running"  # but the queue still has work
+    assert s.queued == 1
+    assert s.error == _UNREADABLE
+    # Not finished, so no counter moved.
+    assert (s.processed, s.failed, s.set_aside) == (0, 0, 0)
+    assert q._queue.qsize() == 1
+
+
+def test_the_status_names_the_folder_by_BASENAME_not_by_its_server_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``current`` goes out in the status body and is rendered in two places.
+
+    Both readers (the Review page's "Importing now" line and the activity row's
+    scope) reduce it with ``lastSegment`` already, so shipping the absolute
+    inbox path bought nothing and disclosed the server's layout - and a
+    surrogate in a peer-chosen name would have failed the JSON encode.
+    """
+    q, _fake, _reg, _led = _make_queue(tmp_path)
+    folder = tmp_path / "inbox" / "Album"
+    folder.mkdir(parents=True)
+    # Hold the gate so the folder stays "current" long enough to read.
+    monkeypatch.setattr("app.lyrics_jobs.registry.lyrics_backfill_active", lambda: True)
+    q.start()
+    try:
+        q.enqueue(folder)
+        s = _poll(q.status, lambda st: st.current is not None)
+        assert s.current == "Album"
+        assert str(tmp_path) not in (s.current or "")
+    finally:
+        q.stop()
+
+
+def test_the_unmounted_share_defer_releases_the_status_too(tmp_path: Path) -> None:
+    """The OTHER defer arm latched ``_current`` identically.
+
+    Two refusals share it and they are not the same event. A dropped music share
+    is an outage nothing else on this page names, so it carries its sentence; a
+    lost race for the single import slot is not a fault at all - another import
+    genuinely is running and the page shows THAT one - so it must not put an
+    error line on the page. Both release ``_current``.
+
+    The fake raises from ``validate``; the arm does not care which side of
+    ``start`` the refusal came from.
+    """
+    for raised, expected_error in (
+        (
+            LibraryRootUnavailableError("Library folder unavailable. Is the music share mounted?"),
+            "Library folder unavailable. Is the music share mounted?",
+        ),
+        (RuntimeError("An import is already running"), None),
+    ):
+        q, fake, _reg, _led = _make_queue(tmp_path / str(id(raised)))
+        folder = tmp_path / str(id(raised)) / "inbox" / "Album"
+        folder.mkdir(parents=True)
+        fake.validate_error = raised
+        _queued_once(q, folder)
+
+        q._process_one(folder)
+
+        s = q.status()
+        assert s.current is None, raised
+        assert s.queued == 1, raised
+        assert s.error == expected_error, raised
+        assert (s.processed, s.failed) == (0, 0), raised
+        assert q._queue.qsize() == 1, raised
+
+
+def test_an_unreadable_folder_gives_up_once_the_defer_window_has_passed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The requeue is a growth path, because the producer is unauthenticated.
+
+    ``/api/slskd/webhook`` is auth-exempt and ``enqueue`` never checks
+    EXISTENCE, and under the very misconfiguration this arm exists for an inbox
+    the app cannot search answers EACCES for names that were never there - so
+    every fabricated name used to become a permanent ``_dedupe`` +
+    ``_unreadable_since`` entry retrying once per ``busy_backoff`` forever.
+
+    Giving up is not losing it: the folder is still on disk, no ledger row is
+    written (so a later webhook re-enqueues it), and the reason lands in the
+    ``status.error`` the Review page renders.
+    """
+    fake = FakeImportRunner()
+    reg = ImportJobRegistry(runner=fake)
+    led = AcquisitionLedger(tmp_path / "ledger.json")
+    q = AcquisitionQueue(
+        import_registry=reg,
+        ledger=led,
+        poll_interval=0.01,
+        busy_backoff=0.01,
+        unreadable_defer_seconds=0.05,
+    )
+    folder = tmp_path / "inbox" / "Album"
+    folder.mkdir(parents=True)
+    fake.validate_error = unreadable_source_error(
+        PermissionError(errno.EACCES, "Permission denied", str(folder))
+    )
+    caplog.set_level(logging.WARNING, logger="app.acquisition.queue")
+    _queued_once(q, folder)
+
+    q._process_one(folder)  # inside the window: defers
+    assert q._queue.qsize() == 1
+    assert q.status().failed == 0
+    assert q._queue.get() == folder
+    time.sleep(0.05)
+
+    q._process_one(folder)  # past it: terminal
+
+    assert q._queue.qsize() == 0
+    s = q.status()
+    assert (s.processed, s.failed) == (1, 1)
+    assert (s.queued, s.current, s.phase) == (0, None, "idle")
+    assert s.error == _UNREADABLE
+    assert q._unreadable_since == {}  # and the log-once set drained with it
+    assert led.entries() == []  # no ledger row, so a re-download is offered again
+    messages = [r.getMessage() for r in caplog.records if r.name == "app.acquisition.queue"]
+    assert len(messages) == 2, messages
+    assert "stayed unreadable" in messages[1], messages
