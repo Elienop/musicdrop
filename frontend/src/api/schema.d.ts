@@ -7962,7 +7962,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The store layout is refused or the library folder is unavailable. */
+            /** @description The store layout is refused, the library folder is unavailable, or another import is still starting. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -11901,7 +11901,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The store layout is refused or the library folder is unavailable. */
+            /** @description The store layout is refused, the library folder is unavailable, or another import is still starting. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -12035,7 +12035,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The store layout is refused or the library folder is unavailable. */
+            /** @description The store layout is refused, the library folder is unavailable, or another import is still starting. */
             503: {
                 headers: {
                     [name: string]: unknown;

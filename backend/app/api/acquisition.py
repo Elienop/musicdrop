@@ -16,10 +16,12 @@ never an error.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
-from typing import Annotated, Final
+from typing import Annotated, Final, TypeVar
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 
@@ -37,6 +39,7 @@ from app.import_jobs.registry import (
 from app.import_jobs.runner import (
     ABSENT_ERRNOS,
     SourcePathMissingError,
+    unreadable_reason,
     unreadable_source_error,
 )
 from app.models.acquisition import (
@@ -47,15 +50,169 @@ from app.models.acquisition import (
 )
 from app.models.errors import ErrorDetail, validation_or_detail_422
 from app.models.import_models import ImportOptions
-from app.wire import AmbiguousDisplayName, resolve_display_path
+from app.wire import (
+    PLACEHOLDER,
+    AmbiguousDisplayName,
+    display_path,
+    resolve_display_path,
+)
 
 router = APIRouter(tags=["acquisition"])
+
+_T = TypeVar("_T")
+
+#: How many inbox FILESYSTEM reads may occupy anyio's worker pool at once.
+#:
+#: A route is bounded by its FIRST unbounded blocking hop, not by the one a
+#: comment annotates. ``review_inbox`` runs ``settled_folders`` - the heaviest
+#: filesystem call in the acquisition surface (scandir, then a full ``has_audio``
+#: walk AND a ``_newest_mtime`` walk PER folder) - before it ever reaches the
+#: 1-token start, and the two GETs the UI polls on an interval read the inbox
+#: with nothing in front of them at all. So N concurrent callers still took N of
+#: anyio's 40 process-wide tokens, which are shared with every sync ``Depends``
+#: and the scrypt derive behind sign-in: an inbox on a hung mount could starve
+#: login exactly as 40 concurrent starts did.
+#:
+#: Its OWN limiter, deliberately NOT ``_IMPORT_START_SLOTS``: the status GET is
+#: the UI's only liveness signal, and serialising it behind a start wedged on a
+#: hung mount would hang the whole page instead of just the import.
+#:
+#: 4 because these are polled reads of ONE directory - concurrency past a
+#: handful is duplicate polling or a second browser tab, not real demand - and
+#: because it leaves the acquisition surface costing at most 5 tokens of 40
+#: (4 reads + the 1 start), so 35 remain for the rest of the app. That
+#: arithmetic covers the slskd WEBHOOK too - its three filesystem hops go
+#: through ``inbox_read`` as well - which is what makes it a statement about
+#: the surface rather than about two routes: the webhook is the only
+#: unauthenticated producer here, so leaving it outside would have left the
+#: number false in exactly the case the cap is for.
+#:
+#: The cap bounds CONCURRENCY, not WAITING. There is no deadline on the
+#: acquire, so a hung mount still parks every caller of this limiter; the
+#: acquisition routes say so at their own call sites.
+_INBOX_SCAN_SLOTS: Final = anyio.CapacityLimiter(4)
+
+
+async def inbox_read(read: Callable[[], _T]) -> _T:
+    """Run ONE inbox filesystem read on a worker thread, under the cap above.
+
+    Public because the slskd webhook's three hops are inbox reads too, and that
+    route is the unauthenticated one - see its own comment.
+
+    Admission first, then the read on anyio's DEFAULT limiter - the shape
+    ``app/api/auth.py::_one_derive_at_a_time`` and ``start_import_off_loop``
+    both use. Handing the cap to anyio as ``limiter=`` instead REPLACES the
+    default limiter rather than nesting under it: the reads then stop drawing
+    from the 40 altogether and the process can run 44 concurrent worker threads
+    (measured 2026-09-20 - the default limiter's ``borrowed_tokens`` stayed 0
+    while four reads were in flight). Nesting keeps ONE global bound, which is
+    what makes the "35 remain" arithmetic above true.
+
+    Admission is taken BY HAND and released in a ``finally`` for the reason
+    ``start_import_off_loop`` gives: passing it to anyio lets a cancelled caller
+    release its token while the worker thread is still stuck.
+    """
+    await _INBOX_SCAN_SLOTS.acquire()
+    # No await between the acquire returning and the try, so a token can never
+    # be held without the finally that releases it.
+    try:
+        return await run_in_threadpool(read)
+    finally:
+        _INBOX_SCAN_SLOTS.release()
+
 
 #: The batch route's own refusal copy. The shared sentence is singular and about
 #: a folder the caller typed; this route hands over folders the browser is never
 #: shown, and only refuses when EVERY one of them vanished. An unreadable folder
-#: keeps the guard's own sentence instead — it names something to fix.
+#: gets ``_batch_unreadable_sentence`` below, which names WHICH folder refused -
+#: the guard's own sentence cannot, since ``strerror`` carries no path.
 _BATCH_SOURCES_GONE: Final = "Those folders are no longer there."
+
+
+#: The two curly quotes the refusal below delimits a folder name with.
+#:
+#: Stripped from the name itself, because they are ordinary characters a POSIX
+#: filename may contain and ``display_path`` replaces only bytes UTF-8 cannot
+#: carry. Measured through the route: a folder named
+#: ``X\u201d is fine. The folder \u201cY`` produced
+#: ``\u201cX\u201d is fine. The folder \u201cY\u201d can't be read.`` - a
+#: complete forged clause in the operator's own sentence. Delimiters cannot
+#: contain a value that may spell the delimiter.
+_QUOTES: Final = "\u201c\u201d"
+
+#: How much of a folder name the refusal may carry.
+#:
+#: NAME_MAX admits 255 characters, so the cap bites: uncapped, a 255-character
+#: name made a 291-character red sentence that the page also moves focus to and
+#: reads out in full. The frame around the name is 36 characters at the common
+#: reason ("Permission denied"), so a capped refusal is 116 - about two lines at
+#: the banner's width, inside the standing "error text is three short lines"
+#: rule. A real download directory name ("Artist - Album (Year) [FLAC]" is 28)
+#: is well under half of it, so nothing realistic is truncated.
+_NAME_CAP: Final = 80
+
+
+def _nameable(name: str) -> str:
+    """``name`` reduced to something that cannot forge structure in a sentence.
+
+    The value is chosen by a REMOTE Soulseek peer - slskd names the local
+    download directory after the peer's directory - and this sentence is read
+    by an operator, so the name must not be able to end the quoted span, start a
+    new clause, re-order the server's own words, or carry a terminal escape.
+    Measured through the route: a leading U+202E reversed the sentence's tail,
+    a raw newline survived into the body, and an ESC introducing an ANSI colour
+    sequence survived too.
+
+    ``str.isprintable()`` is the same predicate ``%r`` uses in the log sinks -
+    False for C0/C1 controls, for U+2028/U+2029, and for the whole Cf class,
+    which is every bidi override and isolate (U+202A-U+202E, U+2066-U+2069,
+    U+200E/U+200F). This round chose ``%r`` for the log sink for exactly that
+    reason and then shipped the same value unescaped into a response body; one
+    rationale, both sinks. The quotes are Pi/Pf, printable, and stripped
+    separately.
+
+    REPLACED with ``wire_safe``'s own U+FFFD rather than dropped, so the app has
+    one placeholder dialect and two words do not silently join into a third.
+
+    ``""`` when nothing nameable survives - including the degenerate
+    ``Path("/").name`` and ``Path("").name``, both of which are already empty.
+    """
+    kept = "".join(c if c.isprintable() and c not in _QUOTES else PLACEHOLDER for c in name).strip()
+    if len(kept) > _NAME_CAP:
+        kept = kept[: _NAME_CAP - 1].rstrip() + "\u2026"
+    return kept
+
+
+def _batch_unreadable_sentence(exc: SourcePathMissingError) -> str:
+    """The unreadable refusal, naming WHICH handed-over folder refused.
+
+    The shared sentence says "That folder", which is right when the caller
+    typed a path and wrong here: this route hands over folders the browser is
+    never shown, so in a batch of N the singular names nothing at all and the
+    operator has nothing to act on - while ``strerror`` carries no path by
+    design, so it cannot supply one either.
+
+    The BASENAME only, through the same ``display_path`` the listing already
+    uses for ``InboxItem.name``, so this discloses nothing the browser does not
+    already hold; the absolute path stays server-side. Quoted so a folder called
+    "Permission denied" is still readable in the middle of a sentence - and run
+    through ``_nameable`` first, because quoting an arbitrary value is only a
+    delimiter if the value cannot spell the delimiter.
+
+    Falls back to the shared singular when nothing nameable is left, rather than
+    emitting an empty quoted span.
+
+    ``missing_source_error`` stops at the FIRST non-absent errno, so this names
+    one folder even when several refused. That is still something to fix, and
+    the next click reports the next one.
+    """
+    os_error = exc.os_error
+    if os_error is None or not isinstance(os_error.filename, str):
+        return str(exc)  # nothing to name; the singular is all we have
+    name = _nameable(display_path(Path(os_error.filename).name))
+    if not name:
+        return str(exc)
+    return f"\u201c{name}\u201d can't be read. {unreadable_reason(os_error)}."
 
 
 def _resolve_inbox_folder(inbox_dir: Path, name: str) -> Path | None:
@@ -118,10 +275,16 @@ def _start_inbox_item(reg: ImportJobRegistry, inbox_dir: Path, name: str) -> str
 #: ``content`` block - see app/models/errors.py.
 #: Set by Apply's backstop when beets loaded a layout the rule refuses, or by the
 #: music root being missing or unreadable, or empty while the library holds
-#: item rows (an unmounted share).
+#: item rows (an unmounted share) - or by a start that waited out
+#: ``app/api/import_.py::_START_WAIT_SECONDS`` for the one start token.
+#: The two copies of this entry (here and the other import-starting router) must
+#: stay worded alike; the OpenAPI schema carries whichever the route declares.
 _LIBRARY_REFUSED_RESPONSE: Final = {
     "model": ErrorDetail,
-    "description": "The store layout is refused or the library folder is unavailable.",
+    "description": (
+        "The store layout is refused, the library folder is unavailable, or"
+        " another import is still starting."
+    ),
 }
 _IMPORT_SLOT_TAKEN_RESPONSE: Final = {
     "model": ErrorDetail,
@@ -137,7 +300,7 @@ _IMPORT_SLOT_TAKEN_RESPONSE: Final = {
 async def get_acquisition_status(request: Request) -> AcquisitionQueueStatus:
     inbox_dir = getattr(request.app.state, "inbox_dir", None)
     inbox_pending = (
-        await run_in_threadpool(count_pending, inbox_dir) if inbox_dir is not None else 0
+        await inbox_read(partial(count_pending, inbox_dir)) if inbox_dir is not None else 0
     )
     queue = getattr(request.app.state, "acquisition_queue", None)
     if queue is None:
@@ -199,27 +362,38 @@ async def review_inbox(
         return ReviewInboxResponse(started=False, job_id=None, pending=0)
     app_settings = getattr(request.app.state, "settings", None) or settings
     settle = float(getattr(app_settings, "inbox_settle_seconds", 60))
-    folders = await run_in_threadpool(
+    folders = await inbox_read(
         partial(settled_folders, inbox_dir, settle_seconds=settle, now=time.time())
     )
     if not folders:
         # Nothing to review right now — but distinguish WHY. An empty inbox is
         # "all done"; folders still receiving files are "not yet", and the caller
         # must not tell the user the inbox cleared while their rows are on screen.
-        total = await run_in_threadpool(count_pending, inbox_dir)
+        total = await inbox_read(partial(count_pending, inbox_dir))
         return ReviewInboxResponse(started=False, job_id=None, pending=0, in_flight=total)
     pending = len(folders)
     # Any listed item we did not hand over is still arriving; report it so the UI
     # can say so rather than implying the backlog is now empty.
-    total = await run_in_threadpool(count_pending, inbox_dir)
+    total = await inbox_read(partial(count_pending, inbox_dir))
     in_flight = max(0, total - pending)
     try:
         # Off the loop: ``start`` -> ``validate`` stats each handed-over folder,
         # and a stat on a hung mount does not return (see the same call in
         # app/api/import_.py for the measurement and the thread-safety).
-        # Capped at one concurrent start (see ``start_import_off_loop``): a stat
-        # that never returns must cost one of anyio's 40 process-wide tokens, not
-        # all of them.
+        # Capped at one concurrent start (see ``start_import_off_loop``), and
+        # bounded there rather than unbounded: a start that cannot get the token
+        # within ``_START_WAIT_SECONDS`` answers 503 instead of waiting forever.
+        #
+        # What that bound does NOT cover, stated plainly because a previous
+        # version of this comment claimed it did: the ``settled_folders`` and
+        # ``count_pending`` reads above are the handler's FIRST blocking hops and
+        # are reached three times before this line. They carry their own cap
+        # (``_INBOX_SCAN_SLOTS``), so no number of callers can exhaust anyio's
+        # pool - but that cap has no DEADLINE, so on a hung mount this route
+        # parks in a read and the 503 can never fire. A recorded residual, not a
+        # regression: before the cap the same callers hung inside ``os.walk``
+        # instead of at the limiter. Bounding the reads means a 503 on two polled
+        # GETs, which is a contract change.
         job_id = await start_import_off_loop(
             partial(
                 reg.start,
@@ -231,7 +405,7 @@ async def review_inbox(
     except SourcePathMissingError as exc:
         # Every settled folder was removed between the listing and the start.
         # Mapped here so the race answers rather than 500ing.
-        detail = str(exc) if exc.unreadable else _BATCH_SOURCES_GONE
+        detail = _batch_unreadable_sentence(exc) if exc.unreadable else _BATCH_SOURCES_GONE
         raise HTTPException(status_code=422, detail=detail) from None
     except (LibraryRefusedError, LibraryRootUnavailableError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
@@ -258,7 +432,7 @@ async def list_inbox_items(request: Request) -> InboxListing:
     settle = float(getattr(app_settings, "inbox_settle_seconds", 60))
     # Same window "Review all" uses, so a row's in_flight cue agrees with whether
     # that button would actually import it.
-    items = await run_in_threadpool(
+    items = await inbox_read(
         partial(list_inbox, inbox_dir, ledger, settle_seconds=settle, now=time.time())
     )
     return InboxListing(items=items)

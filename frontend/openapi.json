@@ -3451,7 +3451,7 @@
             }
           },
           "503": {
-            "description": "The store layout is refused or the library folder is unavailable.",
+            "description": "The store layout is refused, the library folder is unavailable, or another import is still starting.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8272,7 +8272,7 @@
             }
           },
           "503": {
-            "description": "The store layout is refused or the library folder is unavailable.",
+            "description": "The store layout is refused, the library folder is unavailable, or another import is still starting.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8386,7 +8386,7 @@
             }
           },
           "503": {
-            "description": "The store layout is refused or the library folder is unavailable.",
+            "description": "The store layout is refused, the library folder is unavailable, or another import is still starting.",
             "content": {
               "application/json": {
                 "schema": {
