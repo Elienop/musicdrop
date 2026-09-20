@@ -427,8 +427,9 @@ def test_validate_still_refuses_a_missing_source_without_a_library(
     The two library reads above it need a library; asking whether the folder is
     on disk does not, and a registry with no library still creates jobs.
     """
+    runner = BeetsImportRunner(None)
     with pytest.raises(SourcePathMissingError, match=r"^That folder doesn’t exist\.$"):
-        BeetsImportRunner(None).validate([str(tmp_path / "downloads" / "gone")], options)
+        runner.validate([str(tmp_path / "downloads" / "gone")], options)
 
 
 def test_runner_forwards_directive_to_session_and_worker(

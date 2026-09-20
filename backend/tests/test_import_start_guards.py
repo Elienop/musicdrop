@@ -1713,8 +1713,9 @@ def test_an_empty_source_list_is_nothing_to_import(tmp_path: Path) -> None:
     from app.import_jobs.runner import BeetsImportRunner, SourcePathMissingError
 
     _reg, lib = _real_registry(tmp_path)
+    runner = BeetsImportRunner(lib)
     with pytest.raises(SourcePathMissingError, match=r"^That folder doesn’t exist\.$"):
-        BeetsImportRunner(lib).validate([], None)
+        runner.validate([], None)
 
 
 # ----- 15: the start must not park a request thread on the source's filesystem -----

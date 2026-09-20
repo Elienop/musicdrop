@@ -56,6 +56,29 @@ def get_bank_dir() -> Path:
     return store_dir(settings, BANK_STORE, Path(settings.beets_dir))
 
 
+def _current_fingerprint(folder: str) -> str | None:
+    """The banked folder's fingerprint as it is now, or ``None`` if it is gone.
+
+    ``FileNotFoundError`` is ``folder_fingerprint``'s own "gone" signal, raised
+    by hand with no errno - an errno test would miss it. Catching that one
+    ALONE let a PermissionError escape as a 500, so every other ``OSError``
+    goes to ``refuse_unless_absent``, which returns for an absent errno and
+    otherwise raises the shared sentence. Not ``str(exc)``, which on an OSError
+    interpolates ``exc.filename`` - an absolute server path - into the body.
+
+    A folder the OS refuses to answer for did NOT go stale, which is why that
+    arm raises instead of answering ``None``. The two callers read ``None``
+    differently: search flips the row stale, rescan answers 409.
+    """
+    try:
+        return folder_fingerprint(Path(folder))
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        refuse_unless_absent(exc)
+        return None
+
+
 @router.get("/bank")
 async def list_bank(
     status_filter: Annotated[BankStatus | None, Query(alias="status")] = None,
@@ -173,21 +196,8 @@ async def search_bank_item(item_id: str, search: ImportSearch) -> BankSearchResp
     # The flip below is intentionally unguarded (no expected=): the mismatch is
     # a fact about the disk, and a decision racing past the pre-check would hit
     # the apply runner's own fingerprint re-check and land on stale anyway.
-    def _current_fingerprint() -> str | None:
-        try:
-            return folder_fingerprint(Path(item.folder))
-        except FileNotFoundError:
-            return None
-        except OSError as exc:
-            # The rescan route's split, on the site beside it: a folder the OS
-            # refuses to answer for did not go stale, so it must not be flipped
-            # stale below, and ``str(exc)`` on the OSError would carry
-            # ``exc.filename`` - an absolute server path - into the body.
-            refuse_unless_absent(exc)
-            return None
-
     try:
-        current = await run_in_threadpool(_current_fingerprint)
+        current = await run_in_threadpool(_current_fingerprint, item.folder)
     except SourcePathMissingError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     if current is None or current != item.fingerprint:
@@ -258,24 +268,8 @@ async def rescan_bank_item(item_id: str) -> BankItem:
     # Fingerprint FIRST: it describes the folder version being blessed. An
     # edit racing the lookup below surfaces as a mismatch at apply time and
     # goes stale — the safe direction.
-    def _current_fingerprint() -> str | None:
-        try:
-            return folder_fingerprint(Path(item.folder))
-        except FileNotFoundError:
-            # ``folder_fingerprint``'s own "gone" signal, raised by hand with no
-            # errno - the 409 below. The errno test would miss it.
-            return None
-        except OSError as exc:
-            # Anything else the OS refused to answer for is a different fault:
-            # caught as ``FileNotFoundError`` only, a PermissionError escaped this
-            # route as a 500. The shared sentence rather than ``str(exc)``, which
-            # on an OSError interpolates ``exc.filename`` - an absolute server
-            # path.
-            refuse_unless_absent(exc)
-            return None
-
     try:
-        fingerprint = await run_in_threadpool(_current_fingerprint)
+        fingerprint = await run_in_threadpool(_current_fingerprint, item.folder)
     except SourcePathMissingError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     if fingerprint is None:

@@ -85,11 +85,13 @@ def unreadable_source_sentence(exc: OSError) -> str:
     """What every caller says about a path the OS refused to answer for.
 
     ONE sentence wherever a source path refuses to answer, so the same fault
-    cannot be worded differently in each place; ``grep -rn
-    unreadable_source_error app/`` is the live list of those places. Not
-    enumerated here: the last enumeration named the bank apply runner's START
-    arm, which consumes an already-built exception via ``str(exc)`` and never
-    calls this, and missed the bank SEARCH route, which does.
+    cannot be worded differently in each place. The live list is ``grep -rnE
+    'unreadable_source_error|refuse_unless_absent' app/`` - measured
+    2026-09-21: the narrower recipe this said before matched only THIS file,
+    because the route sites reach the sentence through ``refuse_unless_absent``.
+    Not enumerated here: the last enumeration named the bank apply runner's
+    START arm, which consumes an already-built exception via ``str(exc)`` and
+    never calls this, and missed the bank routes, which do.
 
     ``strerror`` is the OS's own summary and carries no path, which is what
     makes surfacing it safe (the same reasoning as the unreadable-root arm in

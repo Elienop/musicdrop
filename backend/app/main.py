@@ -91,6 +91,9 @@ def _resolve_library() -> LibraryHandle:
 #: level-tagged line naming a setting that the layout gate below prints.
 _BEETS_STARTUP_FAILED = (OSError, RuntimeError, ValueError, sqlite3.Error)
 
+#: uvicorn's own error logger; ``_boot_log`` below says why app records go there.
+_UVICORN_ERROR_LOGGER = "uvicorn.error"
+
 
 def _boot_log() -> logging.Logger:
     """The logger a refusal to start goes to.
@@ -100,7 +103,7 @@ def _boot_log() -> logging.Logger:
     handler, with no level tag — and the operator grepping for why the process
     died has only ``docker logs``.
     """
-    return logging.getLogger("uvicorn.error")
+    return logging.getLogger(_UVICORN_ERROR_LOGGER)
 
 
 def wire_app_log_namespace() -> None:
@@ -136,7 +139,7 @@ def wire_app_log_namespace() -> None:
     and ``lastResort`` behaves exactly as before.
     """
     handlers: list[logging.Handler] = []
-    for name in ("uvicorn.error", "uvicorn"):
+    for name in (_UVICORN_ERROR_LOGGER, "uvicorn"):
         source = logging.getLogger(name)
         handlers.extend(h for h in source.handlers if h not in handlers)
         if not source.propagate:
@@ -149,7 +152,7 @@ def wire_app_log_namespace() -> None:
             app_logger.addHandler(handler)
     # Without this the effective level is root's WARNING and INFO stays dropped
     # even with a handler attached. uvicorn's own, so ``--log-level`` carries.
-    app_logger.setLevel(logging.getLogger("uvicorn.error").getEffectiveLevel())
+    app_logger.setLevel(logging.getLogger(_UVICORN_ERROR_LOGGER).getEffectiveLevel())
 
 
 def _refuse_boot(message: str, *args: object) -> None:
@@ -610,7 +613,7 @@ app.add_middleware(
 # (app/auth/cookies.py), so there is no boot-time value to report. Wording it
 # as a state would be a claim the process cannot make — an operator behind a
 # TLS proxy and one on the LAN read the same line and both read the truth.
-logging.getLogger("uvicorn.error").info(
+logging.getLogger(_UVICORN_ERROR_LOGGER).info(
     "security posture: %s; extra write origins: %s; allowed hosts: IP literals, localhost%s;"
     " auth: %s; session cookie: Secure on HTTPS requests, plain otherwise",
     "prod (static_dir set)" if settings.static_dir else "dev (static_dir empty)",

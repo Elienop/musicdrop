@@ -365,22 +365,27 @@ class BankApplyRunner:
                     logger.exception("bank apply: recording the failure for %r failed", item.folder)
                     self._stop.wait(self._busy_backoff)
 
-    def _apply_one(self, item: BankItem) -> None:
-        if not self._wait_for_gate():
-            return  # shutting down; the row stays queued
-        # CAS claim: only a still-queued row may flip to applying. A row
-        # deleted OR re-banked (reset to needs_review, decided=None) between
-        # the pick and the claim returns None - skip it; the drain moves on.
-        claimed = bank_store.set_status(self._bank_dir, item.id, "applying", expected="queued")
-        if claimed is None:
-            return
+    def _row_stopped_by_folder_check(self, item_id: str, claimed: BankItem) -> bool:
+        """Whether the folder check ended this row, having recorded why.
+
+        ``True`` means a terminal status is ALREADY written (``stale``, or
+        ``failed`` + ``fix_folder``) and the caller must only return. Named for
+        the write rather than for the folder: the EACCES arm does NOT claim the
+        folder stopped matching - it claims nobody can tell, which is why it
+        writes ``fix_folder`` and never ``stale``.
+
+        ``item_id`` is the CAS key and ``claimed`` the row it returned - the
+        same row by construction (``set_status`` reads ``get_item(bank_dir,
+        item_id)``). The pair is passed rather than derived so the write target
+        stays the key the caller holds, not the id inside the row file.
+        """
         try:
             current = folder_fingerprint(Path(claimed.folder))
         except FileNotFoundError:
             # ``folder_fingerprint``'s own "the folder is gone" signal. Raised by
             # hand, so its errno is UNSET and the errno test below would miss it.
-            bank_store.set_status(self._bank_dir, item.id, "stale", error=_STALE_GONE_ERROR)
-            return
+            bank_store.set_status(self._bank_dir, item_id, "stale", error=_STALE_GONE_ERROR)
+            return True
         except OSError as exc:
             # Widened from FileNotFoundError alone: ``Path.is_dir`` inside the
             # fingerprint swallows ENOENT/ENOTDIR/ELOOP but re-raises EACCES,
@@ -390,21 +395,34 @@ class BankApplyRunner:
             # 2026-09-20). ``ABSENT_ERRNOS`` is the import guard's own set,
             # imported rather than re-spelled so the two splits cannot drift.
             if exc.errno in ABSENT_ERRNOS:
-                bank_store.set_status(self._bank_dir, item.id, "stale", error=_STALE_GONE_ERROR)
+                bank_store.set_status(self._bank_dir, item_id, "stale", error=_STALE_GONE_ERROR)
             else:
                 # ``fix_folder``: the folder IS there and the operator can make
                 # it readable, so the banner has to say that rather than the bare
                 # "decide again to retry" a retry would fail identically on.
                 bank_store.set_status(
                     self._bank_dir,
-                    item.id,
+                    item_id,
                     "failed",
                     error=unreadable_source_sentence(exc),
                     error_recovery="fix_folder",
                 )
-            return
+            return True
         if current != claimed.fingerprint:
-            bank_store.set_status(self._bank_dir, item.id, "stale", error=_STALE_CHANGED_ERROR)
+            bank_store.set_status(self._bank_dir, item_id, "stale", error=_STALE_CHANGED_ERROR)
+            return True
+        return False
+
+    def _apply_one(self, item: BankItem) -> None:
+        if not self._wait_for_gate():
+            return  # shutting down; the row stays queued
+        # CAS claim: only a still-queued row may flip to applying. A row
+        # deleted OR re-banked (reset to needs_review, decided=None) between
+        # the pick and the claim returns None - skip it; the drain moves on.
+        claimed = bank_store.set_status(self._bank_dir, item.id, "applying", expected="queued")
+        if claimed is None:
+            return
+        if self._row_stopped_by_folder_check(item.id, claimed):
             return
         # Enforced skip_new, deliberately BETWEEN the staleness checks and the
         # directive: the row is already CAS-claimed "applying" (so no second
@@ -450,8 +468,8 @@ class BankApplyRunner:
             # all reach this arm, and one constant for all three would tell the
             # operator a folder that is still there had been deleted.
             #
-            # gone -> ``stale`` + the sentence the OSError arm one screen up uses
-            # for the same physical condition, which routes the Bank page to its
+            # gone -> ``stale`` + the sentence ``_row_stopped_by_folder_check``'s
+            # OSError arm uses for the same condition, which routes the Bank page to its
             # stale screen. Unreadable -> ``failed`` + ``fix_folder``, the same
             # recovery that arm writes: the folder IS there, so deciding again is
             # the remedy - but only AFTER the operator makes it readable, and a
