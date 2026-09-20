@@ -132,7 +132,13 @@ function lineOf(fragment: HTMLElement): HTMLElement {
 
 /** The `d` of an icon concept's glyph. Phosphor renders no name attribute, so
  * the only way to assert WHICH icon a panel wears is to compare its path
- * against the concept module's own render. */
+ * against the concept module's own render.
+ *
+ * It is an IDENTITY check and never weight coverage: this renders the concept
+ * bare, and the page under test mounts no `IconContext` either, so both sides
+ * take Phosphor's own `regular` — a weight the app never ships. The comparison
+ * holds because the concepts it distinguishes differ at every weight. Only
+ * `icons.test.ts` mounts `ICON_WEIGHT` and can say anything about weight. */
 function pathOf(Icon: AppIcon): string {
   const { container, unmount } = render(<Icon aria-hidden="true" />);
   const d = container.querySelector("path")?.getAttribute("d") ?? "";

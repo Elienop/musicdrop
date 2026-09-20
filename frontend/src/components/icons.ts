@@ -6,9 +6,13 @@
 // Default weight is "light" — glyphs don't pass `weight` themselves. It comes
 // from ONE constant (ICON_WEIGHT below), fed to an IconContext by App for the
 // shell and by each route that renders outside it (the sign-in page, the
-// admission fallback). The only sanctioned local overrides: detail-rail
-// actions = thin (large size-10 glyphs), checkbox tick = bold (tiny control
-// glyph needs the stroke).
+// admission fallback). The sanctioned local overrides are keyed on the glyph's
+// SIZE, not on where it sits: at the large step it takes thin, and at the
+// smallest control it takes bold.
+// Stop is StopCircle, not the bare Stop square: at the app's light weight
+// that square reads as an unchecked checkbox on the 40px stopped panel
+// (owner's call 2026-09-20, made from the rendered page). The ring carries
+// the "control" meaning a fill used to, without leaving the one weight.
 // The one spinner is Spinner (CircleNotch) + className "animate-spin".
 // `Success` and `Online` intentionally share CheckCircle (spec's map; online
 // status always pairs the icon with text, never color alone).
@@ -51,7 +55,7 @@ export {
   TrashIcon as Remove,
   XIcon as Close,
   PauseIcon as Pause,
-  StopIcon as Stop,
+  StopCircleIcon as Stop,
   CaretLeftIcon as Back,
   CaretRightIcon as Forward,
   CaretDoubleLeftIcon as SkipBack,
@@ -85,8 +89,18 @@ import type { Icon } from "@phosphor-icons/react";
 /**
  * ONE icon weight app-wide, as an IconContext value: every Phosphor glyph
  * without an explicit `weight` renders LIGHT (nav, status, buttons…).
- * Deliberate overrides stay local: detail-rail actions = thin (large glyphs),
- * checkbox tick = bold (tiny control glyph needs the stroke).
+ *
+ * Deliberate overrides stay local, and the rule behind them is SIZE, not
+ * place. Phosphor's stroke is a fraction of the viewBox, so it scales with the
+ * box (Stop: light = 12 of 256 units, thin = 8) — a weight that reads right at
+ * 16px reads heavy at 40. So a glyph at the LARGE step takes `thin`, and the
+ * smallest control glyph takes `bold`.
+ *
+ * Census of all 18 `weight=` sites, 2026-09-20: every thin one renders at
+ * `size-10` or `size-14`, and they are NOT all detail-rail actions — StatTile
+ * (56px, the biggest in the app), the topbar's Activity and Sign out, and
+ * Add-to-playlist's rail-sized trigger are not. The one bold is the checkbox's
+ * 14px tick, where the light stroke thins away.
  *
  * A module constant so the provider value stays referentially stable across
  * re-renders, and it lives HERE rather than in App because App's provider no
