@@ -638,7 +638,86 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   (`app/beets/setup.py`). Proved pre-existing 2026-09-19: the same five modules with their pre-round
   content failed `test_a_posted_path_without_a_dotdot_segment_is_still_mapped` (1 failed, 286 passed)
   while the edited tree failed a different test of the same module; the full suite is green. Not
-  fixed. Search words: flake, subset, order-dependent, `timeout not found`.
+  fixed. **Rate measured 2026-09-20** by the review seat, 12 runs of
+  `pytest tests/test_import_start_guards.py tests/test_import_runner.py` on each of two trees:
+  **2/12 failed on this branch's tip and 2/12 on `HEAD`** — identical, so the source-missing round
+  did not worsen it. The victim varies between runs
+  (`..._without_a_dotdot_segment_is_still_mapped`, `..._with_a_dotdot_segment_is_not_mapped`,
+  `test_the_sibling_name_fields_are_bounded`) — **not from test ordering**: `pytest-randomly` is
+  not installed and is absent from `uv.lock` (`find_spec("pytest_randomly")` is False; collection
+  order is deterministic file order, confirmed identical across passing and failing runs). The
+  nondeterminism is a THREAD, which is what the fix has to address. The file's own comment at
+  `:174` names the hazard: a worker thread outliving the test reads beets' config after the autouse
+  reset. Three of the round's new tests start real imports, so the `_drive`-dependent population
+  keeps growing — the argument for fixing it, not for calling it harmless.
+  Search words: flake, subset, order-dependent, `timeout not found`.
+- **`POST /api/trash/restore` and `DELETE /api/trash` still resolve caller-named relative paths
+  on the event loop.** Same class as the import start, which was moved off it on 2026-09-20 after
+  the security seat measured a **10002.7 ms** loop gap against a 2.1 ms idle baseline on a hung
+  mount (FUSE stand-in with a sleeping `getattr`; the same probe on the previous commit read
+  2.4 ms). These two routes take the same 255-character / 128-component input shape and were not in
+  that round's scope. A hung share therefore still freezes every other route, live updates and
+  `/api/health` — and the image's `HEALTHCHECK --timeout=5s --retries=3` (`Dockerfile:44`) marks the
+  container unhealthy after ~15 s, which a supervisor (autoheal, a k8s liveness probe) acts on by
+  restarting mid-operation. Fix shape: `run_in_threadpool(partial(...))` around the resolve block,
+  exactly as `app/api/import_.py` and `app/api/acquisition.py` now do; the house test oracle is
+  `asyncio.get_running_loop()` inside the probed callee asserting `on_loop == [False]`, NOT a timing
+  assertion (a timing oracle is vacuous here — under the mutant the blocking call owns the loop, so
+  the `await` that starts the timer cannot resume until the stall ends and the measurement reads
+  clean). Search words: event loop, blocking stat, hung mount, NFS, healthcheck, threadpool.
+- **Forty concurrent import starts exhaust the process-wide thread pool, and `/api/health` keeps
+  answering 200 while they do.** Measured 2026-09-20 on a real uvicorn against a hung FUSE mount.
+  `ImportJobRegistry.start` calls `runner.validate` BEFORE `claim_slot` (`registry.py:298` vs
+  `:314-315`), so the single-job slot does not bound how many source stats are in flight. anyio's
+  default thread limiter is **40 and process-wide** (anyio 4.13.0), and FastAPI draws from it for
+  every sync `Depends` callable — all 18 of this app's are plain `def` — and for the scrypt derive
+  at `app/api/auth.py:459`. With 40 stuck: `/api/health` 200 in 0.65 ms, `/api/imports/active`
+  timed out at 20 s, `POST /api/auth/login` timed out at 20 s. **The single-request case got
+  strictly better** in the same round (on `main` ONE request took `/api/health` to 18.0 s against a
+  0.0005 s baseline; now one request costs one token and everything else stays sub-3 ms), so this
+  is a saturation-only regression — but a specific one: a dead app now reads healthy, where before
+  the loop stall took the healthcheck down with it. The shipped `docker-compose.yml:44` sets only
+  `restart: unless-stopped`, which acts on exit rather than on `unhealthy`, so nothing auto-restarts
+  either way today — the cost is to operator monitoring and to any autoheal/k8s liveness probe.
+  There is no `--limit-concurrency` (`Dockerfile:61`) and no inbound rate limiting anywhere
+  (`TokenBucketLimiter` is the OUTBOUND artwork fetcher). A cap on the import-start path is being
+  added; this entry stays for the health-signal half, which a cap does not fix.
+  Search words: anyio, thread limiter, 40 tokens, saturation, healthcheck lies, liveness.
+- **`POST /api/acquisition/review-inbox` reports an UNREADABLE inbox as "nothing to review".**
+  `app/acquisition/inbox.py:219-222` (`settled_folders`) and `:154-157` (`count_pending`) both
+  return `[]`/`0` on any `OSError`, so with the inbox share unreadable the route answers
+  `200 {"started": false, "pending": 0, "in_flight": 0}` — "your inbox is empty" — for a share the
+  app cannot read. Measured identically on `main` and this branch, so pre-existing, and the safe
+  direction by design (skipping beats sweeping a folder mid-write). But it is the one route where
+  the 2026-09-20 permissions diagnosis does not reach the user: the same misconfiguration says
+  "can't be read" on the two start routes and "all clear" here. Fix shape: let `settled_folders`
+  distinguish empty from unreadable (return `None`, or raise) and have the route answer 422 with
+  the same `strerror` sentence — a return-contract change with several callers, which is why it is
+  recorded rather than folded into that round. Search words: inbox, unreadable, empty, settled,
+  OSError swallowed.
+- **`xs` and `icon-xs` buttons render an unsized glyph at 12px, off the design system's icon
+  scale.** `frontend/src/components/ui/button.tsx:29` gives those sizes
+  `[&_svg:not([class*='size-'])]:size-3`, and twMerge keeps exactly one of the two same-prefix
+  tokens, so the base 16px is replaced rather than joined. At 12px Phosphor's light stroke (12 of
+  256 units) is **0.563px** — sub-pixel on a 1x display, a grey hairline rather than a line. The
+  spec's steps are inline 16 / banner 20 / hero 40. Two live sites were moved to 16px on
+  2026-09-20 by the owner's call (the Activity popover's dismiss glyph and the job row's View
+  caret, both by an explicit `size-4` on the glyph so the buttons keep their own box). **Not
+  swept**: any other `xs`/`icon-xs` button carrying an unsized outline glyph has the same hairline.
+  A sweep needs a design pass, not a find-and-replace, since some of them may want the smaller box.
+  Search words: icon scale, xs, icon-xs, hairline, sub-pixel, twMerge, size-3.
+- **The acquisition queue's dedupe key is recomputed through `resolve()` twice, so a symlink that
+  disappears leaks a `_dedupe` entry and the queued count never returns to zero.** Measured
+  2026-09-20 (security seat, while auditing the drain): `enqueue` and `_process_one` each compute
+  `str(folder.resolve())` independently (`backend/app/acquisition/queue.py`). With a symlinked
+  parent alive at enqueue and gone by process time the two keys differ
+  (`.../real/album` vs `.../link/album`; control: a plain directory gives matching keys), `_finish`
+  then discards a key that is not in `_dedupe`, the set leaks the entry, `status().queued` is
+  permanently off by one and `_phase` never returns to `"idle"` (`queue.py:271`). Pre-existing —
+  both keys were already recomputed before the source-missing round — but that round's new terminal
+  arm is a third way to reach it. Fix shape: resolve once at enqueue and carry the key with the
+  item, rather than re-deriving it from a path whose resolution can change. Search words: dedupe,
+  resolve, symlink, queued count, phase never idle.
 - **Timing flake family — a registry test polls for the album ROW, then pushes a reply before the
   worker has PARKED its slot.** Seen in three full `make coverage` runs on 2026-09-19 while two review
   seats ran suites on the same box: `test_import_duplicate_api.py::test_record_duplicate_decision_unblocks_and_marks`
@@ -2948,6 +3027,43 @@ because a recorded decision is what stops the question being reopened from scrat
 scan here for something to pick up — scan *Open bugs / hardening*. Revisit an item only if
 the condition it names has changed.
 
+- **The source-missing refusal asks "is there nothing to import", not "is every source there"**
+  (2026-09-20, `feat/import-keep-downloads`). A start whose sources are all absent is refused with
+  `That folder doesn't exist.` before any job exists; one absent member of a list is NOT refused.
+  Decided, with the reasoning, because the narrow predicate looks like an oversight:
+  * **A stat cannot close the window it appears to close.** The inbox route re-derives its folder
+    list server-side milliseconds before the start, and a folder is as free to vanish after the
+    stat as before it. A guard placed over a race it cannot win is worse than none, because the
+    next reader trusts the path afterwards.
+  * **beets already answers the one-member case.** A missing toppath takes the single-FILE branch,
+    `read_item` returns `None`, that toppath contributes nothing and the rest import.
+    `test_review_all_survives_a_folder_that_vanished_since_the_listing` pinned this BEFORE the
+    refusal existed, in as many words, and still does.
+  * **The check is existence, never `is_dir`.** beets imports a single file as one track; an
+    `is_dir` guard would take away something the engine can do. Pinned by
+    `test_a_source_that_is_a_FILE_is_not_refused_by_the_existence_guard`.
+  * **Absent and unreadable are told apart.** `os.path.exists` answers False for `EACCES` exactly
+    as for absent, which would have reported the commonest self-hosted misconfiguration (a PUID/GID
+    mismatch on a mounted share) as a typo. The check is one `os.stat` per path with an errno
+    split: `ENOENT`/`ENOTDIR`/`ENAMETOOLONG` keep `That folder doesn't exist.`, anything else says
+    `That folder can't be read. {strerror}.` — `strerror` is the OS's own summary and carries no
+    path, the same reasoning `app/beets/library.py` already relies on. The classification rides on
+    the exception (`unreadable: bool`) so the batch route's plural copy cannot re-bury it.
+  * **`startImport`'s own 422 branch stays asymmetric with the shared helper, deliberately.**
+    `throwIfRefused` shows only our own STRING detail, so FastAPI's array-shaped validation 422
+    stays machine copy; `useImport.ts`'s `startImport` still reads both shapes, which its docstring
+    records as carry-forward. The one body-validation 422 `POST /api/import` can send in practice is
+    the 4096-character path cap, where the validator's own message is MORE useful than the page's
+    generic sentence. Revisit if a second body rule lands.
+  * **The batch sentence is plural even when the batch held one folder.** `settled_folders` can
+    legitimately return a single folder, and if it vanishes the user reads "Those folders are no
+    longer there." about one. Accepted rather than made number-aware: the route is a batch route,
+    the browser is never shown which folders it handed over, and a count-dependent ternary would
+    put two spellings of one refusal in the code to fix a sentence that is not wrong, only loose.
+  * **It is a guard, not the cure.** The typo that prompted it came from a free-text path field.
+    The folder browser in *Next up* removes the typo at its source; this refusal is what stands in
+    until then.
+
 - **"Stop this run" — what it deliberately does not do** (2026-09-19, `feat/import-keep-downloads`,
   replacing the run page's "Start over"). Stop is beets' own `ImportAbortError` raised at the next
   session hook, so the album it lands on is asked again when the folder is added again; what
@@ -2976,12 +3092,19 @@ the condition it names has changed.
   * **One merged album counts as two applied** — the merge row and the merged task's row are both
     counted, pinned by `test_a_merge_that_landed_before_the_stop_still_counts_imported`. Pre-branch
     behaviour; whoever revisits the merge exemption moves the count with it.
-  * **The Stop glyph is the filled Phosphor square app-wide.** Light and regular read as a checkbox
-    at 16 px and 12 px. At 40 px on the stopped panel it is the heaviest mark on the page beside the
-    sibling panels' light Pause and Success; the owner's eye decides, and StopCircle light is the one
-    alternative that stays in the stroke register (side by side in
-    `docs/superpowers/reports/2026-09-19-final-review/browser-pass/stop-run-ux2-compare-x2.png`).
-    Revert is one line in `frontend/src/components/icons.ts`.
+  * **The Stop concept is `StopCircle` at the app's one icon weight** — owner's call 2026-09-20,
+    replacing the filled `Stop` square this entry used to record. It went through both alternatives
+    in one evening, and the order matters: the fill came off first (a plain re-export, so
+    `ICON_WEIGHT` reaches it through `IconContext` like every other concept), then the owner saw the
+    result RENDERED in Orca at 40 px and switched the glyph to the ringed one. The two seats that
+    originally called the light square "an empty checkbox" were right about the shape even though
+    the token measurements said the confusion was unlikely — `--muted-foreground` at 7.63:1 against
+    a real checkbox border's `--input` at 1.47:1, and `/import` renders no `Checkbox` at all (they
+    live on `/import/albums/:index`, which never co-renders). **A measurement that says "unlikely to
+    be confused" is not the same as looking at it.** The ring carries the "control" meaning the fill
+    used to, without leaving the single weight, and the sweep's paused panel — the same `EmptyState`
+    with a light `Pause` — still agrees with it. **Do not re-add a weight wrapper** —
+    `icons.test.ts` pins glyph and weight together, in both directions.
   * **Smaller, left as read by the UI seat:** at 360 the error line above the button indents it
     by the pair's right alignment; the pending label ("Stopping…") shrinks the button and shifts its
     glyph, as the sweep's "Pausing…" already does; the done panel's two CTAs point at two homes

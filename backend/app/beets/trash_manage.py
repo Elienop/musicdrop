@@ -442,7 +442,8 @@ def _unopenable_name_under(entry: Path) -> str | None:
     before anything is handed to beets — which cannot be gated from here: its
     importer opens every file in the folder it is given that its
     ``ignore``/hidden globs do not skip (``mutagen.wave.WAVE`` on a FIFO,
-    ``importer/tasks.py:1141``), and on the move-back arm the app's own
+    ``ImportTaskFactory.read_item``, ``importer/tasks.py:1128`` in the installed
+    beets 2.13.1), and on the move-back arm the app's own
     :func:`_holds_media` walk opens them again afterwards.
 
     ``followlinks=True`` because beets' own walk follows them: ``sorted_walk``
@@ -1094,7 +1095,8 @@ def _restore_to_origin(
         # up front, because beets' discovery is the AUTHORITY on "was there an
         # album here" and :func:`_holds_media` is a heuristic that does not
         # replicate it: beets applies ``ignore``/``ignore_hidden``, extracts
-        # archives, and remuxes before reading (``importer/tasks.py:1141-1168``).
+        # archives, and remuxes before reading (``ImportTaskFactory.read_item``,
+        # ``importer/tasks.py:1128`` in the installed beets 2.13.1).
         # Asking the probe only once beets has already answered "nothing landed"
         # makes it a tie-breaker on a decided question instead of a gate that
         # could decide it alone, and the import costs nothing on a folder with
