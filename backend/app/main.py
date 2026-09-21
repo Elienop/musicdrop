@@ -329,7 +329,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.acquisition_queue = acquisition_queue
     app.state.inbox_dir = inbox_dir
     app.state.acquisition_ledger = ledger  # the Review page lists + annotates the inbox backlog
-    acquisition_queue.start()
 
     # Bank reconciliation: rows stuck in "applying" from a mid-apply crash
     # revert to needs_review with a note (never blind-requeued).
@@ -379,6 +378,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         swap_lock=app.state.beets_swap_lock,
     )
     app.state.bank_apply_runner = bank_apply_runner
+    # Both drains start only after the bank refusal above, so a boot refused
+    # there leaves no drain thread running (measured: the inbox drain used to
+    # outlive it).
+    acquisition_queue.start()
     bank_apply_runner.start()
 
     # Build the artist-image stack once: the disk cache + the persisted enabled

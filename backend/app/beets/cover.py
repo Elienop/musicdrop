@@ -126,7 +126,7 @@ def _make_fetchart_plugin() -> Any:
     a persistent global-config mutation (``fetchart.auto`` reading False for
     everything after). We restore the user's explicit value if they set one, else
     the plugin default (True). NOTE: this does not serialize against a concurrent
-    config Apply clearing ``beets.config`` — that rare single-user timing race is
+    config Apply replacing ``beets.config``'s sources — that rare single-user timing race is
     a documented residual; removing the persistent overlay is the fix here.
     """
     from beetsplug.fetchart import FetchArtPlugin

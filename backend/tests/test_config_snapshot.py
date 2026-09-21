@@ -185,6 +185,27 @@ def test_safety_net_masks_pwd_and_apisecret_variants(loaded_handle: LibraryHandl
     assert "kodi-leak" not in snap.effective_yaml
 
 
+def test_safety_net_masks_a_key_named_key_or_ending_in_key(tmp_path: Path) -> None:
+    """fetchart declares ``fanarttv_key`` secret only while it is LOADED; with
+    fetchart off, the value sat in cleartext in the "secrets redacted" pane."""
+    (tmp_path / "config.yaml").write_text(
+        "library: library.db\n"
+        "directory: music\n"
+        "plugins: []\n"
+        "fetchart:\n  fanarttv_key: fan-leak\n  google_key: goo-leak\n"
+        "custom:\n  key: bare-leak\n  monkey: not-a-secret\n  keys_dir: /keys\n",
+        encoding="utf-8",
+    )
+    handle = setup_beets(str(tmp_path))
+    try:
+        effective = yaml.safe_load(build_config_snapshot(handle).effective_yaml)
+    finally:
+        close_library(handle.lib)
+    assert effective["fetchart"] == {"fanarttv_key": "REDACTED", "google_key": "REDACTED"}
+    # The control: a whole-name suffix, not a substring.
+    assert effective["custom"] == {"key": "REDACTED", "monkey": "not-a-secret", "keys_dir": "/keys"}
+
+
 @pytest.mark.parametrize(
     ("label", "leaked"),
     [

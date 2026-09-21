@@ -518,10 +518,11 @@ def _clear_beets_globals() -> Iterator[None]:
     would see the leaked state. Centralising here means individual test files
     no longer have to remember to repeat this fixture.
 
-    Implementation note: confuse's ``LazyConfig.clear()`` (core.py:749) does
-    NOT reset ``_materialized``; without flipping it back to False the next
-    ``setup_beets()`` force-resolve short-circuits at ``LazyConfig.resolve()``'s
-    guard (core.py:728) and the user's ``config.yaml`` is silently ignored.
+    Implementation note: the reset drops every confuse source, ``config.set()``
+    override and redaction and re-arms the lazy read (confuse's
+    ``LazyConfig.clear()`` alone leaves ``_materialized`` set, core.py:749).
+    ``setup_beets()`` re-reads ``config.yaml`` either way; the reset is for the
+    tests that read ``beets.config`` without calling it.
 
     The env loop below SAVES AND RESTORES; it does not redirect. That is safe
     only because ``backend/conftest.py`` sets ``BEETSDIR`` at import, before any

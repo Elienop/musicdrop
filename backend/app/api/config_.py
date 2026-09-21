@@ -256,8 +256,8 @@ def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSn
         422: {
             "model": StructuredErrorDetail,
             "description": (
-                "The config.yaml on disk breaks the store layout; the recovery line"
-                " says how to fix it."
+                "The config.yaml on disk is unreadable or breaks the store layout;"
+                " nothing was changed, and the recovery line says how to fix it."
             ),
         },
         500: {

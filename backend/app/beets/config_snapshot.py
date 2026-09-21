@@ -73,13 +73,17 @@ from app.models.config_api import BeetsConfigSnapshot
 # is often not the plugin's module name — kodiupdate registers ``kodi``):
 #   spotify.client_secret, lyrics.genius_api_key, beatport.{apikey,apisecret},
 #   kodi[].pwd, subsonic.pass, emby.{password,apikey}, plex.token, auth_token
+# and a key named ``key`` or ending ``_key``: fetchart.{fanarttv,google,
+#   lastfm}_key leaked whenever fetchart was not loaded. Measured over beets
+#   2.13's bundled defaults (61 plugins loaded, the other 18 grepped), those
+#   three are the only default keys this arm adds.
 # over-redacts (harmless): tokenizer, passwordless, secrets, and one real
 #                          bundled default — ``spotify.tokenfile``, a FILENAME.
 #                          The key itself is masked; nothing leaks.
 # does NOT inspect VALUES: a path like ``directory: /home/me/api_keys`` stays
 #                          intact because the key ``directory`` doesn't match.
 SECRET_KEY_PATTERN = re.compile(
-    r"(secret|token|password|pwd|pass|api_?key|api_?secret|auth_?token)",
+    r"(secret|token|password|pwd|pass|api_?key|api_?secret|auth_?token|(?:^|_)key$)",
     re.IGNORECASE,
 )
 

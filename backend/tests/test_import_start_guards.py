@@ -131,12 +131,19 @@ def _bank_status(bank_dir: Path, item_id: str) -> str:
 
 
 def _drive(client: TestClient, job_id: str, attempts: int = 600) -> dict[str, Any]:
+    """Poll until the job is ``done`` or ``failed``; fail the test otherwise.
+
+    Callers use this to drain a worker before the test ends; a job still
+    running here would outlive the test and reload beets' config under the next.
+    """
+    phase = None
     for _ in range(attempts):
         state: dict[str, Any] = client.get(f"/api/import/{job_id}").json()
-        if state["phase"] in ("done", "failed"):
+        phase = state["phase"]
+        if phase in ("done", "failed"):
             return state
         time.sleep(0.01)
-    return client.get(f"/api/import/{job_id}").json()  # type: ignore[no-any-return]
+    pytest.fail(f"import {job_id} still {phase!r} after {attempts} polls")
 
 
 # ----- 9: a NUL in the posted path -----

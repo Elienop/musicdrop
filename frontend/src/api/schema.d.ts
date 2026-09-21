@@ -8968,7 +8968,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The config.yaml on disk breaks the store layout; the recovery line says how to fix it. */
+            /** @description The config.yaml on disk is unreadable or breaks the store layout; nothing was changed, and the recovery line says how to fix it. */
             422: {
                 headers: {
                     [name: string]: unknown;

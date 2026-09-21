@@ -47,13 +47,16 @@ from ruamel.yaml.error import YAMLError
 from app.beets.config_snapshot import build_config_snapshot
 from app.beets.library import LibraryHandle
 
-# ``setup_beets`` / ``reset_beets_globals`` are bound at MODULE LEVEL on
-# purpose: the Apply 500-branch test monkeypatches ``app.beets.config_editor``
-# directly (the name the handler captured at import time), so the lambda fires
-# inside ``_rebuild_beets_handle``. Importing them inside the function body
-# would defeat that patch and the 500 path would silently call the real
-# beets setup.
-from app.beets.setup import reset_beets_globals, setup_beets
+# Bound at MODULE LEVEL on purpose: the Apply tests monkeypatch
+# ``app.beets.config_editor`` directly (the name the handler captured at import
+# time). Importing them inside the function body would defeat that patch and
+# the test would silently call the real beets setup.
+from app.beets.setup import (
+    BeetsConfigRead,
+    open_beets,
+    read_beets_config,
+    reset_beets_globals,
+)
 from app.beets.store_layout import (
     StoreLayoutError,
     checked_store_dirs,
@@ -697,9 +700,11 @@ def on_disk_layout_error(handle: LibraryHandle, settings: Settings) -> StoreLayo
     music root of the load being replaced.
 
     Silent on an unreadable or unparseable file. That is not this check's
-    question — ``setup_beets`` will fail on the same file moments later and
-    :func:`apply` already answers 500 with the restart hint — and returning a
-    layout refusal for a YAML syntax error would name the wrong problem.
+    question — :func:`apply` reads the file with beets' own loader next and
+    refuses it there — and returning a layout refusal for a YAML syntax error
+    would name the wrong problem. This parse is ruamel's, not beets': measured,
+    the two disagree both ways (ruamel refuses a duplicate key PyYAML accepts;
+    PyYAML refuses a ``!!python/name`` tag ruamel accepts).
 
     ``RecursionError`` and ``ValueError`` are the two Save and Validate also
     catch around ``parse_yaml``: ruamel raises them past the nesting limit and on
@@ -716,26 +721,32 @@ def on_disk_layout_error(handle: LibraryHandle, settings: Settings) -> StoreLayo
     return layout_check_for_config(document=doc, settings=settings, handle=handle).error
 
 
-def _rebuild_beets_handle(old: LibraryHandle, beets_dir: str) -> LibraryHandle:
-    """Tear down beets process-globals and re-run ``setup_beets()``.
+def _rebuild_beets_handle(old: LibraryHandle, read: BeetsConfigRead) -> LibraryHandle:
+    """Tear down beets process-globals and install the already-read config.
 
     Blocking — runs in FastAPI's threadpool. Pure of the request scope so unit
-    tests can drive it directly without an ASGI lifecycle. Order matters:
+    tests can drive it directly without an ASGI lifecycle. ``read`` comes from
+    :func:`read_beets_config`, which :func:`apply` runs BEFORE this, so a
+    config.yaml beets cannot read is refused while nothing has been torn down.
     ``reset_beets_globals(old, keep_config=True)`` closes the previous
-    library's SQLite handle AND clears the plugin state, so the subsequent
-    ``setup_beets`` reloads plugins from scratch. The confuse config is NOT
-    cleared: request threads keep reading the old one until ``setup_beets``
-    installs the re-read ``config.yaml`` in one assignment.
+    library's SQLite handle AND clears the plugin state, so :func:`open_beets`
+    reloads plugins from scratch. The confuse config is NOT cleared: request
+    threads keep reading the old one until ``open_beets`` installs ``read``.
 
-    Note: if ``setup_beets()`` raises, the old handle is already torn down —
-    the process is in a degraded state and serves errors until restart. The
-    :func:`apply` 500 path surfaces this with a ``recovery`` hint pointing
-    at restart; we deliberately do NOT try to "undo" the teardown on failure
-    because confuse + plugins + SQLite would each need their own rollback,
-    which is exactly the kind of half-recovered state the restart hint avoids.
+    If ``open_beets`` raises, the old handle is already torn down — the
+    process is degraded and serves errors until restart. The :func:`apply` 500
+    path says so with a ``recovery`` hint pointing at restart; the teardown is
+    not undone, because confuse + plugins + SQLite would each need their own
+    rollback.
     """
     reset_beets_globals(old, keep_config=True)
-    return setup_beets(beets_dir)
+    return open_beets(read)
+
+
+#: Printed after "Apply failed. " on the Settings page.
+_UNREADABLE_CONFIG_RECOVERY: Final = (
+    "beets could not read config.yaml, so nothing was changed. Fix the file and Apply again."
+)
 
 
 def _swap_lock(app: FastAPI) -> asyncio.Lock:
@@ -786,6 +797,8 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
        rebuild, because a failure after its teardown strands the process with no
        working config; 422 and not 409, because the page renders every Apply 409
        as the library-job sentence.
+    2c. **Read** — :func:`read_beets_config`, beets' own read of the file. 422
+       when it fails, with nothing torn down yet.
     3. **Threadpool rebuild** — blocking I/O; any exception maps to 500 with the
        restart hint.
     4. **Atomic swap** — ``app.state.beets_library`` is replaced only after the
@@ -829,7 +842,20 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
                 },
             )
         try:
-            new = await run_in_threadpool(_rebuild_beets_handle, old, settings.beets_dir)
+            read = await run_in_threadpool(read_beets_config, settings.beets_dir)
+        except Exception as exc:
+            # Nothing is torn down yet, so the old config, plugins and library
+            # keep serving. Broad on purpose: whatever the read raised, the
+            # process is unchanged, and a restart would read the same file.
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": f"Apply refused: config.yaml could not be read: {exc}",
+                    "recovery": _UNREADABLE_CONFIG_RECOVERY,
+                },
+            ) from exc
+        try:
+            new = await run_in_threadpool(_rebuild_beets_handle, old, read)
         except Exception as exc:
             # Catch-all is deliberate: the rebuild reaches into beets'
             # private surface (LazyConfig._materialized, plugin caches),

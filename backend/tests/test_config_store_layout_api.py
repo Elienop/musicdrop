@@ -450,20 +450,19 @@ def test_apply_still_reloads_an_acceptable_on_disk_config(
     assert app.state.beets_library is not handle_before
 
 
-def test_apply_lets_an_unparseable_config_reach_the_rebuild(
+def test_apply_lets_an_unparseable_config_reach_the_read(
     client: TestClient, beets_library: LibraryHandle
 ) -> None:
     """A YAML syntax error is NOT a layout refusal, and must not be reported as one.
 
     The containment gate reads the same file; returning its message for a broken
     document would name the wrong problem and point at the wrong setting. It
-    stays silent and lets ``setup_beets`` fail on its own, which is the 500 with
-    the restart hint.
+    stays silent and lets beets' own read refuse the file.
     """
     beets_library.config_path.write_text("directory: [unclosed\n", encoding="utf-8")
     r = client.post("/api/config/apply")
-    assert r.status_code == 500
-    assert "Apply failed during rebuild" in r.json()["detail"]["message"]
+    assert r.status_code == 422
+    assert r.json()["detail"]["message"].startswith("Apply refused: config.yaml could not be read:")
 
 
 def test_apply_answers_its_own_body_for_the_two_shapes_ruamel_does_not_call_yaml(
@@ -490,7 +489,7 @@ def test_apply_answers_its_own_body_for_the_two_shapes_ruamel_does_not_call_yaml
 
     r = client.post("/api/config/apply")
 
-    assert r.status_code == 500, r.text
+    assert r.status_code == 422, r.text
     assert set(r.json()["detail"]) == {"message", "recovery"}
 
     beets_library.config_path.write_text(

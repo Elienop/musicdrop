@@ -8,7 +8,7 @@ import-gate check uses ``get_registry()`` (the live binding — the autouse
 ``reset_import_registry`` fixture in ``conftest.py`` swaps the module global
 between tests, so the handler must NOT import the name eagerly).
 
-The 500 branch monkeypatches ``app.beets.config_editor.setup_beets`` (the name
+The 500 branch monkeypatches ``app.beets.config_editor.open_beets`` (the name
 the handler captured at import time) — patching the source module would not
 affect the already-bound symbol.
 """
@@ -20,7 +20,11 @@ import time
 from pathlib import Path
 
 import pytest
+from beets import plugins
+from beets.library import Item
 from fastapi.testclient import TestClient
+
+from app.beets.library import LibraryHandle
 
 
 def test_apply_returns_snapshot_with_apply_pending_false(
@@ -78,10 +82,10 @@ def test_apply_500_when_setup_beets_fails(
 ) -> None:
     from app.beets import config_editor
 
-    def _boom(_dir: str) -> object:
+    def _boom(_read: object) -> object:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(config_editor, "setup_beets", _boom)
+    monkeypatch.setattr(config_editor, "open_beets", _boom)
     r = client.post("/api/config/apply")
     assert r.status_code == 500
     # Pin the response shape. Starlette already wraps our payload as
@@ -102,3 +106,44 @@ def test_apply_500_when_setup_beets_fails(
     assert "boom" in detail["message"].lower()
     assert "recovery" in detail
     assert "restart" in detail["recovery"].lower()
+
+
+def test_apply_of_an_unparseable_config_changes_nothing(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """A config.yaml beets cannot parse leaves the running process as it was.
+
+    Measured before the read moved ahead of the teardown: plugins were cleared,
+    the read failed, and writes went on with plugin-less templates —
+    ``%the{$artist}`` came out literally in the destination.
+    """
+    from app.main import app
+
+    cfg = beets_library.config_path
+    music = Path(beets_library.lib.directory.decode())
+    cfg.write_text(
+        f"directory: {music}\n"
+        "library: library.db\n"
+        "plugins:\n  - musicbrainz\n  - the\n"
+        "paths:\n  singleton: '%the{$artist}/$title'\n",
+        encoding="utf-8",
+    )
+    assert client.post("/api/config/apply").status_code == 200
+    handle = app.state.beets_library
+    item = Item(artist="The Beatles", title="Come Together", path=b"/nowhere.mp3")
+    handle.lib.add(item)
+    plugins_before = sorted(p.name for p in plugins.find_plugins())
+    destination_before = item.destination()
+    assert b"Beatles, The" in destination_before  # the control: ``the`` is live
+
+    cfg.write_text("directory: [unclosed\n", encoding="utf-8")
+    r = client.post("/api/config/apply")
+
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["recovery"] == (
+        "beets could not read config.yaml, so nothing was changed. Fix the file and Apply again."
+    )
+    assert app.state.beets_library is handle
+    assert sorted(p.name for p in plugins.find_plugins()) == plugins_before
+    assert item.destination() == destination_before
+    assert client.get("/api/albums").status_code == 200

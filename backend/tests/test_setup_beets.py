@@ -93,18 +93,21 @@ def test_setup_leaves_existing_config_alone(tmp_path: Path) -> None:
 def test_fixture_resets_confuse_between_tests(tmp_path: Path) -> None:
     """Regression for the _clear_beets_globals fixture.
 
-    LazyConfig.clear() does NOT reset ``_materialized`` (confuse core.py:749),
-    so without an explicit ``_materialized = False`` the previous test leaves
-    confuse in a "files already read" state and setup_beets()'s force-resolve
-    in this test silently skips reading the user file. We'd then load only
-    beets' bundled defaults — and any Task 2/4 assertion on the user's
-    ``plugins:`` / ``import:`` keys would falsely pass against the defaults.
+    The first two asserts are the fixture's own work: an earlier test's
+    sources and ``config.set()`` overrides are gone and confuse is re-armed
+    (``LazyConfig.clear()`` alone leaves ``_materialized`` set, confuse
+    core.py:749). Without that, a test reading ``beets.config`` without calling
+    ``setup_beets`` would see the earlier test's config. ``setup_beets`` itself
+    re-reads the user file either way (``setup._read_config``).
 
     This test runs AFTER test_setup_copies_starter_when_missing (which
     materialized confuse with the starter), writes a NON-starter config, and
-    asserts the new values are visible — proving the fixture re-reads sources.
+    asserts the new values are visible.
     """
     import beets
+
+    assert beets.config._materialized is False
+    assert beets.config.sources == []
 
     cfg = tmp_path / "config.yaml"
     cfg.write_text(

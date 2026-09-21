@@ -4794,7 +4794,7 @@
             }
           },
           "422": {
-            "description": "The config.yaml on disk breaks the store layout; the recovery line says how to fix it.",
+            "description": "The config.yaml on disk is unreadable or breaks the store layout; nothing was changed, and the recovery line says how to fix it.",
             "content": {
               "application/json": {
                 "schema": {

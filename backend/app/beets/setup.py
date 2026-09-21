@@ -12,10 +12,12 @@ import logging
 import os
 import sqlite3
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 import beets
+import confuse
 from beets import metadata_plugins, plugins
 from beets.library import Library
 from beets.plugins import BeetsPlugin
@@ -30,21 +32,38 @@ logger = logging.getLogger(__name__)
 operator_logger = logging.getLogger("uvicorn.error")
 
 
+@dataclass(frozen=True)
+class BeetsConfigRead:
+    """``config.yaml`` read from disk, not yet installed into the process.
+
+    ``fresh`` is ``None`` on the first load, which confuse reads in place into
+    ``beets.config``; on a reload it holds the new sources for :func:`open_beets`.
+    """
+
+    beets_dir: Path
+    config_path: Path
+    file_mtime_at_load: float
+    fresh: confuse.Configuration | None
+
+
 def setup_beets(beets_dir: str, *, container_music_default: bool = False) -> LibraryHandle:
-    """Open a beets Library under ``beets_dir``, honoring its config.yaml.
+    """Open a beets Library under ``beets_dir``, honoring its config.yaml."""
+    return open_beets(read_beets_config(beets_dir, container_music_default=container_music_default))
 
-    Do not reorder the body. Three constraints are load-bearing:
 
-    - ``BEETSDIR`` must be set BEFORE confuse's first resolve. confuse reads
-      the env inside ``Configuration.config_dir()``; setting it after the
-      first access locks in the platform default and our user file is lost.
-    - The file mtime snapshot must be captured BEFORE the first resolve.
-      It's the baseline for the Config view's "restart required" check; any
-      write during setup would race a freshness comparison taken later.
-    - ``plugins.load_plugins()`` must run AFTER the first resolve. It reads
-      ``config["plugins"].as_str_seq()`` at call time; running it earlier
-      (as the previous implementation did) freezes the bundled defaults and
-      the user's ``plugins:`` list is ignored.
+def read_beets_config(beets_dir: str, *, container_music_default: bool = False) -> BeetsConfigRead:
+    """Read ``config.yaml``; on a reload, change nothing the process is using.
+
+    Apply runs this BEFORE its teardown, so a file confuse cannot read or parse
+    raises here with the old config, plugins and library still in place.
+
+    Do not reorder the body. Two constraints are load-bearing:
+
+    - ``BEETSDIR`` must be set BEFORE the read below. confuse reads the env
+      inside ``Configuration.config_dir()``, at read time.
+    - The file mtime snapshot must be captured BEFORE the read.
+      It's the baseline for the Config view's "restart required" check; a
+      write between the read and a later snapshot would be reported as loaded.
     """
     beets_dir_path = Path(beets_dir).resolve()
     beets_dir_path.mkdir(parents=True, exist_ok=True)
@@ -73,7 +92,24 @@ def setup_beets(beets_dir: str, *, container_music_default: bool = False) -> Lib
 
     file_mtime_at_load = cfg_path.stat().st_mtime
 
-    _load_config()
+    return BeetsConfigRead(
+        beets_dir=beets_dir_path,
+        config_path=cfg_path,
+        file_mtime_at_load=file_mtime_at_load,
+        fresh=_read_config(),
+    )
+
+
+def open_beets(read: BeetsConfigRead) -> LibraryHandle:
+    """Install ``read``, load plugins and open the Library.
+
+    ``plugins.load_plugins()`` must run AFTER the config is installed. It reads
+    ``config["plugins"].as_str_seq()`` at call time; running it earlier (as a
+    previous implementation did) froze the bundled defaults and the user's
+    ``plugins:`` list was ignored.
+    """
+    if read.fresh is not None:
+        _install_config(read.fresh)
 
     plugins.load_plugins()
     # A lookup that ran while ``load_plugins`` was still filling the list (e.g.
@@ -91,34 +127,50 @@ def setup_beets(beets_dir: str, *, container_music_default: bool = False) -> Lib
 
     return LibraryHandle(
         lib=lib,
-        beets_dir=beets_dir_path,
-        config_path=cfg_path,
+        beets_dir=read.beets_dir,
+        config_path=read.config_path,
         loaded_at=datetime.now(UTC),
-        file_mtime_at_load=file_mtime_at_load,
+        file_mtime_at_load=read.file_mtime_at_load,
     )
 
 
-def _load_config() -> None:
-    """Read ``config.yaml`` + beets' defaults into ``beets.config``.
+def _read_config() -> confuse.Configuration | None:
+    """Read ``config.yaml`` + beets' defaults; ``None`` when read into ``beets.config``.
 
-    First load: confuse's own lazy resolve. Reload (Apply): the config is still
-    materialized from the previous load, so the new source list is read into a
-    separate config object and installed with ONE assignment. A reader on
-    another thread then resolves either the old list or the new one; clearing
-    ``beets.config`` and re-reading it in place let a concurrent reader see (or
-    trigger) a half-read list, which Apply then failed on (``pluginpath not
-    found``, measured 17 of 200 Applies against a polling ``GET /api/config``).
+    First load: confuse's own lazy resolve, in place. Reload (Apply): the config
+    is still materialized from the previous load, so the new source list is read
+    into a separate config object, and :func:`_install_config` installs it later
+    with ONE assignment.
     """
     config = beets.config
     if not config._materialized:
         config["dummy"].exists()  # force confuse's lazy resolve
-        return
+        return None
     fresh = type(config)(config.appname, config.modname)
-    fresh["dummy"].exists()  # reads the files, raising here on a bad config.yaml
-    # Same shape ``clear()`` + a lazy read left: file sources only, no
-    # redactions. Plugin defaults and redactions come back with load_plugins.
-    config.sources = fresh.sources
-    config.redactions = fresh.redactions
+    # ``read()``, not ``fresh["dummy"].exists()``: ``exists()`` turns a
+    # ``ValueError`` from the read (a non-UTF-8 file, an over-long integer)
+    # into "not found" (confuse ``ConfigView.first``), leaving a materialized
+    # config with NO sources — measured, Apply then failed after its teardown.
+    fresh.read()
+    return fresh
+
+
+def _install_config(fresh: confuse.Configuration) -> None:
+    """Swap ``beets.config``'s sources for ``fresh``'s in one assignment.
+
+    Each confuse lookup reads the source list once (``RootView.resolve``), so a
+    lookup on another thread sees the old list or the new one. A multi-lookup
+    walk such as ``flatten()`` can span the swap: measured in review, a nonstop
+    ``GET /api/config`` failed about 7 times in 1200 Applies, and the next poll
+    recovered. Clearing and re-reading in place failed Apply itself
+    (``pluginpath not found``, 17 of 200 Applies against the same poll).
+
+    ``redactions`` is kept, not replaced: ``fresh`` has none (confuse reads no
+    redactions from files), and an empty set served plugin secrets unmasked
+    until ``load_plugins`` re-declared them, or for good if it failed. A flag
+    whose plugin is gone over-masks until restart.
+    """
+    beets.config.sources = fresh.sources
 
 
 def _clear_metadata_source_caches() -> None:
@@ -142,7 +194,7 @@ def reset_beets_globals(handle: LibraryHandle | None = None, *, keep_config: boo
     ``LibraryHandle`` (every test owns its own); production always passes the
     live handle so the library's SQLite connection is closed first. Apply also
     passes ``keep_config=True``: ``beets.config`` stays readable until
-    ``setup_beets`` replaces its sources (:func:`_load_config`).
+    :func:`open_beets` replaces its sources (:func:`_install_config`).
 
     THIS IS A BEETS-2.13-PINNED COMPATIBILITY SHIM. Beets 3.x has open TODOs
     around a real plugin manager (see beets/plugins.py FIXME, PR #5887); the
@@ -164,16 +216,15 @@ def reset_beets_globals(handle: LibraryHandle | None = None, *, keep_config: boo
         with suppress(sqlite3.ProgrammingError):
             close_library(handle.lib)
 
-    # confuse: truncate sources + re-arm LazyConfig so the next force-resolve
-    # actually re-reads ``config.yaml``. ``LazyConfig.clear()`` alone does NOT
-    # reset ``_materialized`` (confuse core.py:749 only resets
-    # ``_lazy_prefix``/``_lazy_suffix``); without flipping the flag the next
-    # ``setup_beets()`` short-circuits at the ``resolve()`` guard (confuse
-    # core.py:728) and the user file is silently ignored.
+    # confuse: drop every source, override and redaction, and re-arm
+    # LazyConfig (``clear()`` alone leaves ``_materialized`` set, confuse
+    # core.py:749). Without this, a test that reads ``beets.config`` without
+    # calling ``setup_beets`` sees an earlier test's file and ``config.set()``
+    # overrides.
     #
     # ``keep_config=True`` (Apply) skips this: the running process keeps serving
-    # the old config until ``setup_beets`` installs the new one in one step
-    # (:func:`_load_config`).
+    # the old config until :func:`open_beets` installs the new one in one step
+    # (:func:`_install_config`).
     if not keep_config:
         beets.config.clear()
         beets.config._materialized = False
