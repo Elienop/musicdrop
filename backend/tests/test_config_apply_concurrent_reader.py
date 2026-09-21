@@ -15,8 +15,9 @@ one instant inside the rebuild with events, not sleeps:
 The two hooks below are test instrumentation on confuse/beets functions the
 reload calls; ``test_confuse_surface_the_reload_relies_on`` pins the confuse
 surface ``setup._read_config``/``_install_config`` rely on, so a confuse upgrade
-that changes it fails here loudly. The last tests pin that an Apply never
-serves a plugin-declared secret unmasked.
+that changes it fails here loudly. The last tests pin that an Apply keeps a
+plugin's ``.redact`` flag in force; unloaded plugins are
+``tests/test_declared_secrets.py``.
 """
 
 from __future__ import annotations
@@ -235,20 +236,22 @@ def test_confuse_surface_the_reload_relies_on(beets_library: LibraryHandle) -> N
 
 
 _SECRET = "PIN-USER-4242"
+# Neither BEETS_DECLARED_SECRETS nor SECRET_KEY_PATTERN covers this key, so only a
+# plugin's own ``.redact`` flag masks it: where a third-party plugin's secret is.
+_SECTION, _KEY = "thirdparty", "user_ident"
 
 
-def _load_subsonic(client: TestClient, handle: LibraryHandle, *, via_include: bool) -> None:
-    """Apply a config that loads ``subsonicupdate``, which declares
-    ``subsonic.user`` ``.redact``. ``user`` matches no ``SECRET_KEY_PATTERN``
-    arm, so only the plugin's own flag masks it."""
+def _load_flagged_secret(client: TestClient, handle: LibraryHandle, *, via_include: bool) -> None:
+    """Apply a config holding ``thirdparty.user_ident``, then flag it ``.redact``
+    the way a loaded plugin's ``__init__`` does."""
     cfg = handle.config_path
     head = [
         line
         for line in cfg.read_text(encoding="utf-8").splitlines()
         if line.startswith(("directory:", "library:"))
     ]
-    secret = f"subsonic:\n  user: {_SECRET}"
-    lines = [*head, "plugins:\n  - musicbrainz\n  - subsonicupdate"]
+    secret = f"{_SECTION}:\n  {_KEY}: {_SECRET}"
+    lines = [*head, "plugins:\n  - musicbrainz"]
     if via_include:
         (cfg.parent / "secrets.yaml").write_text(secret + "\n", encoding="utf-8")
         lines.append("include:\n  - secrets.yaml")
@@ -256,20 +259,21 @@ def _load_subsonic(client: TestClient, handle: LibraryHandle, *, via_include: bo
         lines.append(secret)
     cfg.write_text("\n".join(lines) + "\n", encoding="utf-8")
     assert client.post("/api/config/apply").status_code == 200
+    assert _served_user(client) == _SECRET  # the control: nothing else masks it
+    beets.config[_SECTION][_KEY].redact = True
+    assert _served_user(client) == "REDACTED"
 
 
 def _served_user(client: TestClient) -> object:
     r = client.get("/api/config")
     assert r.status_code == 200, r.text
-    return yaml.safe_load(r.json()["effective_yaml"])["subsonic"]["user"]
+    return yaml.safe_load(r.json()["effective_yaml"])[_SECTION][_KEY]
 
 
 def test_an_included_plugin_secret_is_masked_after_a_real_apply(
     client: TestClient, beets_library: LibraryHandle
 ) -> None:
-    _load_subsonic(client, beets_library, via_include=True)
-    assert _served_user(client) == "REDACTED"
-    # A second Apply over the same file: the flag must survive a reload too.
+    _load_flagged_secret(client, beets_library, via_include=True)
     assert client.post("/api/config/apply").status_code == 200
     assert _served_user(client) == "REDACTED"
 
@@ -278,7 +282,7 @@ def test_a_plugin_secret_stays_masked_while_plugins_reload(
     client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A GET between the swap and the end of ``load_plugins`` still masks it."""
-    _load_subsonic(client, beets_library, via_include=False)
+    _load_flagged_secret(client, beets_library, via_include=False)
     real_load: Callable[[], None] = plugins.load_plugins
     served: list[object] = []
 
@@ -297,7 +301,7 @@ def test_a_plugin_secret_stays_masked_after_load_plugins_fails(
     client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The state a failed reload leaves serves every later GET."""
-    _load_subsonic(client, beets_library, via_include=False)
+    _load_flagged_secret(client, beets_library, via_include=False)
 
     def load_plugins_fails() -> None:
         raise RuntimeError("plugin load failed")
