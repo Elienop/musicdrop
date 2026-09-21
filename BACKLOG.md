@@ -813,12 +813,31 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `KeyError: no … parked at index 0`; both files and both named test bodies are byte-identical to
   `origin/main`. `fakes.py` and `registry.py` did change on this branch, so its rate here versus
   `main` is unmeasured.
-- **Acquisition drain threads outlive their tests** (thread census, 2026-09-21; on `main`). Three
-  `musicdrop-acquisition` threads started by `tests/test_store_layout_boot.py` are still alive after
-  their tests end, and one is still alive at session end. Harmless today: the queue module never reads
-  beets config (read, not measured), so it cannot open the `timeout not found` window. It is the same
-  shape as that flake, though, and becomes one the day the queue reads config. Search words: thread
-  leak, acquisition, drain, test_store_layout_boot, census.
+- ~~**Acquisition drain threads outlive their tests**~~ — **CLOSED 2026-09-21** on
+  `feat/import-keep-downloads` (PR #232). This entry called the leak harmless; it was not. With
+  `tests/test_store_layout_boot.py` run before `tests/test_import_start_guards.py`, 4 tests failed
+  (code-review seat, re-run by hand). The cause was the lifespan: `acquisition_queue.start()` ran
+  before the bank-reconcile refusal, which re-raises without stopping it. The start now follows
+  that refusal. Thread census over the full suite: no drain thread alive after any test (on the
+  parent commit, 1, left by `test_an_unreadable_import_bank_gets_the_one_error_line_too`). Search
+  words: thread leak, acquisition, drain, census.
+- **Save accepts a config that stops MusicDrop starting** (security seat, 2026-09-21, measured;
+  owner: record it, fix on the next branch). `musicbrainz: no` saves; a cold `setup_beets` then
+  raises `ConfigTypeError`, so the next start fails. Two sentences are false in that case: Apply's
+  500 recovery line ("cold start will load it", `app/beets/config_editor.py`) and the OpenAPI 500
+  description ("will load on the next start", `app/api/config_.py`). Fix shape not designed:
+  Validate would have to ask beets' typed reads, not only parse the YAML. Search words: L4,
+  ConfigTypeError, musicbrainz, boot, validate, save.
+- **`GET /api/config` can fail once while an Apply swaps the config** (code-review seat,
+  2026-09-21: about 7 failed polls in 1200 Applies against a nonstop poll). One confuse lookup
+  reads the source list once, so single reads are safe; `flatten()` makes many lookups and can span
+  the swap. The next poll recovers. Not fixed. Search words: flatten, swap, effective view, Apply.
+- **A metadata-source lookup racing `load_plugins` can still cache a partial answer** (security
+  seat, 2026-09-21, reasoned, not measured). `setup.open_beets` clears the `functools.cache` after
+  `load_plugins`; a lookup that computed its answer before the clear and stores it after keeps it
+  until the next Apply. Needs an album page's missing-tracks report inside an Apply plus a thread
+  switch between two bytecodes. Search words: metadata_plugins, functools.cache,
+  find_metadata_source_plugins.
 
 - ~~**`/import`'s feed row starves its title exactly like the two `/review` rows did**~~ —
   **CLOSED 2026-09-11** (on `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at
@@ -3684,8 +3703,8 @@ the condition it names has changed.
 - **`_make_fetchart_plugin`'s global-config overlay race is a documented residual — now
   documented HERE, not only in its own docstring** (recorded 2026-08-28). The cover-fetch
   path mutates the process-global beets config (`fetchart.set({"auto": False})`) and
-  restores it in a `finally`; a concurrent config Apply clearing `beets.config` between
-  the two would leave a stale `fetchart.auto` overlay for the process lifetime. The
+  restores it in a `finally`; a concurrent config Apply replacing `beets.config`'s sources
+  between the two would leave a stale `fetchart.auto` overlay for the process lifetime. The
   docstring at `app/beets/cover.py:128-131` names the hole, labels it a documented
   residual, and names the eventual fix (removing the persistent overlay). Genuinely
   narrow: single user, requires an Apply mid-fetch. Recorded so "documented" is true for
