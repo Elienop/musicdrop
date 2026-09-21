@@ -237,3 +237,52 @@ test("Save includes the recommended rules once added", async () => {
     ),
   );
 });
+
+/** Render with a saved-but-unapplied config and an Apply that fails with
+ * `status` and `error`, click Apply, and return the alert it raises. */
+async function applyFails(status: number, error: unknown) {
+  // The beforeEach stubs, re-typed to the one argument they read.
+  type Stub = (path: string) => Promise<unknown>;
+  const get = vi.mocked(client.GET).getMockImplementation() as unknown as
+    | Stub
+    | undefined;
+  const post = vi.mocked(client.POST).getMockImplementation() as unknown as
+    | Stub
+    | undefined;
+  if (!get || !post) throw new Error("beforeEach mocks missing");
+  vi.mocked(client.GET).mockImplementation((async (path: string) =>
+    path === "/api/config"
+      ? { data: { apply_pending: true }, response: { ok: true, status: 200 } }
+      : get(path)) as never);
+  vi.mocked(client.POST).mockImplementation((async (path: string) =>
+    path === "/api/config/apply"
+      ? { data: undefined, error, response: { ok: false, status } }
+      : post(path)) as never);
+  wrap(<NamingPanel />);
+  const applyBtn = await screen.findByRole("button", { name: "Apply" });
+  await waitFor(() => expect(applyBtn).toBeEnabled());
+  await userEvent.click(applyBtn);
+  return screen.findByRole("alert");
+}
+
+test("an Apply 422 shows the server's recovery sentence, not the restart advice", async () => {
+  // The unreadable-file 422: boot reads the same file, so "restart" would
+  // stop MusicDrop. The panel must print what the server says.
+  const alert = await applyFails(422, {
+    detail: {
+      message: "config.yaml could not be read",
+      recovery:
+        "beets could not read config.yaml, so nothing was changed. Fix the file and Apply again.",
+    },
+  });
+  expect(alert).toHaveTextContent(
+    /^Apply failed\. beets could not read config\.yaml, so nothing was changed\. Fix the file and Apply again\.$/,
+  );
+});
+
+test("an Apply failure without a recovery line falls back to the fixed sentence", async () => {
+  const alert = await applyFails(422, { detail: "unexpected" });
+  expect(alert).toHaveTextContent(
+    /^Apply failed\. Your config is saved on disk; try again or restart MusicDrop\.$/,
+  );
+});

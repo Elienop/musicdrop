@@ -46,6 +46,22 @@ function configOpError(
   });
 }
 
+/**
+ * The recovery hint an Apply 422 or 500 carries, nested as
+ * `{detail: {message, recovery}}` (config_editor.apply). Null for any other
+ * shape or a blank string, so the caller falls back to its own sentence.
+ */
+export function applyRecoveryHint(
+  err: ConfigOpError | null | undefined,
+): string | null {
+  const detail = (err?.body as { detail?: unknown } | undefined)?.detail;
+  if (detail && typeof detail === "object" && "recovery" in detail) {
+    const recovery = (detail as { recovery?: unknown }).recovery;
+    if (typeof recovery === "string" && recovery.trim()) return recovery;
+  }
+  return null;
+}
+
 async function fetchConfig(): Promise<BeetsConfigSnapshot> {
   return unwrap(await client.GET("/api/config"), "Failed to load config");
 }
@@ -100,10 +116,10 @@ export function useSaveConfig() {
  * Reload beets in-process (`POST /api/config/apply`). No body — the registry
  * gates this server-side on the import-active probe; if the user clicks Apply
  * during an import the backend returns 409 and the page rehydrates the gate
- * before re-enabling. The 500 branch carries a recovery hint in `body` so the
- * SettingsPage can render it inline. Cache invalidation hits both the snapshot
- * (the post-reload `BeetsConfigSnapshot` has `apply_pending = false` and a new
- * mtime) AND the `["active-import"]` probe (an import may have started+ended
+ * before re-enabling. The 422 and 500 branches carry a recovery hint in `body`
+ * ({@link applyRecoveryHint}); both Apply surfaces render it inline. Cache
+ * invalidation hits both the snapshot (the post-reload `BeetsConfigSnapshot`
+ * has `apply_pending = false` and a new mtime) AND the `["active-import"]` probe (an import may have started+ended
  * during the rebuild — cheaper to refetch than to reason about the race).
  */
 export function useApplyConfig() {

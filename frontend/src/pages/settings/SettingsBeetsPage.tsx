@@ -9,6 +9,7 @@ import {
   type ConfigAdvisory,
   type ConfigOpError,
   type ValidationErrorItem,
+  applyRecoveryHint,
   useApplyConfig,
   useBeetsConfig,
   useSaveConfig,
@@ -82,21 +83,6 @@ function parseConflictBody(err: unknown): ConflictState | null {
     serverDoc: detail.current_yaml_text,
     sha: detail.current_sha256,
   };
-}
-
-/**
- * The recovery hint an Apply 500 carries. The backend nests it as
- * `{detail: {message, recovery}}` (see config_editor.apply); pull the string
- * out, or return null for any other status/shape so the caller falls back to
- * generic copy.
- */
-function applyRecoveryHint(err: ConfigOpError | null | undefined): string | null {
-  const detail = (err?.body as { detail?: unknown } | undefined)?.detail;
-  if (detail && typeof detail === "object" && "recovery" in detail) {
-    const recovery = (detail as { recovery?: unknown }).recovery;
-    if (typeof recovery === "string" && recovery.trim()) return recovery;
-  }
-  return null;
 }
 
 /**

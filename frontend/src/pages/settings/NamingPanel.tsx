@@ -2,7 +2,11 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { useApplyConfig, useBeetsConfig } from "@/api/useBeetsConfig";
+import {
+  applyRecoveryHint,
+  useApplyConfig,
+  useBeetsConfig,
+} from "@/api/useBeetsConfig";
 import { useLibraryJobActive } from "@/api/useLibraryJobActive";
 import {
   NAMING_KEY,
@@ -414,8 +418,9 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
           </output>
         ) : (
           <p className="text-destructive text-sm" role="alert">
-            Apply failed. Your config is saved on disk; try again or restart
-            MusicDrop.
+            Apply failed.{" "}
+            {applyRecoveryHint(apply.error) ??
+              "Your config is saved on disk; try again or restart MusicDrop."}
           </p>
         ))}
     </SettingsSection>
