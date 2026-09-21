@@ -29,7 +29,8 @@ class BeetsConfigSnapshot(BaseModel):
     """Absolute path to the user-owned ``<BEETSDIR>/config.yaml``."""
 
     loaded_at: datetime
-    """When ``setup_beets()`` ran (UTC). The in-memory snapshot is from this moment."""
+    """When beets last loaded config.yaml, at boot or Apply (UTC). The in-memory
+    snapshot is from this moment."""
 
     file_modified_at: datetime | None
     """Current ``st_mtime`` of ``config_path`` (UTC). ``None`` if the file is missing."""

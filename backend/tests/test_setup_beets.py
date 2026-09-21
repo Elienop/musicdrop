@@ -148,10 +148,14 @@ def test_starter_directory_default_container(tmp_path: Path) -> None:
 def test_setup_fails_fast_on_invalid_yaml(tmp_path: Path) -> None:
     from confuse.exceptions import ConfigReadError
 
+    from app.beets.setup import ConfigUnreadable
+
     cfg = tmp_path / "config.yaml"
     cfg.write_text("directory: ../music\n  this: is: not [valid YAML\n")
-    with pytest.raises(ConfigReadError):  # confuse raises during first-resolve
+    with pytest.raises(ConfigUnreadable) as info:  # confuse raises during first-resolve
         setup_beets(str(tmp_path))
+    assert isinstance(info.value.__cause__, ConfigReadError)
+    assert info.value.line == 2
 
 
 def test_setup_logs_deprecation_for_old_env_vars(

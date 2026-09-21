@@ -48,7 +48,7 @@ def entered(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
         seen.append(library_busy.library_job_active())
         raise _EnteredRebuild
 
-    monkeypatch.setattr(config_editor, "on_disk_layout_error", _stub)
+    monkeypatch.setattr(config_editor, "on_disk_refusal", _stub)
     return seen
 
 
@@ -101,7 +101,7 @@ def test_a_claim_made_while_apply_holds_the_lock_is_refused(
             refused.append(True)
         raise _EnteredRebuild
 
-    monkeypatch.setattr(config_editor, "on_disk_layout_error", _stub)
+    monkeypatch.setattr(config_editor, "on_disk_refusal", _stub)
 
     async def scenario() -> bool:
         lock = asyncio.Lock()
@@ -211,7 +211,7 @@ def test_a_claimer_past_its_swap_check_is_seen_by_apply(
         entered.append(real_job_active())
         raise _EnteredRebuild
 
-    monkeypatch.setattr(config_editor, "on_disk_layout_error", _stub)
+    monkeypatch.setattr(config_editor, "on_disk_refusal", _stub)
 
     claim_errors: list[BaseException] = []
     outcome: list[BaseException] = []

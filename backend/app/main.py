@@ -44,7 +44,7 @@ from app.auth.gate import SessionGateMiddleware, boot_auth_posture
 from app.auth.session import load_or_create_session_secret, session_secret_path
 from app.bank.store import reconcile_interrupted
 from app.beets.library import LibraryHandle, close_library
-from app.beets.setup import setup_beets
+from app.beets.setup import CONFIG_ERRORS, setup_beets
 from app.beets.store_layout import StoreLayoutError, checked_store_dirs
 from app.body_limit import BodySizeLimitMiddleware
 from app.config import resolve_artist_image_cache_dir, resolve_cover_thumb_cache_dir, settings
@@ -70,7 +70,7 @@ def _resolve_library() -> LibraryHandle:
     """Run beets' startup and return the opened library handle.
 
     Delegates to setup_beets, which mirrors beets' own _setup: ensure BEETSDIR
-    exists, copy the starter config.yaml on first run, force-resolve confuse,
+    exists, copy the starter config.yaml on first run, read it with confuse,
     load the plugins listed in the user's config, then open the library with
     path formats + replacements and fire library_opened. Always returns a
     handle (the dir/file are created if missing). Sync helper: runs once at
@@ -226,6 +226,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # is written down.
     try:
         handle = _resolve_library()
+    except CONFIG_ERRORS as exc:
+        # First: a config error is not a library path problem, and the digit
+        # case is a ``ValueError`` the arm below would also catch. ``%r`` of the
+        # exception: a YAML error's own text spans several lines.
+        _refuse_boot(
+            "refusing to start: beets rejected config.yaml under %s=%r (%r). Fix that file.",
+            "MUSICDROP_BEETS_DIR",
+            settings.beets_dir,
+            exc,
+        )
+        raise
     except _BEETS_STARTUP_FAILED as exc:
         _refuse_boot(
             "refusing to start: beets could not open the library under %s=%r. %s: %s."
@@ -378,11 +389,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         swap_lock=app.state.beets_swap_lock,
     )
     app.state.bank_apply_runner = bank_apply_runner
-    # Both drains start only after the bank refusal above, so a boot refused
-    # there leaves no drain thread running (measured: the inbox drain used to
-    # outlive it).
-    acquisition_queue.start()
-    bank_apply_runner.start()
 
     # Build the artist-image stack once: the disk cache + the persisted enabled
     # toggle are shared on app.state so the override + settings endpoints reach
@@ -436,6 +442,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.artist_background_source = build_fanart_background_source(http_client, settings)
 
+    # Both drains start here, with nothing that can raise between them and the
+    # ``finally`` that stops them: a boot refused earlier leaves no drain thread
+    # running (measured: the inbox drain used to outlive the bank refusal).
+    acquisition_queue.start()
+    bank_apply_runner.start()
     try:
         yield
     finally:

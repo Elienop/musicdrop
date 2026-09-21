@@ -450,52 +450,46 @@ def test_apply_still_reloads_an_acceptable_on_disk_config(
     assert app.state.beets_library is not handle_before
 
 
-def test_apply_lets_an_unparseable_config_reach_the_read(
+def test_apply_reports_an_unparseable_config_as_unreadable_not_as_a_layout(
     client: TestClient, beets_library: LibraryHandle
 ) -> None:
     """A YAML syntax error is NOT a layout refusal, and must not be reported as one.
 
     The containment gate reads the same file; returning its message for a broken
-    document would name the wrong problem and point at the wrong setting. It
-    stays silent and lets beets' own read refuse the file.
+    document would name the wrong problem and point at the wrong setting.
     """
-    beets_library.config_path.write_text("directory: [unclosed\n", encoding="utf-8")
+    beets_library.config_path.write_text("a: 1\ndirectory: [unclosed\nb: 2\n", encoding="utf-8")
     r = client.post("/api/config/apply")
     assert r.status_code == 422
-    assert r.json()["detail"]["message"].startswith("Apply refused: config.yaml could not be read:")
-
-
-def test_apply_answers_its_own_body_for_the_two_shapes_ruamel_does_not_call_yaml(
-    client: TestClient, beets_library: LibraryHandle
-) -> None:
-    """``RecursionError`` and ``ValueError`` are parse failures too.
-
-    The pre-check runs OUTSIDE the rebuild's handler, so an on-disk document
-    ruamel answers with either of those escaped the route as a bare 500 with no
-    body at all. Both are hand-editable: a 5000-digit integer hits CPython's
-    4300-digit ``int()`` limit, and 400 levels of nesting exhaust the parser.
-
-    The route arm is the digit one — a 400-deep document reaches the snapshot
-    build, whose PyYAML dump has its own recursion limit — so the nesting shape
-    is asked of the pre-check directly. Its answer is ``None``: not a layout
-    refusal, the same silence the syntax error above gets.
-    """
-    from app.beets.config_editor import on_disk_layout_error
-    from app.config import settings
-
-    beets_library.config_path.write_text(
-        f"library: library.db\ndirectory: {'9' * 5000}\n", encoding="utf-8"
+    assert r.json()["detail"]["recovery"] == (
+        "beets could not read config.yaml (line 3), so nothing was changed."
+        " Fix the file and Apply again."
     )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [f"library: library.db\ndirectory: {'9' * 5000}\n", "a: " + "[" * 5000 + "]" * 5000 + "\n"],
+    ids=["an-integer-too-long-to-build", "nested-past-the-limit"],
+)
+def test_apply_answers_its_own_body_for_the_two_shapes_yaml_does_not_call_yaml(
+    client: TestClient, beets_library: LibraryHandle, text: str
+) -> None:
+    """``ValueError`` and ``RecursionError`` are parse failures too.
+
+    The pre-check runs OUTSIDE the rebuild's handler, so either one escaping it
+    is a bare 500 with no body. Both are hand-editable: a 5000-digit integer
+    hits CPython's 4300-digit ``int()`` limit, and 5000 nested ``[`` exhaust
+    PyYAML's recursive parser (measured).
+    """
+    beets_library.config_path.write_text(text, encoding="utf-8")
 
     r = client.post("/api/config/apply")
 
     assert r.status_code == 422, r.text
-    assert set(r.json()["detail"]) == {"message", "recovery"}
-
-    beets_library.config_path.write_text(
-        "".join(" " * level + "b:\n" for level in range(400)), encoding="utf-8"
+    assert r.json()["detail"]["recovery"] == (
+        "beets could not read config.yaml, so nothing was changed. Fix the file and Apply again."
     )
-    assert on_disk_layout_error(beets_library, settings) is None
 
 
 # --------------------------------------------------------------------------
@@ -864,34 +858,32 @@ def test_a_directory_that_arrives_through_a_merge_key_gets_a_gutter_line(
     assert missing[0]["line"] is None
 
 
-def test_apply_refuses_after_the_rebuild_on_a_real_pre_check_divergence(
-    client: TestClient, beets_library: LibraryHandle
+def test_apply_refuses_after_the_rebuild_when_the_file_changes_after_the_gate(
+    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The backstop, driven by a divergence that exists rather than by a patch.
+    """The backstop, driven by the gap it exists for: two reads of one file.
 
-    DUPLICATE ``directory:`` keys. ``on_disk_layout_error`` parses with ruamel,
-    which raises ``DuplicateKeyError`` (a ``YAMLError``) and is answered with
-    ``None`` — the pre-check is blind by its own rules. beets parses the same
-    file with PyYAML, which takes the LAST key, so the rebuild loads a music
-    root that IS the beets dir. Measured both halves before writing this:
-    ruamel raised, PyYAML returned ``{'directory': '/b', ...}``.
-
-    The previous version monkeypatched ``on_disk_layout_error`` to ``None``,
-    which proved the mechanism runs and nothing about whether it is reachable.
+    The gate reads config.yaml, then beets reads it again. An edit landing
+    between the two loads a layout the gate never saw. The edit is made by the
+    real read's caller, not by stubbing either check, so both checks run on
+    real files.
 
     The handle IS swapped — the rebuild closed the old library, so there is
     nothing to put back — and D5's invariant is asserted with it: the import
     registry holds the SAME library the app now serves, not the closed one.
     """
+    from app.beets import config_editor
+    from app.beets.setup import read_beets_config as real_read
     from app.import_jobs.registry import get_registry
     from app.main import app
 
-    beets_library.config_path.write_text(
-        f"directory: {beets_library.beets_dir.parent}\n"
-        f"library: library.db\n"
-        f"directory: {beets_library.beets_dir}\n",
-        encoding="utf-8",
-    )
+    def _edited_after_the_gate(beets_dir: str) -> object:
+        beets_library.config_path.write_text(
+            f"library: library.db\ndirectory: {beets_library.beets_dir}\n", encoding="utf-8"
+        )
+        return real_read(beets_dir)
+
+    monkeypatch.setattr(config_editor, "read_beets_config", _edited_after_the_gate)
     handle_before = app.state.beets_library
 
     r = client.post("/api/config/apply")

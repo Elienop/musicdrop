@@ -253,11 +253,13 @@ def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSn
         # Same structured body as the 500 and for the same reader: the page
         # prints `detail.recovery` after "Apply failed. ". A 409 could not carry
         # it — the frontend renders every Apply 409 as the library-job sentence.
+        # No "nothing was changed" here: the post-load backstop in `apply`
+        # refuses AFTER the new handle is swapped in.
         422: {
             "model": StructuredErrorDetail,
             "description": (
-                "The config.yaml on disk is unreadable or breaks the store layout;"
-                " nothing was changed, and the recovery line says how to fix it."
+                "config.yaml on disk is missing, unreadable, skips an include or breaks"
+                " the store layout; the recovery line says what to fix."
             ),
         },
         500: {

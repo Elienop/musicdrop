@@ -15,6 +15,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, Final
 
 import beets
 import confuse
@@ -32,6 +33,74 @@ logger = logging.getLogger(__name__)
 operator_logger = logging.getLogger("uvicorn.error")
 
 
+class ConfigUnreadable(Exception):
+    """beets could not read ``config.yaml``; ``line`` is 1-based, when YAML gave one."""
+
+    def __init__(self, message: str, line: int | None = None) -> None:
+        super().__init__(message)
+        self.line = line
+
+
+class ConfigFileMissing(ConfigUnreadable):
+    """``config.yaml`` is not a file, so beets would read no user config at all.
+
+    confuse reads the user file as an OPTIONAL source: a path that is not a file
+    loads as ``{}`` with no error (``confuse/sources.py:94-97``), and beets then
+    runs on its defaults (``directory: ~/Music``).
+    """
+
+    def __init__(self, config_path: Path) -> None:
+        super().__init__(f"{config_path} was not found")
+
+
+#: What a config.yaml beets cannot use raises, at the read or while plugins load
+#: (a ``ConfigTypeError`` such as ``musicbrainz: no``). Exported so ``main.py``
+#: can name the file without importing confuse (CLAUDE.md rule 3).
+CONFIG_ERRORS: Final = (ConfigUnreadable, confuse.ConfigError)
+
+#: What beets' read raises for a bad file. confuse wraps OSError and YAML errors
+#: in ``ConfigReadError`` (``confuse/yaml_util.py:96-100``); the rest escape
+#: unwrapped: ``ValueError`` for an integer over CPython's 4300-digit limit,
+#: ``TypeError`` for a top level that is not a mapping (``sources.py:103-107``),
+#: ``RecursionError`` past the nesting limit.
+_READ_ERRORS: Final = (confuse.ConfigError, ValueError, TypeError, RecursionError)
+
+
+def _unreadable(exc: Exception, config_path: Path) -> ConfigUnreadable:
+    """``exc`` from beets' read, as :class:`ConfigUnreadable` with the YAML line."""
+    if isinstance(exc, confuse.ConfigReadError):
+        # PyYAML's MarkedYAMLError carries a 0-based ``problem_mark``; a
+        # ReaderError (a non-UTF-8 byte) and an OSError carry none.
+        mark = getattr(exc.reason, "problem_mark", None)
+        return ConfigUnreadable(str(exc), None if mark is None else mark.line + 1)
+    return ConfigUnreadable(f"{config_path} could not be read: {exc}")
+
+
+def _require_config_file(config_path: Path) -> None:
+    """Raise :class:`ConfigFileMissing` where confuse would read nothing."""
+    if not os.path.isfile(config_path):
+        raise ConfigFileMissing(config_path)
+
+
+def read_config_document(config_path: Path) -> dict[str, Any]:
+    """``config.yaml`` alone, parsed the way beets parses it; includes NOT followed.
+
+    The same ``YamlSource`` and loader beets' own read uses for the user file
+    (``confuse/core.py:546-552``), so a document PyYAML reads differently from
+    ruamel (a duplicate key: PyYAML keeps the last) is seen as beets sees it.
+    Includes are left to the caller: beets' read opens each one by name and
+    blocks on a FIFO (measured, the read never returned).
+
+    Raises:
+        ConfigUnreadable: the file is missing or beets cannot read it.
+    """
+    _require_config_file(config_path)
+    try:
+        return dict(confuse.YamlSource(str(config_path), loader=beets.config.loader))
+    except _READ_ERRORS as exc:
+        raise _unreadable(exc, config_path) from exc
+
+
 @dataclass(frozen=True)
 class BeetsConfigRead:
     """``config.yaml`` read from disk, not yet installed into the process.
@@ -47,15 +116,42 @@ class BeetsConfigRead:
 
 
 def setup_beets(beets_dir: str, *, container_music_default: bool = False) -> LibraryHandle:
-    """Open a beets Library under ``beets_dir``, honoring its config.yaml."""
-    return open_beets(read_beets_config(beets_dir, container_music_default=container_music_default))
+    """Open a beets Library under ``beets_dir``, honoring its config.yaml.
+
+    The boot path: a missing config.yaml is written from the starter first.
+    """
+    _write_starter_config(
+        Path(beets_dir).resolve(), container_music_default=container_music_default
+    )
+    return open_beets(read_beets_config(beets_dir))
 
 
-def read_beets_config(beets_dir: str, *, container_music_default: bool = False) -> BeetsConfigRead:
+def _write_starter_config(beets_dir: Path, *, container_music_default: bool) -> None:
+    """Create ``beets_dir`` and copy the starter ``config.yaml`` into it if absent."""
+    beets_dir.mkdir(parents=True, exist_ok=True)
+    cfg_path = beets_dir / "config.yaml"
+    if cfg_path.exists():
+        return
+    text = (Path(__file__).parent / "config.starter.yaml").read_text(encoding="utf-8")
+    if container_music_default:
+        # In the Docker image the music share is mounted at /music; the
+        # dev-relative ../music default would point inside the volume.
+        text = text.replace("directory: ../music", "directory: /music", 1)
+    cfg_path.write_text(text, encoding="utf-8")
+    operator_logger.info("Copied starter config to %s", cfg_path)
+
+
+def read_beets_config(beets_dir: str) -> BeetsConfigRead:
     """Read ``config.yaml``; on a reload, change nothing the process is using.
 
     Apply runs this BEFORE its teardown, so a file confuse cannot read or parse
-    raises here with the old config, plugins and library still in place.
+    raises here with the old config, plugins and library still in place. It
+    writes nothing: a missing file raises rather than getting the starter,
+    which only :func:`setup_beets` (the boot) writes.
+
+    Raises:
+        ConfigUnreadable: beets could not read the file, or it is missing
+            (:class:`ConfigFileMissing`).
 
     Do not reorder the body. Two constraints are load-bearing:
 
@@ -66,18 +162,8 @@ def read_beets_config(beets_dir: str, *, container_music_default: bool = False) 
       write between the read and a later snapshot would be reported as loaded.
     """
     beets_dir_path = Path(beets_dir).resolve()
-    beets_dir_path.mkdir(parents=True, exist_ok=True)
     cfg_path = beets_dir_path / "config.yaml"
-
-    if not cfg_path.exists():
-        starter = Path(__file__).parent / "config.starter.yaml"
-        text = starter.read_text(encoding="utf-8")
-        if container_music_default:
-            # In the Docker image the music share is mounted at /music; the
-            # dev-relative ../music default would point inside the volume.
-            text = text.replace("directory: ../music", "directory: /music", 1)
-        cfg_path.write_text(text, encoding="utf-8")
-        operator_logger.info("Copied starter config to %s", cfg_path)
+    _require_config_file(cfg_path)
 
     os.environ["BEETSDIR"] = str(beets_dir_path)
 
@@ -92,11 +178,15 @@ def read_beets_config(beets_dir: str, *, container_music_default: bool = False) 
 
     file_mtime_at_load = cfg_path.stat().st_mtime
 
+    try:
+        fresh = _read_config()
+    except _READ_ERRORS as exc:
+        raise _unreadable(exc, cfg_path) from exc
     return BeetsConfigRead(
         beets_dir=beets_dir_path,
         config_path=cfg_path,
         file_mtime_at_load=file_mtime_at_load,
-        fresh=_read_config(),
+        fresh=fresh,
     )
 
 
@@ -141,16 +231,21 @@ def _read_config() -> confuse.Configuration | None:
     is still materialized from the previous load, so the new source list is read
     into a separate config object, and :func:`_install_config` installs it later
     with ONE assignment.
+
+    Neither path goes through ``exists()``: confuse's ``ConfigView.first`` turns
+    a ``ValueError`` from the read (an integer over 4300 digits) into "not
+    found", leaving a materialized config with NO sources. Measured: at boot the
+    error surfaced as ``NotFoundError: pluginpath not found``, and on Apply the
+    rebuild failed after its teardown.
     """
     config = beets.config
     if not config._materialized:
-        config["dummy"].exists()  # force confuse's lazy resolve
+        # ``LazyConfig.resolve`` is a plain method, not a generator: the call
+        # reads the files and unspools the lazy ``set()``/``add()`` buffers
+        # (``confuse/core.py:727-733``), and lets a read error through.
+        config.resolve()
         return None
     fresh = type(config)(config.appname, config.modname)
-    # ``read()``, not ``fresh["dummy"].exists()``: ``exists()`` turns a
-    # ``ValueError`` from the read (a non-UTF-8 file, an over-long integer)
-    # into "not found" (confuse ``ConfigView.first``), leaving a materialized
-    # config with NO sources — measured, Apply then failed after its teardown.
     fresh.read()
     return fresh
 
@@ -185,12 +280,11 @@ def reset_beets_globals(handle: LibraryHandle | None = None, *, keep_config: boo
 
     Mirrors beets' own ``unload_plugins`` (beets/test/helper.py:509-515) and
     extends it with the confuse + metadata-source cache clears that
-    ``setup_beets`` mutates. Calling this leaves the process in a state where a
-    fresh ``setup_beets()`` re-reads the user's ``config.yaml`` and reloads
-    plugins from scratch — used by the Apply endpoint to re-arm beets after
-    rewriting ``config.yaml``, and delegated to (with ``handle=None``) by the
-    conftest autouse fixture so tests and production share a SINGLE teardown
-    body. The autouse passes no handle because it has no reachable
+    ``setup_beets`` mutates. Calling this leaves the process in a state where
+    :func:`open_beets` reloads plugins from scratch — used by the Apply endpoint
+    before it installs the config it already read, and delegated to (with
+    ``handle=None``) by the conftest autouse fixture so tests and production
+    share a SINGLE teardown body. The autouse passes no handle because it has no reachable
     ``LibraryHandle`` (every test owns its own); production always passes the
     live handle so the library's SQLite connection is closed first. Apply also
     passes ``keep_config=True``: ``beets.config`` stays readable until

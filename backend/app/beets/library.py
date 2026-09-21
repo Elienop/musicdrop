@@ -61,7 +61,8 @@ class LibraryHandle:
     need to import beets themselves, keeping the adapter the sole beets
     importer (CLAUDE.md rule 3). The handle bundles the opened ``Library`` with
     the metadata the read-only Config view needs: the path of the user-owned
-    ``config.yaml``, when ``setup_beets()`` ran, and the file's mtime at load —
+    ``config.yaml``, when beets last loaded it (boot or Apply), and the file's
+    mtime at load —
     used to flag "restart required" when the file changes on disk.
     """
 

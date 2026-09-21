@@ -53,8 +53,11 @@ from app.beets.library import LibraryHandle
 # the test would silently call the real beets setup.
 from app.beets.setup import (
     BeetsConfigRead,
+    ConfigFileMissing,
+    ConfigUnreadable,
     open_beets,
     read_beets_config,
+    read_config_document,
     reset_beets_globals,
 )
 from app.beets.store_layout import (
@@ -691,34 +694,78 @@ def save_naming(handle: LibraryHandle, req: SaveNamingRequest) -> BeetsConfigSna
     return build_config_snapshot(handle)
 
 
-def on_disk_layout_error(handle: LibraryHandle, settings: Settings) -> StoreLayoutError | None:
-    """The refusal ``config.yaml`` AS IT SITS ON DISK would cause, or ``None``.
+class ApplyRefusal(NamedTuple):
+    """A 422 body: ``recovery`` is printed after "Apply failed. " on the Settings page."""
+
+    message: str
+    recovery: str
+
+
+def _unreadable_recovery(line: int | None) -> str:
+    where = "" if line is None else f" (line {line})"
+    return (
+        f"beets could not read config.yaml{where}, so nothing was changed."
+        " Fix the file and Apply again."
+    )
+
+
+#: Printed after "Apply failed. " on the Settings page.
+_MISSING_CONFIG_RECOVERY: Final = (
+    "MusicDrop found no config.yaml, so nothing was changed. Restore the file and Apply again."
+)
+
+
+def _read_refusal(exc: Exception) -> ApplyRefusal:
+    """The refusal for a config.yaml beets could not read, whichever step found it."""
+    if isinstance(exc, ConfigFileMissing):
+        return ApplyRefusal(f"Apply refused: {exc}", _MISSING_CONFIG_RECOVERY)
+    if isinstance(exc, ConfigUnreadable):
+        return ApplyRefusal(f"Apply refused: {exc}", _unreadable_recovery(exc.line))
+    return ApplyRefusal(
+        f"Apply refused: config.yaml could not be read: {exc}", _unreadable_recovery(None)
+    )
+
+
+def _skipped_include_refusal(name: str) -> ApplyRefusal:
+    return ApplyRefusal(
+        f"Apply refused: beets would skip the include {name!r}",
+        f"beets could not read the include {name!r}, so nothing was changed."
+        " Fix it and Apply again.",
+    )
+
+
+def on_disk_refusal(handle: LibraryHandle, settings: Settings) -> ApplyRefusal | None:
+    """Why Apply must not load config.yaml AS IT SITS ON DISK, or ``None``.
 
     Apply's input is the file, not a request body, so a hand edit (or an editor
     session from before a restart) can carry a ``directory:`` no Save ever saw.
     Read fresh here rather than from the handle: ``handle.lib.directory`` is the
     music root of the load being replaced.
 
-    Silent on an unreadable or unparseable file. That is not this check's
-    question — :func:`apply` reads the file with beets' own loader next and
-    refuses it there — and returning a layout refusal for a YAML syntax error
-    would name the wrong problem. This parse is ruamel's, not beets': measured,
-    the two disagree both ways (ruamel refuses a duplicate key PyYAML accepts;
-    PyYAML refuses a ``!!python/name`` tag ruamel accepts).
+    Parsed with beets' own loader (:func:`read_config_document`), not ruamel:
+    measured, the two disagree both ways (ruamel refuses a duplicate key PyYAML
+    keeps the last of; PyYAML refuses a ``!!python/name`` tag ruamel accepts),
+    and the ruamel check was blind to the first, so Apply tore down and loaded
+    a refused layout. Runs BEFORE beets' own read because that read opens every
+    include by name and blocks on a FIFO; :func:`layout_check_for_config`
+    reads them through one non-blocking descriptor with a byte budget.
 
-    ``RecursionError`` and ``ValueError`` are the two Save and Validate also
-    catch around ``parse_yaml``: ruamel raises them past the nesting limit and on
-    an over-long integer. This call sits OUTSIDE Apply's rebuild handler, so
-    either one left the route answering a bare 500. ``UnicodeDecodeError`` is not
-    named because it IS a ``ValueError``.
+    A skipped include is refused (owner ruling 2026-09-21): beets prints it to
+    stderr and loads without it (``beets/__init__.py:37-38``).
     """
     try:
-        doc = parse_yaml(handle.config_path.read_text(encoding="utf-8"))
-    except (OSError, YAMLError, RecursionError, ValueError):
-        return None
-    if not isinstance(doc, CommentedMap):
-        return None
-    return layout_check_for_config(document=doc, settings=settings, handle=handle).error
+        document = read_config_document(handle.config_path)
+    except ConfigUnreadable as exc:
+        return _read_refusal(exc)
+    check = layout_check_for_config(document=document, settings=settings, handle=handle)
+    if check.skipped_includes:
+        return _skipped_include_refusal(check.skipped_includes[0])
+    if check.error is not None:
+        # The headline is the refused PAIR, not a fixed sentence: this used to
+        # read "config.yaml would move the music library" for every refusal,
+        # including the ones where the Trash is what moved.
+        return ApplyRefusal(f"Apply refused: {check.error.headline}", str(check.error))
+    return None
 
 
 def _rebuild_beets_handle(old: LibraryHandle, read: BeetsConfigRead) -> LibraryHandle:
@@ -733,20 +780,14 @@ def _rebuild_beets_handle(old: LibraryHandle, read: BeetsConfigRead) -> LibraryH
     reloads plugins from scratch. The confuse config is NOT cleared: request
     threads keep reading the old one until ``open_beets`` installs ``read``.
 
-    If ``open_beets`` raises, the old handle is already torn down — the
-    process is degraded and serves errors until restart. The :func:`apply` 500
-    path says so with a ``recovery`` hint pointing at restart; the teardown is
-    not undone, because confuse + plugins + SQLite would each need their own
-    rollback.
+    If ``open_beets`` raises, the teardown is not undone (confuse, plugins and
+    SQLite would each need their own rollback) and the :func:`apply` 500 points
+    at a restart. Measured after ``load_plugins`` raised: GETs still answered
+    200, with no plugins loaded; beets reopens the closed SQLite handle on
+    demand, and the import registry keeps the old ``Library``.
     """
     reset_beets_globals(old, keep_config=True)
     return open_beets(read)
-
-
-#: Printed after "Apply failed. " on the Settings page.
-_UNREADABLE_CONFIG_RECOVERY: Final = (
-    "beets could not read config.yaml, so nothing was changed. Fix the file and Apply again."
-)
 
 
 def _swap_lock(app: FastAPI) -> asyncio.Lock:
@@ -788,28 +829,28 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
 
     Sequence (spec § "Layer 3 - Backend: Apply flow"):
 
-    1. **Per-app lock** — two Applies racing through ``reset_beets_globals`` +
-       ``setup_beets`` could close the library twice.
+    1. **Per-app lock** — two Applies racing through the teardown and rebuild
+       could close the library twice.
     2. **Job gate** — 409 while a library job holds the library, checked AFTER
        taking the lock (:func:`swap_blocked_by_job`), so no job runs or starts
        while the config is replaced.
-    2b. **Containment gate** — 422 on a refused store layout in the config ON
-       DISK (:func:`on_disk_layout_error`, ``store_layout._ROWS``). Before the
-       rebuild, because a failure after its teardown strands the process with no
-       working config; 422 and not 409, because the page renders every Apply 409
-       as the library-job sentence.
+    2b. **File gate** — 422 when config.yaml ON DISK is missing, unreadable,
+       skips an include, or has a refused store layout (:func:`on_disk_refusal`).
+       Before the rebuild, because a failure after its teardown strands the
+       process with no working config; 422 and not 409, because the page
+       renders every Apply 409 as the library-job sentence.
     2c. **Read** — :func:`read_beets_config`, beets' own read of the file. 422
        when it fails, with nothing torn down yet.
     3. **Threadpool rebuild** — blocking I/O; any exception maps to 500 with the
        restart hint.
     4. **Atomic swap** — ``app.state.beets_library`` is replaced only after the
        rebuild succeeds. On a 500 the OLD handle is already torn down
-       (:func:`_rebuild_beets_handle`), so the process is degraded until restart.
+       (:func:`_rebuild_beets_handle`).
     4b. **Backstop** — the same layout question, asked of what beets actually
        loaded. 422, with the new handle already swapped in and the refusal
        recorded on the import registry.
     5. **Return snapshot** — ``apply_pending`` is ``False``: the new handle's
-       ``file_mtime_at_load`` captured the on-disk mtime during ``setup_beets``.
+       ``file_mtime_at_load`` is the mtime :func:`read_beets_config` captured.
     """
     app = request.app
 
@@ -827,31 +868,17 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
             )
         old: LibraryHandle = app.state.beets_library
         settings = _settings(app)
-        layout_error = await run_in_threadpool(on_disk_layout_error, old, settings)
-        if layout_error is not None:
-            # The headline is the refused PAIR, not a fixed sentence: this used
-            # to read "config.yaml would move the music library" for every
-            # refusal, including the ones where the Trash is what moved.
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "message": f"Apply refused: {layout_error.headline}",
-                    "recovery": str(layout_error),
-                },
-            )
+        refusal = await run_in_threadpool(on_disk_refusal, old, settings)
+        if refusal is not None:
+            raise HTTPException(status_code=422, detail=refusal._asdict())
         try:
             read = await run_in_threadpool(read_beets_config, settings.beets_dir)
         except Exception as exc:
             # Nothing is torn down yet, so the old config, plugins and library
             # keep serving. Broad on purpose: whatever the read raised, the
-            # process is unchanged, and a restart would read the same file.
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "message": f"Apply refused: config.yaml could not be read: {exc}",
-                    "recovery": _UNREADABLE_CONFIG_RECOVERY,
-                },
-            ) from exc
+            # process is unchanged. Step 2b read the same file, so this arm is
+            # reached when the file changed in between.
+            raise HTTPException(status_code=422, detail=_read_refusal(exc)._asdict()) from exc
         try:
             new = await run_in_threadpool(_rebuild_beets_handle, old, read)
         except Exception as exc:
@@ -895,11 +922,11 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
         from app.playlists.store import get_playlists_dir
 
         # 4b. Backstop — the same question, asked of what beets ACTUALLY loaded.
-        # Step 2b reproduces beets' include merge over the candidate document;
+        # Step 2b reads config.yaml and its includes itself, before beets does;
         # this one reads ``new.lib.directory`` and ``new.lib.path`` off the live
-        # handle, so a divergence between that reproduction and beets (an
-        # ``include:`` shape we read differently, a beets upgrade) is caught here
-        # instead of shipping a refused layout into the process.
+        # handle, so a file edited between the two reads, or a divergence
+        # between step 2b's include merge and beets' (a beets upgrade), is
+        # caught here instead of shipping a refused layout into the process.
         #
         # It also supplies the pair the registry needs. Resolving those two paths
         # raises on a symlink loop, outside every ``except StoreLayoutError`` the
