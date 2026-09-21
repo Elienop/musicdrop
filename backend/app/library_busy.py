@@ -72,12 +72,13 @@ _CLAIM_LOCK = threading.Lock()
 # Module-global rather than plumbed through five registries' start() signatures,
 # because the registries hold no reference to the FastAPI app.
 #
-# CAVEAT (deliberate, and the reason this is not a full close): the swap-lock
-# HOLDERS do not route their acquisition through _CLAIM_LOCK, so their own
-# check-then-act window survives. Consulting the lock here narrows the race to
-# the acquire itself — the same best-effort posture every existing gate site
-# uses (``Lock.locked()``) — rather than eliminating it. Closing it completely
-# means making the swap-lock acquisition itself a claim.
+# Config Apply closes its side with :func:`swap_blocked_by_job`: it checks the
+# union under _CLAIM_LOCK AFTER acquiring this lock, so every claim is ordered
+# either before that check (Apply sees the slot and 409s) or after it (the claim
+# sees ``locked()``). The other holders (duplicate resolve, delete, trash,
+# edit, rename, cover, artist-image reset) gate outside _CLAIM_LOCK, so a claim
+# can still land between their gate and their work, including the step where a
+# released lock passes to a waiter.
 _SWAP_LOCK: object | None = None
 
 
@@ -97,6 +98,19 @@ def _swap_in_progress() -> bool:
     lock = _SWAP_LOCK
     locked = getattr(lock, "locked", None) if lock is not None else None
     return bool(locked()) if callable(locked) else False
+
+
+def swap_blocked_by_job() -> bool:
+    """Whether a library job holds the library, asked by a swap-lock HOLDER.
+
+    Call it only while holding the registered swap lock, and release the lock
+    when it returns True. Taken under ``_CLAIM_LOCK``, the answer is final: a job
+    that claimed first is seen here, and a later claim sees ``locked()``. A gate
+    read before the acquire is not: ``asyncio.Lock.release()`` clears ``locked()``
+    before the next waiter resumes, and a claim fits in that step.
+    """
+    with _CLAIM_LOCK:
+        return library_job_active()
 
 
 @contextmanager

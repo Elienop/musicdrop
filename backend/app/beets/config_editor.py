@@ -64,7 +64,7 @@ from app.beets.store_layout import (
 )
 from app.config import Settings
 from app.config import settings as _module_settings
-from app.library_busy import library_job_active
+from app.library_busy import swap_blocked_by_job
 from app.models.config_api import BeetsConfigSnapshot
 from app.models.config_editor import (
     ConfigAdvisory,
@@ -788,10 +788,11 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
 
     Sequence (spec § "Layer 3 - Backend: Apply flow"):
 
-    1. **Import gate** — 409 while an import is active; the rebuild tears down
-       the SQLite connection its worker holds.
-    2. **Per-app lock** — two Applies racing through ``reset_beets_globals`` +
+    1. **Per-app lock** — two Applies racing through ``reset_beets_globals`` +
        ``setup_beets`` could close the library twice.
+    2. **Job gate** — 409 while a library job holds the library, checked AFTER
+       taking the lock (:func:`swap_blocked_by_job`), so no job runs or starts
+       while the config is replaced.
     2b. **Containment gate** — 422 on a refused store layout in the config ON
        DISK (:func:`on_disk_layout_error`, ``store_layout._ROWS``). Before the
        rebuild, because a failure after its teardown strands the process with no
@@ -812,21 +813,18 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
     """
     app = request.app
 
-    # Outside lock: best-effort gate; TOCTOU acceptable for single-user
-    # self-host (an import can still arrive between this check and the swap,
-    # but the worst case is a 500 inside the rebuild — the registry's own
-    # threading.Lock guarantees the import either finished or hasn't started
-    # touching beets yet, and the 500 path's recovery hint covers the rest).
-    # Pulling the gate inside the asyncio.Lock would block Apply behind
-    # any concurrent Apply request even when no import is active, which is
-    # worse UX for the single-user case this product targets.
-    if library_job_active():
-        raise HTTPException(
-            status_code=409,
-            detail="Import in progress; Apply available when it finishes / lyrics backfill",
-        )
-
     async with _swap_lock(app):
+        # Inside the lock, not before it. The rebuild replaces
+        # ``beets.config.sources``, dropping the overlay a running import forces
+        # (``delete: False``, ``duplicate_action``), and beets' importer reads
+        # ``config["import"]`` through a live view; measured, that view read the
+        # user's ``delete: yes`` after the swap. A gate read before the acquire
+        # let a job claim in between (test_config_apply_claim_race.py).
+        if swap_blocked_by_job():
+            raise HTTPException(
+                status_code=409,
+                detail="Import in progress; Apply available when it finishes / lyrics backfill",
+            )
         old: LibraryHandle = app.state.beets_library
         settings = _settings(app)
         layout_error = await run_in_threadpool(on_disk_layout_error, old, settings)
