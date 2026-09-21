@@ -171,8 +171,10 @@ def test_an_ordinary_path_still_starts(tmp_path: Path) -> None:
     source.mkdir()  # past the source-existence guard
     resp = client.post("/api/import", json={"path": str(source)})
     assert resp.status_code == 202
-    # Drained before returning: a worker thread outliving the test reads beets'
-    # config after the autouse reset and raises confuse.NotFoundError elsewhere.
+    # Drained before returning: a worker thread outliving the test reloads beets'
+    # config after the autouse reset, and the NEXT test to read it mid-reload
+    # raises confuse.NotFoundError - an innocent neighbour, never this test
+    # (measured 2026-09-21).
     _drive(client, resp.json()["job_id"])
 
 
@@ -396,6 +398,7 @@ def test_the_posted_path_resolve_runs_off_the_event_loop(
     resp = client.post("/api/import", json={"path": str(folder)})
 
     assert resp.status_code == 202, resp.text
+    _drive(client, resp.json()["job_id"])
     assert on_loop == [False]
 
 
@@ -450,8 +453,10 @@ def test_a_posted_path_without_a_dotdot_segment_is_still_mapped(
 
     monkeypatch.setattr("app.api.import_.resolve_posted_path", spy)
     client = TestClient(app, raise_server_exceptions=False)
-    client.post("/api/import", json={"path": displayed})
+    resp = client.post("/api/import", json={"path": displayed})
 
+    assert resp.status_code == 202, resp.text
+    _drive(client, resp.json()["job_id"])
     assert seen == [(displayed, str(real_folder))]
 
 
