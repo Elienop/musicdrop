@@ -74,6 +74,14 @@ resolver at an empty tmp dir, and the gate rejected the suite's own cookie —
 measured on this branch as ``tests/test_health.py`` failing ``401 == 200``. So
 the resolver is pinned HERE too, at the same place and for the same reason the
 ``BEETSDIR`` floor is: before anything can import ``app.main``.
+
+**The third floor: no ``backend/.env``.** ``Settings`` reads ``env_file=".env"``
+relative to the cwd, and pytest runs from ``backend/``, so a local run took every
+``MUSICDROP_*`` the developer's ``.env`` sets (a real ``MUSICDROP_BEETS_DIR``
+among them) where CI, which has no ``.env``, took the defaults. The singleton is
+built when ``app.config`` is first imported, so it is re-read in place (every
+``from app.config import settings`` binding holds this one object), and the class
+stops reading the file for every ``Settings()`` a test builds.
 """
 
 import os
@@ -83,6 +91,7 @@ from pathlib import Path
 from confuse.util import config_dirs
 
 import app.auth.source as _password_source
+import app.config as _app_config
 
 #: The suite's throwaway ``BEETSDIR``. ``TemporaryDirectory`` keeps a finalizer
 #: that removes it at interpreter exit; ``ignore_cleanup_errors`` so a lingering
@@ -118,3 +127,7 @@ SUITE_PASSWORD_HASH_PATH = SUITE_BEETSDIR / "suite-password-hash"
 # through — the same seam ``tests/conftest.py::password_hash_file`` re-pins per
 # test, which saves and restores this value.
 _password_source.live_password_hash_path = lambda: SUITE_PASSWORD_HASH_PATH
+
+# THE THIRD FLOOR. Environment variables still apply, as they do in CI.
+_app_config.Settings.model_config["env_file"] = None
+_app_config.Settings.__init__(_app_config.settings)

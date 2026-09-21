@@ -266,12 +266,11 @@ class BankApplyRunner:
         # the beets Library and swaps ``app.state.beets_library`` mid-process,
         # so a handle captured at construction would answer the skip_new check
         # from a DB the app no longer uses. Calling it immediately before each
-        # read NARROWS that window; it does not close it. Apply's import gate is
-        # CHECKED, not held ("TOCTOU acceptable for single-user", config_editor
-        # .apply), and the skip_new read happens before this row starts an
-        # import, so nothing stops a concurrent Apply running reset_beets_globals
-        # between the getter and the read. Accepted on the same single-user
-        # stance; a raise from either lands in _drain's per-row catch-all as a
+        # read NARROWS that window; it does not close it. The skip_new read
+        # happens before this row claims the import slot, so nothing stops a
+        # concurrent Apply running reset_beets_globals between the getter and
+        # the read. Accepted for a single-user app; a raise from either lands
+        # in _drain's per-row catch-all as a
         # failed row (honest - an unverifiable collision must never silently
         # import).
         # Required, not optional: a "None means skip enforcement" mode would

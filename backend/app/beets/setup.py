@@ -24,6 +24,7 @@ from beets.library import Library
 from beets.plugins import BeetsPlugin
 
 from app.beets.library import LibraryHandle, close_library
+from app.beets.store_layout import StoreLayoutError, effective_config_paths
 
 logger = logging.getLogger(__name__)
 
@@ -34,46 +35,69 @@ operator_logger = logging.getLogger("uvicorn.error")
 
 
 class ConfigUnreadable(Exception):
-    """beets could not read ``config.yaml``; ``line`` is 1-based, when YAML gave one."""
+    """beets could not read its config; ``line`` is 1-based, when YAML gave one.
 
-    def __init__(self, message: str, line: int | None = None) -> None:
+    ``subject`` names what failed for a recovery sentence: ``config.yaml`` when
+    only that file was parsed, wider when beets' own read (which follows every
+    ``include:``) is what raised.
+    """
+
+    def __init__(
+        self, message: str, line: int | None = None, *, subject: str = "config.yaml"
+    ) -> None:
         super().__init__(message)
         self.line = line
+        self.subject = subject
 
 
 class ConfigFileMissing(ConfigUnreadable):
-    """``config.yaml`` is not a file, so beets would read no user config at all.
+    """``config.yaml`` is not a regular file, so beets would read no user config at all.
 
     confuse reads the user file as an OPTIONAL source: a path that is not a file
     loads as ``{}`` with no error (``confuse/sources.py:94-97``), and beets then
-    runs on its defaults (``directory: ~/Music``).
+    runs on its defaults (``directory: ~/Music``). Absent, a dangling link, a
+    directory and a FIFO all land here.
     """
 
     def __init__(self, config_path: Path) -> None:
-        super().__init__(f"{config_path} was not found")
+        super().__init__(f"{config_path} is missing or is not a regular file")
 
 
-#: What a config.yaml beets cannot use raises, at the read or while plugins load
+#: What a config beets cannot use raises, at the read or while plugins load
 #: (a ``ConfigTypeError`` such as ``musicbrainz: no``). Exported so ``main.py``
 #: can name the file without importing confuse (CLAUDE.md rule 3).
 CONFIG_ERRORS: Final = (ConfigUnreadable, confuse.ConfigError)
 
-#: What beets' read raises for a bad file. confuse wraps OSError and YAML errors
-#: in ``ConfigReadError`` (``confuse/yaml_util.py:96-100``); the rest escape
-#: unwrapped: ``ValueError`` for an integer over CPython's 4300-digit limit,
-#: ``TypeError`` for a top level that is not a mapping (``sources.py:103-107``),
-#: ``RecursionError`` past the nesting limit.
-_READ_ERRORS: Final = (confuse.ConfigError, ValueError, TypeError, RecursionError)
+
+def _named(exc: Exception) -> str:
+    """``KeyError: 'ture'``, not a bare ``'ture'``."""
+    return f"{type(exc).__name__}: {exc}"
 
 
-def _unreadable(exc: Exception, config_path: Path) -> ConfigUnreadable:
-    """``exc`` from beets' read, as :class:`ConfigUnreadable` with the YAML line."""
+def _unreadable(exc: Exception, config_path: Path, *, includes: bool) -> ConfigUnreadable:
+    """``exc`` from a config read, as :class:`ConfigUnreadable` with the YAML line.
+
+    confuse wraps OSError and YAML errors in ``ConfigReadError``
+    (``confuse/yaml_util.py:96-100``); anything else a parse raises escapes
+    unwrapped. Measured: ``ValueError`` for an integer over CPython's 4300-digit
+    limit, ``TypeError`` for a top level that is not a mapping, ``RecursionError``
+    past the nesting limit, ``KeyError`` for ``!!bool ture`` and
+    ``AttributeError`` for a ``!!timestamp`` that is not a date. ``includes``:
+    the read followed ``include:``, and beets' include loop lets everything but
+    a ``ConfigReadError`` through, so the file at fault may be an include.
+    """
     if isinstance(exc, confuse.ConfigReadError):
         # PyYAML's MarkedYAMLError carries a 0-based ``problem_mark``; a
-        # ReaderError (a non-UTF-8 byte) and an OSError carry none.
+        # ReaderError (a non-UTF-8 byte) and an OSError carry none. beets' include
+        # loop catches this type, so it is config.yaml's own.
         mark = getattr(exc.reason, "problem_mark", None)
         return ConfigUnreadable(str(exc), None if mark is None else mark.line + 1)
-    return ConfigUnreadable(f"{config_path} could not be read: {exc}")
+    if includes:
+        return ConfigUnreadable(
+            f"{config_path} or one of its includes could not be read: {_named(exc)}",
+            subject="config.yaml or one of its includes",
+        )
+    return ConfigUnreadable(f"{config_path} could not be read: {_named(exc)}")
 
 
 def _require_config_file(config_path: Path) -> None:
@@ -97,8 +121,9 @@ def read_config_document(config_path: Path) -> dict[str, Any]:
     _require_config_file(config_path)
     try:
         return dict(confuse.YamlSource(str(config_path), loader=beets.config.loader))
-    except _READ_ERRORS as exc:
-        raise _unreadable(exc, config_path) from exc
+    # Broad: parsing changes nothing, so whatever it raises means "unreadable".
+    except Exception as exc:
+        raise _unreadable(exc, config_path, includes=False) from exc
 
 
 @dataclass(frozen=True)
@@ -120,10 +145,27 @@ def setup_beets(beets_dir: str, *, container_music_default: bool = False) -> Lib
 
     The boot path: a missing config.yaml is written from the starter first.
     """
-    _write_starter_config(
-        Path(beets_dir).resolve(), container_music_default=container_music_default
-    )
+    root = Path(beets_dir).resolve()
+    _write_starter_config(root, container_music_default=container_music_default)
+    _refuse_a_broken_include(root)
     return open_beets(read_beets_config(beets_dir))
+
+
+def _refuse_a_broken_include(beets_dir: Path) -> None:
+    """Raise :class:`ConfigUnreadable` for an ``include:`` beets would skip or block on.
+
+    Owner ruling 2026-09-21: boot refuses these, as Apply does. beets prints a
+    skipped include to stderr and loads without it (``beets/__init__.py:37-38``),
+    and blocks on a FIFO include. Before beets' read, for the FIFO; through the
+    include read Apply's gate uses, which opens each one non-blocking.
+    """
+    document = read_config_document(beets_dir / "config.yaml")
+    try:
+        skipped = effective_config_paths(document, beets_dir).skipped
+    except StoreLayoutError as exc:
+        raise ConfigUnreadable(str(exc)) from exc
+    if skipped:
+        raise ConfigUnreadable(f"beets would skip the include {skipped[0]}")
 
 
 def _write_starter_config(beets_dir: Path, *, container_music_default: bool) -> None:
@@ -180,8 +222,11 @@ def read_beets_config(beets_dir: str) -> BeetsConfigRead:
 
     try:
         fresh = _read_config()
-    except _READ_ERRORS as exc:
-        raise _unreadable(exc, cfg_path) from exc
+    # Broad, as in ``read_config_document``: on a reload the read fills a fresh
+    # config object and nothing the process uses; at boot a failure refuses the
+    # start.
+    except Exception as exc:
+        raise _unreadable(exc, cfg_path, includes=True) from exc
     return BeetsConfigRead(
         beets_dir=beets_dir_path,
         config_path=cfg_path,

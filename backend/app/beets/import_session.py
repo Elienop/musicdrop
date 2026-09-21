@@ -2166,11 +2166,11 @@ _CONFIG_FORCE_LOCK = threading.Lock()
 #: A contended acquire REFUSES rather than waits, because an attended import
 #: holds this for the length of a human review: ``run()`` does not return until
 #: the browser answers, and ``park`` ends in an untimed ``slot.reply.get()``
-#: (:meth:`ImportBridge.park`). The other caller is the Trash restore, on a
-#: request thread while holding the swap lock (``api/trash.py`` ->
-#: ``trash_manage._restore_by_import``), so a blocking acquire there would 409
-#: every library-mutating route for the length of someone's review, with nothing
-#: naming the cause. A timeout rather than a nested-acquire deadlock: a daemon
+#: (:meth:`ImportBridge.park`). The other caller, the Trash restore
+#: (``api/trash.py`` -> ``trash_manage._restore_by_import``), refuses while any
+#: import holds its slot, checked under the claim lock after it takes the swap
+#: lock, so the two do not meet (reasoned from the claim order, 2026-09-21; see
+#: BACKLOG). The timeout stays so a new caller fails instead of hanging: a daemon
 #: worker blocked in ``acquire()`` is silent -- no traceback, no log.
 _CONFIG_FORCE_TIMEOUT_S = 5.0
 

@@ -8968,7 +8968,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description config.yaml on disk is missing, unreadable, skips an include or breaks the store layout; the recovery line says what to fix. */
+            /** @description config.yaml on disk is not a regular file, is unreadable, skips an include or breaks the store layout; the recovery line says what to fix. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -8977,7 +8977,7 @@ export interface operations {
                     "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
-            /** @description The library rebuild failed during apply, but the saved config is safe on disk and will load on the next start. */
+            /** @description The rebuild failed after the old config was unloaded; fix the error the recovery line quotes and Apply again. */
             500: {
                 headers: {
                     [name: string]: unknown;

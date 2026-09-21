@@ -10,11 +10,11 @@ via a ``get_library`` override.
 from typing import Final
 
 from fastapi import APIRouter, Request
-from ruamel.yaml.error import YAMLError
 
 from app.beets.config_editor import (
     StoreLayoutReport,
     _settings,
+    parse_error_text,
     parse_yaml,
     read_naming,
     save_naming,
@@ -125,15 +125,17 @@ def validate_config(req: ValidateRequest, request: Request) -> ValidateResponse:
     # computed from one function.
     try:
         data = parse_yaml(req.yaml_text)
-    # Not YAMLError alone: ruamel raises RecursionError on a document nested past
-    # the limit and ValueError on an integer over 4300 digits, both bare 500s.
-    except (YAMLError, RecursionError, ValueError) as e:
+    # Broad: parsing changes nothing, so whatever it raises is a parse error.
+    # Measured beyond YAMLError: RecursionError past the nesting limit, ValueError
+    # on an integer over 4300 digits, KeyError on ``!!bool ture``; each was a
+    # bare 500.
+    except Exception as e:
         mark = getattr(e, "problem_mark", None)
         return ValidateResponse(
             errors=[
                 ValidationErrorItem(
                     loc="",
-                    msg=str(e),
+                    msg=parse_error_text(e),
                     type="yaml_parse",
                     line=(mark.line + 1) if mark else None,
                     column=mark.column if mark else None,
@@ -238,7 +240,7 @@ def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSn
     # must read (see app/models/errors.py). Both are raised inside
     # apply_config_op (app/beets/config_editor.py), not here.
     responses={
-        # The ONLY 409 reachable from this route is the `library_job_active()`
+        # The ONLY 409 reachable from this route is the `swap_blocked_by_job()`
         # gate in `apply` (config_editor.py). The CAS "file changed on disk"
         # 409s live in `save` / `save_naming`, which this route never calls, so
         # naming them here would document a cause Apply cannot produce.
@@ -258,15 +260,15 @@ def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSn
         422: {
             "model": StructuredErrorDetail,
             "description": (
-                "config.yaml on disk is missing, unreadable, skips an include or breaks"
-                " the store layout; the recovery line says what to fix."
+                "config.yaml on disk is not a regular file, is unreadable, skips an include"
+                " or breaks the store layout; the recovery line says what to fix."
             ),
         },
         500: {
             "model": StructuredErrorDetail,
             "description": (
-                "The library rebuild failed during apply, but the saved config"
-                " is safe on disk and will load on the next start."
+                "The rebuild failed after the old config was unloaded; fix the error"
+                " the recovery line quotes and Apply again."
             ),
         },
     },

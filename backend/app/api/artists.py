@@ -941,7 +941,6 @@ async def reset_artist_image_endpoint(
     name: Annotated[str, Query(min_length=1)],
     cache: Annotated[ArtistImageCache, Depends(get_artist_image_cache)],
     service: Annotated[ArtistImageService, Depends(get_artist_image_service)],
-    handle: Annotated[LibraryHandle, Depends(get_library)],
     filler: Annotated[ArtistImageFiller, Depends(get_artist_image_filler)],
 ) -> ArtistImageResetResult:
     """Forget this artist's portrait so it is looked up again; an uploaded or
@@ -968,6 +967,10 @@ async def reset_artist_image_endpoint(
         # A 409 raised here leaves the lock through ``async with``.
         with no_claim_in_flight():
             _gate_artist_art_busy()
+        # Read under the lock, as every other holder reads it: a dependency
+        # resolves before the acquire, and an Apply swapping in between left
+        # this route on the pre-Apply library and music dir.
+        handle: LibraryHandle = request.app.state.beets_library
         moved_to_trash = await _move_override_to_trash(handle, settings, cache, name)
         # The AUTOMATIC slot too: a present ``.bin`` means the resolve path never
         # runs, so clearing only the override lands the user back on the image

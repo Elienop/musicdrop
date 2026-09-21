@@ -62,9 +62,10 @@ _DISK_SYNC = DISK_SYNC
 _CLAIM_LOCK = threading.Lock()
 
 # The beets swap lock, registered once at lifespan startup. It is the SIXTH
-# mutual-exclusion participant: a config Apply, duplicate resolve, delete, or
-# trash restore/empty holds it while mutating beets' process globals and the
-# SQLite connection, yet registers no job slot. ``import_gate_clear`` already
+# mutual-exclusion participant: a config Apply, duplicate resolve, delete, tag
+# edit, rename, cover change, trash restore/empty, or artist-image reset holds
+# it while mutating beets' process globals, the SQLite connection or library
+# files, yet registers no job slot. ``import_gate_clear`` already
 # consults it, so a claim that ignored it would be strictly weaker than the gate
 # it replaced — a producer could pass its gate, spend seconds fingerprinting a
 # folder, and then claim the import slot while an Apply had begun tearing down
@@ -186,7 +187,8 @@ def raise_if_swap_lock_held(app: object, *, message: str = LIBRARY_BUSY_MESSAGE)
     must not WAIT on the lock but already has a narrower job gate of its own:
     the union would refuse it for the length of an unrelated import, which only
     ever READS the lock (``app/import_jobs/gates.py``). Best-effort
-    ``Lock.locked()`` — the single-user TOCTOU posture every site here uses.
+    ``Lock.locked()``, like every read before an acquire; the holders' final
+    checks run after the acquire, under ``_CLAIM_LOCK``.
     """
     from fastapi import HTTPException, status
 

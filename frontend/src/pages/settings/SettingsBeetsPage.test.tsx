@@ -472,7 +472,7 @@ describe("SettingsPage", () => {
             detail: {
               message: "Apply failed during rebuild: boom",
               recovery:
-                "Restart MusicDrop. The saved config is on disk; cold start will load it.",
+                "Apply stopped partway. Fix the cause and Apply again; a restart runs the same load.",
             },
           },
           { status: 500 },
@@ -494,7 +494,7 @@ describe("SettingsPage", () => {
     // banner), and the 500's recovery hint is shown inline.
     const banner = await screen.findByText(/apply failed/i);
     expect(banner).toHaveAttribute("role", "alert");
-    expect(banner).toHaveTextContent(/restart musicdrop/i);
+    expect(banner).toHaveTextContent(/apply stopped partway/i);
   });
 
   test("an Apply refused for a bad Trash layout shows the reason, not the job sentence", async () => {

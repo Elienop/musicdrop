@@ -52,6 +52,7 @@ from app.beets.library import LibraryHandle
 # time). Importing them inside the function body would defeat that patch and
 # the test would silently call the real beets setup.
 from app.beets.setup import (
+    CONFIG_ERRORS,
     BeetsConfigRead,
     ConfigFileMissing,
     ConfigUnreadable,
@@ -116,6 +117,11 @@ def _yaml() -> YAML:
     yaml.indent(mapping=2, sequence=4, offset=2)
     yaml.width = 4096
     return yaml
+
+
+def parse_error_text(exc: Exception) -> str:
+    """A parse failure's lint text: YAML's own, else the class name too (``KeyError: 'ture'``)."""
+    return str(exc) if isinstance(exc, YAMLError) else f"{type(exc).__name__}: {exc}"
 
 
 def parse_yaml(text: str) -> CommentedMap:
@@ -252,12 +258,12 @@ class StoreLayoutReport(NamedTuple):
 
 
 def _skipped_include_advisory(name: str) -> ConfigAdvisory:
-    """An include beets would drop. Advisory, not an error: beets starts."""
+    """An include beets would drop. An advisory: the file may exist by Apply time."""
     return ConfigAdvisory(
         key="include",
         message=(
-            f"beets could not read {name!r}, so it skips that entry and stops"
-            " reading include: there. Nothing listed after it is merged."
+            f"beets cannot read the include {name}. Apply and a restart refuse this"
+            " config until it can."
         ),
     )
 
@@ -433,16 +439,16 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
     # 1. Parse with ruamel.
     try:
         new_map = parse_yaml(req.yaml_text)
-    # Same three as Validate's arm: ruamel raises RecursionError past the nesting
-    # limit and ValueError on an over-long integer.
-    except (YAMLError, RecursionError, ValueError) as exc:
+    # Broad, as Validate's arm is: parsing changes nothing, so whatever it raises
+    # is a parse error.
+    except Exception as exc:
         mark = getattr(exc, "problem_mark", None)
         raise HTTPException(
             status_code=422,
             detail=[
                 {
                     "loc": "",
-                    "msg": str(exc),
+                    "msg": parse_error_text(exc),
                     "type": "yaml_parse",
                     "line": (mark.line + 1) if mark else None,
                     "column": mark.column if mark else None,
@@ -701,18 +707,35 @@ class ApplyRefusal(NamedTuple):
     recovery: str
 
 
-def _unreadable_recovery(line: int | None) -> str:
+def _unreadable_recovery(subject: str, line: int | None) -> str:
     where = "" if line is None else f" (line {line})"
     return (
-        f"beets could not read config.yaml{where}, so nothing was changed."
+        f"beets could not read {subject}{where}, so nothing was changed."
         " Fix the file and Apply again."
     )
 
 
 #: Printed after "Apply failed. " on the Settings page.
 _MISSING_CONFIG_RECOVERY: Final = (
-    "MusicDrop found no config.yaml, so nothing was changed. Restore the file and Apply again."
+    "MusicDrop found no regular file at config.yaml, so nothing was changed."
+    " Restore the file and Apply again."
 )
+
+
+def _rebuild_recovery(exc: Exception) -> str:
+    """The recovery when the rebuild failed after the teardown, quoting ``exc``.
+
+    Both Apply surfaces print only this line, so it carries beets' own text.
+    Measured: fixing the file and applying again loads it, and boot refuses the
+    same file (``tests/test_config_boot.py``), so neither line offers a restart.
+    """
+    cause = (str(exc) or type(exc).__name__).rstrip(".")
+    if isinstance(exc, CONFIG_ERRORS):
+        return (
+            f"beets rejected a value in the config: {cause}. Fix it and Apply again;"
+            " MusicDrop will not start until you do."
+        )
+    return f"Apply stopped partway: {cause}. Fix that and Apply again."
 
 
 def _read_refusal(exc: Exception) -> ApplyRefusal:
@@ -720,17 +743,17 @@ def _read_refusal(exc: Exception) -> ApplyRefusal:
     if isinstance(exc, ConfigFileMissing):
         return ApplyRefusal(f"Apply refused: {exc}", _MISSING_CONFIG_RECOVERY)
     if isinstance(exc, ConfigUnreadable):
-        return ApplyRefusal(f"Apply refused: {exc}", _unreadable_recovery(exc.line))
+        return ApplyRefusal(f"Apply refused: {exc}", _unreadable_recovery(exc.subject, exc.line))
     return ApplyRefusal(
-        f"Apply refused: config.yaml could not be read: {exc}", _unreadable_recovery(None)
+        f"Apply refused: config.yaml could not be read: {exc}",
+        _unreadable_recovery("config.yaml", None),
     )
 
 
 def _skipped_include_refusal(name: str) -> ApplyRefusal:
     return ApplyRefusal(
-        f"Apply refused: beets would skip the include {name!r}",
-        f"beets could not read the include {name!r}, so nothing was changed."
-        " Fix it and Apply again.",
+        f"Apply refused: beets would skip the include {name}",
+        f"beets could not read the include {name}, so nothing was changed. Fix it and Apply again.",
     )
 
 
@@ -781,8 +804,8 @@ def _rebuild_beets_handle(old: LibraryHandle, read: BeetsConfigRead) -> LibraryH
     threads keep reading the old one until ``open_beets`` installs ``read``.
 
     If ``open_beets`` raises, the teardown is not undone (confuse, plugins and
-    SQLite would each need their own rollback) and the :func:`apply` 500 points
-    at a restart. Measured after ``load_plugins`` raised: GETs still answered
+    SQLite would each need their own rollback) and the :func:`apply` 500 asks for
+    a fix and a second Apply. Measured after ``load_plugins`` raised: GETs still answered
     200, with no plugins loaded; beets reopens the closed SQLite handle on
     demand, and the import registry keeps the old ``Library``.
     """
@@ -841,8 +864,8 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
        renders every Apply 409 as the library-job sentence.
     2c. **Read** — :func:`read_beets_config`, beets' own read of the file. 422
        when it fails, with nothing torn down yet.
-    3. **Threadpool rebuild** — blocking I/O; any exception maps to 500 with the
-       restart hint.
+    3. **Threadpool rebuild** — blocking I/O; any exception maps to 500 with a
+       fix-and-Apply-again recovery.
     4. **Atomic swap** — ``app.state.beets_library`` is replaced only after the
        rebuild succeeds. On a 500 the OLD handle is already torn down
        (:func:`_rebuild_beets_handle`).
@@ -900,9 +923,7 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
                 status_code=500,
                 detail={
                     "message": f"Apply failed during rebuild: {exc}",
-                    "recovery": (
-                        "Restart MusicDrop. The saved config is on disk; cold start will load it."
-                    ),
+                    "recovery": _rebuild_recovery(exc),
                 },
             ) from exc
         app.state.beets_library = new

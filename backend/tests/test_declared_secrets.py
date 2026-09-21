@@ -9,15 +9,20 @@ spotify and tidal make network calls in ``__init__``. Each
   does ``name or self.__module__.split(".")[-1]``);
 - ``config`` imported from beets is the global root;
 - a module-level alias (``mpd_config = config["mpd"]``) adds its keys;
-- a function parameter is resolved by ``_PARAMETER_ROOTS`` only.
+- a function parameter is resolved by ``_PARAMETER_ROOTS`` only, including one
+  named ``config``, which would otherwise read as the global root.
 
-A root this cannot resolve fails the test rather than being skipped.
+A root this cannot resolve fails the test rather than being skipped, and so does
+a declaration the walk does not recognise: each file's count of
+``.redact = True`` / ``setattr(..., "redact", ...)`` in the TEXT must equal the
+declarations the walk resolved.
 """
 
 from __future__ import annotations
 
 import ast
 import importlib.util
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -33,6 +38,12 @@ from app.beets.setup import setup_beets
 #: fetchart's sources declare their keys in ``add_default_config(config)``,
 #: called as ``source.add_default_config(self.config)`` by the plugin.
 _PARAMETER_ROOTS = {("fetchart.py", "config"): ("fetchart",)}
+
+#: Every spelling of a declaration in the text, whatever its AST shape: a plain
+#: or multi-target assign, an annotated assign, and ``setattr``.
+_DECLARATION_TEXT = re.compile(
+    r"""\.redact\s*(?::[^=\n]*)?=\s*True\b|setattr\([^\n]*["']redact["']"""
+)
 
 
 def _package_dir(name: str) -> Path:
@@ -85,8 +96,34 @@ def _aliases(tree: ast.Module) -> dict[str, tuple[str, ...]]:
     return out
 
 
-def _declarations(path: Path, module_name: str) -> Iterator[tuple[str, tuple[str, ...]]]:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+def _bound_by_a_function(node: ast.AST, name: str, parents: dict[ast.AST, ast.AST]) -> bool:
+    """``name`` is a parameter of a function enclosing ``node``."""
+    while node in parents:
+        node = parents[node]
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+            args = node.args
+            every = [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]
+            if any(a is not None and a.arg == name for a in every):
+                return True
+    return False
+
+
+def _declarations(path: Path, module_name: str) -> list[tuple[str, tuple[str, ...]]]:
+    """Every ``.redact = True`` in ``path``, resolved; fails on one it cannot resolve."""
+    text = path.read_text(encoding="utf-8")
+    found = list(_resolved(ast.parse(text), path, module_name))
+    spelled = len(_DECLARATION_TEXT.findall(text))
+    if spelled != len(found):
+        pytest.fail(
+            f"{path.parent.name}/{path.name}: {spelled} redact declaration(s) in the"
+            f" text, {len(found)} resolved by the walk"
+        )
+    return found
+
+
+def _resolved(
+    tree: ast.Module, path: Path, module_name: str
+) -> Iterator[tuple[str, tuple[str, ...]]]:
     aliases = _aliases(tree)
     parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     for node in ast.walk(tree):
@@ -113,6 +150,8 @@ def _declarations(path: Path, module_name: str) -> Iterator[tuple[str, tuple[str
             yield where, (_plugin_section(cls, module_name), *keys)
         elif isinstance(root, ast.Name) and (path.name, root.id) in _PARAMETER_ROOTS:
             yield where, (*_PARAMETER_ROOTS[path.name, root.id], *keys)
+        elif isinstance(root, ast.Name) and _bound_by_a_function(node, root.id, parents):
+            pytest.fail(f"{where}: a .redact declaration on the parameter {root.id!r}")
         elif isinstance(root, ast.Name) and root.id in aliases:
             yield where, (*aliases[root.id], *keys)
         elif isinstance(root, ast.Name) and root.id == "config":
@@ -142,6 +181,33 @@ def test_the_table_matches_what_the_installed_beets_declares() -> None:
     stale = {".".join(p) for p in BEETS_DECLARED_SECRETS if p not in declared}
     assert missing == {}, "declared secret(s) not in BEETS_DECLARED_SECRETS"
     assert stale == set(), "table entries the installed beets no longer declares"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'config["a"]["b"].redact = config["a"]["c"].redact = True\n',
+        'config["a"]["b"].redact: bool = True\n',
+        'setattr(config["a"]["b"], "redact", True)\n',
+        'def add(config):\n    config["b"].redact = True\n',
+    ],
+    ids=["multi-target", "annotated", "setattr", "a-parameter-named-config"],
+)
+def test_a_declaration_the_walk_cannot_resolve_fails_it(tmp_path: Path, source: str) -> None:
+    """Each shape was skipped, or given the global root, without a word."""
+    path = tmp_path / "plugin.py"
+    path.write_text(f"from beets import config\n{source}", encoding="utf-8")
+
+    with pytest.raises(pytest.fail.Exception):
+        _declarations(path, "plugin")
+
+
+def test_the_walk_resolves_a_plain_declaration(tmp_path: Path) -> None:
+    """The control for the test above: the shape beets uses resolves, and passes."""
+    path = tmp_path / "plugin.py"
+    path.write_text('from beets import config\nconfig["a"]["b"].redact = True\n', encoding="utf-8")
+
+    assert _declarations(path, "plugin") == [(f"{tmp_path.name}/plugin.py:2", ("a", "b"))]
 
 
 _INCLUDED = """\

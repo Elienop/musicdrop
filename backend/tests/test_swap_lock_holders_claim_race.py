@@ -67,7 +67,7 @@ class _Holder:
 
 
 def _reset(request: Request) -> Coroutine[Any, Any, object]:
-    return artists.reset_artist_image_endpoint(request, "A", _ANY, _ANY, _ANY, _ANY)
+    return artists.reset_artist_image_endpoint(request, "A", _ANY, _ANY, _ANY)
 
 
 HOLDERS = [

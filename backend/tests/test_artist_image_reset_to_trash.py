@@ -99,11 +99,15 @@ def store(handle: LibraryHandle) -> tuple[Path, Path]:
 
 
 @pytest.fixture
-def client(cache: ArtistImageCache, handle: LibraryHandle) -> Iterator[TestClient]:
+def client(
+    cache: ArtistImageCache, handle: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[TestClient]:
     app.dependency_overrides[get_artist_image_cache] = lambda: cache
     app.dependency_overrides[get_artist_image_http_client] = lambda: object()
     app.dependency_overrides[get_artist_image_service] = lambda: _OffService()
     app.dependency_overrides[get_library] = lambda: handle
+    # The reset reads the handle off ``app.state`` once it holds the swap lock.
+    monkeypatch.setattr(app.state, "beets_library", handle, raising=False)
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -492,6 +496,42 @@ def test_the_move_and_the_clear_run_under_the_beets_swap_lock(
     assert client.post(RESET, params={"name": "ABBA"}).status_code == 200
 
     assert seen == {"move": True, "clear": True}
+
+
+def test_the_reset_uses_the_library_current_once_it_holds_the_lock(
+    client: TestClient,
+    cache: ArtistImageCache,
+    edit_lib: Library,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An Apply that swaps the handle and releases before this route's acquire is seen.
+
+    The handle used to come from a dependency, resolved before the lock, so the
+    move ran against the pre-Apply library and music dir.
+    """
+    from app.library_busy import raise_if_swap_lock_held as real_gate
+
+    swapped = make_test_handle(edit_lib, beets_dir_for(tmp_path))
+    real_store = artists_mod._checked_art_trash_store
+    used: list[LibraryHandle] = []
+
+    def apply_lands_after_the_gate(app_: Any) -> None:
+        real_gate(app_)
+        monkeypatch.setattr(app.state, "beets_library", swapped)
+
+    def store_spy(handle_: LibraryHandle, settings_: Any) -> ArtTrashStore:
+        used.append(handle_)
+        return real_store(handle_, settings_)
+
+    monkeypatch.setattr(artists_mod, "raise_if_swap_lock_held", apply_lands_after_the_gate)
+    monkeypatch.setattr(artists_mod, "_checked_art_trash_store", store_spy)
+    cache.write_override("ABBA", PNG, "image/png")
+
+    assert client.post(RESET, params={"name": "ABBA"}).status_code == 200
+
+    assert len(used) == 1
+    assert used[0] is swapped
 
 
 def test_a_held_swap_lock_refuses_the_reset_instead_of_queueing_behind_it(

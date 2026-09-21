@@ -227,11 +227,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         handle = _resolve_library()
     except CONFIG_ERRORS as exc:
-        # First: a config error is not a library path problem, and the digit
-        # case is a ``ValueError`` the arm below would also catch. ``%r`` of the
-        # exception: a YAML error's own text spans several lines.
+        # ``%r`` of the exception: a YAML error's own text spans several lines.
+        # "or one of its includes": beets' read follows ``include:``, so a typed
+        # value or a skipped include can be the fault.
         _refuse_boot(
-            "refusing to start: beets rejected config.yaml under %s=%r (%r). Fix that file.",
+            "refusing to start: beets rejected config.yaml or one of its includes"
+            " under %s=%r (%r). Fix it.",
             "MUSICDROP_BEETS_DIR",
             settings.beets_dir,
             exc,
@@ -442,11 +443,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.artist_background_source = build_fanart_background_source(http_client, settings)
 
-    # Both drains start here, with nothing that can raise between them and the
-    # ``finally`` that stops them: a boot refused earlier leaves no drain thread
-    # running (measured: the inbox drain used to outlive the bank refusal).
+    # Both drains start here, after every refusal above: a boot refused earlier
+    # leaves no drain thread running (measured: the inbox drain used to outlive
+    # the bank refusal). ``Thread.start`` can raise, so a failed second start
+    # stops the first; after that the ``finally`` stops both.
     acquisition_queue.start()
-    bank_apply_runner.start()
+    try:
+        bank_apply_runner.start()
+    except BaseException:
+        acquisition_queue.stop()
+        raise
     try:
         yield
     finally:

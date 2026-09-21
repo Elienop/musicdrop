@@ -692,8 +692,8 @@ def test_an_include_that_makes_directory_a_non_path_answers_a_lint_row(
 
 @pytest.mark.parametrize(
     "yaml_text",
-    ["a: " + "[" * 5000 + "]" * 5000 + "\n", "a: " + "1" * 5000 + "\n"],
-    ids=["nested-past-the-limit", "an-integer-too-long-to-build"],
+    ["a: " + "[" * 5000 + "]" * 5000 + "\n", "a: " + "1" * 5000 + "\n", "a: !!bool ture\n"],
+    ids=["nested-past-the-limit", "an-integer-too-long-to-build", "a-mistyped-bool-tag"],
 )
 def test_a_document_ruamel_will_not_parse_answers_the_parse_row(
     client: TestClient, beets_library: LibraryHandle, yaml_text: str
@@ -1079,7 +1079,7 @@ def test_the_include_reproduction_agrees_with_a_real_beets_startup(
     import beets
 
     from app.beets.library import close_library
-    from app.beets.setup import setup_beets
+    from app.beets.setup import open_beets, read_beets_config
     from app.beets.store_layout import effective_config_paths
 
     beets_dir = tmp_path / "beets"
@@ -1091,7 +1091,8 @@ def test_the_include_reproduction_agrees_with_a_real_beets_startup(
     text = f"directory: {music}\nlibrary: library.db\n{include_block}"
     (beets_dir / "config.yaml").write_text(text, encoding="utf-8")
 
-    handle = setup_beets(str(beets_dir))
+    # beets' own read and open, without the boot's refusal of a skipped include.
+    handle = open_beets(read_beets_config(str(beets_dir)))
     try:
         from_beets = (
             beets.config["directory"].as_filename(),
@@ -1120,7 +1121,7 @@ def test_the_include_reproduction_agrees_with_beets_on_the_shapes_it_tolerates(
     import beets
 
     from app.beets.library import close_library
-    from app.beets.setup import setup_beets
+    from app.beets.setup import open_beets, read_beets_config
     from app.beets.store_layout import effective_config_paths
 
     beets_dir = tmp_path / "beets"
@@ -1146,7 +1147,8 @@ def test_the_include_reproduction_agrees_with_beets_on_the_shapes_it_tolerates(
     text = f"directory: {music}\nlibrary: library.db\ninclude:\n  - {name}\n"
     (beets_dir / "config.yaml").write_text(text, encoding="utf-8")
 
-    handle = setup_beets(str(beets_dir))
+    # beets' own read and open, without the boot's refusal of a skipped include.
+    handle = open_beets(read_beets_config(str(beets_dir)))
     try:
         from_beets = (
             beets.config["directory"].as_filename(),
@@ -1173,13 +1175,11 @@ def test_an_include_beets_drops_is_an_advisory_and_not_an_error(
 ) -> None:
     """Four shapes a real beets START survives, so none of them is a lint row.
 
-    Measured against ``setup_beets`` over the same file: each one makes beets
-    print one stderr line (``/dev/null`` not even that) and boot with the
-    document's own ``directory:``. The gate refused all four, so a config beets
-    loads was reported broken — and Apply answered 422 on it.
-
-    The advisory says what beets does instead, because the entry IS dropped and
-    every include listed after it is skipped with it.
+    Measured against beets' own read and open over the same file: each one
+    makes beets print one stderr line (``/dev/null`` not even that) and load the
+    document's own ``directory:``. The gate once refused all four as lint rows.
+    Since the owner ruling of 2026-09-21, Apply and boot refuse the three beets
+    prints, so the advisory says that; Validate stays a lint pass.
     """
     music = Path(beets_library.lib.directory.decode())
     name = "overlay.yaml"
@@ -1207,8 +1207,10 @@ def test_an_include_beets_drops_is_an_advisory_and_not_an_error(
         assert _advisories(client, text) == []
     else:
         rows = _advisories(client, text)
-        assert len(rows) == 1, rows
-        assert name in str(rows[0]["message"]), rows
+        assert [row["message"] for row in rows] == [
+            f"beets cannot read the include {name}. Apply and a restart refuse this"
+            " config until it can."
+        ]
 
 
 def test_a_symlinked_include_is_followed_the_way_beets_follows_it(
@@ -1411,3 +1413,42 @@ def test_a_library_that_is_a_directory_draws_one_row_at_validate(
     rows = [e for e in r.json()["errors"] if e["loc"] == "library"]
     assert len(rows) == 1, rows
     assert rows[0]["type"] != "store_layout", rows
+
+
+def test_a_mistyped_bool_tag_names_its_error_at_validate_and_save(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """ruamel raises ``KeyError('ture')``; the bare ``'ture'`` said nothing."""
+    text = "a: !!bool ture\n"
+
+    r = client.post("/api/config/validate", json={"yaml_text": text})
+    assert [e["msg"] for e in r.json()["errors"]] == ["KeyError: 'ture'"], r.json()
+
+    saved = client.post(
+        "/api/config/save",
+        json={"yaml_text": text, "base_sha256": _sha(beets_library.config_path)},
+    )
+    assert [e["msg"] for e in saved.json()["detail"]] == ["KeyError: 'ture'"], saved.text
+
+
+def test_a_mistyped_bool_tag_in_an_include_is_a_row_at_validate_and_a_422_at_save(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """PyYAML reads the include; the ``KeyError`` was a bare 500 on both routes."""
+    bad = beets_library.beets_dir / "bad.yaml"
+    bad.write_text("x: !!bool ture\n", encoding="utf-8")
+    text = _with_include(Path(beets_library.lib.directory.decode()), "bad.yaml")
+    row = (
+        f"`include:` in config.yaml could not be read: {str(bad)!r} raised KeyError:"
+        " 'ture'. Fix the include: list."
+    )
+
+    rows = _layout_rows(client, text)
+    assert [r["msg"] for r in rows] == [row], rows
+
+    saved = client.post(
+        "/api/config/save",
+        json={"yaml_text": text, "base_sha256": _sha(beets_library.config_path)},
+    )
+    assert saved.status_code == 422, saved.text
+    assert [e["msg"] for e in saved.json()["detail"]] == [row], saved.text

@@ -563,9 +563,10 @@ entry carries a dated correction block where the pass changed it._
      (`importer/session.py:91-138`, `:188-191`; no per-session config), so an Apply that swapped
      the sources mid-import dropped the pin (measured: `delete: False` became the user's `yes`,
      `duplicate_action: ask` became `remove`). Closed by mutual exclusion rather than by asserting
-     the value where beets reads it: Apply and every other swap-lock holder now check the job
+     the value where beets reads it: Apply and the other swap-lock holders now check the job
      slots under the claim lock AFTER taking the swap lock (`library_busy.swap_blocked_by_job`),
-     so no import runs while one of them works. The same gap let an overlapping copy-import pick
+     so no import runs while Apply replaces the config. The artist-image reset checks only the
+     artist-art slot and touches no beets config. The same gap let an overlapping copy-import pick
      up Trash restore's forced `move`; closed by the same check. Search words: overlay, pin,
      delete, Apply, swap lock, claim lock, TOCTOU.
    - **Upgrade note owed in the release.** A user running `copy: yes, delete: yes` today has
@@ -819,11 +820,28 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   words: thread leak, acquisition, drain, census.
 - **Save accepts a config that stops MusicDrop starting** (security seat, 2026-09-21, measured;
   owner: record it, fix on the next branch). `musicbrainz: no` saves; a cold `setup_beets` then
-  raises `ConfigTypeError`, so the next start fails. Two sentences are false in that case: Apply's
-  500 recovery line ("cold start will load it", `app/beets/config_editor.py`) and the OpenAPI 500
-  description ("will load on the next start", `app/api/config_.py`). Fix shape not designed:
-  Validate would have to ask beets' typed reads, not only parse the YAML. Search words: L4,
-  ConfigTypeError, musicbrainz, boot, validate, save.
+  raises `ConfigTypeError`, so the next start fails. Apply's 500 recovery and its OpenAPI
+  description used to promise a restart would load the file; they now say to fix it and Apply
+  again, quoting beets' error, and that MusicDrop will not start until then. Apply's own file
+  gate passes the same class (`directory: 5`, `plugins: 5`, `musicbrainz: no`; code-review seat,
+  measured) and tears down before beets rejects the value. Two more ways Save writes a file the
+  next start refuses: Validate and Save only advise on a skipped include, which Apply and boot
+  refuse (owner ruling 2026-09-21), and boot refuses an include list over Apply's caps (32
+  entries or 1 MiB) that beets itself would load. Fix shape not designed: Validate would have
+  to ask beets' typed reads, not only parse the YAML. Search words: L4, ConfigTypeError,
+  musicbrainz, boot, validate, save, include, typed read.
+- **`_CONFIG_FORCE_LOCK` may no longer be reachable under contention** (code-review seat,
+  2026-09-21, reasoned; not measured). Its two callers are the import worker, which runs only
+  while its slot is claimed, and the Trash restore, which now refuses while any import holds a
+  slot. So the Restore arm for `ImportConfigBusyError` was deleted as unreachable (a timeout now
+  surfaces as Restore's 500). If a measurement confirms that no two callers can overlap, delete
+  the lock and its 5 s timeout (`app/beets/import_session.py`) rather than keep a guard nothing
+  reaches. Search words: force lock, ImportConfigBusyError, restore, overlay, reachability.
+- **The config view hides a secret by its setting name, not its value** (security seat,
+  2026-09-21, measured; owner: match beets, record it). A secret copied elsewhere with a YAML
+  anchor or merge key (`other: {<<: *sub}`, `note: *alias`) shows in plain text, as it does in
+  `beet config`. Only the operator can write that. No fix planned. Search words: redact, anchor,
+  alias, merge key, secret, mask.
 - **`GET /api/config` can fail once while an Apply swaps the config** (code-review seat,
   2026-09-21: about 7 failed polls in 1200 Applies against a nonstop poll). One confuse lookup
   reads the source list once, so single reads are safe; `flatten()` makes many lookups and can span

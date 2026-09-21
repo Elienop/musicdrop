@@ -1519,8 +1519,9 @@ def _include_source(target: str, budget: int) -> tuple[confuse.ConfigSource, int
     and the size comes back so the caller can subtract it.
 
     Raises ``ConfigReadError`` for the shapes beets prints-and-continues on, and
-    :func:`_unreadable_include` for the three it does not survive: a FIFO, a
-    descriptor with nothing to read, and a read the budget stops.
+    :func:`_unreadable_include` for the rest: a FIFO, a
+    descriptor with nothing to read, a read the budget stops, and a parse error
+    that is not a ``YAMLError``.
     """
     try:
         fd = os.open(target, os.O_RDONLY | os.O_NONBLOCK)
@@ -1547,7 +1548,15 @@ def _include_source(target: str, budget: int) -> tuple[confuse.ConfigSource, int
         raise _unreadable_include(
             f"{target!r} takes the include: list over its {_MAX_INCLUDE_BYTES}-byte budget"
         )
-    data = confuse.yaml_util.load_yaml_string(buf, target) or {}
+    try:
+        data = confuse.yaml_util.load_yaml_string(buf, target) or {}
+    except confuse.ConfigReadError:
+        raise  # a YAML error: beets prints it and skips the include
+    except Exception as exc:
+        # Everything else a parse raises escapes beets' include loop and ends the
+        # start: measured, ``KeyError`` for ``!!bool ture`` and ``AttributeError``
+        # for a ``!!timestamp`` that is not a date.
+        raise _unreadable_include(f"{target!r} raised {type(exc).__name__}: {exc}") from exc
     if not isinstance(data, dict):
         # What ``YamlSource.load`` raises for the same document, so a beets start
         # over this file refuses too.
@@ -1576,8 +1585,8 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
     no filename — a non-string ``directory:``, say — which the schema reports
     instead. When an INCLUDE is what supplied it the schema never sees the value,
     so this raises a row painted on ``include:``. ``skipped`` names the includes
-    beets drops and this gate did not merge; an advisory, because beets prints
-    them and carries on.
+    beets drops and this gate did not merge, as written in ``include:``: beets
+    prints them and carries on, and Apply and boot refuse them.
     """
     cfg = _CandidateConfig(beets_dir)
     # Defaults first, so the document sits ABOVE them: `library: library.db` and
@@ -1600,11 +1609,13 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
     # the repeat would change which file decides ``directory:``.
     read: dict[str, confuse.ConfigSource] = {}
     budget = _MAX_INCLUDE_BYTES
+    written = ""
     try:
         entries = list(cfg["include"].sequence())
         if len(entries) > _MAX_INCLUDE_ENTRIES:
             raise _too_many_includes(len(entries))
         for view in entries:
+            written = str(view.get())
             # Resolved HERE rather than up front: each entry resolves against
             # the sources set so far, which is what beets' own loop does.
             target = view.as_filename()
@@ -1616,13 +1627,14 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
             cfg.set(merged)
     except confuse.NotFoundError:
         pass  # no ``include:`` key at all
-    except confuse.ConfigReadError as exc:
+    except confuse.ConfigReadError:
         # beets writes one stderr line and carries on, with the ``except`` OUTSIDE
         # the loop (``beets/__init__.py:29-38``), so the first unreadable entry ends
         # the merge. Measured with the guard placed per-entry instead, this function
         # reported an overlay's ``directory:`` that a real ``setup_beets`` over the
-        # same file did not load.
-        skipped.append(exc.name)
+        # same file did not load. Only ``_include_source`` raises this, inside
+        # the loop, so ``written`` holds that entry.
+        skipped.append(written)
     except (confuse.ConfigError, TypeError, ValueError, RecursionError) as exc:
         # The shapes a real start does not survive: a non-list ``include:``, an
         # include whose top level is not a mapping, an entry holding a NUL, an
