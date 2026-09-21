@@ -637,7 +637,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `feat/import-keep-downloads` (PR #232). **The cause recorded here was wrong in four places**, all
   corrected by a diagnosis agent's measurements and re-checked against the code:
   - **Not pre-existing against `main`.** The file, the two leaking tests and both victims were all new
-    on this branch (`7b735e2`, 2026-09-19); "pre-existing" was only true of later rounds on the branch.
+    on this branch (2026-09-19, PR #232); "pre-existing" was only true of later rounds on the branch.
   - **The worker thread never raises.** Two tests started a real import and returned without draining
     it, against the file's own rule (`_drive`, see the comment at `test_import_start_guards.py:174`).
     The leftover worker RELOADS beets' config just after the between-test reset, and confuse's
