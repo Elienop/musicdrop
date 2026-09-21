@@ -557,21 +557,17 @@ entry carries a dated correction block where the pass changed it._
      only when the deleted items held the highest ids (the newest album). After a Replace of
      the newest album the same reuse re-points the entries at the replacement copy, which
      happens to be what the user wants there, by accident. The fix is not designed.
-   - **KNOWN LIMIT — a raced config Apply drops the pin and re-shadows the new config.** Every
-     forced `import.*` key is an overlay on a mutable process global, not an invariant.
-     `reset_beets_globals` calls `beets.config.clear()` (`app/beets/setup.py:133`), so an Apply
-     that wins the documented TOCTOU (`app/beets/config_editor.py:799-812`, gated on
-     `library_job_active()` outside the swap lock) drops the forced source mid-import — and the
-     import's `finally` then inserts its PRE-Apply snapshot on top of the freshly reloaded
-     config, re-shadowing every snapshotted key (13 since `incremental_skip_later` joined the
-     set) for the life of the process. The same race can now revert `incremental_skip_later`
-     mid-run: to a user's `yes` under a sweep (it re-banks the same folders), or to beets'
-     default `no` under a hardlink run whose user also set `incremental: yes` (a SKIP is
-     recorded as done). Acceptable for a
-     single-user self-host and not a data-loss path (the import config lock now 409s the
-     reachable races), but it means "never deletes a source" is "never, outside that race".
-     Closing it properly means asserting the value where beets READS it rather than where we
-     write it, which is a design change, not a patch.
+   - ~~**KNOWN LIMIT — a raced config Apply drops the pin and re-shadows the new config.**~~ —
+     **CLOSED 2026-09-21** on `feat/import-keep-downloads` (PR #232). Every forced `import.*`
+     key is an overlay on a process global, and beets' importer reads `config["import"]` live
+     (`importer/session.py:91-138`, `:188-191`; no per-session config), so an Apply that swapped
+     the sources mid-import dropped the pin (measured: `delete: False` became the user's `yes`,
+     `duplicate_action: ask` became `remove`). Closed by mutual exclusion rather than by asserting
+     the value where beets reads it: Apply and every other swap-lock holder now check the job
+     slots under the claim lock AFTER taking the swap lock (`library_busy.swap_blocked_by_job`),
+     so no import runs while one of them works. The same gap let an overlapping copy-import pick
+     up Trash restore's forced `move`; closed by the same check. Search words: overlay, pin,
+     delete, Apply, swap lock, claim lock, TOCTOU.
    - **Upgrade note owed in the release.** A user running `copy: yes, delete: yes` today has
      manual imports of a plain folder silently removing the source; after the pin they keep it, so
      that folder stops self-emptying. Inbox/slskd paths are unaffected (they send
