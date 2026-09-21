@@ -73,9 +73,12 @@ def setup_beets(beets_dir: str, *, container_music_default: bool = False) -> Lib
 
     file_mtime_at_load = cfg_path.stat().st_mtime
 
-    beets.config["dummy"].exists()  # force confuse's lazy resolve
+    _load_config()
 
     plugins.load_plugins()
+    # A lookup that ran while ``load_plugins`` was still filling the list (e.g.
+    # a request thread during Apply) cached a partial answer; drop it.
+    _clear_metadata_source_caches()
 
     lib_path = beets.config["library"].as_filename()
     directory = beets.config["directory"].as_filename()
@@ -95,7 +98,37 @@ def setup_beets(beets_dir: str, *, container_music_default: bool = False) -> Lib
     )
 
 
-def reset_beets_globals(handle: LibraryHandle | None = None) -> None:
+def _load_config() -> None:
+    """Read ``config.yaml`` + beets' defaults into ``beets.config``.
+
+    First load: confuse's own lazy resolve. Reload (Apply): the config is still
+    materialized from the previous load, so the new source list is read into a
+    separate config object and installed with ONE assignment. A reader on
+    another thread then resolves either the old list or the new one; clearing
+    ``beets.config`` and re-reading it in place let a concurrent reader see (or
+    trigger) a half-read list, which Apply then failed on (``pluginpath not
+    found``, measured 17 of 200 Applies against a polling ``GET /api/config``).
+    """
+    config = beets.config
+    if not config._materialized:
+        config["dummy"].exists()  # force confuse's lazy resolve
+        return
+    fresh = type(config)(config.appname, config.modname)
+    fresh["dummy"].exists()  # reads the files, raising here on a bad config.yaml
+    # Same shape ``clear()`` + a lazy read left: file sources only, no
+    # redactions. Plugin defaults and redactions come back with load_plugins.
+    config.sources = fresh.sources
+    config.redactions = fresh.redactions
+
+
+def _clear_metadata_source_caches() -> None:
+    """Clear the three ``functools.cache`` wrappers in ``beets.metadata_plugins``."""
+    metadata_plugins.find_metadata_source_plugins.cache_clear()
+    metadata_plugins.get_metadata_source.cache_clear()
+    metadata_plugins.get_penalty.cache_clear()
+
+
+def reset_beets_globals(handle: LibraryHandle | None = None, *, keep_config: bool = False) -> None:
     """Tear down all beets/confuse/plugin process-global state.
 
     Mirrors beets' own ``unload_plugins`` (beets/test/helper.py:509-515) and
@@ -107,7 +140,9 @@ def reset_beets_globals(handle: LibraryHandle | None = None) -> None:
     conftest autouse fixture so tests and production share a SINGLE teardown
     body. The autouse passes no handle because it has no reachable
     ``LibraryHandle`` (every test owns its own); production always passes the
-    live handle so the library's SQLite connection is closed first.
+    live handle so the library's SQLite connection is closed first. Apply also
+    passes ``keep_config=True``: ``beets.config`` stays readable until
+    ``setup_beets`` replaces its sources (:func:`_load_config`).
 
     THIS IS A BEETS-2.13-PINNED COMPATIBILITY SHIM. Beets 3.x has open TODOs
     around a real plugin manager (see beets/plugins.py FIXME, PR #5887); the
@@ -135,8 +170,13 @@ def reset_beets_globals(handle: LibraryHandle | None = None) -> None:
     # ``_lazy_prefix``/``_lazy_suffix``); without flipping the flag the next
     # ``setup_beets()`` short-circuits at the ``resolve()`` guard (confuse
     # core.py:728) and the user file is silently ignored.
-    beets.config.clear()
-    beets.config._materialized = False
+    #
+    # ``keep_config=True`` (Apply) skips this: the running process keeps serving
+    # the old config until ``setup_beets`` installs the new one in one step
+    # (:func:`_load_config`).
+    if not keep_config:
+        beets.config.clear()
+        beets.config._materialized = False
 
     # beets plugin teardown — verbatim mirror of unload_plugins.
     plugins._instances.clear()
@@ -147,6 +187,4 @@ def reset_beets_globals(handle: LibraryHandle | None = None) -> None:
     # pinned across a reset would freeze the matcher to plugins from the
     # PREVIOUS load (or an empty list, if queried before plugins loaded),
     # silently shadowing the freshly-loaded plugin instances.
-    metadata_plugins.find_metadata_source_plugins.cache_clear()
-    metadata_plugins.get_metadata_source.cache_clear()
-    metadata_plugins.get_penalty.cache_clear()
+    _clear_metadata_source_caches()

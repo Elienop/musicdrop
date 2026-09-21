@@ -721,9 +721,11 @@ def _rebuild_beets_handle(old: LibraryHandle, beets_dir: str) -> LibraryHandle:
 
     Blocking — runs in FastAPI's threadpool. Pure of the request scope so unit
     tests can drive it directly without an ASGI lifecycle. Order matters:
-    ``reset_beets_globals(old)`` closes the previous library's SQLite handle
-    AND clears confuse + plugin caches, so the subsequent ``setup_beets`` re-
-    reads ``config.yaml`` from scratch instead of replaying the previous load.
+    ``reset_beets_globals(old, keep_config=True)`` closes the previous
+    library's SQLite handle AND clears the plugin state, so the subsequent
+    ``setup_beets`` reloads plugins from scratch. The confuse config is NOT
+    cleared: request threads keep reading the old one until ``setup_beets``
+    installs the re-read ``config.yaml`` in one assignment.
 
     Note: if ``setup_beets()`` raises, the old handle is already torn down —
     the process is in a degraded state and serves errors until restart. The
@@ -732,7 +734,7 @@ def _rebuild_beets_handle(old: LibraryHandle, beets_dir: str) -> LibraryHandle:
     because confuse + plugins + SQLite would each need their own rollback,
     which is exactly the kind of half-recovered state the restart hint avoids.
     """
-    reset_beets_globals(old)
+    reset_beets_globals(old, keep_config=True)
     return setup_beets(beets_dir)
 
 
