@@ -3,8 +3,9 @@
 Five mutually-exclusive job types can hold the library: an import, and the
 lyrics / artist-art / reorganize / disk-sync backfills. Many endpoints refuse
 (409) while any of them runs; the api-layer sites ALSO refuse while the beets
-swap lock is held (a config Apply or duplicate resolve mid-flight). This module
-is the ONE place that union lives, so a sixth job type is wired in exactly once.
+swap lock is held (a config Apply, duplicate resolve, delete, edit, rename,
+cover install or Trash operation mid-flight). This module is the ONE place that
+union lives, so a sixth job type is wired in exactly once.
 
 The job predicates are imported lazily inside the functions so the live binding
 is read at call time: tests monkeypatch the source-module attributes, and the
@@ -72,13 +73,16 @@ _CLAIM_LOCK = threading.Lock()
 # Module-global rather than plumbed through five registries' start() signatures,
 # because the registries hold no reference to the FastAPI app.
 #
-# Config Apply closes its side with :func:`swap_blocked_by_job`: it checks the
-# union under _CLAIM_LOCK AFTER acquiring this lock, so every claim is ordered
-# either before that check (Apply sees the slot and 409s) or after it (the claim
-# sees ``locked()``). The other holders (duplicate resolve, delete, trash,
-# edit, rename, cover, artist-image reset) gate outside _CLAIM_LOCK, so a claim
-# can still land between their gate and their work, including the step where a
-# released lock passes to a waiter.
+# Every holder closes its side AFTER acquiring this lock: Config Apply and the
+# holders in duplicates, delete, rename, edit, cover and ``app/api/trash.py``
+# call :func:`raise_if_swap_blocked_by_job` / :func:`swap_blocked_by_job`, and
+# the artist-image reset asks its narrower artist-art gate inside
+# :func:`no_claim_in_flight`. Each reads the slots under _CLAIM_LOCK, so every
+# claim is ordered either before that read (the holder sees the slot and 409s)
+# or after it (the claim sees ``locked()``). Their gates read BEFORE the acquire
+# stay as a fast refusal only; alone they let a claim land between the gate and
+# the work, including the step where a released lock passes to a waiter
+# (tests/test_config_apply_claim_race.py, tests/test_swap_lock_holders_claim_race.py).
 _SWAP_LOCK: object | None = None
 
 
@@ -93,11 +97,24 @@ def register_swap_lock(lock: object | None) -> None:
 
 
 def _swap_in_progress() -> bool:
-    """Whether a beets swap (config Apply / duplicate resolve / trash) holds the
-    library. Best-effort ``locked()``, never raises if nothing is registered."""
+    """Whether a swap-lock holder (config Apply, duplicate resolve, delete, edit,
+    rename, cover, Trash, artist-image reset) holds the library. Best-effort
+    ``locked()``, never raises if nothing is registered."""
     lock = _SWAP_LOCK
     locked = getattr(lock, "locked", None) if lock is not None else None
     return bool(locked()) if callable(locked) else False
+
+
+@contextmanager
+def no_claim_in_flight() -> Iterator[None]:
+    """Hold ``_CLAIM_LOCK``, so no job claim is between its check and its slot.
+
+    For a swap-lock HOLDER whose job gate is narrower than the union: a gate read
+    inside this is final for the same reason :func:`swap_blocked_by_job` is.
+    Keep the body O(1); a claim from any thread waits on it.
+    """
+    with _CLAIM_LOCK:
+        yield
 
 
 def swap_blocked_by_job() -> bool:
@@ -109,7 +126,7 @@ def swap_blocked_by_job() -> bool:
     read before the acquire is not: ``asyncio.Lock.release()`` clears ``locked()``
     before the next waiter resumes, and a claim fits in that step.
     """
-    with _CLAIM_LOCK:
+    with no_claim_in_flight():
         return library_job_active()
 
 
@@ -175,6 +192,18 @@ def raise_if_swap_lock_held(app: object, *, message: str = LIBRARY_BUSY_MESSAGE)
 
     lock = getattr(getattr(app, "state", None), "beets_swap_lock", None)
     if lock is not None and lock.locked():
+        raise HTTPException(status.HTTP_409_CONFLICT, message)
+
+
+def raise_if_swap_blocked_by_job(*, message: str = LIBRARY_BUSY_MESSAGE) -> None:
+    """Raise ``HTTPException(409, message)`` if :func:`swap_blocked_by_job`.
+
+    The api-layer form for a swap-lock HOLDER: call it first thing inside
+    ``async with`` the lock, so the 409 leaves the lock on its way out.
+    """
+    from fastapi import HTTPException, status
+
+    if swap_blocked_by_job():
         raise HTTPException(status.HTTP_409_CONFLICT, message)
 
 

@@ -55,7 +55,7 @@ from app.beets.sidecars import carry_sidecars, sidecar_base
 from app.beets.store_layout import StoreLayoutError, checked_protected_trees, checked_store_dirs
 from app.beets.trash import TrashMoveIncompleteError, TrashRowUnreadableError, trash_album
 from app.beets.trash_origins import TrashOriginsStoreUnusableError, require_usable_store
-from app.library_busy import library_job_active
+from app.library_busy import library_job_active, raise_if_swap_blocked_by_job
 from app.models.delete import DeleteResult
 
 _log = logging.getLogger(__name__)
@@ -663,6 +663,9 @@ def _partial(exc: Exception, *, moved: int, mutated: int, total: int) -> ArtistD
     )
 
 
+_DELETE_BUSY = "A library operation is in progress; delete available when it finishes"
+
+
 def _gate() -> None:
     """Refuse (409) while any library job that mutates the library is running.
 
@@ -670,10 +673,7 @@ def _gate() -> None:
     files + DB those jobs touch, so it must not overlap them.
     """
     if library_job_active():
-        raise HTTPException(
-            status_code=409,
-            detail="A library operation is in progress; delete available when it finishes",
-        )
+        raise HTTPException(status_code=409, detail=_DELETE_BUSY)
 
 
 def _recovery(exc: Exception) -> str:
@@ -762,6 +762,8 @@ async def delete_album_op(
     app = request.app
     _gate()
     async with _swap_lock(app):
+        # Asked again, now the lock is ours: see ``library_busy``'s swap-lock note.
+        raise_if_swap_blocked_by_job(message=_DELETE_BUSY)
         handle, trash_dir, origins_dir, protected = _checked_store(app)
         try:
             return await run_in_threadpool(
@@ -823,6 +825,8 @@ async def delete_artist_op(
     app = request.app
     _gate()
     async with _swap_lock(app):
+        # Asked again, now the lock is ours: see ``library_busy``'s swap-lock note.
+        raise_if_swap_blocked_by_job(message=_DELETE_BUSY)
         handle, trash_dir, origins_dir, protected = _checked_store(app)
         try:
             return await run_in_threadpool(

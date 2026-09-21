@@ -2150,10 +2150,11 @@ class WebImportSession(ImportSession):
 # narrowed to the config mutation it is named for: ``_trash_replaced_albums``
 # moves albums and drops rows through the same ``Library`` handle after the
 # config has been restored, so releasing earlier lets a Trash restore -- which
-# reaches ``run_import_worker`` on a request thread through the check-then-act
-# window ``library_busy`` documents against itself -- start a second import while
-# the first is still writing. In that window the restore already HOLDS the swap
-# lock, which therefore serialises nothing.
+# runs ``run_import_worker`` on a request thread and claims no job slot -- start
+# a second import while the first is still writing. The restore refuses while an
+# import holds its slot (``library_busy.raise_if_swap_blocked_by_job``); this
+# lock does not depend on when that slot is released. The swap lock the restore
+# holds serialises nothing here: imports never take it.
 #
 # Without it two overlapping calls interleave: the second snapshots the first's
 # FORCED values and its finally writes them in as the user's. beets re-reads that

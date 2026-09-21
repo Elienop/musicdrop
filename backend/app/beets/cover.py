@@ -201,15 +201,15 @@ async def install_cover_op(
     from fastapi.concurrency import run_in_threadpool
 
     from app.beets.config_editor import _swap_lock
-    from app.library_busy import library_job_active
+    from app.library_busy import library_job_active, raise_if_swap_blocked_by_job
 
     app = request_obj.app
+    busy = "A library operation is in progress; cover changes available when it finishes"
     if library_job_active():
-        raise HTTPException(
-            status_code=409,
-            detail="A library operation is in progress; cover changes available when it finishes",
-        )
+        raise HTTPException(status_code=409, detail=busy)
     async with _swap_lock(app):
+        # Asked again, now the lock is ours: see ``library_busy``'s swap-lock note.
+        raise_if_swap_blocked_by_job(message=busy)
         handle = app.state.beets_library
         try:
             return await run_in_threadpool(

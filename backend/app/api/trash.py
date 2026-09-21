@@ -37,7 +37,7 @@ from app.beets.trash_manage import (
     restore_album,
 )
 from app.events.emit import emit_library_changed
-from app.library_busy import raise_if_library_busy
+from app.library_busy import raise_if_library_busy, raise_if_swap_blocked_by_job
 from app.models.errors import ErrorDetail
 from app.models.trash import EmptyResult, RestoreRequest, RestoreResult, TrashListing
 from app.wire import AmbiguousDisplayName
@@ -244,6 +244,8 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
     app = request.app
     _gate(app)
     async with _swap_lock(app):
+        # Asked again, now the lock is ours: see ``library_busy``'s swap-lock note.
+        raise_if_swap_blocked_by_job()
         checked, dest = _child_or_404(app, body.folder)
         try:
             result = await run_in_threadpool(
@@ -276,10 +278,11 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         # 409, not 503: this is the "a library operation is in progress" cause
         # the declared conflict description already names -- an import owns the
-        # beets import config until its review finishes. Reaching it needs the
-        # check-then-act window ``library_busy`` documents against itself, where
-        # this thread otherwise blocked for the length of that review while
-        # holding the swap lock, 409-ing every library route with no cause given.
+        # beets import config until its review finishes. The job check above
+        # refuses while an import holds its slot, so this arm is for a worker
+        # still holding that config outside its slot's active phases; without
+        # it this thread blocked for the length of a review while holding the
+        # swap lock, 409-ing every library route with no cause given.
         except ImportConfigBusyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
@@ -302,6 +305,8 @@ async def empty_trash_one(
     app = request.app
     _gate(app)
     async with _swap_lock(app):
+        # Asked again, now the lock is ours: see ``library_busy``'s swap-lock note.
+        raise_if_swap_blocked_by_job()
         # Inside the lock, and ONE check: the path that gets ``rmtree``'d is
         # derived from the pair that check approved. It used to resolve the
         # child outside the lock from a first check and re-check inside, so the
@@ -354,6 +359,8 @@ async def empty_trash_all(request: Request) -> EmptyResult:
     app = request.app
     _gate(app)
     async with _swap_lock(app):
+        # Asked again, now the lock is ours: see ``library_busy``'s swap-lock note.
+        raise_if_swap_blocked_by_job()
         # Inside the lock, so a config Apply cannot swap the handle between the
         # check and the rmtree.
         checked = _store(app, protected=True)

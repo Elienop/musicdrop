@@ -59,7 +59,11 @@ from app.config import settings as _module_settings
 from app.etag import size_scoped_etag
 from app.events.emit import emit_art_changed, emit_library_changed
 from app.fsutil import open_root
-from app.library_busy import raise_if_library_busy, raise_if_swap_lock_held
+from app.library_busy import (
+    no_claim_in_flight,
+    raise_if_library_busy,
+    raise_if_swap_lock_held,
+)
 from app.models.artist import (
     Artist,
     ArtistImageOverrideResult,
@@ -959,9 +963,11 @@ async def reset_artist_image_endpoint(
     async with _swap_lock(request.app):
         # Asked AGAIN, now that the lock is ours: the gate above read a flag the
         # pre-check's own 409 window and the acquire can outlive, and a sweep
-        # that started meanwhile re-stores the slot this is about to clear. A
-        # 409 raised here leaves the lock through ``async with``.
-        _gate_artist_art_busy()
+        # that started meanwhile re-stores the slot this is about to clear. Under
+        # the claim lock, so a sweep claim already past its swap check is seen.
+        # A 409 raised here leaves the lock through ``async with``.
+        with no_claim_in_flight():
+            _gate_artist_art_busy()
         moved_to_trash = await _move_override_to_trash(handle, settings, cache, name)
         # The AUTOMATIC slot too: a present ``.bin`` means the resolve path never
         # runs, so clearing only the override lands the user back on the image
