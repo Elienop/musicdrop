@@ -632,25 +632,28 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   next run. Open choice: dismissals live in `sessionStorage`, so a dismissed row returns in a new
   tab; `localStorage` would make a done row's dismissal stick, and would also make failed rows'
   dismissals per-browser instead of per-tab. On `main`; not this branch's change.
-- **Test-order flake: a SUBSET run of `backend/tests/test_import_start_guards.py` beside the
-  trash test modules fails with `confuse.exceptions.NotFoundError: timeout not found`** raised from
-  `build_library` after `reset_beets_globals` clears beets' process-global config
-  (`app/beets/setup.py`). Proved pre-existing 2026-09-19: the same five modules with their pre-round
-  content failed `test_a_posted_path_without_a_dotdot_segment_is_still_mapped` (1 failed, 286 passed)
-  while the edited tree failed a different test of the same module; the full suite is green. Not
-  fixed. **Rate measured 2026-09-20** by the review seat, 12 runs of
-  `pytest tests/test_import_start_guards.py tests/test_import_runner.py` on each of two trees:
-  **2/12 failed on this branch's tip and 2/12 on `HEAD`** — identical, so the source-missing round
-  did not worsen it. The victim varies between runs
-  (`..._without_a_dotdot_segment_is_still_mapped`, `..._with_a_dotdot_segment_is_not_mapped`,
-  `test_the_sibling_name_fields_are_bounded`) — **not from test ordering**: `pytest-randomly` is
-  not installed and is absent from `uv.lock` (`find_spec("pytest_randomly")` is False; collection
-  order is deterministic file order, confirmed identical across passing and failing runs). The
-  nondeterminism is a THREAD, which is what the fix has to address. The file's own comment at
-  `:174` names the hazard: a worker thread outliving the test reads beets' config after the autouse
-  reset. Three of the round's new tests start real imports, so the `_drive`-dependent population
-  keeps growing — the argument for fixing it, not for calling it harmless.
-  Search words: flake, subset, order-dependent, `timeout not found`.
+- ~~**Test-order flake: a SUBSET run of `backend/tests/test_import_start_guards.py` fails with
+  `confuse.exceptions.NotFoundError: timeout not found`**~~ — **CLOSED 2026-09-21** on
+  `feat/import-keep-downloads` (PR #232). **The cause recorded here was wrong in four places**, all
+  corrected by a diagnosis agent's measurements and re-checked against the code:
+  - **Not pre-existing against `main`.** The file, the two leaking tests and both victims were all new
+    on this branch (`7b735e2`, 2026-09-19); "pre-existing" was only true of later rounds on the branch.
+  - **The worker thread never raises.** Two tests started a real import and returned without draining
+    it, against the file's own rule (`_drive`, see the comment at `test_import_start_guards.py:174`).
+    The leftover worker RELOADS beets' config just after the between-test reset, and confuse's
+    `LazyConfig.read()` sets `_materialized = True` BEFORE it loads the sources
+    (`confuse/core.py:724`), so for ~5 ms the config looks loaded but holds no defaults. The NEXT test
+    to read `timeout` (`beets/library/library.py:83`, via `build_library`) raised — an innocent
+    neighbour, never the test that leaked.
+  - **In the test body, not SETUP** (pytest reports `when=call`), and **not the `clear()` hazard
+    conftest describes** — it is `read()` setting the flag before loading while another thread lives.
+  - **Not a design question.** Two drains closed it.
+  Why the full suite hid it: by then each test's `tmp_path` setup scans a temp dir of ~7,500 entries
+  and runs a few ms slower, so the neighbour usually arrived after the window closed. Measured: the
+  two-file subset failed **3 of 12** plain and **5 of 5** with the window held open; after the fix
+  **0 of 12** plain and **0 of 5** held open, and removing either drain alone leaves that test's
+  import alive at the reset (the second also fails its neighbour again). Search words: flake,
+  subset, order-dependent, `timeout not found`, LazyConfig, `_materialized`, `_drive`, drain.
 - **`POST /api/trash/restore` and `DELETE /api/trash` still resolve caller-named relative paths
   on the event loop.** Same class as the import start, which was moved off it on 2026-09-20 after
   the security seat measured a **10002.7 ms** loop gap against a 2.1 ms idle baseline on a hung
@@ -758,17 +761,12 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   line reading `WARNING:  ...` sits among genuine ones. Still Low under this threat model - the
   actor is an unauthenticated remote peer gaining a deception / anti-forensics primitive in
   `docker logs`, not code execution or data access.
-- **A pre-existing flaky test, with a control.** `beets.config["timeout"]` raises
-  `confuse.NotFoundError` inside `build_library` during test SETUP in
-  `test_import_start_guards.py`. It needs NO particular file pairing and NO particular order —
-  re-measured 2026-09-20 during the simplification round, it failed **2 of 10** runs of a
-  0.3 s subset holding only the file's first 18 tests, none of which that round touched (the
-  earliest test it edited is collected 57th, so it cannot be upstream of the failure). The
-  victim varies between `test_a_posted_path_with_a_dotdot_segment_is_not_mapped` and
-  `test_the_sibling_name_fields_are_bounded`; the exception is identical. It is the confuse
-  `LazyConfig.clear()` / `_materialized` hazard `backend/tests/conftest.py` already describes. Not fixed: resetting confuse deterministically is
-  a design question and touching the shared conftest could destabilise the suite. Search words:
-  confuse, LazyConfig, NotFoundError, timeout, flaky, build_library.
+- ~~**A pre-existing flaky test, with a control.** `beets.config["timeout"]` raises
+  `confuse.NotFoundError` inside `build_library`~~ — **CLOSED 2026-09-21** (PR #232). The same flake
+  as the "Test-order flake" entry above, recorded twice; its cause, the correction of what was
+  recorded here ("pre-existing", "during test SETUP", "resetting confuse deterministically is a design
+  question") and the measurements are all in that entry. Search words: confuse, LazyConfig,
+  NotFoundError, timeout, flaky, build_library.
 - **Backend user-facing copy is half-curly: sweep the rest.** Owner's call 2026-09-20 — app copy
   uses TYPOGRAPHIC punctuation, because the user never sees a `.py` file, they see one page, and
   the frontend already uses `’` (153 sites) and quotes user data with `“ ”`
@@ -810,6 +808,17 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   file's `_poll_dup_prompt` docstring names the race (outcomes drain first, parked rows second). 0 of
   10 module runs failed under coverage on either tree when run alone. Fix shape: poll the parked
   prompt (or the bridge's slot), not the row, in every registry test that pushes a reply. Not fixed.
+  **Checked 2026-09-21: a DIFFERENT cause from the `timeout not found` flake, and genuinely
+  pre-existing** — these tests use `FakeImportRunner`, which never reads beets config, and fail with
+  `KeyError: no … parked at index 0`; both files and both named test bodies are byte-identical to
+  `origin/main`. `fakes.py` and `registry.py` did change on this branch, so its rate here versus
+  `main` is unmeasured.
+- **Acquisition drain threads outlive their tests** (thread census, 2026-09-21; on `main`). Three
+  `musicdrop-acquisition` threads started by `tests/test_store_layout_boot.py` are still alive after
+  their tests end, and one is still alive at session end. Harmless today: the queue module never reads
+  beets config (read, not measured), so it cannot open the `timeout not found` window. It is the same
+  shape as that flake, though, and becomes one the day the queue reads config. Search words: thread
+  leak, acquisition, drain, test_store_layout_boot, census.
 
 - ~~**`/import`'s feed row starves its title exactly like the two `/review` rows did**~~ —
   **CLOSED 2026-09-11** (on `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at
