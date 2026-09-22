@@ -68,8 +68,8 @@ def test_an_over_long_integer_at_boot_raises_the_real_error(beets_dir: Path) -> 
 
 def _config_refusal(beets_dir: Path, exc: BaseException) -> str:
     return (
-        "refusing to start: beets rejected config.yaml or one of its includes under"
-        f" MUSICDROP_BEETS_DIR={str(beets_dir)!r} ({exc!r}). Fix it."
+        "refusing to start: config.yaml or one of its includes under"
+        f" MUSICDROP_BEETS_DIR={str(beets_dir)!r} cannot be used ({exc!r}). Fix it."
     )
 
 
@@ -174,7 +174,37 @@ def test_an_include_beets_would_skip_refuses_the_boot(
         with TestClient(real_app):
             pass  # pragma: no cover - the lifespan raises before the body runs
 
-    assert str(info.value) == "beets would skip the include gone.yaml"
+    assert str(info.value) == "beets would skip the include gone.yaml: No such file or directory"
+    assert _boot_refusal(caplog) == _config_refusal(beets_dir, info.value)
+
+
+_ROOT_SKIP = pytest.mark.skipif(
+    os.geteuid() == 0, reason="root ignores the permission bits this test sets"
+)
+
+
+@pytest.mark.parametrize(
+    ("shape", "reason"),
+    [
+        ("yaml", "expected ',' or ']', but got '<stream end>' at line 3"),
+        pytest.param("permission", "Permission denied", marks=_ROOT_SKIP),
+    ],
+)
+def test_a_skipped_include_names_why_at_boot(
+    beets_dir: Path, caplog: pytest.LogCaptureFixture, shape: str, reason: str
+) -> None:
+    """Owner ruling 2026-09-21: a YAML error in the refusal carries its line number."""
+    bad = beets_dir / "bad.yaml"
+    bad.write_text("a: 1\nfoo: [unclosed\n", encoding="utf-8")
+    if shape == "permission":
+        bad.chmod(0)
+    _write(beets_dir, "include:\n  - bad.yaml\n")
+
+    with caplog.at_level(logging.ERROR), pytest.raises(ConfigUnreadable) as info:
+        with TestClient(real_app):
+            pass  # pragma: no cover - the lifespan raises before the body runs
+
+    assert str(info.value) == f"beets would skip the include bad.yaml: {reason}"
     assert _boot_refusal(caplog) == _config_refusal(beets_dir, info.value)
 
 

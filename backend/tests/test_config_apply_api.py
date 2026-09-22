@@ -9,13 +9,15 @@ import-gate check uses ``get_registry()`` (the live binding — the autouse
 ``reset_import_registry`` fixture in ``conftest.py`` swaps the module global
 between tests, so the handler must NOT import the name eagerly).
 
-The 500 branch monkeypatches ``app.beets.config_editor.open_beets`` (the name
-the handler captured at import time) — patching the source module would not
-affect the already-bound symbol.
+A rebuild that fails after the teardown puts the old config back and answers
+422 (owner ruling 2026-09-23); the 500 is left for a restore that fails too.
+One 500 test monkeypatches ``app.beets.config_editor.open_beets`` (the name the
+handler captured at import time), so the rebuild and the restore both raise.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from pathlib import Path
@@ -82,13 +84,18 @@ def test_apply_409_when_import_active(client: TestClient, monkeypatch: pytest.Mo
 def test_apply_500_when_open_beets_fails(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Both loads raise: the rebuild, then the restore of the old config."""
     from app.beets import config_editor
 
-    def _boom(_read: object) -> object:
+    calls: list[object] = []
+
+    def _boom(read: object) -> object:
+        calls.append(read)
         raise RuntimeError("boom")
 
     monkeypatch.setattr(config_editor, "open_beets", _boom)
     r = client.post("/api/config/apply")
+    assert len(calls) == 2
     assert r.status_code == 500
     # Pin the response shape. Starlette already wraps our payload as
     # ``{"detail": ...}`` once — so the handler's payload must be a flat dict
@@ -121,6 +128,25 @@ def config_rejected(cause: str) -> str:
 def rebuild_failed(cause: str) -> str:
     """Apply's 500 recovery for any other rebuild failure."""
     return f"Apply stopped partway: {cause}. Fix that and Apply again."
+
+
+def restored_config_rejected(cause: str) -> dict[str, str]:
+    """Apply's 422 body when a config error was put back, copied by hand."""
+    return {
+        "message": f"Apply failed and put the old config back: {cause}",
+        "recovery": (
+            f"beets rejected a value in the config: {cause}, so nothing was changed."
+            " Fix it and Apply again; MusicDrop will not start until you do."
+        ),
+    }
+
+
+def restored_rebuild_failed(cause: str) -> dict[str, str]:
+    """Apply's 422 body when any other rebuild failure was put back."""
+    return {
+        "message": f"Apply failed and put the old config back: {cause}",
+        "recovery": f"Apply stopped: {cause}, so nothing was changed. Fix that and Apply again.",
+    }
 
 
 @pytest.mark.parametrize(
@@ -178,6 +204,22 @@ def _assert_unchanged(client: TestClient, before: _Before) -> None:
     assert app.state.beets_library is before.handle
     assert sorted(p.name for p in plugins.find_plugins()) == before.plugins
     assert before.item.destination() == before.destination
+    assert client.get("/api/albums").status_code == 200
+
+
+def _assert_restored(client: TestClient, before: _Before) -> None:
+    """The old config loaded again, on a fresh handle everything now holds."""
+    from app.import_jobs.registry import get_registry
+    from app.main import app
+
+    restored: LibraryHandle = app.state.beets_library
+    assert restored is not before.handle
+    assert get_registry()._lib is restored.lib
+    assert sorted(p.name for p in plugins.find_plugins()) == before.plugins
+    assert before.item.id is not None
+    item = restored.lib.get_item(before.item.id)
+    assert item is not None
+    assert item.destination() == before.destination
     assert client.get("/api/albums").status_code == 200
 
 
@@ -293,16 +335,58 @@ def test_apply_of_a_config_whose_include_beets_would_skip_changes_nothing(
 
     assert r.status_code == 422, r.text
     assert r.json()["detail"] == {
-        "message": "Apply refused: beets would skip the include overlay.yaml",
+        "message": (
+            "Apply refused: beets would skip the include overlay.yaml: No such file or directory"
+        ),
         "recovery": (
-            "beets could not read the include overlay.yaml, so nothing was changed."
-            " Fix it and Apply again."
+            "beets could not read the include overlay.yaml (No such file or directory),"
+            " so nothing was changed. Fix it and Apply again."
         ),
     }
     _assert_unchanged(client, before)
 
     overlay.write_text("ui:\n  color: no\n", encoding="utf-8")
     assert client.post("/api/config/apply").status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("shape", "reason"),
+    [
+        ("yaml", "expected ',' or ']', but got '<stream end>' at line 3"),
+        pytest.param(
+            "permission",
+            "Permission denied",
+            marks=pytest.mark.skipif(
+                os.geteuid() == 0, reason="root ignores the permission bits this test sets"
+            ),
+        ),
+    ],
+)
+def test_a_skipped_include_names_why_at_apply(
+    client: TestClient, beets_library: LibraryHandle, shape: str, reason: str
+) -> None:
+    """Owner ruling 2026-09-21: a YAML error in the refusal carries its line number."""
+    before = _live_state(client, beets_library)
+    music = Path(beets_library.lib.directory.decode())
+    bad = beets_library.beets_dir / "bad.yaml"
+    bad.write_text("a: 1\nfoo: [unclosed\n", encoding="utf-8")
+    if shape == "permission":
+        bad.chmod(0)
+    beets_library.config_path.write_text(
+        f"directory: {music}\nlibrary: library.db\ninclude:\n  - bad.yaml\n", encoding="utf-8"
+    )
+
+    r = client.post("/api/config/apply")
+
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {
+        "message": f"Apply refused: beets would skip the include bad.yaml: {reason}",
+        "recovery": (
+            f"beets could not read the include bad.yaml ({reason}), so nothing was changed."
+            " Fix it and Apply again."
+        ),
+    }
+    _assert_unchanged(client, before)
 
 
 def test_apply_refuses_the_layout_beets_parses_not_the_one_ruamel_refuses_to(
@@ -385,11 +469,12 @@ def test_a_file_that_breaks_after_the_gate_is_refused_by_the_read(
 def test_a_value_beets_rejects_after_the_teardown_is_fixed_by_a_second_apply(
     client: TestClient, beets_library: LibraryHandle, bad: str, cause: str
 ) -> None:
-    """What the 500's recovery tells the operator to do, done.
+    """What the 422's recovery tells the operator to do, done.
 
-    The file gate passes these and the rebuild's typed read raises. Boot refuses
-    the same files (``tests/test_config_boot.py``), so the recovery does not
-    offer a restart. The page prints only the recovery, so it quotes beets.
+    The file gate passes these and the rebuild's typed read raises, so the old
+    config is put back. Boot refuses the same files
+    (``tests/test_config_boot.py``), so the recovery does not offer a restart.
+    The page prints only the recovery, so it quotes beets.
     """
     from app.main import app
 
@@ -399,8 +484,8 @@ def test_a_value_beets_rejects_after_the_teardown_is_fixed_by_a_second_apply(
 
     r = client.post("/api/config/apply")
 
-    assert r.status_code == 500, r.text
-    assert r.json()["detail"]["recovery"] == config_rejected(cause)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == restored_config_rejected(cause)
 
     cfg.write_text(
         f"directory: {music}\nlibrary: library.db\nplugins:\n  - the\n", encoding="utf-8"
@@ -411,25 +496,116 @@ def test_a_value_beets_rejects_after_the_teardown_is_fixed_by_a_second_apply(
     assert client.get("/api/albums").status_code == 200
 
 
-def test_a_library_beets_cannot_open_is_fixed_by_a_second_apply(
+def test_a_library_beets_cannot_open_puts_the_old_config_back(
     client: TestClient, beets_library: LibraryHandle
 ) -> None:
     """The other arm: not a config error, and boot refuses this file too."""
+    before = _live_state(client, beets_library)
     music = Path(beets_library.lib.directory.decode())
     cfg = beets_library.config_path
     cfg.write_text(f"directory: {music}\nlibrary: /nonexistent-md/x/lib.db\n", encoding="utf-8")
 
     r = client.post("/api/config/apply")
 
-    assert r.status_code == 500, r.text
-    assert r.json()["detail"] == {
-        "message": "Apply failed during rebuild: unable to open database file",
-        "recovery": rebuild_failed("unable to open database file"),
-    }
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == restored_rebuild_failed("unable to open database file")
+    _assert_restored(client, before)
 
     cfg.write_text(f"directory: {music}\nlibrary: library.db\n", encoding="utf-8")
     assert client.post("/api/config/apply").status_code == 200
     assert client.get("/api/albums").status_code == 200
+
+
+def test_a_value_beets_rejects_puts_the_old_config_back(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """Owner ruling 2026-09-23: a failed Apply puts the old config back.
+
+    Measured before the restore: the plugin list came back empty and the same
+    item's destination became a literal ``%the{$artist}/Come Together.mp3``.
+    """
+    before = _live_state(client, beets_library)
+    music = Path(beets_library.lib.directory.decode())
+    beets_library.config_path.write_text(
+        f"directory: {music}\nlibrary: library.db\n"
+        "plugins:\n  - musicbrainz\n  - the\nmusicbrainz: no\n",
+        encoding="utf-8",
+    )
+
+    r = client.post("/api/config/apply")
+
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == restored_config_rejected("musicbrainz must be a dict, not bool")
+    _assert_restored(client, before)
+
+
+def test_the_apply_contract_names_the_restore() -> None:
+    """The 422 covers a load put back; the 500 is left for a restore that failed."""
+    from app.main import app
+
+    responses = app.openapi()["paths"]["/api/config/apply"]["post"]["responses"]
+    assert responses["422"]["description"] == (
+        "config.yaml on disk is not a regular file, is unreadable, skips an include,"
+        " breaks the store layout, or failed to load and the old config was put back;"
+        " the recovery line says what to fix."
+    )
+    assert responses["500"]["description"] == (
+        "The rebuild failed and putting the old config back failed too; fix the"
+        " error the recovery line quotes and Apply again."
+    )
+
+
+def test_a_restored_apply_leaves_the_saved_file_pending(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """The file on disk still differs from what is loaded."""
+    _live_state(client, beets_library)
+    music = Path(beets_library.lib.directory.decode())
+    cfg = beets_library.config_path
+    cfg.write_text(f"directory: {music}\nlibrary: library.db\nplugins: 5\n", encoding="utf-8")
+    later = time.time() + 5
+    os.utime(cfg, (later, later))
+
+    assert client.post("/api/config/apply").status_code == 422
+    assert client.get("/api/config").json()["apply_pending"] is True
+
+
+def test_a_restore_that_fails_too_answers_the_500(
+    client: TestClient, beets_library: LibraryHandle, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The old library file is a directory by the time the restore opens it."""
+    from app.main import app
+
+    _live_state(client, beets_library)
+    music = Path(beets_library.lib.directory.decode())
+    cfg = beets_library.config_path
+    cfg.write_text(f"directory: {music}\nlibrary: other.db\nplugins: 5\n", encoding="utf-8")
+    old_db = beets_library.beets_dir / "library.db"
+    old_db.rename(beets_library.beets_dir / "library.db.moved")
+    old_db.mkdir()
+    cause = "plugins: must be a whitespace-separated string or a list"
+
+    with caplog.at_level(logging.ERROR, logger="uvicorn.error"):
+        r = client.post("/api/config/apply")
+
+    assert r.status_code == 500, r.text
+    assert r.json()["detail"] == {
+        "message": f"Apply failed during rebuild: {cause}",
+        "recovery": config_rejected(cause),
+    }
+    records = [rec for rec in caplog.records if rec.name == "uvicorn.error"]
+    assert [rec.getMessage() for rec in records] == [
+        f"Apply could not put the old config back after: {cause}"
+    ]
+    assert records[0].exc_info is not None
+    assert str(records[0].exc_info[1]) == "unable to open database file"
+    old_db.rmdir()
+    cfg.write_text(
+        f"directory: {music}\nlibrary: library.db\nplugins:\n  - the\n", encoding="utf-8"
+    )
+    assert client.post("/api/config/apply").status_code == 200
+    assert [p.name for p in plugins.find_plugins()] == ["the"]
+    assert app.state.beets_library.lib.path == old_db
 
 
 def test_a_mistyped_tag_in_config_yaml_is_refused_with_nothing_changed(

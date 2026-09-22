@@ -688,3 +688,41 @@ def test_a_trash_aliased_onto_another_store_answers_503_with_its_own_cause(
     assert str(trash_dir) not in detail
     assert list(trash_dir.iterdir()) == [], "nothing moved"
     assert isinstance(cache.get("ABBA"), CachedImage), "the upload is still served"
+
+
+def test_the_refill_looks_up_the_mbid_in_the_library_live_when_it_runs(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fill runs after the swap lock is released; an Apply may land first."""
+    from app.api.artists import get_artist_image_filler
+    from app.beets import library as library_mod
+
+    lookups: list[Any] = []
+
+    class _OnService:
+        def is_enabled(self) -> bool:
+            return True
+
+    class _CapturingFiller:
+        async def fill(
+            self, service: object, name: str, *, get_mbid: Any, grace_seconds: float
+        ) -> None:
+            lookups.append(get_mbid)
+
+    app.dependency_overrides[get_artist_image_service] = lambda: _OnService()
+    app.dependency_overrides[get_artist_image_filler] = lambda: _CapturingFiller()
+    assert client.post(RESET, params={"name": "ABBA"}).status_code == 200
+
+    after_apply = Mock()
+    monkeypatch.setattr(app.state, "beets_library", after_apply)
+    seen: list[object] = []
+
+    def _lookup(lib: object, name: str) -> str:
+        seen.append(lib)
+        return "the-mbid"
+
+    monkeypatch.setattr(library_mod, "get_artist_mbid", _lookup)
+
+    (get_mbid,) = lookups
+    assert get_mbid() == "the-mbid"
+    assert seen == [after_apply.lib]

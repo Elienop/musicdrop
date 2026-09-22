@@ -166,7 +166,8 @@ class ConfigValidationErrorDetail(BaseModel):
 
 
 class NamingRuleError(BaseModel):
-    """One rejected ``replace:`` row of ``POST /api/config/naming/save``.
+    """One rejected ``replace:`` row of ``POST /api/config/naming/save``, or its
+    config.yaml on disk that does not parse (``loc`` empty).
 
     The same three keys as a :class:`~app.models.config_editor.ValidationErrorItem`
     and DELIBERATELY not that model: the naming save builds these dicts by hand
@@ -178,7 +179,7 @@ class NamingRuleError(BaseModel):
     """
 
     loc: str
-    """Which submitted row was rejected, as ``replace[<index>]``."""
+    """Which submitted row was rejected, as ``replace[<index>]``; empty for config.yaml."""
 
     msg: str
     type: str

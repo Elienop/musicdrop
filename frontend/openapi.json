@@ -4525,6 +4525,16 @@
               }
             }
           },
+          "422": {
+            "description": "config.yaml on disk does not parse; the detail quotes the error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "400": {
             "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
             "content": {
@@ -4670,7 +4680,7 @@
             }
           },
           "422": {
-            "description": "A submitted replace: pattern is not a valid regular expression, so the save was refused before anything was written; the body names the offending row. A malformed request body answers with FastAPI's validation shape instead.",
+            "description": "A submitted replace: pattern is not a valid regular expression, or config.yaml on disk does not parse, so the save was refused before anything was written; the body names the problem. A malformed request body answers with FastAPI's validation shape instead.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4700,7 +4710,7 @@
                               "type"
                             ],
                             "title": "NamingRuleError",
-                            "description": "One rejected ``replace:`` row of ``POST /api/config/naming/save``.\n\nThe same three keys as a :class:`~app.models.config_editor.ValidationErrorItem`\nand DELIBERATELY not that model: the naming save builds these dicts by hand\n(``app/beets/config_editor.py::save_naming``) with no ``line``/``column``,\nbecause a bad regex comes from a form row rather than from a position in the\nYAML document - ``loc`` is the row index (``\"replace[0]\"``), which is what\nthe panel would highlight. Reusing the five-field model here would promise a\nline number this route can never send."
+                            "description": "One rejected ``replace:`` row of ``POST /api/config/naming/save``, or its\nconfig.yaml on disk that does not parse (``loc`` empty).\n\nThe same three keys as a :class:`~app.models.config_editor.ValidationErrorItem`\nand DELIBERATELY not that model: the naming save builds these dicts by hand\n(``app/beets/config_editor.py::save_naming``) with no ``line``/``column``,\nbecause a bad regex comes from a form row rather than from a position in the\nYAML document - ``loc`` is the row index (``\"replace[0]\"``), which is what\nthe panel would highlight. Reusing the five-field model here would promise a\nline number this route can never send."
                           },
                           "type": "array",
                           "title": "Detail"
@@ -4794,7 +4804,7 @@
             }
           },
           "422": {
-            "description": "config.yaml on disk is not a regular file, is unreadable, skips an include or breaks the store layout; the recovery line says what to fix.",
+            "description": "config.yaml on disk is not a regular file, is unreadable, skips an include, breaks the store layout, or failed to load and the old config was put back; the recovery line says what to fix.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4804,7 +4814,7 @@
             }
           },
           "500": {
-            "description": "The rebuild failed after the old config was unloaded; fix the error the recovery line quotes and Apply again.",
+            "description": "The rebuild failed and putting the old config back failed too; fix the error the recovery line quotes and Apply again.",
             "content": {
               "application/json": {
                 "schema": {

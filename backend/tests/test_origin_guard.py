@@ -315,8 +315,9 @@ def test_prod_posture_rejects_the_dev_origin_write(tmp_path: Path) -> None:
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
-        env=env,
-        cwd=backend,
+        env={**env, "PYTHONPATH": str(backend)},
+        # Not ``backend``: ``Settings()`` reads ``.env`` from the cwd.
+        cwd=tmp_path,
         timeout=180,
         check=False,
     )

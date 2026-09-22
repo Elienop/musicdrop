@@ -1564,12 +1564,31 @@ def _include_source(target: str, budget: int) -> tuple[confuse.ConfigSource, int
     return confuse.ConfigSource(data, filename=os.path.abspath(target)), len(buf)
 
 
+class SkippedInclude(NamedTuple):
+    """An ``include:`` entry beets would skip, as written, and one clause of why."""
+
+    name: str
+    reason: str
+
+
+def _skip_reason(exc: confuse.ConfigReadError) -> str:
+    """The YAML problem and its 1-based line, else the OS error, else the first line."""
+    reason = exc.reason
+    mark = getattr(reason, "problem_mark", None)
+    problem = getattr(reason, "problem", None)
+    if mark is not None and problem:
+        return f"{problem} at line {mark.line + 1}"
+    if isinstance(reason, OSError) and reason.strerror:
+        return reason.strerror
+    return str(reason).partition("\n")[0]
+
+
 class EffectivePaths(NamedTuple):
     """What beets would load, and the ``include:`` entries the gate skipped."""
 
     directory: str | None
     library: str | None
-    skipped: tuple[str, ...] = ()
+    skipped: tuple[SkippedInclude, ...] = ()
 
 
 def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> EffectivePaths:
@@ -1585,8 +1604,8 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
     no filename — a non-string ``directory:``, say — which the schema reports
     instead. When an INCLUDE is what supplied it the schema never sees the value,
     so this raises a row painted on ``include:``. ``skipped`` names the includes
-    beets drops and this gate did not merge, as written in ``include:``: beets
-    prints them and carries on, and Apply and boot refuse them.
+    beets drops and this gate did not merge, as written in ``include:``, with
+    why: beets prints them and carries on, and Apply and boot refuse them.
     """
     cfg = _CandidateConfig(beets_dir)
     # Defaults first, so the document sits ABOVE them: `library: library.db` and
@@ -1603,7 +1622,7 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
     # exposes — which is bounded by the session gate, by the read budget, and by
     # the rows below, which narrow it to "this file parses as a mapping" rather
     # than "here is its content".
-    skipped: list[str] = []
+    skipped: list[SkippedInclude] = []
     # One read per resolved path, so a repeated entry costs one. The entry is
     # still ``set`` again at its own position: the LAST include wins, so dropping
     # the repeat would change which file decides ``directory:``.
@@ -1627,14 +1646,14 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
             cfg.set(merged)
     except confuse.NotFoundError:
         pass  # no ``include:`` key at all
-    except confuse.ConfigReadError:
+    except confuse.ConfigReadError as exc:
         # beets writes one stderr line and carries on, with the ``except`` OUTSIDE
         # the loop (``beets/__init__.py:29-38``), so the first unreadable entry ends
         # the merge. Measured with the guard placed per-entry instead, this function
         # reported an overlay's ``directory:`` that a real ``setup_beets`` over the
         # same file did not load. Only ``_include_source`` raises this, inside
         # the loop, so ``written`` holds that entry.
-        skipped.append(written)
+        skipped.append(SkippedInclude(written, _skip_reason(exc)))
     except (confuse.ConfigError, TypeError, ValueError, RecursionError) as exc:
         # The shapes a real start does not survive: a non-list ``include:``, an
         # include whose top level is not a mapping, an entry holding a NUL, an
@@ -1662,7 +1681,7 @@ class LayoutCheck(NamedTuple):
     """A candidate document's refusal, and the includes the gate skipped."""
 
     error: StoreLayoutError | None
-    skipped_includes: tuple[str, ...] = ()
+    skipped_includes: tuple[SkippedInclude, ...] = ()
 
 
 def layout_check_for_config(
@@ -1679,7 +1698,7 @@ def layout_check_for_config(
     they are env-derived, and the two values that move through the editor are the
     two :func:`effective_config_paths` reads back out of the document.
     """
-    skipped: tuple[str, ...] = ()
+    skipped: tuple[SkippedInclude, ...] = ()
     try:
         paths = effective_config_paths(document, handle.beets_dir)
         skipped = paths.skipped

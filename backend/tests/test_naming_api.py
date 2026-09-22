@@ -1,4 +1,9 @@
+import hashlib
+
+import pytest
 from fastapi.testclient import TestClient
+
+from app.beets.library import LibraryHandle
 
 
 def _cfg_sha(client: TestClient) -> str:
@@ -68,3 +73,55 @@ def test_save_naming_409_on_stale_sha(client: TestClient) -> None:
         json={"rules": [], "replace": [], "base_sha256": "stale"},
     )
     assert r.status_code == 409
+
+
+_UNCLOSED_TEXT = (
+    "while parsing a flow sequence\n"
+    '  in "<unicode string>", line 2, column 4:\n'
+    "    x: [unclosed\n"
+    "       ^ (line: 2)\n"
+    "expected ',' or ']', but got '<stream end>'\n"
+    '  in "<unicode string>", line 3, column 1:\n'
+    "    \n"
+    "    ^ (line: 3)"
+)
+
+_BROKEN_ON_DISK = pytest.mark.parametrize(
+    ("text", "error"),
+    [("a: 1\nx: [unclosed\n", _UNCLOSED_TEXT), ("a: 1\nx: !!bool ture\n", "KeyError: 'ture'")],
+    ids=["syntax", "mistyped-tag"],
+)
+
+
+@_BROKEN_ON_DISK
+def test_get_naming_names_the_parse_error_of_the_file_on_disk(
+    client: TestClient, beets_library: LibraryHandle, text: str, error: str
+) -> None:
+    """Measured before: a bare 500 for both, while ``GET /api/config`` answered 200."""
+    beets_library.config_path.write_text(text, encoding="utf-8")
+
+    r = client.get("/api/config/naming")
+
+    assert r.status_code == 422, r.text
+    assert r.json() == {"detail": f"config.yaml does not parse: {error}"}
+    assert client.get("/api/config").status_code == 200
+
+
+@_BROKEN_ON_DISK
+def test_save_naming_names_the_parse_error_of_the_file_on_disk(
+    client: TestClient, beets_library: LibraryHandle, text: str, error: str
+) -> None:
+    """The base hash matches the broken file, so the save reaches its re-read."""
+    beets_library.config_path.write_text(text, encoding="utf-8")
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    r = client.post(
+        "/api/config/naming/save",
+        json={"rules": [], "replace": [], "base_sha256": sha},
+    )
+
+    assert r.status_code == 422, r.text
+    assert r.json() == {
+        "detail": [{"loc": "", "msg": f"config.yaml does not parse: {error}", "type": "yaml_parse"}]
+    }
+    assert beets_library.config_path.read_text(encoding="utf-8") == text

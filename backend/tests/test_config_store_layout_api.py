@@ -1206,11 +1206,41 @@ def test_an_include_beets_drops_is_an_advisory_and_not_an_error(
         # beets does exactly that, silently, so there is nothing to advise on.
         assert _advisories(client, text) == []
     else:
+        reason = "No such device or address" if shape == "socket" else "Is a directory"
         rows = _advisories(client, text)
         assert [row["message"] for row in rows] == [
-            f"beets cannot read the include {name}. Apply and a restart refuse this"
-            " config until it can."
+            f"beets cannot read the include {name} ({reason}). Apply and a restart refuse"
+            " this config until it can."
         ]
+
+
+@pytest.mark.parametrize(
+    ("shape", "reason"),
+    [
+        ("yaml", "expected ',' or ']', but got '<stream end>' at line 3"),
+        pytest.param(
+            "permission",
+            "Permission denied",
+            marks=pytest.mark.skipif(
+                os.geteuid() == 0, reason="root ignores the permission bits this test sets"
+            ),
+        ),
+    ],
+)
+def test_a_skipped_include_names_why_at_validate(
+    client: TestClient, beets_library: LibraryHandle, shape: str, reason: str
+) -> None:
+    """Owner ruling 2026-09-21: a YAML error in the refusal carries its line number."""
+    bad = beets_library.beets_dir / "bad.yaml"
+    bad.write_text("a: 1\nfoo: [unclosed\n", encoding="utf-8")
+    if shape == "permission":
+        bad.chmod(0)
+    text = _with_include(Path(beets_library.lib.directory.decode()), "bad.yaml")
+
+    assert [row["message"] for row in _advisories(client, text)] == [
+        f"beets cannot read the include bad.yaml ({reason}). Apply and a restart refuse"
+        " this config until it can."
+    ]
 
 
 def test_a_symlinked_include_is_followed_the_way_beets_follows_it(

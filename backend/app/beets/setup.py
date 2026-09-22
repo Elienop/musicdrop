@@ -137,7 +137,24 @@ class BeetsConfigRead:
     beets_dir: Path
     config_path: Path
     file_mtime_at_load: float
-    fresh: confuse.Configuration | None
+    fresh: confuse.RootView | None
+
+
+def running_config(handle: LibraryHandle) -> BeetsConfigRead:
+    """The config ``handle`` is running on, as a read :func:`open_beets` can install again.
+
+    A copy of ``beets.config``'s source list, taken before Apply's teardown so a
+    failed rebuild can put it back. The file is not re-read: it has changed. The
+    copy still holds the plugins' defaults, which ``load_plugins`` adds again:
+    measured, 5 more sources per restore with ``musicbrainz`` and ``the``, and
+    ``flatten()`` unchanged after three (each duplicate sits below its twin).
+    """
+    return BeetsConfigRead(
+        beets_dir=handle.beets_dir,
+        config_path=handle.config_path,
+        file_mtime_at_load=handle.file_mtime_at_load,
+        fresh=confuse.RootView(beets.config.sources),
+    )
 
 
 def setup_beets(beets_dir: str, *, container_music_default: bool = False) -> LibraryHandle:
@@ -165,7 +182,9 @@ def _refuse_a_broken_include(beets_dir: Path) -> None:
     except StoreLayoutError as exc:
         raise ConfigUnreadable(str(exc)) from exc
     if skipped:
-        raise ConfigUnreadable(f"beets would skip the include {skipped[0]}")
+        raise ConfigUnreadable(
+            f"beets would skip the include {skipped[0].name}: {skipped[0].reason}"
+        )
 
 
 def _write_starter_config(beets_dir: Path, *, container_music_default: bool) -> None:
@@ -295,7 +314,7 @@ def _read_config() -> confuse.Configuration | None:
     return fresh
 
 
-def _install_config(fresh: confuse.Configuration) -> None:
+def _install_config(fresh: confuse.RootView) -> None:
     """Swap ``beets.config``'s sources for ``fresh``'s in one assignment.
 
     Each confuse lookup reads the source list once (``RootView.resolve``), so a

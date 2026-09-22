@@ -8755,6 +8755,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
+            /** @description config.yaml on disk does not parse; the detail quotes the error. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
         };
     };
     preview_naming_api_config_naming_preview_post: {
@@ -8893,7 +8902,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description A submitted replace: pattern is not a valid regular expression, so the save was refused before anything was written; the body names the offending row. A malformed request body answers with FastAPI's validation shape instead. */
+            /** @description A submitted replace: pattern is not a valid regular expression, or config.yaml on disk does not parse, so the save was refused before anything was written; the body names the problem. A malformed request body answers with FastAPI's validation shape instead. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -8968,7 +8977,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description config.yaml on disk is not a regular file, is unreadable, skips an include or breaks the store layout; the recovery line says what to fix. */
+            /** @description config.yaml on disk is not a regular file, is unreadable, skips an include, breaks the store layout, or failed to load and the old config was put back; the recovery line says what to fix. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -8977,7 +8986,7 @@ export interface operations {
                     "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
-            /** @description The rebuild failed after the old config was unloaded; fix the error the recovery line quotes and Apply again. */
+            /** @description The rebuild failed and putting the old config back failed too; fix the error the recovery line quotes and Apply again. */
             500: {
                 headers: {
                     [name: string]: unknown;

@@ -144,10 +144,12 @@ def test_the_app_namespace_reaches_a_real_uvicorns_output(tmp_path: Path) -> Non
         "MUSICDROP_BEETS_DIR": str(tmp_path / "beets"),
         "MUSICDROP_STATIC_DIR": "",
         "MUSICDROP_PASSWORD_HASH": "",
+        "PYTHONPATH": str(backend),
     }
     done = subprocess.run(
         [sys.executable, "-c", _PROBE],
-        cwd=backend,
+        # Not ``backend``: ``Settings()`` reads ``.env`` from the cwd.
+        cwd=tmp_path,
         env=env,
         capture_output=True,
         text=True,

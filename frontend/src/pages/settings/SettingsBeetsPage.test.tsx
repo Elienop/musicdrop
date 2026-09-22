@@ -471,8 +471,7 @@ describe("SettingsPage", () => {
           {
             detail: {
               message: "Apply failed during rebuild: boom",
-              recovery:
-                "Apply stopped partway. Fix the cause and Apply again; a restart runs the same load.",
+              recovery: "Apply stopped partway: boom. Fix that and Apply again.",
             },
           },
           { status: 500 },

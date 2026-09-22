@@ -229,10 +229,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except CONFIG_ERRORS as exc:
         # ``%r`` of the exception: a YAML error's own text spans several lines.
         # "or one of its includes": beets' read follows ``include:``, so a typed
-        # value or a skipped include can be the fault.
+        # value or a skipped include can be the fault. "cannot be used", not
+        # "beets rejected": MusicDrop refuses some includes beets would load.
         _refuse_boot(
-            "refusing to start: beets rejected config.yaml or one of its includes"
-            " under %s=%r (%r). Fix it.",
+            "refusing to start: config.yaml or one of its includes under %s=%r"
+            " cannot be used (%r). Fix it.",
             "MUSICDROP_BEETS_DIR",
             settings.beets_dir,
             exc,

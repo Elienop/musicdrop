@@ -987,7 +987,11 @@ async def reset_artist_image_endpoint(
         await filler.fill(
             service,
             name,
-            get_mbid=lambda: beets_library.get_artist_mbid(handle.lib, name),
+            # The handle at CALL time: the fill runs after the lock is released,
+            # and an Apply landing first would leave ``handle`` closed.
+            get_mbid=lambda: beets_library.get_artist_mbid(
+                request.app.state.beets_library.lib, name
+            ),
             grace_seconds=0.0,
         )
     # UNSCOPED on purpose: the artist image is served under a NORMALIZED name
