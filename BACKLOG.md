@@ -832,23 +832,36 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   Apply is no longer part of the harm: when beets rejects a value after the teardown, Apply puts
   the running config back and answers 422 with beets' error (owner ruling 2026-09-23). It
   answers 500 only if that restore fails too. Validate and Save DO refuse an include list over
-  Apply's caps (32 entries or 1 MiB; code-review seat, measured). Fix shape not designed:
-  Validate would parse with beets' own loader (as `setup.read_config_document` does) and ask
-  beets' typed reads, not only ruamel. Search words: L4, ConfigTypeError, musicbrainz, boot,
-  validate, save, include, typed read, ruamel, PyYAML.
+  Apply's caps (32 entries or 1 MiB; code-review seat, measured). The Naming save answers 200 on
+  a file of the third kind and writes it back with only its two keys changed (security seat).
+  The other direction is safe: ruamel refuses a duplicate key that beets loads (PyYAML keeps the
+  last), so Validate, Save and the Naming routes refuse a file Apply and boot accept (code-review
+  seat, measured). Fix shape not designed: Validate would parse with beets' own loader (as
+  `setup.read_config_document` does) and ask beets' typed reads, not only ruamel. Search words:
+  L4, ConfigTypeError, musicbrainz, boot, validate, save, include, typed read, ruamel, PyYAML,
+  duplicate key.
 - **Small residuals of Apply's restore and the include gate** (review seats, 2026-09-23).
-  - On the restore path, the layout backstop's refusal would say "Apply loaded config.yaml,
-    but …", which is false there. It is reachable only if the running layout became refused
-    after it loaded, and no test reaches it without patching.
   - Each restore installs the plugins' default sources again: 5 more per restore with two
     plugins. The values are unchanged. The list resets on the next good Apply or restart.
-  - The Naming panel shows "Could not load naming config." for the new 422, not its parse text,
-    because the frontend never reads that body. This is a frontend change.
+  - A refused config's `pluginpath` stays importable after the restore, ahead of the bundled
+    plugins: beets adds it (`beets/plugins.py:381,385`) before the check that fails. Setting
+    `pluginpath` already runs the operator's code, so this adds no power.
+  - The Naming panel shows "Could not load naming config." for its 422s (a `config.yaml` that
+    cannot be read, does not parse, or is not a mapping), not their text, because the frontend
+    never reads that body. This is a frontend change.
+  - ruamel's round-trip drops a comment that sits before `---`, on Save and the Naming save
+    alike.
+  - A FIFO planted as `config.yaml` would hang `GET /api/config` and the Naming routes (reasoned,
+    not measured). Apply's gate refuses it.
+  - The bank, slskd, Plex and playlist stores resolve `MUSICDROP_BEETS_DIR` on every call, so
+    they follow a beets-dir symlink re-pointed while MusicDrop runs. Apply uses the dir resolved
+    at boot.
   - The GET artist-image route's refill closure keeps the library handle from its dependency.
     A lookup that races an Apply can read the old library. It is read-only.
   - A FIFO swapped in between the boot gate's open of an include and beets' own open still hangs
     boot. It needs write access to the beets dir.
-  Search words: restore, backstop, sources, naming 422, get_mbid, FIFO, include race.
+  Search words: restore, sources, pluginpath, naming 422, get_mbid, FIFO, include race, `---`,
+  re-pointed symlink.
 - **`_CONFIG_FORCE_LOCK` may no longer be reachable under contention** (code-review seat,
   2026-09-21, reasoned; not measured). Its two callers are the import worker, which runs only
   while its slot is claimed, and the Trash restore, which now refuses while any import holds a
