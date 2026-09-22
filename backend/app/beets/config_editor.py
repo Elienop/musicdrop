@@ -493,7 +493,9 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
                 status_code=409,
                 detail={
                     "detail": "File changed on disk",
-                    "current_yaml_text": on_disk_bytes.decode("utf-8"),
+                    # ``replace``: beets cannot read a non-UTF-8 file either,
+                    # and the conflict panel only shows it.
+                    "current_yaml_text": on_disk_bytes.decode("utf-8", errors="replace"),
                     "current_sha256": on_disk_sha,
                 },
             )
@@ -550,6 +552,28 @@ def _unparsed_on_disk(exc: Exception) -> str:
     return f"config.yaml does not parse: {parse_error_text(exc)}"
 
 
+class _UnusableOnDisk(Exception):
+    """config.yaml on disk cannot be edited as settings; ``str()`` is the 422 text."""
+
+
+def _on_disk_mapping(on_disk_bytes: bytes) -> CommentedMap:
+    """config.yaml as the Naming routes edit it.
+
+    Measured with beets' own loader: an empty or comment-only file reads as no
+    settings, and any other top level that is not a mapping is refused.
+    """
+    try:
+        doc = parse_yaml(on_disk_bytes.decode("utf-8"))
+    # Broad, as Validate's arm is: see :func:`parse_yaml`.
+    except Exception as exc:
+        raise _UnusableOnDisk(_unparsed_on_disk(exc)) from exc
+    if doc is None:
+        return CommentedMap()
+    if not isinstance(doc, CommentedMap):
+        raise _UnusableOnDisk("config.yaml must be a mapping of settings.")
+    return doc
+
+
 def read_naming(handle: LibraryHandle) -> NamingConfig:
     """Parse the on-disk ``paths:``/``replace:`` into structured rows + CAS sha,
     falling back per key to beets' built-in defaults so the panel reflects the
@@ -562,10 +586,9 @@ def read_naming(handle: LibraryHandle) -> NamingConfig:
     on_disk_bytes = handle.config_path.read_bytes()
     sha = hashlib.sha256(on_disk_bytes).hexdigest()
     try:
-        doc = parse_yaml(on_disk_bytes.decode("utf-8"))
-    # Broad, as Validate's arm is: see :func:`parse_yaml`.
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=_unparsed_on_disk(exc)) from exc
+        doc = _on_disk_mapping(on_disk_bytes)
+    except _UnusableOnDisk as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # ``or {}`` is not enough — a truthy scalar/list (from a hand-corrupted
     # config like ``paths: somestring``) would survive it and then ``.items()``
@@ -691,18 +714,20 @@ def save_naming(handle: LibraryHandle, req: SaveNamingRequest) -> BeetsConfigSna
                 status_code=409,
                 detail={
                     "detail": "File changed on disk",
-                    "current_yaml_text": on_disk_bytes.decode("utf-8"),
+                    # ``replace``: beets cannot read a non-UTF-8 file either,
+                    # and the conflict panel only shows it.
+                    "current_yaml_text": on_disk_bytes.decode("utf-8", errors="replace"),
                     "current_sha256": on_disk_sha,
                 },
             )
 
         # 3. Round-trip merge — only the two nodes change.
         try:
-            doc = parse_yaml(on_disk_bytes.decode("utf-8"))
-        except Exception as exc:
+            doc = _on_disk_mapping(on_disk_bytes)
+        except _UnusableOnDisk as exc:
             raise HTTPException(
                 status_code=422,
-                detail=[{"loc": "", "msg": _unparsed_on_disk(exc), "type": "yaml_parse"}],
+                detail=[{"loc": "", "msg": str(exc), "type": "yaml_parse"}],
             ) from exc
         paths = _naming_map(req.rules)
         if paths:

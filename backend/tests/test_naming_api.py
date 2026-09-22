@@ -125,3 +125,78 @@ def test_save_naming_names_the_parse_error_of_the_file_on_disk(
         "detail": [{"loc": "", "msg": f"config.yaml does not parse: {error}", "type": "yaml_parse"}]
     }
     assert beets_library.config_path.read_text(encoding="utf-8") == text
+
+
+@pytest.mark.parametrize("text", ["", "# nothing set here\n"], ids=["empty", "comment-only"])
+def test_get_naming_reads_an_empty_file_as_beets_defaults(
+    client: TestClient, beets_library: LibraryHandle, text: str
+) -> None:
+    """beets' loader reads these as no settings; before, ``None.get`` was a bare 500."""
+    beets_library.config_path.write_text("a: 1\n", encoding="utf-8")
+    defaults = client.get("/api/config/naming").json()
+    beets_library.config_path.write_text(text, encoding="utf-8")
+
+    r = client.get("/api/config/naming")
+
+    assert r.status_code == 200, r.text
+    assert {k: v for k, v in r.json().items() if k != "sha256"} == {
+        k: v for k, v in defaults.items() if k != "sha256"
+    }
+
+
+_NOT_A_MAPPING = pytest.mark.parametrize("text", ["- a\n", "hello\n"], ids=["list", "scalar"])
+
+
+@_NOT_A_MAPPING
+def test_get_naming_refuses_a_file_that_is_not_a_mapping(
+    client: TestClient, beets_library: LibraryHandle, text: str
+) -> None:
+    """beets' loader refuses these too; before, a bare 500."""
+    beets_library.config_path.write_text(text, encoding="utf-8")
+
+    r = client.get("/api/config/naming")
+
+    assert r.status_code == 422, r.text
+    assert r.json() == {"detail": "config.yaml must be a mapping of settings."}
+
+
+@_NOT_A_MAPPING
+def test_save_naming_refuses_a_file_that_is_not_a_mapping(
+    client: TestClient, beets_library: LibraryHandle, text: str
+) -> None:
+    beets_library.config_path.write_text(text, encoding="utf-8")
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    r = client.post(
+        "/api/config/naming/save",
+        json={"rules": [], "replace": [], "base_sha256": sha},
+    )
+
+    assert r.status_code == 422, r.text
+    assert r.json() == {
+        "detail": [
+            {"loc": "", "msg": "config.yaml must be a mapping of settings.", "type": "yaml_parse"}
+        ]
+    }
+    assert beets_library.config_path.read_text(encoding="utf-8") == text
+
+
+def test_save_naming_writes_into_an_empty_file(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    beets_library.config_path.write_text("", encoding="utf-8")
+    sha = hashlib.sha256(b"").hexdigest()
+
+    r = client.post(
+        "/api/config/naming/save",
+        json={
+            "rules": [{"query": "default", "template": "$artist/$title"}],
+            "replace": [],
+            "base_sha256": sha,
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    assert beets_library.config_path.read_text(encoding="utf-8") == (
+        "paths:\n  default: $artist/$title\n"
+    )

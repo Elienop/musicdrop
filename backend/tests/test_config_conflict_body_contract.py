@@ -167,3 +167,17 @@ def test_the_other_error_models_reject_the_conflict_body(
     body = response.json()
     with pytest.raises(ValidationError):
         model.model_validate(body)
+
+
+@pytest.mark.parametrize("path", _SAVE_ROUTES)
+def test_a_conflict_with_a_file_that_is_not_utf8_still_answers_409(
+    client: TestClient, beets_library_config_path: Path, path: str
+) -> None:
+    """Strict UTF-8 decoding of the file on disk made this a bare 500."""
+    valid = beets_library_config_path.read_text(encoding="utf-8")
+    beets_library_config_path.write_bytes(b"a: 1\nb: \xff\n")
+
+    response = client.post(path, json=_save_request(path, valid))
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["current_yaml_text"] == "a: 1\nb: �\n"
