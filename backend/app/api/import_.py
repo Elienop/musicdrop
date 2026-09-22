@@ -333,7 +333,7 @@ async def start_import(
             # in-library copy; the status and the body shape are the same.
             raise HTTPException(status_code=422, detail=str(exc)) from None
         except (LibraryRefusedError, LibraryRootUnavailableError) as exc:
-            # Apply loaded a refused layout, or the music share is not there: an
+            # Apply loaded or put back a refused layout, or the music share is not there: an
             # import would write into a root the app refuses to file into. The
             # refused-layout arm is a RuntimeError, so it stays ahead of that one.
             raise HTTPException(status_code=503, detail=str(exc)) from None

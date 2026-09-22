@@ -412,10 +412,11 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
        because the file this writes is also the file the process boots from — a
        config saved in that shape would refuse to start on the next restart.
     3. **SHA-256 CAS** — compare ``req.base_sha256`` to the SHA-256 of the
-       on-disk bytes. Mismatch -> 409 with ``current_yaml_text`` (raw on-disk
-       file) and ``current_sha256`` so the frontend's merge view can render
-       the diff. SHA-256 alone is the CAS token (no mtime check): nanosecond
-       mtime ints overflow JavaScript's ``Number.MAX_SAFE_INTEGER`` and
+       on-disk bytes; a file it cannot read -> 422, and nothing is created.
+       Mismatch -> 409 with ``current_yaml_text`` (raw on-disk file) and
+       ``current_sha256`` so the frontend's merge view can render the diff.
+       SHA-256 alone is the CAS token (no mtime check): nanosecond mtime ints
+       overflow JavaScript's ``Number.MAX_SAFE_INTEGER`` and
        silently corrupt across the JSON wire — the SHA already covers every
        bytes-changed edit, including the rare ``os.utime`` "preserve mtime,
        change content" case (see ``test_save_409_on_sha_change``). The CAS token
@@ -486,15 +487,24 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
     # concurrent save can't pass the same-base check and clobber this one
     # (last-writer-wins).
     with _SAVE_LOCK:
-        on_disk_bytes = handle.config_path.read_bytes()
+        # A 422, and no write: the file is not created, because Apply's
+        # recovery for a missing file is to restore it.
+        try:
+            on_disk_bytes = _read_on_disk(handle.config_path)
+        except _UnusableOnDisk as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=[
+                    {"loc": "", "msg": str(exc), "type": "yaml_parse", "line": None, "column": None}
+                ],
+            ) from exc
         on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
         if on_disk_sha != req.base_sha256:
             raise HTTPException(
                 status_code=409,
                 detail={
                     "detail": "File changed on disk",
-                    # ``replace``: beets cannot read a non-UTF-8 file either,
-                    # and the conflict panel only shows it.
+                    # ``replace``: the conflict panel only shows it.
                     "current_yaml_text": on_disk_bytes.decode("utf-8", errors="replace"),
                     "current_sha256": on_disk_sha,
                 },
@@ -556,19 +566,49 @@ class _UnusableOnDisk(Exception):
     """config.yaml on disk cannot be edited as settings; ``str()`` is the 422 text."""
 
 
+def _read_on_disk(config_path: Path) -> bytes:
+    """config.yaml's bytes for both save routes and the Naming GET; an OS error is a 422."""
+    try:
+        return config_path.read_bytes()
+    except OSError as exc:
+        raise _UnusableOnDisk(
+            f"config.yaml could not be read: {exc.strerror or type(exc).__name__}."
+        ) from exc
+
+
+def _empty_mapping_keeping(text: str) -> CommentedMap | None:
+    """``text``, which holds no YAML node, as an empty mapping that keeps its comments.
+
+    ``None`` when it does not come back as one: an explicit null (``~``) is a
+    node, and the ``{}`` appended after it does not replace it.
+    """
+    if text and not text.endswith("\n"):
+        text += "\n"  # else ``{}`` would sit inside the last comment
+    try:
+        doc = parse_yaml(text + "{}\n")
+    # Broad: whatever this raises is about the ``{}`` added here, not the file.
+    except Exception:
+        return None
+    return doc if isinstance(doc, CommentedMap) else None
+
+
 def _on_disk_mapping(on_disk_bytes: bytes) -> CommentedMap:
     """config.yaml as the Naming routes edit it.
 
-    Measured with beets' own loader: an empty or comment-only file reads as no
-    settings, and any other top level that is not a mapping is refused.
+    beets reads an empty, comment-only or falsy top level as no settings
+    (``load_yaml(...) or {}``, ``confuse/sources.py:101``). Here a file with no
+    YAML node is an empty mapping that keeps its comments; every other top
+    level that is not a mapping is refused, ``~``, ``[]`` and ``false``
+    included, because a save could not keep their comments.
     """
     try:
-        doc = parse_yaml(on_disk_bytes.decode("utf-8"))
+        text = on_disk_bytes.decode("utf-8")
+        doc = parse_yaml(text)
     # Broad, as Validate's arm is: see :func:`parse_yaml`.
     except Exception as exc:
         raise _UnusableOnDisk(_unparsed_on_disk(exc)) from exc
     if doc is None:
-        return CommentedMap()
+        doc = _empty_mapping_keeping(text)
     if not isinstance(doc, CommentedMap):
         raise _UnusableOnDisk("config.yaml must be a mapping of settings.")
     return doc
@@ -583,12 +623,12 @@ def read_naming(handle: LibraryHandle) -> NamingConfig:
     ``previews`` and ``replace_errors`` are left empty here — the router fills
     them by calling the renderer with ``handle.lib`` (this function stays
     config-only, no library access)."""
-    on_disk_bytes = handle.config_path.read_bytes()
-    sha = hashlib.sha256(on_disk_bytes).hexdigest()
     try:
+        on_disk_bytes = _read_on_disk(handle.config_path)
         doc = _on_disk_mapping(on_disk_bytes)
     except _UnusableOnDisk as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    sha = hashlib.sha256(on_disk_bytes).hexdigest()
 
     # ``or {}`` is not enough — a truthy scalar/list (from a hand-corrupted
     # config like ``paths: somestring``) would survive it and then ``.items()``
@@ -707,22 +747,21 @@ def save_naming(handle: LibraryHandle, req: SaveNamingRequest) -> BeetsConfigSna
     # 2. CAS. Read → compare → merge → write under _SAVE_LOCK so a concurrent
     # save can't pass the same-base check and clobber this one.
     with _SAVE_LOCK:
-        on_disk_bytes = handle.config_path.read_bytes()
-        on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
-        if on_disk_sha != req.base_sha256:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "detail": "File changed on disk",
-                    # ``replace``: beets cannot read a non-UTF-8 file either,
-                    # and the conflict panel only shows it.
-                    "current_yaml_text": on_disk_bytes.decode("utf-8", errors="replace"),
-                    "current_sha256": on_disk_sha,
-                },
-            )
-
-        # 3. Round-trip merge — only the two nodes change.
         try:
+            on_disk_bytes = _read_on_disk(handle.config_path)
+            on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
+            if on_disk_sha != req.base_sha256:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "detail": "File changed on disk",
+                        # ``replace``: the conflict panel only shows it.
+                        "current_yaml_text": on_disk_bytes.decode("utf-8", errors="replace"),
+                        "current_sha256": on_disk_sha,
+                    },
+                )
+
+            # 3. Round-trip merge — only the two nodes change.
             doc = _on_disk_mapping(on_disk_bytes)
         except _UnusableOnDisk as exc:
             raise HTTPException(
@@ -878,8 +917,9 @@ def _restore_beets_handle(running: BeetsConfigRead) -> LibraryHandle:
     """Load ``running`` (:func:`running_config`) again, after a failed rebuild.
 
     The same two steps as :func:`_rebuild_beets_handle`. The teardown runs again
-    because a ``load_plugins`` that raised partway leaves the plugins it built
-    registered; the old library is already closed.
+    because the failed rebuild may have registered the new config's plugins, and
+    ``load_plugins`` loads nothing while any are (``beets/plugins.py:456``); the
+    old library is already closed.
     """
     reset_beets_globals(keep_config=True)
     return open_beets(running)
@@ -964,9 +1004,9 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
        while the config is replaced.
     2b. **File gate** — 422 when config.yaml ON DISK is missing, unreadable,
        skips an include, or has a refused store layout (:func:`on_disk_refusal`).
-       Before the rebuild, because a failure after its teardown strands the
-       process with no working config; 422 and not 409, because the page
-       renders every Apply 409 as the library-job sentence.
+       Before beets' read: that read blocks on a FIFO include, and loads a
+       refused layout or skips an include without raising. 422 and not 409,
+       because the page renders every Apply 409 as the library-job sentence.
     2c. **Read** — :func:`read_beets_config`, beets' own read of the file. 422
        when it fails, with nothing torn down yet.
     3. **Threadpool rebuild** — blocking I/O (:func:`_rebuild_or_restore`). When
@@ -1002,7 +1042,10 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
         if refusal is not None:
             raise HTTPException(status_code=422, detail=refusal._asdict())
         try:
-            read = await run_in_threadpool(read_beets_config, settings.beets_dir)
+            # ``old.beets_dir``, the dir resolved at boot, not the setting: the
+            # gate above read that dir, and a symlinked setting re-pointed since
+            # made the restore open another dir's library.
+            read = await run_in_threadpool(read_beets_config, str(old.beets_dir))
         except Exception as exc:
             # Nothing is torn down yet, so the old config, plugins and library
             # keep serving. Broad on purpose: whatever the read raised, the
@@ -1049,18 +1092,27 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
             # started in this state was accepted and wrote into the beets data
             # dir, so ``start`` now refuses with this sentence.
             # ``.exception``: the record carries the traceback with the
-            # sentence, like the three boot refusals.
+            # sentence, like the three boot refusals. After a restore the
+            # config running is the old one, and the rejected value is still in
+            # config.yaml, so the answer is the restore's.
             logging.getLogger("uvicorn.error").exception(
-                "Apply loaded a config whose store layout is refused: %s", exc
+                "Apply %s a config whose store layout is refused: %s",
+                "loaded" if failure is None else "put back",
+                exc,
             )
+            did = "loaded config.yaml" if failure is None else "put the old config back"
             get_registry().attach_library(
                 new.lib,
                 None,
                 bank_dir=get_bank_dir(),
                 playlists_dir=get_playlists_dir(),
                 trash_origins_dir=None,
-                refusal=f"Apply loaded config.yaml, but {exc}",
+                refusal=f"Apply {did}, but {exc}",
             )
+            if failure is not None:
+                raise HTTPException(
+                    status_code=422, detail=_restored_refusal(failure)._asdict()
+                ) from failure
             raise HTTPException(
                 status_code=422,
                 detail={

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import socket
 from pathlib import Path
@@ -859,7 +860,10 @@ def test_a_directory_that_arrives_through_a_merge_key_gets_a_gutter_line(
 
 
 def test_apply_refuses_after_the_rebuild_when_the_file_changes_after_the_gate(
-    client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+    client: TestClient,
+    beets_library: LibraryHandle,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The backstop, driven by the gap it exists for: two reads of one file.
 
@@ -874,6 +878,7 @@ def test_apply_refuses_after_the_rebuild_when_the_file_changes_after_the_gate(
     """
     from app.beets import config_editor
     from app.beets.setup import read_beets_config as real_read
+    from app.beets.store_layout import StoreLayoutError, checked_store_dirs
     from app.import_jobs.registry import get_registry
     from app.main import app
 
@@ -886,9 +891,15 @@ def test_apply_refuses_after_the_rebuild_when_the_file_changes_after_the_gate(
     monkeypatch.setattr(config_editor, "read_beets_config", _edited_after_the_gate)
     handle_before = app.state.beets_library
 
-    r = client.post("/api/config/apply")
+    with caplog.at_level(logging.ERROR, logger="uvicorn.error"):
+        r = client.post("/api/config/apply")
 
     assert r.status_code == 422, r.text
+    with pytest.raises(StoreLayoutError) as refused:
+        checked_store_dirs(config_editor._settings(app), app.state.beets_library)
+    assert [rec.getMessage() for rec in caplog.records if rec.name == "uvicorn.error"] == [
+        f"Apply loaded a config whose store layout is refused: {refused.value}"
+    ]
     body = r.json()["detail"]
     assert body["message"] == (
         "Apply loaded config.yaml, but The beets data directory is the music library"
@@ -906,10 +917,63 @@ def test_apply_refuses_after_the_rebuild_when_the_file_changes_after_the_gate(
     started = client.post("/api/import", json={"path": str(beets_library.beets_dir.parent)})
     assert started.status_code == 503, started.text
     detail = started.json()["detail"]
-    assert "The beets data directory is the music library" in detail
     # The refusal used to be built as "but {headline}. {exc}" while str(exc)
     # already opens with the headline, so the 503 said it twice.
-    assert detail.count("The beets data directory is the music library") == 1
+    assert detail == f"Apply loaded config.yaml, but {refused.value}"
+
+
+def test_a_restore_onto_a_refused_layout_answers_the_restore_not_loaded(
+    client: TestClient,
+    beets_library: LibraryHandle,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A backstop 422 leaves a refused layout running; the next Apply fails and puts it back.
+
+    Measured before: the 422 said "Apply loaded config.yaml, but" and offered a
+    restart, which boot refuses while the rejected value is still in the file.
+    """
+    from app.beets import config_editor
+    from app.beets.setup import read_beets_config as real_read
+    from app.beets.store_layout import StoreLayoutError, checked_store_dirs
+    from app.main import app
+
+    def _edited_after_the_gate(beets_dir: str) -> object:
+        beets_library.config_path.write_text(
+            f"library: library.db\ndirectory: {beets_library.beets_dir}\n", encoding="utf-8"
+        )
+        return real_read(beets_dir)
+
+    monkeypatch.setattr(config_editor, "read_beets_config", _edited_after_the_gate)
+    assert client.post("/api/config/apply").status_code == 422
+    monkeypatch.setattr(config_editor, "read_beets_config", real_read)
+    with pytest.raises(StoreLayoutError) as refused:
+        checked_store_dirs(config_editor._settings(app), app.state.beets_library)
+    music = beets_library.beets_dir.parent / "music"
+    beets_library.config_path.write_text(
+        f"directory: {music}\nlibrary: library.db\nplugins:\n  - musicbrainz\nmusicbrainz: no\n",
+        encoding="utf-8",
+    )
+    cause = "musicbrainz must be a dict, not bool"
+    caplog.clear()
+
+    with caplog.at_level(logging.ERROR, logger="uvicorn.error"):
+        r = client.post("/api/config/apply")
+
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {
+        "message": f"Apply failed and put the old config back: {cause}",
+        "recovery": (
+            f"beets rejected a value in the config: {cause}, so nothing was changed."
+            " Fix it and Apply again; MusicDrop will not start until you do."
+        ),
+    }
+    assert [rec.getMessage() for rec in caplog.records if rec.name == "uvicorn.error"] == [
+        f"Apply put back a config whose store layout is refused: {refused.value}"
+    ]
+    started = client.post("/api/import", json={"path": str(music)})
+    assert started.status_code == 503, started.text
+    assert started.json()["detail"] == f"Apply put the old config back, but {refused.value}"
 
 
 def test_a_document_with_no_directory_key_gets_the_schema_row_and_no_layout_row(
@@ -1217,7 +1281,7 @@ def test_an_include_beets_drops_is_an_advisory_and_not_an_error(
 @pytest.mark.parametrize(
     ("shape", "reason"),
     [
-        ("yaml", "expected ',' or ']', but got '<stream end>' at line 3"),
+        ("yaml", "YAML error at line 3"),
         pytest.param(
             "permission",
             "Permission denied",
@@ -1469,8 +1533,8 @@ def test_a_mistyped_bool_tag_in_an_include_is_a_row_at_validate_and_a_422_at_sav
     bad.write_text("x: !!bool ture\n", encoding="utf-8")
     text = _with_include(Path(beets_library.lib.directory.decode()), "bad.yaml")
     row = (
-        f"`include:` in config.yaml could not be read: {str(bad)!r} raised KeyError:"
-        " 'ture'. Fix the include: list."
+        f"`include:` in config.yaml could not be read: {str(bad)!r} raised KeyError."
+        " Fix the include: list."
     )
 
     rows = _layout_rows(client, text)

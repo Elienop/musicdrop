@@ -1,4 +1,6 @@
 import hashlib
+import os
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -144,14 +146,30 @@ def test_get_naming_reads_an_empty_file_as_beets_defaults(
     }
 
 
-_NOT_A_MAPPING = pytest.mark.parametrize("text", ["- a\n", "hello\n"], ids=["list", "scalar"])
+_NOT_A_MAPPING = pytest.mark.parametrize(
+    "text",
+    ["- a\n", "hello\n", "~\n", "# a\n~\n# b\n", "[]\n", "false\n", "0\n", "''\n"],
+    ids=[
+        "list",
+        "scalar",
+        "null",
+        "null-with-comments",
+        "empty-list",
+        "false",
+        "zero",
+        "empty-str",
+    ],
+)
 
 
 @_NOT_A_MAPPING
 def test_get_naming_refuses_a_file_that_is_not_a_mapping(
     client: TestClient, beets_library: LibraryHandle, text: str
 ) -> None:
-    """beets' loader refuses these too; before, a bare 500."""
+    """beets refuses the first two and reads the falsy ones as no settings.
+
+    Refused here all the same: a save could not keep a falsy file's comments.
+    """
     beets_library.config_path.write_text(text, encoding="utf-8")
 
     r = client.get("/api/config/naming")
@@ -200,3 +218,102 @@ def test_save_naming_writes_into_an_empty_file(
     assert beets_library.config_path.read_text(encoding="utf-8") == (
         "paths:\n  default: $artist/$title\n"
     )
+
+
+_SAVED_RULE = {"query": "default", "template": "$artist/$title"}
+
+
+@pytest.mark.parametrize(
+    ("text", "rules", "written"),
+    [
+        ("# a\n# b\n", [_SAVED_RULE], "# a\n# b\npaths:\n  default: $artist/$title\n"),
+        ("# a\n# b\n", [], "# a\n# b\n{}\n"),
+        ("# a", [_SAVED_RULE], "# a\npaths:\n  default: $artist/$title\n"),
+        ("%YAML 1.1\n---\n# a\n", [_SAVED_RULE], "# a\npaths:\n  default: $artist/$title\n"),
+    ],
+    ids=["comments", "comments-no-rules", "no-final-newline", "markers"],
+)
+def test_save_naming_keeps_the_comments_of_a_file_with_no_settings(
+    client: TestClient,
+    beets_library: LibraryHandle,
+    text: str,
+    rules: list[dict[str, str]],
+    written: str,
+) -> None:
+    """Measured before: the 200 wrote only the new keys and every comment was gone."""
+    from app.beets.setup import read_config_document
+
+    cfg = beets_library.config_path
+    cfg.write_text(text, encoding="utf-8")
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    r = client.post(
+        "/api/config/naming/save",
+        json={"rules": rules, "replace": [], "base_sha256": sha},
+    )
+
+    assert r.status_code == 200, r.text
+    assert cfg.read_text(encoding="utf-8") == written
+    assert read_config_document(cfg) == ({"paths": {"default": "$artist/$title"}} if rules else {})
+
+
+def _unreadable_config(cfg: Path, shape: str) -> str:
+    """Make ``cfg`` unreadable as ``shape``; return the OS problem it reports."""
+    cfg.unlink()
+    if shape == "directory":
+        cfg.mkdir()
+        return "Is a directory"
+    if shape == "permission":
+        cfg.write_text("a: 1\n", encoding="utf-8")
+        cfg.chmod(0)
+        return "Permission denied"
+    return "No such file or directory"
+
+
+_UNREADABLE = pytest.mark.parametrize(
+    "shape",
+    [
+        "absent",
+        "directory",
+        pytest.param(
+            "permission",
+            marks=pytest.mark.skipif(
+                os.geteuid() == 0, reason="root ignores the permission bits this test sets"
+            ),
+        ),
+    ],
+)
+
+
+@_UNREADABLE
+def test_get_naming_refuses_a_config_it_cannot_read(
+    client: TestClient, beets_library: LibraryHandle, shape: str
+) -> None:
+    """Before, a bare 500; ``GET /api/config`` answers 200 for the same file."""
+    problem = _unreadable_config(beets_library.config_path, shape)
+
+    r = client.get("/api/config/naming")
+
+    assert r.status_code == 422, r.text
+    assert r.json() == {"detail": f"config.yaml could not be read: {problem}."}
+    assert client.get("/api/config").status_code == 200
+
+
+@_UNREADABLE
+def test_save_naming_refuses_a_config_it_cannot_read(
+    client: TestClient, beets_library: LibraryHandle, shape: str
+) -> None:
+    problem = _unreadable_config(beets_library.config_path, shape)
+
+    r = client.post(
+        "/api/config/naming/save",
+        json={"rules": [_SAVED_RULE], "replace": [], "base_sha256": "0" * 64},
+    )
+
+    assert r.status_code == 422, r.text
+    assert r.json() == {
+        "detail": [
+            {"loc": "", "msg": f"config.yaml could not be read: {problem}.", "type": "yaml_parse"}
+        ]
+    }
+    assert client.get("/api/config").status_code == 200

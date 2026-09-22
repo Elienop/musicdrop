@@ -1556,7 +1556,8 @@ def _include_source(target: str, budget: int) -> tuple[confuse.ConfigSource, int
         # Everything else a parse raises escapes beets' include loop and ends the
         # start: measured, ``KeyError`` for ``!!bool ture`` and ``AttributeError``
         # for a ``!!timestamp`` that is not a date.
-        raise _unreadable_include(f"{target!r} raised {type(exc).__name__}: {exc}") from exc
+        # The class alone: its text quotes the value, which can be a secret.
+        raise _unreadable_include(f"{target!r} raised {type(exc).__name__}") from exc
     if not isinstance(data, dict):
         # What ``YamlSource.load`` raises for the same document, so a beets start
         # over this file refuses too.
@@ -1572,12 +1573,15 @@ class SkippedInclude(NamedTuple):
 
 
 def _skip_reason(exc: confuse.ConfigReadError) -> str:
-    """The YAML problem and its 1-based line, else the OS error, else the first line."""
+    """A YAML error's 1-based line, else the OS error, else the first line.
+
+    Not PyYAML's problem text: for an undefined alias or an unknown tag it
+    quotes the token, which can be an unquoted secret.
+    """
     reason = exc.reason
     mark = getattr(reason, "problem_mark", None)
-    problem = getattr(reason, "problem", None)
-    if mark is not None and problem:
-        return f"{problem} at line {mark.line + 1}"
+    if mark is not None:
+        return f"YAML error at line {mark.line + 1}"
     if isinstance(reason, OSError) and reason.strerror:
         return reason.strerror
     return str(reason).partition("\n")[0]
@@ -1660,7 +1664,7 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
         # include nested past the recursion limit. Measured, all four escaped the
         # old ``except confuse.ConfigError`` and the three routes answered a bare
         # 500 or reported the document CLEAN.
-        raise _unreadable_include(str(exc)) from exc
+        raise _unreadable_include(f"{written!r}: {exc}" if written else str(exc)) from exc
     names = tuple(skipped)
     document_file = str(beets_dir / "config.yaml")
     resolved: dict[str, str] = {}

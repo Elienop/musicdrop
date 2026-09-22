@@ -186,7 +186,7 @@ _ROOT_SKIP = pytest.mark.skipif(
 @pytest.mark.parametrize(
     ("shape", "reason"),
     [
-        ("yaml", "expected ',' or ']', but got '<stream end>' at line 3"),
+        ("yaml", "YAML error at line 3"),
         pytest.param("permission", "Permission denied", marks=_ROOT_SKIP),
     ],
 )
@@ -237,7 +237,7 @@ def test_a_mistyped_tag_in_an_include_refuses_the_boot_and_names_it(beets_dir: P
 
     assert str(info.value) == (
         f"`include:` in config.yaml could not be read: {str(beets_dir / 'bad.yaml')!r}"
-        " raised KeyError: 'ture'. Fix the include: list."
+        " raised KeyError. Fix the include: list."
     )
 
 

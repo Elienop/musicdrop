@@ -85,8 +85,10 @@ reading the file for every ``Settings()`` a test builds. The two image caches
 default to the REPO ROOT's ``data/cache`` (the dev instance's real one, toggle
 files included) and ``import plexapi`` reads ``~/.config/plexapi``; environment
 variables set here point all three into a sandbox, before the import. Child
-processes inherit them through ``{**os.environ}``; the ones that are not pytest
-start in a scratch cwd, so they read no ``.env`` either.
+processes inherit them through ``{**os.environ}``. A child pytest loads this
+floor. The hash CLI (``tests/test_auth_credentials.py``) runs from
+``backend/`` and imports no ``app.config``; the other Python children start in
+a scratch cwd. So none reads ``.env``.
 """
 
 import contextlib

@@ -93,8 +93,10 @@ def _unreadable(exc: Exception, config_path: Path, *, includes: bool) -> ConfigU
         mark = getattr(exc.reason, "problem_mark", None)
         return ConfigUnreadable(str(exc), None if mark is None else mark.line + 1)
     if includes:
+        # The class alone: the fault may be in an include, whose text the config
+        # view masks, and the exception's text quotes the value (``'ture'``).
         return ConfigUnreadable(
-            f"{config_path} or one of its includes could not be read: {_named(exc)}",
+            f"{config_path} or one of its includes could not be read: {type(exc).__name__}",
             subject="config.yaml or one of its includes",
         )
     return ConfigUnreadable(f"{config_path} could not be read: {_named(exc)}")

@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import NamedTuple
 
@@ -352,7 +353,7 @@ def test_apply_of_a_config_whose_include_beets_would_skip_changes_nothing(
 @pytest.mark.parametrize(
     ("shape", "reason"),
     [
-        ("yaml", "expected ',' or ']', but got '<stream end>' at line 3"),
+        ("yaml", "YAML error at line 3"),
         pytest.param(
             "permission",
             "Permission denied",
@@ -384,6 +385,76 @@ def test_a_skipped_include_names_why_at_apply(
         "recovery": (
             f"beets could not read the include bad.yaml ({reason}), so nothing was changed."
             " Fix it and Apply again."
+        ),
+    }
+    _assert_unchanged(client, before)
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        ("a: 1\nkey: *Hunter2Alias\n", "YAML error at line 2"),
+        ("a: 1\nkey: !Hunter2Tag x\n", "YAML error at line 2"),
+        ("a: 1\nkey: !Hunter2Handle!x y\n", "YAML error at line 2"),
+    ],
+    ids=["undefined-alias", "unknown-tag", "undefined-tag-handle"],
+)
+def test_a_skipped_include_quotes_nothing_from_inside_it(
+    client: TestClient, beets_library: LibraryHandle, text: str, reason: str
+) -> None:
+    """PyYAML's problem text quoted the token, which can be an unquoted secret."""
+    before = _live_state(client, beets_library)
+    music = Path(beets_library.lib.directory.decode())
+    (beets_library.beets_dir / "secret.yaml").write_text(text, encoding="utf-8")
+    beets_library.config_path.write_text(
+        f"directory: {music}\nlibrary: library.db\ninclude:\n  - secret.yaml\n",
+        encoding="utf-8",
+    )
+
+    r = client.post("/api/config/apply")
+
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {
+        "message": f"Apply refused: beets would skip the include secret.yaml: {reason}",
+        "recovery": (
+            f"beets could not read the include secret.yaml ({reason}), so nothing was changed."
+            " Fix it and Apply again."
+        ),
+    }
+    _assert_unchanged(client, before)
+
+
+@pytest.mark.parametrize(
+    ("include", "detail"),
+    [
+        (
+            "\n  - good.yaml\n  - list.yaml\n",
+            "'list.yaml': YAML config must be a mapping, got <class 'list'>",
+        ),
+        ('\n  - "nul\\0.yaml"\n', "'nul\\x00.yaml': open: embedded null character in path"),
+        (" good.yaml\n", "include must be a list, not str"),
+    ],
+    ids=["not-a-mapping", "nul", "not-a-list"],
+)
+def test_an_include_refusal_names_the_entry_as_written(
+    client: TestClient, beets_library: LibraryHandle, include: str, detail: str
+) -> None:
+    """Measured before: the first two named no entry. ``include:`` itself has none."""
+    before = _live_state(client, beets_library)
+    music = Path(beets_library.lib.directory.decode())
+    (beets_library.beets_dir / "good.yaml").write_text("a: 1\n", encoding="utf-8")
+    (beets_library.beets_dir / "list.yaml").write_text("- a\n", encoding="utf-8")
+    beets_library.config_path.write_text(
+        f"directory: {music}\nlibrary: library.db\ninclude:{include}", encoding="utf-8"
+    )
+
+    r = client.post("/api/config/apply")
+
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {
+        "message": "Apply refused: `include:` in config.yaml could not be read",
+        "recovery": (
+            f"`include:` in config.yaml could not be read: {detail}. Fix the include: list."
         ),
     }
     _assert_unchanged(client, before)
@@ -648,8 +719,8 @@ def test_a_mistyped_tag_in_an_include_is_refused_with_nothing_changed(
     assert r.json()["detail"] == {
         "message": "Apply refused: `include:` in config.yaml could not be read",
         "recovery": (
-            f"`include:` in config.yaml could not be read: {str(bad)!r} raised KeyError:"
-            " 'ture'. Fix the include: list."
+            f"`include:` in config.yaml could not be read: {str(bad)!r} raised KeyError."
+            " Fix the include: list."
         ),
     }
     _assert_unchanged(client, before)
@@ -681,12 +752,84 @@ def test_a_file_that_breaks_after_the_gate_in_an_include_is_not_blamed_on_config
 
     assert r.status_code == 422, r.text
     assert r.json()["detail"] == {
-        "message": (
-            f"Apply refused: {cfg} or one of its includes could not be read: KeyError: 'ture'"
-        ),
+        "message": (f"Apply refused: {cfg} or one of its includes could not be read: KeyError"),
         "recovery": (
             "beets could not read config.yaml or one of its includes, so nothing was"
             " changed. Fix the file and Apply again."
         ),
     }
     _assert_unchanged(client, before)
+
+
+@pytest.fixture
+def repointed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[Path, Path]]:
+    """Booted through ``beets -> beetsA``; the link now points at ``beetsB``.
+
+    ``beetsB/config.yaml`` holds a value beets rejects, and each dir has its own
+    library path. Yields ``(beetsA, beetsB)``.
+    """
+    from app.beets.library import close_library
+    from app.beets.setup import setup_beets
+    from app.main import app
+
+    music = tmp_path / "music"
+    music.mkdir()
+    a, b = tmp_path / "beetsA", tmp_path / "beetsB"
+    a.mkdir()
+    b.mkdir()
+    (a / "config.yaml").write_text(
+        f"directory: {music}\nlibrary: library.db\nplugins:\n  - the\n", encoding="utf-8"
+    )
+    (b / "config.yaml").write_text(
+        f"directory: {music}\nlibrary: library.db\nplugins:\n  - musicbrainz\nmusicbrainz: no\n",
+        encoding="utf-8",
+    )
+    link = tmp_path / "beets"
+    link.symlink_to(a)
+    monkeypatch.setattr("app.config.settings.beets_dir", str(link))
+    prior = getattr(app.state, "beets_library", None)
+    app.state.beets_library = setup_beets(str(link))
+    link.unlink()
+    link.symlink_to(b)
+    try:
+        yield a, b
+    finally:
+        close_library(app.state.beets_library.lib)
+        if prior is None:
+            del app.state.beets_library
+        else:
+            app.state.beets_library = prior
+
+
+def test_a_repointed_beets_dir_is_not_read_until_a_restart(repointed: tuple[Path, Path]) -> None:
+    """The gate read the booted dir; beets read the setting again, and loaded the other."""
+    from app.main import app
+
+    a, b = repointed
+
+    r = TestClient(app).post("/api/config/apply")
+
+    assert r.status_code == 200, r.text
+    assert app.state.beets_library.lib.path == a / "library.db"
+    assert os.environ["BEETSDIR"] == str(a)
+    assert not (b / "library.db").exists()
+
+
+def test_a_failed_apply_after_a_repoint_puts_back_the_booted_library(
+    repointed: tuple[Path, Path],
+) -> None:
+    """Measured before: the 422 said nothing was changed and the restore opened ``beetsB``."""
+    from app.main import app
+
+    a, b = repointed
+    (a / "config.yaml").write_text(
+        (b / "config.yaml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    r = TestClient(app).post("/api/config/apply")
+
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == restored_config_rejected("musicbrainz must be a dict, not bool")
+    assert app.state.beets_library.lib.path == a / "library.db"
+    assert os.environ["BEETSDIR"] == str(a)
+    assert not (b / "library.db").exists()

@@ -11,8 +11,10 @@ overflow JS's ``Number.MAX_SAFE_INTEGER`` and silently corrupt the round-trip).
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -187,3 +189,55 @@ def test_save_preserves_comments(client: TestClient, beets_library_config_path: 
     )
     assert r.status_code == 200
     assert "# my hand-authored note" in beets_library_config_path.read_text()
+
+
+@pytest.mark.parametrize(
+    ("shape", "problem"),
+    [
+        ("absent", "No such file or directory"),
+        ("directory", "Is a directory"),
+        pytest.param(
+            "permission",
+            "Permission denied",
+            marks=pytest.mark.skipif(
+                os.geteuid() == 0, reason="root ignores the permission bits this test sets"
+            ),
+        ),
+    ],
+)
+def test_save_refuses_a_config_it_cannot_read_and_writes_nothing(
+    client: TestClient, beets_library_config_path: Path, shape: str, problem: str
+) -> None:
+    """Measured before: a bare 500. Creating the file would hide a missing mount."""
+    cfg = beets_library_config_path
+    text = cfg.read_text(encoding="utf-8")
+    sha = _cas(client)
+    cfg.unlink()
+    if shape == "directory":
+        cfg.mkdir()
+    elif shape == "permission":
+        cfg.write_text(text, encoding="utf-8")
+        cfg.chmod(0)
+    listing = sorted(os.listdir(cfg.parent))
+
+    r = client.post("/api/config/save", json={"yaml_text": text, "base_sha256": sha})
+
+    assert r.status_code == 422, r.text
+    assert r.json() == {
+        "detail": [
+            {
+                "loc": "",
+                "msg": f"config.yaml could not be read: {problem}.",
+                "type": "yaml_parse",
+                "line": None,
+                "column": None,
+            }
+        ]
+    }
+    assert sorted(os.listdir(cfg.parent)) == listing
+    assert os.path.lexists(cfg) is (shape != "absent")
+    if shape == "directory":
+        assert os.listdir(cfg) == []
+    if shape == "permission":
+        cfg.chmod(0o600)
+        assert cfg.read_text(encoding="utf-8") == text

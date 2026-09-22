@@ -82,8 +82,9 @@ _SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
     (
         # The rows carry a 1-based line and 0-based column where there is one,
         # and a malformed request body answers with FastAPI's own shape instead.
-        "The YAML did not parse, a key has the wrong shape, or its directory:/"
-        "library: would break the store layout; the body lists one item per problem."
+        "The YAML did not parse, a key has the wrong shape, its directory:/library:"
+        " would break the store layout, or config.yaml on disk cannot be read; the"
+        " body lists one item per problem."
     ),
 )
 
@@ -93,13 +94,13 @@ _SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
 #: row (``loc`` is ``replace[<index>]``) rather than from a position in the YAML
 #: document. Sharing one model would promise a line number this route can never
 #: send - see app/models/errors.py::NamingRuleError. A config.yaml on disk that
-#: does not parse is one row with an empty ``loc``.
+#: cannot be read or does not parse is one row with an empty ``loc``.
 _NAMING_SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
     NamingValidationErrorDetail,
     (
         "A submitted replace: pattern is not a valid regular expression, or"
-        " config.yaml on disk does not parse, so the save was refused before"
-        " anything was written; the body names the problem. A malformed request"
+        " config.yaml on disk cannot be read or does not parse, so the save was"
+        " refused before anything was written; the body names the problem. A malformed request"
         " body answers with FastAPI's validation shape instead."
     ),
 )
@@ -208,7 +209,9 @@ def save_config(req: SaveRequest, request: Request) -> BeetsConfigSnapshot:
     responses={
         422: {
             "model": ErrorDetail,
-            "description": "config.yaml on disk does not parse; the detail quotes the error.",
+            "description": (
+                "config.yaml on disk cannot be read or does not parse; the detail says why."
+            ),
         },
     },
 )
