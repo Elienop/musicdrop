@@ -572,7 +572,10 @@ entry carries a dated correction block where the pass changed it._
    - **Upgrade note owed in the release.** A user running `copy: yes, delete: yes` today has
      manual imports of a plain folder silently removing the source; after the pin they keep it, so
      that folder stops self-emptying. Inbox/slskd paths are unaffected (they send
-     `operation="move"`). Name `move` as the supported alternative.
+     `operation="move"`). Name `move` as the supported alternative. Also name the new boot
+     refusals (owner ruling 2026-09-21): a config that started on the previous release stops at
+     boot if an `include:` is missing or broken, or if the include list is over 32 entries or
+     1 MiB. Before, beets loaded it without the include and said so only on stderr.
    - **Reference.** Lidarr v3.1.0 applies "Use Hardlinks instead of Copy" only on its copy path,
      as hardlink-else-copy (`TrackFileMovingService`, `DiskTransferService`), and keeps Remote
      Path Mappings per client host.
@@ -819,17 +822,33 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   parent commit, 1, left by `test_an_unreadable_import_bank_gets_the_one_error_line_too`). Search
   words: thread leak, acquisition, drain, census.
 - **Save accepts a config that stops MusicDrop starting** (security seat, 2026-09-21, measured;
-  owner: record it, fix on the next branch). `musicbrainz: no` saves; a cold `setup_beets` then
-  raises `ConfigTypeError`, so the next start fails. Apply's 500 recovery and its OpenAPI
-  description used to promise a restart would load the file; they now say to fix it and Apply
-  again, quoting beets' error, and that MusicDrop will not start until then. Apply's own file
-  gate passes the same class (`directory: 5`, `plugins: 5`, `musicbrainz: no`; code-review seat,
-  measured) and tears down before beets rejects the value. Two more ways Save writes a file the
-  next start refuses: Validate and Save only advise on a skipped include, which Apply and boot
-  refuse (owner ruling 2026-09-21), and boot refuses an include list over Apply's caps (32
-  entries or 1 MiB) that beets itself would load. Fix shape not designed: Validate would have
-  to ask beets' typed reads, not only parse the YAML. Search words: L4, ConfigTypeError,
-  musicbrainz, boot, validate, save, include, typed read.
+  owner: record it, fix on the next branch). Three ways, each measured: Validate is clean and
+  Save writes the file, then the next start refuses it.
+  - A value beets rejects only when it reads it typed: `musicbrainz: no`, `plugins: 5`,
+    `directory: 5` (`ConfigTypeError`).
+  - A skipped include, which Validate and Save only advise on; Apply and boot refuse it.
+  - YAML that ruamel accepts and PyYAML refuses: `!!python/object/apply:…` tags and complex
+    keys such as `? [a]`.
+  Apply is no longer part of the harm: when beets rejects a value after the teardown, Apply puts
+  the running config back and answers 422 with beets' error (owner ruling 2026-09-23). It
+  answers 500 only if that restore fails too. Validate and Save DO refuse an include list over
+  Apply's caps (32 entries or 1 MiB; code-review seat, measured). Fix shape not designed:
+  Validate would parse with beets' own loader (as `setup.read_config_document` does) and ask
+  beets' typed reads, not only ruamel. Search words: L4, ConfigTypeError, musicbrainz, boot,
+  validate, save, include, typed read, ruamel, PyYAML.
+- **Small residuals of Apply's restore and the include gate** (review seats, 2026-09-23).
+  - On the restore path, the layout backstop's refusal would say "Apply loaded config.yaml,
+    but …", which is false there. It is reachable only if the running layout became refused
+    after it loaded, and no test reaches it without patching.
+  - Each restore installs the plugins' default sources again: 5 more per restore with two
+    plugins. The values are unchanged. The list resets on the next good Apply or restart.
+  - The Naming panel shows "Could not load naming config." for the new 422, not its parse text,
+    because the frontend never reads that body. This is a frontend change.
+  - The GET artist-image route's refill closure keeps the library handle from its dependency.
+    A lookup that races an Apply can read the old library. It is read-only.
+  - A FIFO swapped in between the boot gate's open of an include and beets' own open still hangs
+    boot. It needs write access to the beets dir.
+  Search words: restore, backstop, sources, naming 422, get_mbid, FIFO, include race.
 - **`_CONFIG_FORCE_LOCK` may no longer be reachable under contention** (code-review seat,
   2026-09-21, reasoned; not measured). Its two callers are the import worker, which runs only
   while its slot is claimed, and the Trash restore, which now refuses while any import holds a
