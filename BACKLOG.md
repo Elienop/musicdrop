@@ -881,13 +881,22 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     types (`ScalarFloat`, `CommentedMap`) where Apply's says `float`, `OrderedDict`.
   - At boot, the starter config is written through a dangling `config.yaml` link, to wherever it
     points (`setup.py` ~196-203). Only someone with write access to the beets dir can plant one.
-  - A Save follows a symlinked `config.yaml` when it writes, not when it reads (owner ruling
-    2026-09-23: write through the link). A link re-pointed between the two sends the bytes to
-    the new target: a file there keeps its mode, a dangling target is created with the umask
-    default, and a loop is replaced by a regular file. Only someone who already controls
-    `config.yaml`'s content can re-point it. `realpath(strict=True)` would refuse the last two.
+  - A Save resolves a symlinked `config.yaml` twice: to read it, and again (`realpath`) to write
+    it (owner ruling 2026-09-23: write through the link). A link re-pointed between the two sends
+    the bytes to the new target. Another file there keeps its mode, and its own text is lost
+    with no 409. A dangling target is created with the umask default, missing folders included.
+    A loop replaces the link where it closes, possibly in another folder, with a regular file at
+    the umask default. Only someone who already controls `config.yaml`'s content can re-point
+    it, and that content already runs commands (beets' hook plugin on `library_opened`).
+    `realpath(strict=True)` would refuse the dangling and loop cases (review seats, measured).
   - The folder fsync runs after the publish, so an EIO there answers "config.yaml could not be
-    written" after the new bytes landed (round-12 implementer, reasoned; not reproduced).
+    written" after the new bytes landed. A retry on the same base then answers 409 (measured
+    with an injected EIO).
+  - A Save publishes a new file, so only the mode carries over: the owner and group become the
+    app's, and a per-file ACL entry, extended attributes and another hard link to the old file
+    do not follow. For a regular `config.yaml` this predates the branch (security seat,
+    measured). A Save killed mid-write leaves its temp, new text included, in the target's
+    folder until a later Save there sweeps it after an hour.
   - The artwork toggle reads its `_enabled.json` at startup with no regular-file check
     (`artwork/toggle.py:25`, from `main.py:404`): a FIFO there blocks startup (security seat,
     measured; predates this branch). Only someone with write access to the data dir can plant one.
