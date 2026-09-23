@@ -836,10 +836,13 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   a file of the third kind and writes it back with only its two keys changed (security seat).
   The other direction is safe: ruamel refuses a duplicate key that beets loads (PyYAML keeps the
   last), so Validate, Save and the Naming routes refuse a file Apply and boot accept (code-review
-  seat, measured). Fix shape not designed: Validate would parse with beets' own loader (as
-  `setup.read_config_document` does) and ask beets' typed reads, not only ruamel. Search words:
-  L4, ConfigTypeError, musicbrainz, boot, validate, save, include, typed read, ruamel, PyYAML,
-  duplicate key.
+  seat, measured). The same two parsers also disagree on values, and a save writes ruamel's
+  reading back: PyYAML (beets) reads `y`, `N` and `._5` as strings, ruamel as `True`, `False`
+  and `0.5`. So Save or a Naming save of a file holding one changes what beets reads (round-9
+  implementer, measured). Fix shape not designed: Validate would parse with beets' own loader (as
+  `setup.read_config_document` does) and ask beets' typed reads, not only ruamel; the round-trip
+  would need PyYAML's scalar rules. Search words: L4, ConfigTypeError, musicbrainz, boot,
+  validate, save, include, typed read, ruamel, PyYAML, duplicate key, y/n, implicit resolver.
 - **Small residuals of Apply's restore and the include gate** (review seats, 2026-09-23).
   - Each restore installs the plugins' default sources again: 5 more per restore with two
     plugins. The values are unchanged. The list resets on the next good Apply or restart.
@@ -848,20 +851,30 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     `pluginpath` already runs the operator's code, so this adds no power.
   - The Naming panel shows "Could not load naming config." for its 422s (a `config.yaml` that
     cannot be read, does not parse, or is not a mapping), not their text, because the frontend
-    never reads that body. This is a frontend change.
-  - ruamel's round-trip drops a comment that sits before `---`, on Save and the Naming save
-    alike.
-  - A FIFO planted as `config.yaml` would hang `GET /api/config` and the Naming routes (reasoned,
-    not measured). Apply's gate refuses it.
-  - The bank, slskd, Plex and playlist stores resolve `MUSICDROP_BEETS_DIR` on every call, so
-    they follow a beets-dir symlink re-pointed while MusicDrop runs. Apply uses the dir resolved
-    at boot.
+    never reads that body. Settings → Beets does the same for Save's 422 on a `config.yaml` it
+    cannot read: its linter finds nothing in the editor text, and the page shows the generic
+    "Save failed" banner. Both are frontend changes.
+  - ruamel's round-trip drops a comment that sits before `---` and any `%YAML` line, and
+    indents a comment that follows `--- ` on the same line, on Save and the Naming save alike.
+    beets reads the saved mapping back unchanged.
+  - Save, the Naming routes and `GET /api/config` open `config.yaml` only when it is a regular
+    file. A FIFO swapped in between that check and the open still blocks, the same gap confuse's
+    own `os.path.isfile` read and Apply's gate have.
+  - The bank, slskd, Plex and playlist stores and the password-hash file re-read
+    `MUSICDROP_BEETS_DIR` on every call, so they follow a beets-dir symlink re-pointed while
+    MusicDrop runs. Apply uses the dir resolved at boot. Measured: after a re-point to a dir with
+    no hash file, the password reads as not set and first-run setup opens. Deleting the file
+    reaches the same state, so this adds no power. Replacing the booted dir itself with a link
+    (`mv beetsA beetsA.old; ln -s beetsB beetsA`) also moves Apply's restore to `beetsB`.
+  - The boot refusal line names only the exception class for a tagged value in an include
+    (`!!bool`, `!!int`), but the traceback uvicorn prints for the failed startup still carries
+    the cause, and with it the value. beets prints the same line.
   - The GET artist-image route's refill closure keeps the library handle from its dependency.
     A lookup that races an Apply can read the old library. It is read-only.
   - A FIFO swapped in between the boot gate's open of an include and beets' own open still hangs
     boot. It needs write access to the beets dir.
   Search words: restore, sources, pluginpath, naming 422, get_mbid, FIFO, include race, `---`,
-  re-pointed symlink.
+  re-pointed symlink, password hash, first-run, traceback, __cause__.
 - **`_CONFIG_FORCE_LOCK` may no longer be reachable under contention** (code-review seat,
   2026-09-21, reasoned; not measured). Its two callers are the import worker, which runs only
   while its slot is claimed, and the Trash restore, which now refuses while any import holds a
