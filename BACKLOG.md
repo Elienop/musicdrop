@@ -841,21 +841,23 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     then refused. Only the operator can write that tag (security seat, measured; predates the
     branch).
   - An `!!omap` sequence counts as a mapping to the editor at any depth (`import: !!omap
-    [copy: yes]`, or the top level): Validate is clean, Save writes it as typed, and beets
-    refuses the file ("expected a mapping node, but found sequence"); Apply refuses before
-    unloading anything. The reverse too: beets accepts `!!omap {…}` (`confuse/yaml_util.py:83`)
-    and the editor refuses it (review seats, 2026-09-23, measured; predates the branch).
+    [copy: yes]`, or the top level): Validate is clean, Save writes it back (`[copy: yes]` as
+    `[copy: true]`), and beets refuses the file ("expected a mapping node, but found
+    sequence"); Apply refuses before unloading anything. The reverse too: beets accepts
+    `!!omap {…}` (`confuse/yaml_util.py:83`) and the editor refuses it (review seats,
+    2026-09-23, measured; predates the branch).
   - Validate rows that name internals: a non-string `directory:` or `library:` (including one
     typed with no value yet) reads "Input is not a valid path for <class 'pathlib.Path'>", and
     a bad `import.reflink` gives two rows, `import.reflink.bool` and
     `import.reflink.literal['auto']`, both with no line (review seats, 2026-09-23, measured).
   - **The planned fix, owner ruling 2026-09-23 ("Cut and ship", after asking whether this was
     over-engineered):** Validate and Save check the text with beets' own loader and typed reads
-    (`confuse.yaml_util.load_yaml_string`, which Apply already calls at
-    `app/beets/store_layout.py:1556`), and keep ruamel only for writing, because it keeps
-    comments. That closes this whole list at once and deletes the editor's `_RefusingComposer`
-    (`app/beets/config_editor.py`), which exists only to make ruamel refuse a reused anchor as
-    PyYAML does. Do NOT keep patching ruamel or rewording Pydantic messages one case at a time.
+    (`confuse.YamlSource` with `beets.config.loader`, which Apply already reads config.yaml
+    through: `read_config_document`, `app/beets/setup.py:111`), and keep ruamel only for
+    writing, because it keeps comments. That closes this whole list at once and deletes the
+    editor's `_RefusingComposer` (`app/beets/config_editor.py`), which exists only to make
+    ruamel refuse a reused anchor as PyYAML does. Do NOT keep patching ruamel or rewording
+    Pydantic messages one case at a time.
   - Not a start refusal, but the same typed-read gap: `write`, `copy` or `move` set to a number
     (`write: 1`) passes Validate and Save, and beets' `.get(bool)` refuses it. An import refuses
     it before adding any row (the pre-check), and an album edit answers a bare 500 (review seats,
@@ -980,8 +982,15 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   - After an Apply 409 whose job has already ended, the click shows nothing new.
   - The extensions-memo comment in `SettingsBeetsPage.tsx` (~165-171) says the editor remounts;
     it does not.
-  - Not checked: whether the Beets "Unsaved changes. Save to write to …" banner and the
-    Apply-failed alert or the validation line ever give conflicting instructions together.
+  - Partly checked: a refused Apply plus a draft shows "Apply failed. Fix the file and Apply
+    again." beside "Unsaved changes. Save to write to …", which do not conflict. The validation
+    line beside them is not measured.
+  - Naming drops a draft without a word when a read brings a new file version: the panel
+    remounts on the file's sha (`NamingPanel.tsx`, `key={data.sha256}`). The Beets page opens
+    the conflict panel instead. Predates the branch.
+  - The tests' timed waits cannot fail correct code, but a mutant kill behind the 300 ms wait
+    past @uiw's typing latch can pass on a slow run: the latch is 200 ticks of a 1 ms interval,
+    measured 211-220 ms idle and about 450 ms with a busy event loop.
   Search words: conflict panel, Save button, round trip, draft lost, focus, Apply 409.
 - **The config view hides a secret by its setting name, not its value** (security seat,
   2026-09-21, measured; owner: match beets, record it). A secret copied elsewhere with a YAML
