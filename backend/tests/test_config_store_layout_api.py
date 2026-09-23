@@ -895,14 +895,15 @@ def test_apply_refuses_after_the_rebuild_when_the_file_changes_after_the_gate(
         r = client.post("/api/config/apply")
 
     assert r.status_code == 422, r.text
+    live_settings = config_editor._settings(app)
     with pytest.raises(StoreLayoutError) as refused:
-        checked_store_dirs(config_editor._settings(app), app.state.beets_library)
+        checked_store_dirs(live_settings, app.state.beets_library)
     assert [rec.getMessage() for rec in caplog.records if rec.name == "uvicorn.error"] == [
         f"Apply loaded a config whose store layout is refused: {refused.value}"
     ]
     body = r.json()["detail"]
     assert body["message"] == (
-        "Apply loaded config.yaml, but The beets data directory is the music library"
+        "Apply loaded config.yaml. The beets data directory is the music library."
     )
     assert "The beets data directory is the music library" in body["recovery"]
     assert body["recovery"].endswith("Then restart MusicDrop.")
@@ -919,7 +920,7 @@ def test_apply_refuses_after_the_rebuild_when_the_file_changes_after_the_gate(
     detail = started.json()["detail"]
     # The refusal used to be built as "but {headline}. {exc}" while str(exc)
     # already opens with the headline, so the 503 said it twice.
-    assert detail == f"Apply loaded config.yaml, but {refused.value}"
+    assert detail == f"Apply loaded config.yaml. {refused.value}"
 
 
 def test_a_restore_onto_a_refused_layout_answers_the_restore_not_loaded(
@@ -947,8 +948,9 @@ def test_a_restore_onto_a_refused_layout_answers_the_restore_not_loaded(
     monkeypatch.setattr(config_editor, "read_beets_config", _edited_after_the_gate)
     assert client.post("/api/config/apply").status_code == 422
     monkeypatch.setattr(config_editor, "read_beets_config", real_read)
+    live_settings = config_editor._settings(app)
     with pytest.raises(StoreLayoutError) as refused:
-        checked_store_dirs(config_editor._settings(app), app.state.beets_library)
+        checked_store_dirs(live_settings, app.state.beets_library)
     music = beets_library.beets_dir.parent / "music"
     beets_library.config_path.write_text(
         f"directory: {music}\nlibrary: library.db\nplugins:\n  - musicbrainz\nmusicbrainz: no\n",
@@ -973,7 +975,7 @@ def test_a_restore_onto_a_refused_layout_answers_the_restore_not_loaded(
     ]
     started = client.post("/api/import", json={"path": str(music)})
     assert started.status_code == 503, started.text
-    assert started.json()["detail"] == f"Apply put the old config back, but {refused.value}"
+    assert started.json()["detail"] == f"Apply put the old config back. {refused.value}"
 
 
 def test_a_document_with_no_directory_key_gets_the_schema_row_and_no_layout_row(
@@ -1418,6 +1420,46 @@ def test_one_request_reads_a_bounded_total_of_include_bytes(
     assert _layout_rows(client, _with_include(music, "big1.yaml")) == []
 
 
+@pytest.mark.parametrize(
+    ("shape", "reason"),
+    [
+        ("fifo", "is a FIFO; beets would block on it"),
+        ("oversized", "takes the include: list over its 1048576-byte budget"),
+        ("terminal", "had nothing to read"),
+        ("mistyped-tag", "raised KeyError"),
+    ],
+)
+def test_an_include_the_gate_cannot_use_is_named_as_written(
+    client: TestClient, beets_library: LibraryHandle, shape: str, reason: str
+) -> None:
+    """Round 8 named these four by the resolved absolute path; the others as written."""
+    music = Path(beets_library.lib.directory.decode())
+    target = beets_library.beets_dir / "overlay.yaml"
+    terminal: tuple[int, int] | None = None
+    if shape == "fifo":
+        os.mkfifo(target)
+    elif shape == "oversized":
+        with target.open("wb") as fh:
+            fh.truncate(2 << 20)
+    elif shape == "terminal":
+        # A terminal with nothing typed: a non-blocking read answers EAGAIN.
+        terminal = os.openpty()
+        target.symlink_to(os.ttyname(terminal[1]))
+    else:
+        target.write_text("x: !!bool ture\n", encoding="utf-8")
+
+    try:
+        rows = _layout_rows(client, _with_include(music, "overlay.yaml"))
+    finally:
+        for fd in terminal or ():
+            os.close(fd)
+
+    assert [r["msg"] for r in rows] == [
+        f"`include:` in config.yaml could not be read: 'overlay.yaml' {reason}."
+        " Fix the include: list."
+    ], rows
+
+
 def test_a_repeated_include_entry_is_read_once(
     client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1438,9 +1480,9 @@ def test_a_repeated_include_entry_is_read_once(
     reads: list[str] = []
     real = store_layout._include_source
 
-    def counted(target: str, budget: int) -> tuple[object, int]:
+    def counted(target: str, written: str, budget: int) -> tuple[object, int]:
         reads.append(target)
-        return real(target, budget)
+        return real(target, written, budget)
 
     monkeypatch.setattr(store_layout, "_include_source", counted)
 
@@ -1533,7 +1575,7 @@ def test_a_mistyped_bool_tag_in_an_include_is_a_row_at_validate_and_a_422_at_sav
     bad.write_text("x: !!bool ture\n", encoding="utf-8")
     text = _with_include(Path(beets_library.lib.directory.decode()), "bad.yaml")
     row = (
-        f"`include:` in config.yaml could not be read: {str(bad)!r} raised KeyError."
+        "`include:` in config.yaml could not be read: 'bad.yaml' raised KeyError."
         " Fix the include: list."
     )
 

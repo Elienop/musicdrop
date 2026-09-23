@@ -147,11 +147,11 @@ class ConfigValidationErrorDetail(BaseModel):
 
     That route's own 422s - a parse failure, a schema or store-layout row, and a
     config.yaml on disk it cannot read (``app/beets/config_editor.py::save``) -
-    raise with a LIST of
-    :class:`~app.models.config_editor.ValidationErrorItem` payloads, which
-    Starlette renders verbatim under the outer ``detail`` key. The items are the
-    SAME rows ``POST /api/config/validate`` returns on a 200, which is what lets
-    the editor feed a rejected Save straight into its CodeMirror gutter.
+    raise with a LIST of :class:`~app.models.config_editor.ValidationErrorItem`
+    payloads, which Starlette renders verbatim under the outer ``detail`` key.
+    The items are the SAME rows ``POST /api/config/validate`` returns on a 200,
+    which is what lets the editor feed a rejected Save straight into its
+    CodeMirror gutter.
 
     FastAPI's ``HTTPValidationError`` is not this shape and cannot stand in for
     it: its items carry ``loc`` as an ARRAY of path segments and have no ``line``
@@ -168,7 +168,8 @@ class ConfigValidationErrorDetail(BaseModel):
 
 class NamingRuleError(BaseModel):
     """One rejected ``replace:`` row of ``POST /api/config/naming/save``, or its
-    config.yaml on disk that cannot be read or does not parse (``loc`` empty).
+    config.yaml on disk that cannot be read, does not parse or is not a mapping
+    (``loc`` empty).
 
     The same three keys as a :class:`~app.models.config_editor.ValidationErrorItem`
     and DELIBERATELY not that model: the naming save builds these dicts by hand

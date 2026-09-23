@@ -143,3 +143,29 @@ def test_validate_returns_all_distinct_schema_errors(client: TestClient) -> None
     locs = {e["loc"] for e in r.json()["errors"]}
     assert "import.copy" in locs
     assert "match.strong_rec_thresh" in locs
+
+
+def test_validate_reads_a_file_with_a_document_marker_as_yaml_1_1(client: TestClient) -> None:
+    """``---`` made ruamel read ``yes`` as a string (YAML 1.2); beets reads a bool.
+
+    One row, for ``maybe``, on the file's own line 7.
+    """
+    text = (
+        "---\n# note\ndirectory: /tmp/music\nlibrary: /tmp/x\nimport:\n  copy: yes\n  move: maybe\n"
+    )
+
+    r = client.post("/api/config/validate", json={"yaml_text": text})
+
+    assert r.status_code == 200
+    assert r.json() == {
+        "errors": [
+            {
+                "loc": "import.move",
+                "msg": "Value error, must be a bool: write maybe without the quotes",
+                "type": "value_error",
+                "line": 7,
+                "column": 8,
+            }
+        ],
+        "advisories": [],
+    }

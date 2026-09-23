@@ -43,7 +43,7 @@ class ConfigUnreadable(Exception):
     """
 
     def __init__(
-        self, message: str, line: int | None = None, *, subject: str = "config.yaml"
+        self, message: str, line: int | None = None, *, subject: str = confuse.CONFIG_FILENAME
     ) -> None:
         super().__init__(message)
         self.line = line
@@ -178,7 +178,7 @@ def _refuse_a_broken_include(beets_dir: Path) -> None:
     and blocks on a FIFO include. Before beets' read, for the FIFO; through the
     include read Apply's gate uses, which opens each one non-blocking.
     """
-    document = read_config_document(beets_dir / "config.yaml")
+    document = read_config_document(beets_dir / confuse.CONFIG_FILENAME)
     try:
         skipped = effective_config_paths(document, beets_dir).skipped
     except StoreLayoutError as exc:
@@ -192,7 +192,7 @@ def _refuse_a_broken_include(beets_dir: Path) -> None:
 def _write_starter_config(beets_dir: Path, *, container_music_default: bool) -> None:
     """Create ``beets_dir`` and copy the starter ``config.yaml`` into it if absent."""
     beets_dir.mkdir(parents=True, exist_ok=True)
-    cfg_path = beets_dir / "config.yaml"
+    cfg_path = beets_dir / confuse.CONFIG_FILENAME
     if cfg_path.exists():
         return
     text = (Path(__file__).parent / "config.starter.yaml").read_text(encoding="utf-8")
@@ -225,7 +225,7 @@ def read_beets_config(beets_dir: str) -> BeetsConfigRead:
       write between the read and a later snapshot would be reported as loaded.
     """
     beets_dir_path = Path(beets_dir).resolve()
-    cfg_path = beets_dir_path / "config.yaml"
+    cfg_path = beets_dir_path / confuse.CONFIG_FILENAME
     _require_config_file(cfg_path)
 
     os.environ["BEETSDIR"] = str(beets_dir_path)

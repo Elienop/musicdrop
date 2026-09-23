@@ -1915,9 +1915,9 @@ def test_start_refuses_while_the_attached_library_is_refused() -> None:
 
     runner = FakeImportRunner()
     reg = ImportJobRegistry(runner)
-    reg.attach_library(object(), refusal="Apply loaded config.yaml, but T is M.")
+    reg.attach_library(object(), refusal="Apply loaded config.yaml. T is M.")
 
-    with pytest.raises(LibraryRefusedError, match="but T is M"):
+    with pytest.raises(LibraryRefusedError, match=r"^Apply loaded config\.yaml\. T is M\.$"):
         reg.start("/x")
 
     assert runner.validate_calls == []  # nothing reached the runner

@@ -221,7 +221,7 @@ def test_a_fifo_include_refuses_the_boot_instead_of_hanging(
     assert finished, "the boot is still blocked on the FIFO"
     assert isinstance(raised, ConfigUnreadable)
     assert str(raised) == (
-        f"`include:` in config.yaml could not be read: {str(beets_dir / 'pipe.yaml')!r}"
+        "`include:` in config.yaml could not be read: 'pipe.yaml'"
         " is a FIFO; beets would block on it. Fix the include: list."
     )
     assert _boot_refusal(caplog) == _config_refusal(beets_dir, raised)
@@ -236,7 +236,7 @@ def test_a_mistyped_tag_in_an_include_refuses_the_boot_and_names_it(beets_dir: P
         setup_beets(str(beets_dir))
 
     assert str(info.value) == (
-        f"`include:` in config.yaml could not be read: {str(beets_dir / 'bad.yaml')!r}"
+        "`include:` in config.yaml could not be read: 'bad.yaml'"
         " raised KeyError. Fix the include: list."
     )
 

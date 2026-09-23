@@ -109,7 +109,7 @@ def test_save_naming_keeps_boolean_token_replace_rules_as_strings(
     # their quoting is decided by the dumper's YAML-version resolver, NOT by
     # preserve_quotes. A bool-token pattern/replacement ("no"/"off"/"y") must be
     # emitted QUOTED so it reloads as a string. If the dumper used the 1.2 resolver
-    # (what clearing yaml.version does), these dump BARE, then confuse/PyYAML and
+    # (what dropping ``_Yaml11Resolver`` does), these dump BARE, then confuse/PyYAML and
     # ruamel-1.1 re-type them to bool — beets' re.compile(False) crashes on Apply
     # for a bool KEY, and a bool VALUE is silently dropped (`repl or ''`).
     import yaml as pyyaml

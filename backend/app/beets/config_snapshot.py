@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import stat
 from datetime import UTC, datetime
 from typing import Any
 
@@ -88,7 +89,7 @@ from app.models.config_api import BeetsConfigSnapshot
 # does NOT inspect VALUES: a path like ``directory: /home/me/api_keys`` stays
 #                          intact because the key ``directory`` doesn't match.
 SECRET_KEY_PATTERN = re.compile(
-    r"(secret|token|password|pwd|pass|api_?key|api_?secret|auth_?token|(?:^|_)key$)",
+    r"(secret|token|password|pwd|pass|api_?key|api_?secret|auth_?token|(?:(?:^|_)key$))",
     re.IGNORECASE,
 )
 
@@ -123,11 +124,14 @@ def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
     sha256 = ""
     yaml_text = ""
     try:
-        raw = handle.config_path.read_bytes()
-        current_mtime = handle.config_path.stat().st_mtime
-        file_modified_at = datetime.fromtimestamp(current_mtime, tz=UTC)
-        sha256 = hashlib.sha256(raw).hexdigest()
-        yaml_text = raw.decode("utf-8")
+        # Only a regular file is opened, as confuse reads it; measured, a FIFO
+        # blocked this read until a writer opened it.
+        if stat.S_ISREG(handle.config_path.stat().st_mode):
+            raw = handle.config_path.read_bytes()
+            current_mtime = handle.config_path.stat().st_mtime
+            file_modified_at = datetime.fromtimestamp(current_mtime, tz=UTC)
+            sha256 = hashlib.sha256(raw).hexdigest()
+            yaml_text = raw.decode("utf-8")
     except (OSError, UnicodeDecodeError):
         pass
 

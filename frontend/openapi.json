@@ -4453,7 +4453,7 @@
                         "detail"
                       ],
                       "title": "ConfigValidationErrorDetail",
-                      "description": "The FOURTH real error body: ``POST /api/config/save``'s 422.\n\nThat route's own 422s - a parse failure, a schema or store-layout row, and a\nconfig.yaml on disk it cannot read (``app/beets/config_editor.py::save``) -\nraise with a LIST of\n:class:`~app.models.config_editor.ValidationErrorItem` payloads, which\nStarlette renders verbatim under the outer ``detail`` key. The items are the\nSAME rows ``POST /api/config/validate`` returns on a 200, which is what lets\nthe editor feed a rejected Save straight into its CodeMirror gutter.\n\nFastAPI's ``HTTPValidationError`` is not this shape and cannot stand in for\nit: its items carry ``loc`` as an ARRAY of path segments and have no ``line``\nor ``column`` at all. The editor's CodeMirror gutter consumes the same row\nshape from ``POST /api/config/validate``'s 200 body, where it is correctly\ntyped; no live client reads this save 422 body today (the save mutation's\nerror handler covers 409 only and the 422 body is discarded). Declaring this\n422 as that model would still mistype the generated TypeScript - a\nwrongly-typed status is worse than an undeclared one."
+                      "description": "The FOURTH real error body: ``POST /api/config/save``'s 422.\n\nThat route's own 422s - a parse failure, a schema or store-layout row, and a\nconfig.yaml on disk it cannot read (``app/beets/config_editor.py::save``) -\nraise with a LIST of :class:`~app.models.config_editor.ValidationErrorItem`\npayloads, which Starlette renders verbatim under the outer ``detail`` key.\nThe items are the SAME rows ``POST /api/config/validate`` returns on a 200,\nwhich is what lets the editor feed a rejected Save straight into its\nCodeMirror gutter.\n\nFastAPI's ``HTTPValidationError`` is not this shape and cannot stand in for\nit: its items carry ``loc`` as an ARRAY of path segments and have no ``line``\nor ``column`` at all. The editor's CodeMirror gutter consumes the same row\nshape from ``POST /api/config/validate``'s 200 body, where it is correctly\ntyped; no live client reads this save 422 body today (the save mutation's\nerror handler covers 409 only and the 422 body is discarded). Declaring this\n422 as that model would still mistype the generated TypeScript - a\nwrongly-typed status is worse than an undeclared one."
                     },
                     {
                       "$ref": "#/components/schemas/HTTPValidationError"
@@ -4526,7 +4526,7 @@
             }
           },
           "422": {
-            "description": "config.yaml on disk cannot be read or does not parse; the detail says why.",
+            "description": "config.yaml on disk cannot be read, does not parse or is not a mapping; the detail says why.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4680,7 +4680,7 @@
             }
           },
           "422": {
-            "description": "A submitted replace: pattern is not a valid regular expression, or config.yaml on disk cannot be read or does not parse, so the save was refused before anything was written; the body names the problem. A malformed request body answers with FastAPI's validation shape instead.",
+            "description": "A submitted replace: pattern is not a valid regular expression, or config.yaml on disk cannot be read, does not parse or is not a mapping, so the save was refused before anything was written; the body names the problem. A malformed request body answers with FastAPI's validation shape instead.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4710,7 +4710,7 @@
                               "type"
                             ],
                             "title": "NamingRuleError",
-                            "description": "One rejected ``replace:`` row of ``POST /api/config/naming/save``, or its\nconfig.yaml on disk that cannot be read or does not parse (``loc`` empty).\n\nThe same three keys as a :class:`~app.models.config_editor.ValidationErrorItem`\nand DELIBERATELY not that model: the naming save builds these dicts by hand\n(``app/beets/config_editor.py::save_naming``) with no ``line``/``column``,\nbecause a bad regex comes from a form row rather than from a position in the\nYAML document - ``loc`` is the row index (``\"replace[0]\"``), which is what\nthe panel would highlight. Reusing the five-field model here would promise a\nline number this route can never send."
+                            "description": "One rejected ``replace:`` row of ``POST /api/config/naming/save``, or its\nconfig.yaml on disk that cannot be read, does not parse or is not a mapping\n(``loc`` empty).\n\nThe same three keys as a :class:`~app.models.config_editor.ValidationErrorItem`\nand DELIBERATELY not that model: the naming save builds these dicts by hand\n(``app/beets/config_editor.py::save_naming``) with no ``line``/``column``,\nbecause a bad regex comes from a form row rather than from a position in the\nYAML document - ``loc`` is the row index (``\"replace[0]\"``), which is what\nthe panel would highlight. Reusing the five-field model here would promise a\nline number this route can never send."
                           },
                           "type": "array",
                           "title": "Detail"

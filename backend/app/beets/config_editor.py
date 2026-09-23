@@ -29,6 +29,7 @@ import hashlib
 import io
 import logging
 import re
+import stat
 import threading
 from collections.abc import Collection
 from pathlib import Path
@@ -41,6 +42,7 @@ from pydantic import ValidationError
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.error import YAMLError
+from ruamel.yaml.resolver import VersionedResolver
 
 # ``build_config_snapshot`` is used by save()/apply() to return the post-write
 # snapshot (raw editable doc + redacted effective view + freshness fields).
@@ -97,6 +99,21 @@ __all__ = [
 ]
 
 
+class _Yaml11Resolver(VersionedResolver):
+    """Resolves every scalar as YAML 1.1, as beets' PyYAML does.
+
+    ``yaml.version = (1, 1)`` did not hold: a ``---`` with no ``%YAML`` line
+    sets it back to ``None`` (``ruamel/yaml/parser.py:319-321``), and the
+    resolver then used 1.2 (``ruamel/yaml/compat.py:28``), where ``no`` is a
+    string. Scanner, parser, resolver and the dump's quoting all ask this
+    property.
+    """
+
+    @property
+    def processing_version(self) -> tuple[int, int]:
+        return (1, 1)
+
+
 def _yaml() -> YAML:
     """Construct the canonical round-trip ``YAML`` instance.
 
@@ -104,9 +121,10 @@ def _yaml() -> YAML:
 
     * default ``typ='rt'`` (do NOT pass it explicitly — maintainer warns
       against it).
-    * ``yaml.version = (1, 1)`` so ``yes`` / ``no`` parse as bool (ruamel
-      SF #285 — https://sourceforge.net/p/ruamel-yaml/tickets/285/ — and
-      YAML 1.1 spec).
+    * :class:`_Yaml11Resolver`, so ``yes`` / ``no`` are bools with or without a
+      ``---`` or a ``%YAML`` line, as beets reads them, and a dump quotes the
+      strings 1.1 would read back as bools. No ``yaml.version``: set, it made
+      every dump start with a ``%YAML 1.1`` line.
     * ``preserve_quotes = True`` so the user's quoting style survives a
       round-trip.
     * ``indent(mapping=2, sequence=4, offset=2)`` — ruamel-recommended block
@@ -114,7 +132,7 @@ def _yaml() -> YAML:
     * ``width = 4096`` so long strings don't get rewrapped.
     """
     yaml = YAML()
-    yaml.version = (1, 1)
+    yaml.Resolver = _Yaml11Resolver
     yaml.preserve_quotes = True
     yaml.indent(mapping=2, sequence=4, offset=2)
     yaml.width = 4096
@@ -333,31 +351,6 @@ def store_layout_report(
     )
 
 
-def _strip_yaml_directive(text: str) -> str:
-    """Drop a leading ``%YAML 1.1`` directive line and its ``---`` document-start.
-
-    ruamel emits this two-line prologue whenever ``yaml.version`` is set. We keep
-    the version on the dumper (it drives 1.1 scalar-quoting — see ``atomic_write``)
-    but the directive itself is unwanted churn in the user's config.yaml, so we
-    peel it off the dumped text. Only a directive at the very top is stripped; a
-    ``---`` is removed only when it directly follows the directive (never a
-    ``---`` that legitimately appears inside the document).
-    """
-    if not text.startswith("%YAML"):
-        return text
-    newline = text.find("\n")
-    if newline == -1:
-        return text
-    rest = text[newline + 1 :]
-    if rest.startswith("---\n"):
-        rest = rest[len("---\n") :]
-    elif rest == "---\n".rstrip("\n") or rest.startswith("--- "):
-        # A "--- <inline scalar>" form (never produced for a mapping root, but be
-        # defensive): keep the content after the marker.
-        rest = rest[len("---") :].lstrip(" ")
-    return rest
-
-
 def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
     """Dump ``data`` and publish it as ``dst`` through the shared atomic writer.
 
@@ -376,19 +369,13 @@ def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
     up. First write: the umask default. See ``write_atomic_bytes`` for what
     ``None`` does when the target is not a regular file.
     """
-    # Dump to a buffer and strip the "%YAML 1.1" directive prologue (see
-    # _strip_yaml_directive) rather than write ``yaml.dump(data, f)`` directly:
-    # ruamel injects that header on every dump whenever ``yaml.version`` is set,
-    # churning the user's hand-edited config.yaml (diff noise, a changed CAS sha,
-    # a no-op save that isn't byte-identical). The version MUST stay (1,1) on the
-    # dump side — clearing it would switch the emitter to the YAML-1.2 resolver,
-    # which writes bool-token strings ("no"/"yes"/"on"/"off"/"y"/"n") and
-    # sexagesimals ("d:d:d") UNQUOTED; those silently reload as bool/int and
-    # corrupt config (e.g. a naming ``replace`` rule value "no" becomes False,
-    # crashing beets' re.compile on Apply). 1.1 keeps them quoted.
+    # The resolver must stay :class:`_Yaml11Resolver` on the dump side too: the
+    # 1.2 one writes bool-token strings ("no"/"yes"/"on"/"off") and sexagesimals
+    # ("d:d:d") UNQUOTED, and they reload as bool/int (a naming ``replace`` rule
+    # value "no" became False, crashing beets' re.compile on Apply).
     buf = io.StringIO()
     yaml.dump(data, buf)
-    write_atomic_text(dst, _strip_yaml_directive(buf.getvalue()), mode=None)
+    write_atomic_text(dst, buf.getvalue(), mode=None)
 
 
 # Serializes the read-SHA -> compare -> atomic-write of ``save``/``save_naming``
@@ -495,7 +482,13 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
             raise HTTPException(
                 status_code=422,
                 detail=[
-                    {"loc": "", "msg": str(exc), "type": "yaml_parse", "line": None, "column": None}
+                    {
+                        "loc": "",
+                        "msg": str(exc),
+                        "type": _ON_DISK_ERROR_TYPE,
+                        "line": None,
+                        "column": None,
+                    }
                 ],
             ) from exc
         on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
@@ -566,9 +559,21 @@ class _UnusableOnDisk(Exception):
     """config.yaml on disk cannot be edited as settings; ``str()`` is the 422 text."""
 
 
+#: The ``type`` on a 422 row about config.yaml ON DISK rather than the submitted
+#: text: it cannot be read, does not parse, or is not a mapping.
+_ON_DISK_ERROR_TYPE: Final = "config_on_disk"
+
+
 def _read_on_disk(config_path: Path) -> bytes:
-    """config.yaml's bytes for both save routes and the Naming GET; an OS error is a 422."""
+    """config.yaml's bytes for both save routes and the Naming GET; an OS error is a 422.
+
+    Only a regular file is opened, the test ``os.path.isfile`` makes and confuse
+    reads the user file under (``confuse/sources.py:94-96``). Measured: a FIFO
+    blocked the open while a save held ``_SAVE_LOCK``, until a restart.
+    """
     try:
+        if not stat.S_ISREG(config_path.stat().st_mode):
+            raise _UnusableOnDisk("config.yaml is not a regular file.")
         return config_path.read_bytes()
     except OSError as exc:
         raise _UnusableOnDisk(
@@ -577,7 +582,7 @@ def _read_on_disk(config_path: Path) -> bytes:
 
 
 def _empty_mapping_keeping(text: str) -> CommentedMap | None:
-    """``text``, which holds no YAML node, as an empty mapping that keeps its comments.
+    """``text``, which parsed to ``None``, as an empty mapping that keeps its comments.
 
     ``None`` when it does not come back as one: an explicit null (``~``) is a
     node, and the ``{}`` appended after it does not replace it.
@@ -597,9 +602,12 @@ def _on_disk_mapping(on_disk_bytes: bytes) -> CommentedMap:
 
     beets reads an empty, comment-only or falsy top level as no settings
     (``load_yaml(...) or {}``, ``confuse/sources.py:101``). Here a file with no
-    YAML node is an empty mapping that keeps its comments; every other top
+    YAML node is an empty mapping; a save keeps its comments, except one above
+    ``---``, and writes one after ``--- `` indented four spaces. Every other top
     level that is not a mapping is refused, ``~``, ``[]`` and ``false``
-    included, because a save could not keep their comments.
+    included, because a save could not keep their comments. So is ``---`` then
+    ``...``, which beets reads as ``{}``: the ``{}`` added here is a second
+    document.
     """
     try:
         text = on_disk_bytes.decode("utf-8")
@@ -612,6 +620,30 @@ def _on_disk_mapping(on_disk_bytes: bytes) -> CommentedMap:
     if not isinstance(doc, CommentedMap):
         raise _UnusableOnDisk("config.yaml must be a mapping of settings.")
     return doc
+
+
+def _split_paths(
+    paths_raw: object,
+) -> tuple[str | None, str | None, str | None, list[NamingRuleInput]]:
+    """``paths:`` as ``(default, comp, singleton, custom rules)``; ``None`` where unset."""
+    # ``or {}`` is not enough — a truthy scalar/list (from a hand-corrupted
+    # config like ``paths: somestring``) would survive it and then ``.items()``
+    # would raise. Coerce any non-mapping to empty so read never 500s.
+    paths = paths_raw if isinstance(paths_raw, dict) else {}
+    default = comp = singleton = None
+    custom: list[NamingRuleInput] = []
+    for key, val in paths.items():
+        tmpl = "" if val is None else str(val)
+        skey = str(key)
+        if skey == "default":
+            default = tmpl
+        elif skey == "comp":
+            comp = tmpl
+        elif skey == "singleton":
+            singleton = tmpl
+        else:
+            custom.append(NamingRuleInput(query=skey, template=tmpl))
+    return default, comp, singleton, custom
 
 
 def read_naming(handle: LibraryHandle) -> NamingConfig:
@@ -630,24 +662,7 @@ def read_naming(handle: LibraryHandle) -> NamingConfig:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     sha = hashlib.sha256(on_disk_bytes).hexdigest()
 
-    # ``or {}`` is not enough — a truthy scalar/list (from a hand-corrupted
-    # config like ``paths: somestring``) would survive it and then ``.items()``
-    # would raise. Coerce any non-mapping to empty so read never 500s.
-    paths_raw = doc.get("paths")
-    paths = paths_raw if isinstance(paths_raw, dict) else {}
-    default = comp = singleton = None
-    custom: list[NamingRuleInput] = []
-    for key, val in paths.items():
-        tmpl = "" if val is None else str(val)
-        skey = str(key)
-        if skey == "default":
-            default = tmpl
-        elif skey == "comp":
-            comp = tmpl
-        elif skey == "singleton":
-            singleton = tmpl
-        else:
-            custom.append(NamingRuleInput(query=skey, template=tmpl))
+    default, comp, singleton, custom = _split_paths(doc.get("paths"))
 
     # Per-key fallback to beets' bundled defaults. ``paths`` IS merged per-key in
     # beets, so a user who set only ``default`` still inherits ``comp``/
@@ -766,7 +781,7 @@ def save_naming(handle: LibraryHandle, req: SaveNamingRequest) -> BeetsConfigSna
         except _UnusableOnDisk as exc:
             raise HTTPException(
                 status_code=422,
-                detail=[{"loc": "", "msg": str(exc), "type": "yaml_parse"}],
+                detail=[{"loc": "", "msg": str(exc), "type": _ON_DISK_ERROR_TYPE}],
             ) from exc
         paths = _naming_map(req.rules)
         if paths:
@@ -1107,7 +1122,7 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
                 bank_dir=get_bank_dir(),
                 playlists_dir=get_playlists_dir(),
                 trash_origins_dir=None,
-                refusal=f"Apply {did}, but {exc}",
+                refusal=f"Apply {did}. {exc}",
             )
             if failure is not None:
                 raise HTTPException(
@@ -1116,7 +1131,7 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
             raise HTTPException(
                 status_code=422,
                 detail={
-                    "message": f"Apply loaded config.yaml, but {exc.headline}",
+                    "message": f"Apply loaded config.yaml. {exc.headline}.",
                     "recovery": f"{exc} Then restart MusicDrop.",
                 },
             ) from exc

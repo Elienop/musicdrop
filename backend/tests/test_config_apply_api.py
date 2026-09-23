@@ -433,17 +433,25 @@ def test_a_skipped_include_quotes_nothing_from_inside_it(
         ),
         ('\n  - "nul\\0.yaml"\n', "'nul\\x00.yaml': open: embedded null character in path"),
         (" good.yaml\n", "include must be a list, not str"),
+        # Entry 1 resolves after nested.yaml is merged, so it is nested.yaml's own.
+        ("\n  - nested.yaml\n  - good.yaml\n", "include#1: must be a filename, not OrderedDict"),
     ],
-    ids=["not-a-mapping", "nul", "not-a-list"],
+    ids=["not-a-mapping", "nul", "not-a-list", "nested-mapping"],
 )
 def test_an_include_refusal_names_the_entry_as_written(
     client: TestClient, beets_library: LibraryHandle, include: str, detail: str
 ) -> None:
-    """Measured before: the first two named no entry. ``include:`` itself has none."""
+    """Measured before: the first two named no entry. ``include:`` itself has none.
+
+    A mapping is never quoted: round 8's text carried its repr, password and all.
+    """
     before = _live_state(client, beets_library)
     music = Path(beets_library.lib.directory.decode())
     (beets_library.beets_dir / "good.yaml").write_text("a: 1\n", encoding="utf-8")
     (beets_library.beets_dir / "list.yaml").write_text("- a\n", encoding="utf-8")
+    (beets_library.beets_dir / "nested.yaml").write_text(
+        "include:\n  - x.yaml\n  - {password: Hunter2Nested}\n", encoding="utf-8"
+    )
     beets_library.config_path.write_text(
         f"directory: {music}\nlibrary: library.db\ninclude:{include}", encoding="utf-8"
     )
@@ -719,7 +727,7 @@ def test_a_mistyped_tag_in_an_include_is_refused_with_nothing_changed(
     assert r.json()["detail"] == {
         "message": "Apply refused: `include:` in config.yaml could not be read",
         "recovery": (
-            f"`include:` in config.yaml could not be read: {str(bad)!r} raised KeyError."
+            "`include:` in config.yaml could not be read: 'bad.yaml' raised KeyError."
             " Fix the include: list."
         ),
     }

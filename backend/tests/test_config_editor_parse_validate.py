@@ -2,8 +2,8 @@
 
 Per the Layer-3 plan (Task 2), these tests pin three load-bearing decisions:
 
-* ruamel parses `yes`/`no` as bool when `yaml.version = (1, 1)` (YAML 1.1
-  spec; ruamel SF #285) — verified by `test_parse_yes_no_as_bool`.
+* ruamel parses `yes`/`no` as bool, as YAML 1.1 and beets' PyYAML do
+  (`_Yaml11Resolver`) — verified by `test_parse_yes_no_as_bool`.
 * invalid YAML surfaces as a `ruamel.yaml.YAMLError` for the caller to map
   to HTTP 422 — verified by `test_parse_invalid_yaml_raises`.
 * schema errors carry a 1-based `(line, column)` derived from ruamel's

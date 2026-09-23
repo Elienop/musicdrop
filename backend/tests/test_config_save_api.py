@@ -17,6 +17,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from app.beets.setup import read_config_document
+from tests.conftest import answer_before_a_fifo_blocks
+
 
 def _cas(client: TestClient) -> str:
     return str(client.get("/api/config").json()["sha256"])
@@ -54,6 +57,28 @@ def test_save_normalizes_yes_no_to_true_false(
     text = beets_library_config_path.read_text()
     assert "autotag: true" in text
     assert "autotag: yes" not in text
+
+
+def test_save_writes_no_as_a_bool_under_a_document_marker(
+    client: TestClient, beets_library_config_path: Path
+) -> None:
+    """``---`` made ruamel read ``no`` as a string, which Save wrote as ``'no'``.
+
+    confuse reads that string as TRUE, so ``auto: no`` turned fetchart on.
+    """
+    cfg = beets_library_config_path
+    music = cfg.read_text(encoding="utf-8").splitlines()[0]
+    sha = _cas(client)
+    text = f"---\n{music}\nlibrary: library.db\nimport:\n  write: no\nfetchart:\n  auto: no\n"
+
+    r = client.post("/api/config/save", json={"yaml_text": text, "base_sha256": sha})
+
+    assert r.status_code == 200, r.text
+    assert cfg.read_text(encoding="utf-8") == (
+        f"{music}\nlibrary: library.db\nimport:\n  write: false\nfetchart:\n  auto: false\n"
+    )
+    document = read_config_document(cfg)
+    assert (document["import"]["write"], document["fetchart"]["auto"]) == (False, False)
 
 
 def test_save_422_on_invalid_yaml(client: TestClient) -> None:
@@ -191,14 +216,19 @@ def test_save_preserves_comments(client: TestClient, beets_library_config_path: 
     assert "# my hand-authored note" in beets_library_config_path.read_text()
 
 
+_NOT_A_REGULAR_FILE = "config.yaml is not a regular file."
+
+
 @pytest.mark.parametrize(
-    ("shape", "problem"),
+    ("shape", "message"),
     [
-        ("absent", "No such file or directory"),
-        ("directory", "Is a directory"),
+        ("absent", "config.yaml could not be read: No such file or directory."),
+        ("directory", _NOT_A_REGULAR_FILE),
+        ("fifo", _NOT_A_REGULAR_FILE),
+        ("device-link", _NOT_A_REGULAR_FILE),
         pytest.param(
             "permission",
-            "Permission denied",
+            "config.yaml could not be read: Permission denied.",
             marks=pytest.mark.skipif(
                 os.geteuid() == 0, reason="root ignores the permission bits this test sets"
             ),
@@ -206,36 +236,44 @@ def test_save_preserves_comments(client: TestClient, beets_library_config_path: 
     ],
 )
 def test_save_refuses_a_config_it_cannot_read_and_writes_nothing(
-    client: TestClient, beets_library_config_path: Path, shape: str, problem: str
+    client: TestClient, beets_library_config_path: Path, shape: str, message: str
 ) -> None:
-    """Measured before: a bare 500. Creating the file would hide a missing mount."""
+    """Measured before: a bare 500; a FIFO blocked while holding ``_SAVE_LOCK``.
+
+    The base is the hash of no bytes, which ``/dev/null`` reads as, so a Save
+    that opened the link would pass the CAS and replace it with a file.
+    """
     cfg = beets_library_config_path
     text = cfg.read_text(encoding="utf-8")
-    sha = _cas(client)
     cfg.unlink()
     if shape == "directory":
         cfg.mkdir()
+    elif shape == "fifo":
+        os.mkfifo(cfg)
+    elif shape == "device-link":
+        cfg.symlink_to("/dev/null")
     elif shape == "permission":
         cfg.write_text(text, encoding="utf-8")
         cfg.chmod(0)
     listing = sorted(os.listdir(cfg.parent))
 
-    r = client.post("/api/config/save", json={"yaml_text": text, "base_sha256": sha})
+    r = answer_before_a_fifo_blocks(
+        lambda: client.post(
+            "/api/config/save",
+            json={"yaml_text": text, "base_sha256": hashlib.sha256(b"").hexdigest()},
+        ),
+        cfg,
+    )
 
     assert r.status_code == 422, r.text
     assert r.json() == {
         "detail": [
-            {
-                "loc": "",
-                "msg": f"config.yaml could not be read: {problem}.",
-                "type": "yaml_parse",
-                "line": None,
-                "column": None,
-            }
+            {"loc": "", "msg": message, "type": "config_on_disk", "line": None, "column": None}
         ]
     }
     assert sorted(os.listdir(cfg.parent)) == listing
     assert os.path.lexists(cfg) is (shape != "absent")
+    assert os.path.islink(cfg) is (shape == "device-link")
     if shape == "directory":
         assert os.listdir(cfg) == []
     if shape == "permission":

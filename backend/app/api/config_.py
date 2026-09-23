@@ -94,12 +94,13 @@ _SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
 #: row (``loc`` is ``replace[<index>]``) rather than from a position in the YAML
 #: document. Sharing one model would promise a line number this route can never
 #: send - see app/models/errors.py::NamingRuleError. A config.yaml on disk that
-#: cannot be read or does not parse is one row with an empty ``loc``.
+#: cannot be read, does not parse or is not a mapping is one row with an empty
+#: ``loc``.
 _NAMING_SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
     NamingValidationErrorDetail,
     (
         "A submitted replace: pattern is not a valid regular expression, or"
-        " config.yaml on disk cannot be read or does not parse, so the save was"
+        " config.yaml on disk cannot be read, does not parse or is not a mapping, so the save was"
         " refused before anything was written; the body names the problem. A malformed request"
         " body answers with FastAPI's validation shape instead."
     ),
@@ -210,7 +211,8 @@ def save_config(req: SaveRequest, request: Request) -> BeetsConfigSnapshot:
         422: {
             "model": ErrorDetail,
             "description": (
-                "config.yaml on disk cannot be read or does not parse; the detail says why."
+                "config.yaml on disk cannot be read, does not parse or is not a mapping;"
+                " the detail says why."
             ),
         },
     },

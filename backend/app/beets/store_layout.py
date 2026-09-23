@@ -1506,8 +1506,11 @@ def _winning_source(cfg: confuse.Configuration, key: str) -> str | None:
     return None
 
 
-def _include_source(target: str, budget: int) -> tuple[confuse.ConfigSource, int]:
+def _include_source(target: str, written: str, budget: int) -> tuple[confuse.ConfigSource, int]:
     """One ``include:`` entry, read through ONE descriptor. With its size.
+
+    ``target`` is the entry resolved to a path; ``written`` is how the refusals
+    name it, as :func:`_as_written` gives it.
 
     ``os.stat`` then confuse's ``open`` asked the same NAME twice, and flipping a
     symlink between the two put the FIFO hang back — measured, the read ran until
@@ -1534,10 +1537,10 @@ def _include_source(target: str, budget: int) -> tuple[confuse.ConfigSource, int
             # overlay for a file beets BLOCKS on at startup. The type test is
             # narrow on purpose — a directory, a socket and ``/dev/null`` are
             # shapes beets survives, and refusing those was the collateral.
-            raise _unreadable_include(f"{target!r} is a FIFO; beets would block on it")
+            raise _unreadable_include(f"{written!r} is a FIFO; beets would block on it")
         buf = bytes_at_most(fd, budget)
     except BlockingIOError as exc:
-        raise _unreadable_include(f"{target!r} had nothing to read") from exc
+        raise _unreadable_include(f"{written!r} had nothing to read") from exc
     except OSError as exc:
         # EISDIR for a directory: beets' own ``open`` answers the same and its
         # ``ConfigReadError`` arm carries on.
@@ -1546,7 +1549,7 @@ def _include_source(target: str, budget: int) -> tuple[confuse.ConfigSource, int
         os.close(fd)
     if buf is None:
         raise _unreadable_include(
-            f"{target!r} takes the include: list over its {_MAX_INCLUDE_BYTES}-byte budget"
+            f"{written!r} takes the include: list over its {_MAX_INCLUDE_BYTES}-byte budget"
         )
     try:
         data = confuse.yaml_util.load_yaml_string(buf, target) or {}
@@ -1557,7 +1560,7 @@ def _include_source(target: str, budget: int) -> tuple[confuse.ConfigSource, int
         # start: measured, ``KeyError`` for ``!!bool ture`` and ``AttributeError``
         # for a ``!!timestamp`` that is not a date.
         # The class alone: its text quotes the value, which can be a secret.
-        raise _unreadable_include(f"{target!r} raised {type(exc).__name__}") from exc
+        raise _unreadable_include(f"{written!r} raised {type(exc).__name__}") from exc
     if not isinstance(data, dict):
         # What ``YamlSource.load`` raises for the same document, so a beets start
         # over this file refuses too.
@@ -1585,6 +1588,35 @@ def _skip_reason(exc: confuse.ConfigReadError) -> str:
     if isinstance(reason, OSError) and reason.strerror:
         return reason.strerror
     return str(reason).partition("\n")[0]
+
+
+def _as_written(view: confuse.Subview) -> str:
+    """An ``include:`` entry as written when it is a filename, else ``""``.
+
+    A later entry can come from inside an earlier include, and the repr of a
+    mapping there quoted its values (``OrderedDict({'password': ...})``).
+    """
+    raw = view.get()
+    return str(raw) if isinstance(raw, (str, bytes)) else ""
+
+
+def _loaded_paths(cfg: confuse.Configuration, document_file: str) -> tuple[str | None, str | None]:
+    """``directory:`` and ``library:`` as beets would load them from ``cfg``.
+
+    ``(None, None)`` when the document's OWN key resolves to no filename: the
+    schema paints that one, and two rows saying the same thing was the
+    collateral of reporting it here.
+    """
+    resolved: dict[str, str] = {}
+    for key in ("directory", "library"):
+        try:
+            resolved[key] = cfg[key].as_filename()
+        except confuse.ConfigError as exc:
+            source = _winning_source(cfg, key)
+            if source is not None and source != document_file:
+                raise _include_sets_a_non_path(key, source) from exc
+            return (None, None)
+    return (resolved["directory"], resolved["library"])
 
 
 class EffectivePaths(NamedTuple):
@@ -1638,13 +1670,13 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
         if len(entries) > _MAX_INCLUDE_ENTRIES:
             raise _too_many_includes(len(entries))
         for view in entries:
-            written = str(view.get())
+            written = _as_written(view)
             # Resolved HERE rather than up front: each entry resolves against
             # the sources set so far, which is what beets' own loop does.
             target = view.as_filename()
             merged = read.get(target)
             if merged is None:
-                merged, used = _include_source(target, budget)
+                merged, used = _include_source(target, written, budget)
                 budget -= used
                 read[target] = merged
             cfg.set(merged)
@@ -1665,20 +1697,8 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
         # old ``except confuse.ConfigError`` and the three routes answered a bare
         # 500 or reported the document CLEAN.
         raise _unreadable_include(f"{written!r}: {exc}" if written else str(exc)) from exc
-    names = tuple(skipped)
-    document_file = str(beets_dir / "config.yaml")
-    resolved: dict[str, str] = {}
-    for key in ("directory", "library"):
-        try:
-            resolved[key] = cfg[key].as_filename()
-        except confuse.ConfigError as exc:
-            source = _winning_source(cfg, key)
-            if source is not None and source != document_file:
-                raise _include_sets_a_non_path(key, source) from exc
-            # The document's OWN key: the schema paints that one, and two rows
-            # saying the same thing was the collateral of reporting it here.
-            return EffectivePaths(None, None, names)
-    return EffectivePaths(resolved["directory"], resolved["library"], names)
+    directory, library = _loaded_paths(cfg, str(beets_dir / "config.yaml"))
+    return EffectivePaths(directory, library, tuple(skipped))
 
 
 class LayoutCheck(NamedTuple):

@@ -267,11 +267,11 @@ export function SettingsBeetsPage() {
           setLocalText(null);
         },
         onError: (err) => {
-          // 409 = CAS mismatch -> open the conflict panel. 422 is handled by
-          // the lint source on the editor's next debounce tick (the linter
-          // re-runs after the save resolves), so we don't need to do anything
-          // here. Any other status falls through (React Query exposes via
-          // `save.error` if a future banner wants to surface it).
+          // 409 = CAS mismatch -> open the conflict panel. Every other error,
+          // 422 included, shows the "Save failed" banner below. A 422 about the
+          // editor text is also painted by the lint source on its next
+          // debounce tick; the 422 for a config.yaml on disk that cannot be
+          // read has no lint row, so its reason is shown nowhere.
           const c = parseConflictBody(err);
           if (c) setConflict(c);
         },

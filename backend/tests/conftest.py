@@ -40,10 +40,12 @@ import hashlib
 import os
 import signal
 import socket
-from collections.abc import Iterator
+import threading
+import time
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import pytest
 from fastapi.testclient import TestClient
@@ -123,6 +125,43 @@ def low_cost_stored_hash(password: str, *, n: int = 1024, r: int = 8, p: int = 1
             base64.b64encode(digest).decode("ascii"),
         )
     )
+
+
+#: How long a request may take before :func:`answer_before_a_fifo_blocks` calls
+#: it blocked. The routes it guards answer in under 0.1 s.
+FIFO_DEADLINE_SECONDS = 5.0
+
+T = TypeVar("T")
+
+
+def answer_before_a_fifo_blocks(call: Callable[[], T], fifo: Path) -> T:
+    """``call()``'s result, or a failure (not a hang) if it is still running at the deadline.
+
+    A read blocked opening ``fifo`` is then released by a writer that opens and
+    closes it, so a blocked save gives ``_SAVE_LOCK`` back to the tests after it.
+    """
+    answered: list[T] = []
+    raised: list[Exception] = []
+
+    def run() -> None:
+        try:
+            answered.append(call())
+        except Exception as exc:
+            raised.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(FIFO_DEADLINE_SECONDS)
+    blocked = worker.is_alive()
+    release_by = time.monotonic() + 10
+    while worker.is_alive() and time.monotonic() < release_by:
+        with contextlib.suppress(OSError):
+            os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+        time.sleep(0.05)
+    assert not blocked, f"still blocked on {fifo} after {FIFO_DEADLINE_SECONDS} s"
+    if raised:
+        raise raised[0]
+    return answered[0]
 
 
 def _install_session_cookie_on_every_test_client() -> None:

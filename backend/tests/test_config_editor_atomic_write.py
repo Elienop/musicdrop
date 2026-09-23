@@ -151,11 +151,10 @@ def test_atomic_write_parent_dir_fsync_open_carries_o_directory(
 
 
 def test_atomic_write_omits_yaml_directive_header(tmp_path: Path) -> None:
-    """``_yaml()`` sets ``version=(1,1)`` so ``yes``/``no`` parse as bool, but
-    ruamel then also injects a ``%YAML 1.1\\n---\\n`` prologue on every dump —
-    unrequested churn in the user's hand-edited config.yaml (diff noise, a
-    changed CAS sha, a no-op save that isn't byte-identical). ``atomic_write``
-    must strip that directive; the version stays a LOAD-side concern only."""
+    """No ``%YAML 1.1\\n---\\n`` prologue: ruamel writes one whenever
+    ``yaml.version`` is set, which is unrequested churn in the user's
+    hand-edited config.yaml (diff noise, a changed CAS sha, a no-op save that
+    isn't byte-identical)."""
     cfg = tmp_path / "config.yaml"
     cfg.write_text("a: 1\n")
     data = parse_yaml("# keep me\nplugins: [fetchart]\n")

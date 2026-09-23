@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.beets.library import LibraryHandle
+from tests.conftest import answer_before_a_fifo_blocks
 
 
 def _cfg_sha(client: TestClient) -> str:
@@ -124,7 +125,9 @@ def test_save_naming_names_the_parse_error_of_the_file_on_disk(
 
     assert r.status_code == 422, r.text
     assert r.json() == {
-        "detail": [{"loc": "", "msg": f"config.yaml does not parse: {error}", "type": "yaml_parse"}]
+        "detail": [
+            {"loc": "", "msg": f"config.yaml does not parse: {error}", "type": "config_on_disk"}
+        ]
     }
     assert beets_library.config_path.read_text(encoding="utf-8") == text
 
@@ -193,7 +196,11 @@ def test_save_naming_refuses_a_file_that_is_not_a_mapping(
     assert r.status_code == 422, r.text
     assert r.json() == {
         "detail": [
-            {"loc": "", "msg": "config.yaml must be a mapping of settings.", "type": "yaml_parse"}
+            {
+                "loc": "",
+                "msg": "config.yaml must be a mapping of settings.",
+                "type": "config_on_disk",
+            }
         ]
     }
     assert beets_library.config_path.read_text(encoding="utf-8") == text
@@ -257,17 +264,51 @@ def test_save_naming_keeps_the_comments_of_a_file_with_no_settings(
     assert read_config_document(cfg) == ({"paths": {"default": "$artist/$title"}} if rules else {})
 
 
+def test_save_naming_writes_no_as_a_bool_under_a_document_marker(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """``---`` made ruamel read ``no`` as a string, which the save wrote as ``'no'``.
+
+    beets then refused ``import.write`` as "must be a bool, not str" on Apply.
+    """
+    from app.beets.setup import read_config_document
+
+    cfg = beets_library.config_path
+    text = "---\nimport: {write: no, copy: yes, move: no}\n"
+    cfg.write_text(text, encoding="utf-8")
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    r = client.post(
+        "/api/config/naming/save",
+        json={"rules": [_SAVED_RULE], "replace": [], "base_sha256": sha},
+    )
+
+    assert r.status_code == 200, r.text
+    assert cfg.read_text(encoding="utf-8") == (
+        "import: {write: false, copy: true, move: false}\npaths:\n  default: $artist/$title\n"
+    )
+    assert read_config_document(cfg) == {
+        "import": {"write": False, "copy": True, "move": False},
+        "paths": {"default": "$artist/$title"},
+    }
+
+
 def _unreadable_config(cfg: Path, shape: str) -> str:
-    """Make ``cfg`` unreadable as ``shape``; return the OS problem it reports."""
+    """Make ``cfg`` unusable as ``shape``; return the sentence the Naming routes answer."""
     cfg.unlink()
     if shape == "directory":
         cfg.mkdir()
-        return "Is a directory"
-    if shape == "permission":
+    elif shape == "fifo":
+        os.mkfifo(cfg)
+    elif shape == "device-link":
+        cfg.symlink_to("/dev/null")
+    elif shape == "permission":
         cfg.write_text("a: 1\n", encoding="utf-8")
         cfg.chmod(0)
-        return "Permission denied"
-    return "No such file or directory"
+        return "config.yaml could not be read: Permission denied."
+    else:
+        return "config.yaml could not be read: No such file or directory."
+    return "config.yaml is not a regular file."
 
 
 _UNREADABLE = pytest.mark.parametrize(
@@ -275,6 +316,8 @@ _UNREADABLE = pytest.mark.parametrize(
     [
         "absent",
         "directory",
+        "fifo",
+        "device-link",
         pytest.param(
             "permission",
             marks=pytest.mark.skipif(
@@ -289,31 +332,39 @@ _UNREADABLE = pytest.mark.parametrize(
 def test_get_naming_refuses_a_config_it_cannot_read(
     client: TestClient, beets_library: LibraryHandle, shape: str
 ) -> None:
-    """Before, a bare 500; ``GET /api/config`` answers 200 for the same file."""
-    problem = _unreadable_config(beets_library.config_path, shape)
+    """Before, a bare 500, and a FIFO blocked; ``GET /api/config`` answers 200 for the same file."""
+    cfg = beets_library.config_path
+    message = _unreadable_config(cfg, shape)
 
-    r = client.get("/api/config/naming")
+    r = answer_before_a_fifo_blocks(lambda: client.get("/api/config/naming"), cfg)
 
     assert r.status_code == 422, r.text
-    assert r.json() == {"detail": f"config.yaml could not be read: {problem}."}
-    assert client.get("/api/config").status_code == 200
+    assert r.json() == {"detail": message}
+    assert answer_before_a_fifo_blocks(lambda: client.get("/api/config"), cfg).status_code == 200
 
 
 @_UNREADABLE
 def test_save_naming_refuses_a_config_it_cannot_read(
     client: TestClient, beets_library: LibraryHandle, shape: str
 ) -> None:
-    problem = _unreadable_config(beets_library.config_path, shape)
+    """A FIFO blocked the save while it held ``_SAVE_LOCK``, so every later save waited."""
+    cfg = beets_library.config_path
+    message = _unreadable_config(cfg, shape)
 
-    r = client.post(
-        "/api/config/naming/save",
-        json={"rules": [_SAVED_RULE], "replace": [], "base_sha256": "0" * 64},
+    r = answer_before_a_fifo_blocks(
+        lambda: client.post(
+            "/api/config/naming/save",
+            json={
+                "rules": [_SAVED_RULE],
+                "replace": [],
+                "base_sha256": hashlib.sha256(b"").hexdigest(),
+            },
+        ),
+        cfg,
     )
 
     assert r.status_code == 422, r.text
-    assert r.json() == {
-        "detail": [
-            {"loc": "", "msg": f"config.yaml could not be read: {problem}.", "type": "yaml_parse"}
-        ]
-    }
-    assert client.get("/api/config").status_code == 200
+    assert r.json() == {"detail": [{"loc": "", "msg": message, "type": "config_on_disk"}]}
+    assert os.path.lexists(cfg) is (shape != "absent")
+    assert os.path.islink(cfg) is (shape == "device-link")
+    assert answer_before_a_fifo_blocks(lambda: client.get("/api/config"), cfg).status_code == 200

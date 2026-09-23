@@ -106,8 +106,9 @@ def test_a_claim_made_while_apply_holds_the_lock_is_refused(
     async def scenario() -> bool:
         lock = asyncio.Lock()
         monkeypatch.setattr(library_busy, "_SWAP_LOCK", lock)
+        request = _request(lock)
         with pytest.raises(_EnteredRebuild):
-            await config_editor.apply(_request(lock))
+            await config_editor.apply(request)
         return lock.locked()
 
     still_locked = asyncio.run(scenario())
@@ -125,8 +126,9 @@ def test_apply_409s_and_releases_the_lock_while_a_job_holds_the_library(
     async def scenario() -> tuple[HTTPException, bool]:
         lock = asyncio.Lock()
         monkeypatch.setattr(library_busy, "_SWAP_LOCK", lock)
+        request = _request(lock)
         with pytest.raises(HTTPException) as info:
-            await config_editor.apply(_request(lock))
+            await config_editor.apply(request)
         return info.value, lock.locked()
 
     exc, still_locked = asyncio.run(scenario())
