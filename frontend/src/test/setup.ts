@@ -117,4 +117,15 @@ afterEach(() => {
   cleanup();
   server.resetHandlers();
 });
-afterAll(() => server.close());
+// A file's last test can leave 0 ms timers queued: cleanup() unmounting a
+// Radix overlay queues FocusScope's focus restore, and a query settling at the
+// end queues TanStack's notify flush. vitest tears jsdom down when the file
+// ends without waiting for them, so one can run after `window` is deleted and
+// Node's own CustomEvent is back, and the run exits 1 with every test passed
+// ("Failed to execute 'dispatchEvent' on 'EventTarget'", "window is not
+// defined"). One macrotask first lets them run while jsdom is still installed:
+// timers with the same delay fire in the order they were queued.
+afterAll(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  server.close();
+});

@@ -819,13 +819,14 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   switch: ruff, mypy and 4270 tests pass on 3.11.16 as well. Patch releases can still differ (CI
   takes the runner's 3.12.3, the image the latest 3.12), which is how a test pinning CPython's
   NUL-path wording surfaced this.
-- **Frontend flake: a Radix focus-scope timer outlives `MergePlaylistDialog.test.tsx`.** Every test
-  passes, but Vitest exits 1 on `TypeError: Failed to execute 'dispatchEvent' … not of type 'Event'`
-  (`@radix-ui/react-focus-scope/dist/index.mjs:97`, in a `setTimeout`) and names that file. Seen in
-  3 full runs with `--maxWorkers=4` on 2026-09-23, 2 of them back to back; the file alone passed 3
-  of 3. CI runs `npm run test`, so it can fail a PR run. The branch that saw it touches nothing
-  under `components/playlists/`. Fix shape: the test waits for the dialog to close (or flushes
-  timers) before it ends; not a global error filter. Search words: unhandled error, Errors 1 error.
+- ~~**Frontend flake: a Radix focus-scope timer outlives `MergePlaylistDialog.test.tsx`.**~~ —
+  **CLOSED 2026-09-23** (PR #232). Not one file: a file's last test can leave a 0 ms timer
+  (Radix FocusScope's focus restore on unmount, TanStack's notify flush) that vitest's jsdom
+  teardown races; when it loses, the run exits 1 with every test passed. The shared
+  `src/test/setup.ts` `afterAll` now waits one macrotask first. Measured: full runs 7 of 26 red
+  before, 0 of 17 after; a forced reproduction 10/10 → 0/10, and 3/3 again with the line removed
+  (re-run by hand). No library drains this itself (RTL `cleanup()` is synchronous; vitest's
+  `teardownTimeout` only bounds the wait). Report: `docs/superpowers/reports/2026-09-23-flake/`.
 - ~~**Acquisition drain threads outlive their tests**~~ — **CLOSED 2026-09-21** on
   `feat/import-keep-downloads` (PR #232). This entry called the leak harmless; it was not. With
   `tests/test_store_layout_boot.py` run before `tests/test_import_start_guards.py`, 4 tests failed
