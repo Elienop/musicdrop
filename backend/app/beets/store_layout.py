@@ -57,6 +57,7 @@ __all__ = [
     "effective_config_paths",
     "layout_check_for_config",
     "lib_music_and_library",
+    "yaml_error_at",
 ]
 
 #: How each of the five inputs is spelled for the operator who has to change it.
@@ -1575,16 +1576,22 @@ class SkippedInclude(NamedTuple):
     reason: str
 
 
-def _skip_reason(exc: confuse.ConfigReadError) -> str:
-    """A YAML error's 1-based line, else the OS error, else the first line.
+def yaml_error_at(exc: object) -> str | None:
+    """``YAML error at line N`` from a PyYAML or ruamel ``problem_mark``, else ``None``.
 
-    Not PyYAML's problem text: for an undefined alias or an unknown tag it
+    Not the parser's problem text: for an undefined alias or an unknown tag it
     quotes the token, which can be an unquoted secret.
     """
+    mark = getattr(exc, "problem_mark", None)
+    return None if mark is None else f"YAML error at line {mark.line + 1}"
+
+
+def _skip_reason(exc: confuse.ConfigReadError) -> str:
+    """A YAML error's 1-based line, else the OS error, else the first line."""
     reason = exc.reason
-    mark = getattr(reason, "problem_mark", None)
-    if mark is not None:
-        return f"YAML error at line {mark.line + 1}"
+    at = yaml_error_at(reason)
+    if at is not None:
+        return at
     if isinstance(reason, OSError) and reason.strerror:
         return reason.strerror
     return str(reason).partition("\n")[0]

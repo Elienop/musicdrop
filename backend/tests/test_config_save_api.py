@@ -79,7 +79,8 @@ def test_save_writes_no_as_a_bool_under_a_document_marker(
         f"{music}\nlibrary: library.db\nimport:\n  write: false\nfetchart:\n  auto: false\n"
     )
     document = read_config_document(cfg)
-    assert (document["import"]["write"], document["fetchart"]["auto"]) == (False, False)
+    flags = (document["import"]["write"], document["fetchart"]["auto"])
+    assert flags == (False, False)
 
 
 def test_save_writes_an_octal_back_as_it_was_written(
@@ -161,8 +162,9 @@ def test_save_over_a_symlinked_config_writes_the_target_and_keeps_the_link(
 def test_save_refuses_when_config_yaml_cannot_be_written_and_changes_nothing(
     client: TestClient, beets_library_config_path: Path, shape: str
 ) -> None:
-    """Measured before: a bare 500. The folder the temp goes in is read-only: the
-    link target's for a link, config.yaml's own for a regular file."""
+    """Measured before: a 500 for a regular file, and a 200 that replaced a link
+    with a regular file. The folder the temp goes in is read-only: the link
+    target's for a link, config.yaml's own for a regular file."""
     cfg = beets_library_config_path
     target = _link_to_dotfile(cfg, 0o600) if shape == "link" else cfg
     before = (target.read_bytes(), stat.S_IMODE(target.stat().st_mode))
@@ -192,7 +194,8 @@ def test_save_refuses_when_config_yaml_cannot_be_written_and_changes_nothing(
     assert os.path.islink(cfg) is (shape == "link")
     if shape == "link":
         assert os.readlink(cfg) == os.path.join("dotfiles", "config.yaml")
-    assert (target.read_bytes(), stat.S_IMODE(target.stat().st_mode)) == before
+    after = (target.read_bytes(), stat.S_IMODE(target.stat().st_mode))
+    assert after == before
     assert sorted(os.listdir(target.parent)) == listing
 
 

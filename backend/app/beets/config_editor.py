@@ -70,6 +70,7 @@ from app.beets.store_layout import (
     StoreLayoutError,
     checked_store_dirs,
     layout_check_for_config,
+    yaml_error_at,
 )
 from app.config import Settings
 from app.config import settings as _module_settings
@@ -618,8 +619,14 @@ def _beets_default_naming() -> tuple[dict[str, str], dict[str, str]]:
 
 
 def _unparsed_on_disk(exc: Exception) -> str:
-    """The Naming routes' 422 text for a config.yaml on disk that does not parse."""
-    return f"config.yaml does not parse: {parse_error_text(exc)}"
+    """The Naming routes' 422 text for a config.yaml on disk that does not parse.
+
+    One line, and no text from the file: measured, ruamel's ran to 11 lines, and
+    for a duplicate key it quoted both values. The Beets editor shows it whole.
+    """
+    at = yaml_error_at(exc)
+    cause = "" if at is None else f": {at}"
+    return f"config.yaml does not parse{cause}. Fix it in Settings → Beets."
 
 
 class _UnusableOnDisk(Exception):
@@ -692,6 +699,10 @@ def _on_disk_mapping(on_disk_bytes: bytes) -> CommentedMap:
     """
     try:
         text = on_disk_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        # Not "does not parse": the Beets editor opens such a file empty.
+        raise _UnusableOnDisk("config.yaml is not UTF-8.") from exc
+    try:
         doc = parse_yaml(text)
     # Broad, as Validate's arm is: see :func:`parse_yaml`.
     except Exception as exc:

@@ -79,45 +79,49 @@ def test_save_naming_409_on_stale_sha(client: TestClient) -> None:
     assert r.status_code == 409
 
 
-_UNCLOSED_TEXT = (
-    "while parsing a flow sequence\n"
-    '  in "<unicode string>", line 2, column 4:\n'
-    "    x: [unclosed\n"
-    "       ^ (line: 2)\n"
-    "expected ',' or ']', but got '<stream end>'\n"
-    '  in "<unicode string>", line 3, column 1:\n'
-    "    \n"
-    "    ^ (line: 3)"
-)
+_FIX_IN_BEETS = " Fix it in Settings → Beets."
 
+# A duplicate key is the case beets' loader accepts (it keeps the last value),
+# and ruamel's text quoted both values.
 _BROKEN_ON_DISK = pytest.mark.parametrize(
-    ("text", "error"),
-    [("a: 1\nx: [unclosed\n", _UNCLOSED_TEXT), ("a: 1\nx: !!bool ture\n", "KeyError: 'ture'")],
-    ids=["syntax", "mistyped-tag"],
+    ("data", "message"),
+    [
+        (
+            b"a: 1\nx: [unclosed\n",
+            "config.yaml does not parse: YAML error at line 3." + _FIX_IN_BEETS,
+        ),
+        (
+            b"plex:\n  token: Hunter2First\n  token: Hunter2Last\n",
+            "config.yaml does not parse: YAML error at line 3." + _FIX_IN_BEETS,
+        ),
+        (b"a: 1\nx: !!bool ture\n", "config.yaml does not parse." + _FIX_IN_BEETS),
+        (b"a: 1\nb: caf\xe9\n", "config.yaml is not UTF-8."),
+    ],
+    ids=["syntax", "duplicate-key", "mistyped-tag", "not-utf8"],
 )
 
 
 @_BROKEN_ON_DISK
 def test_get_naming_names_the_parse_error_of_the_file_on_disk(
-    client: TestClient, beets_library: LibraryHandle, text: str, error: str
+    client: TestClient, beets_library: LibraryHandle, data: bytes, message: str
 ) -> None:
-    """Measured before: a bare 500 for both, while ``GET /api/config`` answered 200."""
-    beets_library.config_path.write_text(text, encoding="utf-8")
+    """Before, the parser's own text: a duplicate key's ran to 11 lines and quoted both values."""
+    beets_library.config_path.write_bytes(data)
 
     r = client.get("/api/config/naming")
 
     assert r.status_code == 422, r.text
-    assert r.json() == {"detail": f"config.yaml does not parse: {error}"}
+    assert r.json() == {"detail": message}
     assert client.get("/api/config").status_code == 200
 
 
 @_BROKEN_ON_DISK
 def test_save_naming_names_the_parse_error_of_the_file_on_disk(
-    client: TestClient, beets_library: LibraryHandle, text: str, error: str
+    client: TestClient, beets_library: LibraryHandle, data: bytes, message: str
 ) -> None:
     """The base hash matches the broken file, so the save reaches its re-read."""
-    beets_library.config_path.write_text(text, encoding="utf-8")
-    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    beets_library.config_path.write_bytes(data)
+    sha = hashlib.sha256(data).hexdigest()
 
     r = client.post(
         "/api/config/naming/save",
@@ -125,12 +129,8 @@ def test_save_naming_names_the_parse_error_of_the_file_on_disk(
     )
 
     assert r.status_code == 422, r.text
-    assert r.json() == {
-        "detail": [
-            {"loc": "", "msg": f"config.yaml does not parse: {error}", "type": "config_on_disk"}
-        ]
-    }
-    assert beets_library.config_path.read_text(encoding="utf-8") == text
+    assert r.json() == {"detail": [{"loc": "", "msg": message, "type": "config_on_disk"}]}
+    assert beets_library.config_path.read_bytes() == data
 
 
 @pytest.mark.parametrize("text", ["", "# nothing set here\n"], ids=["empty", "comment-only"])
@@ -399,7 +399,7 @@ def test_save_naming_over_a_symlinked_config_writes_the_target_and_keeps_the_lin
 def test_save_naming_refuses_when_config_yaml_cannot_be_written_and_changes_nothing(
     client: TestClient, beets_library: LibraryHandle
 ) -> None:
-    """Measured before: a bare 500."""
+    """Measured before: a 200 that replaced the link with a regular file."""
     cfg = beets_library.config_path
     dotfile = _chain_to_dotfile(cfg, 0o600)
     before = dotfile.read_bytes()

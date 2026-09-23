@@ -138,10 +138,11 @@ def _write_through_dir_fd(name: str, data: bytes, *, mode: int | None, dir_fd: i
     existing = _lstat_destination(name, dir_fd)
     if existing is not None and stat_mod.S_ISLNK(existing.st_mode):
         # The publish replaces the LINK, so the operator loses it and the new
-        # file takes the umask default instead of the target's mode: measured, a
-        # dotfiles-linked 0o600 config.yaml became a 0o644 regular file with
-        # nothing in the logs. Present tense: this runs BEFORE the publish, and a
-        # write that then fails replaced nothing.
+        # file takes the umask default instead of the target's mode. Measured
+        # before config.yaml's Save resolved its link: a dotfiles-linked 0o600
+        # config.yaml became a 0o644 regular file with nothing in the logs.
+        # Present tense: this runs BEFORE the publish, and a write that then
+        # fails replaced nothing.
         #
         # A BARE name, because for a ``dir_fd`` caller that is all this function
         # has — the parent belongs to the descriptor. The caller's own log line
