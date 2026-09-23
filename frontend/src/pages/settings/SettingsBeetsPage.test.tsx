@@ -907,6 +907,52 @@ describe("SettingsPage", () => {
     ).toBeInTheDocument();
   });
 
+  test("the conflict panel is a plain diff: both panes read-only, no revert control", async () => {
+    // Overwrite saves the main editor's draft, so an edit in this panel
+    // would be lost without a word.
+    defaultMocks();
+    server.use(
+      http.post(SAVE_URL, () =>
+        HttpResponse.json(
+          {
+            detail: {
+              current_yaml_text: "directory: /music-fresh\n",
+              current_sha256: "fresh-server-sha",
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    const content = await findEditorContent();
+
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    content.focus();
+    await user.keyboard("q");
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+    const modal = await screen.findByRole("dialog", {
+      name: /file changed on disk/i,
+    });
+    // Both panes: not editable, and read-only to typed input.
+    const panes = Array.from(modal.querySelectorAll(".cm-content"), (e) => [
+      e.getAttribute("contenteditable"),
+      e.getAttribute("aria-readonly"),
+    ]);
+    expect(panes).toEqual([
+      ["false", "true"],
+      ["false", "true"],
+    ]);
+    expect(modal.querySelector(".cm-merge-revert")).toBeNull();
+    expect(
+      within(modal)
+        .queryAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["Reload (drop my edits)", "Overwrite anyway"]);
+  });
+
   test("Reload in the conflict modal closes the modal and returns to clean", async () => {
     defaultMocks();
     server.use(

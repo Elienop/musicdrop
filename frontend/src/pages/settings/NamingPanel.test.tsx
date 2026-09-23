@@ -469,6 +469,7 @@ function namingState() {
 }
 
 const CUE = "Saved. Click Apply to load it.";
+const UNSAVED = "Unsaved changes. Save, then Apply.";
 const SAVE_FALLBACK_ALERT =
   "Save failed. Your changes weren’t written — try again.";
 const APPLY_FALLBACK_ALERT =
@@ -543,7 +544,7 @@ test("the Save alert gives way to an invalid replace pattern, and stays gone onc
     expect(namingState()).toEqual({
       save: "Save naming",
       apply: "Apply (off)",
-      lines: [],
+      lines: [UNSAVED],
       below: [],
       alerts: [],
     }),
@@ -688,7 +689,7 @@ const PENDING_REST = {
   alerts: [],
 };
 
-test("a draft hides the Saved cue and turns Apply off; typing it back restores both", async () => {
+test("a draft swaps the Saved cue for the unsaved line and turns Apply off; typing it back restores both", async () => {
   mockPanel();
   wrap(<NamingPanel />);
   const def = await screen.findByDisplayValue(/\$albumartist/);
@@ -700,7 +701,7 @@ test("a draft hides the Saved cue and turns Apply off; typing it back restores b
     expect(namingState()).toEqual({
       save: "Save naming",
       apply: "Apply (off)",
-      lines: [],
+      lines: [UNSAVED],
       below: [],
       alerts: [],
     }),
@@ -747,10 +748,111 @@ test("Save is off while an Apply is in flight, and the cue is gone", async () =>
   };
   expect(namingState()).toEqual(applying);
 
-  // A draft typed while Apply runs: Save stays off.
+  // A draft typed while Apply runs: Save stays off, and the draft is still
+  // unsaved once Apply ends.
   await userEvent.type(def, "X");
   await new Promise((r) => setTimeout(r, 50));
-  expect(namingState()).toEqual(applying);
+  expect(namingState()).toEqual({ ...applying, lines: [UNSAVED] });
+});
+
+test("the unsaved line shows with nothing waiting to be applied, and not at rest", async () => {
+  mockPanel({ applyPending: false });
+  wrap(<NamingPanel />);
+  const def = await screen.findByDisplayValue(/\$albumartist/);
+  const rest = {
+    save: "Save naming (off)",
+    apply: "Apply (off)",
+    lines: [],
+    below: [],
+    alerts: [],
+  };
+  await new Promise((r) => setTimeout(r, 50));
+  expect(namingState()).toEqual(rest);
+
+  await userEvent.type(def, "X");
+  await waitFor(() =>
+    expect(namingState()).toEqual({
+      ...rest,
+      save: "Save naming",
+      lines: [UNSAVED],
+    }),
+  );
+});
+
+test("the unsaved line gives way to an invalid replace pattern", async () => {
+  let replaceErrors: ReplaceError[] = [];
+  const hits = mockPanel({ replaceErrors: () => replaceErrors });
+  wrap(<NamingPanel />);
+  const def = await screen.findByDisplayValue(/\$albumartist/);
+  await waitFor(() => expect(hits.preview).toBeGreaterThan(0));
+
+  replaceErrors = [{ index: 0, pattern: "[", message: "unterminated set" }];
+  await userEvent.type(def, "X");
+  await waitFor(() =>
+    expect(namingState()).toEqual({
+      save: "Save naming (off)",
+      apply: "Apply (off)",
+      lines: ["Invalid replace pattern. Fix to save."],
+      below: [],
+      alerts: [],
+    }),
+  );
+});
+
+test("a draft replaces the paused line: Apply waits for the Save, not the job", async () => {
+  mockPanel({ jobActive: () => true });
+  wrap(<NamingPanel />);
+  const def = await screen.findByDisplayValue(/\$albumartist/);
+  await screen.findByText(/^Apply paused:/);
+
+  await userEvent.type(def, "X");
+  await waitFor(() =>
+    expect(namingState()).toEqual({
+      save: "Save naming",
+      apply: "Apply (off)",
+      lines: [UNSAVED],
+      below: [],
+      alerts: [],
+    }),
+  );
+});
+
+test("the unsaved line gives way to an Apply failure's recovery", async () => {
+  mockPanel({ apply: () => fail(422, UNREADABLE) });
+  wrap(<NamingPanel />);
+  const def = await screen.findByDisplayValue(/\$albumartist/);
+  await userEvent.click(await screen.findByRole("button", { name: "Apply" }));
+  await screen.findByText(REFUSED_ALERT);
+
+  await userEvent.type(def, "X");
+  await new Promise((r) => setTimeout(r, 50));
+  expect(namingState()).toEqual({
+    save: "Save naming",
+    apply: "Apply (off)",
+    lines: [],
+    below: [REFUSED_ALERT],
+    alerts: [REFUSED_ALERT],
+  });
+});
+
+test("the unsaved line gives way to a Save conflict, through later edits", async () => {
+  mockPanel({ save: () => fail(409, { detail: [] }) });
+  wrap(<NamingPanel />);
+  const def = await screen.findByDisplayValue(/\$albumartist/);
+  await userEvent.type(def, "X");
+  await userEvent.click(screen.getByRole("button", { name: /save naming/i }));
+  const banner = await screen.findByRole("alert");
+
+  // An edit ends the Save's error; the conflict banner still speaks.
+  await userEvent.type(def, "Y");
+  await new Promise((r) => setTimeout(r, 50));
+  expect(namingState()).toEqual({
+    save: "Save naming",
+    apply: "Apply (off)",
+    lines: [],
+    below: [],
+    alerts: [banner.textContent],
+  });
 });
 
 test("the paused line shows while a job holds a pending Apply", async () => {

@@ -22,15 +22,10 @@ import { Button } from "@/components/ui/button";
  *    `sha256` token (carried by the 409 body) so the second Save can't lose
  *    the same race.
  *
- * The diff itself is a `@codemirror/merge` `MergeView`:
- *   - `a` side = `local`, editable in principle (but we don't surface the
- *     edits — Reload/Overwrite are the only two paths out). Keeping `a`
- *     editable preserves the revert affordance: `revertControls: "b-to-a"`
- *     means each changed chunk has a "<- revert" button that copies the
- *     server's version of that chunk INTO `a`, so a user who only wants to
- *     accept a subset of disk-side changes can still do that visually.
- *   - `b` side = `server`, locked read-only via the standard CM6 triplet
- *     (`EditorState.readOnly` + `EditorView.editable.of(false)`).
+ * The diff itself is a `@codemirror/merge` `MergeView`, a plain diff: both
+ * sides are read-only (`a` = `local`, `b` = `server`) and there are no revert
+ * controls, because Overwrite saves the main editor's draft, not this pane.
+ * Its options:
  *   - `collapseUnchanged: {}` folds identical regions to a "show more"
  *     affordance so the diff stays focused on the actual divergence.
  *   - `highlightChanges: true` + `gutter: true` colour the changed lines and
@@ -70,25 +65,15 @@ export function SettingsConflict({
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    const readOnly = [
+      yaml(),
+      EditorState.readOnly.of(true),
+      EditorView.editable.of(false),
+    ];
     const mv = new MergeView({
       parent: host,
-      a: {
-        doc: local,
-        extensions: [yaml()],
-      },
-      b: {
-        doc: server,
-        extensions: [
-          yaml(),
-          EditorState.readOnly.of(true),
-          EditorView.editable.of(false),
-        ],
-      },
-      // "b-to-a" = revert chunks FROM server (b) BACK INTO local (a) — i.e.
-      // the user is editing the left side and can pull individual disk-side
-      // chunks across. Direction matches the spec's "your edits on the
-      // left, the on-disk version on the right" framing.
-      revertControls: "b-to-a",
+      a: { doc: local, extensions: readOnly },
+      b: { doc: server, extensions: readOnly },
       highlightChanges: true,
       gutter: true,
       // Empty config = use the default (collapse runs of identical lines

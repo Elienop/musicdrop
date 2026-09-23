@@ -454,6 +454,17 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
             Invalid replace pattern. Fix to save.
           </p>
         )}
+        {/* Why Apply is off beside a draft. Gives way to any line or alert
+            that names another step, and goes once a Save is sent. */}
+        {dirty &&
+          save.isIdle &&
+          !hasReplaceErrors &&
+          !conflict &&
+          !applyFailed && (
+            <output className="text-muted-foreground text-sm block">
+              Unsaved changes. Save, then Apply.
+            </output>
+          )}
         {/* "Saved. Click Apply" only while that is the next step: not beside
             a draft Apply would not load, and not while Apply runs. */}
         {!hasReplaceErrors &&
@@ -470,8 +481,9 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
               it.
             </output>
           )}
-        {/* Only when something is waiting to be applied. */}
-        {applyPending && job.active && (
+        {/* Only when the file is waiting to be applied: beside a draft,
+            "available when it finishes" would be false. */}
+        {applyPending && job.active && !dirty && (
           <output className="text-muted-foreground text-sm block">
             Apply paused: {job.label} is running; available when it finishes.
           </output>
