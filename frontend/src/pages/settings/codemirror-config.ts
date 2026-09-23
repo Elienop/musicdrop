@@ -149,7 +149,7 @@ export function buildReadOnlyExtensions(
  *
  * The page calls this inside `useMemo` keyed by `initialDoc`, so the
  * Compartment identity is stable across re-renders for a given doc — only
- * a fresh snapshot (post-Apply refetch) rebuilds them.
+ * a read that brings new file text rebuilds them.
  *
  * Extension order is load-bearing:
  *   1. `basicSetup` — registers the default keymap.

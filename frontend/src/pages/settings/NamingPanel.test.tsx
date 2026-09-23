@@ -817,7 +817,9 @@ test("a draft replaces the paused line: Apply waits for the Save, not the job", 
   );
 });
 
-test("the unsaved line gives way to an Apply failure's recovery", async () => {
+test("the unsaved line shows beside an Apply failure's recovery", async () => {
+  // Decision #59: while a draft is unsaved, the line says so. No Apply
+  // recovery sentence contradicts "Save, then Apply."
   mockPanel({ apply: () => fail(422, UNREADABLE) });
   wrap(<NamingPanel />);
   const def = await screen.findByDisplayValue(/\$albumartist/);
@@ -825,13 +827,75 @@ test("the unsaved line gives way to an Apply failure's recovery", async () => {
   await screen.findByText(REFUSED_ALERT);
 
   await userEvent.type(def, "X");
-  await new Promise((r) => setTimeout(r, 50));
-  expect(namingState()).toEqual({
+  await waitFor(() =>
+    expect(namingState()).toEqual({
+      save: "Save naming",
+      apply: "Apply (off)",
+      lines: [UNSAVED],
+      below: [REFUSED_ALERT],
+      alerts: [REFUSED_ALERT],
+    }),
+  );
+});
+
+test("a row Save would not send is not a change; a rule with a query and a template is", async () => {
+  // Save leaves these rows out, so its write would be the same bytes, the
+  // sha would not move and the panel would not remount: a draft counted from
+  // the rows would keep Apply off after that Save with no line.
+  const bodies: unknown[] = [];
+  mockPanel();
+  // mockPanel's stub, re-typed to the one argument it reads.
+  type Stub = (path: string) => Promise<unknown>;
+  const post = vi.mocked(client.POST).getMockImplementation() as unknown as
+    | Stub
+    | undefined;
+  if (!post) throw new Error("mockPanel stub missing");
+  vi.mocked(client.POST).mockImplementation(((path: string, init: unknown) => {
+    if (path === "/api/config/naming/save") bodies.push(init);
+    return post(path);
+  }) as never);
+  wrap(<NamingPanel />);
+  await screen.findByDisplayValue(/\$albumartist/);
+  await waitFor(() => expect(namingState()).toEqual(PENDING_REST));
+
+  // An empty rule and an empty replace row.
+  await userEvent.click(screen.getByRole("button", { name: /add rule/i }));
+  await userEvent.click(
+    screen.getByRole("button", { name: /add replacement/i }),
+  );
+  expect(namingState()).toEqual(PENDING_REST);
+
+  // A template with no query: the backend writes no key for it.
+  const template = screen.getByLabelText("Custom rule 1 template");
+  await userEvent.type(template, "Live/$album");
+  expect(namingState()).toEqual(PENDING_REST);
+
+  // Control: with a query too, it is a change.
+  await userEvent.type(
+    screen.getByLabelText("Custom rule 1 query"),
+    "albumtype:live",
+  );
+  const draft = {
     save: "Save naming",
     apply: "Apply (off)",
-    lines: [],
-    below: [REFUSED_ALERT],
-    alerts: [REFUSED_ALERT],
+    lines: [UNSAVED],
+    below: [],
+    alerts: [],
+  };
+  expect(namingState()).toEqual(draft);
+
+  // Save sends exactly the rows the draft was counted from.
+  await userEvent.click(screen.getByRole("button", { name: /save naming/i }));
+  await waitFor(() => expect(bodies).toHaveLength(1));
+  expect(bodies[0]).toEqual({
+    body: {
+      rules: [
+        { query: "default", template: naming.default },
+        { query: "albumtype:live", template: "Live/$album" },
+      ],
+      replace: [],
+      base_sha256: "sha-1",
+    },
   });
 });
 

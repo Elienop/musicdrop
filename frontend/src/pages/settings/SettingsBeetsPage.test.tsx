@@ -936,14 +936,17 @@ describe("SettingsPage", () => {
     const modal = await screen.findByRole("dialog", {
       name: /file changed on disk/i,
     });
-    // Both panes: not editable, and read-only to typed input.
-    const panes = Array.from(modal.querySelectorAll(".cm-content"), (e) => [
+    // Both panes: not editable, read-only to typed input, and in the Tab
+    // order, so a keyboard user can move through the diff.
+    const paneNodes = Array.from(modal.querySelectorAll(".cm-content"));
+    const panes = paneNodes.map((e) => [
       e.getAttribute("contenteditable"),
       e.getAttribute("aria-readonly"),
+      e.getAttribute("tabindex"),
     ]);
     expect(panes).toEqual([
-      ["false", "true"],
-      ["false", "true"],
+      ["false", "true", "0"],
+      ["false", "true", "0"],
     ]);
     expect(modal.querySelector(".cm-merge-revert")).toBeNull();
     expect(
@@ -951,6 +954,18 @@ describe("SettingsPage", () => {
         .queryAllByRole("button")
         .map((b) => b.textContent),
     ).toEqual(["Reload (drop my edits)", "Overwrite anyway"]);
+    // Tab from the panel: each pane, then the two actions.
+    const reached: (Element | null)[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      await user.tab();
+      reached.push(document.activeElement);
+    }
+    expect(reached).toEqual([
+      paneNodes[0],
+      paneNodes[1],
+      within(modal).getByRole("button", { name: /reload/i }),
+      within(modal).getByRole("button", { name: /overwrite/i }),
+    ]);
   });
 
   test("Reload in the conflict modal closes the modal and returns to clean", async () => {
@@ -1870,6 +1885,204 @@ describe("SettingsBeetsPage while Apply is pending", () => {
     expect(
       screen.queryByRole("dialog", { name: /file changed on disk/i }),
     ).not.toBeInTheDocument();
+    // Focus is in the editor, where the draft and Save are, not on <body>.
+    expect(document.activeElement).toBe(document.querySelector(".cm-content"));
+  });
+
+  test("a new file version equal to the draft opens no panel, and the page is clean", async () => {
+    // Another writer wrote exactly the draft.
+    pendingMocks({
+      read: (n) => (n > 1 ? { yaml_text: `x${SAMPLE_YAML}` } : {}),
+    });
+    const user = userEvent.setup();
+    const { queryClient } = renderPage();
+    await findEditorContent();
+    await editAndType(user);
+    await waitFor(() => expect(beetsState()).toEqual(DIRTY_STATE));
+
+    await queryClient.invalidateQueries({ queryKey: ["beets-config"] });
+    await waitFor(() => expect(beetsState()).toEqual(PENDING_STATE));
+    expect(
+      screen.queryByRole("dialog", { name: /file changed on disk/i }),
+    ).not.toBeInTheDocument();
+    expect(editorText()).toBe(`x${SAMPLE_YAML.replaceAll("\n", "")}`);
+    expect(editable()).toBe("false");
+  });
+
+  test("a read that lands inside the page's own Save opens no panel", async () => {
+    // A focus refetch answered after the Save's write and before its answer
+    // brings the saved text with a new sha.
+    const SAVED_EFFECTIVE = "saved: yes\n";
+    let disk = { text: SAMPLE_YAML, sha: "sha-1" };
+    let written = false;
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const snapshot = () =>
+      snapshotFixture({
+        apply_pending: true,
+        yaml_text: disk.text,
+        sha256: disk.sha,
+        effective_yaml: written ? SAVED_EFFECTIVE : EFFECTIVE_YAML,
+      });
+    defaultMocks();
+    server.use(
+      http.get(CONFIG_URL, () => HttpResponse.json(snapshot())),
+      http.post(SAVE_URL, async ({ request }) => {
+        const body = (await request.json()) as SaveRequest;
+        disk = { text: body.yaml_text, sha: "sha-saved" };
+        written = true;
+        await held;
+        return HttpResponse.json(snapshot());
+      }),
+    );
+    const user = userEvent.setup();
+    const { queryClient } = renderPage();
+    await findEditorContent();
+    await editAndType(user);
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(written).toBe(true));
+
+    await queryClient.invalidateQueries({ queryKey: ["beets-config"] });
+    const effective = screen.getByRole("region", { name: "Effective config" });
+    await waitFor(() =>
+      expect(effective.querySelector(".cm-content")?.textContent).toBe(
+        "saved: yes",
+      ),
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    expect(
+      screen.queryByRole("dialog", { name: /file changed on disk/i }),
+    ).not.toBeInTheDocument();
+    expect(beetsState()).toEqual({
+      edit: false,
+      save: null,
+      cancel: null,
+      apply: false,
+      alerts: [],
+      status: ["Saving configuration…"],
+      helpers: [],
+    });
+
+    release();
+    await waitFor(() => expect(beetsState()).toEqual(PENDING_STATE));
+    expect(
+      screen.queryByRole("dialog", { name: /file changed on disk/i }),
+    ).not.toBeInTheDocument();
+    expect(editorText()).toBe(`x${SAMPLE_YAML.replaceAll("\n", "")}`);
+  });
+
+  test("a new file version ends a Save failure about the file as it was", async () => {
+    const OTHER = "directory: /elsewhere\nlibrary: library.db\n";
+    pendingMocks({ read: (n) => (n > 1 ? { yaml_text: OTHER } : {}) });
+    server.use(
+      http.post(SAVE_URL, () =>
+        HttpResponse.json(
+          {
+            detail: [
+              {
+                loc: "",
+                msg: "config.yaml is not UTF-8.",
+                type: "config_on_disk",
+                line: null,
+                column: null,
+              },
+            ],
+          },
+          { status: 422 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    const { queryClient } = renderPage();
+    await findEditorContent();
+    await editAndType(user);
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() =>
+      expect(beetsState()).toEqual({
+        ...DIRTY_STATE,
+        alerts: ["Save failed. config.yaml is not UTF-8."],
+      }),
+    );
+
+    await queryClient.invalidateQueries({ queryKey: ["beets-config"] });
+    const panel = await screen.findByRole("dialog", {
+      name: /file changed on disk/i,
+    });
+    await waitFor(() => expect(panel.textContent).toContain("/elsewhere"));
+    expect(beetsState()).toEqual(DIRTY_STATE);
+  });
+
+  test("a new file version closes a panel left open with no draft, so a Save pairs its text and sha", async () => {
+    // A fake config.yaml with the server's sha compare: a Save whose base is
+    // not the file's sha answers 409 with the file.
+    const F2 = "directory: /one\n";
+    const F3 = "directory: /three\n";
+    let disk = { text: SAMPLE_YAML, sha: "sha-1" };
+    const bodies: SaveRequest[] = [];
+    defaultMocks();
+    server.use(
+      http.get(CONFIG_URL, () =>
+        HttpResponse.json(
+          snapshotFixture({ yaml_text: disk.text, sha256: disk.sha }),
+        ),
+      ),
+      http.post(SAVE_URL, async ({ request }) => {
+        const body = (await request.json()) as SaveRequest;
+        bodies.push(body);
+        if (body.base_sha256 !== disk.sha) {
+          return HttpResponse.json(
+            {
+              detail: {
+                current_yaml_text: disk.text,
+                current_sha256: disk.sha,
+              },
+            },
+            { status: 409 },
+          );
+        }
+        disk = { text: body.yaml_text, sha: "sha-saved" };
+        return HttpResponse.json(
+          snapshotFixture({
+            apply_pending: true,
+            yaml_text: disk.text,
+            sha256: disk.sha,
+          }),
+        );
+      }),
+    );
+    const user = userEvent.setup();
+    const { queryClient } = renderPage();
+    await findEditorContent();
+    await editAndType(user);
+
+    // Another writer, then the Save meets a 409 and the panel shows F2.
+    disk = { text: F2, sha: "sha-2" };
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+    const panel = await screen.findByRole("dialog", {
+      name: /file changed on disk/i,
+    });
+    await waitFor(() => expect(panel.textContent).toContain("/one"));
+
+    // The edit deleted by hand: no draft, the panel still open.
+    (await findEditorContent()).focus();
+    await user.keyboard("{Backspace}");
+    await waitFor(() => expect(beetsState().save).toBe(false));
+
+    // Another writer again, and a read brings F3.
+    disk = { text: F3, sha: "sha-3" };
+    await queryClient.invalidateQueries({ queryKey: ["beets-config"] });
+    await waitFor(() => expect(editorText()).toBe("directory: /three"));
+    expect(
+      screen.queryByRole("dialog", { name: /file changed on disk/i }),
+    ).not.toBeInTheDocument();
+
+    // The next Save sends F3's text with F3's sha.
+    await editAndType(user);
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(bodies).toHaveLength(2));
+    expect(bodies[1]).toEqual({ yaml_text: `x${F3}`, base_sha256: "sha-3" });
   });
 
   test("Overwrite sends no Save while an Apply runs", async () => {

@@ -11,6 +11,7 @@ import { useLibraryJobActive } from "@/api/useLibraryJobActive";
 import {
   NAMING_KEY,
   type NamingConfig,
+  type NamingDraft,
   type NamingRuleInput,
   type RenderedRule,
   type ReplaceError,
@@ -63,7 +64,7 @@ const RECOMMENDED_REPLACE_RULES: { pattern: string; replacement: string }[] = [
  * singleton, then custom) — mirrors the backend `assemble_rules`. */
 function assemble(
   base: { default: string; comp: string; singleton: string },
-  custom: CustomRow[],
+  custom: NamingRuleInput[],
 ): NamingRuleInput[] {
   const rules: NamingRuleInput[] = [
     { query: "default", template: base.default },
@@ -72,6 +73,24 @@ function assemble(
   ];
   for (const c of custom) rules.push({ query: c.query, template: c.template });
   return rules;
+}
+
+/** The rules and replace rows Save sends. It leaves out the rows the backend
+ * would not write (`_naming_map`, `_replace_map`): a rule with no query or a
+ * blank template, and a replace row with no pattern. */
+function saveBody(
+  base: { default: string; comp: string; singleton: string },
+  custom: NamingRuleInput[],
+  replace: NamingDraft["replace"],
+): NamingDraft {
+  return {
+    rules: assemble(base, custom).filter(
+      (r) => r.query !== "" && r.template.trim() !== "",
+    ),
+    replace: replace
+      .filter((r) => r.pattern !== "")
+      .map((r) => ({ pattern: r.pattern, replacement: r.replacement })),
+  };
 }
 
 export function NamingPanel() {
@@ -169,31 +188,26 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
     [replace],
   );
 
-  // Whether the editable state differs from the on-disk snapshot — gates Save so
-  // an unchanged config can't be re-saved (which would needlessly advance mtime
-  // and re-light the apply-pending cue). The panel remounts on a fresh sha256,
-  // so `initial` is always the current on-disk config.
+  // Whether a Save would send something other than the on-disk snapshot. It
+  // gates Save (a re-Save would advance mtime and re-light the apply-pending
+  // cue) and Apply. It compares what Save sends, not the rows: a Save of rows
+  // the backend drops writes the same bytes, and a same-sha Save does not
+  // remount the panel, so a row-level flag would stay set with Apply off.
+  // The panel remounts on a fresh sha256, so `initial` is always the current
+  // on-disk config.
   const dirty = useMemo(() => {
-    const cur = JSON.stringify({
-      base,
-      custom: custom.map((c) => ({ query: c.query, template: c.template })),
-      replace: replaceDraft,
-    });
-    const init = JSON.stringify({
-      base: {
-        default: initial.default ?? "",
-        comp: initial.comp ?? "",
-        singleton: initial.singleton ?? "",
-      },
-      custom: initial.custom.map((c) => ({
-        query: c.query,
-        template: c.template,
-      })),
-      replace: initial.replace.map((r) => ({
-        pattern: r.pattern,
-        replacement: r.replacement,
-      })),
-    });
+    const cur = JSON.stringify(saveBody(base, custom, replaceDraft));
+    const init = JSON.stringify(
+      saveBody(
+        {
+          default: initial.default ?? "",
+          comp: initial.comp ?? "",
+          singleton: initial.singleton ?? "",
+        },
+        initial.custom,
+        initial.replace,
+      ),
+    );
     return cur !== init;
   }, [base, custom, replaceDraft, initial]);
 
@@ -254,13 +268,9 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
   function handleSave() {
     setConflict(false);
     apply.reset();
-    const rules = assemble(base, custom).filter(
-      (r) => r.template.trim() !== "",
-    );
     save.mutate(
       {
-        rules,
-        replace: replaceDraft.filter((r) => r.pattern !== ""),
+        ...saveBody(base, custom, replaceDraft),
         base_sha256: initial.sha256,
       },
       {
@@ -454,13 +464,11 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
             Invalid replace pattern. Fix to save.
           </p>
         )}
-        {/* Why Apply is off beside a draft. Gives way to any line or alert
-            that names another step, and goes once a Save is sent. */}
-        {dirty &&
-          save.isIdle &&
-          !hasReplaceErrors &&
-          !conflict &&
-          !applyFailed && (
+        {/* Why Apply is off beside a draft. Gives way to the replace line
+            and the conflict banner, which name another step, and goes once a
+            Save is sent. It shows beside an Apply failure, whose recovery
+            does not contradict it. */}
+        {dirty && save.isIdle && !hasReplaceErrors && !conflict && (
             <output className="text-muted-foreground text-sm block">
               Unsaved changes. Save, then Apply.
             </output>

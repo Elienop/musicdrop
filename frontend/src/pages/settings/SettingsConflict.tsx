@@ -1,26 +1,25 @@
 import { yaml } from "@codemirror/lang-yaml";
 import { MergeView } from "@codemirror/merge";
-import { EditorState } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
 import { useEffect, useRef } from "react";
 
 import { Button } from "@/components/ui/button";
+import { READ_ONLY_EXTENSION } from "@/pages/settings/codemirror-config";
 
 /**
- * Conflict resolution view: shown when Save returns 409 (the on-disk YAML
- * advanced past the CAS tokens we sent). The page hands us BOTH docs:
+ * Conflict resolution view: shown when Save returns 409, or when a read brings
+ * a new file version while a draft differs from it. The page hands us BOTH
+ * docs:
  *
- *  - `local`  — what the user has in their CM6 editor right now (the draft
- *               that lost the CAS race).
- *  - `server` — the freshest disk text the 409 body carried back.
+ *  - `local`  — what the user has in their CM6 editor right now (the draft).
+ *  - `server` — the newer file: the 409 body's text, or that read's text.
  *
  * The user picks an exit:
  *
  *  - **Reload (drop my edits)** — abandon `local`, accept `server` as the
  *    new baseline. Page invalidates + re-fetches the snapshot.
- *  - **Overwrite anyway** — force-Save `local` with the server's fresh
- *    `sha256` token (carried by the 409 body) so the second Save can't lose
- *    the same race.
+ *  - **Overwrite anyway** — force-Save `local` with the newer file's `sha256`
+ *    (from the 409 body or the read), so the second Save can't lose the same
+ *    race.
  *
  * The diff itself is a `@codemirror/merge` `MergeView`, a plain diff: both
  * sides are read-only (`a` = `local`, `b` = `server`) and there are no revert
@@ -65,11 +64,9 @@ export function SettingsConflict({
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    const readOnly = [
-      yaml(),
-      EditorState.readOnly.of(true),
-      EditorView.editable.of(false),
-    ];
+    // The main editor's read-only set: no input, and still in the Tab order,
+    // so a keyboard user can move through the diff.
+    const readOnly = [yaml(), READ_ONLY_EXTENSION];
     const mv = new MergeView({
       parent: host,
       a: { doc: local, extensions: readOnly },

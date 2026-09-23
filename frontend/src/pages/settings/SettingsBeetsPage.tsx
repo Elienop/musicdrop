@@ -166,9 +166,10 @@ export function SettingsBeetsPage() {
   // Compartments must NOT be module-level singletons: under React 19
   // StrictMode dev-mode double-mounts the first dispatch can target a
   // torn-down view, and two concurrently-mounted SettingsPages would clobber
-  // each other's read-only state. Keying by `data?.yaml_text` recomputes on
-  // a snapshot swap (post-Apply refetch) which is exactly when the editor
-  // remounts anyway.
+  // each other's read-only state. Keying by `data?.yaml_text` recomputes when
+  // a read brings new file text. The editor does not remount then: @uiw
+  // reconfigures the same view with the new list, whose compartments start
+  // read-only.
   const { extensions, editableCompartment } = useMemo(
     () =>
       buildExtensions({
@@ -186,20 +187,27 @@ export function SettingsBeetsPage() {
   // A read that brings a new file version (its sha256, the only CAS token; the
   // snapshot omits mtime_ns, which overflows a JS number). Tracking the hash,
   // not the data, lets a re-read of the same file leave everything alone.
-  // - It ends an Apply refusal, which was about the file as it was, unless
-  //   that Apply is still in flight: its answer is still to come.
-  // - With a draft open, the draft stays and the conflict panel offers the new
-  //   file. New file text rebuilds the extensions read-only, so editing is
-  //   turned back on.
-  // - Without one, the editor takes the new file.
+  // - It ends an Apply refusal and a Save failure, which were about the file
+  //   as it was, unless that action is still in flight: its answer is still
+  //   to come.
+  // - With a draft that differs from the new file, the draft stays and the
+  //   conflict panel offers the new file. New file text rebuilds the
+  //   extensions read-only, so editing is turned back on.
+  // - Otherwise the editor takes the new file and the page is clean. A draft
+  //   equals it when, for one, the read lands inside the page's own Save. An
+  //   open panel closes: it would offer an older file, and its Reload would
+  //   pair that text with this sha.
   const prevSha = useRef<string | undefined>(data?.sha256);
   const resetApply = applyMutation.reset;
   const applyInFlight = applyMutation.isPending;
+  const resetSave = save.reset;
+  const saveInFlight = save.isPending;
   useEffect(() => {
     if (!data?.sha256 || data.sha256 === prevSha.current) return;
     prevSha.current = data.sha256;
     if (!applyInFlight) resetApply();
-    if (dirty) {
+    if (!saveInFlight) resetSave();
+    if (dirty && localText !== data.yaml_text) {
       setConflict({ serverDoc: data.yaml_text, sha: data.sha256 });
       editorRef.current?.view?.dispatch({
         effects: editableCompartment.reconfigure([]),
@@ -207,12 +215,17 @@ export function SettingsBeetsPage() {
       return;
     }
     setLocalText(null);
+    setDirty(false);
+    setConflict(null);
   }, [
     data?.sha256,
     data?.yaml_text,
     dirty,
+    localText,
     applyInFlight,
     resetApply,
+    saveInFlight,
+    resetSave,
     editableCompartment,
   ]);
 
@@ -330,10 +343,9 @@ export function SettingsBeetsPage() {
     if (!data) return;
     const view = editorRef.current?.view;
     if (view) {
-      // Restore read-only + reset the doc back to the snapshot. The doc reset
-      // is required because `value={data.yaml_text}` on `<CodeMirror>` only
-      // applies on remount; once the user has typed, CM6 owns the doc and
-      // we have to dispatch the change explicitly.
+      // Restore read-only + reset the doc back to the snapshot. @uiw syncs
+      // the `value` prop (`localText ?? data.yaml_text`) only once its typing
+      // latch has passed; the dispatch makes the change immediate.
       view.dispatch({
         effects: editableCompartment.reconfigure(READ_ONLY_EXTENSION),
         changes: {
@@ -377,13 +389,12 @@ export function SettingsBeetsPage() {
     if (!conflict) return;
     const view = editorRef.current?.view;
     if (view) {
-      // Drop the user's local edits in the editor itself — replace its doc
-      // with the fresh on-disk text that the 409 body carried back. Without
-      // this dispatch the editor visually keeps the stale local edit even
-      // though React state thinks we're clean (the `value={data.yaml_text}`
-      // prop only applies on remount; CM6 owns the doc after the first user
-      // keystroke). Also flip the editor back to read-only so the page state
-      // is internally consistent with the cleared `dirty` flag.
+      // Drop the user's local edits in the editor itself: replace its doc
+      // with the panel's file, from the 409 body or from the read that
+      // opened the panel. @uiw syncs the `value` prop (`localText ??
+      // data.yaml_text`) only once its typing latch has passed; the dispatch
+      // makes the change immediate. Also flip the editor back to read-only
+      // so the page state is consistent with the cleared `dirty` flag.
       view.dispatch({
         effects: editableCompartment.reconfigure(READ_ONLY_EXTENSION),
         changes: {
@@ -398,9 +409,9 @@ export function SettingsBeetsPage() {
     setDirty(false);
     setConflict(null);
     setLintErrors(0);
-    // Refresh the snapshot so its CAS sha matches the new on-disk bytes —
-    // the next Save (after a fresh Edit) sends the right base_sha256 from
-    // React Query's cache instead of the stale pre-409 value.
+    // Read the file again: the next Save sends the snapshot's sha. Once the
+    // read lands, the text and the sha come from one file version, because a
+    // read with a new sha puts its own text in the editor (the effect above).
     void queryClient.invalidateQueries({ queryKey: ["beets-config"] });
   }
 
@@ -421,9 +432,15 @@ export function SettingsBeetsPage() {
         // Another writer since the first 409: the panel takes the newer file
         // and token, the same as for the first 409. Any other failure closes
         // the panel: the Save alert shows it, and Save is the way to retry.
+        // Focus goes to the editor, where the draft is, before the panel's
+        // focused button unmounts.
         onError: (err) => {
-          if (err.status === 409) openConflict(err);
-          else setConflict(null);
+          if (err.status === 409) {
+            openConflict(err);
+            return;
+          }
+          setConflict(null);
+          editorRef.current?.view?.focus();
         },
       },
     );
