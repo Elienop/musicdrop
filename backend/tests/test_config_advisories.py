@@ -21,7 +21,11 @@ What each test pins:
 
 from __future__ import annotations
 
-from app.beets.config_editor import parse_yaml
+from typing import get_args
+
+from beets.importer import DuplicateAction
+
+from app.beets.config_editor import parse_yaml, validate_known_keys
 from app.models.config_editor import ConfigAdvisory, ImportSection, import_advisories
 
 
@@ -68,9 +72,22 @@ def test_duplicate_action_ask_yields_no_advisory() -> None:
     assert _advise("import:\n  duplicate_action: ask\n") == []
 
 
+def test_the_editor_accepts_exactly_the_duplicate_actions_beets_accepts() -> None:
+    """beets reads the key with ``as_choice(DuplicateAction.choices())``. A value
+    beets adds (2.14 added ``upgrade``) and the editor lacks would block every
+    Save of a config that holds it, so the editor's list must be beets' list."""
+    beets_values = set(DuplicateAction.choices())
+    offered = set(get_args(ImportSection.model_fields["duplicate_action"].annotation))
+    assert offered == beets_values
+    for value in sorted(beets_values):
+        errors = validate_known_keys(parse_yaml(f"import:\n  duplicate_action: {value}\n"))
+        # Only this key is under test; the fragment omits the required roots.
+        assert [e for e in errors if e.loc.startswith("import")] == [], value
+
+
 def test_every_discarded_duplicate_action_value_fires() -> None:
-    """The editor offers five values; four of them are discarded in-app."""
-    for value in ("skip", "keep", "remove", "merge"):
+    """Every value beets accepts except ``ask`` is discarded in-app."""
+    for value in sorted(set(DuplicateAction.choices()) - {"ask"}):
         advisories = _advise(f"import:\n  duplicate_action: {value}\n")
         assert _keys(advisories) == {"import.duplicate_action"}, value
         assert value in _message_for(advisories, "import.duplicate_action")

@@ -27,7 +27,7 @@ from typing import Any
 import beets.importer.tasks as beets_tasks
 import pytest
 from beets import config
-from beets.autotag import AlbumInfo, AlbumMatch, TrackInfo
+from beets.autotag import AlbumInfo, AlbumMatch, Source, TrackInfo
 from beets.autotag.distance import distance
 from beets.autotag.match import Proposal, assign_items
 from beets.autotag.match import Recommendation as BeetsRec
@@ -76,16 +76,20 @@ def _match(album: str, *, artist: str = "Radiohead", album_id: str = "a9") -> Al
         va=False,
     )
     pairs, extra_items, extra_tracks = assign_items(items, info.tracks)
-    return AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_items, extra_tracks)
+    return AlbumMatch(
+        distance(Source.from_items(items).data, info, pairs, len(extra_items)),
+        info,
+        dict(pairs),
+        extra_items,
+        extra_tracks,
+    )
 
 
 def _apply_task(match: AlbumMatch, monkeypatch: pytest.MonkeyPatch) -> ImportTask:
     """An APPLY task whose matched release carries the variant title."""
 
-    def fake_tag_album(
-        items: Any, search_ids: Any = None
-    ) -> tuple[str | None, str | None, Proposal]:
-        return (match.info.artist, match.info.album, Proposal([match], BeetsRec.strong))
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+        return Proposal([match], BeetsRec.strong)
 
     monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
     task = ImportTask(toppath=None, paths=[b"/incoming/album"], items=list(match.mapping.keys()))
@@ -97,10 +101,8 @@ def _apply_task(match: AlbumMatch, monkeypatch: pytest.MonkeyPatch) -> ImportTas
 def _asis_task(album: str, artist: str | None, monkeypatch: pytest.MonkeyPatch) -> ImportTask:
     """An ASIS task whose FILE TAGS carry the given album/artist (None = absent)."""
 
-    def fake_tag_album(
-        items: Any, search_ids: Any = None
-    ) -> tuple[str | None, str | None, Proposal]:
-        return (artist, album, Proposal([], BeetsRec.none))
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+        return Proposal([], BeetsRec.none)
 
     tags: dict[str, Any] = {"album": album, "title": "Chapter One", "track": 1, "length": 200.0}
     if artist is not None:
@@ -311,8 +313,8 @@ def test_variant_gate_reimport_is_not_a_duplicate(
     lib_album_obj = lib.add_album(make_album(lib_files, lib_album, "Chapter {n}"))
 
     def make_task(paths: list[str]) -> ImportTask:
-        def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
-            return ("Radiohead", incoming, Proposal([], BeetsRec.none))
+        def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+            return Proposal([], BeetsRec.none)
 
         monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
         task = ImportTask(
@@ -446,10 +448,8 @@ def test_variant_gate_sweep_banks_needs_dup_resolution(
     (folder / "01 Chapter One.mp3").write_bytes(b"x" * 64)
     match = _match("Greatest Hits " + _EN_DASH + " Chapter One")
 
-    def fake_tag_album(
-        items: Any, search_ids: Any = None
-    ) -> tuple[str | None, str | None, Proposal]:
-        return (match.info.artist, match.info.album, Proposal([match], BeetsRec.strong))
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+        return Proposal([match], BeetsRec.strong)
 
     monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
     task = ImportTask(

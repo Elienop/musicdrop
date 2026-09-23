@@ -34,9 +34,9 @@ _REFLINK_VALUES: tuple[bool | str | None, ...] = (False, True, "auto", None)
 
 def _beets_operation(imp: Any) -> str:
     """What beets runs after ``set_config``: the files stage's order
-    (importer/stages.py:278-291) — deliberately NOT the same order as
+    (importer/stages.py:367-380) — deliberately NOT the same order as
     ``file_operation``, which models ``set_config``'s — then a copy with
-    ``delete`` removing the originals (importer/tasks.py:326-333).
+    ``delete`` removing the originals (importer/tasks.py:527-534).
 
     ``REFLINK_AUTO`` is kept apart from ``REFLINK`` because beets keeps them
     apart: auto falls back to a plain copy where reflink raises."""

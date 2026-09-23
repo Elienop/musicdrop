@@ -318,7 +318,7 @@ def test_apply_of_a_config_whose_include_beets_would_skip_changes_nothing(
 ) -> None:
     """beets writes one stderr line for an include it cannot read and loads without it.
 
-    ``beets/__init__.py:37-38`` in the installed beets 2.13.1. Owner ruling
+    ``beets/__init__.py:37-38`` in the installed beets 2.14.0. Owner ruling
     2026-09-21: refuse, change nothing. The control is the same document with
     the include present, which Apply loads.
     """

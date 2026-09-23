@@ -8,8 +8,8 @@ the two files cannot drift on how an import is driven.
 What the ordering buys, measured rather than argued:
 
 * beets asks the duplicate hook from ``_resolve_duplicates``
-  (``importer/stages.py:337``) and places files in ``manipulate_files`` at
-  ``:294``, so a Trash move made inside the hook happens while the new album is
+  (``importer/stages.py:428-430``) and places files in ``manipulate_files`` at
+  ``:382-386``, so a Trash move made inside the hook happens while the new album is
   still only in the download folder.
 * all-or-nothing falls out of it: if the move fails there is nothing to undo,
   because beets has not been told anything yet.
@@ -834,7 +834,7 @@ def test_two_albums_sharing_only_their_cover_still_share_a_file(
     two albums whose artpath is the same file share a file even when no track
     does — and beets creates exactly that pairing itself: a re-import whose new
     album lands on a replaced album's path inherits its artpath
-    (``importer/tasks.py:582``, ``self.album.artpath = replaced_album.artpath``).
+    (``importer/tasks.py:783``, ``self.album.artpath = replaced_album.artpath``).
     Trashing the old one then moves the cover the album that just landed points
     at.
 
@@ -1096,11 +1096,11 @@ def test_an_as_is_compilation_replace_leaves_the_album_the_user_never_saw(
 ) -> None:
     """Why the hook answers KEEP and disposes of the copies itself.
 
-    beets' ``ImportTask.remove_duplicates`` (``tasks.py:246``) does not reuse the
+    beets' ``ImportTask.remove_duplicates`` (``tasks.py:388``) does not reuse the
     list the hook was handed: it RE-RUNS ``find_duplicates``. For an as-is album
     the query key comes from the items' own tags via ``get_most_common_tags``,
     whose last step replaces the artist with the albumartist when there is a
-    consensus (``util/__init__.py:842-844``) — and ``task.add`` has meanwhile
+    consensus (``util/__init__.py:834-836``) — and ``task.add`` has meanwhile
     stamped every item ``albumartist = Various Artists``. So the hook asks about
     ``("Artist One", album)`` and beets' removal asks about
     ``("Various Artists", album)``.
@@ -1144,7 +1144,8 @@ def test_a_replace_never_runs_beets_own_duplicate_removal(
     """The mechanism the test above depends on, pinned directly.
 
     ``manipulate_files`` calls ``task.remove_duplicates`` only when the hook
-    answered ``REMOVE`` (``importer/stages.py:276``). A spy over the beets method
+    answered ``REMOVE`` or ``UPGRADE``, which MusicDrop never answers
+    (``importer/stages.py:361-365``). A spy over the beets method
     therefore records nothing on a Replace that succeeded — and records a call
     the moment the hook answers REMOVE again, which is the whole difference
     between disposing of what the user was shown and disposing of what a second
@@ -1225,7 +1226,7 @@ def test_a_ghost_whose_cover_survived_is_replaced_and_its_cover_left_alone(
     ``cover.jpg`` they curated, imports a better rip and presses Replace. An
     album with no track file left is a ghost whatever its ``artpath`` says — its
     rows are dropped by ``album.remove(delete=False)``, which does not read the
-    art path at all (``library/models.py:396-400``), so the cover is not moved,
+    art path at all (``library/models.py:413-417``), so the cover is not moved,
     not deleted and not renamed. It is still byte-identical at its own path
     afterwards, and nothing about it is in Trash.
 
@@ -1234,7 +1235,7 @@ def test_a_ghost_whose_cover_survived_is_replaced_and_its_cover_left_alone(
     beets skips the move of every missing track, and with no item moved
     ``Album.move_art`` computes the art destination from the album's first item,
     whose stored path never changed, so ``new_art == old_art`` and it returns
-    without moving (``library/models.py:434-436``). Nothing moved, so the
+    without moving (``library/models.py:451-453``). Nothing moved, so the
     mover's post-condition stopped the row drop and the Replace imported
     nothing. Owner ruling: this flow must work.
 

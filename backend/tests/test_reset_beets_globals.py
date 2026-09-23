@@ -5,7 +5,7 @@ endpoint (Task 8) calls this helper between writing config.yaml and re-running
 ``setup_beets``; the conftest autouse fixture delegates to the same helper so
 tests and production stay in lockstep via a single source of truth. Anything
 less than all 7 clears here is a silent leak — see beets' own
-``unload_plugins`` (beets/test/helper.py:460-466) for the matched-pair
+``unload_plugins`` (beets/test/helper.py:474-480) for the matched-pair
 invariants this regression locks down.
 """
 
@@ -76,7 +76,7 @@ def test_reset_propagates_unexpected_close_errors(
     """Suppress is sqlite3-scoped, not ``Exception``-wide.
 
     A future beets API drift that makes ``Library._close`` raise
-    ``AttributeError`` (the failure mode the 2.11 pin exists to surface) must
+    ``AttributeError`` (the failure mode the exact-minor beets pin exists to surface) must
     propagate so the regression shows up in test logs, not silently no-op.
     """
 

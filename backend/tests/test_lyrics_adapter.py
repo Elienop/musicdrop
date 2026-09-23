@@ -136,23 +136,22 @@ def test_fetch_item_not_found(edit_lib: Library) -> None:
     assert out.written is False
 
 
-def test_fetch_item_null_text_result_is_not_found_not_crash(edit_lib: Library) -> None:
-    # beets 2.12's LRCLib can hand back a Lyrics whose .text is None (a candidate
-    # with null plainLyrics, synced not selected). beets' own Lyrics.text_lines
-    # then does None.splitlines() and raises AttributeError, which used to abort
-    # the WHOLE backfill on one such track. Treat it as no usable lyrics.
+def test_fetch_item_blank_text_result_is_not_found(edit_lib: Library) -> None:
+    # A backend can hand back a Lyrics whose text is only whitespace (MusiXmatch
+    # builds it from whatever its page split leaves). That is no usable lyrics:
+    # nothing is stored and the item ends not_found, marked searched.
     from app.beets.lyrics import fetch_item_lyrics
 
     item = _first_item(edit_lib)
-    null_text = Lyrics(None, "lrclib", "u")  # type: ignore[arg-type]  # the bug: backend returns text=None
-    plugin = _FakePlugin([_FakeBackend(result=null_text)])
+    blank_text = Lyrics("   \n  ", "musixmatch", "u")
+    plugin = _FakePlugin([_FakeBackend(result=blank_text)])
 
     out = fetch_item_lyrics(plugin, item, force=False, write=True)
 
-    assert out.status == "not_found"  # not a crash
+    assert out.status == "not_found"
     assert out.written is False
     assert not item.lyrics  # nothing stored
-    assert item.get("lyrics_checked")  # marked searched -> won't re-crash next run
+    assert item.get("lyrics_checked")  # marked searched -> not retried next run
 
 
 def test_fetch_item_http_404_is_not_found_not_failed(edit_lib: Library) -> None:

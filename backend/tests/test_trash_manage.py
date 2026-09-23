@@ -739,7 +739,7 @@ def test_a_listed_loose_file_swapped_for_a_fifo_refuses_the_restore(tmp_path: Pa
     pre-flight's walk answered ``None`` for a Trash entry that IS a pipe — and
     beets opens a non-directory toppath DIRECTLY rather than walking it (``if
     not os.path.isdir(syspath(self.toppath)): yield [self.toppath],
-    [self.toppath]``, ``beets/importer/tasks.py:1041``). Measured 2026-09-13
+    [self.toppath]``, ``beets/importer/tasks.py:1376``). Measured 2026-09-13
     (security seat H-1 probes p1/p3, code seat CRITICAL): ``POST
     /api/trash/restore`` never returned, and one wedge held ``beets_swap_lock``
     for the life of the process — every mutating Trash route and reorganize
@@ -871,7 +871,7 @@ def test_a_fifo_inside_a_symlinked_subfolder_of_an_entry_refuses_the_restore(
     """The pre-flight follows links into subfolders because beets does.
 
     ``sorted_walk`` sorts a name into ``dirs`` by ``os.path.isdir``, which
-    resolves links (``beets/util/__init__.py:247``), so the importer descends a
+    resolves links (``beets/util/__init__.py:250``), so the importer descends a
     symlinked subfolder of the entry. A pre-flight that stopped at it would hand
     beets the pipe inside. The walk is bounded by identity, not by depth: the
     link back up its own tree below is walked once.

@@ -71,8 +71,8 @@ def test_get_config_redacts_numeric_secret_in_list_shaped_plugin_config(
 
     The shape under test is a REAL one, mirrored from ``beetsplug/kodiupdate.py``
     rather than invented: that plugin registers the section ``kodi``
-    (``super().__init__("kodi")``, :35) and adds a LIST as its default
-    (``self.config.add([{"host": ..., "user": ..., "pwd": ...}])``, :38), then
+    (``super().__init__("kodi")``, :44) and adds a LIST as its default
+    (``self.config.add([{"host": ..., "user": ..., "pwd": ...}])``, :47), then
     sets ``self.config["pwd"].redact = True``. A user's config.yaml therefore
     reads ``kodi:`` followed by a list of instances — grepping it for
     ``kodiupdate:`` finds nothing.

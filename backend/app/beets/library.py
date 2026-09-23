@@ -836,7 +836,7 @@ def _row_path(item: Any) -> str:
 def _inside_library(lib: Library, item: Any) -> bool:
     """True iff the item's file lives under the library dir; no filesystem read.
 
-    Mirrors beets' guard in ``Item.try_sync`` (``library/models.py:1027``).
+    Mirrors beets' guard in ``Item.try_sync`` (``library/models.py:1046``).
     ``commonpath``, not a prefix test: ``<music>`` and ``<music>-inbox`` are
     different folders. No-disk pinned by
     ``test_the_containment_question_records_no_filesystem_read``.

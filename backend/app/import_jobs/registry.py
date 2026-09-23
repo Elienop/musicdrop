@@ -430,8 +430,8 @@ class ImportJobRegistry:
 
         The MERGE exemption is conditional on ``next_landed`` — did the row
         AFTER this one land. beets answers MERGE by pushing a fresh task back
-        through ``lookup_candidates`` then ``user_query`` (beets 2.13.1
-        ``importer/stages.py:190-207``, the ``DuplicateAction.MERGE`` branch of
+        through ``lookup_candidates`` then ``user_query`` (beets 2.14.0
+        ``importer/stages.py:276-294``, the ``DuplicateAction.MERGE`` branch of
         ``user_query``; ``already_merged`` holds only the duplicate's own paths,
         so it does not bubble), and the pipeline is serial (``threaded: False``),
         so the row after a merge row IS the merged task's. That task lands with

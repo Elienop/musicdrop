@@ -1,11 +1,11 @@
 """The file operation beets' import config resolves to, and the flags that force one.
 
-beets 2.13.1 resolves the flags in two places. ``ImportSession.set_config`` keeps
+beets 2.14.0 resolves the flags in two places. ``ImportSession.set_config`` keeps
 one of move > link > hardlink > reflink, each clearing ``copy``, and clears
 ``delete`` unless ``copy`` survives (``importer/session.py:114-138``). The files
 stage then takes ``copy`` when it is left, and tells reflink apart from
-``reflink: auto`` (``importer/stages.py:278-291``); a copy with ``delete``
-removes the originals (``importer/tasks.py:326-333``), which is a move.
+``reflink: auto`` (``importer/stages.py:367-380``); a copy with ``delete``
+removes the originals (``importer/tasks.py:527-534``), which is a move.
 ``tests/test_import_operation.py`` compares :func:`file_operation` with
 ``set_config`` for every combination, so a beets bump that changes either fails.
 """
@@ -39,7 +39,7 @@ def file_operation(
 
     ``reflink_auto`` is its own answer because beets treats it as its own
     operation: ``REFLINK_AUTO`` copies when the filesystem cannot reflink,
-    where ``REFLINK`` raises (``util/__init__.py:596-609``).
+    where ``REFLINK`` raises (``util/__init__.py:617-634``).
     """
     if move:
         return "move"

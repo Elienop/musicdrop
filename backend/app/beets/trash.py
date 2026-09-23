@@ -89,7 +89,7 @@ class TrashMoveIncompleteError(Exception):
     """``Album.move`` returned normally but relocated nothing.
 
     beets answers a source file it cannot find by logging and returning
-    (``beets/library/models.py:1178-1192``), so a move that moved NOTHING is
+    (``beets/library/models.py:1197-1211``), so a move that moved NOTHING is
     indistinguishable from a successful one at the call site. Dropping the DB
     rows on that is the data loss the post-condition in :func:`trash_album`
     exists to stop; this is what it raises when the music root is healthy and
@@ -267,9 +267,9 @@ def trash_album(
     same album, which would lose the lyrics the user still has.
 
     Guarded on BOTH sides of the move, because neither half is enough alone.
-    beets 2.12's ``Item.move`` silently skips a source file that is not there
+    beets' ``Item.move`` (2.12 onward) silently skips a source file that is not there
     ("If the source file is missing, skip the move", ``log.warning`` then
-    ``return`` — ``beets/library/models.py:1178-1192``), so with the share
+    ``return`` — ``beets/library/models.py:1197-1211``), so with the share
     unmounted every move no-ops while ``Album.move`` still returns normally, and
     ``Album.remove`` would drop the rows anyway: a Trash path naming an empty
     folder and a library that has forgotten the album.
@@ -281,7 +281,7 @@ def trash_album(
       ``TrashOriginsStoreUnusableError`` if the origin store cannot be looked up
       in or written to. Both run ahead of the ``mkdir`` as well as the moves, because a
       beets transaction COMMITS on the way out even while unwinding an exception
-      (``beets/dbcore/db.py:924-941`` — no rollback branch), so aborting after a
+      (``beets/dbcore/db.py:940-957`` — no rollback branch), so aborting after a
       mutation would not undo it.
     * **After** — the rows are dropped only once the items' stored paths are
       provably under the container. A pre-check is point-in-time: the share can
@@ -343,7 +343,7 @@ def trash_album(
     album.move(basedir=basedir)  # relocate under the container + prune source dir
     items = list(album.items())
     # POST-CONDITION. ``Album.move`` cannot report a skip: beets logs a missing
-    # source and returns (models.py:1178-1192), so "move returned" is not
+    # source and returns (models.py:1197-1211), so "move returned" is not
     # "files moved". The pre-check above closes the window it can see; this
     # closes the one it cannot — the share dropping AFTER the check, and every
     # other cause of a silent skip. Rows are dropped only once the files are

@@ -175,7 +175,7 @@ def _declared_by_installed_beets() -> dict[tuple[str, ...], list[str]]:
 def test_the_table_matches_what_the_installed_beets_declares() -> None:
     """A beets upgrade that adds, drops or moves a ``.redact`` fails here."""
     declared = _declared_by_installed_beets()
-    # Control: the walk reaches a known declaration (smartplaylist.py:63).
+    # Control: the walk reaches a known declaration (smartplaylist.py:79).
     assert ("smartplaylist", "prefix") in declared
     missing = {".".join(p): w for p, w in declared.items() if p not in BEETS_DECLARED_SECRETS}
     stale = {".".join(p) for p in BEETS_DECLARED_SECRETS if p not in declared}

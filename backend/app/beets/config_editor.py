@@ -654,7 +654,7 @@ def _beets_default_naming() -> tuple[dict[str, str], dict[str, str]]:
     between a naming Save and an Apply (Apply has not reloaded beets yet), so
     reading it would show the pre-Save values and make the panel revert the
     user's just-saved edit. The bundled file is static and version-pinned
-    (``beets==2.13.*``), never contaminated by the loaded user config, so
+    (``beets==2.14.*``), never contaminated by the loaded user config, so
     "on-disk override ?? bundled default" is correct both with no override AND
     immediately after a Save.
 
@@ -1105,7 +1105,7 @@ def _restore_beets_handle(running: BeetsConfigRead) -> LibraryHandle:
 
     The same two steps as :func:`_rebuild_beets_handle`. The teardown runs again
     because the failed rebuild may have registered the new config's plugins, and
-    ``load_plugins`` loads nothing while any are (``beets/plugins.py:456``); the
+    ``load_plugins`` loads nothing while any are (``beets/plugins.py:555``); the
     old library is already closed.
     """
     reset_beets_globals(keep_config=True)

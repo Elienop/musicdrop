@@ -541,7 +541,7 @@ def _task_source_paths(task: Any) -> set[Any]:
     """Every file the CURRENT task is reading, as beets' own re-import test reads it.
 
     Stored-path form, byte-compared — the expression beets uses to exclude a
-    re-import from its own duplicates (``importer/tasks.py:388``) and to find the
+    re-import from its own duplicates (``importer/tasks.py:589``) and to find the
     rows it deletes at ``task.add``. Not ``task.paths``, which holds the toppath
     DIRECTORIES; what a MOVER may touch asks :class:`_SourceFiles`.
     """
@@ -877,7 +877,7 @@ class WebImportSession(ImportSession):
         # decision: a banked astracks apply (directive) OR an attended park the
         # user decided astracks (_astracks_in_flight, armed by choose_match). An
         # astracks choice re-pipelines each file as a SingletonImportTask whose
-        # choose_match routes HERE (beets tasks.py:758-760), so ASIS is what
+        # choose_match routes HERE (beets tasks.py:976-978), so ASIS is what
         # actually imports the tracks - the chunk-1 SKIP silently imported
         # NOTHING for the attended path (the bug this branch fixes). Every other
         # mode (inbox, sweep, non-astracks directives) keeps SKIP; the import
@@ -887,7 +887,7 @@ class WebImportSession(ImportSession):
         #
         # A stop does NOT land here mid-expansion. beets re-pipelines each file
         # as its own SingletonImportTask and runs it through the remaining
-        # stages on its own (stages.py:180-193, :368-385), so each track is
+        # stages on its own (stages.py:253-263, :461-478), so each track is
         # placed and history-recorded separately: aborting between track 3 and
         # track 4 leaves one album half in the library and half in the download
         # folder, in move mode with the landed half already gone from the
@@ -1540,8 +1540,8 @@ class WebImportSession(ImportSession):
         options = map_candidate_options(candidates)
         candidate = map_album_match(
             top,
-            cur_artist=task.cur_artist,
-            cur_album=task.cur_album,
+            cur_artist=task.source.artist,
+            cur_album=task.source.name,
             options=options,
             recommendation=recommendation,
             has_current_art=has_current_art,
@@ -1648,8 +1648,8 @@ class WebImportSession(ImportSession):
             top = candidates[0]
             candidate = map_album_match(
                 top,
-                cur_artist=task.cur_artist,
-                cur_album=task.cur_album,
+                cur_artist=task.source.artist,
+                cur_album=task.source.name,
                 options=map_candidate_options(candidates),
                 recommendation=recommendation,
                 has_current_art=has_current_art,
@@ -1716,7 +1716,7 @@ class WebImportSession(ImportSession):
     ) -> tuple[list[Any], Recommendation, str | None, bool, str | None]:
         """Rescan choice: guard the folder, re-read it, re-run the default lookup.
 
-        Swaps task state (items / cur_artist / cur_album / candidates / art) only
+        Swaps task state (items / source / candidates / art) only
         on a successful candidate-yielding lookup — never a half-swap. Returns the
         updated (candidates, recommendation, art_source, has_current_art) plus the
         search_feedback string (None on success).
@@ -1744,7 +1744,7 @@ class WebImportSession(ImportSession):
                 has_current_art,
                 "No audio files remain in the folder. Skip or Abort.",
             )
-        cur_artist, cur_album, new_candidates, new_rec = lookup_items(new_items, None)
+        _, _, new_candidates, new_rec = lookup_items(new_items, None)
         if not new_candidates:
             # The live payload cannot represent a candidate-less park, and a
             # half-swap would let Apply import deleted files — keep the task
@@ -1757,8 +1757,11 @@ class WebImportSession(ImportSession):
                 "No release matched the rescanned folder; showing the album as originally scanned.",
             )
         task.items = new_items
-        task.cur_artist = cur_artist
-        task.cur_album = cur_album
+        # beets caches ``task.source`` (a cached_property built from the items it
+        # first saw), and ``chosen_info()`` - which beets' duplicate check and the
+        # variant guard read - returns that cached copy. Drop it so beets' own
+        # property rebuilds it from the rescanned items on the next read.
+        del task.source
         candidates = new_candidates
         task.candidates = candidates
         recommendation = _REC_MAP.get(new_rec, Recommendation.none)
@@ -1962,8 +1965,8 @@ class WebImportSession(ImportSession):
             source="sweep",
             reason=reason,
             fingerprint=folder_fingerprint(Path(folder)),
-            artist=_opt_str(task.cur_artist),
-            album=_opt_str(task.cur_album),
+            artist=_opt_str(task.source.artist),
+            album=_opt_str(task.source.name),
             recommendation=recommendation.value,
             confidence=confidence,
             parked=parked,
@@ -2014,8 +2017,8 @@ class WebImportSession(ImportSession):
         others: list[Any] = [c for c in (task.candidates or []) if c is not match]
         candidate = map_album_match(
             match,
-            cur_artist=task.cur_artist,
-            cur_album=task.cur_album,
+            cur_artist=task.source.artist,
+            cur_album=task.source.name,
             options=map_candidate_options([match, *others]),
             recommendation=recommendation,
             has_current_art=has_current_art,
@@ -2040,8 +2043,8 @@ class WebImportSession(ImportSession):
         return AlbumOutcome(
             album_index=index,
             folder=self._task_folder(task),
-            artist=_opt_str(task.cur_artist),
-            album=_opt_str(task.cur_album),
+            artist=_opt_str(task.source.artist),
+            album=_opt_str(task.source.name),
             recommendation=recommendation,
             confidence=confidence,
             status=status,
@@ -2068,8 +2071,8 @@ class WebImportSession(ImportSession):
         art_source = self._first_item_art_source(items)
         has_art = art_source is not None and embedded_art(art_source) is not None
         return IncomingAlbum(
-            album_artist=_opt_str(task.cur_artist),
-            album=_opt_str(task.cur_album),
+            album_artist=_opt_str(task.source.artist),
+            album=_opt_str(task.source.name),
             year=year,
             track_count=len(items),
             format=fmt,
@@ -2159,7 +2162,7 @@ class WebImportSession(ImportSession):
 # Without it two overlapping calls interleave: the second snapshots the first's
 # FORCED values and its finally writes them in as the user's. beets re-reads that
 # global late (``ImportTask.finalize`` -> ``cleanup`` at
-# ``importer/tasks.py:307-311``), so an explicit MOVE can reach finalize reading
+# ``importer/tasks.py:508-512``), so an explicit MOVE can reach finalize reading
 # another run's copy+delete.
 _CONFIG_FORCE_LOCK = threading.Lock()
 
@@ -2196,13 +2199,13 @@ def _history_flags(
     """beets' import history for one run, from the four exclusive arms in order.
 
     A folder is recorded when ``incremental`` is on and the album was not
-    SKIPped-with-``incremental_skip_later`` (``importer/tasks.py:301-305``), and
+    SKIPped-with-``incremental_skip_later`` (``importer/tasks.py:502-506``), and
     a recorded folder is skipped before any hook fires
     (``importer/session.py:246-256``).
 
     A ``directive`` run is non-incremental; a ``sweep`` is incremental; then the
     ``incremental`` flag, whose ``False`` is ``beet import -I``
-    (``ui/commands/import_/__init__.py:280-286``); then the file operation
+    (``ui/commands/import_/__init__.py:303-309``); then the file operation
     ``forced`` resolves to — a run that HARDLINKS leaves the download in place,
     so history is what stops the same folder meeting the album a second time,
     with ``incremental_skip_later`` on so a SKIPped album is offered again.
@@ -2263,9 +2266,11 @@ def run_import_worker(
     thread target AND ``trash_manage.restore_album``, which calls this directly —
     so it is the one place that can cover them together; see the inline comment.
 
-    Forces single-threaded execution, ``import.duplicate_action: ask`` (so the
-    duplicate hook always fires, regardless of the user's config — the web review
-    IS the "ask"), ``import.autotag: yes`` and ``import.singletons: no`` — the
+    Forces single-threaded execution, ``import.duplicate_action: ask`` (read by
+    nothing: beets' only reader is the base ``get_duplicate_action``,
+    ``importer/session.py:175-183``, which :class:`WebImportSession` overrides —
+    the override is what makes the web review the "ask"; see BACKLOG),
+    ``import.autotag: yes`` and ``import.singletons: no`` — the
     last one forced for EVERY MusicDrop-driven import (review included), not just
     sweep/apply branches: a ``singletons: yes`` user config would route every
     DEFAULT review album into ``choose_item``'s SKIP funnel, importing NOTHING
@@ -2306,10 +2311,10 @@ def run_import_worker(
     and the duplication that forcing prevents cannot happen when nothing is
     copied. ``link``/``hardlink``/``reflink`` are snapshotted and forced off with
     it, because beets' stage picks the operation by falling through those in
-    order (``importer/stages.py:278-291``) — with move and copy off, a user
+    order (``importer/stages.py:367-380``) — with move and copy off, a user
     config of ``link: yes`` would otherwise symlink the album into the templated
     path. Nothing is deleted either way: ``ImportTask.cleanup`` removes originals
-    only when ``copy and delete`` (``importer/tasks.py:326-333``).
+    only when ``copy and delete`` (``importer/tasks.py:527-534``).
 
     ``sweep`` scopes the banking sweep's beets flags to this one run (same
     snapshot/restore discipline as move/copy): ``incremental`` on — beets'
@@ -2317,7 +2322,7 @@ def run_import_worker(
     (SKIPped tasks are recorded too: ``incremental_skip_later`` is forced
     ``no`` so a user's ``yes`` cannot stop that recording, which left every
     later sweep re-banking the same folders; the bank is the re-entry path for
-    a banked folder, not a re-sweep). ``resume`` off EXPLICITLY — beets 2.13.1
+    a banked folder, not a re-sweep). ``resume`` off EXPLICITLY — beets 2.14.0
     clears it itself when ``incremental`` is on
     (``importer/session.py:100-101``, read live by ``want_resume`` at ``:140``),
     so ours is redundant today and kept so the behaviour does not depend on that
@@ -2392,7 +2397,7 @@ def run_import_worker(
         # ``search_ids`` list. ``.get(bool)`` VALIDATES rather than coerces
         # (``delete: 1`` raises ConfigTypeError), so snapshotting through it
         # turned a non-bool in the USER's config into OUR failure; beets reads
-        # these with ``.get(bool)`` itself (``importer/tasks.py:307-311``). The
+        # these with ``.get(bool)`` itself (``importer/tasks.py:508-512``). The
         # set is a superset of the keys beets' own ``set_config`` writes and
         # never restores.
         orig_threaded = config["threaded"].get()
@@ -2417,8 +2422,8 @@ def run_import_worker(
         # Fail before the force, not inside beets' pipeline: a default import
         # leaves ``copy``, ``move`` and ``write`` to the user, and beets reads
         # them with ``.get(bool)`` only after the rows are added: ``write`` in
-        # ``manipulate_files`` (``importer/stages.py:296``), ``copy`` and
-        # ``move`` in ``finalize`` (``importer/tasks.py:307-311``), after the
+        # ``manipulate_files`` (``importer/stages.py:385``), ``copy`` and
+        # ``move`` in ``finalize`` (``importer/tasks.py:508-512``), after the
         # album is filed. Without this, ``copy: 1`` in config.yaml
         # files the album and then fails the job.
         for validated in ("copy", "move", "write"):
@@ -2434,7 +2439,7 @@ def run_import_worker(
             # (``test_default_operation_pins_delete_off_and_leaves_filing_to_the_user``).
             # beets keeps ``delete`` alive whenever ``copy`` survives
             # (``importer/session.py:136-138``) and then removes the originals
-            # (``importer/tasks.py:326-333``), so a default import under a user
+            # (``importer/tasks.py:527-534``), so a default import under a user
             # ``delete: yes`` is a move wearing the word "copy"; the config
             # editor advises that the key is ignored.
             "delete": False,

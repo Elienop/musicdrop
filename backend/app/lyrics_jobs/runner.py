@@ -3,7 +3,7 @@
 ``sweep`` is the synchronous, directly-testable loop (snapshot items, fetch each
 with skip-existing/skip-checked, record progress, courtesy-sleep, honor Stop).
 ``start_backfill`` runs it on a daemon thread so the API start endpoint returns
-immediately. beets 2.12 throttles/retries the HTTP itself; the courtesy ``delay``
+immediately. beets throttles/retries the HTTP itself; the courtesy ``delay``
 is just an inter-track pause.
 """
 

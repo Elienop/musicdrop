@@ -17,7 +17,7 @@ from typing import Any
 import beets.importer.tasks as beets_tasks
 import pytest
 from beets import config
-from beets.autotag import AlbumInfo, AlbumMatch, TrackInfo
+from beets.autotag import AlbumInfo, AlbumMatch, Source, TrackInfo
 from beets.autotag.distance import distance
 from beets.autotag.match import Proposal, assign_items
 from beets.autotag.match import Recommendation as BeetsRec
@@ -61,7 +61,13 @@ def _match() -> AlbumMatch:
         va=False,
     )
     pairs, extra_items, extra_tracks = assign_items(items, info.tracks)
-    return AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_items, extra_tracks)
+    return AlbumMatch(
+        distance(Source.from_items(items).data, info, pairs, len(extra_items)),
+        info,
+        dict(pairs),
+        extra_items,
+        extra_tracks,
+    )
 
 
 def _session(bridge: ImportBridge, *, trash_dir: Path | None = None) -> WebImportSession:
@@ -107,8 +113,8 @@ def _session(bridge: ImportBridge, *, trash_dir: Path | None = None) -> WebImpor
 
 
 def _task(match: AlbumMatch, monkeypatch: pytest.MonkeyPatch) -> ImportTask:
-    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
-        return ("Radiohead", "In Rainbows", Proposal([match], BeetsRec.strong))
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+        return Proposal([match], BeetsRec.strong)
 
     monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
     task = ImportTask(toppath=None, paths=[b"/incoming/album"], items=list(match.mapping.keys()))

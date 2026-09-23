@@ -15,7 +15,7 @@ last is why one caller asks with several spellings rather than one. The SQL arm
 (``lib.items``) and the Python arm (``match``) are asserted to agree, because the
 two callers use different ones.
 
-Measured against beets 2.13.1.
+Measured against beets 2.13.1; re-run green on 2.14.0 (2026-09-23).
 """
 
 from __future__ import annotations

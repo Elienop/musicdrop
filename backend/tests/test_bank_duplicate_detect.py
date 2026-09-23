@@ -63,7 +63,7 @@ def test_no_collision_returns_empty(beets_library: LibraryHandle) -> None:
 
 
 def test_no_albumartist_skips_like_beets(beets_library: LibraryHandle) -> None:
-    # beets find_duplicates returns [] when artist is None (tasks.py:398-400).
+    # beets find_duplicates returns [] when artist is None (tasks.py:576-578).
     assert (
         find_import_duplicates(
             beets_library.lib, albumartist=None, album="x", year=None, mb_albumid=None

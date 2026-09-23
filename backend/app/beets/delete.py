@@ -377,7 +377,7 @@ def _dirs_the_prune_can_reach(
     ``music/B`` and another directly in the store have no common chain
     (``test_a_store_holding_one_of_two_item_folders_survives``). And the cover's
     own directory, because ``Album.move_art`` prunes from ``dirname(artpath)``
-    (beets 2.13.1 ``library/models.py:446``) — measured, an app store holding
+    (beets 2.14.0 ``library/models.py:463``) — measured, an app store holding
     only the cover was rmtree'd
     (``test_a_store_holding_only_the_cover_survives_the_delete``).
 
@@ -497,7 +497,7 @@ def delete_artist(
     with no albums is a safe no-op (``trashed_albums=0``). One transaction wraps
     all the moves so they COMMIT TOGETHER — one commit point, never a rollback:
     beets' ``Transaction.__exit__`` commits unconditionally, including when it is
-    unwinding an exception (``beets/dbcore/db.py:924-941``). So a fault part-way
+    unwinding an exception (``beets/dbcore/db.py:940-957``). So a fault part-way
     through leaves the albums already processed trashed and dropped, and no
     amount of error handling here can undo them.
 

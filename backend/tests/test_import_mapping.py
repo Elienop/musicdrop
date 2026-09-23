@@ -1,4 +1,4 @@
-from beets.autotag import AlbumInfo, AlbumMatch, TrackInfo
+from beets.autotag import AlbumInfo, AlbumMatch, Source, TrackInfo
 from beets.autotag.distance import distance
 from beets.autotag.match import assign_items
 from beets.library import Item
@@ -68,7 +68,7 @@ def _perfect_match() -> AlbumMatch:
         va=False,
     )
     pairs, extra_items, extra_tracks = assign_items(items, info.tracks)
-    dist = distance(items, info, pairs)
+    dist = distance(Source.from_items(items).data, info, pairs, len(extra_items))
     return AlbumMatch(dist, info, dict(pairs), extra_items, extra_tracks)
 
 
@@ -96,7 +96,7 @@ def _diff_match() -> AlbumMatch:
         va=False,
     )
     pairs, extra_items, extra_tracks = assign_items(items, info.tracks)
-    dist = distance(items, info, pairs)
+    dist = distance(Source.from_items(items).data, info, pairs, len(extra_items))
     return AlbumMatch(dist, info, dict(pairs), extra_items, extra_tracks)
 
 
@@ -130,7 +130,7 @@ def test_map_carries_current_file_format() -> None:
         va=False,
     )
     pairs, extra_items, extra_tracks = assign_items(items, info.tracks)
-    dist = distance(items, info, pairs)
+    dist = distance(Source.from_items(items).data, info, pairs, len(extra_items))
     match = AlbumMatch(dist, info, dict(pairs), extra_items, extra_tracks)
     candidate = map_album_match(match, cur_artist="Radiohead", cur_album="OK Computer", options=[])
     assert candidate.tracks[0].format == "FLAC"
@@ -219,7 +219,7 @@ def _unmatched_match() -> AlbumMatch:
         va=False,
     )
     pairs, extra_items, extra_tracks = assign_items(items, info.tracks)
-    dist = distance(items, info, pairs)
+    dist = distance(Source.from_items(items).data, info, pairs, len(extra_items))
     return AlbumMatch(dist, info, dict(pairs), extra_items, extra_tracks)
 
 
@@ -341,7 +341,7 @@ def _multi_disc_match() -> AlbumMatch:
         va=False,
     )
     pairs, extra_items, extra_tracks = assign_items(items, info.tracks)
-    dist = distance(items, info, pairs)
+    dist = distance(Source.from_items(items).data, info, pairs, len(extra_items))
     return AlbumMatch(dist, info, dict(pairs), extra_items, extra_tracks)
 
 

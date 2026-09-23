@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -63,6 +64,20 @@ def test_install_cover_unknown_album(edit_lib: Library) -> None:
     png = PNG.read_bytes()
     with pytest.raises(AlbumNotFoundError):
         install_cover(edit_lib, album_id=999999, image_bytes=png)
+
+
+def test_embed_album_gets_embedarts_own_logger(caplog: pytest.LogCaptureFixture) -> None:
+    """beets' embedart hands ``embed_album`` its plugin logger, a BeetsLogger that
+    formats beets' ``{}``-style messages. A stdlib logger would print
+    "--- Logging error ---" in place of the message."""
+    from beets import logging as beets_logging
+
+    from app.beets import cover as cover_mod
+
+    assert cover_mod._log is beets_logging.getLogger("beets").getChild("embedart")
+    with caplog.at_level(logging.WARNING, logger=cover_mod._log.name):
+        cover_mod._log.warning("could not read image file: {}", "x.png")
+    assert caplog.records[-1].getMessage() == "could not read image file: x.png"
 
 
 def test_install_cover_embed_gated_off_by_default(edit_lib: Library) -> None:

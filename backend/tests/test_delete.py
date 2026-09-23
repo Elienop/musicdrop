@@ -524,7 +524,7 @@ def test_delete_album_op_409_during_backfill() -> None:
 # itself gone that reading is wrong for every album at once, so the primitive's
 # root guard has to fire before the first row drop — and the drop it prevents
 # would otherwise be permanent, because a beets ``Transaction`` commits on the
-# way out even while unwinding an exception (dbcore/db.py:924-941).
+# way out even while unwinding an exception (dbcore/db.py:940-957).
 
 
 def test_delete_album_root_unavailable_keeps_rows(duplicates_lib: Library, tmp_path: Path) -> None:
@@ -1321,7 +1321,7 @@ def test_delete_artist_partial_speaks_only_of_the_albums_it_never_reached(
 
     The fault is a patched ``Album.remove`` on the SECOND album, not a plugin
     listener: a listener fires after beets deleted the album row
-    (``beets/library/models.py:391`` before ``:394``), so it could not support
+    (``beets/library/models.py:408`` before ``:411``), so it could not support
     the "still in the library" assert below. Both message shapes, because the
     clause was the same sentence in both and a fix to one of them is not a fix.
     """
@@ -1468,7 +1468,7 @@ def _shared_folder_two_track_library(tmp_path: Path) -> Library:
 
     ``trash_album`` moves item by item and beets stores each item's new path as
     it goes (``Album.move`` -> ``item.move(..., store=True)``,
-    ``beets/library/models.py:489-495``), so a fault on the second item leaves
+    ``beets/library/models.py:507-513``), so a fault on the second item leaves
     the first under Trash with its row already pointing there and the album still
     in the library.
 

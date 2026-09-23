@@ -425,7 +425,7 @@ def _unopenable_name_under(entry: Path) -> str | None:
     answered ``None`` for a Trash entry that IS a pipe — and beets opens a
     non-directory toppath DIRECTLY rather than walking it (``if not
     os.path.isdir(syspath(self.toppath)): yield [self.toppath],
-    [self.toppath]``, ``beets/importer/tasks.py:1041``), straight into
+    [self.toppath]``, ``beets/importer/tasks.py:1376``), straight into
     ``read_item`` → ``Item.from_path`` → ``mutagen``. Measured 2026-09-13
     (security seat H-1, code seat CRITICAL): ``POST /api/trash/restore`` on such
     an entry never returned and held ``beets_swap_lock`` for the life of the
@@ -442,13 +442,13 @@ def _unopenable_name_under(entry: Path) -> str | None:
     before anything is handed to beets — which cannot be gated from here: its
     importer opens every file in the folder it is given that its
     ``ignore``/hidden globs do not skip (``mutagen.wave.WAVE`` on a FIFO,
-    ``ImportTaskFactory.read_item``, ``importer/tasks.py:1128`` in the installed
-    beets 2.13.1), and on the move-back arm the app's own
+    ``ImportTaskFactory.read_item``, ``importer/tasks.py:1463`` in the installed
+    beets 2.14.0), and on the move-back arm the app's own
     :func:`_holds_media` walk opens them again afterwards.
 
     ``followlinks=True`` because beets' own walk follows them: ``sorted_walk``
     sorts a name into ``dirs`` by ``os.path.isdir``, which resolves links
-    (``beets/util/__init__.py:247``), so a symlinked subfolder inside the entry
+    (``beets/util/__init__.py:250``), so a symlinked subfolder inside the entry
     IS descended by the importer — a pre-flight that stopped at it would leave
     the pipe in it to open. The loop that buys is closed by identity rather than
     by depth: each directory is walked once, so a link pointing back up its own
@@ -772,7 +772,7 @@ def _audio_free_entries(
                     # ``Item.from_path`` raises on and every file that is not a
                     # regular file (``_is_a_regular_file``), while beets' own discovery
                     # takes every non-ignored file in the folder as a candidate
-                    # (``albums_in_dir``, importer/tasks.py:1184-1216, no
+                    # (``albums_in_dir``, importer/tasks.py:1519-1551, no
                     # extension or media filter). So a folder listed at 0 tracks
                     # can still restore. The UI shows a "may still work" hint on
                     # this count and deliberately does NOT disable Restore
@@ -1089,14 +1089,14 @@ def _restore_to_origin(
         # library row to recreate, so the move IS the restore and an empty import
         # is beets agreeing there was nothing to import — it builds an album task
         # only once at least one file reads as an ``Item``
-        # (``importer/tasks.py:1084-1089``).
+        # (``importer/tasks.py:1419-1424``).
         #
         # Classified AFTER the import rather than skipping it on the same probe
         # up front, because beets' discovery is the AUTHORITY on "was there an
         # album here" and :func:`_holds_media` is a heuristic that does not
         # replicate it: beets applies ``ignore``/``ignore_hidden``, extracts
         # archives, and remuxes before reading (``ImportTaskFactory.read_item``,
-        # ``importer/tasks.py:1128`` in the installed beets 2.13.1).
+        # ``importer/tasks.py:1463`` in the installed beets 2.14.0).
         # Asking the probe only once beets has already answered "nothing landed"
         # makes it a tie-breaker on a decided question instead of a gate that
         # could decide it alone, and the import costs nothing on a folder with

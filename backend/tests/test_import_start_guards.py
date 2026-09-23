@@ -33,7 +33,7 @@ import beets.importer.tasks as beets_tasks
 import httpx
 import pytest
 from beets import config
-from beets.autotag import AlbumInfo, AlbumMatch, TrackInfo
+from beets.autotag import AlbumInfo, AlbumMatch, Source, TrackInfo
 from beets.autotag.distance import distance
 from beets.autotag.match import Proposal, assign_items
 from beets.autotag.match import Recommendation as BeetsRec
@@ -60,8 +60,8 @@ _BAD_NAME = b"Caf\xe9"
 def _canned_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin beets' lookup to one STRONG canned match, so a run auto-applies."""
 
-    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
-        item_list = list(items)
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+        item_list = list(source.items)
         tracks = [
             TrackInfo(title=f"Airbag {i}", track_id=f"t{i}", index=i, length=1.0)
             for i in range(1, len(item_list) + 1)
@@ -78,9 +78,13 @@ def _canned_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
         )
         pairs, extra_items, extra_tracks = assign_items(item_list, info.tracks)
         match = AlbumMatch(
-            distance(item_list, info, pairs), info, dict(pairs), extra_items, extra_tracks
+            distance(source.data, info, pairs, len(extra_items)),
+            info,
+            dict(pairs),
+            extra_items,
+            extra_tracks,
         )
-        return (_ARTIST, _ALBUM, Proposal([match], BeetsRec.strong))
+        return Proposal([match], BeetsRec.strong)
 
     def fake_tag_item(item: Any, search_ids: Any = None) -> Proposal:
         return Proposal([], BeetsRec.none)
@@ -1291,8 +1295,8 @@ def test_review_all_survives_a_folder_that_vanished_since_the_listing(
     ``settled_folders`` call and ``start`` cannot be closed by a stat - the
     folder is as free to vanish after it as before - and beets already answers
     the case, contributing nothing for a toppath whose ``read_item`` returns
-    None (``ImportTaskFactory.read_item``, beets/importer/tasks.py:1128 in beets
-    2.13.1, the version ``.venv`` runs; :1142 in the 2.12.0 reference checkout)
+    None (``ImportTaskFactory.read_item``, beets/importer/tasks.py:1463 in beets
+    2.14.0, the version ``.venv`` runs; :1142 in the 2.12.0 reference checkout)
     while the rest import.
     """
     _canned_lookup(monkeypatch)
@@ -1365,7 +1369,7 @@ def test_review_all_refuses_when_EVERY_settled_folder_vanished(
 # (".../stop-test/Courtney" for ".../stop-test/Courtney Barnett"). beets takes a
 # missing toppath down the branch a single FILE takes
 # (``ImportTaskFactory.paths`` -> ``if not os.path.isdir(util.syspath(self.toppath))``,
-# beets/importer/tasks.py:1041 in beets 2.13.1, the version ``.venv`` runs; :1055 in
+# beets/importer/tasks.py:1376 in beets 2.14.0, the version ``.venv`` runs; :1055 in
 # the 2.12.0 reference checkout), reads no item, produces zero tasks and ends the
 # session normally - so the app created a job, ran it, and said "Import finished
 # - 0 albums imported". Nothing refused.

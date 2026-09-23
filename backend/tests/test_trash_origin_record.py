@@ -1112,7 +1112,7 @@ def test_restore_never_links_the_album_when_the_user_config_asks_for_links(
     """All THREE link flags, because only ``link`` was ever tested.
 
     beets picks the file operation by falling through move, copy, link,
-    hardlink, reflink in order (importer/stages.py:278-291). The in-place import
+    hardlink, reflink in order (importer/stages.py:367-380). The in-place import
     turns move and copy OFF, so whichever of the three the user has on takes
     over and files the album at the TEMPLATED path — files at the origin,
     library rows pointing somewhere else. That is the whole feature defeated,

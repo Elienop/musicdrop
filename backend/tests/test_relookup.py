@@ -2,7 +2,7 @@ from typing import Any
 
 import pytest
 from beets import metadata_plugins
-from beets.autotag import AlbumInfo, AlbumMatch, TrackInfo
+from beets.autotag import AlbumInfo, AlbumMatch, Source, TrackInfo
 from beets.autotag.distance import distance
 from beets.autotag.match import Proposal, assign_items
 from beets.autotag.match import Recommendation as BeetsRec
@@ -40,7 +40,13 @@ def _info(album_id: str, album: str) -> AlbumInfo:
 def _match(album_id: str, album: str, items: list[Item]) -> AlbumMatch:
     info = _info(album_id, album)
     pairs, extra_i, extra_t = assign_items(items, info.tracks)
-    return AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_i, extra_t)
+    return AlbumMatch(
+        distance(Source.from_items(items).data, info, pairs, len(extra_i)),
+        info,
+        dict(pairs),
+        extra_i,
+        extra_t,
+    )
 
 
 def test_relookup_release_id_uses_tag_album_search_ids(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -49,10 +55,13 @@ def test_relookup_release_id_uses_tag_album_search_ids(monkeypatch: pytest.Monke
     canned = _match("a1", "Dreams", items)
 
     def fake_tag_album(
-        items_: Any, search_artist: Any = None, search_name: Any = None, search_ids: Any = None
-    ) -> Any:
+        source: Source,
+        search_artist: str | None = None,
+        search_name: str | None = None,
+        search_ids: list[str] | None = None,
+    ) -> Proposal:
         seen["search_ids"] = search_ids
-        return ("2 Brothers", "Dreams", Proposal([canned], BeetsRec.strong))
+        return Proposal([canned], BeetsRec.strong)
 
     monkeypatch.setattr(rl, "tag_album", fake_tag_album)
     cands, rec = rl.relookup(
@@ -91,12 +100,15 @@ def test_relookup_default_name_search_uses_public_tag_album(
     canned = _match("a1", "Dreams", items)
 
     def fake_tag_album(
-        items_: Any, search_artist: Any = None, search_name: Any = None, search_ids: Any = None
-    ) -> Any:
+        source: Source,
+        search_artist: str | None = None,
+        search_name: str | None = None,
+        search_ids: list[str] | None = None,
+    ) -> Proposal:
         seen["artist"] = search_artist
         seen["album"] = search_name
         seen["search_ids"] = search_ids
-        return ("2 Brothers", "Dreams", Proposal([canned], BeetsRec.medium))
+        return Proposal([canned], BeetsRec.medium)
 
     monkeypatch.setattr(rl, "tag_album", fake_tag_album)
     cands, rec = rl.relookup(
@@ -109,7 +121,7 @@ def test_relookup_default_name_search_uses_public_tag_album(
 
 def test_relookup_empty_results(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_tag_album(*a: Any, **k: Any) -> Any:
-        return ("x", "y", Proposal([], BeetsRec.none))
+        return Proposal([], BeetsRec.none)
 
     monkeypatch.setattr(rl, "tag_album", fake_tag_album)
     cands, rec = rl.relookup(_Task(_items()), ImportSearch(release_id="bad-id"))
@@ -120,13 +132,19 @@ def test_relookup_empty_results(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_relookup_items_takes_items_directly(monkeypatch: pytest.MonkeyPatch) -> None:
     items = _items()
     canned = _match("a1", "Dreams", items)
+    seen: dict[str, Any] = {}
 
     def fake_tag_album(
-        items_: Any, search_artist: Any = None, search_name: Any = None, search_ids: Any = None
-    ) -> Any:
-        return ("2 Brothers", "Dreams", Proposal([canned], BeetsRec.strong))
+        source: Source,
+        search_artist: str | None = None,
+        search_name: str | None = None,
+        search_ids: list[str] | None = None,
+    ) -> Proposal:
+        seen["items"] = list(source.items)
+        return Proposal([canned], BeetsRec.strong)
 
     monkeypatch.setattr(rl, "tag_album", fake_tag_album)
     cands, rec = rl.relookup_items(items, ImportSearch(release_id="a1"))
+    assert seen["items"] == items  # beets' Source of exactly these items
     assert cands == [canned]
     assert rec is BeetsRec.strong

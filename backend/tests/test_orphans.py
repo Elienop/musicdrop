@@ -793,7 +793,7 @@ def _symlinked_library(tmp_path: Path) -> tuple[Path, Path]:
     """``(link, real)`` — ``/music -> /mnt/tank/music``, the shape a container has.
 
     beets stores ``lib.directory`` as the operator wrote it (``normpath``, not
-    ``realpath`` — ``beets/util/__init__.py:178``), so the sweep walks the LINK
+    ``realpath`` — ``beets/util/__init__.py:181``), so the sweep walks the LINK
     while the exclusion roots reach it resolved.
     """
     real = tmp_path / "tank" / "music"

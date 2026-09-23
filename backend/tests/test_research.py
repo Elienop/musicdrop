@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from beets.autotag import AlbumInfo, AlbumMatch, TrackInfo
+from beets.autotag import AlbumInfo, AlbumMatch, Source, TrackInfo
 from beets.autotag.distance import distance
 from beets.autotag.match import Proposal, assign_items
 from beets.autotag.match import Recommendation as BeetsRec
@@ -28,7 +28,13 @@ def _match(album_id: str, album: str, items: list[Item]) -> AlbumMatch:
         va=False,
     )
     pairs, extra_i, extra_t = assign_items(items, info.tracks)
-    return AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_i, extra_t)
+    return AlbumMatch(
+        distance(Source.from_items(items).data, info, pairs, len(extra_i)),
+        info,
+        dict(pairs),
+        extra_i,
+        extra_t,
+    )
 
 
 def _searched(
@@ -111,15 +117,17 @@ def test_rescan_folder_runs_the_default_lookup(
     canned = _match("a1", "Dreams", items)
     seen: dict[str, Any] = {}
 
-    def fake_tag_album(items_: Any, *args: Any, **kwargs: Any) -> Any:
+    def fake_tag_album(source: Source, *args: Any, **kwargs: Any) -> Proposal:
+        seen["items"] = list(source.items)
         seen["args"] = args
         seen["kwargs"] = kwargs
-        return ("2 Brothers", "Dreams", Proposal([canned], BeetsRec.strong))
+        return Proposal([canned], BeetsRec.strong)
 
     monkeypatch.setattr(res, "_read_items", lambda folder: items)
     monkeypatch.setattr(res, "tag_album", fake_tag_album)
     outcome = res.rescan_folder(str(tmp_path))
-    # Default first-scan lookup: NO search terms of any kind.
+    # Default first-scan lookup over the folder's items: NO search terms of any kind.
+    assert seen["items"] == items
     assert seen["args"] == ()
     assert seen["kwargs"] == {}
     assert outcome.result is not None
@@ -133,9 +141,7 @@ def test_rescan_folder_no_candidates_keeps_cur_identity(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(res, "_read_items", lambda folder: _items())
-    monkeypatch.setattr(
-        res, "tag_album", lambda items_: ("2 Brothers", "Dreams", Proposal([], BeetsRec.none))
-    )
+    monkeypatch.setattr(res, "tag_album", lambda source: Proposal([], BeetsRec.none))
     outcome = res.rescan_folder(str(tmp_path))
     assert outcome.result is None
     assert outcome.cur_artist == "2 Brothers"
