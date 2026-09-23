@@ -198,6 +198,10 @@ export function buildExtensions(opts: {
       ]),
     ),
     editableCompartment.of(READ_ONLY_EXTENSION),
+    // Editable too. Turning read-only sets `contenteditable="false"` before the
+    // triplet's tabindex, and Chrome drops a focused editor's focus to <body>
+    // in between (measured after "Overwrite anyway").
+    EditorView.contentAttributes.of({ tabindex: "0" }),
     themeCompartment.of(opts.theme),
     EditorView.updateListener.of((u) => {
       if (u.docChanged) {

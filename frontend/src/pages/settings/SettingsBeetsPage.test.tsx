@@ -227,7 +227,7 @@ function watchCaretScrolls(content: HTMLElement) {
     });
   /** The one scroll the page should have asked for: the caret, below the topbar. */
   const caretShown = () => [
-    [view.state.selection.main.head, { y: "nearest", yMargin: 80 }],
+    [view.state.selection.main.head, { y: "nearest", yMargin: 86 }],
   ];
   return { scrolls, caretShown };
 }
@@ -1036,7 +1036,7 @@ describe("SettingsPage", () => {
         screen.queryByRole("dialog", { name: /file changed on disk/i }),
       ).not.toBeInTheDocument(),
     );
-    // Focus is in the editor, not on <body>, and its caret is scrolled to.
+    // Focus is in the editor, not on <body>, and its caret is in view.
     expect(document.activeElement).toBe(content);
     expect(watch.scrolls()).toEqual(watch.caretShown());
     // Clean state: Edit is enabled again, the dirty banner is gone.
@@ -1115,7 +1115,7 @@ describe("SettingsPage", () => {
     expect(savedBodies[0].base_sha256).toBe("base-sha");
     expect(savedBodies[1].base_sha256).toBe("fresh-server-sha");
     // The panel closes and focus is in the editor, not on <body>, with its
-    // caret scrolled to.
+    // caret in view.
     await waitFor(() =>
       expect(
         screen.queryByRole("dialog", { name: /file changed on disk/i }),
@@ -1338,7 +1338,7 @@ describe("SettingsPage", () => {
     expect(screen.queryByText(/unsaved changes/i)).not.toBeInTheDocument();
   });
 
-  test("Cancel puts focus in the editor, with its caret scrolled to", async () => {
+  test("Cancel puts focus in the editor, with its caret in view", async () => {
     // Cancel shows only beside a draft, so the click unmounts it.
     defaultMocks();
     const user = userEvent.setup();
@@ -1358,6 +1358,22 @@ describe("SettingsPage", () => {
     );
     expect(document.activeElement).toBe(content);
     expect(watch.scrolls()).toEqual(watch.caretShown());
+  });
+
+  test("the editor keeps tabindex 0 while editable, so turning read-only keeps its focus", async () => {
+    // Chrome drops focus to <body> if the editor is briefly unfocusable while
+    // it turns read-only; jsdom does not, so this pins the attribute.
+    defaultMocks();
+    const user = userEvent.setup();
+    renderPage();
+    const content = await findEditorContent();
+
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+
+    await waitFor(() =>
+      expect(content).toHaveAttribute("contenteditable", "true"),
+    );
+    expect(content).toHaveAttribute("tabindex", "0");
   });
 
   test("/settings lands on the beets section inside the settings layout", async () => {

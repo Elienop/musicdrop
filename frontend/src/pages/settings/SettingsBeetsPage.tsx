@@ -116,9 +116,10 @@ function derivePageState(
 
 /**
  * Focus the editor and scroll its caret into view, below the sticky topbar
- * (73px measured, so a margin of 80). `view.focus()` alone never scrolls, and
- * the buttons that call this sit below the 500px editor. "nearest" leaves a
- * caret that is already in view where it is.
+ * (81px measured at widths 375 to 1920, plus CodeMirror's default margin of
+ * 5). `view.focus()` alone never scrolls, and the buttons that call this sit
+ * below the 500px editor. "nearest" moves nothing once the caret is 86px
+ * inside the editor and the window.
  */
 function focusEditor(view: EditorView | undefined) {
   if (!view) return;
@@ -126,7 +127,7 @@ function focusEditor(view: EditorView | undefined) {
   view.dispatch({
     effects: EditorView.scrollIntoView(view.state.selection.main.head, {
       y: "nearest",
-      yMargin: 80,
+      yMargin: 86,
     }),
   });
 }
