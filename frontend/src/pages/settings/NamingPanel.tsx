@@ -133,15 +133,15 @@ export function NamingPanel() {
 }
 
 function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
-  const [base, setBaseState] = useState({
+  const [base, setBase] = useState({
     default: initial.default ?? "",
     comp: initial.comp ?? "",
     singleton: initial.singleton ?? "",
   });
-  const [custom, setCustomState] = useState<CustomRow[]>(
+  const [custom, setCustom] = useState<CustomRow[]>(
     initial.custom.map((c) => ({ ...c, id: mkId() })),
   );
-  const [replace, setReplaceState] = useState<ReplaceRow[]>(
+  const [replace, setReplace] = useState<ReplaceRow[]>(
     initial.replace.map((r) => ({ ...r, id: mkId() })),
   );
   const [previews, setPreviews] = useState<RenderedRule[]>(initial.previews);
@@ -176,9 +176,9 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
       set(value);
     };
   }
-  const setBase = draftSetter(setBaseState);
-  const setCustom = draftSetter(setCustomState);
-  const setReplace = draftSetter(setReplaceState);
+  const updateBase = draftSetter(setBase);
+  const updateCustom = draftSetter(setCustom);
+  const updateReplace = draftSetter(setReplace);
 
   // Tracks the focused template input so the Insert palette writes at the caret.
   const focusedRef = useRef<HTMLInputElement | null>(null);
@@ -236,10 +236,10 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
 
   function applyValue(name: string, value: string) {
     if (name === "default" || name === "comp" || name === "singleton") {
-      setBase((b) => ({ ...b, [name]: value }));
+      updateBase((b) => ({ ...b, [name]: value }));
     } else if (name.startsWith("custom-tmpl-")) {
       const id = Number(name.slice("custom-tmpl-".length));
-      setCustom((rows) =>
+      updateCustom((rows) =>
         rows.map((r) => (r.id === id ? { ...r, template: value } : r)),
       );
     }
@@ -343,7 +343,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
           label="Default"
           name="default"
           value={base.default}
-          onChange={(v) => setBase((b) => ({ ...b, default: v }))}
+          onChange={(v) => updateBase((b) => ({ ...b, default: v }))}
           rendered={rendered(0)}
           focusedRef={focusedRef}
         />
@@ -351,7 +351,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
           label="Compilations"
           name="comp"
           value={base.comp}
-          onChange={(v) => setBase((b) => ({ ...b, comp: v }))}
+          onChange={(v) => updateBase((b) => ({ ...b, comp: v }))}
           rendered={rendered(1)}
           focusedRef={focusedRef}
         />
@@ -359,7 +359,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
           label="Singletons"
           name="singleton"
           value={base.singleton}
-          onChange={(v) => setBase((b) => ({ ...b, singleton: v }))}
+          onChange={(v) => updateBase((b) => ({ ...b, singleton: v }))}
           rendered={rendered(2)}
           focusedRef={focusedRef}
         />
@@ -375,7 +375,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
                 placeholder="query (e.g. albumtype:soundtrack)"
                 value={row.query}
                 onChange={(e) =>
-                  setCustom((rows) =>
+                  updateCustom((rows) =>
                     rows.map((r) =>
                       r.id === row.id ? { ...r, query: e.target.value } : r,
                     ),
@@ -388,7 +388,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
                 size="icon"
                 aria-label={`Remove custom rule ${i + 1}`}
                 onClick={() =>
-                  setCustom((rows) => rows.filter((r) => r.id !== row.id))
+                  updateCustom((rows) => rows.filter((r) => r.id !== row.id))
                 }
               >
                 <Remove className="size-4" aria-hidden="true" />
@@ -400,7 +400,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
               name={`custom-tmpl-${row.id}`}
               value={row.template}
               onChange={(v) =>
-                setCustom((rows) =>
+                updateCustom((rows) =>
                   rows.map((r) =>
                     r.id === row.id ? { ...r, template: v } : r,
                   ),
@@ -417,7 +417,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
             variant="outline"
             size="sm"
             onClick={() =>
-              setCustom((rows) => [
+              updateCustom((rows) => [
                 ...rows,
                 { id: mkId(), query: "", template: "" },
               ])
@@ -432,7 +432,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
 
       <ReplaceEditor
         rows={replace}
-        setRows={setReplace}
+        setRows={updateReplace}
         errors={replaceErrors}
       />
 

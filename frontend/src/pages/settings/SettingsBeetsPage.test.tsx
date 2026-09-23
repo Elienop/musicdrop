@@ -22,7 +22,9 @@ import {
   beforeEach,
   describe,
   expect,
+  onTestFinished,
   test,
+  vi,
 } from "vitest";
 
 import type { components, operations } from "@/api/schema";
@@ -200,6 +202,35 @@ async function findEditorContent(): Promise<HTMLElement> {
  * edit (its typing latch), then applies it. Wait past that before asserting
  * that the editor's text was NOT replaced. */
 const pastTypingLatch = () => new Promise((r) => setTimeout(r, 300));
+
+/**
+ * Watch the main editor for caret scrolls: each `EditorView.scrollIntoView`
+ * call whose effect reached the editor's `dispatch`, as `[position,
+ * options]`. jsdom does no layout, so this pins the request; where the caret
+ * lands is for a browser to confirm.
+ */
+function watchCaretScrolls(content: HTMLElement) {
+  const view = EditorView.findFromDOM(content);
+  if (!view) throw new Error(".cm-content has no EditorView");
+  const made = vi.spyOn(EditorView, "scrollIntoView");
+  const sent = vi.spyOn(view, "dispatch");
+  onTestFinished(() => {
+    made.mockRestore();
+    sent.mockRestore();
+  });
+  const scrolls = () =>
+    made.mock.calls.filter((_, i) => {
+      const effect = made.mock.results[i]?.value;
+      return sent.mock.calls.some((specs) =>
+        specs.some((spec) => [spec.effects].flat().includes(effect)),
+      );
+    });
+  /** The one scroll the page should have asked for: the caret, mid-window. */
+  const caretCentred = () => [
+    [view.state.selection.main.head, { y: "center" }],
+  ];
+  return { scrolls, caretCentred };
+}
 
 function renderPage() {
   const queryClient = new QueryClient({
@@ -995,6 +1026,7 @@ describe("SettingsPage", () => {
     const modal = await screen.findByRole("dialog", {
       name: /file changed on disk/i,
     });
+    const watch = watchCaretScrolls(content);
     await user.click(
       within(modal).getByRole("button", { name: /reload \(drop my edits\)/i }),
     );
@@ -1004,8 +1036,9 @@ describe("SettingsPage", () => {
         screen.queryByRole("dialog", { name: /file changed on disk/i }),
       ).not.toBeInTheDocument(),
     );
-    // Focus is in the editor, not on <body>.
+    // Focus is in the editor, not on <body>, and its caret is scrolled to.
     expect(document.activeElement).toBe(content);
+    expect(watch.scrolls()).toEqual(watch.caretCentred());
     // Clean state: Edit is enabled again, the dirty banner is gone.
     expect(screen.getByRole("button", { name: /^edit$/i })).toBeEnabled();
     expect(screen.queryByText(/unsaved changes/i)).not.toBeInTheDocument();
@@ -1071,6 +1104,7 @@ describe("SettingsPage", () => {
     const modal = await screen.findByRole("dialog", {
       name: /file changed on disk/i,
     });
+    const watch = watchCaretScrolls(content);
     await user.click(
       within(modal).getByRole("button", { name: /overwrite anyway/i }),
     );
@@ -1080,13 +1114,15 @@ describe("SettingsPage", () => {
     // must carry the conflict body's `current_sha256`, NOT the original.
     expect(savedBodies[0].base_sha256).toBe("base-sha");
     expect(savedBodies[1].base_sha256).toBe("fresh-server-sha");
-    // The panel closes and focus is in the editor, not on <body>.
+    // The panel closes and focus is in the editor, not on <body>, with its
+    // caret scrolled to.
     await waitFor(() =>
       expect(
         screen.queryByRole("dialog", { name: /file changed on disk/i }),
       ).not.toBeInTheDocument(),
     );
     expect(document.activeElement).toBe(content);
+    expect(watch.scrolls()).toEqual(watch.caretCentred());
   });
 
   test("Save stays disabled while the linter reports validation errors", async () => {
@@ -1300,6 +1336,28 @@ describe("SettingsPage", () => {
       ).not.toBeInTheDocument(),
     );
     expect(screen.queryByText(/unsaved changes/i)).not.toBeInTheDocument();
+  });
+
+  test("Cancel puts focus in the editor, with its caret scrolled to", async () => {
+    // Cancel shows only beside a draft, so the click unmounts it.
+    defaultMocks();
+    const user = userEvent.setup();
+    renderPage();
+    const content = await findEditorContent();
+
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    content.focus();
+    await user.keyboard("q");
+    const watch = watchCaretScrolls(content);
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: /^cancel$/i }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(document.activeElement).toBe(content);
+    expect(watch.scrolls()).toEqual(watch.caretCentred());
   });
 
   test("/settings lands on the beets section inside the settings layout", async () => {
@@ -1880,6 +1938,8 @@ describe("SettingsBeetsPage while Apply is pending", () => {
     const panel = await screen.findByRole("dialog", {
       name: /file changed on disk/i,
     });
+    const content = await findEditorContent();
+    const watch = watchCaretScrolls(content);
     await user.click(
       within(panel).getByRole("button", { name: /overwrite anyway/i }),
     );
@@ -1894,8 +1954,10 @@ describe("SettingsBeetsPage while Apply is pending", () => {
     expect(
       screen.queryByRole("dialog", { name: /file changed on disk/i }),
     ).not.toBeInTheDocument();
-    // Focus is in the editor, where the draft and Save are, not on <body>.
-    expect(document.activeElement).toBe(document.querySelector(".cm-content"));
+    // Focus is in the editor, where the draft and Save are, not on <body>,
+    // with its caret scrolled to.
+    expect(document.activeElement).toBe(content);
+    expect(watch.scrolls()).toEqual(watch.caretCentred());
   });
 
   test("a new file version equal to the draft opens no panel, and the page is clean", async () => {

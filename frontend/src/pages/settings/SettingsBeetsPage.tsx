@@ -1,4 +1,5 @@
 import type { Diagnostic } from "@codemirror/lint";
+import { EditorView } from "@codemirror/view";
 import { useQueryClient } from "@tanstack/react-query";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -111,6 +112,21 @@ function derivePageState(
   if (dirty) return "dirty";
   if (applyPending) return "apply_pending";
   return "clean";
+}
+
+/**
+ * Focus the editor and scroll its caret to the middle of the window, clear
+ * of the sticky topbar. `view.focus()` alone never scrolls, and the buttons
+ * that call this sit below the 500px editor.
+ */
+function focusEditor(view: EditorView | undefined) {
+  if (!view) return;
+  view.focus();
+  view.dispatch({
+    effects: EditorView.scrollIntoView(view.state.selection.main.head, {
+      y: "center",
+    }),
+  });
 }
 
 export function SettingsBeetsPage() {
@@ -354,6 +370,8 @@ export function SettingsBeetsPage() {
           insert: data.yaml_text,
         },
       });
+      // Cancel is shown only beside a draft, so the click unmounts it.
+      focusEditor(view);
     }
     setLocalText(null);
     setDirty(false);
@@ -404,9 +422,9 @@ export function SettingsBeetsPage() {
         },
       });
       // Before the panel's focused button unmounts, or focus drops to <body>.
-      view.focus();
+      focusEditor(view);
     }
-    // The editor holds the 409's file until the re-read below lands.
+    // The editor holds the panel's file until the re-read below lands.
     setLocalText(conflict.serverDoc);
     setDirty(false);
     setConflict(null);
@@ -432,7 +450,7 @@ export function SettingsBeetsPage() {
         onSuccess: () => {
           setDirty(false);
           setConflict(null);
-          editorRef.current?.view?.focus();
+          focusEditor(editorRef.current?.view);
         },
         // Another writer since the first 409: the panel takes the newer file
         // and token, the same as for the first 409. Any other failure closes
@@ -444,7 +462,7 @@ export function SettingsBeetsPage() {
             return;
           }
           setConflict(null);
-          editorRef.current?.view?.focus();
+          focusEditor(editorRef.current?.view);
         },
       },
     );

@@ -7,24 +7,35 @@ import { Button } from "@/components/ui/button";
 import { READ_ONLY_EXTENSION } from "@/pages/settings/codemirror-config";
 
 /**
- * A focused pane's ring: the app's focus dialect (`.focus-ring` in
- * styles.css, 3px at ring/70), 3.96:1 on the panel. CodeMirror's own outline
- * is drawn outside `.cm-editor`, whose merge-view wrapper is
- * `overflow: hidden`, and the gutter is stacked at z-index 200. This ring is
- * drawn inside the editor, at z-index 201.
+ * Each pane's theme: CodeMirror's dark variant, as the main editor uses.
+ *
+ * A focused pane's ring is the app's focus dialect (`.focus-ring` in
+ * styles.css, 3px at ring/70), 3.96:1 on the panel. It replaces
+ * CodeMirror's own outline, which is drawn outside `.cm-editor`, where the
+ * merge view's `overflow: hidden` wrapper clips it. The ring is inside. It
+ * needs no z-index: the gutter's z-index 200 counts only inside
+ * `.cm-scroller`, a stacking context at z-index 0, and a positioned
+ * `::after` with no z-index paints after it in tree order. Stacked no
+ * higher, it stays under the sticky topbar.
+ *
+ * `@codemirror/merge` draws the change markers at 1-3px from the pane's
+ * left edge, under the ring; 4px of padding moves them past it.
  */
-const PANE_FOCUS_RING = EditorView.theme({
-  "&.cm-focused": { outline: "none" },
-  "&.cm-focused::after": {
-    content: '""',
-    position: "absolute",
-    inset: "0",
-    zIndex: "201",
-    pointerEvents: "none",
-    boxShadow:
-      "inset 0 0 0 3px color-mix(in oklab, var(--ring) 70%, transparent)",
+const PANE_THEME = EditorView.theme(
+  {
+    "&.cm-focused": { outline: "none" },
+    "&.cm-focused::after": {
+      content: '""',
+      position: "absolute",
+      inset: "0",
+      pointerEvents: "none",
+      boxShadow:
+        "inset 0 0 0 3px color-mix(in oklab, var(--ring) 70%, transparent)",
+    },
+    ".cm-changeGutter": { width: "6px", paddingLeft: "4px" },
   },
-});
+  { dark: true },
+);
 
 /**
  * Conflict resolution view: shown when Save returns 409, or when a read brings
@@ -92,7 +103,7 @@ export function SettingsConflict({
       yaml(),
       READ_ONLY_EXTENSION,
       EditorView.contentAttributes.of({ "aria-label": name }),
-      PANE_FOCUS_RING,
+      PANE_THEME,
     ];
     const mv = new MergeView({
       parent: host,
