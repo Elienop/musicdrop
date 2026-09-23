@@ -12,12 +12,14 @@ from typing import Final
 from fastapi import APIRouter, Request
 
 from app.beets.config_editor import (
+    NOT_A_MAPPING,
     StoreLayoutReport,
     _settings,
     parse_error_text,
     parse_yaml,
     read_naming,
     save_naming,
+    settings_mapping,
     store_layout_report,
     validate_known_keys,
 )
@@ -127,7 +129,7 @@ def validate_config(req: ValidateRequest, request: Request) -> ValidateResponse:
     # ``config_editor.save`` calls, so the gutter and the Save refusal are
     # computed from one function.
     try:
-        data = parse_yaml(req.yaml_text)
+        parsed = parse_yaml(req.yaml_text)
     # Broad: parsing changes nothing, so whatever it raises is a parse error.
     # Measured beyond YAMLError: RecursionError past the nesting limit, ValueError
     # on an integer over 4300 digits, KeyError on ``!!bool ture``; each was a
@@ -148,6 +150,13 @@ def validate_config(req: ValidateRequest, request: Request) -> ValidateResponse:
             # still sent: ``advisories`` is a required field, and a client that
             # had to test for its presence would be defending against a shape
             # this route never produces.
+            advisories=[],
+        )
+    # The Naming routes' rule and sentence, not Pydantic's, which names a class.
+    data = settings_mapping(req.yaml_text, parsed)
+    if data is None:
+        return ValidateResponse(
+            errors=[ValidationErrorItem(loc="", msg=NOT_A_MAPPING, type="model_type")],
             advisories=[],
         )
     # Two independent channels: an advisory is a valid setting MusicDrop

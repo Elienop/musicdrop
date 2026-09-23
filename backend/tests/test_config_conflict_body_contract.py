@@ -169,9 +169,44 @@ def test_the_other_error_models_reject_the_conflict_body(
         model.model_validate(body)
 
 
-@pytest.mark.parametrize("path", _SAVE_ROUTES)
-def test_a_conflict_with_a_file_that_is_not_utf8_still_answers_409(
-    client: TestClient, beets_library_config_path: Path, path: str
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        (
+            "/api/config/save",
+            (
+                422,
+                {
+                    "detail": [
+                        {
+                            "loc": "",
+                            "msg": "config.yaml is not UTF-8.",
+                            "type": "config_on_disk",
+                            "line": None,
+                            "column": None,
+                        }
+                    ]
+                },
+            ),
+        ),
+        (
+            "/api/config/naming/save",
+            (
+                422,
+                {
+                    "detail": [
+                        {"loc": "", "msg": "config.yaml is not UTF-8.", "type": "config_on_disk"}
+                    ]
+                },
+            ),
+        ),
+    ],
+)
+def test_a_stale_save_to_a_file_that_is_not_utf8_is_not_a_500(
+    client: TestClient,
+    beets_library_config_path: Path,
+    path: str,
+    expected: tuple[int, dict[str, object]],
 ) -> None:
     """Strict UTF-8 decoding of the file on disk made this a bare 500."""
     valid = beets_library_config_path.read_text(encoding="utf-8")
@@ -179,5 +214,5 @@ def test_a_conflict_with_a_file_that_is_not_utf8_still_answers_409(
 
     response = client.post(path, json=_save_request(path, valid))
 
-    assert response.status_code == 409, response.text
-    assert response.json()["detail"]["current_yaml_text"] == "a: 1\nb: �\n"
+    assert (response.status_code, response.json()) == expected
+    assert beets_library_config_path.read_bytes() == b"a: 1\nb: \xff\n"

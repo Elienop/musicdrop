@@ -137,6 +137,32 @@ def test_save_naming_names_the_parse_error_of_the_file_on_disk(
     assert beets_library.config_path.read_bytes() == data
 
 
+@pytest.mark.parametrize("base", ["served", "stale"])
+def test_save_naming_refuses_a_utf16_file_whatever_the_base(
+    client: TestClient, beets_library: LibraryHandle, base: str
+) -> None:
+    """Measured before: a stale base got the 409, not this 422."""
+    raw = "paths:\n  default: $album/$title\n".encode("utf-16")
+    beets_library.config_path.write_bytes(raw)
+    served = hashlib.sha256(raw).hexdigest()
+    assert client.get("/api/config").json()["sha256"] == served
+
+    r = client.post(
+        "/api/config/naming/save",
+        json={
+            "rules": [],
+            "replace": [],
+            "base_sha256": served if base == "served" else hashlib.sha256(b"").hexdigest(),
+        },
+    )
+
+    assert (r.status_code, r.json()) == (
+        422,
+        {"detail": [{"loc": "", "msg": "config.yaml is not UTF-8.", "type": "config_on_disk"}]},
+    )
+    assert beets_library.config_path.read_bytes() == raw
+
+
 @pytest.mark.parametrize("text", ["", "# nothing set here\n"], ids=["empty", "comment-only"])
 def test_get_naming_reads_an_empty_file_as_beets_defaults(
     client: TestClient, beets_library: LibraryHandle, text: str

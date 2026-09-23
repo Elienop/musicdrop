@@ -119,10 +119,6 @@ def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
     # editable doc rather than 500-ing the settings page — exactly when a user
     # opens Settings to fix a broken config. The effective view still renders
     # from the in-memory beets.config either way.
-    #
-    # The sha is set only once the text decodes: served beside an empty editor,
-    # the file's real sha let a Save replace the file the page never showed
-    # (measured: a Plex token lost). With ``""`` that Save gets the 409.
     file_modified_at: datetime | None = None
     current_mtime: float | None = None
     sha256 = ""
@@ -134,8 +130,8 @@ def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
             raw = handle.config_path.read_bytes()
             current_mtime = handle.config_path.stat().st_mtime
             file_modified_at = datetime.fromtimestamp(current_mtime, tz=UTC)
-            yaml_text = raw.decode("utf-8")
             sha256 = hashlib.sha256(raw).hexdigest()
+            yaml_text = raw.decode("utf-8")
     except (OSError, UnicodeDecodeError):
         pass
 

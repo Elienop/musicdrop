@@ -93,12 +93,14 @@ from app.models.config_editor import (
 from app.playlists.atomic import write_atomic_text
 
 __all__ = [
+    "NOT_A_MAPPING",
     "apply",
     "atomic_write",
     "parse_yaml",
     "read_naming",
     "save",
     "save_naming",
+    "settings_mapping",
     "store_layout_report",
     "validate_known_keys",
 ]
@@ -284,6 +286,15 @@ def _merged_line_col(node: Any, key: str | int) -> tuple[int, int] | tuple[None,
     return (None, None)
 
 
+def _not_a_mapping(subject: str) -> str:
+    """The row text for ``subject``, which the schema models as a mapping of settings."""
+    return f"{subject} must be a mapping of settings."
+
+
+#: The one sentence for a top level beets does not read as settings.
+NOT_A_MAPPING: Final = _not_a_mapping("config.yaml")
+
+
 def validate_known_keys(
     data: CommentedMap | dict[str, Any],
 ) -> list[ValidationErrorItem]:
@@ -294,7 +305,10 @@ def validate_known_keys(
 
     * ``loc`` — the Pydantic loc tuple rendered as a dotted path (e.g.
       ``"import.copy"``).
-    * ``msg`` / ``type`` — verbatim from Pydantic.
+    * ``msg`` / ``type`` — verbatim from Pydantic, except ``msg`` for a
+      ``model_type`` error: Pydantic's names the model class ("…instance of
+      ImportSection"), so it is :func:`_not_a_mapping` of the ``loc``. That is
+      every field typed as a model, at any depth.
     * ``line`` / ``column`` — resolved via ``_line_col_for_path`` when
       ``data`` is a ``CommentedMap`` (i.e. it came from ``parse_yaml``).
       When ``data`` is a plain ``dict`` (e.g. callers that already
@@ -315,10 +329,14 @@ def validate_known_keys(
             col: int | None = None
             if root is not None:
                 line, col = _line_col_for_path(root, err["loc"])
+            loc = loc_to_dot_sep(err["loc"])
+            msg = str(err["msg"])
+            if err["type"] == "model_type":
+                msg = _not_a_mapping(loc or "config.yaml")
             out.append(
                 ValidationErrorItem(
-                    loc=loc_to_dot_sep(err["loc"]),
-                    msg=str(err["msg"]),
+                    loc=loc,
+                    msg=msg,
                     type=str(err["type"]),
                     line=line,
                     column=col,
@@ -371,8 +389,7 @@ def store_layout_report(
     filename — ``KnownKeysSchema`` reports both. A missing ``library:`` is held
     to beets' own ``library.db`` default instead, which is what the next boot
     opens; the schema requires that key too, so at Validate and Save the default
-    adds no row and only Apply's on-disk read reaches it. The ``isinstance`` on
-    ``data`` is load-bearing; ruamel returns ``None`` for an empty document.
+    adds no row and only Apply's on-disk read reaches it.
 
     ``reported_keys`` suppress exactly one row: a single-UNUSABLE-VALUE refusal
     on a key the schema also reported, where both say the same thing. Measured,
@@ -489,14 +506,17 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
 
     1. **Parse** with ruamel — bad YAML -> HTTP 422 with ``problem_mark`` line/col.
     2. **Schema validate** via ``KnownKeysSchema`` — known-key errors -> 422 with
-       per-error ``ValidationErrorItem`` payloads. Then the same
+       per-error ``ValidationErrorItem`` payloads; a text with no YAML node is
+       validated as ``{}``, and any other top level that is not a mapping is one
+       :data:`NOT_A_MAPPING` row (:func:`settings_mapping`). Then the same
        :func:`store_layout_report` row ``POST /api/config/validate`` paints
        in the gutter: a ``directory:`` that would put the music library at or
        under Trash (or over the origin store) is refused HERE, before the write,
        because the file this writes is also the file the process boots from — a
        config saved in that shape would refuse to start on the next restart.
     3. **SHA-256 CAS** — compare ``req.base_sha256`` to the SHA-256 of the
-       on-disk bytes; a file it cannot read -> 422, and nothing is created.
+       on-disk bytes; a file it cannot read -> 422, and nothing is created. A
+       file that is not UTF-8 -> 422 too, whatever the base.
        Mismatch -> 409 with ``current_yaml_text`` (raw on-disk file) and
        ``current_sha256`` so the frontend's merge view can render the diff.
        SHA-256 alone is the CAS token (no mtime check): nanosecond mtime ints
@@ -550,6 +570,21 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
     # list, same 422: to the editor both are lint rows on the same document, and
     # splitting them into two statuses would make the gutter and the Save button
     # disagree about what "there is an error" means.
+    settings_map = settings_mapping(req.yaml_text, new_map)
+    if settings_map is None:
+        raise HTTPException(
+            status_code=422,
+            detail=[
+                {
+                    "loc": "",
+                    "msg": NOT_A_MAPPING,
+                    "type": "model_type",
+                    "line": None,
+                    "column": None,
+                }
+            ],
+        )
+    new_map = settings_map
     schema_errors = validate_known_keys(new_map)
     errors = (
         schema_errors
@@ -576,14 +611,15 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
         # too when the write fails.
         try:
             on_disk_bytes = _read_on_disk(handle.config_path)
+            # Before the compare: its 409 hands out the sha "Overwrite anyway" sends.
+            on_disk_text = _on_disk_text(on_disk_bytes)
             on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
             if on_disk_sha != req.base_sha256:
                 raise HTTPException(
                     status_code=409,
                     detail={
                         "detail": "File changed on disk",
-                        # ``replace``: the conflict panel only shows it.
-                        "current_yaml_text": on_disk_bytes.decode("utf-8", errors="replace"),
+                        "current_yaml_text": on_disk_text,
                         "current_sha256": on_disk_sha,
                     },
                 )
@@ -715,33 +751,48 @@ def _empty_mapping_keeping(text: str) -> CommentedMap | None:
     return doc if isinstance(doc, CommentedMap) else None
 
 
-def _on_disk_mapping(on_disk_bytes: bytes) -> CommentedMap:
-    """config.yaml as the Naming routes edit it.
+def settings_mapping(text: str, doc: object) -> CommentedMap | None:
+    """``doc``, parsed from ``text``, as a mapping of settings; ``None`` when it is not one.
 
     beets reads an empty, comment-only or falsy top level as no settings
-    (``load_yaml(...) or {}``, ``confuse/sources.py:101``). Here a file with no
-    YAML node is an empty mapping; a save keeps its comments, except one above
-    ``---``, and writes one after ``--- `` indented four spaces. Every other top
-    level that is not a mapping is refused, ``~``, ``[]`` and ``false``
-    included, because a save could not keep their comments. So is ``---`` then
-    ``...``, which beets reads as ``{}``: the ``{}`` added here is a second
-    document.
+    (``load_yaml(...) or {}``, ``confuse/sources.py:101``). Here only a text with
+    no YAML node is: an empty mapping. ``~``, ``[]``, ``false`` and a scalar are
+    ``None``, and so is ``---`` then ``...``: the ``{}`` added is a second document.
+    """
+    if doc is None:
+        doc = _empty_mapping_keeping(text)
+    return doc if isinstance(doc, CommentedMap) else None
+
+
+def _on_disk_text(on_disk_bytes: bytes) -> str:
+    """config.yaml's text for both save routes and the Naming GET; not UTF-8 is a 422.
+
+    Not "does not parse": the Beets editor opens such a file empty. Measured on
+    the Beets Save: one "Overwrite anyway" replaced a UTF-16 file beets reads.
     """
     try:
-        text = on_disk_bytes.decode("utf-8")
+        return on_disk_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
-        # Not "does not parse": the Beets editor opens such a file empty.
         raise _UnusableOnDisk("config.yaml is not UTF-8.") from exc
+
+
+def _on_disk_mapping(text: str) -> CommentedMap:
+    """config.yaml's text as the Naming routes edit it, per :func:`settings_mapping`.
+
+    A file with no YAML node is an empty mapping; a save keeps its comments,
+    except one above ``---``, and writes one after ``--- `` indented four spaces.
+    Every other top level that is not a mapping is refused, because a save could
+    not keep their comments.
+    """
     try:
         doc = parse_yaml(text)
     # Broad, as Validate's arm is: see :func:`parse_yaml`.
     except Exception as exc:
         raise _UnusableOnDisk(_unparsed_on_disk(exc)) from exc
-    if doc is None:
-        doc = _empty_mapping_keeping(text)
-    if not isinstance(doc, CommentedMap):
-        raise _UnusableOnDisk("config.yaml must be a mapping of settings.")
-    return doc
+    mapping = settings_mapping(text, doc)
+    if mapping is None:
+        raise _UnusableOnDisk(NOT_A_MAPPING)
+    return mapping
 
 
 def _split_paths(
@@ -779,7 +830,7 @@ def read_naming(handle: LibraryHandle) -> NamingConfig:
     config-only, no library access)."""
     try:
         on_disk_bytes = _read_on_disk(handle.config_path)
-        doc = _on_disk_mapping(on_disk_bytes)
+        doc = _on_disk_mapping(_on_disk_text(on_disk_bytes))
     except _UnusableOnDisk as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     sha = hashlib.sha256(on_disk_bytes).hexdigest()
@@ -851,7 +902,8 @@ def save_naming(handle: LibraryHandle, req: SaveNamingRequest) -> BeetsConfigSna
     1. **Regex validate** — any ``replace`` pattern that fails ``re.compile`` ->
        422 (beets' ``get_replacements()`` would otherwise raise on config load).
     2. **SHA-256 CAS** — ``req.base_sha256`` vs the on-disk bytes; mismatch -> 409
-       with ``current_sha256`` (same shape as ``save``'s 409).
+       with ``current_sha256`` (same shape as ``save``'s 409). A file that is
+       not UTF-8 -> 422 first, whatever the base.
     3. **ruamel round-trip** — load the on-disk doc, replace ONLY the ``paths:``
        and ``replace:`` nodes (empty -> drop the key); every other key, comment,
        and secret is untouched.
@@ -886,20 +938,21 @@ def save_naming(handle: LibraryHandle, req: SaveNamingRequest) -> BeetsConfigSna
     with _SAVE_LOCK:
         try:
             on_disk_bytes = _read_on_disk(handle.config_path)
+            # Before the compare, as in :func:`save`.
+            on_disk_text = _on_disk_text(on_disk_bytes)
             on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
             if on_disk_sha != req.base_sha256:
                 raise HTTPException(
                     status_code=409,
                     detail={
                         "detail": "File changed on disk",
-                        # ``replace``: the conflict panel only shows it.
-                        "current_yaml_text": on_disk_bytes.decode("utf-8", errors="replace"),
+                        "current_yaml_text": on_disk_text,
                         "current_sha256": on_disk_sha,
                     },
                 )
 
             # 3. Round-trip merge — only the two nodes change.
-            doc = _on_disk_mapping(on_disk_bytes)
+            doc = _on_disk_mapping(on_disk_text)
             paths = _naming_map(req.rules)
             if paths:
                 doc["paths"] = paths

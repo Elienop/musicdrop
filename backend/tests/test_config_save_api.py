@@ -17,6 +17,7 @@ import stat
 from pathlib import Path
 
 import pytest
+import yaml as pyyaml
 from fastapi.testclient import TestClient
 
 from app.beets.setup import read_config_document
@@ -276,6 +277,148 @@ def test_a_reused_anchor_reaches_no_log_or_stream(
     assert statuses == [200, 422, 422, 422]
 
 
+def test_a_reused_anchor_on_a_mapping_is_refused_and_reaches_no_log_or_stream(
+    client: TestClient,
+    beets_library_config_path: Path,
+    recwarn: pytest.WarningsRecorder,
+    capfd: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Measured: a composer that refused only a reused anchor on a scalar passed
+    every scalar test, and printed the ``plex:`` line below to stderr."""
+    caplog.set_level(logging.DEBUG)
+    text = "directory: /tmp/music\nlibrary: /tmp/x\nplex: &a {token: Zq7Secret}\nother: &a [1]\n"
+    with pytest.raises(pyyaml.YAMLError, match="found duplicate anchor"):
+        pyyaml.safe_load(text)
+    before = beets_library_config_path.read_bytes()
+
+    lint = client.post("/api/config/validate", json={"yaml_text": text})
+    r = client.post("/api/config/save", json={"yaml_text": text, "base_sha256": _cas(client)})
+
+    assert lint.status_code == 200
+    assert [(e["type"], e["line"]) for e in lint.json()["errors"]] == [("yaml_parse", 4)]
+    assert (r.status_code, r.json()) == (422, {"detail": lint.json()["errors"]})
+    assert beets_library_config_path.read_bytes() == before
+    assert [str(w.message) for w in recwarn.list] == []
+    out, err = capfd.readouterr()
+    assert "Zq7" not in out + err
+    assert "Zq7" not in caplog.text
+
+
+def _row(loc: str, msg: str, type_: str) -> dict[str, object]:
+    return {"loc": loc, "msg": msg, "type": type_, "line": None, "column": None}
+
+
+_NO_SETTINGS = [
+    _row("directory", "Field required", "missing"),
+    _row("library", "Field required", "missing"),
+]
+_NOT_A_MAPPING = [_row("", "config.yaml must be a mapping of settings.", "model_type")]
+
+
+@pytest.mark.parametrize(
+    ("text", "rows"),
+    [
+        ("", _NO_SETTINGS),
+        ("# my beets config\n\n# more\n", _NO_SETTINGS),
+        ("~\n", _NOT_A_MAPPING),
+        ("[]\n", _NOT_A_MAPPING),
+        ("false\n", _NOT_A_MAPPING),
+        ("hello\n", _NOT_A_MAPPING),
+        # beets reads it as {}; the Naming routes refuse it too.
+        ("---\n...\n", _NOT_A_MAPPING),
+    ],
+    ids=["empty", "comment-only", "null", "empty-list", "false", "scalar", "empty-document"],
+)
+def test_validate_and_save_answer_a_top_level_with_no_settings_in_our_words(
+    client: TestClient, beets_library_config_path: Path, text: str, rows: list[dict[str, object]]
+) -> None:
+    """Measured before: one row, "Input should be a valid dictionary or instance of
+    KnownKeysSchema", for every one of these."""
+    before = beets_library_config_path.read_bytes()
+
+    lint = client.post("/api/config/validate", json={"yaml_text": text})
+    r = client.post("/api/config/save", json={"yaml_text": text, "base_sha256": _cas(client)})
+
+    assert (lint.status_code, lint.json()) == (200, {"errors": rows, "advisories": []})
+    assert (r.status_code, r.json()) == (422, {"detail": rows})
+    assert beets_library_config_path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("section", "row"),
+    [
+        (
+            "import: 5\n",
+            {
+                "loc": "import",
+                "msg": "import must be a mapping of settings.",
+                "type": "model_type",
+                "line": 3,
+                "column": 8,
+            },
+        ),
+        (
+            "match: []\n",
+            {
+                "loc": "match",
+                "msg": "match must be a mapping of settings.",
+                "type": "model_type",
+                "line": 3,
+                "column": 7,
+            },
+        ),
+        # A key with no value: YAML null, placed on the line after it.
+        (
+            "import:\n",
+            {
+                "loc": "import",
+                "msg": "import must be a mapping of settings.",
+                "type": "model_type",
+                "line": 4,
+                "column": 0,
+            },
+        ),
+        # Controls: rows of every other type keep Pydantic's text.
+        (
+            "import:\n  copy: 5\n",
+            {
+                "loc": "import.copy",
+                "msg": "Input should be a valid boolean, unable to interpret input",
+                "type": "bool_parsing",
+                "line": 4,
+                "column": 8,
+            },
+        ),
+        (
+            "plugins: 5\n",
+            {
+                "loc": "plugins",
+                "msg": "Input should be a valid list",
+                "type": "list_type",
+                "line": 3,
+                "column": 9,
+            },
+        ),
+    ],
+    ids=["import-int", "match-list", "import-null", "control-bool", "control-list"],
+)
+def test_a_section_that_is_not_a_mapping_is_named_without_a_class(
+    client: TestClient, beets_library_config_path: Path, section: str, row: dict[str, object]
+) -> None:
+    """Measured before: "Input should be a valid dictionary or instance of ImportSection"."""
+    cfg = beets_library_config_path
+    text = f"{cfg.read_text(encoding='utf-8').splitlines()[0]}\nlibrary: library.db\n{section}"
+    before = cfg.read_bytes()
+
+    lint = client.post("/api/config/validate", json={"yaml_text": text})
+    r = client.post("/api/config/save", json={"yaml_text": text, "base_sha256": _cas(client)})
+
+    assert (lint.status_code, lint.json()) == (200, {"errors": [row], "advisories": []})
+    assert (r.status_code, r.json()) == (422, {"detail": [row]})
+    assert cfg.read_bytes() == before
+
+
 def test_save_422_on_schema_error(client: TestClient) -> None:
     sha = _cas(client)
     # Not a bare ``/tmp``: the fixture's beets dir sits under it, so that value
@@ -358,36 +501,50 @@ def test_save_409_carries_fresh_cas_token(
     assert r.json()["detail"]["current_sha256"] == hashlib.sha256(new_bytes).hexdigest()
 
 
-def test_save_from_the_empty_editor_of_a_utf16_config_is_a_409(
-    client: TestClient, beets_library_config_path: Path
+@pytest.mark.parametrize("base", ["served", "wrong"])
+def test_save_refuses_a_utf16_config_whatever_the_base(
+    client: TestClient, beets_library_config_path: Path, base: str
 ) -> None:
     """beets reads a UTF-16 file with a BOM; the editor opens it empty.
 
-    Measured before: the GET served the file's real sha, so this Save answered
-    200 and replaced the whole file, a Plex token included.
+    Measured before: the served sha, or the one a 409 handed to "Overwrite
+    anyway", let this Save replace the whole file, a Plex token included.
     """
     cfg = beets_library_config_path
     text = cfg.read_text(encoding="utf-8") + "plex:\n  token: Zq7Secret\n"
     raw = text.encode("utf-16")
     cfg.write_bytes(raw)
     assert read_config_document(cfg)["plex"] == {"token": "Zq7Secret"}
-
     snap = client.get("/api/config").json()
-    assert (snap["yaml_text"], snap["sha256"]) == ("", "")
-    music = text.splitlines()[0]
+    assert (snap["yaml_text"], snap["sha256"]) == ("", hashlib.sha256(raw).hexdigest())
+    sha = snap["sha256"] if base == "served" else hashlib.sha256(b"").hexdigest()
+
     r = client.post(
         "/api/config/save",
-        json={"yaml_text": f"{music}\nlibrary: library.db\n", "base_sha256": snap["sha256"]},
+        json={"yaml_text": f"{text.splitlines()[0]}\nlibrary: library.db\n", "base_sha256": sha},
     )
 
-    assert r.status_code == 409, r.text
+    assert r.status_code == 422, r.text
     assert r.json() == {
-        "detail": {
-            "detail": "File changed on disk",
-            "current_yaml_text": raw.decode("utf-8", errors="replace"),
-            "current_sha256": hashlib.sha256(raw).hexdigest(),
-        }
+        "detail": [
+            {
+                "loc": "",
+                "msg": "config.yaml is not UTF-8.",
+                "type": "config_on_disk",
+                "line": None,
+                "column": None,
+            }
+        ]
     }
+    # The Naming Save's row, which it gives once past its own sha compare.
+    naming = client.post(
+        "/api/config/naming/save",
+        json={"rules": [], "replace": [], "base_sha256": snap["sha256"]},
+    )
+    assert (naming.status_code, naming.json()["detail"][0]["msg"]) == (
+        422,
+        "config.yaml is not UTF-8.",
+    )
     assert cfg.read_bytes() == raw
 
 

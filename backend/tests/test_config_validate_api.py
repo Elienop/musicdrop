@@ -76,21 +76,6 @@ def test_validate_refuses_a_reused_anchor_as_beets_does(client: TestClient) -> N
     }
 
 
-def test_validate_returns_safe_error_on_empty_text(client: TestClient) -> None:
-    """A cleared editor buffer must never trigger a 500.
-
-    ``parse_yaml("")`` returns ``None``; ``validate_known_keys(None)`` then
-    drives Pydantic to a ``model_type`` error (loc == ``""``). Pinning this
-    so a future refactor of ``validate_known_keys`` can't silently regress
-    into raising AttributeError.
-    """
-    r = client.post("/api/config/validate", json={"yaml_text": ""})
-    assert r.status_code == 200
-    errors = r.json()["errors"]
-    assert len(errors) >= 1
-    assert errors[0]["type"] == "model_type"
-
-
 def test_validate_openapi_uses_named_response_schema(client: TestClient) -> None:
     """The validate endpoint must reference a named ``ValidateResponse`` schema
     in OpenAPI — not an inline ``additionalProperties`` map. The frontend

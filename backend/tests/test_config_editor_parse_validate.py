@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any, cast
 
 import beets
 import pytest
@@ -65,11 +66,24 @@ def test_parse_refuses_a_reused_anchor_as_beets_does(recwarn: pytest.WarningsRec
 
 
 def test_parse_keeps_anchors_and_aliases_that_are_not_reused() -> None:
-    """The control: one anchor per name, aliased and merged, and a name per document."""
+    """The control: one anchor per name, aliased and merged."""
     text = "a: &x 1\nb: *x\nc: &m {k: v}\nd:\n  <<: *m\n"
 
     assert parse_yaml(text) == {"a": 1, "b": 1, "c": {"k": "v"}, "d": {"k": "v"}}
-    assert list(_yaml().load_all("a: &x 1\n---\nb: &x 2\n")) == [{"a": 1}, {"b": 2}]
+
+
+def test_the_mapping_rule_covers_the_root_model_too() -> None:
+    """By rule, not by list: the root is a model as well. Validate and Save refuse a
+    non-mapping root before the schema; a caller that does not still gets our text."""
+    [row] = validate_known_keys(cast(dict[str, Any], []))
+
+    assert row.model_dump() == {
+        "loc": "",
+        "msg": "config.yaml must be a mapping of settings.",
+        "type": "model_type",
+        "line": None,
+        "column": None,
+    }
 
 
 def test_validate_returns_empty_on_valid(tmp_path: Path) -> None:

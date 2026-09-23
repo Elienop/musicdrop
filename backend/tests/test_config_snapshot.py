@@ -7,6 +7,7 @@ case here starts from a clean confuse singleton.
 
 import copy
 import datetime as dt
+import hashlib
 import os
 from collections.abc import Iterator
 from datetime import datetime, timedelta
@@ -104,11 +105,11 @@ def test_yaml_text_empty_on_non_utf8_file(loaded_handle: LibraryHandle) -> None:
     ``UnicodeDecodeError`` (a ``ValueError``, not ``OSError``), so the read guard
     has to catch it too — otherwise it escapes ``build_config_snapshot``.
 
-    The sha is ``""`` too, as for a missing file: measured before, the real sha
-    beside the empty editor let a Save replace the file."""
-    loaded_handle.config_path.write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
+    The sha is the file's own: the Save refuses such a file on the server."""
+    raw = b"\xff\xfe not valid utf-8 \x80\x81"
+    loaded_handle.config_path.write_bytes(raw)
     snap = build_config_snapshot(loaded_handle)  # must not raise
-    assert (snap.yaml_text, snap.sha256) == ("", "")
+    assert (snap.yaml_text, snap.sha256) == ("", hashlib.sha256(raw).hexdigest())
     # The merged view still renders from the in-memory beets.config.
     assert snap.effective_yaml != ""
 
