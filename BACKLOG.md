@@ -813,11 +813,12 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `KeyError: no … parked at index 0`; both files and both named test bodies are byte-identical to
   `origin/main`. `fakes.py` and `registry.py` did change on this branch, so its rate here versus
   `main` is unmeasured.
-- **No test runs on the Python that ships.** The image is `python:3.11-slim` (`Dockerfile:19`);
-  CI's `uv sync` takes the runner's Python (Ubuntu's 3.12.3 on 2026-09-23, run 35891156419); local
-  venvs run uv's 3.12.13. It surfaced when a test pinned CPython's NUL-path wording, which differs
-  between 3.12.3 and 3.12.13. Fix shape: pin the image's Python in CI (`setup-uv`'s
-  `python-version`, or a `.python-version` file); owner's call.
+- ~~**No test runs on the Python that ships.**~~ — **CLOSED 2026-09-23** (PR #232). The image
+  was `python:3.11-slim` while `backend/.python-version` has pinned 3.12 since the scaffold, so
+  local and CI tested 3.12 only. Owner's call: ship 3.12 (`Dockerfile`). Measured before the
+  switch: ruff, mypy and 4270 tests pass on 3.11.16 as well. Patch releases can still differ (CI
+  takes the runner's 3.12.3, the image the latest 3.12), which is how a test pinning CPython's
+  NUL-path wording surfaced this.
 - **Frontend flake: a Radix focus-scope timer outlives `MergePlaylistDialog.test.tsx`.** Every test
   passes, but Vitest exits 1 on `TypeError: Failed to execute 'dispatchEvent' … not of type 'Event'`
   (`@radix-ui/react-focus-scope/dist/index.mjs:97`, in a `setTimeout`) and names that file. Seen in

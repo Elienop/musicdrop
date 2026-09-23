@@ -107,7 +107,7 @@ class StoreLayoutError(Exception):
 
 #: What resolving an operator-supplied path can raise. Measured on this tree:
 #: ``RuntimeError("Symlink loop from ...")`` for a self-referencing symlink on
-#: Python 3.11 (what the image ships) and 3.12 (what the venv runs), and
+#: Python 3.11 and 3.12 (what the image ships and the venv runs), and
 #: ``ValueError("embedded null character")`` for a ``directory: "/music/\0evil"``,
 #: which ruamel accepts. ``OSError`` covers the strict-mode shape 3.13 uses and
 #: any I/O fault under the ``lstat`` chain.
