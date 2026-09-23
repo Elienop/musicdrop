@@ -288,42 +288,84 @@ test("an Apply 422 shows the server's recovery sentence, not the restart advice"
 test("an Apply failure without a recovery line falls back to the fixed sentence", async () => {
   const alert = await applyFails(422, { detail: "unexpected" });
   expect(alert).toHaveTextContent(
-    /^Apply failed\. Your config is saved on disk; try again or restart MusicDrop\.$/,
+    /^Apply failed\. Your config is saved on disk — try again or restart MusicDrop\.$/,
   );
 });
 
 /** Edit the default template, click Save against a Save 422 answering `error`,
- * and return the alert it raises. */
-async function saveFails(error: NamingSave422) {
+ * and return the alert it raises. `onReady` runs once the panel has loaded. */
+async function saveFails(
+  error: NamingSave422,
+  {
+    applyPending = false,
+    onReady = async () => {},
+  }: { applyPending?: boolean; onReady?: () => Promise<void> } = {},
+) {
   type Stub = (path: string) => Promise<unknown>;
+  const get = vi.mocked(client.GET).getMockImplementation() as unknown as
+    | Stub
+    | undefined;
   const post = vi.mocked(client.POST).getMockImplementation() as unknown as
     | Stub
     | undefined;
-  if (!post) throw new Error("beforeEach mocks missing");
+  if (!get || !post) throw new Error("beforeEach mocks missing");
+  vi.mocked(client.GET).mockImplementation((async (path: string) =>
+    path === "/api/config"
+      ? {
+          data: { apply_pending: applyPending },
+          response: { ok: true, status: 200 },
+        }
+      : get(path)) as never);
   vi.mocked(client.POST).mockImplementation((async (path: string) =>
     path === "/api/config/naming/save"
       ? { data: undefined, error, response: { ok: false, status: 422 } }
       : post(path)) as never);
   wrap(<NamingPanel />);
   const def = await screen.findByDisplayValue(/\$albumartist/);
+  await onReady();
   await userEvent.type(def, "X");
   await userEvent.click(screen.getByRole("button", { name: /save naming/i }));
   return screen.findByRole("alert");
 }
 
-test("a Save 422 about config.yaml on disk shows the server's sentence", async () => {
+const WRITE_FAULT: NamingSave422 = {
+  detail: [
+    {
+      loc: "",
+      msg: "config.yaml could not be written: Permission denied.",
+      type: "config_on_disk",
+    },
+  ],
+};
+
+test("a Save 422 about config.yaml on disk shows the server's sentence and the fix", async () => {
+  const alert = await saveFails(WRITE_FAULT);
+  expect(alert).toHaveTextContent(
+    /^Save failed\. config\.yaml could not be written: Permission denied\. Fix that and Save again\.$/,
+  );
+  // A server sentence can carry a long unbroken token (a path).
+  expect(alert).toHaveClass("break-words");
+});
+
+test("the Save fix line follows the row's type, not its text", async () => {
   const alert = await saveFails({
-    detail: [
-      {
-        loc: "",
-        msg: "config.yaml could not be written: Permission denied.",
-        type: "config_on_disk",
-      },
-    ],
+    detail: [{ ...WRITE_FAULT.detail[0], type: "value_error" }],
   });
   expect(alert).toHaveTextContent(
-    /^Save failed: config\.yaml could not be written: Permission denied\.$/,
+    /^Save failed\. Your changes weren’t written — try again\.$/,
   );
+});
+
+test("a failed Save hides the Saved cue", async () => {
+  const alert = await saveFails(WRITE_FAULT, {
+    applyPending: true,
+    // The cue shows while nothing has failed.
+    onReady: async () => {
+      expect(await screen.findByText(/^Saved\. Click/)).toBeInTheDocument();
+    },
+  });
+  expect(alert).toHaveTextContent(/^Save failed\./);
+  expect(screen.queryByText(/^Saved\. Click/)).not.toBeInTheDocument();
 });
 
 test("a Save 422 for a bad replace: pattern keeps the fixed sentence", async () => {
@@ -336,7 +378,9 @@ test("a Save 422 for a bad replace: pattern keeps the fixed sentence", async () 
       },
     ],
   });
-  expect(alert).toHaveTextContent(/^Save failed: Failed to save naming config$/);
+  expect(alert).toHaveTextContent(
+    /^Save failed\. Your changes weren’t written — try again\.$/,
+  );
 });
 
 /** Render against a naming GET that answers `status` + `error`; return the alert. */
@@ -350,13 +394,44 @@ async function loadFails(status: number, error: ErrorDetail) {
   return screen.findByRole("alert");
 }
 
-test("a load 422 about config.yaml on disk shows the server's sentence", async () => {
-  const alert = await loadFails(422, {
-    detail: "config.yaml could not be read: No such file or directory.",
-  });
-  expect(alert).toHaveTextContent(
-    /^config\.yaml could not be read: No such file or directory\.$/,
-  );
+const PARSE_FAULT =
+  "config.yaml does not parse: YAML error at line 3. Fix it in Settings → Beets.";
+
+test("a load 422 about config.yaml on disk shows the headline, then the server's sentence", async () => {
+  const alert = await loadFails(422, { detail: PARSE_FAULT });
+  expect(Array.from(alert.children, (p) => p.textContent)).toEqual([
+    "Could not load naming config.",
+    PARSE_FAULT,
+  ]);
+  // A server sentence can carry a long unbroken token (a path).
+  expect(alert.children[1]).toHaveClass("break-words");
+});
+
+test("Try again reloads the naming config", async () => {
+  type Stub = (path: string) => Promise<unknown>;
+  const ok = vi.mocked(client.GET).getMockImplementation() as unknown as
+    | Stub
+    | undefined;
+  if (!ok) throw new Error("beforeEach mocks missing");
+  let failed = false;
+  vi.mocked(client.GET).mockImplementation((async (path: string) => {
+    if (path === "/api/config/naming" && !failed) {
+      failed = true;
+      return {
+        data: undefined,
+        error: { detail: PARSE_FAULT },
+        response: { ok: false, status: 422 },
+      };
+    }
+    return ok(path);
+  }) as never);
+  wrap(<NamingPanel />);
+  await screen.findByRole("alert");
+  await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+  expect(
+    await screen.findByDisplayValue(/\$albumartist/),
+  ).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
 test("a load 500 keeps the fixed sentence", async () => {

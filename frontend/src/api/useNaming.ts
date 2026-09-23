@@ -55,9 +55,12 @@ export function usePreviewNaming() {
   });
 }
 
-/** Error carrying the HTTP status so the panel can special-case 409 (conflict). */
+/** Error carrying the HTTP status so the panel can special-case 409 (conflict).
+ * `onDisk` is the server's sentence from a `config_on_disk` 422 row; absent
+ * for any other failure. */
 export interface NamingSaveError extends Error {
   status?: number;
+  onDisk?: string;
 }
 
 export function useSaveNaming() {
@@ -79,10 +82,12 @@ export function useSaveNaming() {
       }
       if (!response.ok || !data) {
         // A 422 about config.yaml on disk carries the sentence to show.
+        const onDisk = configOnDiskMessage(error);
         const e: NamingSaveError = new Error(
-          configOnDiskMessage(error) ?? "Failed to save naming config",
+          onDisk ?? "Failed to save naming config",
         );
         e.status = response.status;
+        if (onDisk) e.onDisk = onDisk;
         throw e;
       }
       return data;

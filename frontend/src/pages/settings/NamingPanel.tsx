@@ -23,6 +23,10 @@ import { SettingsSection } from "@/components/system/SettingsSection";
 import { StatusBanner } from "@/components/system/StatusBanner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  APPLY_FALLBACK,
+  saveFailureDetail,
+} from "@/pages/settings/configFailureText";
 import { NAMING_FIELDS, NAMING_FUNCTIONS } from "@/pages/settings/namingFields";
 
 const PREVIEW_DEBOUNCE_MS = 250;
@@ -71,7 +75,7 @@ function assemble(
 }
 
 export function NamingPanel() {
-  const { data, isPending, isError, error } = useNaming();
+  const { data, isPending, isError, error, refetch } = useNaming();
   if (isPending) {
     return (
       <SettingsSection title="Naming">
@@ -84,9 +88,23 @@ export function NamingPanel() {
   if (isError || !data) {
     return (
       <SettingsSection title="Naming">
-        <p className="text-destructive text-sm" role="alert">
-          {error?.onDisk ?? "Could not load naming config."}
-        </p>
+        {/* SettingsTrashPage's load-error recipe; its comment measures why the
+          * alert needs `w-full` under `items-start`. */}
+        <div className="flex flex-col items-start gap-2">
+          <div role="alert" className="flex w-full max-w-prose flex-col gap-1">
+            <p className="text-destructive text-sm">
+              Could not load naming config.
+            </p>
+            {error?.onDisk && (
+              <p className="text-muted-foreground text-sm break-words">
+                {error.onDisk}
+              </p>
+            )}
+          </div>
+          <Button variant="outline" size="sm" onClick={() => void refetch()}>
+            Try again
+          </Button>
+        </div>
       </SettingsSection>
     );
   }
@@ -394,6 +412,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
         {!hasReplaceErrors &&
           applyPending &&
           !save.isPending &&
+          !saveError &&
           !job.active && (
             <output className="text-muted-foreground text-sm block">
               Saved. Click <span className="font-medium">Apply</span> to load
@@ -408,8 +427,8 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
       </div>
 
       {saveError && (
-        <p className="text-destructive text-sm" role="alert">
-          Save failed: {save.error?.message ?? "unknown error"}
+        <p className="text-destructive text-sm break-words" role="alert">
+          Save failed. {saveFailureDetail(save.error?.onDisk)}
         </p>
       )}
       {apply.isError &&
@@ -420,8 +439,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
         ) : (
           <p className="text-destructive text-sm" role="alert">
             Apply failed.{" "}
-            {applyRecoveryHint(apply.error) ??
-              "Your config is saved on disk; try again or restart MusicDrop."}
+            {applyRecoveryHint(apply.error) ?? APPLY_FALLBACK}
           </p>
         ))}
     </SettingsSection>

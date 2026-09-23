@@ -498,6 +498,34 @@ describe("SettingsPage", () => {
     expect(banner).toHaveTextContent(/apply stopped partway/i);
   });
 
+  test("an Apply failure without a recovery line falls back to the fixed sentence", async () => {
+    server.use(
+      http.get(CONFIG_URL, () =>
+        HttpResponse.json(snapshotFixture({ apply_pending: true })),
+      ),
+      http.get(ACTIVE_IMPORT_URL, () => HttpResponse.json({ active: false })),
+      http.post(VALIDATE_URL, () =>
+        HttpResponse.json({ errors: [], advisories: [] }),
+      ),
+      http.post(APPLY_URL, () =>
+        HttpResponse.json({ detail: "unexpected" }, { status: 422 }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await findEditorContent();
+    const applyBtn = screen.getByRole("button", { name: /apply changes/i });
+    await waitFor(() => expect(applyBtn).toBeEnabled());
+
+    await user.click(applyBtn);
+
+    const banner = await screen.findByText(/apply failed/i);
+    expect(banner).toHaveAttribute("role", "alert");
+    expect(banner).toHaveTextContent(
+      /^Apply failed\. Your config is saved on disk — try again or restart MusicDrop\.$/,
+    );
+  });
+
   test("an Apply refused for a bad Trash layout shows the reason, not the job sentence", async () => {
     // The backend answers 422 (not 409) precisely so this branch runs: every
     // Apply 409 renders the fixed "A library job is running" line, which would
@@ -603,7 +631,7 @@ describe("SettingsPage", () => {
     });
     expect(banner).toHaveAttribute("role", "alert");
     expect(banner).toHaveTextContent(
-      /^Save failed\. config\.yaml could not be written: Permission denied\.$/,
+      /^Save failed\. config\.yaml could not be written: Permission denied\. Fix that and Save again\.$/,
     );
   });
 

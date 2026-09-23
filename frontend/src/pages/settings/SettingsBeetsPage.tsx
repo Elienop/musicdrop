@@ -29,6 +29,10 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { DiskSyncPanel } from "./DiskSyncPanel";
 import { ReorganizeLibraryPanel } from "./ReorganizeLibraryPanel";
+import {
+  APPLY_FALLBACK,
+  saveFailureDetail,
+} from "@/pages/settings/configFailureText";
 import { SettingsConflict } from "@/pages/settings/SettingsConflict";
 import {
   READ_ONLY_EXTENSION,
@@ -492,15 +496,13 @@ export function SettingsBeetsPage() {
           ) : (
             <p className="text-destructive text-sm" role="alert">
               Apply failed.{" "}
-              {applyRecoveryHint(applyMutation.error) ??
-                "Your config is saved on disk — try again or restart MusicDrop."}
+              {applyRecoveryHint(applyMutation.error) ?? APPLY_FALLBACK}
             </p>
           ))}
         {save.isError && save.error?.status !== 409 && pageState === "dirty" && (
           <p className="text-destructive text-sm" role="alert">
             Save failed.{" "}
-            {configOnDiskMessage(save.error?.body) ??
-              "Your changes weren’t written — try again."}
+            {saveFailureDetail(configOnDiskMessage(save.error?.body))}
           </p>
         )}
 
