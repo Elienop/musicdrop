@@ -860,11 +860,11 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   - A refused config's `pluginpath` stays importable after the restore, ahead of the bundled
     plugins: beets adds it (`beets/plugins.py:381,385`) before the check that fails. Setting
     `pluginpath` already runs the operator's code, so this adds no power.
-  - The Naming panel shows "Could not load naming config." for its 422s (a `config.yaml` that
-    cannot be read, does not parse, or is not a mapping), not their text, because the frontend
-    never reads that body. Settings → Beets does the same for Save's 422 on a `config.yaml` it
-    cannot read: its linter finds nothing in the editor text, and the page shows the generic
-    "Save failed" banner. Both are frontend changes.
+  - ~~The Naming panel shows "Could not load naming config." for its 422s.~~ **CLOSED
+    2026-09-23** on `feat/import-keep-downloads` (PR #232): the Naming panel's load and Save and
+    Settings → Beets' Save now print the server's `config_on_disk` sentence. It showed the fixed
+    text for a `config.yaml` that cannot be read, does not parse, or is not a mapping, because
+    the frontend never read that body.
   - ruamel's round-trip drops a comment that sits before `---` and any `%YAML` line, and
     indents a comment that follows `--- ` on the same line, on Save and the Naming save alike.
     These comment changes alter no value beets reads. A NEL character (U+0085) in a submitted
@@ -881,6 +881,13 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     types (`ScalarFloat`, `CommentedMap`) where Apply's says `float`, `OrderedDict`.
   - At boot, the starter config is written through a dangling `config.yaml` link, to wherever it
     points (`setup.py` ~196-203). Only someone with write access to the beets dir can plant one.
+  - A Save follows a symlinked `config.yaml` when it writes, not when it reads (owner ruling
+    2026-09-23: write through the link). A link re-pointed between the two sends the bytes to
+    the new target: a file there keeps its mode, a dangling target is created with the umask
+    default, and a loop is replaced by a regular file. Only someone who already controls
+    `config.yaml`'s content can re-point it. `realpath(strict=True)` would refuse the last two.
+  - The folder fsync runs after the publish, so an EIO there answers "config.yaml could not be
+    written" after the new bytes landed (round-12 implementer, reasoned; not reproduced).
   - The artwork toggle reads its `_enabled.json` at startup with no regular-file check
     (`artwork/toggle.py:25`, from `main.py:404`): a FIFO there blocks startup (security seat,
     measured; predates this branch). Only someone with write access to the data dir can plant one.
