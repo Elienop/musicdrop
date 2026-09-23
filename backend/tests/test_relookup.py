@@ -13,10 +13,11 @@ from app.models.import_models import ImportSearch
 
 
 class _Task:
-    """Minimal stand-in for ImportTask (relookup only reads ``.items``)."""
+    """Minimal stand-in for ImportTask (relookup only reads ``.source``)."""
 
     def __init__(self, items: list[Item]) -> None:
         self.items = items
+        self.source = Source.from_items(items)
         self.candidates: list[Any] = []
 
 
@@ -61,13 +62,15 @@ def test_relookup_release_id_uses_tag_album_search_ids(monkeypatch: pytest.Monke
         search_ids: list[str] | None = None,
     ) -> Proposal:
         seen["search_ids"] = search_ids
+        seen["source"] = source
         return Proposal([canned], BeetsRec.strong)
 
     monkeypatch.setattr(rl, "tag_album", fake_tag_album)
-    cands, rec = rl.relookup(
-        _Task(items), ImportSearch(release_id="https://musicbrainz.org/release/a1")
-    )
+    task = _Task(items)
+    cands, rec = rl.relookup(task, ImportSearch(release_id="https://musicbrainz.org/release/a1"))
     assert seen["search_ids"] == ["https://musicbrainz.org/release/a1"]
+    # The task's own cached Source, as beets' manual search passes it.
+    assert seen["source"] is task.source
     assert cands == [canned]
     assert rec is BeetsRec.strong
 
@@ -129,7 +132,7 @@ def test_relookup_empty_results(monkeypatch: pytest.MonkeyPatch) -> None:
     assert rec is BeetsRec.none
 
 
-def test_relookup_items_takes_items_directly(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_relookup_source_takes_a_source_directly(monkeypatch: pytest.MonkeyPatch) -> None:
     items = _items()
     canned = _match("a1", "Dreams", items)
     seen: dict[str, Any] = {}
@@ -140,11 +143,12 @@ def test_relookup_items_takes_items_directly(monkeypatch: pytest.MonkeyPatch) ->
         search_name: str | None = None,
         search_ids: list[str] | None = None,
     ) -> Proposal:
-        seen["items"] = list(source.items)
+        seen["source"] = source
         return Proposal([canned], BeetsRec.strong)
 
     monkeypatch.setattr(rl, "tag_album", fake_tag_album)
-    cands, rec = rl.relookup_items(items, ImportSearch(release_id="a1"))
-    assert seen["items"] == items  # beets' Source of exactly these items
+    source = Source.from_items(items)
+    cands, rec = rl.relookup_source(source, ImportSearch(release_id="a1"))
+    assert seen["source"] is source  # the caller's Source, not a rebuilt one
     assert cands == [canned]
     assert rec is BeetsRec.strong

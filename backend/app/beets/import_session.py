@@ -15,6 +15,7 @@ import logging
 import os
 import queue
 import stat
+import tarfile
 import threading
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -97,6 +98,14 @@ if TYPE_CHECKING:
     from beets.importer.tasks import ImportTask
 
 logger = logging.getLogger(__name__)
+
+# beets unpacks an archive FILE handed to the importer with a bare
+# ``extractall`` and offers no filter (2.14.0 ``importer/tasks.py:1272``). PEP 706's
+# app-wide default (Python 3.14's own) makes it refuse tar members that are
+# absolute, climb out with ``..`` or write through a link; beets logs the refusal
+# as "extraction failed" (``tasks.py:1455-1456``). Set on import of the module
+# that owns the only ImportSession, so it holds before any import, on every thread.
+tarfile.TarFile.extraction_filter = staticmethod(tarfile.data_filter)
 
 #: Operator-facing records go to ``uvicorn.error``: under the Dockerfile CMD
 #: uvicorn's LOGGING_CONFIG leaves app-namespace loggers at WARNING, so an app
@@ -909,8 +918,11 @@ class WebImportSession(ImportSession):
         beets 2.12 renamed the old ``resolve_duplicate`` hook to this and made it
         RETURN a ``DuplicateAction`` enum (the pipeline assigns it to
         ``task.duplicate_action``) instead of mutating boolean flags. beets calls
-        it (when ``import.duplicate_action`` resolves to ``ask`` — forced in
-        run_import_worker) for any APPLY/ASIS/RETAG task with library duplicates.
+        it for any APPLY/ASIS/RETAG task with library duplicates, whatever
+        ``import.duplicate_action`` says (2.14.0 ``importer/stages.py:419-430``).
+        This override replaces the base method, beets' only reader of that key
+        (``importer/session.py:175-183``), and never returns REMOVE or UPGRADE,
+        so beets' deleting arms (``importer/stages.py:361-365``) stay unreachable.
         We reuse the album's feed index (stashed by choose_match) so the prompt
         flips that one row, then block the serial worker until a decision arrives.
         In sweep mode the prompt is banked (reason needs_dup_resolution) and the

@@ -288,8 +288,8 @@ def _duplicate_action_advisory(section: ImportSection) -> str | None:
     if section.duplicate_action == "ask":
         return None
     return (
-        'MusicDrop forces import.duplicate_action to "ask" for every import it runs, so'
-        " duplicates come back to the review queue instead of being resolved unattended."
+        'MusicDrop always runs "ask" for its own imports: duplicates come back to the'
+        " review queue instead of being resolved unattended."
         f' Your "{section.duplicate_action}" is discarded in the app — `beet import` from'
         " the command line still honours it."
     )

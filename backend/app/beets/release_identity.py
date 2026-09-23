@@ -15,13 +15,11 @@ from app.models.album import ReleaseIdentity
 
 
 def _attr(obj: Any, key: str) -> object:
-    """Read ``obj.key`` defensively. A beets ``Album`` raises ``AttributeError``
-    for an absent flex field, but ``AlbumInfo``/``TrackInfo`` (AttrDict) raise
-    ``KeyError`` — ``getattr(..., default)`` only swallows the former, so catch both."""
-    try:
-        return getattr(obj, key)
-    except (AttributeError, KeyError):
-        return None
+    """Read ``obj.key``, or ``None`` when absent. A beets ``Album`` and an
+    ``AlbumInfo`` (an ``AttrDict``) both raise ``AttributeError`` for a missing
+    key (2.14.0 ``dbcore/db.py:570-576``, ``util/__init__.py:1232-1238``), which
+    the ``getattr`` default absorbs."""
+    return getattr(obj, key, None)
 
 
 def _opt_str(value: object) -> str | None:

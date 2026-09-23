@@ -46,7 +46,7 @@ def _searched(
 ) -> res.ResearchResult | None:
     (tmp_path / "01 dreams.mp3").write_bytes(b"not-audio")  # walker sees a file
     monkeypatch.setattr(res, "_read_items", lambda folder: items)
-    monkeypatch.setattr(res, "relookup_items", lambda i, s: (matches, rec))
+    monkeypatch.setattr(res, "relookup_source", lambda src, s: (matches, rec))
     return res.research_folder(str(tmp_path), ImportSearch(release_id="a1"))
 
 
@@ -66,6 +66,34 @@ def test_research_maps_the_full_candidate(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert len(cand.options) == 1
     assert cand.options[0].release_id == "a1"
     assert cand.has_current_art is False  # in-memory items carry no art source
+
+
+def test_search_lookup_hands_its_one_source_to_the_relookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # beets' manual search passes one Source through; the research lookup
+    # builds it once and hands that same object on, not a second copy.
+    items = _items()
+    built: list[Source] = []
+    seen: list[Source] = []
+    real_from_items = Source.from_items
+
+    def spy_from_items(its: Any) -> Source:
+        source = real_from_items(its)
+        built.append(source)
+        return source
+
+    def fake_relookup(source: Source, search: ImportSearch) -> tuple[list[Any], BeetsRec]:
+        seen.append(source)
+        return [], BeetsRec.none
+
+    monkeypatch.setattr(Source, "from_items", staticmethod(spy_from_items))
+    monkeypatch.setattr(res, "relookup_source", fake_relookup)
+    artist, album, _cands, _rec = res.lookup_items(items, ImportSearch(release_id="a1"))
+    assert len(built) == 1
+    assert len(seen) == 1
+    assert seen[0] is built[0]
+    assert (artist, album) == ("2 Brothers", "Dreams")
 
 
 def test_research_none_when_lookup_is_empty(

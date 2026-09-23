@@ -3,7 +3,7 @@
 Reads a banked folder's audio files into DETACHED beets Items (``Item.from_path``,
 no library DB — the trash_manage pattern) and re-matches them in one of two
 modes: the SEARCH re-lookup (a release id pin / name search, via
-:func:`relookup_items`) that powers the bank's "search for a different release",
+:func:`relookup_source`) that powers the bank's "search for a different release",
 or the RESCAN — beets' DEFAULT first-scan ``tag_album`` with no search terms,
 the "I changed the folder on purpose" re-read. Either way the winner is mapped
 through the same mappers the sweep uses, so the payload is exactly what the
@@ -39,7 +39,7 @@ from app.beets.import_mapping import (
     map_album_match,
     map_candidate_options,
 )
-from app.beets.relookup import relookup_items
+from app.beets.relookup import relookup_source
 from app.models.import_models import Candidate, Recommendation
 
 if TYPE_CHECKING:
@@ -106,7 +106,7 @@ def lookup_items(
     """
     source = Source.from_items(items)
     if search is not None:
-        candidates, rec = relookup_items(items, search)
+        candidates, rec = relookup_source(source, search)
     else:
         proposal = tag_album(source)
         candidates, rec = list(proposal.candidates), proposal.recommendation
