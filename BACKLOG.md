@@ -85,7 +85,7 @@ entry carries a dated correction block where the pass changed it._
 6. **Import carries no `.lrc`/`.txt` sidecars** (owner question 2026-09-14; not started, needs
    the owner's word). A yubal album imported through Add from folder left its `.lrc` files in the
    download folder: beets imports audio files only and, after a move, removes a source folder only
-   when what is left is clutter (`clutter: ["Thumbs.DB", ".DS_Store"]`, beets 2.13.1), and the
+   when what is left is clutter (`clutter: ["Thumbs.DB", ".DS_Store"]`, beets 2.14.0), and the
    import path has no sidecar call (reorganize and tag-edit moves carry them through
    `sidecars.move_sidecars`). Recommended, not decided: on beets' per-track
    `item_moved`/`item_copied` events (both carry source and destination), carry sidecars with
@@ -115,7 +115,7 @@ entry carries a dated correction block where the pass changed it._
    - **Beyond beets.** beets resolves the flags TWICE and the orders differ: `set_config` keeps
      one of move > link > hardlink > reflink, each clearing `copy` (`importer/session.py:114-138`),
      and the files stage then takes `copy` if it survived, telling `reflink: auto` apart from
-     `reflink` (`importer/stages.py:278-291`). It ships `copy: yes` (2.13.1,
+     `reflink` (`importer/stages.py:367-380`). It ships `copy: yes` (2.14.0,
      `config_default.yaml`), and `hardlink` beats it, so a hardlink import needs `hardlink: yes`
      and `move: no` (beets' default).
      An explicit per-import `operation` (`move`, `copy`) now pins all five file flags plus
@@ -128,10 +128,12 @@ entry carries a dated correction block where the pass changed it._
      downloader's own file (mutagen opens it `rb+`) — acceptable for non-torrent sources, as *arr
      only documents it.
    - **Removing the source is a FIRST-CLASS feature, not `import.delete`.** MusicDrop forces
-     `import.delete` off on every import path, because it is the only hard `unlink` beets performs
-     on the app's behalf — `ImportTask.cleanup` calls `util.remove(old_path, False)`
-     (`importer/tasks.py:332`): no Trash, no origin record, no undo, triggered by a config value
-     with no UI affordance. That pin is not a refusal of the capability. If source
+     `import.delete` off on every import path, because beets then hard-`unlink`s the source —
+     `ImportTask.cleanup` calls `util.remove(old_path, False)`
+     (`importer/tasks.py:533`): no Trash, no origin record, no undo, triggered by a config value
+     with no UI affordance. (The one other hard removal beets makes for the app: a Move import of
+     an archive FILE deletes the archive once every member imported, `importer/tasks.py:1231-1249`;
+     see *Open bugs*.) That pin is not a refusal of the capability. If source
      removal is ever wanted, the shape follows #53 — ONE global setting, not a per-provider
      mode — and it moves the source to MusicDrop's **Trash**: visible, reversible, consistent
      with delete/replace, rather than honouring the beets key. The global hardlink/move switch
@@ -139,7 +141,7 @@ entry carries a dated correction block where the pass changed it._
      a route the design does not use.
      `copy` + `delete` is also a strictly worse move: a mid-album copy failure can leave a partial
      album filed *and* the originals gone, because `cleanup`'s "only delete what was copied" guard
-     (`tasks.py:328-331`) only covers the items that made it.
+     (`tasks.py:529-532`) only covers the items that made it.
    - **DEFERRED — the in-place footgun has no pre-import warning.** A config with every file
      operation off (`copy: no, move: no`) makes beets import IN PLACE, and MusicDrop's editor
      makes that two keystrokes. Measured on a default import: library rows point *into the
@@ -613,6 +615,44 @@ entry carries a dated correction block where the pass changed it._
     `BankSection.tsx` (two), `BrowsePage.tsx`, `Pagination.tsx`, `PlexSettingsPanel.tsx`. One pass,
     all six, so the family stays one shape; the Pagination one is the only page-size control.
 
+11. **Release notes owed for the beets 2.14 port** (`fix/beets-2.14`, 2026-09-23; the pin is now
+    `beets==2.14.*`). Operator-facing, for the release that ships it:
+    - **No database migration.** `beets/library/migrations.py` is byte-identical to 2.13.1, so a
+      library 2.13 already opened gets no new `library.db-before-*.bak` on the first boot
+      (measured by the phase-1 reader on a scratch DB).
+    - **Lyrics.** LRCLib no longer picks an entry with neither plain nor synced text (2.14.0
+      `beetsplug/lyrics.py:320-343`). Tracks 2.13 marked checked after such an entry may now find
+      lyrics: run the Lyrics backfill once with *Re-check tracks already found to have no lyrics*.
+      How many tracks this affects: could not confirm.
+    - **Import review.** Wrong candidates for names with a word ending in "ft" (`Daft Punk` vs
+      `Daft Funk`) score lower: the featuring pattern gained word boundaries
+      (`autotag/distance.py:39`). Correct candidates are unchanged.
+    - **Plex token.** beets deprecates `plex.token` in favour of `beet plexupdate --auth`, which
+      writes `plex_token.json` into the beets dir (`data/beets`). CLI only; MusicDrop's own Plex
+      sync is unaffected, and `plexupdate` never refreshes under MusicDrop (it listens only for
+      `cli_exit`, `beetsplug/plexupdate.py:328`).
+    - **`duplicate_action: upgrade`.** Settings -> Beets now saves it (it used to refuse the whole
+      Save). In-app imports ignore it. A CLI `beet import` that upgrades DELETES the replaced
+      library files (`importer/tasks.py:437`, `:959`), outside MusicDrop's Trash.
+    - **Archive import (tar) is new, and filtered.** When Import is given one archive FILE (typed
+      into Import; slskd's webhook names folders, and beets unpacks only a top-level archive
+      file, `importer/tasks.py:1312`), beets unpacks it (`importer/tasks.py:1272`, no
+      filter of its own). On 2.13.1 every tar failed (`'TarFile' object has no attribute
+      'infolist'`); 2.14 restores tar import (changelog), so a normal album tar now imports.
+      Under Move, beets deletes the archive outright once every member imported (see *Open bugs*).
+      MusicDrop sets Python's PEP 706 `data_filter` as the tar default
+      (`app/beets/import_session.py`), and a crafted tar changes no file's content outside beets'
+      temp folder.
+      A member that climbs out with `..`, or a link that points outside, makes the tar import
+      nothing: beets logs `extraction failed` (`tasks.py:1455-1456`) and leaves its temp folder
+      behind. An absolute member name is written inside the temp folder instead; if a file exists
+      at that name outside, its modification time changes (the zip residual, see *Open bugs*).
+      This covers imports MusicDrop runs: a `beet import` run inside the container is a separate
+      Python program and still unpacks tars unfiltered (open, Low). Test:
+      `tests/test_import_archive_extraction.py`.
+    - **Zip is not covered by the tar default:** its member names can still move an outside
+      file's mtime (open, Low; see *Open bugs / hardening*).
+
 The 40 banked #143 Plex review Minors stay fully adjudicated (2026-08-25, every item
 re-verified against v0.44.0): 12 shipped as the triage fix slice (see Recently shipped), 12
 recorded below, 3 accepted as deliberate, 3 were already fixed. Of the 12 recorded, the
@@ -621,6 +661,57 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 ## Open bugs / hardening
 
+- **Low: an archive import (zip, or tar with an absolute member name) can reset an outside
+  file's modification time.** Security seat, 2026-09-23 (zip, beets 2.13.1 and 2.14.0) and
+  2026-09-24 (tar, 2.14.0). When Import is given one archive FILE, the member is written safely
+  inside beets' temp folder, but beets then sets each file's time from the member's RAW name
+  (`importer/tasks.py:1275-1288`, `os.utime`). A zip member named with an absolute path or `../`,
+  or a tar member with an absolute name (`data_filter` re-roots it and refuses `..`), resets that
+  outside file's mtime; its content is untouched. A name whose target does not exist makes beets
+  log `extraction failed` and leave its temp folder behind. One upstream fix
+  covers both (set the time on the name actually written); reporting it is the owner's call.
+  Search words: zip, tar, mtime, utime, archive import, absolute member, extraction failed.
+- **Low: `beet import` run inside the container unpacks tars unfiltered.** Security seat,
+  2026-09-24, measured in a sandbox. MusicDrop's tar default (`data_filter`, *Next up* #11) is set
+  in the app's own process; the image puts beets' `beet` on the PATH (`/app/.venv/bin`), and that
+  is a separate Python program whose default is still none, so a crafted tar given to it can
+  write outside. Only the operator can run it. Options, owner's call: a `python:3.14` base image,
+  where `data_filter` is Python's own default (no code); a `sitecustomize` setting it for every
+  interpreter would be a new mechanism. Search words: beet CLI, tar, extraction_filter, PEP 706.
+- **Low: a cross-disk move into a btrfs Trash that dies mid-copy can leave a folder behind.** Code
+  seat, 2026-09-24, found while reviewing `fix/beets-2.14` (not in its diff).
+  `_discard_own_container` (`app/beets/trash.py`) re-lists the new Trash folder through the
+  directory handle it already listed; on btrfs that second listing missed the half-copied file,
+  so the folder is not emptied and its `rmdir` fails quietly. Measured: tmpfs listed the new
+  file through the same handle, btrfs did not, and a fresh handle listed it on both.
+  `tests/test_artist_art_write.py::test_a_move_that_dies_mid_copy_leaves_no_container_behind`
+  passes with pytest's temp folder on tmpfs and fails on btrfs. The security seat then measured
+  three more btrfs-only failures of the same same-handle listing:
+  `test_protected_trees.py::test_a_library_moved_in_after_the_walk_is_still_refused[all|one]`,
+  where a Trash delete racing the library being moved in answers 500 "Directory not empty"
+  (`app/api/trash.py:324-325`) instead of the 503 refusal (the library survives only because
+  `rmdir` refuses a non-empty folder; `trash_manage.py:1701`, `:1810`, `:1817`), and
+  `test_playlists_atomic.py::test_a_write_that_swept_still_publishes_through_the_same_dir_fd`
+  (its own `os.listdir(fd)`; the production write does publish). Why btrfs does this is
+  unconfirmed against kernel source. The seat's suggested fix: list through a fresh handle. Search
+  words: btrfs, Trash, leftover folder, ENOSPC, same fd, rescan, Directory not empty.
+- **Low: a Move import of an archive FILE deletes the archive outright, not to Trash.** Code and
+  security seats, 2026-09-24, measured on 2.14.0. Once every member imported,
+  `ArchiveImportTask.cleanup` calls `util.remove(self.archive_path)`
+  (`importer/tasks.py:1231-1249`); a partial import keeps it. Zip has done this since 2.13.1; tar
+  reaches it now that 2.14 imports tars. The tracks are in the library, so nothing is lost beyond
+  what Move means, but it is the one source removal that skips Trash. Also: with neither copy nor
+  move on (`hardlink: yes`, which keep-downloads can write), beets refuses an archive with only a
+  warning (`tasks.py:1443-1448`) and the job reports no error. Owner's call. Search words:
+  archive, move, util.remove, Trash, hardlink, Archive importing requires.
+- **Low: 15 more tests decide before the fake has parked its prompt.** Code seat, 2026-09-24.
+  `fix/beets-2.14` fixed this race for two tests in `test_import_duplicate_api.py` (wait on the
+  parked prompt, not the row). The same shape remains in `test_import_registry.py` (12, e.g.
+  `:200`, `:216`, `:278`), `test_import_api.py` (`:506`, `:539`) and
+  `test_import_duplicate_api.py::test_drain_flips_row_to_needs_dup_resolution`. They pass in
+  every natural run (full suite 2/2, `test_import_registry.py` 100/100) and fail only with a
+  0.3-0.5 s delay injected before the park. Fix per test: wait on `awaiting_decision is True`, as
+  `test_import_registry.py:532` already does. Search words: race, parked, KeyError no album parked.
 - **Activity popover: a finished job's "Done" row cannot be dismissed and stays until the server
   forgets the outcome.** Owner, 2026-09-19, from the TrueNAS instance: three Done rows (lyrics,
   artist art, Reorganize) with *"no way to clear them"*. Cause: each job registry keeps its last
@@ -900,7 +991,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   - Each restore installs the plugins' default sources again: 5 more per restore with two
     plugins. The values are unchanged. The list resets on the next good Apply or restart.
   - A refused config's `pluginpath` stays importable after the restore, ahead of the bundled
-    plugins: beets adds it (`beets/plugins.py:381,385`) before the check that fails. Setting
+    plugins: beets adds it (`beets/plugins.py:480,484`) before the check that fails. Setting
     `pluginpath` already runs the operator's code, so this adds no power.
   - ~~The Naming panel shows "Could not load naming config." for its 422s.~~ **CLOSED
     2026-09-23** on `feat/import-keep-downloads` (PR #232): the Naming panel's load and Save and
@@ -4018,6 +4109,41 @@ the condition it names has changed.
   of the net.
 
 ## Open questions
+
+- **Adopt beets' own "Rescan directory" for the attended Rescan?** (beets 2.14 port, 2026-09-23;
+  owner call, not built.) 2.14 adds `Action.RESCAN` (`importer/actions.py:20`, `stages.py:233-250`,
+  `rescan_tasks` at `:92`): beets re-walks the folder with its own discovery (`albums_in_dir`,
+  which honours `ignore`/`ignore_hidden` and groups multi-disc folders) and re-runs the lookup.
+  Returning it from `choose_match` would retire `_park_rescan`, its toppath guard
+  (`_under_toppath`) and `research._read_items`. It changes four review behaviours, measured by
+  the phase-1 importer reader:
+  - the rescanned album gets a NEW feed row and outcome, instead of re-parking the same row;
+  - a rescan with no candidates hits `choose_match`'s zero-candidate SKIP, instead of showing the
+    album as first scanned;
+  - a folder that now splits yields several albums;
+  - a MERGE or toppath-less task is SKIPped by beets with a log warning (`stages.py:238-244`),
+    instead of refused with feedback.
+  Separately, and possible without the rest: `research._read_items` (also behind the Bank's
+  session-less **Rescan folder**, which `RESCAN` cannot serve) walks with a bare `os.walk`;
+  beets' `albums_in_dir` (`importer/tasks.py:1519`) needs no session and applies the same
+  ignore rules beets imports with.
+
+- **Offer `duplicate_action: upgrade` as a review choice?** (beets 2.14 port, owner call, not
+  built.) beets 2.14 does the whole per-track upgrade itself: keeps a new track only when its
+  bitrate beats every old copy (`resolve_upgrade`, `importer/tasks.py:93`) and folds the
+  kept tracks into the surviving album (`_remove_upgrade_duplicates`, `:421`). But it DELETES the
+  superseded files (`util.remove`, `:437`), while every MusicDrop removal goes to Trash. Wrapping
+  it to divert to Trash is the shim `decisions` #52 rules out. Adopting it is a contract change
+  (`BankDecision.duplicate_action`, `import_models.DuplicateAction`) plus one arm in
+  `_beets_dup_action`. Today it is unreachable: the mapping only goes from MusicDrop to beets.
+
+- **Delete the forced `import.duplicate_action: ask` overlay?** (beets 2.14 port, owner call.)
+  `run_import_worker` forces `ask`, but nothing reads it: beets' only reader is the base
+  `ImportSession.get_duplicate_action` (`importer/session.py:175-183`, same in 2.13.1), which
+  `WebImportSession.get_duplicate_action` overrides with no `super()`. The override is what makes
+  review the "ask". Only a third-party plugin could read the key. Its docstring used to say the
+  force makes the hook fire; corrected on `fix/beets-2.14`. Deleting it also drops a snapshot and
+  restore.
 
 - **What should a "Try again" button do while it retries, and where should focus go after?**
   (PR #232 round-13 UI seat, owner call.) This covers every Try again or Retry button that calls
