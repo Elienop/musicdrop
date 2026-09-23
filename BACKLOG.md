@@ -991,6 +991,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     mid-name, while `breakablePath` (`AlbumDetailPage.tsx`) breaks after each `/`. Sharing the
     helper is the consistent fix.
   - The diff box's rounded corners clip the focused pane's square ring corners.
+  - No test covers Naming's reset of a Save failure when a custom rule or replace row is edited
+    (`updateCustom`, `updateReplace`); only the base fields are pinned. Predates the branch.
   - Text and sha can still come from two file versions in two cases no person can reach: another
     writer puts the old bytes back before Reload's re-read lands (A-B-A), or a read lands and
     Edit, a key and Ctrl+S all follow within @uiw's 200 ms typing latch. Both predate the branch.
