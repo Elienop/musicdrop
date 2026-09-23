@@ -4,7 +4,14 @@ import { useDiskSyncStatus } from "@/api/useDiskSync";
 import { useLyricsBackfillStatus } from "@/api/useLyricsBackfill";
 import { useReorganizeStatus } from "@/api/useReorganize";
 
-export type LibraryJobActive = { active: boolean; label: string | null };
+export type LibraryJobActive = {
+  active: boolean;
+  label: string | null;
+  /** Ask every probe again. Most poll only while their job runs, so one
+   * started elsewhere stays unseen until something refetches it — e.g. an
+   * Apply that answered 409. */
+  refetch: () => void;
+};
 
 /**
  * Whether a library job that BLOCKS a config Apply is currently running, plus a
@@ -23,18 +30,26 @@ export function useLibraryJobActive(): LibraryJobActive {
   const reorganize = useReorganizeStatus();
   const diskSync = useDiskSyncStatus();
 
-  if (importStatus.data?.active) return { active: true, label: "an import" };
+  const refetch = () => {
+    for (const probe of [importStatus, lyrics, artistArt, reorganize, diskSync]) {
+      void probe.refetch();
+    }
+  };
+
+  if (importStatus.data?.active) {
+    return { active: true, label: "an import", refetch };
+  }
   if (lyrics.data?.phase === "running") {
-    return { active: true, label: "a lyrics backfill" };
+    return { active: true, label: "a lyrics backfill", refetch };
   }
   if (artistArt.data?.phase === "running") {
-    return { active: true, label: "an artist-art backfill" };
+    return { active: true, label: "an artist-art backfill", refetch };
   }
   if (reorganize.data?.phase === "running") {
-    return { active: true, label: "a library reorganize" };
+    return { active: true, label: "a library reorganize", refetch };
   }
   if (diskSync.data?.phase === "running") {
-    return { active: true, label: "a disk sync" };
+    return { active: true, label: "a disk sync", refetch };
   }
-  return { active: false, label: null };
+  return { active: false, label: null, refetch };
 }

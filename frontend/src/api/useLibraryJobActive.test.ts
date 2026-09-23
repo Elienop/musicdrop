@@ -82,21 +82,23 @@ let lyricsData: LyricsBackfillStatus = idleLyrics;
 let artistArtData: ArtistArtBackfillStatus = idleArtistArt;
 let reorganizeData: ReorganizeBackfillStatus = idleReorganize;
 let diskSyncData: DiskSyncStatus = idleDiskSync;
+/** Which probes `refetch` asked again, in order. */
+const refetched: string[] = [];
 
 vi.mock("@/api/useActiveImport", () => ({
-  useActiveImport: () => ({ data: importData }),
+  useActiveImport: () => ({ data: importData, refetch: () => refetched.push("import") }),
 }));
 vi.mock("@/api/useLyricsBackfill", () => ({
-  useLyricsBackfillStatus: () => ({ data: lyricsData }),
+  useLyricsBackfillStatus: () => ({ data: lyricsData, refetch: () => refetched.push("lyrics") }),
 }));
 vi.mock("@/api/useArtistArt", () => ({
-  useArtistArtBackfillStatus: () => ({ data: artistArtData }),
+  useArtistArtBackfillStatus: () => ({ data: artistArtData, refetch: () => refetched.push("artist-art") }),
 }));
 vi.mock("@/api/useReorganize", () => ({
-  useReorganizeStatus: () => ({ data: reorganizeData }),
+  useReorganizeStatus: () => ({ data: reorganizeData, refetch: () => refetched.push("reorganize") }),
 }));
 vi.mock("@/api/useDiskSync", () => ({
-  useDiskSyncStatus: () => ({ data: diskSyncData }),
+  useDiskSyncStatus: () => ({ data: diskSyncData, refetch: () => refetched.push("disk-sync") }),
 }));
 
 beforeEach(() => {
@@ -105,12 +107,27 @@ beforeEach(() => {
   artistArtData = idleArtistArt;
   reorganizeData = idleReorganize;
   diskSyncData = idleDiskSync;
+  refetched.length = 0;
 });
 
 describe("useLibraryJobActive", () => {
   it("is inactive when every job is idle", () => {
     const { result } = renderHook(() => useLibraryJobActive());
-    expect(result.current).toEqual({ active: false, label: null });
+    const { active, label } = result.current;
+    expect({ active, label }).toEqual({ active: false, label: null });
+  });
+
+  it("refetch asks every probe again", () => {
+    const { result } = renderHook(() => useLibraryJobActive());
+    expect(refetched).toEqual([]);
+    result.current.refetch();
+    expect(refetched).toEqual([
+      "import",
+      "lyrics",
+      "artist-art",
+      "reorganize",
+      "disk-sync",
+    ]);
   });
 
   it("flags a running lyrics backfill (the case that 409'd Apply)", () => {
@@ -123,7 +140,8 @@ describe("useLibraryJobActive", () => {
   it("flags an active import", () => {
     importData = { ...idleImport, active: true };
     const { result } = renderHook(() => useLibraryJobActive());
-    expect(result.current).toEqual({ active: true, label: "an import" });
+    const { active, label } = result.current;
+    expect({ active, label }).toEqual({ active: true, label: "an import" });
   });
 
   it("flags a running artist-art backfill", () => {

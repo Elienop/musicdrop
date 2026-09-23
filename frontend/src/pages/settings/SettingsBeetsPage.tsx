@@ -95,7 +95,10 @@ function parseConflictBody(err: unknown): ConflictState | null {
  * snapshot's `apply_pending` + local `dirty`. The mutation flags take
  * priority because they describe an in-flight action — a `saving` state
  * mid-Save should not flicker back to `dirty` if the user happens to keep
- * typing during the round-trip.
+ * typing during the round-trip. A draft outranks `apply_pending` (owner
+ * ruling 2026-09-23, "Edit works while pending"): once it differs from the
+ * file the page is in its edit state, so Save is on and Apply is off until
+ * the draft is Saved or discarded.
  */
 function derivePageState(
   applying: boolean,
@@ -105,8 +108,8 @@ function derivePageState(
 ): PageState {
   if (applying) return "applying";
   if (saving) return "saving";
-  if (applyPending) return "apply_pending";
   if (dirty) return "dirty";
+  if (applyPending) return "apply_pending";
   return "clean";
 }
 
@@ -157,14 +160,18 @@ export function SettingsBeetsPage() {
   // clobber an in-progress edit. sha256 is also the only CAS token — the
   // snapshot intentionally omits mtime_ns because nanosecond ints overflow
   // JavaScript's Number.MAX_SAFE_INTEGER.
+  // A new sha also ends an Apply refusal: it was about the file as it was, and
+  // a file fixed outside the app would otherwise keep "Fix the file…" on screen.
   const prevSha = useRef<string | undefined>(data?.sha256);
+  const resetApply = applyMutation.reset;
   useEffect(() => {
     if (data?.sha256 && data.sha256 !== prevSha.current) {
       prevSha.current = data.sha256;
       setLocalText(null);
       setDirty(false);
+      resetApply();
     }
-  }, [data?.sha256]);
+  }, [data?.sha256, resetApply]);
 
   // Latest-callback refs. The CM6 extension list is memoized (so Compartments
   // stay stable across renders), but the linter source + Mod-s handler need to
@@ -260,6 +267,8 @@ export function SettingsBeetsPage() {
     // unresolved lint errors. The button is disabled, but Mod-s would
     // otherwise bypass it.
     if (lintErrors > 0) return;
+    // The latest action owns the one alert: a Save ends the last Apply's.
+    applyMutation.reset();
     const text = localText ?? data.yaml_text;
     save.mutate(
       {
@@ -271,16 +280,13 @@ export function SettingsBeetsPage() {
           setDirty(false);
           setLocalText(null);
         },
-        onError: (err) => {
-          // 409 = CAS mismatch -> open the conflict panel. Every other error,
-          // 422 included, shows the "Save failed" banner below. A 422 about the
-          // editor text is also painted by the lint source on its next
-          // debounce tick (a row with no line goes on line 1); a 422 about
-          // config.yaml on disk has no lint row, so the banner prints its
-          // sentence.
-          const c = parseConflictBody(err);
-          if (c) setConflict(c);
-        },
+        // 409 = CAS mismatch -> open the conflict panel. Every other error,
+        // 422 included, shows the "Save failed" alert below. A 422 about the
+        // editor text is also painted by the lint source on its next debounce
+        // tick; from then on the lint line is the recovery and the alert
+        // gives way. A 422 about config.yaml on disk has no lint row, so the
+        // alert prints its sentence.
+        onError: openConflict,
       },
     );
   }
@@ -291,13 +297,18 @@ export function SettingsBeetsPage() {
   asyncSourceRef.current = asyncSource;
   onSaveRef.current = handleSave;
 
+  /** Open (or refresh) the conflict panel for a 409 on either Save path. */
+  function openConflict(err: unknown) {
+    const c = parseConflictBody(err);
+    if (c) setConflict(c);
+  }
+
   function handleEdit() {
-    // Entering a fresh edit session clears any stale Save/Apply failure banner
-    // from a prior attempt: a settled error mutation keeps its error state until
-    // reset, so without this the old alert would resurface the moment the doc is
-    // dirty again.
+    // Entering a fresh edit session clears a stale Save failure: a settled
+    // error mutation keeps its error state until reset, so without this the
+    // old alert would resurface the moment the doc is dirty again. An Apply
+    // refusal stays: it is still true of the file until a Save replaces it.
     save.reset();
-    applyMutation.reset();
     const view = editorRef.current?.view;
     if (view) {
       view.dispatch({
@@ -328,19 +339,26 @@ export function SettingsBeetsPage() {
     setDirty(false);
     // Cancel also dismisses any conflict modal from a prior failed Save —
     // the user explicitly chose to drop their edits, so there's nothing
-    // left for the diff view to resolve. The lint count is reset too: the
-    // doc is back to the clean snapshot, which has no errors (it's what
-    // beets is already running on).
+    // left for the diff view to resolve. The lint count is reset too; the
+    // doc reset re-runs the linter, which counts the file's own rows again.
     setConflict(null);
     setLintErrors(0);
-    // Discarding also clears a prior Save/Apply failure banner — the page is
-    // returning to clean, so a lingering "Save failed" would be a false alarm.
+    // Discarding also clears a prior Save/Apply failure alert: the page returns
+    // to its resting state, where a lingering "Save failed" would be a false
+    // alarm and a returning Apply alert would be announced again.
     save.reset();
     applyMutation.reset();
   }
 
   function handleApply() {
-    applyMutation.mutate();
+    // A 409 means a job this page has not seen holds the library. Ask the
+    // probes again so the "Apply paused" line speaks for it, and goes when
+    // the job ends.
+    applyMutation.mutate(undefined, {
+      onError: (err) => {
+        if (err.status === 409) job.refetch();
+      },
+    });
   }
 
   function handleConflictReload() {
@@ -387,9 +405,17 @@ export function SettingsBeetsPage() {
           setLocalText(null);
           setConflict(null);
         },
+        // Another writer since the first 409: the panel takes the newer file
+        // and token, the same as for the first 409.
+        onError: openConflict,
       },
     );
   }
+
+  // An Apply failure other than the library-job 409, which the "Apply paused"
+  // line speaks for once the probes see the job.
+  const applyFailed =
+    applyMutation.isError && applyMutation.error?.status !== 409;
 
   return (
     <div className="flex flex-col gap-8">
@@ -404,6 +430,7 @@ export function SettingsBeetsPage() {
         <ConfigStateBanner
           state={pageState}
           jobActive={job.active}
+          applyFailed={applyFailed}
           data={data}
         />
 
@@ -417,14 +444,20 @@ export function SettingsBeetsPage() {
           // our shadcnTheme variables are the only thing setting colors.
           theme="none"
           extensions={extensions}
-          onChange={(value) => setLocalText(value)}
+          onChange={(value) => {
+            setLocalText(value);
+            // A draft edit ends the last Save's failure. Its alert is about
+            // text that is gone, and one hidden by the lint line and shown
+            // again would be announced twice for one Save.
+            if (save.isError) save.reset();
+          }}
         />
 
         <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="outline"
             onClick={handleEdit}
-            disabled={pageState !== "clean"}
+            disabled={pageState !== "clean" && pageState !== "apply_pending"}
           >
             Edit
           </Button>
@@ -484,31 +517,31 @@ export function SettingsBeetsPage() {
             belongs to (apply_pending / dirty) so a stale error can't outlive it:
             a settled mutation keeps its error until reset, so an externally
             resolved apply_pending or a discarded edit would otherwise leave a
-            false alarm behind. A 409 on Save opens the conflict panel above; a
-            409 on Apply is the library-job gate (a transient status, not an
-            error). Everything else is a destructive alert. */}
-        {applyMutation.isError &&
-          pageState === "apply_pending" &&
-          (applyMutation.error?.status === 409 ? (
-            <output className="text-muted-foreground text-sm block">
-              A library job is running; Apply will be available when it
-              finishes.
-            </output>
-          ) : (
-            <p className="text-destructive text-sm break-words" role="alert">
-              Apply failed.{" "}
-              {applyRecoveryHint(applyMutation.error) ?? APPLY_FALLBACK}
-            </p>
-          ))}
-        {save.isError && save.error?.status !== 409 && pageState === "dirty" && (
-          <p className="text-destructive text-sm" role="alert">
-            Save failed.{" "}
-            {saveFailureDetail(configOnDiskMessage(save.error?.body))}
+            false alarm behind. A 409 on Save opens the conflict panel below; a
+            409 on Apply is the library-job gate, which the "Apply paused" line
+            speaks for. Everything else is a destructive alert. The Save alert
+            also gives way to the lint line, which is then the recovery. */}
+        {applyFailed && pageState === "apply_pending" && (
+          <p className="text-destructive text-sm break-words" role="alert">
+            Apply failed.{" "}
+            {applyRecoveryHint(applyMutation.error) ?? APPLY_FALLBACK}
           </p>
         )}
+        {save.isError &&
+          save.error?.status !== 409 &&
+          pageState === "dirty" &&
+          lintErrors === 0 && (
+            <p className="text-destructive text-sm break-words" role="alert">
+              Save failed.{" "}
+              {saveFailureDetail(configOnDiskMessage(save.error?.body))}
+            </p>
+          )}
 
         {conflict && (
+          // Keyed by the 409's token, so a second 409 remounts the panel and
+          // moves focus to it, the same as the first.
           <SettingsConflict
+            key={conflict.sha}
             local={localText ?? data.yaml_text}
             server={conflict.serverDoc}
             onReload={handleConflictReload}
@@ -635,10 +668,13 @@ function ConfigAdvisories({
 function ConfigStateBanner({
   state,
   jobActive,
+  applyFailed,
   data,
 }: Readonly<{
   state: PageState;
   jobActive: boolean;
+  /** An Apply failure alert shows; its sentence carries the recovery. */
+  applyFailed: boolean;
   data: BeetsConfigSnapshot;
 }> ) {
   if (state === "clean") {
@@ -679,7 +715,12 @@ function ConfigStateBanner({
     );
   }
   // apply_pending — same copy the tests pin; the system banner supplies the
-  // warning chrome + role="alert".
+  // warning chrome + role="alert". Beside an Apply failure the tail goes: the
+  // alert's sentence is the recovery, and "click Apply" would contradict one
+  // that says to fix something first.
+  let tail = "; click Apply to load it into beets.";
+  if (applyFailed) tail = ".";
+  else if (jobActive) tail = "; Apply available once the running job finishes.";
   return (
     <StatusBanner tone="warning" icon={Warning}>
       <p>
@@ -687,9 +728,7 @@ function ConfigStateBanner({
         {data.file_modified_at && (
           <> ({new Date(data.file_modified_at).toLocaleTimeString()})</>
         )}
-        {jobActive
-          ? "; Apply available once the running job finishes."
-          : "; click Apply to load it into beets."}
+        {tail}
       </p>
     </StatusBanner>
   );
@@ -697,10 +736,12 @@ function ConfigStateBanner({
 
 /** Resolve `ValidationErrorItem[]` into CodeMirror `Diagnostic[]` keyed off
  * 1-based line numbers. A row whose line is null (a parse error with no
- * position, e.g. `!!bool ture`) or out of range (the draft changed since it
- * was sent) is marked on the whole of line 1 rather than dropped, so it still
- * counts toward the error line and disables Save: the server would refuse a
- * Save of the text Validate rejected. */
+ * position, e.g. `!!bool ture`) is kept as a point at the start of line 1: it
+ * counts toward the error line, gets a gutter marker and disables Save (the
+ * server would refuse a Save of the text Validate rejected), without
+ * underlining text that may be fine. Validate's lines come from the text it
+ * was sent, so a row past the last line means the draft changed since; CM6
+ * then drops the whole result, and the row counts only until the next pass. */
 function mapErrorsToDiagnostics(
   errors: ValidationErrorItem[],
   ref: ReactCodeMirrorRef | null,
@@ -721,7 +762,7 @@ function mapErrorsToDiagnostics(
     const column = placed ? (e.column ?? 0) : 0;
     return {
       from: Math.min(line.from + column, line.to),
-      to: line.to,
+      to: placed ? line.to : line.from,
       severity: "error" as const,
       message: e.loc ? `${e.loc}: ${e.msg}` : e.msg,
     };

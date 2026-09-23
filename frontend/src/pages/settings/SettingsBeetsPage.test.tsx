@@ -213,12 +213,69 @@ function renderPage() {
     ],
     { initialEntries: ["/settings"] },
   );
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>,
-  );
+  return {
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    ),
+    queryClient,
+  };
 }
+
+/** The fixture's `file_modified_at`, as the apply_pending banner prints it. */
+const MODIFIED_AT = new Date("2026-05-28T14:23:00Z").toLocaleTimeString();
+const PENDING_BANNER = `config.yaml is saved but not loaded yet (${MODIFIED_AT}); click Apply to load it into beets.`;
+const UNSAVED_BANNER =
+  "Unsaved changes. Save to write to /abs/data/beets/config.yaml.";
+
+/** Everything the Beets section offers and says, pinned whole: each button's
+ * enabled state (`null` when absent), then the text of every alert, status
+ * line and helper line under the buttons. */
+function beetsState() {
+  const section = screen.getByRole("region", { name: "Beets configuration" });
+  const enabled = (name: RegExp) => {
+    const b = within(section).queryByRole("button", { name });
+    return b === null ? null : !(b as HTMLButtonElement).disabled;
+  };
+  const row = within(section).getByRole("button", { name: /^edit$/i })
+    .parentElement;
+  return {
+    edit: enabled(/^edit$/i),
+    save: enabled(/^save$/i),
+    cancel: enabled(/^cancel$/i),
+    apply: enabled(/^apply changes$/i),
+    alerts: within(section)
+      .queryAllByRole("alert")
+      .map((e) => e.textContent),
+    status: within(section)
+      .queryAllByRole("status")
+      .map((e) => e.textContent),
+    helpers: Array.from(row?.querySelectorAll("p") ?? [], (p) => p.textContent),
+  };
+}
+
+/** apply_pending at rest: Edit and Apply on, the banner says to Apply. */
+const PENDING_STATE = {
+  edit: true,
+  save: false,
+  cancel: null,
+  apply: true,
+  alerts: [PENDING_BANNER],
+  status: [],
+  helpers: [],
+};
+
+/** A draft: Save and Cancel on, Edit and Apply off. */
+const DIRTY_STATE = {
+  edit: false,
+  save: true,
+  cancel: true,
+  apply: false,
+  alerts: [],
+  status: [UNSAVED_BANNER],
+  helpers: [],
+};
 
 describe("SettingsPage", () => {
   test("renders loading state while the snapshot is fetching", async () => {
@@ -412,7 +469,7 @@ describe("SettingsPage", () => {
     );
   });
 
-  test("apply success returns the page to clean (Edit re-enabled, Apply disabled)", async () => {
+  test("apply success returns the page to clean (Edit enabled, Apply disabled)", async () => {
     // GETs alternate between apply_pending=true (initial) and false (post-apply).
     let getCalls = 0;
     server.use(
@@ -437,24 +494,19 @@ describe("SettingsPage", () => {
     renderPage();
     await findEditorContent();
 
-    // Wait for apply_pending state (Apply enabled, Edit disabled).
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: /apply changes/i }),
-      ).toBeEnabled(),
-    );
-    expect(screen.getByRole("button", { name: /^edit$/i })).toBeDisabled();
+    // apply_pending: Apply and Edit both on (owner ruling 2026-09-23).
+    await waitFor(() => expect(beetsState()).toEqual(PENDING_STATE));
 
     await user.click(screen.getByRole("button", { name: /apply changes/i }));
 
-    // Post-apply: state returns to clean. Edit becomes enabled (clean is the
-    // only state where Edit is clickable) and Apply turns off.
+    // Post-apply: clean. Edit stays on, Apply turns off, the banner goes.
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /^edit$/i })).toBeEnabled(),
+      expect(beetsState()).toEqual({
+        ...PENDING_STATE,
+        apply: false,
+        alerts: [],
+      }),
     );
-    expect(
-      screen.getByRole("button", { name: /apply changes/i }),
-    ).toBeDisabled();
   });
 
   test("an Apply failure surfaces a destructive banner with the recovery hint", async () => {
@@ -528,12 +580,12 @@ describe("SettingsPage", () => {
     );
   });
 
-  test("an Apply refused for a bad Trash layout shows the reason, not the job sentence", async () => {
-    // The backend answers 422 (not 409) precisely so this branch runs: every
-    // Apply 409 renders the fixed "A library job is running" line, which would
-    // tell the operator the opposite of what happened. Pinned on the STATUS the
-    // containment refusal uses, so a later `status === 422` branch that showed
-    // generic copy would fail here.
+  test("an Apply refused for a bad Trash layout shows the reason", async () => {
+    // The backend answers 422 (not 409) precisely so this branch runs: an
+    // Apply 409 is read as the library-job gate and shows no alert, which
+    // would hide what happened. Pinned on the STATUS the containment refusal
+    // uses, so a later `status === 422` branch that showed generic copy would
+    // fail here.
     let getCalls = 0;
     server.use(
       http.get(CONFIG_URL, () => {
@@ -578,9 +630,6 @@ describe("SettingsPage", () => {
     expect(banner).toHaveTextContent(/MUSICDROP_TRASH_DIR/);
     // An Apply refusal can quote two paths, as this one does; the alert wraps.
     expect(banner).toHaveClass("break-words");
-    expect(
-      screen.queryByText(/a library job is running/i),
-    ).not.toBeInTheDocument();
   });
 
   test("a non-409 Save failure surfaces a destructive banner", async () => {
@@ -641,6 +690,8 @@ describe("SettingsPage", () => {
   });
 
   test("a Save 422 about the editor text keeps the try-again sentence", async () => {
+    // Control for the lint-delay test below: Validate is clean, so the alert
+    // is the only recovery and it shows.
     const banner = await saveFails({
       detail: [
         {
@@ -655,6 +706,61 @@ describe("SettingsPage", () => {
     expect(banner).toHaveTextContent(
       /^Save failed\. Your changes weren’t written — try again\.$/,
     );
+    // The same wrapping as every Save and Apply alert on both pages.
+    expect(banner).toHaveClass("text-destructive text-sm break-words", {
+      exact: true,
+    });
+  });
+
+  test("a Save inside the lint delay gives way to the lint line, and stays gone once it is fixed", async () => {
+    const row = {
+      loc: "",
+      msg: "KeyError: 'ture'",
+      type: "yaml_parse",
+      line: null,
+      column: null,
+    };
+    let validateErrors = [row];
+    let saveHits = 0;
+    defaultMocks();
+    server.use(
+      http.post(VALIDATE_URL, () =>
+        HttpResponse.json({ errors: validateErrors, advisories: [] }),
+      ),
+      http.post(SAVE_URL, () => {
+        saveHits += 1;
+        return HttpResponse.json({ detail: [row] }, { status: 422 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    const content = await findEditorContent();
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    content.focus();
+    await user.keyboard("x");
+    // Save before the 500 ms lint tick: lintErrors is still 0, so it fires.
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(saveHits).toBe(1));
+
+    // The lint line lands and is the one recovery.
+    await waitFor(
+      () =>
+        expect(beetsState()).toEqual({
+          ...DIRTY_STATE,
+          save: false,
+          helpers: ["1 validation error; fix to save."],
+        }),
+      { timeout: 4000 },
+    );
+
+    // Fixed: the lint line goes, and the old alert does not come back.
+    validateErrors = [];
+    content.focus();
+    await user.keyboard("y");
+    await waitFor(() => expect(beetsState()).toEqual(DIRTY_STATE), {
+      timeout: 4000,
+    });
+    expect(saveHits).toBe(1);
   });
 
   test("Cancel after a failed Save clears the stale Save-failed alert", async () => {
@@ -985,8 +1091,9 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
   }
 
-  test("a Validate row with no line is marked on line 1 and blocks Save", async () => {
+  test("a Validate row with no line is a point at the start of line 1 and blocks Save", async () => {
     // A parse error with no position (`!!bool ture`) comes back line: null.
+    // It gets the marker and the count, but underlines none of line 1's text.
     const { doc, found } = await lintsWith({
       loc: "",
       msg: "KeyError: 'ture'",
@@ -995,13 +1102,16 @@ describe("SettingsPage", () => {
       column: null,
     });
     const line1 = doc.line(1);
+    expect(line1.text).toBe("xdirectory: /music");
     expect(found).toEqual([
-      { from: line1.from, to: line1.to, message: "KeyError: 'ture'" },
+      { from: line1.from, to: line1.from, message: "KeyError: 'ture'" },
     ]);
+    expect(document.querySelector(".cm-lintRange")).toBeNull();
+    expect(document.querySelector(".cm-lintPoint")).not.toBeNull();
     expectSaveBlocked();
   });
 
-  test("a Validate row past the last line is marked on line 1 and blocks Save", async () => {
+  test("a Validate row past the last line is a point at the start of line 1 and blocks Save", async () => {
     const { doc, found } = await lintsWith({
       loc: "import.copy",
       msg: "must be a boolean",
@@ -1009,15 +1119,17 @@ describe("SettingsPage", () => {
       line: 99,
       column: 3,
     });
-    // Its column belongs to no line here, so the whole of line 1 is marked.
+    // Its column belongs to no line here, so it is ignored.
     const line1 = doc.line(1);
     expect(found).toEqual([
       {
         from: line1.from,
-        to: line1.to,
+        to: line1.from,
         message: "import.copy: must be a boolean",
       },
     ]);
+    expect(document.querySelector(".cm-lintRange")).toBeNull();
+    expect(document.querySelector(".cm-lintPoint")).not.toBeNull();
     expectSaveBlocked();
   });
 
@@ -1039,6 +1151,8 @@ describe("SettingsPage", () => {
         message: "library: must be a path",
       },
     ]);
+    // A placed row is underlined.
+    expect(document.querySelector(".cm-lintRange")).not.toBeNull();
     expectSaveBlocked();
   });
 
@@ -1139,6 +1253,313 @@ describe("SettingsPage", () => {
         name: "Reorganize library",
       }),
     ).toBeInTheDocument();
+  });
+});
+
+/**
+ * Owner ruling 2026-09-23, "Edit works while pending": a config.yaml that
+ * broke after load is always apply_pending, and Apply's refusal says to fix
+ * the file, so Edit must work in that state.
+ */
+describe("SettingsBeetsPage while Apply is pending", () => {
+  const UNREADABLE = {
+    detail: {
+      message: "config.yaml could not be read",
+      recovery:
+        "beets could not read config.yaml, so nothing was changed. Fix the file and Apply again.",
+    },
+  };
+  const REFUSED_ALERT =
+    "Apply failed. beets could not read config.yaml, so nothing was changed. Fix the file and Apply again.";
+  /** The banner beside an Apply failure: no "click Apply" tail. */
+  const BARE_BANNER = `config.yaml is saved but not loaded yet (${MODIFIED_AT}).`;
+  /** apply_pending beside the refusal: Edit and Apply stay on. */
+  const REFUSED_STATE = {
+    ...PENDING_STATE,
+    alerts: [BARE_BANNER, REFUSED_ALERT],
+  };
+
+  /** A pending snapshot whose sha is `sha-<n>` on the n-th read (or never
+   * answers from `hangAfter` reads on), plus an Apply answering `apply`. */
+  function pendingMocks({
+    apply = () => HttpResponse.json(UNREADABLE, { status: 422 }),
+    hangAfter = Infinity,
+  }: {
+    apply?: () => Response;
+    hangAfter?: number;
+  } = {}) {
+    let reads = 0;
+    defaultMocks();
+    server.use(
+      http.get(CONFIG_URL, () => {
+        reads += 1;
+        if (reads >= hangAfter) {
+          return new Promise<HttpResponse<BeetsConfigSnapshot>>(() => {});
+        }
+        return HttpResponse.json(
+          snapshotFixture({ apply_pending: true, sha256: `sha-${reads}` }),
+        );
+      }),
+      http.post(APPLY_URL, apply),
+      http.post(SAVE_URL, () =>
+        HttpResponse.json(
+          snapshotFixture({ apply_pending: true, sha256: "sha-saved" }),
+        ),
+      ),
+    );
+  }
+
+  /** Edit and type one character. */
+  async function editAndType(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    const content = await findEditorContent();
+    await waitFor(() =>
+      expect(content.getAttribute("contenteditable")).toBe("true"),
+    );
+    content.focus();
+    await user.keyboard("x");
+  }
+
+  test("Edit works, a draft turns Apply off, and a Save turns it back on", async () => {
+    pendingMocks();
+    const user = userEvent.setup();
+    renderPage();
+    await findEditorContent();
+    await waitFor(() => expect(beetsState()).toEqual(PENDING_STATE));
+
+    // Edit alone changes nothing on screen: the draft does not differ yet.
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    await waitFor(() =>
+      expect(
+        document.querySelector(".cm-content")?.getAttribute("contenteditable"),
+      ).toBe("true"),
+    );
+    expect(beetsState()).toEqual(PENDING_STATE);
+
+    const content = await findEditorContent();
+    content.focus();
+    await user.keyboard("x");
+    await waitFor(() => expect(beetsState()).toEqual(DIRTY_STATE));
+
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(beetsState()).toEqual(PENDING_STATE));
+  });
+
+  test("after a refused Apply, the file can be fixed here", async () => {
+    pendingMocks();
+    const user = userEvent.setup();
+    renderPage();
+    await findEditorContent();
+    await waitFor(() => expect(beetsState()).toEqual(PENDING_STATE));
+
+    await user.click(screen.getByRole("button", { name: /apply changes/i }));
+    await waitFor(() => expect(beetsState()).toEqual(REFUSED_STATE));
+
+    // Edit keeps the refusal: it is still true of the file.
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    await waitFor(() =>
+      expect(
+        document.querySelector(".cm-content")?.getAttribute("contenteditable"),
+      ).toBe("true"),
+    );
+    expect(beetsState()).toEqual(REFUSED_STATE);
+
+    const content = await findEditorContent();
+    content.focus();
+    await user.keyboard("x");
+    await waitFor(() => expect(beetsState()).toEqual(DIRTY_STATE));
+
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(beetsState()).toEqual(PENDING_STATE));
+  });
+
+  test("a Save ends the Apply alert before the file is read again", async () => {
+    // The re-read after the Save never answers, so only the Save can have
+    // ended the refusal.
+    pendingMocks({ hangAfter: 2 });
+    const user = userEvent.setup();
+    renderPage();
+    await findEditorContent();
+    await user.click(
+      await screen.findByRole("button", { name: /apply changes/i }),
+    );
+    await waitFor(() => expect(beetsState()).toEqual(REFUSED_STATE));
+
+    await editAndType(user);
+    await waitFor(() => expect(beetsState()).toEqual(DIRTY_STATE));
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(beetsState()).toEqual(PENDING_STATE));
+  });
+
+  test("Cancel after a refused Apply returns to apply_pending without the alert", async () => {
+    pendingMocks();
+    const user = userEvent.setup();
+    renderPage();
+    await findEditorContent();
+    await user.click(
+      await screen.findByRole("button", { name: /apply changes/i }),
+    );
+    await waitFor(() => expect(beetsState()).toEqual(REFUSED_STATE));
+
+    await editAndType(user);
+    await waitFor(() => expect(beetsState()).toEqual(DIRTY_STATE));
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+    await waitFor(() => expect(beetsState()).toEqual(PENDING_STATE));
+  });
+
+  test("a file changed outside the app ends the Apply alert", async () => {
+    pendingMocks();
+    const user = userEvent.setup();
+    const { queryClient } = renderPage();
+    await findEditorContent();
+    await user.click(
+      await screen.findByRole("button", { name: /apply changes/i }),
+    );
+    await waitFor(() => expect(beetsState()).toEqual(REFUSED_STATE));
+
+    // The next read carries a new sha: someone fixed the file in a shell.
+    await queryClient.invalidateQueries({ queryKey: ["beets-config"] });
+    await waitFor(() => expect(beetsState()).toEqual(PENDING_STATE));
+  });
+
+  test("a read of the same file keeps the Apply alert", async () => {
+    // Control for the test above: only a new sha ends the refusal.
+    defaultMocks();
+    server.use(
+      http.get(CONFIG_URL, () =>
+        HttpResponse.json(snapshotFixture({ apply_pending: true })),
+      ),
+      http.post(APPLY_URL, () =>
+        HttpResponse.json(UNREADABLE, { status: 422 }),
+      ),
+    );
+    const user = userEvent.setup();
+    const { queryClient } = renderPage();
+    await findEditorContent();
+    await user.click(
+      await screen.findByRole("button", { name: /apply changes/i }),
+    );
+    await waitFor(() => expect(beetsState()).toEqual(REFUSED_STATE));
+
+    await queryClient.invalidateQueries({ queryKey: ["beets-config"] });
+    expect(beetsState()).toEqual(REFUSED_STATE);
+  });
+
+  test("an Apply 409 asks the job probes again, and the paused line speaks for the job", async () => {
+    // The job started elsewhere after this page last asked, so only the 409
+    // knows about it.
+    let jobRunning = false;
+    pendingMocks({
+      apply: () => {
+        jobRunning = true;
+        return HttpResponse.json(
+          { detail: "a library job is running" },
+          { status: 409 },
+        );
+      },
+    });
+    server.use(
+      http.get(ACTIVE_IMPORT_URL, () =>
+        HttpResponse.json({ active: jobRunning }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await findEditorContent();
+    await user.click(
+      await screen.findByRole("button", { name: /apply changes/i }),
+    );
+
+    await waitFor(() =>
+      expect(beetsState()).toEqual({
+        ...PENDING_STATE,
+        apply: false,
+        alerts: [
+          `config.yaml is saved but not loaded yet (${MODIFIED_AT}); Apply available once the running job finishes.`,
+        ],
+        helpers: [
+          "Apply paused — an import is running; available when it finishes.",
+        ],
+      }),
+    );
+  });
+
+  test("an Apply 409 after the job has ended leaves nothing about a job", async () => {
+    let probeReads = 0;
+    let applyHits = 0;
+    pendingMocks({
+      apply: () => {
+        applyHits += 1;
+        return HttpResponse.json(
+          { detail: "a library job is running" },
+          { status: 409 },
+        );
+      },
+    });
+    server.use(
+      http.get(ACTIVE_IMPORT_URL, () => {
+        probeReads += 1;
+        return HttpResponse.json({ active: false });
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await findEditorContent();
+    const apply = await screen.findByRole("button", { name: /apply changes/i });
+    await waitFor(() => expect(probeReads).toBeGreaterThan(0));
+    const readsBefore = probeReads;
+    await user.click(apply);
+
+    await waitFor(() => expect(applyHits).toBe(1));
+    await waitFor(() => expect(probeReads).toBeGreaterThan(readsBefore));
+    await waitFor(() => expect(beetsState()).toEqual(PENDING_STATE));
+  });
+
+  test("a second 409 on Overwrite anyway refreshes the panel, the same as the first", async () => {
+    defaultMocks();
+    const shas: string[] = [];
+    const conflictOn = (sha: string, text: string) =>
+      HttpResponse.json(
+        { detail: { current_yaml_text: text, current_sha256: sha } },
+        { status: 409 },
+      );
+    server.use(
+      http.post(SAVE_URL, async ({ request }) => {
+        shas.push(((await request.json()) as SaveRequest).base_sha256);
+        if (shas.length === 1) return conflictOn("sha-one", "directory: /one\n");
+        if (shas.length === 2) return conflictOn("sha-two", "directory: /two\n");
+        return HttpResponse.json(
+          snapshotFixture({ apply_pending: true, sha256: "sha-three" }),
+        );
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await findEditorContent();
+    await editAndType(user);
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+    const first = await screen.findByRole("dialog", {
+      name: /file changed on disk/i,
+    });
+    await waitFor(() => expect(first.textContent).toContain("/one"));
+
+    await user.click(
+      within(first).getByRole("button", { name: /overwrite anyway/i }),
+    );
+    // The panel takes the newer file and moves focus to itself again.
+    await waitFor(() => {
+      const second = screen.getByRole("dialog", {
+        name: /file changed on disk/i,
+      });
+      expect(second.textContent).toContain("/two");
+      expect(second.textContent).not.toContain("/one");
+      expect(second).toHaveFocus();
+    });
+    expect(screen.queryByText(/save failed/i)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /overwrite anyway/i }));
+    await waitFor(() => expect(shas).toHaveLength(3));
+    expect(shas).toEqual(["base-sha", "sha-one", "sha-two"]);
   });
 });
 

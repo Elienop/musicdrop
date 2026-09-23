@@ -10,6 +10,7 @@ import { NamingPanel } from "@/pages/settings/NamingPanel";
 type NamingSave422 =
   operations["save_naming_route_api_config_naming_save_post"]["responses"][422]["content"]["application/json"];
 type ErrorDetail = components["schemas"]["ErrorDetail"];
+type ReplaceError = components["schemas"]["ReplaceError"];
 
 function wrap(ui: React.ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -392,36 +393,321 @@ test("a Save conflict hides the Saved cue", async () => {
   expect(screen.queryByText(/^Saved\. Click/)).not.toBeInTheDocument();
 });
 
-test("the Save alert gives way to an invalid replace pattern", async () => {
-  const alert = await saveFails({
-    detail: [{ loc: "default", msg: "bad template", type: "value_error" }],
+type Reply = {
+  data?: unknown;
+  error?: unknown;
+  response: { ok: boolean; status: number };
+};
+const ok = (data: unknown): Reply => ({
+  data,
+  response: { ok: true, status: 200 },
+});
+const fail = (status: number, error?: unknown): Reply => ({
+  data: undefined,
+  error,
+  response: { ok: false, status },
+});
+/** A reply that never comes: the action stays in flight. */
+const never = () => new Promise<Reply>(() => {});
+
+/** Replace the beforeEach stubs whole. Each route answers from its callback
+ * at request time, so a test can change the answer mid-test. */
+function mockPanel({
+  applyPending = true,
+  jobActive = () => false,
+  save = () => ok({ apply_pending: true }),
+  apply = () => ok({ apply_pending: false }),
+  replaceErrors = () => [],
+}: {
+  applyPending?: boolean;
+  jobActive?: () => boolean;
+  save?: () => Reply | Promise<Reply>;
+  apply?: () => Reply | Promise<Reply>;
+  replaceErrors?: () => ReplaceError[];
+} = {}) {
+  const hits = { preview: 0, probe: 0, apply: 0 };
+  vi.mocked(client.GET).mockImplementation((async (path: string) => {
+    if (path === "/api/config/naming") return ok(naming);
+    if (path === "/api/imports/active") {
+      hits.probe += 1;
+      return ok({ active: jobActive() });
+    }
+    if (path === "/api/config") return ok({ apply_pending: applyPending });
+    return fail(404);
+  }) as never);
+  vi.mocked(client.POST).mockImplementation((async (path: string) => {
+    if (path === "/api/config/naming/preview") {
+      hits.preview += 1;
+      return ok({ rendered: naming.previews, replace_errors: replaceErrors() });
+    }
+    if (path === "/api/config/naming/save") return save();
+    if (path === "/api/config/apply") {
+      hits.apply += 1;
+      return apply();
+    }
+    return fail(404);
+  }) as never);
+  return hits;
+}
+
+/** Everything the panel offers and says, pinned whole: each button's label
+ * (" (off)" when disabled), the lines beside them, what sits below them, and
+ * every alert. */
+function namingState() {
+  const button = (name: RegExp) => {
+    const b = screen.getByRole("button", { name }) as HTMLButtonElement;
+    return `${b.textContent}${b.disabled ? " (off)" : ""}`;
+  };
+  const saveBtn = screen.getByRole("button", { name: /^(save naming|saving…)$/i });
+  const footer = saveBtn.parentElement;
+  if (!footer) throw new Error("no footer");
+  const below: string[] = [];
+  for (let e = footer.nextElementSibling; e; e = e.nextElementSibling) {
+    below.push(e.textContent);
+  }
+  return {
+    save: button(/^(save naming|saving…)$/i),
+    apply: button(/^(apply|applying…)$/i),
+    lines: Array.from(footer.querySelectorAll("p, output"), (e) => e.textContent),
+    below,
+    alerts: screen.queryAllByRole("alert").map((e) => e.textContent),
+  };
+}
+
+const CUE = "Saved. Click Apply to load it.";
+const SAVE_FALLBACK_ALERT =
+  "Save failed. Your changes weren’t written — try again.";
+const APPLY_FALLBACK_ALERT =
+  "Apply failed. Your config is saved on disk — try again or restart MusicDrop.";
+const UNREADABLE = {
+  detail: {
+    message: "config.yaml could not be read",
+    recovery:
+      "beets could not read config.yaml, so nothing was changed. Fix the file and Apply again.",
+  },
+};
+const REFUSED_ALERT =
+  "Apply failed. beets could not read config.yaml, so nothing was changed. Fix the file and Apply again.";
+
+test("the Save alert gives way to an invalid replace pattern, and stays gone once it is fixed", async () => {
+  let replaceErrors: ReplaceError[] = [];
+  const hits = mockPanel({
+    applyPending: false,
+    save: () =>
+      fail(422, {
+        detail: [
+          { loc: "replace[0]", msg: "unterminated set", type: "value_error" },
+        ],
+      }),
+    replaceErrors: () => replaceErrors,
   });
-  // It shows until the pattern is marked.
-  expect(alert).toHaveTextContent(
-    /^Save failed\. Your changes weren’t written — try again\.$/,
+  wrap(<NamingPanel />);
+  const def = await screen.findByDisplayValue(/\$albumartist/);
+  await waitFor(() => expect(hits.preview).toBeGreaterThan(0));
+
+  // Save inside the 250 ms preview delay: nothing is marked yet.
+  replaceErrors = [{ index: 0, pattern: "[", message: "unterminated set" }];
+  await userEvent.type(def, "X");
+  await userEvent.click(screen.getByRole("button", { name: /save naming/i }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    SAVE_FALLBACK_ALERT,
   );
-  type Stub = (path: string) => Promise<unknown>;
-  const post = vi.mocked(client.POST).getMockImplementation() as unknown as
-    | Stub
-    | undefined;
-  if (!post) throw new Error("saveFails mocks missing");
-  vi.mocked(client.POST).mockImplementation((async (path: string) =>
-    path === "/api/config/naming/preview"
-      ? {
-          data: {
-            rendered: naming.previews,
-            replace_errors: [
-              { index: 0, pattern: "[", message: "unterminated set" },
-            ],
-          },
-          response: { ok: true, status: 200 },
-        }
-      : post(path)) as never);
-  await userEvent.type(screen.getByDisplayValue(/\$albumartist/), "Y");
-  expect(
-    await screen.findByText("Invalid replace pattern. Fix to save."),
-  ).toBeInTheDocument();
-  expect(screen.queryByText(/^Save failed/)).not.toBeInTheDocument();
+
+  // The preview marks it: the replace line is the one recovery.
+  await waitFor(() =>
+    expect(namingState()).toEqual({
+      save: "Save naming (off)",
+      apply: "Apply (off)",
+      lines: ["Invalid replace pattern. Fix to save."],
+      below: [],
+      alerts: [],
+    }),
+  );
+
+  // Fixed: the line goes, and the old alert does not come back.
+  replaceErrors = [];
+  await userEvent.type(def, "Y");
+  await waitFor(() =>
+    expect(namingState()).toEqual({
+      save: "Save naming",
+      apply: "Apply (off)",
+      lines: [],
+      below: [],
+      alerts: [],
+    }),
+  );
+});
+
+test("a Save failure, then an Apply failure, shows only the Apply alert", async () => {
+  mockPanel({ save: () => fail(500), apply: () => fail(502) });
+  wrap(<NamingPanel />);
+  await userEvent.type(await screen.findByDisplayValue(/\$albumartist/), "X");
+  await userEvent.click(screen.getByRole("button", { name: /save naming/i }));
+  await waitFor(() =>
+    expect(namingState()).toEqual({
+      save: "Save naming",
+      apply: "Apply",
+      lines: [],
+      below: [SAVE_FALLBACK_ALERT],
+      alerts: [SAVE_FALLBACK_ALERT],
+    }),
+  );
+
+  await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+  await waitFor(() =>
+    expect(namingState()).toEqual({
+      save: "Save naming",
+      apply: "Apply",
+      lines: [],
+      below: [APPLY_FALLBACK_ALERT],
+      alerts: [APPLY_FALLBACK_ALERT],
+    }),
+  );
+});
+
+test("an Apply failure, then a Save failure, shows only the Save alert", async () => {
+  mockPanel({ save: () => fail(500), apply: () => fail(422, UNREADABLE) });
+  wrap(<NamingPanel />);
+  const def = await screen.findByDisplayValue(/\$albumartist/);
+  await userEvent.click(await screen.findByRole("button", { name: "Apply" }));
+  await screen.findByText(REFUSED_ALERT);
+
+  await userEvent.type(def, "X");
+  await userEvent.click(screen.getByRole("button", { name: /save naming/i }));
+  await waitFor(() =>
+    expect(namingState()).toEqual({
+      save: "Save naming",
+      apply: "Apply",
+      lines: [],
+      below: [SAVE_FALLBACK_ALERT],
+      alerts: [SAVE_FALLBACK_ALERT],
+    }),
+  );
+});
+
+test("an Apply failure hides the Saved cue: the alert carries the recovery", async () => {
+  mockPanel({ apply: () => fail(422, UNREADABLE) });
+  wrap(<NamingPanel />);
+  await screen.findByDisplayValue(/\$albumartist/);
+  // The cue shows while nothing has failed.
+  await waitFor(() =>
+    expect(namingState()).toEqual({
+      save: "Save naming (off)",
+      apply: "Apply",
+      lines: [CUE],
+      below: [],
+      alerts: [],
+    }),
+  );
+
+  await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+  await waitFor(() =>
+    expect(namingState()).toEqual({
+      save: "Save naming (off)",
+      apply: "Apply",
+      lines: [],
+      below: [REFUSED_ALERT],
+      alerts: [REFUSED_ALERT],
+    }),
+  );
+});
+
+test("an Apply 409 asks the job probes again, and the paused line speaks for the job", async () => {
+  // The job started elsewhere after this panel last asked.
+  let running = false;
+  mockPanel({
+    apply: () => {
+      running = true;
+      return fail(409, { detail: "a library job is running" });
+    },
+    jobActive: () => running,
+  });
+  wrap(<NamingPanel />);
+  await screen.findByDisplayValue(/\$albumartist/);
+  await userEvent.click(await screen.findByRole("button", { name: "Apply" }));
+
+  await waitFor(() =>
+    expect(namingState()).toEqual({
+      save: "Save naming (off)",
+      apply: "Apply (off)",
+      lines: ["Apply paused: an import is running; available when it finishes."],
+      below: [],
+      alerts: [],
+    }),
+  );
+});
+
+test("an Apply 409 after the job has ended leaves nothing about a job", async () => {
+  const hits = mockPanel({
+    apply: () => fail(409, { detail: "a library job is running" }),
+  });
+  wrap(<NamingPanel />);
+  await screen.findByDisplayValue(/\$albumartist/);
+  const applyBtn = await screen.findByRole("button", { name: "Apply" });
+  await waitFor(() => expect(hits.probe).toBeGreaterThan(0));
+  const probesBefore = hits.probe;
+  await userEvent.click(applyBtn);
+
+  await waitFor(() => expect(hits.apply).toBe(1));
+  await waitFor(() => expect(hits.probe).toBeGreaterThan(probesBefore));
+  await waitFor(() =>
+    expect(namingState()).toEqual({
+      save: "Save naming (off)",
+      apply: "Apply",
+      lines: [CUE],
+      below: [],
+      alerts: [],
+    }),
+  );
+});
+
+test("Apply is off while a Save is in flight", async () => {
+  mockPanel({ save: never });
+  wrap(<NamingPanel />);
+  await userEvent.type(await screen.findByDisplayValue(/\$albumartist/), "X");
+  // Control: both are on before the Save.
+  await waitFor(() =>
+    expect(namingState()).toEqual({
+      save: "Save naming",
+      apply: "Apply",
+      lines: [CUE],
+      below: [],
+      alerts: [],
+    }),
+  );
+
+  await userEvent.click(screen.getByRole("button", { name: /save naming/i }));
+  expect(namingState()).toEqual({
+    save: "Saving… (off)",
+    apply: "Apply (off)",
+    lines: [],
+    below: [],
+    alerts: [],
+  });
+});
+
+test("Save is off while an Apply is in flight", async () => {
+  mockPanel({ apply: never });
+  wrap(<NamingPanel />);
+  await userEvent.type(await screen.findByDisplayValue(/\$albumartist/), "X");
+  await waitFor(() =>
+    expect(namingState()).toEqual({
+      save: "Save naming",
+      apply: "Apply",
+      lines: [CUE],
+      below: [],
+      alerts: [],
+    }),
+  );
+
+  await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+  expect(namingState()).toEqual({
+    save: "Save naming (off)",
+    apply: "Applying… (off)",
+    lines: [CUE],
+    below: [],
+    alerts: [],
+  });
 });
 
 test("a Save 422 for a bad replace: pattern keeps the fixed sentence", async () => {

@@ -113,15 +113,15 @@ export function NamingPanel() {
 }
 
 function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
-  const [base, setBase] = useState({
+  const [base, setBaseState] = useState({
     default: initial.default ?? "",
     comp: initial.comp ?? "",
     singleton: initial.singleton ?? "",
   });
-  const [custom, setCustom] = useState<CustomRow[]>(
+  const [custom, setCustomState] = useState<CustomRow[]>(
     initial.custom.map((c) => ({ ...c, id: mkId() })),
   );
-  const [replace, setReplace] = useState<ReplaceRow[]>(
+  const [replace, setReplaceState] = useState<ReplaceRow[]>(
     initial.replace.map((r) => ({ ...r, id: mkId() })),
   );
   const [previews, setPreviews] = useState<RenderedRule[]>(initial.previews);
@@ -143,6 +143,21 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
   // clears automatically once Apply reloads beets.
   const config = useBeetsConfig();
   const applyPending = config.data?.apply_pending ?? false;
+
+  // Every draft edit goes through these, and ends the last Save's failure:
+  // its alert is about a draft that is gone, and one hidden by the replace
+  // line and shown again would be announced twice for one Save.
+  function draftSetter<T>(
+    set: React.Dispatch<React.SetStateAction<T>>,
+  ): React.Dispatch<React.SetStateAction<T>> {
+    return (value) => {
+      if (save.isError) save.reset();
+      set(value);
+    };
+  }
+  const setBase = draftSetter(setBaseState);
+  const setCustom = draftSetter(setCustomState);
+  const setReplace = draftSetter(setReplaceState);
 
   // Tracks the focused template input so the Insert palette writes at the caret.
   const focusedRef = useRef<HTMLInputElement | null>(null);
@@ -232,8 +247,12 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
     });
   }
 
+  // One alert at a time, the latest action's: each click ends the other's
+  // failure. Neither fires while the other is in flight (the buttons say so),
+  // so a reset never drops a pending result.
   function handleSave() {
     setConflict(false);
+    apply.reset();
     const rules = assemble(base, custom).filter(
       (r) => r.template.trim() !== "",
     );
@@ -251,6 +270,18 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
     );
   }
 
+  function handleApply() {
+    save.reset();
+    // A 409 means a job this panel has not seen holds the library. Ask the
+    // probes again so the "Apply paused" line speaks for it, and goes when
+    // the job ends.
+    apply.mutate(undefined, {
+      onError: (err) => {
+        if (err.status === 409) job.refetch();
+      },
+    });
+  }
+
   function reloadFromDisk() {
     setConflict(false);
     // Reseed THIS panel from the on-disk values (a fresh sha remounts the
@@ -264,6 +295,9 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
   // from a template/regex the preview missed or about config.yaml on disk, a
   // 500, or a network failure.
   const saveError = save.isError && save.error?.status !== 409;
+  // An Apply failure other than the library-job 409, which the "Apply paused"
+  // line speaks for once the probes see the job.
+  const applyFailed = apply.isError && apply.error?.status !== 409;
 
   return (
     <SettingsSection title="Naming">
@@ -393,14 +427,18 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
       <div className="border-border mt-2 flex flex-wrap items-center gap-3 border-t pt-3">
         <Button
           onClick={handleSave}
-          disabled={save.isPending || hasReplaceErrors || !dirty}
+          disabled={
+            save.isPending || apply.isPending || hasReplaceErrors || !dirty
+          }
         >
           {save.isPending ? "Saving…" : "Save naming"}
         </Button>
         <Button
           variant="outline"
-          onClick={() => apply.mutate()}
-          disabled={apply.isPending || job.active || !applyPending}
+          onClick={handleApply}
+          disabled={
+            apply.isPending || save.isPending || job.active || !applyPending
+          }
         >
           {apply.isPending ? "Applying…" : "Apply"}
         </Button>
@@ -413,6 +451,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
           applyPending &&
           !save.isPending &&
           !saveError &&
+          !applyFailed &&
           !conflict &&
           !job.active && (
             <output className="text-muted-foreground text-sm block">
@@ -433,17 +472,11 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
           Save failed. {saveFailureDetail(save.error?.onDisk)}
         </p>
       )}
-      {apply.isError &&
-        (apply.error?.status === 409 ? (
-          <output className="text-muted-foreground text-sm block">
-            A library job is running; Apply will be available when it finishes.
-          </output>
-        ) : (
-          <p className="text-destructive text-sm break-words" role="alert">
-            Apply failed.{" "}
-            {applyRecoveryHint(apply.error) ?? APPLY_FALLBACK}
-          </p>
-        ))}
+      {applyFailed && (
+        <p className="text-destructive text-sm break-words" role="alert">
+          Apply failed. {applyRecoveryHint(apply.error) ?? APPLY_FALLBACK}
+        </p>
+      )}
     </SettingsSection>
   );
 }
