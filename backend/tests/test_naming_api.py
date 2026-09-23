@@ -1,5 +1,6 @@
 import hashlib
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -348,6 +349,85 @@ def test_naming_reads_and_saves_one_letter_replacements_as_beets_reads_them(
     assert r.status_code == 200, r.text
     assert cfg.read_text(encoding="utf-8") == "replace:\n  ñ: n\n  ý: y\n"
     assert read_config_document(cfg) == {"replace": {"ñ": "n", "ý": "y"}}
+
+
+def _chain_to_dotfile(cfg: Path, mode: int) -> Path:
+    """``cfg`` -> ``hop.yaml`` -> ``dotfiles/config.yaml``, both links absolute."""
+    dotfile = cfg.parent / "dotfiles" / "config.yaml"
+    dotfile.parent.mkdir()
+    dotfile.write_text(cfg.read_text(encoding="utf-8"), encoding="utf-8")
+    dotfile.chmod(mode)
+    hop = cfg.parent / "hop.yaml"
+    hop.symlink_to(dotfile)
+    cfg.unlink()
+    cfg.symlink_to(hop)
+    return dotfile
+
+
+@pytest.mark.parametrize("umask", [0o000, 0o077], ids=["umask000", "umask077"])
+@pytest.mark.parametrize("mode", [0o600, 0o444], ids=["0600", "0444"])
+def test_save_naming_over_a_symlinked_config_writes_the_target_and_keeps_the_link(
+    client: TestClient, beets_library: LibraryHandle, mode: int, umask: int
+) -> None:
+    """The Naming twin of the Save test, over a chain of two links."""
+    cfg = beets_library.config_path
+    dotfile = _chain_to_dotfile(cfg, mode)
+    hop = cfg.parent / "hop.yaml"
+    sha = _cfg_sha(client)
+
+    old_umask = os.umask(umask)
+    try:
+        r = client.post(
+            "/api/config/naming/save",
+            json={"rules": [_SAVED_RULE], "replace": [], "base_sha256": sha},
+        )
+    finally:
+        os.umask(old_umask)
+
+    assert r.status_code == 200, r.text
+    assert (os.readlink(cfg), os.readlink(hop)) == (str(hop), str(dotfile))
+    text = dotfile.read_text(encoding="utf-8")
+    assert text.endswith("paths:\n  default: $artist/$title\n")
+    assert stat.S_IMODE(dotfile.stat().st_mode) == mode
+    assert sorted(os.listdir(dotfile.parent)) == ["config.yaml"]
+    body = client.get("/api/config/naming").json()
+    assert body["default"] == "$artist/$title"
+    assert body["sha256"] == hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")
+def test_save_naming_refuses_when_config_yaml_cannot_be_written_and_changes_nothing(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """Measured before: a bare 500."""
+    cfg = beets_library.config_path
+    dotfile = _chain_to_dotfile(cfg, 0o600)
+    before = dotfile.read_bytes()
+    sha = _cfg_sha(client)
+
+    dotfile.parent.chmod(0o555)
+    try:
+        r = client.post(
+            "/api/config/naming/save",
+            json={"rules": [_SAVED_RULE], "replace": [], "base_sha256": sha},
+        )
+    finally:
+        dotfile.parent.chmod(0o755)
+
+    assert r.status_code == 422, r.text
+    assert r.json() == {
+        "detail": [
+            {
+                "loc": "",
+                "msg": "config.yaml could not be written: Permission denied.",
+                "type": "config_on_disk",
+            }
+        ]
+    }
+    assert os.readlink(cfg) == str(cfg.parent / "hop.yaml")
+    assert dotfile.read_bytes() == before
+    assert stat.S_IMODE(dotfile.stat().st_mode) == 0o600
+    assert sorted(os.listdir(dotfile.parent)) == ["config.yaml"]
 
 
 def _unreadable_config(cfg: Path, shape: str) -> str:

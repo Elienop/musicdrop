@@ -240,7 +240,8 @@ class ValidationErrorItem(BaseModel):
     (CodeMirror reference manual)."""
 
     loc: str
-    """Dotted path, e.g. ``"import.copy"``. Empty for a YAML parse error or an unreadable file."""
+    """Dotted path, e.g. ``"import.copy"``. Empty for a YAML parse error or a file
+    that cannot be read or written."""
 
     msg: str
     type: str

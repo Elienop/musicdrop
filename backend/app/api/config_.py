@@ -83,7 +83,7 @@ _SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
         # The rows carry a 1-based line and 0-based column where there is one,
         # and a malformed request body answers with FastAPI's own shape instead.
         "The YAML did not parse, a key has the wrong shape, its directory:/library:"
-        " would break the store layout, or config.yaml on disk cannot be read; the"
+        " would break the store layout, or config.yaml on disk cannot be read or written; the"
         " body lists one item per problem."
     ),
 )
@@ -94,15 +94,15 @@ _SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
 #: row (``loc`` is ``replace[<index>]``) rather than from a position in the YAML
 #: document. Sharing one model would promise a line number this route can never
 #: send - see app/models/errors.py::NamingRuleError. A config.yaml on disk that
-#: cannot be read, does not parse or is not a mapping is one row with an empty
+#: cannot be read or written, does not parse or is not a mapping is one row with an empty
 #: ``loc``.
 _NAMING_SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
     NamingValidationErrorDetail,
     (
         "A submitted replace: pattern is not a valid regular expression, or"
-        " config.yaml on disk cannot be read, does not parse or is not a mapping, so the save was"
-        " refused before anything was written; the body names the problem. A malformed request"
-        " body answers with FastAPI's validation shape instead."
+        " config.yaml on disk cannot be read or written, does not parse or is not a mapping; the"
+        " body names the problem. A malformed request body answers with FastAPI's validation"
+        " shape instead."
     ),
 )
 
@@ -193,7 +193,7 @@ def save_config(req: SaveRequest, request: Request) -> BeetsConfigSnapshot:
     # The rest of the contract is here rather than in the docstring, which
     # FastAPI publishes whole: the response is the freshly-built
     # ``BeetsConfigSnapshot``, whose ``apply_pending`` is ``True`` until Apply
-    # reloads beets' globals; 422 on a parse, schema or store-layout failure;
+    # reloads beets' globals; 422 on a parse, schema, store-layout, read or write failure;
     # 409 on a CAS mismatch.
     #
     # A comment, not a docstring paragraph — FastAPI publishes the docstring as

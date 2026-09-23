@@ -168,7 +168,7 @@ class ConfigValidationErrorDetail(BaseModel):
 
 class NamingRuleError(BaseModel):
     """One rejected ``replace:`` row of ``POST /api/config/naming/save``, or its
-    config.yaml on disk that cannot be read, does not parse or is not a mapping
+    config.yaml on disk that cannot be read or written, does not parse or is not a mapping
     (``loc`` empty).
 
     The same three keys as a :class:`~app.models.config_editor.ValidationErrorItem`

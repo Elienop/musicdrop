@@ -4390,7 +4390,7 @@
             }
           },
           "422": {
-            "description": "The YAML did not parse, a key has the wrong shape, its directory:/library: would break the store layout, or config.yaml on disk cannot be read; the body lists one item per problem.",
+            "description": "The YAML did not parse, a key has the wrong shape, its directory:/library: would break the store layout, or config.yaml on disk cannot be read or written; the body lists one item per problem.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4680,7 +4680,7 @@
             }
           },
           "422": {
-            "description": "A submitted replace: pattern is not a valid regular expression, or config.yaml on disk cannot be read, does not parse or is not a mapping, so the save was refused before anything was written; the body names the problem. A malformed request body answers with FastAPI's validation shape instead.",
+            "description": "A submitted replace: pattern is not a valid regular expression, or config.yaml on disk cannot be read or written, does not parse or is not a mapping; the body names the problem. A malformed request body answers with FastAPI's validation shape instead.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4710,7 +4710,7 @@
                               "type"
                             ],
                             "title": "NamingRuleError",
-                            "description": "One rejected ``replace:`` row of ``POST /api/config/naming/save``, or its\nconfig.yaml on disk that cannot be read, does not parse or is not a mapping\n(``loc`` empty).\n\nThe same three keys as a :class:`~app.models.config_editor.ValidationErrorItem`\nand DELIBERATELY not that model: the naming save builds these dicts by hand\n(``app/beets/config_editor.py::save_naming``) with no ``line``/``column``,\nbecause a bad regex comes from a form row rather than from a position in the\nYAML document - ``loc`` is the row index (``\"replace[0]\"``), which is what\nthe panel would highlight. Reusing the five-field model here would promise a\nline number this route can never send."
+                            "description": "One rejected ``replace:`` row of ``POST /api/config/naming/save``, or its\nconfig.yaml on disk that cannot be read or written, does not parse or is not a mapping\n(``loc`` empty).\n\nThe same three keys as a :class:`~app.models.config_editor.ValidationErrorItem`\nand DELIBERATELY not that model: the naming save builds these dicts by hand\n(``app/beets/config_editor.py::save_naming``) with no ``line``/``column``,\nbecause a bad regex comes from a form row rather than from a position in the\nYAML document - ``loc`` is the row index (``\"replace[0]\"``), which is what\nthe panel would highlight. Reusing the five-field model here would promise a\nline number this route can never send."
                           },
                           "type": "array",
                           "title": "Detail"

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -111,29 +112,88 @@ def test_save_writes_one_letter_replacements_as_beets_reads_them(
     assert read_config_document(cfg)["replace"] == {"ñ": "n", "ý": "y"}
 
 
-def test_save_over_a_symlinked_config_keeps_the_targets_mode(
-    client: TestClient, beets_library_config_path: Path
-) -> None:
-    """Measured before: a dotfiles-linked 0o600 config.yaml became a 0o644 file."""
-    cfg = beets_library_config_path
-    dotfile = cfg.parent / "dotfiles-config.yaml"
+def _link_to_dotfile(cfg: Path, mode: int) -> Path:
+    """Move ``cfg`` into a ``dotfiles`` folder and leave a RELATIVE link to it."""
+    dotfile = cfg.parent / "dotfiles" / "config.yaml"
+    dotfile.parent.mkdir()
     dotfile.write_text(cfg.read_text(encoding="utf-8"), encoding="utf-8")
-    dotfile.chmod(0o600)
+    dotfile.chmod(mode)
     cfg.unlink()
-    cfg.symlink_to(dotfile)
-    original = dotfile.read_text(encoding="utf-8")
-    text = original + "# saved\n"
+    cfg.symlink_to(Path("dotfiles") / "config.yaml")
+    return dotfile
 
-    old_umask = os.umask(0o022)
+
+# umask 000 shows a mode taken from the umask, 077 one the create narrowed.
+_UMASK_PROOF = pytest.mark.parametrize("umask", [0o000, 0o077], ids=["umask000", "umask077"])
+
+
+@_UMASK_PROOF
+@pytest.mark.parametrize("mode", [0o600, 0o444], ids=["0600", "0444"])
+def test_save_over_a_symlinked_config_writes_the_target_and_keeps_the_link(
+    client: TestClient, beets_library_config_path: Path, mode: int, umask: int
+) -> None:
+    """Measured before: the link was replaced by a regular file, so a dotfiles copy
+    stopped getting edits (owner ruling, vault decisions #59)."""
+    cfg = beets_library_config_path
+    music = cfg.read_text(encoding="utf-8").splitlines()[0]
+    dotfile = _link_to_dotfile(cfg, mode)
+    text = f"{music}\nlibrary: library.db\n# saved\n"
+
+    old_umask = os.umask(umask)
     try:
         r = client.post("/api/config/save", json={"yaml_text": text, "base_sha256": _cas(client)})
     finally:
         os.umask(old_umask)
 
     assert r.status_code == 200, r.text
-    assert not cfg.is_symlink()
-    assert oct(os.stat(cfg).st_mode & 0o777) == oct(0o600)
-    assert dotfile.read_text(encoding="utf-8") == original
+    assert r.json()["apply_pending"] is True
+    assert os.readlink(cfg) == os.path.join("dotfiles", "config.yaml")
+    assert dotfile.read_text(encoding="utf-8") == text
+    assert stat.S_IMODE(dotfile.stat().st_mode) == mode
+    assert sorted(os.listdir(dotfile.parent)) == ["config.yaml"]
+    snapshot = client.get("/api/config").json()
+    assert snapshot["yaml_text"] == text
+    assert snapshot["sha256"] == hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")
+@pytest.mark.parametrize("shape", ["link", "regular"])
+def test_save_refuses_when_config_yaml_cannot_be_written_and_changes_nothing(
+    client: TestClient, beets_library_config_path: Path, shape: str
+) -> None:
+    """Measured before: a bare 500. The folder the temp goes in is read-only: the
+    link target's for a link, config.yaml's own for a regular file."""
+    cfg = beets_library_config_path
+    target = _link_to_dotfile(cfg, 0o600) if shape == "link" else cfg
+    before = (target.read_bytes(), stat.S_IMODE(target.stat().st_mode))
+    listing = sorted(os.listdir(target.parent))
+    sha = _cas(client)
+
+    target.parent.chmod(0o555)
+    try:
+        r = client.post(
+            "/api/config/save", json={"yaml_text": before[0].decode() + "# x\n", "base_sha256": sha}
+        )
+    finally:
+        target.parent.chmod(0o755)
+
+    assert r.status_code == 422, r.text
+    assert r.json() == {
+        "detail": [
+            {
+                "loc": "",
+                "msg": "config.yaml could not be written: Permission denied.",
+                "type": "config_on_disk",
+                "line": None,
+                "column": None,
+            }
+        ]
+    }
+    assert os.path.islink(cfg) is (shape == "link")
+    if shape == "link":
+        assert os.readlink(cfg) == os.path.join("dotfiles", "config.yaml")
+    assert (target.read_bytes(), stat.S_IMODE(target.stat().st_mode)) == before
+    assert sorted(os.listdir(target.parent)) == listing
 
 
 def test_save_422_on_invalid_yaml(client: TestClient) -> None:

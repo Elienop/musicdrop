@@ -28,6 +28,7 @@ import asyncio
 import hashlib
 import io
 import logging
+import os
 import re
 import stat
 import threading
@@ -422,6 +423,10 @@ def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
     over would mask "the user just saved" and the Apply button would never light
     up. First write: the umask default. See ``write_atomic_bytes`` for what
     ``None`` does when the target is not a regular file.
+
+    A symlinked ``dst`` is written through: the resolved path is published, so
+    the link stays and its target gets the bytes and keeps its mode. The temp
+    goes in the target's folder, so that folder must be writable.
     """
     # Dump to a buffer and strip the "%YAML 1.1" directive prologue (see
     # _strip_yaml_directive) rather than write ``yaml.dump(data, f)`` directly:
@@ -434,7 +439,9 @@ def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
     # octals as ``0644`` and quotes ``?`` in a flow collection.
     buf = io.StringIO()
     yaml.dump(data, buf)
-    write_atomic_text(dst, _strip_yaml_directive(buf.getvalue()), mode=None)
+    # realpath, not one readlink: a relative link and a chain resolve too.
+    target = Path(os.path.realpath(dst))
+    write_atomic_text(target, _strip_yaml_directive(buf.getvalue()), mode=None)
 
 
 # Serializes the read-SHA -> compare -> atomic-write of ``save``/``save_naming``
@@ -472,7 +479,7 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
        own mode preserved (``mode=None``). The submitted document is written
        verbatim (no secret-preserve merge: the editor serves and edits the raw
        file). Mode bits only: atime/mtime advance so step 5's freshness signal
-       fires.
+       fires. A symlinked config.yaml's target is written; an OS error -> 422.
     5. **Return new snapshot** — ``apply_pending`` will be ``True`` because the
        mtime advanced past ``handle.file_mtime_at_load`` (this is the load-bearing
        reason ``atomic_write`` preserves the mode and not the mtime — a frozen
@@ -533,10 +540,29 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
     # concurrent save can't pass the same-base check and clobber this one
     # (last-writer-wins).
     with _SAVE_LOCK:
-        # A 422, and no write: the file is not created, because Apply's
-        # recovery for a missing file is to restore it.
+        # A 422 when the read fails, and no write: the file is not created,
+        # because Apply's recovery for a missing file is to restore it. A 422
+        # too when the write fails.
         try:
             on_disk_bytes = _read_on_disk(handle.config_path)
+            on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
+            if on_disk_sha != req.base_sha256:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "detail": "File changed on disk",
+                        # ``replace``: the conflict panel only shows it.
+                        "current_yaml_text": on_disk_bytes.decode("utf-8", errors="replace"),
+                        "current_sha256": on_disk_sha,
+                    },
+                )
+
+            # 4. Atomic write. The editor serves and edits the RAW file (secrets
+            # included), so the submitted document IS the intended file — write it
+            # straight back. There is deliberately no secret-preserve merge: masking
+            # the served text is what used to clobber list-nested credentials with
+            # "REDACTED" and flatten the user's comments/anchors on the round-trip.
+            _write_on_disk(handle.config_path, new_map, yaml)
         except _UnusableOnDisk as exc:
             raise HTTPException(
                 status_code=422,
@@ -550,24 +576,6 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
                     }
                 ],
             ) from exc
-        on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
-        if on_disk_sha != req.base_sha256:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "detail": "File changed on disk",
-                    # ``replace``: the conflict panel only shows it.
-                    "current_yaml_text": on_disk_bytes.decode("utf-8", errors="replace"),
-                    "current_sha256": on_disk_sha,
-                },
-            )
-
-        # 4. Atomic write. The editor serves and edits the RAW file (secrets
-        # included), so the submitted document IS the intended file — write it
-        # straight back. There is deliberately no secret-preserve merge: masking
-        # the served text is what used to clobber list-nested credentials with
-        # "REDACTED" and flatten the user's comments/anchors on the round-trip.
-        atomic_write(handle.config_path, new_map, yaml)
 
     # 5. Return the new snapshot. apply_pending will be True because mtime
     # advanced past handle.file_mtime_at_load — Task 8's Apply endpoint clears it.
@@ -619,7 +627,7 @@ class _UnusableOnDisk(Exception):
 
 
 #: The ``type`` on a 422 row about config.yaml ON DISK rather than the submitted
-#: text: it cannot be read, does not parse, or is not a mapping.
+#: text: it cannot be read or written, does not parse, or is not a mapping.
 _ON_DISK_ERROR_TYPE: Final = "config_on_disk"
 
 
@@ -637,6 +645,20 @@ def _read_on_disk(config_path: Path) -> bytes:
     except OSError as exc:
         raise _UnusableOnDisk(
             f"config.yaml could not be read: {exc.strerror or type(exc).__name__}."
+        ) from exc
+
+
+def _write_on_disk(config_path: Path, data: CommentedMap, yaml: YAML) -> None:
+    """:func:`atomic_write` for both save routes; an OS error is a 422.
+
+    Measured before: a 500. A failure before the publish leaves the file, and a
+    link at it, as they were; only the folder fsync runs after the publish.
+    """
+    try:
+        atomic_write(config_path, data, yaml)
+    except OSError as exc:
+        raise _UnusableOnDisk(
+            f"config.yaml could not be written: {exc.strerror or type(exc).__name__}."
         ) from exc
 
 
@@ -793,7 +815,7 @@ def save_naming(handle: LibraryHandle, req: SaveNamingRequest) -> BeetsConfigSna
        and ``replace:`` nodes (empty -> drop the key); every other key, comment,
        and secret is untouched.
     4. **Atomic write** + return the standard snapshot (``apply_pending`` True
-       until Apply reloads beets).
+       until Apply reloads beets). An OS error -> 422.
 
     No :func:`store_layout_report` step, unlike :func:`save`: step 3 rewrites
     exactly two nodes and neither is ``directory:``, so the music root this
@@ -837,24 +859,24 @@ def save_naming(handle: LibraryHandle, req: SaveNamingRequest) -> BeetsConfigSna
 
             # 3. Round-trip merge — only the two nodes change.
             doc = _on_disk_mapping(on_disk_bytes)
+            paths = _naming_map(req.rules)
+            if paths:
+                doc["paths"] = paths
+            else:
+                doc.pop("paths", None)
+            replace = _replace_map(req.replace)
+            if replace:
+                doc["replace"] = replace
+            else:
+                doc.pop("replace", None)
+
+            # 4. Atomic write + snapshot.
+            _write_on_disk(handle.config_path, doc, yaml)
         except _UnusableOnDisk as exc:
             raise HTTPException(
                 status_code=422,
                 detail=[{"loc": "", "msg": str(exc), "type": _ON_DISK_ERROR_TYPE}],
             ) from exc
-        paths = _naming_map(req.rules)
-        if paths:
-            doc["paths"] = paths
-        else:
-            doc.pop("paths", None)
-        replace = _replace_map(req.replace)
-        if replace:
-            doc["replace"] = replace
-        else:
-            doc.pop("replace", None)
-
-        # 4. Atomic write + snapshot.
-        atomic_write(handle.config_path, doc, yaml)
     return build_config_snapshot(handle)
 
 

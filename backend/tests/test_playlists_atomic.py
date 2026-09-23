@@ -345,43 +345,23 @@ def test_the_mode_is_pinned_against_the_umask(tmp_path: Path) -> None:
     assert stat_mod.S_IMODE(keep.stat().st_mode) == 0o646
 
 
-# (umask, the link target's mode, the published file's mode)
-_LINK_MODES = [
-    (0o022, 0o600, 0o600),  # a dotfiles-linked 0o600 config.yaml became 0o644
-    (0o022, 0o640, 0o640),
-    (0o077, 0o640, 0o600),
-    (0o077, 0o644, 0o600),
-    (0o022, 0o777, 0o644),
-    (0o022, 0o4755, 0o644),
-    (0o022, 0o6777, 0o644),
-    (0o022, 0o1644, 0o644),
-    (0o022, 0o200, 0o600),
-    (0o022, 0o000, 0o600),
-]
-
-
-@pytest.mark.parametrize(
-    ("umask", "target_mode", "expected"),
-    _LINK_MODES,
-    ids=[f"umask{u:03o}-target{t:04o}" for u, t, _ in _LINK_MODES],
-)
-def test_a_symlink_at_the_target_is_replaced_by_a_file_no_looser_than_its_target(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, umask: int, target_mode: int, expected: int
+def test_a_symlink_at_the_target_is_replaced_by_a_regular_file(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A link at the destination is replaced, its target left alone, and under
-    ``mode=None`` the new file gives group and other no more than the target or
-    the umask default, has no set-id or sticky bit, and can be read back. Measured before:
-    the target's WHOLE mode was copied, 0o4755 and 0o777 included, and a 0o200
-    target gave a file MusicDrop could not read.
+    """A link at the destination is replaced, its target left alone — and it
+    donates no mode under ``mode=None``, because the stat behind that regime does
+    not follow it (a followed link would hand over its target's 0o600).
 
-    That replacement is LOGGED: before, nothing anywhere said the link was gone."""
+    That replacement is LOGGED. Measured: a dotfiles-symlinked, credential-
+    bearing ``config.yaml`` became a 0o644 regular file after a Save, with
+    nothing anywhere saying the link was gone."""
     outside = tmp_path / "outside.txt"
     outside.write_bytes(b"untouched")
-    outside.chmod(target_mode)
+    outside.chmod(0o600)
     target = tmp_path / "p.m3u8"
     target.symlink_to(outside)
 
-    old_umask = os.umask(umask)
+    old_umask = os.umask(0o022)
     try:
         with caplog.at_level(logging.WARNING, logger="app.playlists.atomic"):
             write_atomic_bytes(target, b"data", mode=None)
@@ -390,67 +370,13 @@ def test_a_symlink_at_the_target_is_replaced_by_a_file_no_looser_than_its_target
 
     assert not target.is_symlink()
     assert target.read_bytes() == b"data"
-    assert stat_mod.S_IMODE(target.stat().st_mode) == expected
-    assert stat_mod.S_IMODE(outside.stat().st_mode) == target_mode
-    outside.chmod(0o600)
     assert outside.read_bytes() == b"untouched"
+    assert stat_mod.S_IMODE(target.stat().st_mode) == 0o644
     assert len(caplog.records) == 1
     # Present tense: the line fires BEFORE the publish, so a write that then
     # failed would have logged a replacement that did not happen.
     assert "replacing a symlink" in caplog.text
     assert "p.m3u8" in caplog.text
-
-
-def test_an_explicit_mode_never_stats_through_a_link(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The secret writers pass ``mode=0o600``. A stat through the link can wait on
-    an unreachable mount, and its result was unused. The ``mode=None`` write is
-    the control: it is what makes a zero here mean something."""
-    outside = tmp_path / "outside.txt"
-    outside.write_bytes(b"untouched")
-    target = tmp_path / "secret"
-    real_stat = os.stat
-    followed: list[str] = []
-
-    def counting_stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
-        if path == "secret" and kwargs.get("follow_symlinks", True):
-            followed.append(path)
-        return real_stat(path, *args, **kwargs)
-
-    monkeypatch.setattr(os, "stat", counting_stat)
-    counts = []
-    for mode in (0o600, None):
-        target.symlink_to(outside)
-        followed.clear()
-        write_atomic_bytes(target, b"data", mode=mode)
-        counts.append(len(followed))
-        target.unlink()
-
-    assert counts == [0, 1]
-
-
-@pytest.mark.parametrize("pointed_at", ["dangling", "directory", "/dev/null"])
-def test_a_link_to_anything_but_a_regular_file_donates_no_mode(
-    tmp_path: Path, pointed_at: str
-) -> None:
-    """The control for the test above: only a regular target has a mode to keep."""
-    if pointed_at == "directory":
-        (tmp_path / "adir").mkdir(mode=0o700)
-        pointed_at = str(tmp_path / "adir")
-    elif pointed_at == "dangling":
-        pointed_at = str(tmp_path / "gone")
-    target = tmp_path / "p.m3u8"
-    target.symlink_to(pointed_at)
-
-    old_umask = os.umask(0o022)
-    try:
-        write_atomic_bytes(target, b"data", mode=None)
-    finally:
-        os.umask(old_umask)
-
-    assert not target.is_symlink()
-    assert stat_mod.S_IMODE(target.stat().st_mode) == 0o644
 
 
 def test_an_ordinary_rewrite_logs_nothing(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:

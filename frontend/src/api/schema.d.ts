@@ -8694,7 +8694,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The YAML did not parse, a key has the wrong shape, its directory:/library: would break the store layout, or config.yaml on disk cannot be read; the body lists one item per problem. */
+            /** @description The YAML did not parse, a key has the wrong shape, its directory:/library: would break the store layout, or config.yaml on disk cannot be read or written; the body lists one item per problem. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -8902,7 +8902,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description A submitted replace: pattern is not a valid regular expression, or config.yaml on disk cannot be read, does not parse or is not a mapping, so the save was refused before anything was written; the body names the problem. A malformed request body answers with FastAPI's validation shape instead. */
+            /** @description A submitted replace: pattern is not a valid regular expression, or config.yaml on disk cannot be read or written, does not parse or is not a mapping; the body names the problem. A malformed request body answers with FastAPI's validation shape instead. */
             422: {
                 headers: {
                     [name: string]: unknown;
