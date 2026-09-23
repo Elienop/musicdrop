@@ -827,8 +827,9 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   - A value beets rejects only when it reads it typed: `musicbrainz: no`, `plugins: 5`,
     `directory: 5` (`ConfigTypeError`).
   - A skipped include, which Validate and Save only advise on; Apply and boot refuse it.
-  - YAML that ruamel accepts and PyYAML refuses: `!!python/object/apply:…` tags and complex
-    keys such as `? [a]`.
+  - YAML that ruamel accepts and PyYAML refuses: `!!python/object/apply:…` tags, complex keys
+    such as `? [a]`, a bare `=` or `<<`, a NEL/LS/PS character in a plain value, and some flow
+    values such as `{k: 0:}`.
   Apply is no longer part of the harm: when beets rejects a value after the teardown, Apply puts
   the running config back and answers 422 with beets' error (owner ruling 2026-09-23). It
   answers 500 only if that restore fails too. Validate and Save DO refuse an include list over
@@ -840,11 +841,14 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `confuse/yaml_util.py:70-73`). So Validate, Save and the Naming routes refuse a file Apply and
   boot accept (review seats, measured). A negative leading-zero int (`-0644`) is the reverse: a
   ruamel bug writes it back as `!!int '0-644'`, which beets cannot load, so Apply answers 422
-  and a restart refuses. Every other scalar now reads as beets reads it: the editor's resolver
-  takes beets' own loader table (PR #232 round 10; measured over 101,360 values, the negative
-  leading-zero int is the only difference left). Fix shape not designed: Validate would parse
-  with beets' own loader (as `setup.read_config_document` does) and ask beets' typed reads, not
-  only ruamel. Search words: L4, ConfigTypeError, musicbrainz, boot,
+  and a restart refuses. Plain values in block style now read as beets reads them: the editor's
+  resolver reads a copy of beets' own loader table (PR #232 rounds 10-11; over 101,360 values
+  the negative leading-zero int is the only difference left). Tagged and flow values still
+  differ: `!!str x` reads as a ruamel TaggedScalar, `!!bool 'y'` as True where beets errors, and
+  a 7-digit timestamp fraction is rounded where beets truncates (security seat, measured). Fix
+  shape not designed: Validate would parse with beets' own loader (as
+  `setup.read_config_document` does) and ask beets' typed reads, not only ruamel. Search words:
+  L4, ConfigTypeError, musicbrainz, boot,
   validate, save, include, typed read, ruamel, PyYAML, duplicate key, y/n, implicit resolver.
 - **Small residuals of Apply's restore and the include gate** (review seats, 2026-09-23).
   - Each restore installs the plugins' default sources again: 5 more per restore with two
@@ -864,10 +868,13 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   - Save, the Naming routes and `GET /api/config` open `config.yaml` only when it is a regular
     file. A FIFO swapped in between that check and the open still blocks, the same gap confuse's
     own `os.path.isfile` read and Apply's gate have. The check bounds the file's type, not its
-    size: a huge or sparse regular `config.yaml` is read whole, and so is it by beets at boot, so
-    a cap in our routes alone would not keep MusicDrop up (security seat, reasoned; not run).
-  - Validate's messages name ruamel's internal types (`ScalarFloat`, `CommentedMap`) where
-    Apply's say `float`, `OrderedDict`.
+    size: our routes read a huge or sparse regular `config.yaml` whole. beets reads a huge VALID
+    file whole at boot too, but PyYAML reads in 4 KiB chunks and stops at the first NUL
+    (`yaml/reader.py:146-178`), so for a sparse file of NULs our routes would exhaust memory
+    where boot refuses at once (security seat, measured with a finite 256 KiB file). Only
+    someone with write access to the beets dir can plant one; no cap was added.
+  - Validate's message for a non-string `include:` entry names ruamel's internal types
+    (`ScalarFloat`, `CommentedMap`) where Apply's says `float`, `OrderedDict`.
   - At boot, the starter config is written through a dangling `config.yaml` link, to wherever it
     points (`setup.py` ~196-203). Only someone with write access to the beets dir can plant one.
   - The bank, slskd, Plex and playlist stores and the password-hash file re-read
