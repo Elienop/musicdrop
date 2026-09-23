@@ -828,8 +828,12 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     `directory: 5` (`ConfigTypeError`).
   - A skipped include, which Validate and Save only advise on; Apply and boot refuse it.
   - YAML that ruamel accepts and PyYAML refuses: `!!python/object/apply:…` tags, complex keys
-    such as `? [a]`, a bare `=` or `<<`, a NEL/LS/PS character in a plain value, and some flow
-    values such as `{k: 0:}`.
+    such as `? [a]`, and a bare `=` or `<<`. (A NEL/LS/PS character in a value, or `{k: 0:}`,
+    is read too, but a Save rewrites it into YAML beets loads.)
+  - Not a start refusal, but the same typed-read gap: `write`, `copy` or `move` set to a number
+    (`write: 1`) passes Validate and Save, and beets' `.get(bool)` refuses it. An import refuses
+    it before adding any row (the pre-check), and an album edit answers a bare 500 (review seats,
+    2026-09-23, measured).
   Apply is no longer part of the harm: when beets rejects a value after the teardown, Apply puts
   the running config back and answers 422 with beets' error (owner ruling 2026-09-23). It
   answers 500 only if that restore fails too. Validate and Save DO refuse an include list over
@@ -841,12 +845,12 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `confuse/yaml_util.py:70-73`). So Validate, Save and the Naming routes refuse a file Apply and
   boot accept (review seats, measured). A negative leading-zero int (`-0644`) is the reverse: a
   ruamel bug writes it back as `!!int '0-644'`, which beets cannot load, so Apply answers 422
-  and a restart refuses. Plain values in block style now read as beets reads them: the editor's
-  resolver reads a copy of beets' own loader table (PR #232 rounds 10-11; over 101,360 values
-  the negative leading-zero int is the only difference left). Tagged and flow values still
-  differ: `!!str x` reads as a ruamel TaggedScalar, `!!bool 'y'` as True where beets errors, and
-  a 7-digit timestamp fraction is rounded where beets truncates (security seat, measured). Fix
-  shape not designed: Validate would parse with beets' own loader (as
+  and a restart refuses. The editor's resolver reads a copy of beets' own loader table (PR #232
+  rounds 10-11): over 101,360 plain values, each resolves to the type beets gives it except the
+  negative leading-zero int. Still different: tagged values (`!!str x` reads as a ruamel
+  TaggedScalar, `!!bool 'y'` as True where beets errors), a timestamp with more than 6 fraction
+  digits (ruamel rounds, beets truncates), and the YAML listed above (review seats, measured).
+  Fix shape not designed: Validate would parse with beets' own loader (as
   `setup.read_config_document` does) and ask beets' typed reads, not only ruamel. Search words:
   L4, ConfigTypeError, musicbrainz, boot,
   validate, save, include, typed read, ruamel, PyYAML, duplicate key, y/n, implicit resolver.
@@ -873,10 +877,13 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     (`yaml/reader.py:146-178`), so for a sparse file of NULs our routes would exhaust memory
     where boot refuses at once (security seat, measured with a finite 256 KiB file). Only
     someone with write access to the beets dir can plant one; no cap was added.
-  - Validate's message for a non-string `include:` entry names ruamel's internal types
-    (`ScalarFloat`, `CommentedMap`) where Apply's says `float`, `OrderedDict`.
+  - Validate's message for a non-list `include:` or a non-string entry names ruamel's internal
+    types (`ScalarFloat`, `CommentedMap`) where Apply's says `float`, `OrderedDict`.
   - At boot, the starter config is written through a dangling `config.yaml` link, to wherever it
     points (`setup.py` ~196-203). Only someone with write access to the beets dir can plant one.
+  - The artwork toggle reads its `_enabled.json` at startup with no regular-file check
+    (`artwork/toggle.py:25`, from `main.py:404`): a FIFO there blocks startup (security seat,
+    measured; predates this branch). Only someone with write access to the data dir can plant one.
   - The bank, slskd, Plex and playlist stores and the password-hash file re-read
     `MUSICDROP_BEETS_DIR` on every call, so they follow a beets-dir symlink re-pointed while
     MusicDrop runs. Apply uses the dir resolved at boot. Measured: after a re-point to a dir with
@@ -4321,7 +4328,9 @@ Added by the 2026-08-28 sweeps:
   facet still advertises the whole library's Vinyl total, and ticking it returns a
   fraction of the promised number — reads as a filtering bug, is a labelling choice. Was
   in two docstrings and on no board.
-- The shipped starter-config header makes two false claims that become the header of the
+- ~~The shipped starter-config header makes two false claims.~~ **CLOSED 2026-09-23** on
+  `feat/import-keep-downloads` (PR #232): the header now says the Settings pages edit the file and
+  Apply loads it. Existing files keep their old header. It became the header of the
   USER'S own file on first run (`config.starter.yaml:2-3`): "MusicDrop reads it; it never
   writes back" (the config editor's save and save-naming both `atomic_write` it) and
   "Edit and restart MusicDrop to apply changes" (`POST /api/config/apply` re-arms beets

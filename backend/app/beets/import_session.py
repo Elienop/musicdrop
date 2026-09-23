@@ -2419,7 +2419,7 @@ def run_import_worker(
         # them with ``.get(bool)`` only after the rows are added: ``write`` in
         # ``manipulate_files`` (``importer/stages.py:296``), ``copy`` and
         # ``move`` in ``finalize`` (``importer/tasks.py:307-311``), after the
-        # album is filed. Without this, ``copy: 1`` in a hand-edited config
+        # album is filed. Without this, ``copy: 1`` in config.yaml
         # files the album and then fails the job.
         for validated in ("copy", "move", "write"):
             config["import"][validated].get(bool)

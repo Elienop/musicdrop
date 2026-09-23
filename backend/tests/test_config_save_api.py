@@ -171,7 +171,7 @@ def test_save_refuses_write_n_and_writes_nothing(
 ) -> None:
     """Round 10 made the Save keep ``write: n`` as written, where it used to
     rewrite it as ``false``. beets' ``.get(bool)`` refuses the string, so every
-    import would fail after adding its rows."""
+    import would fail."""
     before = beets_library_config_path.read_bytes()
     text = "directory: /tmp/music\nlibrary: /tmp/x\nimport:\n  write: n\n"
 

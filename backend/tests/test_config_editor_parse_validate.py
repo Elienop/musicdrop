@@ -135,7 +135,7 @@ def test_the_resolver_table_beets_reads_with_keeps_its_shape() -> None:
 
     ``None`` must stay absent: ruamel appends that key's list to a first
     character's list IN PLACE (``ruamel/yaml/resolver.py:357-358``), which
-    would grow the copy on every scalar of one load or dump.
+    would grow the copy on every matching scalar of one load or dump.
     """
     table = beets.config.loader.yaml_implicit_resolvers
     copied = _yaml().Resolver().versioned_resolver

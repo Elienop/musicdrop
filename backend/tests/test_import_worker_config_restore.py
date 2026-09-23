@@ -431,8 +431,8 @@ def test_the_resolved_file_operation_is_logged(caplog: Any) -> None:
 
 
 def test_a_non_bool_copy_is_refused_before_anything_is_filed() -> None:
-    """``copy`` and ``move`` are the only file flags a default import leaves to
-    the user's config, and beets reads both with ``.get(bool)`` — at
+    """``copy`` and ``move`` are file flags a default import leaves to the
+    user's config, and beets reads both with ``.get(bool)`` — at
     ``importer/tasks.py:307-311``, inside ``finalize``, which runs AFTER
     ``manipulate_files`` has already filed the album. So a hand-edited
     ``copy: 1`` (YAML parses bare ``1`` as int, and confuse's bool template
@@ -448,7 +448,7 @@ def test_a_non_bool_copy_is_refused_before_anything_is_filed() -> None:
 
     from app.beets.import_session import run_import_worker
 
-    config["import"]["copy"] = 1  # hand-edited config.yaml; Settings would coerce it
+    config["import"]["copy"] = 1  # Validate and Save accept it (BACKLOG)
 
     session = _RecordingSession()
     with pytest.raises(ConfigTypeError, match="must be a bool"):
@@ -471,7 +471,7 @@ def test_a_string_write_is_refused_before_any_row_is_added() -> None:
 
     from app.beets.import_session import run_import_worker
 
-    config["import"]["write"] = "n"  # hand-edited config.yaml; Validate and Save refuse it
+    config["import"]["write"] = "n"  # edited outside MusicDrop; Validate and Save refuse it
 
     session = _RecordingSession()
     with pytest.raises(ConfigTypeError, match=r"^import\.write: must be a bool, not str$"):

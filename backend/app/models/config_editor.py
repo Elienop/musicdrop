@@ -175,7 +175,7 @@ class ImportSection(BaseModel):
     )
     @classmethod
     def _reject_quoted_bool(cls, value: object, info: ValidationInfo) -> object:
-        """A string is the one value the editor must not accept.
+        """Refuse a string, which beets never reads as this bool.
 
         Pydantic's lax bool reads ``'no'``/``'off'``/``'false'``/``'0'`` as
         False. beets does not: it tests most of these flags with a bare ``if``
