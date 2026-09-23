@@ -29,8 +29,8 @@ default: their own comments say the preserve arm is all but unreachable from
 them, because what sits at the name has just been moved aside or unlinked.
 
 A SYMLINK at the destination is replaced by a regular file, and that is logged
-once, BEFORE the publish: the operator loses the link and, under ``mode=None``,
-the target's mode with it.
+once, BEFORE the publish: the operator loses the link. Under ``mode=None`` the
+new file takes the target's mode when the target is a regular file.
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ def _lstat_destination(name: str, dir_fd: int) -> os.stat_result | None:
     """What is at ``name`` right now, or None for a path this cannot stat.
 
     ``follow_symlinks=False``: this writer publishes over the LINK, so the link
-    is what the mode decision and the warning below are about — not its target.
+    is what the warning below is about; the mode then comes from its target.
     """
     try:
         return os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
@@ -90,11 +90,18 @@ def _lstat_destination(name: str, dir_fd: int) -> os.stat_result | None:
         return None
 
 
+def _link_target(name: str, dir_fd: int) -> os.stat_result | None:
+    """What the link at ``name`` points to, or None for a target this cannot stat."""
+    try:
+        return os.stat(name, dir_fd=dir_fd)
+    except OSError:
+        return None
+
+
 def _preserved_mode(existing: os.stat_result | None) -> int | None:
     """``existing``'s mode under ``mode=None``, or None to take the umask default.
 
-    A symlink or a directory donates nothing: only a REGULAR file has a mode
-    this writer is rewriting.
+    Only a REGULAR file donates one; a directory, a device or nothing does not.
     """
     if existing is None or not stat_mod.S_ISREG(existing.st_mode):
         return None
@@ -134,19 +141,21 @@ def _write_through_dir_fd(name: str, data: bytes, *, mode: int | None, dir_fd: i
     _sweep_stale_temps(dir_fd)
     # Read BEFORE the create so the preserved mode can never leave the temp
     # briefly looser than the file it replaces. mode=None with no regular file
-    # there (absent, symlink, directory) takes the umask default from 0o666.
+    # there (absent, directory, a link to anything else) takes the umask default
+    # from 0o666.
     existing = _lstat_destination(name, dir_fd)
     if existing is not None and stat_mod.S_ISLNK(existing.st_mode):
-        # The publish replaces the LINK, so the operator loses it and the new
-        # file takes the umask default instead of the target's mode: measured, a
-        # dotfiles-linked 0o600 config.yaml became a 0o644 regular file with
-        # nothing in the logs. Present tense: this runs BEFORE the publish, and a
-        # write that then fails replaced nothing.
+        # The publish replaces the LINK, so the operator loses it. Present tense:
+        # this runs BEFORE the publish, and a write that then fails replaced
+        # nothing.
         #
         # A BARE name, because for a ``dir_fd`` caller that is all this function
         # has — the parent belongs to the descriptor. The caller's own log line
         # is the locator (``'session_secret'`` alone says nothing about where).
         _log.warning("replacing a symlink with a regular file: %r", display_path(name))
+        # Under mode=None the new file takes the target's mode: measured without
+        # this, a dotfiles-linked 0o600 config.yaml became a 0o644 regular file.
+        existing = _link_target(name, dir_fd)
     final = _preserved_mode(existing) if mode is None else mode
     tmp = _tmp_name(name)
     try:
@@ -186,8 +195,9 @@ def write_atomic_bytes(
     ``mode``: an int is applied to the temp's fd, so it is the published file's
     mode exactly. ``None`` preserves the existing REGULAR file's mode on
     rewrite and otherwise takes the umask default — a symlink at ``path`` is
-    replaced by a regular file and donates no mode (its target is untouched,
-    and the replacement is logged once); a DIRECTORY at ``path`` makes
+    replaced by a regular file with its target's mode when that target is a
+    regular file (the target is untouched, and the replacement is logged
+    once); a DIRECTORY at ``path`` makes
     ``os.replace`` raise EISDIR and the temp is cleaned up.
 
     ``dir_fd``: when given, ``path.parent`` is never opened and no directory is

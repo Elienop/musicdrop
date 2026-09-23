@@ -174,7 +174,23 @@ def test_an_include_beets_would_skip_refuses_the_boot(
         with TestClient(real_app):
             pass  # pragma: no cover - the lifespan raises before the body runs
 
-    assert str(info.value) == "beets would skip the include gone.yaml: No such file or directory"
+    assert str(info.value) == "beets would skip the include 'gone.yaml': No such file or directory"
+    assert _boot_refusal(caplog) == _config_refusal(beets_dir, info.value)
+
+
+def test_a_skipped_include_is_named_escaped_at_boot(
+    beets_dir: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Named raw before: a newline and an ESC reached the lifespan traceback."""
+    _write(beets_dir, 'include:\n  - "m\\nFAKE \\e[31mx.yaml"\n')
+
+    with caplog.at_level(logging.ERROR), pytest.raises(ConfigUnreadable) as info:
+        with TestClient(real_app):
+            pass  # pragma: no cover - the lifespan raises before the body runs
+
+    assert str(info.value) == (
+        "beets would skip the include 'm\\nFAKE \\x1b[31mx.yaml': No such file or directory"
+    )
     assert _boot_refusal(caplog) == _config_refusal(beets_dir, info.value)
 
 
@@ -204,7 +220,7 @@ def test_a_skipped_include_names_why_at_boot(
         with TestClient(real_app):
             pass  # pragma: no cover - the lifespan raises before the body runs
 
-    assert str(info.value) == f"beets would skip the include bad.yaml: {reason}"
+    assert str(info.value) == f"beets would skip the include 'bad.yaml': {reason}"
     assert _boot_refusal(caplog) == _config_refusal(beets_dir, info.value)
 
 

@@ -185,7 +185,7 @@ def _refuse_a_broken_include(beets_dir: Path) -> None:
         raise ConfigUnreadable(str(exc)) from exc
     if skipped:
         raise ConfigUnreadable(
-            f"beets would skip the include {skipped[0].name}: {skipped[0].reason}"
+            f"beets would skip the include {skipped[0].name!r}: {skipped[0].reason}"
         )
 
 

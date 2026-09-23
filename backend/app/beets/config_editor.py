@@ -99,19 +99,33 @@ __all__ = [
 ]
 
 
-class _Yaml11Resolver(VersionedResolver):
-    """Resolves every scalar as YAML 1.1, as beets' PyYAML does.
+#: A YAML implicit-resolver table: first character -> ``(tag, regex)`` pairs.
+_ImplicitResolvers = dict[str | None, list[tuple[str, re.Pattern[str]]]]
 
-    ``yaml.version = (1, 1)`` did not hold: a ``---`` with no ``%YAML`` line
-    sets it back to ``None`` (``ruamel/yaml/parser.py:319-321``), and the
-    resolver then used 1.2 (``ruamel/yaml/compat.py:28``), where ``no`` is a
-    string. Scanner, parser, resolver and the dump's quoting all ask this
-    property.
+
+class _Yaml11Resolver(VersionedResolver):
+    """Resolves every plain scalar as beets' loader does, on load and on dump.
+
+    ruamel's own YAML 1.1 table is not PyYAML's: it reads ``y`` / ``n`` as
+    bools and ``+_1_`` as an int (``ruamel/yaml/resolver.py:32,65``). Measured:
+    ``replace: {'ñ': n}`` came back as ``False``, and a save wrote it as one.
+    The dump asks the same table whether a string needs quotes.
+
+    ``yaml.version = (1, 1)`` alone does not hold on load: a ``---`` with no
+    ``%YAML`` line sets it back to ``None`` (``ruamel/yaml/parser.py:319-321``),
+    and ruamel then uses 1.2 (``ruamel/yaml/compat.py:28``). Scanner, parser and
+    constructor ask ``processing_version``; measured without it, ``0644`` after
+    a ``---`` read as 644, where beets reads 420.
     """
 
     @property
     def processing_version(self) -> tuple[int, int]:
         return (1, 1)
+
+    @property
+    def versioned_resolver(self) -> _ImplicitResolvers:
+        # The loader beets reads config.yaml with (``setup.read_config_document``).
+        return cast(_ImplicitResolvers, beets.config.loader.yaml_implicit_resolvers)
 
 
 def _yaml() -> YAML:
@@ -122,9 +136,14 @@ def _yaml() -> YAML:
     * default ``typ='rt'`` (do NOT pass it explicitly — maintainer warns
       against it).
     * :class:`_Yaml11Resolver`, so ``yes`` / ``no`` are bools with or without a
-      ``---`` or a ``%YAML`` line, as beets reads them, and a dump quotes the
-      strings 1.1 would read back as bools. No ``yaml.version``: set, it made
-      every dump start with a ``%YAML 1.1`` line.
+      ``---`` or a ``%YAML`` line, as beets reads them.
+    * ``version = (1, 1)`` for the dump. The serializer keeps its own copy
+      (``ruamel/yaml/main.py:319``), and the dump reads it for an octal's prefix
+      (``representer.py:609``) and to quote ``?`` / ``:`` in a flow collection
+      (``emitter.py:1096,1109``). Measured without it: ``0644`` was written as
+      ``!!int '0o644'``, and a ``replace`` key ``\\?`` was written bare in a flow
+      mapping, which beets cannot parse. A load resets it to ``None``; every
+      dump uses a fresh instance.
     * ``preserve_quotes = True`` so the user's quoting style survives a
       round-trip.
     * ``indent(mapping=2, sequence=4, offset=2)`` — ruamel-recommended block
@@ -133,6 +152,7 @@ def _yaml() -> YAML:
     """
     yaml = YAML()
     yaml.Resolver = _Yaml11Resolver
+    yaml.version = (1, 1)
     yaml.preserve_quotes = True
     yaml.indent(mapping=2, sequence=4, offset=2)
     yaml.width = 4096
@@ -285,7 +305,7 @@ def _skipped_include_advisory(skipped: SkippedInclude) -> ConfigAdvisory:
     return ConfigAdvisory(
         key="include",
         message=(
-            f"beets cannot read the include {skipped.name} ({skipped.reason}). Apply and"
+            f"beets cannot read the include {skipped.name!r} ({skipped.reason}). Apply and"
             " a restart refuse this config until it can."
         ),
     )
@@ -351,6 +371,31 @@ def store_layout_report(
     )
 
 
+def _strip_yaml_directive(text: str) -> str:
+    """Drop a leading ``%YAML 1.1`` directive line and its ``---`` document-start.
+
+    ruamel emits this two-line prologue whenever ``yaml.version`` is set. We keep
+    the version on the dumper (octal prefix, flow quoting — see :func:`_yaml`)
+    but the directive itself is unwanted churn in the user's config.yaml, so we
+    peel it off the dumped text. Only a directive at the very top is stripped; a
+    ``---`` is removed only when it directly follows the directive (never a
+    ``---`` that legitimately appears inside the document).
+    """
+    if not text.startswith("%YAML"):
+        return text
+    newline = text.find("\n")
+    if newline == -1:
+        return text
+    rest = text[newline + 1 :]
+    if rest.startswith("---\n"):
+        rest = rest[len("---\n") :]
+    elif rest == "---\n".rstrip("\n") or rest.startswith("--- "):
+        # A "--- <inline scalar>" form (never produced for a mapping root, but be
+        # defensive): keep the content after the marker.
+        rest = rest[len("---") :].lstrip(" ")
+    return rest
+
+
 def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
     """Dump ``data`` and publish it as ``dst`` through the shared atomic writer.
 
@@ -369,13 +414,18 @@ def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
     up. First write: the umask default. See ``write_atomic_bytes`` for what
     ``None`` does when the target is not a regular file.
     """
-    # The resolver must stay :class:`_Yaml11Resolver` on the dump side too: the
-    # 1.2 one writes bool-token strings ("no"/"yes"/"on"/"off") and sexagesimals
-    # ("d:d:d") UNQUOTED, and they reload as bool/int (a naming ``replace`` rule
-    # value "no" became False, crashing beets' re.compile on Apply).
+    # Dump to a buffer and strip the "%YAML 1.1" directive prologue (see
+    # _strip_yaml_directive) rather than write ``yaml.dump(data, f)`` directly:
+    # ruamel injects that header on every dump whenever ``yaml.version`` is set,
+    # churning the user's hand-edited config.yaml (diff noise, a changed CAS sha,
+    # a no-op save that isn't byte-identical). Both 1.1 settings stay on the dump
+    # side (see :func:`_yaml`): the resolver quotes a string that would read
+    # back as a bool or an int ("no"; a naming ``replace`` value "no" became
+    # False, crashing beets' re.compile on Apply), and ``yaml.version`` keeps
+    # octals as ``0644`` and quotes ``?`` in a flow collection.
     buf = io.StringIO()
     yaml.dump(data, buf)
-    write_atomic_text(dst, buf.getvalue(), mode=None)
+    write_atomic_text(dst, _strip_yaml_directive(buf.getvalue()), mode=None)
 
 
 # Serializes the read-SHA -> compare -> atomic-write of ``save``/``save_naming``
@@ -869,8 +919,8 @@ def _read_refusal(exc: Exception) -> ApplyRefusal:
 
 def _skipped_include_refusal(skipped: SkippedInclude) -> ApplyRefusal:
     return ApplyRefusal(
-        f"Apply refused: beets would skip the include {skipped.name}: {skipped.reason}",
-        f"beets could not read the include {skipped.name} ({skipped.reason}), so nothing"
+        f"Apply refused: beets would skip the include {skipped.name!r}: {skipped.reason}",
+        f"beets could not read the include {skipped.name!r} ({skipped.reason}), so nothing"
         " was changed. Fix it and Apply again.",
     )
 

@@ -107,11 +107,12 @@ def test_save_naming_keeps_boolean_token_replace_rules_as_strings(
 ) -> None:
     # Regression: save_naming builds a FRESH CommentedMap of plain-str values, so
     # their quoting is decided by the dumper's YAML-version resolver, NOT by
-    # preserve_quotes. A bool-token pattern/replacement ("no"/"off"/"y") must be
+    # preserve_quotes. A bool-token pattern/replacement ("no"/"off") must be
     # emitted QUOTED so it reloads as a string. If the dumper used the 1.2 resolver
-    # (what dropping ``_Yaml11Resolver`` does), these dump BARE, then confuse/PyYAML and
-    # ruamel-1.1 re-type them to bool — beets' re.compile(False) crashes on Apply
-    # for a bool KEY, and a bool VALUE is silently dropped (`repl or ''`).
+    # (what dropping ``_Yaml11Resolver`` does), these dump BARE, then confuse/PyYAML
+    # re-type them to bool — beets' re.compile(False) crashes on Apply for a bool
+    # KEY, and a bool VALUE is silently dropped (`repl or ''`). "y" is a bool only
+    # in ruamel's own 1.1 table: beets reads it bare as a string.
     import yaml as pyyaml
 
     cfg_path = beets_library.config_path
@@ -121,7 +122,7 @@ def test_save_naming_keeps_boolean_token_replace_rules_as_strings(
         replace=[
             ReplaceRuleInput(pattern="no", replacement="_"),  # bool-token KEY
             ReplaceRuleInput(pattern="[<>]", replacement="off"),  # bool-token VALUE
-            ReplaceRuleInput(pattern="ñ", replacement="y"),  # bool-token VALUE
+            ReplaceRuleInput(pattern="ñ", replacement="y"),  # a bool in ruamel's table only
         ],
         base_sha256=_sha(cfg_path),
     )

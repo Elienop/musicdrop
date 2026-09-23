@@ -145,6 +145,36 @@ def test_validate_returns_all_distinct_schema_errors(client: TestClient) -> None
     assert "match.strong_rec_thresh" in locs
 
 
+_NOT_A_BOOL = "Value error, must be a bool: write yes or no, without quotes"
+
+
+def test_validate_refuses_a_quoted_and_an_unquoted_string_for_a_filing_flag(
+    client: TestClient,
+) -> None:
+    """The old text said "write y without the quotes" for an unquoted ``y``.
+
+    beets reads both as strings and refuses them (``must be a bool, not str``).
+    """
+    text = "directory: /tmp/music\nlibrary: /tmp/x\nimport:\n  copy: 'no'\n  move: y\n"
+
+    r = client.post("/api/config/validate", json={"yaml_text": text})
+
+    assert r.status_code == 200
+    assert r.json() == {
+        "errors": [
+            {
+                "loc": f"import.{key}",
+                "msg": _NOT_A_BOOL,
+                "type": "value_error",
+                "line": line,
+                "column": 8,
+            }
+            for key, line in (("copy", 4), ("move", 5))
+        ],
+        "advisories": [],
+    }
+
+
 def test_validate_reads_a_file_with_a_document_marker_as_yaml_1_1(client: TestClient) -> None:
     """``---`` made ruamel read ``yes`` as a string (YAML 1.2); beets reads a bool.
 
@@ -161,7 +191,7 @@ def test_validate_reads_a_file_with_a_document_marker_as_yaml_1_1(client: TestCl
         "errors": [
             {
                 "loc": "import.move",
-                "msg": "Value error, must be a bool: write maybe without the quotes",
+                "msg": _NOT_A_BOOL,
                 "type": "value_error",
                 "line": 7,
                 "column": 8,

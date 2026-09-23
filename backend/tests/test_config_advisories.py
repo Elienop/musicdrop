@@ -269,8 +269,8 @@ def test_a_quoted_boolean_is_refused_because_beets_reads_it_as_true() -> None:
     ``'no'``, ``'off'``, ``'false'``, ``'0'`` — editor False, beets True.
 
     Unquoted ``no`` parses to a real bool in ruamel and never reaches the
-    validator, so ordinary configs are untouched; this refuses the quoted
-    spelling only, and says how to fix it.
+    validator, so ordinary configs are untouched; this refuses a string only
+    (quoted, or an unquoted ``y`` beets also reads as one), and says how to fix it.
     """
     import pytest
     from pydantic import ValidationError
@@ -278,7 +278,9 @@ def test_a_quoted_boolean_is_refused_because_beets_reads_it_as_true() -> None:
     from app.models.config_editor import ImportSection
 
     for spelling in ("no", "off", "false", "0", "yes", "on", "1"):
-        with pytest.raises(ValidationError, match="without the quotes"):
+        with pytest.raises(
+            ValidationError, match=r"must be a bool: write yes or no, without quotes \["
+        ):
             ImportSection(move=spelling)  # type: ignore[arg-type]  # the point is the refusal
 
     # real booleans, and reflink's one real string, still pass
@@ -287,7 +289,9 @@ def test_a_quoted_boolean_is_refused_because_beets_reads_it_as_true() -> None:
     assert ImportSection(reflink="auto").reflink == "auto"
     # ...and a quoted reflink is refused too: beets' as_choice would kill the
     # import at set_config, before any file operation.
-    with pytest.raises(ValidationError, match="without the quotes"):
+    with pytest.raises(
+        ValidationError, match=r"must be a bool or auto: write yes, no or auto, without quotes \["
+    ):
         ImportSection(reflink="yes")  # type: ignore[arg-type]  # the point is the refusal
 
 

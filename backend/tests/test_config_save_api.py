@@ -81,6 +81,61 @@ def test_save_writes_no_as_a_bool_under_a_document_marker(
     assert (document["import"]["write"], document["fetchart"]["auto"]) == (False, False)
 
 
+def test_save_writes_an_octal_back_as_it_was_written(
+    client: TestClient, beets_library_config_path: Path
+) -> None:
+    """Without ``yaml.version`` on the dump, ``0644`` came back as ``!!int '0o644'``."""
+    cfg = beets_library_config_path
+    music = cfg.read_text(encoding="utf-8").splitlines()[0]
+    text = f"{music}\nlibrary: library.db\npermissions:\n  file: 0644\n  dir: 0755\n"
+
+    r = client.post("/api/config/save", json={"yaml_text": text, "base_sha256": _cas(client)})
+
+    assert r.status_code == 200, r.text
+    assert cfg.read_text(encoding="utf-8") == text
+
+
+def test_save_writes_one_letter_replacements_as_beets_reads_them(
+    client: TestClient, beets_library_config_path: Path
+) -> None:
+    """ruamel's own 1.1 table read ``n`` / ``y`` as bools, so a Save wrote
+    ``false`` / ``true``; after Apply every beets path raised ``TypeError``."""
+    cfg = beets_library_config_path
+    music = cfg.read_text(encoding="utf-8").splitlines()[0]
+    text = f"{music}\nlibrary: library.db\nreplace:\n  'ñ': n\n  'ý': y\n"
+
+    r = client.post("/api/config/save", json={"yaml_text": text, "base_sha256": _cas(client)})
+
+    assert r.status_code == 200, r.text
+    assert cfg.read_text(encoding="utf-8") == text
+    assert read_config_document(cfg)["replace"] == {"ñ": "n", "ý": "y"}
+
+
+def test_save_over_a_symlinked_config_keeps_the_targets_mode(
+    client: TestClient, beets_library_config_path: Path
+) -> None:
+    """Measured before: a dotfiles-linked 0o600 config.yaml became a 0o644 file."""
+    cfg = beets_library_config_path
+    dotfile = cfg.parent / "dotfiles-config.yaml"
+    dotfile.write_text(cfg.read_text(encoding="utf-8"), encoding="utf-8")
+    dotfile.chmod(0o600)
+    cfg.unlink()
+    cfg.symlink_to(dotfile)
+    original = dotfile.read_text(encoding="utf-8")
+    text = original + "# saved\n"
+
+    old_umask = os.umask(0o022)
+    try:
+        r = client.post("/api/config/save", json={"yaml_text": text, "base_sha256": _cas(client)})
+    finally:
+        os.umask(old_umask)
+
+    assert r.status_code == 200, r.text
+    assert not cfg.is_symlink()
+    assert oct(os.stat(cfg).st_mode & 0o777) == oct(0o600)
+    assert dotfile.read_text(encoding="utf-8") == original
+
+
 def test_save_422_on_invalid_yaml(client: TestClient) -> None:
     sha = _cas(client)
     r = client.post(

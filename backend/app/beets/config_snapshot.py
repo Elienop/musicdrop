@@ -89,7 +89,7 @@ from app.models.config_api import BeetsConfigSnapshot
 # does NOT inspect VALUES: a path like ``directory: /home/me/api_keys`` stays
 #                          intact because the key ``directory`` doesn't match.
 SECRET_KEY_PATTERN = re.compile(
-    r"(secret|token|password|pwd|pass|api_?key|api_?secret|auth_?token|(?:(?:^|_)key$))",
+    r"((?:^|_)key$|secret|token|password|pwd|pass|api_?key|api_?secret|auth_?token)",
     re.IGNORECASE,
 )
 

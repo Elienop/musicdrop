@@ -163,17 +163,21 @@ class ImportSection(BaseModel):
     @field_validator("copy", "move", "delete", "link", "hardlink", "reflink", mode="before")
     @classmethod
     def _reject_quoted_bool(cls, value: object, info: ValidationInfo) -> object:
-        """A QUOTED boolean is the one value the editor must not accept.
+        """A string is the one value the editor must not accept.
 
         Pydantic's lax bool reads ``'no'``/``'off'``/``'false'``/``'0'`` as
         False. beets does not: it tests these flags with a bare ``if`` on the raw
         view, and a non-empty string is truthy — so ``move: 'no'`` saved clean,
         fired no advisory, and handed the user a MOVE they believed they had
-        turned off. Unquoted ``no`` parses to a real bool in ruamel and never
-        reaches this. ``reflink`` keeps ``"auto"``, a real beets value.
+        turned off. Unquoted ``no`` parses to a real bool and never reaches
+        this; unquoted ``y`` and ``maybe`` are strings, as beets reads them.
+        ``reflink`` keeps ``"auto"``, a real beets value.
         """
-        if isinstance(value, str) and not (info.field_name == "reflink" and value == "auto"):
-            raise ValueError(f"must be a bool: write {value} without the quotes")
+        if info.field_name == "reflink":
+            if isinstance(value, str) and value != "auto":
+                raise ValueError("must be a bool or auto: write yes, no or auto, without quotes")
+        elif isinstance(value, str):
+            raise ValueError("must be a bool: write yes or no, without quotes")
         return value
 
     copy: bool = True  # type: ignore[assignment]  # beets YAML key; shadows BaseModel.copy()

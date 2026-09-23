@@ -337,10 +337,10 @@ def test_apply_of_a_config_whose_include_beets_would_skip_changes_nothing(
     assert r.status_code == 422, r.text
     assert r.json()["detail"] == {
         "message": (
-            "Apply refused: beets would skip the include overlay.yaml: No such file or directory"
+            "Apply refused: beets would skip the include 'overlay.yaml': No such file or directory"
         ),
         "recovery": (
-            "beets could not read the include overlay.yaml (No such file or directory),"
+            "beets could not read the include 'overlay.yaml' (No such file or directory),"
             " so nothing was changed. Fix it and Apply again."
         ),
     }
@@ -381,10 +381,37 @@ def test_a_skipped_include_names_why_at_apply(
 
     assert r.status_code == 422, r.text
     assert r.json()["detail"] == {
-        "message": f"Apply refused: beets would skip the include bad.yaml: {reason}",
+        "message": f"Apply refused: beets would skip the include 'bad.yaml': {reason}",
         "recovery": (
-            f"beets could not read the include bad.yaml ({reason}), so nothing was changed."
+            f"beets could not read the include 'bad.yaml' ({reason}), so nothing was changed."
             " Fix it and Apply again."
+        ),
+    }
+    _assert_unchanged(client, before)
+
+
+def test_a_skipped_include_is_named_escaped_at_apply(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """Named raw before: a newline and an ESC reached the 422's message and recovery."""
+    before = _live_state(client, beets_library)
+    music = Path(beets_library.lib.directory.decode())
+    beets_library.config_path.write_text(
+        f'directory: {music}\nlibrary: library.db\ninclude:\n  - "m\\nFAKE \\e[31mx.yaml"\n',
+        encoding="utf-8",
+    )
+
+    r = client.post("/api/config/apply")
+
+    assert r.status_code == 422, r.text
+    shown = "'m\\nFAKE \\x1b[31mx.yaml'"
+    assert r.json()["detail"] == {
+        "message": (
+            f"Apply refused: beets would skip the include {shown}: No such file or directory"
+        ),
+        "recovery": (
+            f"beets could not read the include {shown} (No such file or directory),"
+            " so nothing was changed. Fix it and Apply again."
         ),
     }
     _assert_unchanged(client, before)
@@ -415,9 +442,9 @@ def test_a_skipped_include_quotes_nothing_from_inside_it(
 
     assert r.status_code == 422, r.text
     assert r.json()["detail"] == {
-        "message": f"Apply refused: beets would skip the include secret.yaml: {reason}",
+        "message": f"Apply refused: beets would skip the include 'secret.yaml': {reason}",
         "recovery": (
-            f"beets could not read the include secret.yaml ({reason}), so nothing was changed."
+            f"beets could not read the include 'secret.yaml' ({reason}), so nothing was changed."
             " Fix it and Apply again."
         ),
     }

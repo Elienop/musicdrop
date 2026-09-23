@@ -1275,7 +1275,7 @@ def test_an_include_beets_drops_is_an_advisory_and_not_an_error(
         reason = "No such device or address" if shape == "socket" else "Is a directory"
         rows = _advisories(client, text)
         assert [row["message"] for row in rows] == [
-            f"beets cannot read the include {name} ({reason}). Apply and a restart refuse"
+            f"beets cannot read the include {name!r} ({reason}). Apply and a restart refuse"
             " this config until it can."
         ]
 
@@ -1304,7 +1304,28 @@ def test_a_skipped_include_names_why_at_validate(
     text = _with_include(Path(beets_library.lib.directory.decode()), "bad.yaml")
 
     assert [row["message"] for row in _advisories(client, text)] == [
-        f"beets cannot read the include bad.yaml ({reason}). Apply and a restart refuse"
+        f"beets cannot read the include 'bad.yaml' ({reason}). Apply and a restart refuse"
+        " this config until it can."
+    ]
+
+
+@pytest.mark.parametrize(
+    ("entry", "shown", "reason"),
+    [
+        ('"m\\nFAKE \\e[31mx.yaml"', "'m\\nFAKE \\x1b[31mx.yaml'", "No such file or directory"),
+        ("''", "''", "Is a directory"),
+    ],
+    ids=["control-characters", "empty"],
+)
+def test_a_skipped_include_is_named_escaped_at_validate(
+    client: TestClient, beets_library: LibraryHandle, entry: str, shown: str, reason: str
+) -> None:
+    """Named raw before: a newline and an ESC reached the advisory, and an empty
+    entry read "the include  (Is a directory)"."""
+    text = _with_include(Path(beets_library.lib.directory.decode()), entry)
+
+    assert [row["message"] for row in _advisories(client, text)] == [
+        f"beets cannot read the include {shown} ({reason}). Apply and a restart refuse"
         " this config until it can."
     ]
 

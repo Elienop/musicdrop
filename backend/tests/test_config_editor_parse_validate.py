@@ -13,7 +13,12 @@ Per the Layer-3 plan (Task 2), these tests pin three load-bearing decisions:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+
+import beets
+import pytest
+import yaml as pyyaml
 
 # NOTE: plan-verbatim used `from ruamel.yaml import YAMLError`, but the
 # ruamel.yaml stubs only expose YAMLError from `ruamel.yaml.error` (its
@@ -22,7 +27,8 @@ from pathlib import Path
 # suppression directive.
 from ruamel.yaml.error import YAMLError
 
-from app.beets.config_editor import parse_yaml, validate_known_keys
+from app.beets.config_editor import _yaml, atomic_write, parse_yaml, validate_known_keys
+from app.beets.setup import read_config_document
 
 
 def test_parse_yes_no_as_bool() -> None:
@@ -88,3 +94,56 @@ def test_validate_returns_line_col_for_invalid_plugin_in_list(tmp_path: Path) ->
     )
     errors = validate_known_keys(parse_yaml(text))
     assert any(e.loc == "plugins[1]" and e.line is not None for e in errors)
+
+
+# (the value as written, what beets' loader reads, what a save writes back)
+_SCALARS = [
+    ("y", "y", "y"),
+    ("N", "N", "N"),
+    ("1e400", "1e400", "1e400"),
+    ("0e5", "0e5", "0e5"),
+    ("+_1_", "+_1_", "+_1_"),
+    ("._5", "._5", "._5"),
+    ("no", False, "false"),
+    ("0644", 420, "0644"),
+    ("1.5e+3", 1500.0, "1.5e+3"),
+]
+
+
+@pytest.mark.parametrize("marker", ["", "---\n"], ids=["plain", "document-marker"])
+@pytest.mark.parametrize(("written", "read", "saved"), _SCALARS, ids=[row[0] for row in _SCALARS])
+def test_a_scalar_reads_and_saves_as_beets_reads_it(
+    tmp_path: Path, marker: str, written: str, read: object, saved: str
+) -> None:
+    """ruamel's own 1.1 table read ``y`` as True, ``1e400`` as a float and
+    ``+_1_`` as 1, and a save wrote ``true``, ``.inf``, ``0e0`` and ``1_``."""
+    text = f"{marker}k: {written}\n"
+    assert pyyaml.load(text, Loader=beets.config.loader) == {"k": read}
+    parsed = parse_yaml(text)["k"]
+    assert parsed == read
+    assert isinstance(parsed, type(read))
+    cfg = tmp_path / "config.yaml"
+
+    atomic_write(cfg, parse_yaml(text), _yaml())
+
+    assert cfg.read_text(encoding="utf-8") == f"k: {saved}\n"
+    assert read_config_document(cfg) == {"k": read}
+
+
+def test_the_resolver_table_beets_reads_with_keeps_its_shape() -> None:
+    """Tripwire for the table ``_Yaml11Resolver`` reads: PyYAML's, through beets' loader.
+
+    ``None`` must stay absent: ruamel appends that key's list to a first
+    character's list IN PLACE (``ruamel/yaml/resolver.py:357-358``), which
+    would grow PyYAML's own table on every scalar.
+    """
+    table = beets.config.loader.yaml_implicit_resolvers
+    assert _yaml().Resolver().versioned_resolver is table
+    assert isinstance(table, dict)
+    assert None not in table
+    assert all(isinstance(first, str) and len(first) <= 1 for first in table)
+    pairs = [pair for entries in table.values() for pair in entries]
+    assert all(isinstance(tag, str) and isinstance(regex, re.Pattern) for tag, regex in pairs)
+    assert {tag for tag, _ in pairs} >= {
+        f"tag:yaml.org,2002:{kind}" for kind in ("bool", "int", "float", "null", "timestamp")
+    }

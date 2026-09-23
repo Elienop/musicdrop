@@ -293,6 +293,63 @@ def test_save_naming_writes_no_as_a_bool_under_a_document_marker(
     }
 
 
+def test_save_naming_quotes_a_question_mark_in_a_flow_mapping(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """Without ``yaml.version`` on the dump, ``\\?`` was written bare: beets could not parse it."""
+    from app.beets.setup import read_config_document
+
+    cfg = beets_library.config_path
+    text = "{directory: /music, library: library.db}\n"
+    cfg.write_text(text, encoding="utf-8")
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    r = client.post(
+        "/api/config/naming/save",
+        json={
+            "rules": [_SAVED_RULE],
+            "replace": [{"pattern": "\\?", "replacement": "_"}],
+            "base_sha256": sha,
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    assert cfg.read_text(encoding="utf-8") == (
+        "{directory: /music, library: library.db, paths: {default: $artist/$title},"
+        " replace: {'\\?': _}}\n"
+    )
+    assert read_config_document(cfg) == {
+        "directory": "/music",
+        "library": "library.db",
+        "paths": {"default": "$artist/$title"},
+        "replace": {"\\?": "_"},
+    }
+
+
+def test_naming_reads_and_saves_one_letter_replacements_as_beets_reads_them(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """ruamel's own 1.1 table read ``n`` / ``y`` as bools: the GET served
+    ``False`` / ``True``, and the save wrote the strings ``'False'`` / ``'True'``."""
+    from app.beets.setup import read_config_document
+
+    cfg = beets_library.config_path
+    text = "---\nreplace:\n  'ñ': n\n  'ý': y\n"
+    cfg.write_text(text, encoding="utf-8")
+    rows = [{"pattern": "ñ", "replacement": "n"}, {"pattern": "ý", "replacement": "y"}]
+
+    body = client.get("/api/config/naming").json()
+
+    assert body["replace"] == rows
+    r = client.post(
+        "/api/config/naming/save",
+        json={"rules": [], "replace": body["replace"], "base_sha256": body["sha256"]},
+    )
+    assert r.status_code == 200, r.text
+    assert cfg.read_text(encoding="utf-8") == "replace:\n  ñ: n\n  ý: y\n"
+    assert read_config_document(cfg) == {"replace": {"ñ": "n", "ý": "y"}}
+
+
 def _unreadable_config(cfg: Path, shape: str) -> str:
     """Make ``cfg`` unusable as ``shape``; return the sentence the Naming routes answer."""
     cfg.unlink()
