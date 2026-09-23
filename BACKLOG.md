@@ -970,21 +970,32 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   the lock and its 5 s timeout (`app/beets/import_session.py`) rather than keep a guard nothing
   reaches. Search words: force lock, ImportConfigBusyError, restore, overlay, reachability.
 - **Settings → Beets and Naming: small residuals left by PR #232** (review seats and
-  implementers, rounds 15–17, 2026-09-23; recorded, not built, under the owner's "Cut and ship").
+  implementers, rounds 15–18, 2026-09-23; recorded, not built, under the owner's "Cut and ship").
   - The Save button stays on while the conflict panel is open, and a click does nothing (Ctrl+S
     already checks for the panel). Predates the branch.
   - Text typed during a Save's round trip is lost when the re-read arrives. Predates the branch;
     a fix needs a design call.
   - After an Apply 409 whose job has already ended, the click shows nothing new.
   - A conflict panel opened by a read takes focus while the operator is typing; since round 17
-    "Overwrite anyway" is four Tabs away, not two. Changing that is a design call.
+    "Overwrite anyway" is four Tabs away, not two. Keys meant for the editor can still land:
+    Shift+Tab (dedent) then Space presses Cancel and drops the draft; three Tabs then Space
+    presses Reload. Neither writes. Changing that is a design call.
+  - A read that closes a conflict panel while focus is inside it drops focus to `<body>`. A fix
+    needs to know whether focus was in the panel, so it is a new mechanism.
+  - The panel's "N unchanged lines" bar opens by click only (`@codemirror/merge`'s collapse
+    widget). Predates the branch.
+  - Text and sha can still come from two file versions in two cases no person can reach: another
+    writer puts the old bytes back before Reload's re-read lands (A-B-A), or a read lands and
+    Edit, a key and Ctrl+S all follow within @uiw's 200 ms typing latch. Both predate the branch.
   - Naming: a Save that writes the same bytes still leaves Apply off with no line when two rules
-    share a query, two replace rows share a pattern, or a custom rule is named `default`, `comp`
-    or `singleton`. A rule with a template and no query, or a query and a blank template,
-    leaves Save off with no reason; Save would write nothing for either.
-  - Partly checked: a refused Apply plus a draft shows "Apply failed. Fix the file and Apply
-    again." beside "Unsaved changes. Save to write to …", which do not conflict. The validation
-    line beside them is not measured.
+    share a query, two replace rows share a pattern, a custom rule is named `default`, `comp`
+    or `singleton`, a base template the file lacks is cleared (the read fills beets' default),
+    or every replace row is removed from a file with no `replace:` block. A rule with a template
+    and no query, or a query and a blank template, leaves Save off with no reason; Save would
+    write nothing for either.
+  - Naming cannot remove a row that is on disk but that Save drops (a custom rule with an empty
+    template or query, a replace row with an empty pattern): removing it is not a change, so
+    Save stays off. The Beets editor can. Since round 17.
   - Naming drops a draft without a word when a read brings a new file version: the panel
     remounts on the file's sha (`NamingPanel.tsx`, `key={data.sha256}`). The Beets page opens
     the conflict panel instead. Predates the branch.
@@ -992,7 +1003,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     past @uiw's typing latch can pass on a slow run: the latch is 200 ticks of a 1 ms interval,
     measured 211-220 ms idle and about 450 ms with a busy event loop.
   Search words: conflict panel, Save button, round trip, draft lost, focus, Apply 409, Tab,
-  Overwrite, same bytes.
+  Overwrite, Cancel, same bytes, A-B-A, typing latch, unchanged lines.
 - **The config view hides a secret by its setting name, not its value** (security seat,
   2026-09-21, measured; owner: match beets, record it). A secret copied elsewhere with a YAML
   anchor or merge key (`other: {<<: *sub}`, `note: *alias`) shows in plain text, as it does in
