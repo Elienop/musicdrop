@@ -984,6 +984,13 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     needs to know whether focus was in the panel, so it is a new mechanism.
   - The panel's "N unchanged lines" bar opens by click only (`@codemirror/merge`'s collapse
     widget). Predates the branch.
+  - The main editor, where focus lands after Reload, Overwrite and Cancel, shows focus only by
+    its 1 px caret, and neither it nor the Effective config editor has an accessible name. The
+    conflict panes have both since round 18.
+  - Paths wrap two ways: `break-all` (the Beets page's config path, `PlexSettingsPanel`) splits
+    mid-name, while `breakablePath` (`AlbumDetailPage.tsx`) breaks after each `/`. Sharing the
+    helper is the consistent fix.
+  - The diff box's rounded corners clip the focused pane's square ring corners.
   - Text and sha can still come from two file versions in two cases no person can reach: another
     writer puts the old bytes back before Reload's re-read lands (A-B-A), or a read lands and
     Edit, a key and Ctrl+S all follow within @uiw's 200 ms typing latch. Both predate the branch.
