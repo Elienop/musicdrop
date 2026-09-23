@@ -1971,9 +1971,9 @@ describe("SettingsBeetsPage while Apply is pending", () => {
       screen.queryByRole("dialog", { name: /file changed on disk/i }),
     ).not.toBeInTheDocument();
     // Focus is in the editor, where the draft and Save are, not on <body>,
-    // with no scroll, so the Save alert below the editor stays in view.
+    // with its caret in view.
     expect(document.activeElement).toBe(content);
-    expect(watch.scrolls()).toEqual([]);
+    expect(watch.scrolls()).toEqual(watch.caretShown());
   });
 
   test("a new file version equal to the draft opens no panel, and the page is clean", async () => {

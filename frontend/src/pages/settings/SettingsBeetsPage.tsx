@@ -458,15 +458,15 @@ export function SettingsBeetsPage() {
         // Another writer since the first 409: the panel takes the newer file
         // and token, the same as for the first 409. Any other failure closes
         // the panel: the Save alert shows it, and Save is the way to retry.
-        // Focus goes to the editor, where the draft is, without a scroll, so
-        // the alert below the editor stays in view.
+        // Focus goes to the editor, where the draft is; the alert and Save sit
+        // just below it.
         onError: (err) => {
           if (err.status === 409) {
             openConflict(err);
             return;
           }
           setConflict(null);
-          editorRef.current?.view?.focus();
+          focusEditor(editorRef.current?.view);
         },
       },
     );
