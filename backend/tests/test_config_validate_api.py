@@ -4,8 +4,17 @@ Cheap lint pass — never writes, returns 200 even on errors so CodeMirror's
 async ``linter()`` source can display them inline.
 """
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
+
+
+def _head(tmp_path: Path) -> str:
+    """``directory:`` and ``library:`` the schema accepts: the fixture's own music
+    dir, and a file under ``tmp_path``. Measured: ``library: /tmp/x`` failed 11
+    tests here while a directory was at ``/tmp/x``."""
+    return f"directory: {tmp_path / 'music'}\nlibrary: {tmp_path / 'x'}\n"
 
 
 def test_validate_returns_empty_on_starter(client: TestClient) -> None:
@@ -20,13 +29,8 @@ def test_validate_returns_empty_on_starter(client: TestClient) -> None:
     assert r.json() == {"errors": [], "advisories": []}
 
 
-def test_validate_returns_errors_on_invalid_bool(client: TestClient) -> None:
-    # ``/tmp/music`` rather than a bare ``/tmp``: the fixture's beets dir is a
-    # pytest tmp path UNDER /tmp, so ``directory: /tmp`` really would put the
-    # Trash origin store inside the music library and earn a second error row
-    # (app/beets/store_layout.py). Every throwaway value in this file is one
-    # level down for that reason.
-    text = "directory: /tmp/music\nlibrary: /tmp/x\nimport:\n  copy: maybe\n"
+def test_validate_returns_errors_on_invalid_bool(client: TestClient, tmp_path: Path) -> None:
+    text = _head(tmp_path) + "import:\n  copy: maybe\n"
     r = client.post("/api/config/validate", json={"yaml_text": text})
     assert r.status_code == 200
     errors = r.json()["errors"]
@@ -88,15 +92,13 @@ def test_validate_openapi_uses_named_response_schema(client: TestClient) -> None
     assert "ValidateResponse" in spec["components"]["schemas"]
 
 
-def test_validate_surfaces_advisories_through_the_api(client: TestClient) -> None:
+def test_validate_surfaces_advisories_through_the_api(client: TestClient, tmp_path: Path) -> None:
     """The advisory channel must survive the route, not just the rule function.
 
     Rule-level coverage lives in ``test_config_advisories.py``; this pins that
     the field is actually serialised onto the 200 body the editor reads.
     """
-    text = (
-        "directory: /tmp/music\nlibrary: /tmp/x\nimport:\n  autotag: no\n  duplicate_action: skip\n"
-    )
+    text = _head(tmp_path) + "import:\n  autotag: no\n  duplicate_action: skip\n"
     r = client.post("/api/config/validate", json={"yaml_text": text})
     assert r.status_code == 200
     advisories = r.json()["advisories"]
@@ -104,16 +106,14 @@ def test_validate_surfaces_advisories_through_the_api(client: TestClient) -> Non
     assert all(a["message"] for a in advisories)
 
 
-def test_validate_advisory_only_config_is_still_valid(client: TestClient) -> None:
+def test_validate_advisory_only_config_is_still_valid(client: TestClient, tmp_path: Path) -> None:
     """Advisories are NOT errors.
 
     CodeMirror paints the ``errors`` list red, and every config these rules fire
     on is valid — so a config whose only problem is an inert key must come back
     with an empty ``errors`` list.
     """
-    text = (
-        "directory: /tmp/music\nlibrary: /tmp/x\nimport:\n  singletons: yes\n  incremental: yes\n"
-    )
+    text = _head(tmp_path) + "import:\n  singletons: yes\n  incremental: yes\n"
     r = client.post("/api/config/validate", json={"yaml_text": text})
     assert r.status_code == 200
     body = r.json()
@@ -146,13 +146,9 @@ def test_validate_openapi_declares_advisories_as_required(client: TestClient) ->
     assert set(advisory["required"]) == {"key", "message"}
 
 
-def test_validate_returns_all_distinct_schema_errors(client: TestClient) -> None:
+def test_validate_returns_all_distinct_schema_errors(client: TestClient, tmp_path: Path) -> None:
     """One YAML body with TWO known-key errors must surface both, not just the first."""
-    text = (
-        "directory: /tmp/music\nlibrary: /tmp/x\n"
-        "import:\n  copy: maybe\n"
-        "match:\n  strong_rec_thresh: 5.0\n"
-    )
+    text = _head(tmp_path) + "import:\n  copy: maybe\nmatch:\n  strong_rec_thresh: 5.0\n"
     r = client.post("/api/config/validate", json={"yaml_text": text})
     assert r.status_code == 200
     locs = {e["loc"] for e in r.json()["errors"]}
@@ -164,13 +160,13 @@ _NOT_A_BOOL = "Value error, must be a bool: write yes or no, without quotes"
 
 
 def test_validate_refuses_a_quoted_and_an_unquoted_string_for_a_filing_flag(
-    client: TestClient,
+    client: TestClient, tmp_path: Path
 ) -> None:
     """The old text said "write y without the quotes" for an unquoted ``y``.
 
     beets reads both as strings and refuses them (``must be a bool, not str``).
     """
-    text = "directory: /tmp/music\nlibrary: /tmp/x\nimport:\n  copy: 'no'\n  move: y\n"
+    text = _head(tmp_path) + "import:\n  copy: 'no'\n  move: y\n"
 
     r = client.post("/api/config/validate", json={"yaml_text": text})
 
@@ -193,11 +189,11 @@ def test_validate_refuses_a_quoted_and_an_unquoted_string_for_a_filing_flag(
 @pytest.mark.parametrize("value", ["n", "'no'"])
 @pytest.mark.parametrize("key", ["write", "autotag", "singletons", "incremental"])
 def test_validate_refuses_a_string_for_every_other_import_bool(
-    client: TestClient, key: str, value: str
+    client: TestClient, tmp_path: Path, key: str, value: str
 ) -> None:
     """Pydantic read ``n`` and ``'no'`` as False here. beets refuses ``write: n``
     (``.get(bool)``) and reads the other three as on (a bare ``if``)."""
-    text = f"directory: /tmp/music\nlibrary: /tmp/x\nimport:\n  {key}: {value}\n"
+    text = _head(tmp_path) + f"import:\n  {key}: {value}\n"
 
     r = client.post("/api/config/validate", json={"yaml_text": text})
 
@@ -216,14 +212,14 @@ def test_validate_refuses_a_string_for_every_other_import_bool(
     }
 
 
-def test_validate_reads_a_file_with_a_document_marker_as_yaml_1_1(client: TestClient) -> None:
+def test_validate_reads_a_file_with_a_document_marker_as_yaml_1_1(
+    client: TestClient, tmp_path: Path
+) -> None:
     """``---`` made ruamel read ``yes`` as a string (YAML 1.2); beets reads a bool.
 
     One row, for ``maybe``, on the file's own line 7.
     """
-    text = (
-        "---\n# note\ndirectory: /tmp/music\nlibrary: /tmp/x\nimport:\n  copy: yes\n  move: maybe\n"
-    )
+    text = "---\n# note\n" + _head(tmp_path) + "import:\n  copy: yes\n  move: maybe\n"
 
     r = client.post("/api/config/validate", json={"yaml_text": text})
 

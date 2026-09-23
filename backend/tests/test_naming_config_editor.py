@@ -26,14 +26,14 @@ def _sha(p: Path) -> str:
 
 
 def test_config_saves_hold_the_save_lock_during_write(
-    beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+    beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """save/save_naming must run their CAS read->write under _SAVE_LOCK so a
     concurrent save can't pass the same-base check and clobber the other."""
     import app.beets.config_editor as ce
 
     cfg_path = beets_library.config_path
-    cfg_path.write_text("directory: /tmp/music\nlibrary: library.db\n")
+    cfg_path.write_text(f"directory: {tmp_path / 'music'}\nlibrary: library.db\n")
     orig = ce.atomic_write
     locked_during: list[bool] = []
 

@@ -12,10 +12,10 @@ The default ``extra='ignore'`` on Pydantic (per Pydantic v2 docs § Models)
 is correct here: we never round-trip through the schema, only validate.
 Unknown beets/plugin keys live on disk in the ruamel ``CommentedMap``.
 
-Currently exports: ``parse_yaml``, ``validate_known_keys``,
-``store_layout_report``, ``atomic_write``, ``read_naming``, ``save``,
-``save_naming``, and ``apply`` (asyncio-locked threadpool rebuild that swaps
-``app.state.beets_library``).
+Currently exports: ``parse_yaml``, ``parse_error_text``, ``settings_mapping``,
+``NOT_A_MAPPING``, ``validate_known_keys``, ``store_layout_report``,
+``atomic_write``, ``read_naming``, ``save``, ``save_naming``, and ``apply``
+(asyncio-locked threadpool rebuild that swaps ``app.state.beets_library``).
 
 Save writes the submitted document straight back to disk (the editor serves and
 edits the RAW ``config.yaml``): there is no secret-preserve merge — masking the
@@ -96,6 +96,7 @@ __all__ = [
     "NOT_A_MAPPING",
     "apply",
     "atomic_write",
+    "parse_error_text",
     "parse_yaml",
     "read_naming",
     "save",
@@ -286,13 +287,8 @@ def _merged_line_col(node: Any, key: str | int) -> tuple[int, int] | tuple[None,
     return (None, None)
 
 
-def _not_a_mapping(subject: str) -> str:
-    """The row text for ``subject``, which the schema models as a mapping of settings."""
-    return f"{subject} must be a mapping of settings."
-
-
 #: The one sentence for a top level beets does not read as settings.
-NOT_A_MAPPING: Final = _not_a_mapping("config.yaml")
+NOT_A_MAPPING: Final = "config.yaml must be a mapping of settings."
 
 
 def validate_known_keys(
@@ -307,8 +303,9 @@ def validate_known_keys(
       ``"import.copy"``).
     * ``msg`` / ``type`` — verbatim from Pydantic, except ``msg`` for a
       ``model_type`` error: Pydantic's names the model class ("…instance of
-      ImportSection"), so it is :func:`_not_a_mapping` of the ``loc``. That is
-      every field typed as a model, at any depth.
+      ImportSection"), so it is "must be a mapping of settings." (the editor
+      shows the ``loc`` before it), or :data:`NOT_A_MAPPING` at the root. That
+      is every field typed as a model, at any depth.
     * ``line`` / ``column`` — resolved via ``_line_col_for_path`` when
       ``data`` is a ``CommentedMap`` (i.e. it came from ``parse_yaml``).
       When ``data`` is a plain ``dict`` (e.g. callers that already
@@ -332,7 +329,7 @@ def validate_known_keys(
             loc = loc_to_dot_sep(err["loc"])
             msg = str(err["msg"])
             if err["type"] == "model_type":
-                msg = _not_a_mapping(loc or "config.yaml")
+                msg = "must be a mapping of settings." if loc else NOT_A_MAPPING
             out.append(
                 ValidationErrorItem(
                     loc=loc,
@@ -398,7 +395,7 @@ def store_layout_report(
     ``directory: /`` the schema's "not writable" and the layout row are different
     facts, and only the second names the loss.
     """
-    if not isinstance(data, dict) or "directory" not in data:
+    if "directory" not in data:
         return StoreLayoutReport([], [])
     check = layout_check_for_config(document=data, settings=settings, handle=handle)
     advisories = [_skipped_include_advisory(skipped) for skipped in check.skipped_includes]

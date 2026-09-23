@@ -321,6 +321,7 @@ _NOT_A_MAPPING = [_row("", "config.yaml must be a mapping of settings.", "model_
     [
         ("", _NO_SETTINGS),
         ("# my beets config\n\n# more\n", _NO_SETTINGS),
+        ("{}\n", _NO_SETTINGS),
         ("~\n", _NOT_A_MAPPING),
         ("[]\n", _NOT_A_MAPPING),
         ("false\n", _NOT_A_MAPPING),
@@ -328,7 +329,16 @@ _NOT_A_MAPPING = [_row("", "config.yaml must be a mapping of settings.", "model_
         # beets reads it as {}; the Naming routes refuse it too.
         ("---\n...\n", _NOT_A_MAPPING),
     ],
-    ids=["empty", "comment-only", "null", "empty-list", "false", "scalar", "empty-document"],
+    ids=[
+        "empty",
+        "comment-only",
+        "empty-mapping",
+        "null",
+        "empty-list",
+        "false",
+        "scalar",
+        "empty-document",
+    ],
 )
 def test_validate_and_save_answer_a_top_level_with_no_settings_in_our_words(
     client: TestClient, beets_library_config_path: Path, text: str, rows: list[dict[str, object]]
@@ -352,7 +362,7 @@ def test_validate_and_save_answer_a_top_level_with_no_settings_in_our_words(
             "import: 5\n",
             {
                 "loc": "import",
-                "msg": "import must be a mapping of settings.",
+                "msg": "must be a mapping of settings.",
                 "type": "model_type",
                 "line": 3,
                 "column": 8,
@@ -362,7 +372,7 @@ def test_validate_and_save_answer_a_top_level_with_no_settings_in_our_words(
             "match: []\n",
             {
                 "loc": "match",
-                "msg": "match must be a mapping of settings.",
+                "msg": "must be a mapping of settings.",
                 "type": "model_type",
                 "line": 3,
                 "column": 7,
@@ -373,7 +383,7 @@ def test_validate_and_save_answer_a_top_level_with_no_settings_in_our_words(
             "import:\n",
             {
                 "loc": "import",
-                "msg": "import must be a mapping of settings.",
+                "msg": "must be a mapping of settings.",
                 "type": "model_type",
                 "line": 4,
                 "column": 0,
@@ -419,12 +429,11 @@ def test_a_section_that_is_not_a_mapping_is_named_without_a_class(
     assert cfg.read_bytes() == before
 
 
-def test_save_422_on_schema_error(client: TestClient) -> None:
+def test_save_422_on_schema_error(client: TestClient, tmp_path: Path) -> None:
     sha = _cas(client)
-    # Not a bare ``/tmp``: the fixture's beets dir sits under it, so that value
-    # would also trip the containment row (app/beets/store_layout.py) and this
-    # test would pass while asking a different question.
-    text = "directory: /tmp/music\nlibrary: /tmp/x\nimport:\n  copy: maybe\n"
+    # The fixture's own music dir, and a library under ``tmp_path``: a fixed path
+    # such as ``/tmp/x`` made the answer depend on whether it existed.
+    text = f"directory: {tmp_path / 'music'}\nlibrary: {tmp_path / 'x'}\nimport:\n  copy: maybe\n"
     r = client.post(
         "/api/config/save",
         json={
@@ -437,13 +446,13 @@ def test_save_422_on_schema_error(client: TestClient) -> None:
 
 
 def test_save_refuses_write_n_and_writes_nothing(
-    client: TestClient, beets_library_config_path: Path
+    client: TestClient, beets_library_config_path: Path, tmp_path: Path
 ) -> None:
     """Round 10 made the Save keep ``write: n`` as written, where it used to
     rewrite it as ``false``. beets' ``.get(bool)`` refuses the string, so every
     import would fail."""
     before = beets_library_config_path.read_bytes()
-    text = "directory: /tmp/music\nlibrary: /tmp/x\nimport:\n  write: n\n"
+    text = f"directory: {tmp_path / 'music'}\nlibrary: {tmp_path / 'x'}\nimport:\n  write: n\n"
 
     r = client.post("/api/config/save", json={"yaml_text": text, "base_sha256": _cas(client)})
 
@@ -536,7 +545,7 @@ def test_save_refuses_a_utf16_config_whatever_the_base(
             }
         ]
     }
-    # The Naming Save's row, which it gives once past its own sha compare.
+    # The Naming Save's row. It too refuses before its sha compare.
     naming = client.post(
         "/api/config/naming/save",
         json={"rules": [], "replace": [], "base_sha256": snap["sha256"]},
