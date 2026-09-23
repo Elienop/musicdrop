@@ -830,21 +830,32 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   - YAML that ruamel accepts and PyYAML refuses: `!!python/object/apply:…` tags, complex keys
     such as `? [a]`, and a bare `=` or `<<`. (A NEL/LS/PS character in a value, or `{k: 0:}`,
     is read too, but a Save rewrites it into YAML beets loads.)
-  - Anchor names outside `[A-Za-z0-9_-]`: `&x.y`, `&é`, `&a:b`, `&a&b` save with a 200, and
-    beets' scanner then refuses the file. beets reads `&t:x Zq7` as the value `':x Zq7'`, and
-    `&t:x` beside `&t:y` is a reused anchor to beets but not to the editor (review seats,
-    2026-09-23, measured; predates the branch).
+  - Anchor names outside `[A-Za-z0-9_-]`: `&x.y`, `&é`, `&a&b` save with a 200, and beets'
+    scanner then refuses the file. A `:` ends the anchor name for beets: it reads `k: &a:b 1` as
+    `':b 1'`, refuses it only once an alias uses it (in its parser), and sees `&t:x` beside
+    `&t:y` as a reused anchor where the editor does not (review seats, 2026-09-23, measured;
+    predates the branch).
   - A ruamel warning prints the whole value of an explicit `!!float` tag that holds an `e` and
-    no dot (`!!float Zq7Secrt`) to stderr (`ruamel/yaml/constructor.py:504-508`). The value is
+    no dot (`!!float Zq7Secrt`) to stderr (`ruamel/yaml/constructor.py:1148`, the round-trip
+    constructor). The value is
     then refused. Only the operator can write that tag (security seat, measured; predates the
     branch).
-  - An `!!omap` top level counts as a mapping to the editor (ruamel's ordered map subclasses
-    its map), where beets refuses it: "expected a mapping node, but found sequence" (measured
-    with `confuse.YamlSource`, 2026-09-23; what a Save of one writes was not measured; predates
-    the branch).
-  When the planned fix lands (parse with beets' own loader first), delete the editor's
-  `_RefusingComposer` (`app/beets/config_editor.py`): it exists only to make ruamel refuse a
-  reused anchor as PyYAML does.
+  - An `!!omap` sequence counts as a mapping to the editor at any depth (`import: !!omap
+    [copy: yes]`, or the top level): Validate is clean, Save writes it as typed, and beets
+    refuses the file ("expected a mapping node, but found sequence"); Apply refuses before
+    unloading anything. The reverse too: beets accepts `!!omap {…}` (`confuse/yaml_util.py:83`)
+    and the editor refuses it (review seats, 2026-09-23, measured; predates the branch).
+  - Validate rows that name internals: a non-string `directory:` or `library:` (including one
+    typed with no value yet) reads "Input is not a valid path for <class 'pathlib.Path'>", and
+    a bad `import.reflink` gives two rows, `import.reflink.bool` and
+    `import.reflink.literal['auto']`, both with no line (review seats, 2026-09-23, measured).
+  - **The planned fix, owner ruling 2026-09-23 ("Cut and ship", after asking whether this was
+    over-engineered):** Validate and Save check the text with beets' own loader and typed reads
+    (`confuse.yaml_util.load_yaml_string`, which Apply already calls at
+    `app/beets/store_layout.py:1556`), and keep ruamel only for writing, because it keeps
+    comments. That closes this whole list at once and deletes the editor's `_RefusingComposer`
+    (`app/beets/config_editor.py`), which exists only to make ruamel refuse a reused anchor as
+    PyYAML does. Do NOT keep patching ruamel or rewording Pydantic messages one case at a time.
   - Not a start refusal, but the same typed-read gap: `write`, `copy` or `move` set to a number
     (`write: 1`) passes Validate and Save, and beets' `.get(bool)` refuses it. An import refuses
     it before adding any row (the pre-check), and an album edit answers a bare 500 (review seats,
@@ -893,11 +904,14 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     empty editor and does not say why. Its only lint rows are the two "Field required" rows
     (`directory`, `library`) on line 1. For a missing, unreadable or non-regular file the banner
     says "config.yaml is saved but not loaded yet", which is false (code seat, measured for
-    absent, EACCES, a FIFO and a directory). beets loads a UTF-16 file with a BOM, so such a file
-    can be running. Both Saves refuse a non-UTF-8 file with 422 "config.yaml is not UTF-8.",
-    whatever sha they are sent, and write nothing. On `main` a Save from the empty editor
-    replaced the file (measured: a Plex token lost; fixed in PR #232). Re-save the file as UTF-8
-    to edit it here. Search words: UTF-16, BOM, empty editor, sha256, not UTF-8, 422.
+    absent, EACCES, a FIFO and a directory). Since Edit works while Apply is pending, such a
+    page also invites a draft that every Save refuses with a 422 naming the cause, for example
+    "config.yaml could not be read: No such file or directory." (UI seat, measured). beets loads
+    a UTF-16 file with a BOM, so such a file can be running. Both Saves refuse a non-UTF-8 file
+    with 422 "config.yaml is not UTF-8.", whatever sha they are sent, and write nothing. On
+    `main` a Save from the empty editor replaced the file (measured: a Plex token lost; fixed in
+    PR #232). Re-save the file as UTF-8 to edit it here. Search words: UTF-16, BOM, empty editor,
+    sha256, not UTF-8, 422.
   - Save, the Naming routes and `GET /api/config` open `config.yaml` only when it is a regular
     file. A FIFO swapped in between that check and the open still blocks, the same gap confuse's
     own `os.path.isfile` read and Apply's gate have. The check bounds the file's type, not its
@@ -923,9 +937,10 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     with an injected EIO).
   - A Save publishes a new file, so only the mode carries over: the owner becomes the app's, the
     group the app's (or the folder's, in a setgid folder), and a per-file ACL entry, extended
-    attributes and another hard link to the old file do not follow. For a regular `config.yaml` this predates the branch (security seat,
-    measured). A Save killed mid-write leaves its temp, new text included, in the target's
-    folder until a later Save there sweeps it after an hour.
+    attributes and another hard link to the old file do not follow. For a regular
+    `config.yaml` this predates the branch (security seat, measured). A Save killed mid-write
+    leaves its temp, new text included, in the target's folder until a later Save there sweeps
+    it after an hour.
   - The artwork toggle reads its `_enabled.json` at startup with no regular-file check
     (`artwork/toggle.py:25`, from `main.py:404`): a FIFO there blocks startup (security seat,
     measured; predates this branch). Only someone with write access to the data dir can plant one.
@@ -952,6 +967,22 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   surfaces as Restore's 500). If a measurement confirms that no two callers can overlap, delete
   the lock and its 5 s timeout (`app/beets/import_session.py`) rather than keep a guard nothing
   reaches. Search words: force lock, ImportConfigBusyError, restore, overlay, reachability.
+- **Settings → Beets and Naming: small residuals left by PR #232** (review seats and
+  implementers, rounds 15–16, 2026-09-23; recorded, not built, under the owner's "Cut and ship").
+  - The Save button stays on while the conflict panel is open, and a click does nothing (Ctrl+S
+    already checks for the panel). Predates the branch.
+  - Text typed during a Save's round trip is lost when the re-read arrives. Predates the branch;
+    a fix needs a design call.
+  - A draft that matches the new file exactly still opens the conflict panel, with identical
+    sides.
+  - The conflict panel's read-only panes cannot take focus, so a keyboard-only user cannot
+    scroll a long line sideways (not measured).
+  - After an Apply 409 whose job has already ended, the click shows nothing new.
+  - The extensions-memo comment in `SettingsBeetsPage.tsx` (~165-171) says the editor remounts;
+    it does not.
+  - Not checked: whether the Beets "Unsaved changes. Save to write to …" banner and the
+    Apply-failed alert or the validation line ever give conflicting instructions together.
+  Search words: conflict panel, Save button, round trip, draft lost, focus, Apply 409.
 - **The config view hides a secret by its setting name, not its value** (security seat,
   2026-09-21, measured; owner: match beets, record it). A secret copied elsewhere with a YAML
   anchor or merge key (`other: {<<: *sub}`, `note: *alias`) shows in plain text, as it does in
@@ -3934,11 +3965,14 @@ the condition it names has changed.
 - **What should a "Try again" button do while it retries, and where should focus go after?**
   (PR #232 round-13 UI seat, owner call.) This covers every Try again or Retry button that calls
   a query's `refetch()` (`grep -rn "refetch" frontend/src --include=*.tsx`): Trash, the Naming
-  panel's load error since #232, `ErrorState`'s Retry, the import pages' notices, and more. None
-  gives a sign on a repeat failure: about a second passes (one automatic retry), then the same
-  alert returns and a screen reader announces nothing. On success the button disappears and
-  keyboard focus drops to `<body>`. A fix belongs to all of them at once: a busy label while
-  fetching, and a chosen focus target on success.
+  panel's load error since #232, `ErrorState`'s Retry, the import pages' notices, and more. They
+  give no sign on a repeat failure: the same alert returns (after about a second where the query
+  retries once; at once where it sets `retry: false`, as `useImport.ts:531,654` and
+  `useAlbum.ts:59` do) and a screen reader announces nothing. On success the button disappears
+  and keyboard focus drops to `<body>`. The one exception is the login page's "Check again"
+  (`RecheckStatus`, `pages/LoginPage.tsx:778`), which shows "Checking…" while it fetches: the
+  in-app pattern to copy. A fix belongs to all of them at once: a busy label while fetching,
+  and a chosen focus target on success.
 
 - **Should duplicates resolve / resolve-all gain 503 parity with the delete routes?**
   (#189, owner call.) Both currently keep their established structured-500 absorb shape
