@@ -441,7 +441,7 @@ def test_a_non_bool_copy_is_refused_before_anything_is_filed() -> None:
     Reading them above the first mutation puts the raise back where the other
     early exits are: nothing forced, nothing filed, nothing to restore.
 
-    Mutant this kills: deleting the two-key validating loop.
+    Mutant this kills: deleting the validating loop.
     """
     import pytest
     from confuse import ConfigTypeError
@@ -456,6 +456,29 @@ def test_a_non_bool_copy_is_refused_before_anything_is_filed() -> None:
 
     assert session.seen == {}  # the pipeline never started
     assert config["import"]["copy"].get() == 1  # nothing was forced or restored over it
+
+
+def test_a_string_write_is_refused_before_any_row_is_added() -> None:
+    """beets reads ``write`` with ``.get(bool)`` in ``manipulate_files``
+    (``importer/stages.py:296``), after ``_apply_choice`` has added the rows
+    (``:319``). beets' loader reads a hand-edited ``write: n`` as the string
+    ``'n'``, so every import added its rows and then failed.
+
+    Mutant this kills: dropping ``write`` from the validating loop.
+    """
+    import pytest
+    from confuse import ConfigTypeError
+
+    from app.beets.import_session import run_import_worker
+
+    config["import"]["write"] = "n"  # hand-edited config.yaml; Validate and Save refuse it
+
+    session = _RecordingSession()
+    with pytest.raises(ConfigTypeError, match=r"^import\.write: must be a bool, not str$"):
+        run_import_worker(session)  # type: ignore[arg-type]  # minimal stand-in; raises before .run()
+
+    assert session.seen == {}  # the pipeline never started
+    assert config["import"]["write"].get() == "n"  # nothing was forced or restored over it
 
 
 def test_the_lock_covers_the_post_run_trash_pass(monkeypatch: Any) -> None:

@@ -2414,12 +2414,14 @@ def run_import_worker(
                 "delete",
             )
         }
-        # Fail before the force, not inside beets' finalize: ``copy`` and
-        # ``move`` are the file flags a default import leaves to the user, and
-        # beets reads both with ``.get(bool)`` at ``importer/tasks.py:307-311``,
-        # AFTER ``manipulate_files`` has filed the album. Without this, ``copy:
-        # 1`` in a hand-edited config files the album and then fails the job.
-        for validated in ("copy", "move"):
+        # Fail before the force, not inside beets' pipeline: a default import
+        # leaves ``copy``, ``move`` and ``write`` to the user, and beets reads
+        # them with ``.get(bool)`` only after the rows are added: ``write`` in
+        # ``manipulate_files`` (``importer/stages.py:296``), ``copy`` and
+        # ``move`` in ``finalize`` (``importer/tasks.py:307-311``), after the
+        # album is filed. Without this, ``copy: 1`` in a hand-edited config
+        # files the album and then fails the job.
+        for validated in ("copy", "move", "write"):
             config["import"][validated].get(bool)
         forced: dict[str, object] = {
             "duplicate_action": "ask",
