@@ -3,7 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { components } from "./schema";
 import { client } from "./client";
-import { unwrap } from "./lib";
+import { detailMessage, unwrap } from "./lib";
+import { configOnDiskMessage } from "./useBeetsConfig";
 
 export type NamingConfig = components["schemas"]["NamingConfig"];
 export type NamingRuleInput = components["schemas"]["NamingRuleInput"];
@@ -21,11 +22,26 @@ export interface NamingDraft {
   replace: ReplaceRuleInput[];
 }
 
+/** A load failure. `onDisk` is the server's sentence from the 422 about
+ * config.yaml on disk; absent for any other failure. */
+export interface NamingLoadError extends Error {
+  onDisk?: string;
+}
+
 export function useNaming() {
-  return useQuery({
+  return useQuery<NamingConfig, NamingLoadError>({
     queryKey: NAMING_KEY,
-    queryFn: async (): Promise<NamingConfig> =>
-      unwrap(await client.GET("/api/config/naming"), "Failed to load naming config"),
+    queryFn: async (): Promise<NamingConfig> => {
+      const result = await client.GET("/api/config/naming");
+      const onDisk =
+        result.response.status === 422 ? detailMessage(result.error) : null;
+      if (onDisk) {
+        const e: NamingLoadError = new Error(onDisk);
+        e.onDisk = onDisk;
+        throw e;
+      }
+      return unwrap(result, "Failed to load naming config");
+    },
   });
 }
 
@@ -52,16 +68,20 @@ export function useSaveNaming() {
     NamingDraft & { base_sha256: string }
   >({
     mutationFn: async (body): Promise<BeetsConfigSnapshot> => {
-      const { data, response } = await client.POST("/api/config/naming/save", {
-        body,
-      });
+      const { data, error, response } = await client.POST(
+        "/api/config/naming/save",
+        { body },
+      );
       if (response.status === 409) {
         const e: NamingSaveError = new Error("Config changed on disk");
         e.status = 409;
         throw e;
       }
       if (!response.ok || !data) {
-        const e: NamingSaveError = new Error("Failed to save naming config");
+        // A 422 about config.yaml on disk carries the sentence to show.
+        const e: NamingSaveError = new Error(
+          configOnDiskMessage(error) ?? "Failed to save naming config",
+        );
         e.status = response.status;
         throw e;
       }

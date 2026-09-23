@@ -10,6 +10,7 @@ import {
   type ConfigOpError,
   type ValidationErrorItem,
   applyRecoveryHint,
+  configOnDiskMessage,
   useApplyConfig,
   useBeetsConfig,
   useSaveConfig,
@@ -270,8 +271,8 @@ export function SettingsBeetsPage() {
           // 409 = CAS mismatch -> open the conflict panel. Every other error,
           // 422 included, shows the "Save failed" banner below. A 422 about the
           // editor text is also painted by the lint source on its next
-          // debounce tick; the 422 for a config.yaml on disk that cannot be
-          // read has no lint row, so its reason is shown nowhere.
+          // debounce tick; a 422 about config.yaml on disk has no lint row, so
+          // the banner prints its sentence.
           const c = parseConflictBody(err);
           if (c) setConflict(c);
         },
@@ -497,7 +498,9 @@ export function SettingsBeetsPage() {
           ))}
         {save.isError && save.error?.status !== 409 && pageState === "dirty" && (
           <p className="text-destructive text-sm" role="alert">
-            Save failed. Your changes weren’t written — try again.
+            Save failed.{" "}
+            {configOnDiskMessage(save.error?.body) ??
+              "Your changes weren’t written — try again."}
           </p>
         )}
 

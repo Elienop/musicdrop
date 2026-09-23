@@ -23,7 +23,7 @@ import {
   test,
 } from "vitest";
 
-import type { components } from "@/api/schema";
+import type { components, operations } from "@/api/schema";
 import { SettingsBeetsPage } from "@/pages/settings/SettingsBeetsPage";
 import { SettingsLayout } from "@/pages/settings/SettingsLayout";
 import { server } from "@/test/msw-server";
@@ -73,6 +73,8 @@ afterAll(() => {
 
 type BeetsConfigSnapshot = components["schemas"]["BeetsConfigSnapshot"];
 type SaveRequest = components["schemas"]["SaveRequest"];
+type Save422 =
+  operations["save_config_api_config_save_post"]["responses"][422]["content"]["application/json"];
 
 const CONFIG_URL = `${window.location.origin}/api/config`;
 const SAVE_URL = `${window.location.origin}/api/config/save`;
@@ -567,6 +569,59 @@ describe("SettingsPage", () => {
 
     const banner = await screen.findByText(/save failed/i);
     expect(banner).toHaveAttribute("role", "alert");
+  });
+
+  /** Edit, type, click Save against a Save 422 answering `body`; return the
+   * "Save failed" alert. */
+  async function saveFails(body: Save422) {
+    defaultMocks();
+    server.use(
+      http.post(SAVE_URL, () => HttpResponse.json(body, { status: 422 })),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    const content = await findEditorContent();
+
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    content.focus();
+    await user.keyboard("x");
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+    return screen.findByText(/save failed/i);
+  }
+
+  test("a Save 422 about config.yaml on disk shows the server's sentence", async () => {
+    const banner = await saveFails({
+      detail: [
+        {
+          loc: "",
+          msg: "config.yaml could not be written: Permission denied.",
+          type: "config_on_disk",
+          line: null,
+          column: null,
+        },
+      ],
+    });
+    expect(banner).toHaveAttribute("role", "alert");
+    expect(banner).toHaveTextContent(
+      /^Save failed\. config\.yaml could not be written: Permission denied\.$/,
+    );
+  });
+
+  test("a Save 422 about the editor text keeps the try-again sentence", async () => {
+    const banner = await saveFails({
+      detail: [
+        {
+          loc: "directory",
+          msg: "directory: must be a string",
+          type: "value_error",
+          line: 1,
+          column: 0,
+        },
+      ],
+    });
+    expect(banner).toHaveTextContent(
+      /^Save failed\. Your changes weren’t written — try again\.$/,
+    );
   });
 
   test("Cancel after a failed Save clears the stale Save-failed alert", async () => {

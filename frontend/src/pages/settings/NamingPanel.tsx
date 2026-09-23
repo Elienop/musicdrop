@@ -71,7 +71,7 @@ function assemble(
 }
 
 export function NamingPanel() {
-  const { data, isPending, isError } = useNaming();
+  const { data, isPending, isError, error } = useNaming();
   if (isPending) {
     return (
       <SettingsSection title="Naming">
@@ -85,7 +85,7 @@ export function NamingPanel() {
     return (
       <SettingsSection title="Naming">
         <p className="text-destructive text-sm" role="alert">
-          Could not load naming config.
+          {error?.onDisk ?? "Could not load naming config."}
         </p>
       </SettingsSection>
     );
@@ -243,7 +243,8 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
 
   const hasReplaceErrors = replaceErrors.length > 0;
   // A save error other than the 409 conflict (which has its own banner): a 422
-  // from a template/regex the preview missed, a 500, or a network failure.
+  // from a template/regex the preview missed or about config.yaml on disk, a
+  // 500, or a network failure.
   const saveError = save.isError && save.error?.status !== 409;
 
   return (

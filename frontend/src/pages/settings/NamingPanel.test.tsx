@@ -4,7 +4,12 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { client } from "@/api/client";
+import type { components, operations } from "@/api/schema";
 import { NamingPanel } from "@/pages/settings/NamingPanel";
+
+type NamingSave422 =
+  operations["save_naming_route_api_config_naming_save_post"]["responses"][422]["content"]["application/json"];
+type ErrorDetail = components["schemas"]["ErrorDetail"];
 
 function wrap(ui: React.ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -284,5 +289,85 @@ test("an Apply failure without a recovery line falls back to the fixed sentence"
   const alert = await applyFails(422, { detail: "unexpected" });
   expect(alert).toHaveTextContent(
     /^Apply failed\. Your config is saved on disk; try again or restart MusicDrop\.$/,
+  );
+});
+
+/** Edit the default template, click Save against a Save 422 answering `error`,
+ * and return the alert it raises. */
+async function saveFails(error: NamingSave422) {
+  type Stub = (path: string) => Promise<unknown>;
+  const post = vi.mocked(client.POST).getMockImplementation() as unknown as
+    | Stub
+    | undefined;
+  if (!post) throw new Error("beforeEach mocks missing");
+  vi.mocked(client.POST).mockImplementation((async (path: string) =>
+    path === "/api/config/naming/save"
+      ? { data: undefined, error, response: { ok: false, status: 422 } }
+      : post(path)) as never);
+  wrap(<NamingPanel />);
+  const def = await screen.findByDisplayValue(/\$albumartist/);
+  await userEvent.type(def, "X");
+  await userEvent.click(screen.getByRole("button", { name: /save naming/i }));
+  return screen.findByRole("alert");
+}
+
+test("a Save 422 about config.yaml on disk shows the server's sentence", async () => {
+  const alert = await saveFails({
+    detail: [
+      {
+        loc: "",
+        msg: "config.yaml could not be written: Permission denied.",
+        type: "config_on_disk",
+      },
+    ],
+  });
+  expect(alert).toHaveTextContent(
+    /^Save failed: config\.yaml could not be written: Permission denied\.$/,
+  );
+});
+
+test("a Save 422 for a bad replace: pattern keeps the fixed sentence", async () => {
+  const alert = await saveFails({
+    detail: [
+      {
+        loc: "replace[0]",
+        msg: "unterminated character set at position 0",
+        type: "value_error",
+      },
+    ],
+  });
+  expect(alert).toHaveTextContent(/^Save failed: Failed to save naming config$/);
+});
+
+/** Render against a naming GET that answers `status` + `error`; return the alert. */
+async function loadFails(status: number, error: ErrorDetail) {
+  vi.mocked(client.GET).mockImplementation((async () => ({
+    data: undefined,
+    error,
+    response: { ok: false, status },
+  })) as never);
+  wrap(<NamingPanel />);
+  return screen.findByRole("alert");
+}
+
+test("a load 422 about config.yaml on disk shows the server's sentence", async () => {
+  const alert = await loadFails(422, {
+    detail: "config.yaml could not be read: No such file or directory.",
+  });
+  expect(alert).toHaveTextContent(
+    /^config\.yaml could not be read: No such file or directory\.$/,
+  );
+});
+
+test("a load 500 keeps the fixed sentence", async () => {
+  const alert = await loadFails(500, { detail: "Internal Server Error" });
+  expect(alert).toHaveTextContent(/^Could not load naming config\.$/);
+});
+
+test("a load network failure keeps the fixed sentence", async () => {
+  vi.mocked(client.GET).mockRejectedValue(new TypeError("Failed to fetch"));
+  wrap(<NamingPanel />);
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    /^Could not load naming config\.$/,
   );
 });

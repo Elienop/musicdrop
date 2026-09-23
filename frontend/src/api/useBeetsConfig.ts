@@ -62,6 +62,29 @@ export function applyRecoveryHint(
   return null;
 }
 
+/** The `type` of a Save 422 row about config.yaml on disk
+ * (config_editor._ON_DISK_ERROR_TYPE). The schema types `type` as a string. */
+const CONFIG_ON_DISK = "config_on_disk";
+
+/**
+ * The server's sentence from a `config_on_disk` row of a Save 422, from either
+ * `POST /api/config/save` or `POST /api/config/naming/save`. Null for any other
+ * body (validation rows, a 409, a 500), so the caller keeps its own sentence.
+ */
+export function configOnDiskMessage(body: unknown): string | null {
+  const detail = (body as { detail?: unknown } | null | undefined)?.detail;
+  if (!Array.isArray(detail)) return null;
+  for (const row of detail as unknown[]) {
+    if (row && typeof row === "object" && "type" in row && "msg" in row) {
+      const { type, msg } = row as { type: unknown; msg: unknown };
+      if (type === CONFIG_ON_DISK && typeof msg === "string" && msg.trim()) {
+        return msg;
+      }
+    }
+  }
+  return null;
+}
+
 async function fetchConfig(): Promise<BeetsConfigSnapshot> {
   return unwrap(await client.GET("/api/config"), "Failed to load config");
 }
