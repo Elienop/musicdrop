@@ -869,6 +869,16 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     indents a comment that follows `--- ` on the same line, on Save and the Naming save alike.
     These comment changes alter no value beets reads. A NEL character (U+0085) in a submitted
     string comes back as a space.
+  - ~~Validate and Save accept a reused YAML anchor.~~ **CLOSED 2026-09-23** on
+    `feat/import-keep-downloads` (PR #232). ruamel only warned (`ruamel/yaml/composer.py:130-137`),
+    and the warning printed both file lines to stderr, secrets included. Save then wrote a file
+    boot refuses. The editor's composer now refuses it, as PyYAML does (`yaml/composer.py:74-77`).
+  - A `config.yaml` that is not UTF-8, cannot be read, or is not a regular file shows an empty
+    editor and does not say why. beets loads a UTF-16 file with a BOM, so such a file can be
+    running. A Save from the empty editor of a non-UTF-8 file answers the 409 "changed on disk"
+    conflict (tested). It used to replace the file (measured: a Plex token lost; fixed on this
+    branch, PR #232). Re-save the file as UTF-8 to edit it here. Search words: UTF-16, BOM,
+    empty editor, sha256, 409.
   - Save, the Naming routes and `GET /api/config` open `config.yaml` only when it is a regular
     file. A FIFO swapped in between that check and the open still blocks, the same gap confuse's
     own `os.path.isfile` read and Apply's gate have. The check bounds the file's type, not its
