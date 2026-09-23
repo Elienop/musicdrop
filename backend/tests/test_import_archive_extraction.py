@@ -1,15 +1,23 @@
-"""Real beets, real archive: a tar handed to the importer cannot write outside.
+"""Real beets, real archive: a tar handed to the importer changes no outside file's content.
 
 beets unpacks a single archive FILE toppath with a bare ``extractall`` (2.14.0
 ``importer/tasks.py:1272``). ``app.beets.import_session`` sets PEP 706's
-``data_filter`` as the tarfile default when it loads, so beets refuses the
-escaping member and logs its own "extraction failed" (``tasks.py:1455-1456``).
-These tests never set that default themselves: they run the app's own
-``WebImportSession`` + ``run_import_worker``, so removing the production line
-makes them fail.
+``data_filter`` as the tarfile default when it loads. It refuses a member that
+climbs out with ``..`` and a link, symbolic or hard, that points outside; beets
+logs that as "extraction failed" (``tasks.py:1455-1456``) and imports nothing.
+An ABSOLUTE member name is not refused: the filter re-roots it inside the
+extract folder, so the file at that name keeps its bytes.
 
-Everything stays under ``tmp_path`` even with the default removed: beets'
-``mkdtemp`` is pointed there, and every escape target sits beside it.
+The guarantee pinned here is the filter's: no outside file changes content. Every
+target exists first with known bytes. The hard-link cases are what tell
+``data_filter`` from Python's weaker ``tar_filter``, which checks no link target.
+beets' own residual, resetting an outside file's modification time through an
+absolute name (``tasks.py:1275-1288``), is not pinned.
+
+These tests never set the default themselves: they run the app's own
+``WebImportSession`` + ``run_import_worker``, so removing the production line
+makes them fail. Everything stays under ``tmp_path`` even with the default
+removed: beets' ``mkdtemp`` is pointed there, and every target sits beside it.
 """
 
 from __future__ import annotations
@@ -43,6 +51,7 @@ _ALBUM = "OK Computer"
 _ARTIST = "Radiohead"
 _DEADLINE_S = 30.0
 _PAYLOAD = b"plugins: hook\n"
+_ORIGINAL = b"original bytes\n"
 
 
 def _tagged_flac(dst: Path, i: int) -> None:
@@ -177,33 +186,65 @@ def test_a_normal_album_tar_imports(lib: Library, tmp_path: Path) -> None:
     assert titles == ["Airbag 1", "Airbag 2"]
 
 
+def _outside_file(tmp_path: Path, name: str) -> Path:
+    outside = tmp_path / "outside"
+    outside.mkdir(exist_ok=True)
+    target = outside / name
+    target.write_bytes(_ORIGINAL)
+    return target
+
+
 def _dotdot(tmp_path: Path) -> tuple[Any, Path]:
     # beets extracts into tmp_path/tmp/<mkdtemp>/, so two levels up is tmp_path.
-    target = tmp_path / "escaped-dotdot.yaml"
-    return (lambda tar: _add_bytes(tar, "../../escaped-dotdot.yaml", _PAYLOAD)), target
-
-
-def _absolute(tmp_path: Path) -> tuple[Any, Path]:
-    target = tmp_path / "escaped-absolute.yaml"
-    return (lambda tar: _add_bytes(tar, str(target), _PAYLOAD)), target
+    target = _outside_file(tmp_path, "dotdot.yaml")
+    return (lambda tar: _add_bytes(tar, "../../outside/dotdot.yaml", _PAYLOAD)), target
 
 
 def _through_symlink(tmp_path: Path) -> tuple[Any, Path]:
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    target = outside / "escaped-symlink.yaml"
+    target = _outside_file(tmp_path, "symlink.yaml")
 
     def add(tar: tarfile.TarFile) -> None:
         link = tarfile.TarInfo("album/link")
         link.type = tarfile.SYMTYPE
-        link.linkname = str(outside)
+        link.linkname = str(target.parent)
         tar.addfile(link)
-        _add_bytes(tar, "album/link/escaped-symlink.yaml", _PAYLOAD)
+        _add_bytes(tar, "album/link/symlink.yaml", _PAYLOAD)
 
     return add, target
 
 
-@pytest.mark.parametrize("member", [_dotdot, _absolute, _through_symlink])
+def _hard_link_member(target: Path, linkname: str) -> Any:
+    """A hard link to ``linkname``, then a regular member of the same name.
+
+    Unfiltered, or under ``tar_filter``, the second member is written through the
+    link into ``target``.
+    """
+
+    def add(tar: tarfile.TarFile) -> None:
+        link = tarfile.TarInfo("album/hl")
+        link.type = tarfile.LNKTYPE
+        link.linkname = linkname
+        tar.addfile(link)
+        _add_bytes(tar, "album/hl", _PAYLOAD)
+
+    return add
+
+
+def _through_absolute_hard_link(tmp_path: Path) -> tuple[Any, Path]:
+    target = _outside_file(tmp_path, "hard-absolute.yaml")
+    return _hard_link_member(target, str(target)), target
+
+
+def _through_relative_hard_link(tmp_path: Path) -> tuple[Any, Path]:
+    # A hard link's name is joined to the extract dir itself, so two levels up.
+    target = _outside_file(tmp_path, "hard-relative.yaml")
+    return _hard_link_member(target, "../../outside/hard-relative.yaml"), target
+
+
+@pytest.mark.parametrize(
+    "member",
+    [_dotdot, _through_symlink, _through_absolute_hard_link, _through_relative_hard_link],
+)
 def test_a_tar_member_that_escapes_is_refused(
     lib: Library,
     tmp_path: Path,
@@ -216,7 +257,25 @@ def test_a_tar_member_that_escapes_is_refused(
     with caplog.at_level(logging.ERROR, logger="beets"):
         errors = _import(lib, archive)
 
-    assert not target.exists(), f"a tar member was written outside beets' extract dir: {target}"
+    assert target.read_bytes() == _ORIGINAL, f"a tar member was written outside: {target}"
     assert errors == []
     assert any("extraction failed" in r.getMessage() for r in caplog.records)
     assert list(lib.items()) == []
+
+
+def test_an_absolute_tar_member_leaves_the_file_at_that_name_alone(
+    lib: Library, tmp_path: Path
+) -> None:
+    """The filter writes the member inside the extract dir instead of refusing it.
+
+    Only the bytes are pinned: beets then sets the modification time on the
+    member's raw, absolute name, and whether the album imports depends on that
+    step, so it is not asserted.
+    """
+    target = _outside_file(tmp_path, "absolute.yaml")
+    archive = _album_tar(tmp_path, lambda tar: _add_bytes(tar, str(target), _PAYLOAD))
+
+    errors = _import(lib, archive)
+
+    assert target.read_bytes() == _ORIGINAL, f"a tar member was written outside: {target}"
+    assert errors == []

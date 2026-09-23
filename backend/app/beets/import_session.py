@@ -101,10 +101,13 @@ logger = logging.getLogger(__name__)
 
 # beets unpacks an archive FILE handed to the importer with a bare
 # ``extractall`` and offers no filter (2.14.0 ``importer/tasks.py:1272``). PEP 706's
-# app-wide default (Python 3.14's own) makes it refuse tar members that are
-# absolute, climb out with ``..`` or write through a link; beets logs the refusal
-# as "extraction failed" (``tasks.py:1455-1456``). Set on import of the module
-# that owns the only ImportSession, so it holds before any import, on every thread.
+# app-wide default (Python 3.14's own) refuses tar members that climb out with
+# ``..`` and links, symbolic or hard, that point outside; beets logs that as
+# "extraction failed" (``tasks.py:1455-1456``). An absolute member name is
+# re-rooted inside the extract folder (CPython 3.12 ``tarfile.py:773-774``), so no
+# archive content lands outside. beets still sets modification times on the raw
+# names (``tasks.py:1275-1288``). Set on import of the module that owns the only
+# ImportSession: before any import, on every thread.
 tarfile.TarFile.extraction_filter = staticmethod(tarfile.data_filter)
 
 #: Operator-facing records go to ``uvicorn.error``: under the Dockerfile CMD
@@ -2447,8 +2450,11 @@ def run_import_worker(
             # ``singletons: yes`` user config it otherwise skips every album
             # while recording import history.
             "singletons": False,
-            # No import path destroys a source
+            # No import path lets beets delete the source files
             # (``test_default_operation_pins_delete_off_and_leaves_filing_to_the_user``).
+            # beets' own exception, not this key: a Move import of an archive
+            # file deletes the archive once every member imported
+            # (``importer/tasks.py:1231-1249``).
             # beets keeps ``delete`` alive whenever ``copy`` survives
             # (``importer/session.py:136-138``) and then removes the originals
             # (``importer/tasks.py:527-534``), so a default import under a user
