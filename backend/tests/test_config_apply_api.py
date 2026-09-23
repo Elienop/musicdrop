@@ -451,6 +451,19 @@ def test_a_skipped_include_quotes_nothing_from_inside_it(
     _assert_unchanged(client, before)
 
 
+def _nul_path_error() -> str:
+    """CPython's own words for a NUL in a path, from the ``os.open`` the gate calls.
+
+    They changed within 3.12: 3.12.13 says "open: embedded null character in
+    path", and CI's 3.12.3 said "embedded null byte" (run 35891156419).
+    """
+    try:
+        os.open("nul\0.yaml", os.O_RDONLY)
+    except ValueError as exc:
+        return str(exc)
+    raise AssertionError("os.open accepted a NUL in a path")
+
+
 @pytest.mark.parametrize(
     ("include", "detail"),
     [
@@ -458,7 +471,7 @@ def test_a_skipped_include_quotes_nothing_from_inside_it(
             "\n  - good.yaml\n  - list.yaml\n",
             "'list.yaml': YAML config must be a mapping, got <class 'list'>",
         ),
-        ('\n  - "nul\\0.yaml"\n', "'nul\\x00.yaml': open: embedded null character in path"),
+        ('\n  - "nul\\0.yaml"\n', f"'nul\\x00.yaml': {_nul_path_error()}"),
         (" good.yaml\n", "include must be a list, not str"),
         # Entry 1 resolves after nested.yaml is merged, so it is nested.yaml's own.
         ("\n  - nested.yaml\n  - good.yaml\n", "include#1: must be a filename, not OrderedDict"),
