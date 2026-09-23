@@ -88,4 +88,47 @@ test("busy disables every field and the submit", () => {
   expect(screen.getByLabelText(/^artist$/i)).toBeDisabled();
   expect(screen.getByLabelText(/^album$/i)).toBeDisabled();
   expect(screen.getByRole("button", { name: /searching/i })).toBeDisabled();
+  // The compilation toggle is a field too — it feeds the search that is
+  // already in flight.
+  expect(screen.getByRole("checkbox", { name: /not a compilation/i })).toBeDisabled();
+});
+
+test("busy swallows a click on the compilation toggle", async () => {
+  renderRow({ busy: true });
+  const box = screen.getByRole("checkbox", { name: /not a compilation/i });
+  await userEvent.click(box);
+  // The attribute is the posture; this is the behaviour behind it.
+  expect(box).toHaveAttribute("aria-checked", "true");
+  // The words dim with the box. The primitive's root carries `peer` and dims
+  // itself at 50%; without shadcn's own Label recipe on the sibling, the label
+  // stayed at full opacity over a half-faded control. jsdom has no layout
+  // engine, so the classes are what a test can hold.
+  expect(screen.getByText("Not a compilation")).toHaveClass(
+    "peer-disabled:cursor-not-allowed",
+    "peer-disabled:opacity-50",
+  );
+  expect(box).toHaveClass("peer");
+});
+
+// The three things the swap from a native <input type="checkbox"> had to keep.
+// Each is a separate assertion because they come from different places: the
+// role and the checked state from the primitive, the name and the click target
+// from the sibling <label htmlFor>.
+test("the compilation toggle: one name, label clicks, Space toggles", async () => {
+  renderRow();
+  const box = screen.getByRole("checkbox", { name: "Not a compilation" });
+  // Exactly one accessible name — the words are not also read as a second
+  // label, which is what a wrapping <label> plus an aria-label would give.
+  expect(screen.getAllByText("Not a compilation")).toHaveLength(1);
+  expect(box).toBeChecked();
+
+  // People click the words. A dead label is worse than none.
+  await userEvent.click(screen.getByText("Not a compilation"));
+  expect(box).not.toBeChecked();
+
+  // One tab stop, reached with Tab and toggled with Space.
+  box.focus();
+  expect(box).toHaveFocus();
+  await userEvent.keyboard("{ }");
+  expect(box).toBeChecked();
 });

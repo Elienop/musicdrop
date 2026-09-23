@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -108,6 +109,10 @@ def test_a_trash_dir_that_will_not_resolve_still_gets_the_one_error_line(
     assert "MUSICDROP_TRASH_DIR could not be resolved" in message
 
 
+def _alive_drains() -> set[threading.Thread]:
+    return {t for t in threading.enumerate() if t.name == "musicdrop-acquisition" and t.is_alive()}
+
+
 def test_an_unreadable_import_bank_gets_the_one_error_line_too(
     beets_dir: Path,
     tmp_path: Path,
@@ -124,6 +129,9 @@ def test_an_unreadable_import_bank_gets_the_one_error_line_too(
 
     The setting holds a NEWLINE here: interpolated with ``%s``, it forged a
     second line in ``docker logs`` that reads as its own record.
+
+    The refused boot also leaves no inbox drain thread behind: one used to
+    outlive it, and the inbox tests that count drain threads then failed.
     """
     if os.getuid() == 0:
         pytest.skip("root reads a mode-000 directory anyway")
@@ -132,6 +140,7 @@ def test_an_unreadable_import_bank_gets_the_one_error_line_too(
     bank.mkdir(parents=True)
     monkeypatch.setattr("app.config.settings.bank_dir", str(bank))
     os.chmod(locked, 0o000)
+    drains_before = _alive_drains()
 
     try:
         with caplog.at_level(logging.ERROR), pytest.raises(PermissionError):
@@ -139,6 +148,8 @@ def test_an_unreadable_import_bank_gets_the_one_error_line_too(
                 pass  # pragma: no cover - the lifespan raises before the body runs
     finally:
         os.chmod(locked, 0o755)
+
+    assert _alive_drains() - drains_before == set()
 
     refusals = [r for r in caplog.records if r.name == "uvicorn.error"]
     assert len(refusals) == 1, [(r.name, r.getMessage()) for r in caplog.records]

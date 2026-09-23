@@ -126,7 +126,13 @@ function DuplicateScreen({
     setPending(action);
     resolve.mutate(
       { index, decision: { action } },
-      { onSuccess: () => navigate(backTo), onError: () => setPending(null) },
+      {
+        // `replace`, like every other post-decision exit in this flow: the
+        // album this screen is about is gone once the decision lands, so Back
+        // must not return to it.
+        onSuccess: () => navigate(backTo, { replace: true }),
+        onError: () => setPending(null),
+      },
     );
   }
 
@@ -137,6 +143,11 @@ function DuplicateScreen({
         incomingCoverUrl={
           prompt.incoming.has_current_art ? importCoverUrl(jobId, index) : null
         }
+        // beets asks two questions per album, the match then the duplicate
+        // (beets/importer/stages.py user_query). This screen is the second one
+        // for an album whose match is already decided — however the user got
+        // here, from the Apply they just made or from the list's Resolve.
+        eyebrow="Next question for this album"
       />
       {resolve.isError && (
         <p className="text-destructive text-sm" role="alert">

@@ -47,7 +47,7 @@ from app.beets.trash import (
     album_format_bitrate,
     trash_album,
 )
-from app.library_busy import library_job_active
+from app.library_busy import library_job_active, raise_if_swap_blocked_by_job
 from app.models.duplicates import (
     DuplicateAlbum,
     DuplicateGroup,
@@ -412,6 +412,9 @@ def resolve_duplicate_group(
         return ResolveResult(kept_album_id=keep_album_id, moved=moved)
 
 
+_RESOLVE_BUSY = "Import in progress; resolve available when it finishes"
+
+
 def _checked_store(app: FastAPI) -> tuple[LibraryHandle, Path, Path]:
     """The handle and the CHECKED Trash / origin-store pair, or a 503.
 
@@ -455,13 +458,15 @@ async def resolve_duplicates_op(
 ) -> ResolveResult:
     """Resolve a duplicate group, serialized against imports and config Apply.
 
-    Mirrors :func:`app.beets.config_editor.apply`:
+    Shares Apply's lock and its post-acquire job check
+    (:func:`app.beets.config_editor.apply`):
 
-    1. **Import gate** (409) — refuse while an import is active. Moving files +
-       dropping DB rows under a live import worker would corrupt it. Best-effort
-       TOCTOU, accepted for the single-user self-host case exactly as Apply does.
+    1. **Import gate** (409) — a fast refusal while an import is active, read
+       before the lock. Moving files + dropping DB rows under a live import
+       worker would corrupt it.
     2. **Shared lock** — ``app.state.beets_swap_lock`` (via ``_swap_lock``) so
-       resolve and Apply (and concurrent resolves) never overlap.
+       resolve and Apply (and concurrent resolves) never overlap. The job check
+       is asked again under the claim lock once this is held, as Apply asks it.
     3. **Threadpool** — beets file moves + SQLite are blocking; offload them.
     4. **Error mapping** — StaleGroupError → 409, AlbumNotFoundError → 404, any
        other failure → structured 500 ``{message, recovery}`` (the nested shape
@@ -469,11 +474,10 @@ async def resolve_duplicates_op(
     """
     app = request.app
     if library_job_active():
-        raise HTTPException(
-            status_code=409,
-            detail="Import in progress; resolve available when it finishes",
-        )
+        raise HTTPException(status_code=409, detail=_RESOLVE_BUSY)
     async with _swap_lock(app):
+        # Asked again, now the lock is ours: see ``library_busy``'s swap-lock note.
+        raise_if_swap_blocked_by_job(message=_RESOLVE_BUSY)
         handle, trash_dir, origins_dir = _checked_store(app)
         try:
             return await run_in_threadpool(
@@ -563,11 +567,10 @@ async def resolve_all_op(
     """
     app = request.app
     if library_job_active():
-        raise HTTPException(
-            status_code=409,
-            detail="Import in progress; resolve available when it finishes",
-        )
+        raise HTTPException(status_code=409, detail=_RESOLVE_BUSY)
     async with _swap_lock(app):
+        # Asked again, now the lock is ours: see ``library_busy``'s swap-lock note.
+        raise_if_swap_blocked_by_job(message=_RESOLVE_BUSY)
         handle, trash_dir, origins_dir = _checked_store(app)
         try:
             return await run_in_threadpool(

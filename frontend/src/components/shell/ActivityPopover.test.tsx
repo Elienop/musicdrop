@@ -88,6 +88,22 @@ describe("ActivityButton", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("sizes the dismiss glyph on the inline step, not the icon-xs 12px", async () => {
+    rows = [runningLyrics, failedReorganize];
+    renderWithProviders(<ActivityButton />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^Activity/ }));
+    await screen.findByText("Reorganize");
+    const svg = screen
+      .getByRole("button", { name: "Dismiss Reorganize" })
+      .querySelector("svg");
+    // `icon-xs` carries `[&_svg:not([class*='size-'])]:size-3`, so an unsized
+    // glyph renders 12px and Phosphor light draws a 0.563px hairline. The
+    // button keeps its own box; only the glyph moves. Owner's call 2026-09-20.
+    expect(svg).not.toBeNull();
+    expect(svg?.getAttribute("class")).toContain("size-4");
+  });
+
   it("offers a Dismiss button on failed rows only, wired to the dismissals store", async () => {
     rows = [runningLyrics, failedReorganize];
     renderWithProviders(<ActivityButton />);

@@ -36,7 +36,7 @@ from app.beets.trash_manage import (
     restore_album,
 )
 from app.events.emit import emit_library_changed
-from app.library_busy import raise_if_library_busy
+from app.library_busy import raise_if_library_busy, raise_if_swap_blocked_by_job
 from app.models.errors import ErrorDetail
 from app.models.trash import EmptyResult, RestoreRequest, RestoreResult, TrashListing
 from app.wire import AmbiguousDisplayName
@@ -65,11 +65,19 @@ _TRASH_RESTORE_FAILED_RESPONSE: Final = {
 }
 #: Every route here resolves the Trash / origin-store pair per request and runs
 #: the containment check on what it resolved to, so every one of them can answer
-#: this. One sentence for all three, and it says nothing about what was left:
-#: ``DELETE /api/trash/all`` removes every unprotected entry BEFORE it refuses.
+#: 503. The two EMPTY routes get this one, and it says nothing about what was
+#: left: ``DELETE /api/trash/all`` removes every unprotected entry BEFORE it
+#: refuses. "Kept" rather than "store-layout or identity", because these routes
+#: also refuse an entry whose files the LIBRARY still lists.
 _TRASH_LAYOUT_REFUSED_RESPONSE: Final = {
     "model": ErrorDetail,
-    "description": "A store-layout or identity refusal; the message names the cause.",
+    "description": "The entry was kept; the message names the cause and what to do.",
+}
+#: The LISTING's own, because "the entry was kept" is false for it: it removes
+#: nothing and keeps nothing, it only could not read the Trash it resolved.
+_TRASH_LIST_REFUSED_RESPONSE: Final = {
+    "model": ErrorDetail,
+    "description": "Trash could not be listed; the message names the setup fault.",
 }
 #: The single delete's twin of the sweep's failed-entry 500: the entry is still
 #: in Trash, and the fault is on disk rather than in the request.
@@ -77,11 +85,13 @@ _TRASH_EMPTY_FAILED_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": "The entry could not be removed; the message names the fault.",
 }
+#: The sweep's 500, which has TWO causes: entries it could not remove, and a
+#: fault that ended it — the root open, or a record it could not drop after an
+#: entry went. One sentence for both, because OpenAPI carries one per status.
 _TRASH_EMPTY_PARTIAL_RESPONSE: Final = {
     "model": ErrorDetail,
     "description": (
-        "Some Trash entries were removed and others could not be; the message names"
-        " which are still there."
+        "Trash was not fully cleared; the message names the entries still there or the fault."
     ),
 }
 #: A move-back restore writes INTO the music library, so it answers an
@@ -202,7 +212,7 @@ def _child_or_404(app: Any, folder: str) -> tuple[CheckedTrash, Path]:
         raise HTTPException(status_code=404, detail="Not in Trash") from None
 
 
-@router.get("/trash", responses={503: _TRASH_LAYOUT_REFUSED_RESPONSE})
+@router.get("/trash", responses={503: _TRASH_LIST_REFUSED_RESPONSE})
 async def list_trash(request: Request) -> TrashListing:
     """List the albums sitting in Trash (read off disk; no gate)."""
     app = request.app
@@ -233,6 +243,8 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
     app = request.app
     _gate(app)
     async with _swap_lock(app):
+        # Asked again, now the lock is ours: see ``library_busy``'s swap-lock note.
+        raise_if_swap_blocked_by_job()
         checked, dest = _child_or_404(app, body.folder)
         try:
             result = await run_in_threadpool(
@@ -276,11 +288,15 @@ async def restore_trash(request: Request, body: RestoreRequest) -> RestoreResult
         503: _TRASH_LAYOUT_REFUSED_RESPONSE,
     },
 )
-async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> EmptyResult:
+async def empty_trash_one(
+    request: Request, folder: Annotated[str, Query(max_length=255)]
+) -> EmptyResult:
     """Permanently remove one trashed album folder. 409 if busy, 404 if not in Trash."""
     app = request.app
     _gate(app)
     async with _swap_lock(app):
+        # Asked again, now the lock is ours: see ``library_busy``'s swap-lock note.
+        raise_if_swap_blocked_by_job()
         # Inside the lock, and ONE check: the path that gets ``rmtree``'d is
         # derived from the pair that check approved. It used to resolve the
         # child outside the lock from a first check and re-check inside, so the
@@ -292,6 +308,10 @@ async def empty_trash_one(request: Request, folder: Annotated[str, Query()]) -> 
                 str(dest),
                 origins_dir=checked.origins_dir,
                 protected=_required(checked.protected),
+                # The library, so an entry whose files the library still names is
+                # refused: after a delete whose row drop raised, that entry is
+                # the album's ONLY copy and one click destroyed it (measured).
+                lib=checked.handle.lib,
             )
         # 503, like the layout refusal it completes: the entry is still in Trash
         # and the fix is the operator's. Raised inline so the status stays a
@@ -329,6 +349,8 @@ async def empty_trash_all(request: Request) -> EmptyResult:
     app = request.app
     _gate(app)
     async with _swap_lock(app):
+        # Asked again, now the lock is ours: see ``library_busy``'s swap-lock note.
+        raise_if_swap_blocked_by_job()
         # Inside the lock, so a config Apply cannot swap the handle between the
         # check and the rmtree.
         checked = _store(app, protected=True)
@@ -338,6 +360,7 @@ async def empty_trash_all(request: Request) -> EmptyResult:
                 checked.trash_dir,
                 origins_dir=checked.origins_dir,
                 protected=_required(checked.protected),
+                lib=checked.handle.lib,  # see empty_trash_one
             )
         # A partial sweep still CHANGED the library, so the event fires before
         # the error propagates — the page must not keep showing entries that are
@@ -350,5 +373,12 @@ async def empty_trash_all(request: Request) -> EmptyResult:
         except ProtectedTreeError as exc:
             emit_library_changed(app)
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # The twin of ``empty_trash_one``'s arm: the root open, or an origin
+        # record that could not be dropped after its entry went, otherwise falls
+        # into the blanket 500 with no declared body. The event fires first, like
+        # the two above it — entries this call removed are gone from the page.
+        except OSError as exc:
+            emit_library_changed(app)
+            raise HTTPException(status_code=500, detail=f"Empty Trash: {exc}") from exc
         emit_library_changed(app)
     return result

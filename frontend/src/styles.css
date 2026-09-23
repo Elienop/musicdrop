@@ -64,7 +64,20 @@
   --success-foreground: oklch(14.7% 0 0deg);
   --border: oklch(100% 0 0deg / 10%);
   --input: oklch(100% 0 0deg / 15%);
-  --ring: oklch(70.9% 0.165 293.5deg); /* focus ring = violet, consumed at /50 */
+  /* Focus ring = the one violet, shared with --primary-light. Consumed at /70,
+   * NOT shadcn's /50, because /50 is under WCAG's 3:1 for non-text on EVERY
+   * declared ground. Composited ring vs its own ground, per surface:
+   *   --background 14.5%          /50 2.57:1   /70 4.02:1
+   *   --surface-raised 18%        /50 2.59:1   /70 3.94:1
+   *   --card / --popover 20.5%    /50 2.57:1   /70 3.85:1
+   *   --surface-hover 24%         /50 2.51:1   /70 3.65:1
+   *   --muted/--secondary/--accent 26.9%  /50 2.43:1  /70 3.46:1  <- worst
+   * So /70 clears 3:1 on all five and /50 clears none. The four ui/ primitives
+   * diverge from their canonical class string for that reason. Raising the
+   * token's lightness instead would have split this violet from
+   * --primary-light — owner's call 2026-09-20: keep one violet.
+   * Re-derive: composite --ring over the ground in sRGB, then WCAG ratio. */
+  --ring: oklch(70.9% 0.165 293.5deg);
 
   /* Sidebar family — wired to the real sidebar in Phase 2. Mirrors the
    * elevation ramp (sidebar = raised surface) with violet active states. */
@@ -202,7 +215,7 @@
   .focus-ring {
     @apply outline-none;
     &:focus-visible {
-      @apply ring-[3px] ring-ring/50;
+      @apply ring-[3px] ring-ring/70;
     }
   }
 }

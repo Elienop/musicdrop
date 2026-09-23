@@ -24,11 +24,16 @@ from app.acquisition.inbox import contain
 from app.acquisition.ledger import AcquisitionLedger
 from app.import_jobs.gates import import_gate_clear
 from app.import_jobs.registry import ImportJobRegistry
+from app.import_jobs.runner import LibraryRootUnavailableError, SourcePathMissingError
 from app.models.acquisition import AcquisitionQueueStatus, LedgerOutcome
 from app.models.import_api import ImportPhase
 from app.models.import_models import ImportOptions
+from app.wire import display_path
 
 logger = logging.getLogger(__name__)
+
+#: Why a stopped inbox import is recorded as failed rather than imported.
+_STOPPED_BEFORE_FINISH = "The import was stopped before this folder finished."
 
 
 class AcquisitionQueue:
@@ -102,7 +107,9 @@ class AcquisitionQueue:
         # root is rejected here too. Belt-and-suspenders behind the webhook's guard.
         if self._inbox_dir is not None:
             if contain(str(folder), self._inbox_dir, strict=True) is None:
-                logger.warning("acquisition: refusing non-descendant inbox path %s", folder)
+                # ``%r``: the value is caller-supplied (the webhook posts it), and a
+                # name carrying a newline forges a whole log record under ``%s``.
+                logger.warning("acquisition: refusing non-descendant inbox path %r", folder)
                 return
         key = str(folder.resolve())
         with self._lock:
@@ -143,7 +150,14 @@ class AcquisitionQueue:
         key = str(folder.resolve())
         with self._lock:
             self._phase = "running"
-            self._current = str(folder)
+            # The BASENAME, never ``str(folder)``: this field goes out in
+            # ``GET /api/acquisition/status`` and both readers (the Review
+            # page's "Importing now" line and the activity row's scope) already
+            # reduce it with ``lastSegment``, so the rendered text is unchanged
+            # while the absolute inbox path stops leaving the server.
+            # ``display_path`` because an inbox name is whatever bytes a remote
+            # peer chose, and a surrogate in it would fail the JSON encode.
+            self._current = display_path(folder.name)
 
         if not self._wait_for_gate():
             return  # shutting down
@@ -154,12 +168,40 @@ class AcquisitionQueue:
                 options=ImportOptions(operation="move", unattended=True),
                 origin="inbox",
             )
-        except RuntimeError:
-            # The slot was claimed between the gate check and start() (TOCTOU).
-            # Defer: back off briefly, requeue, leave dedupe + status as-is.
-            self._stop.wait(self._busy_backoff)
-            if not self._stop.is_set():
-                self._queue.put(folder)
+        except (RuntimeError, LibraryRootUnavailableError) as exc:
+            # The slot was claimed, or the music share dropped, between the gate
+            # check and start() (TOCTOU). Without the second arm the refusal
+            # escaped _drain and killed this daemon thread, stranding every later
+            # download for the process lifetime (measured).
+            #
+            # Defer, and release ``_current`` while doing it - see ``_defer``.
+            # "Leave status as-is" used to mean the page rendered "Importing
+            # <folder>" behind a spinner for the whole outage.
+            #
+            # Only the library arm carries a REASON. Losing the race for the
+            # single slot is not a fault: another import genuinely is running and
+            # the page shows that one, so an error line would be noise. A music
+            # share that dropped is an outage nothing else on this page names.
+            reason = str(exc) if isinstance(exc, LibraryRootUnavailableError) else None
+            self._defer(folder, error=reason)
+            return
+        except SourcePathMissingError as exc:
+            # Two faults, ONE terminal outcome, and they must not share a
+            # sentence: a folder the OS will not let us search is sitting right
+            # there, and logged as gone an operator greps for it and finds it.
+            #
+            # Terminal for both: while either fault stands ``has_audio`` answers
+            # False so the folder is in no listing anyway, and the moment it is
+            # fixed "Review all" imports it ATTENDED. No ledger row, because
+            # ``mark`` REPLACES any prior entry for that path - ``_finish`` is
+            # the durable record, and a re-download re-enqueues.
+            #
+            # ``%r`` because ``enqueue`` never checks EXISTENCE, so a peer-chosen
+            # name that never existed reaches this line; under ``%s`` a newline
+            # in it forged a complete log record at another severity (measured).
+            fault = "cannot be read" if exc.unreadable else "is no longer there"
+            logger.warning("inbox drain: %r %s; dropped (%r)", folder, fault, exc)
+            self._finish(key, "failed", str(exc))
             return
 
         result = self._wait_for_import(job_id)
@@ -171,6 +213,29 @@ class AcquisitionQueue:
         except OSError:
             pass  # best-effort; never crash the drain on a ledger write
         self._finish(key, outcome, error)
+
+    def _defer(self, folder: Path, *, error: str | None) -> None:
+        """Back off, requeue, and stop claiming an import is in flight.
+
+        The dedupe entry STAYS, so ``status()`` keeps counting the folder as
+        queued and a webhook retry is still a no-op. ``_current`` does not:
+        only ``_finish`` used to clear it, so a folder that deferred forever
+        left the status reporting ``phase="running"`` with ``current`` naming
+        it, ``failed`` at 0 and ``error`` at ``None`` - "Importing <folder>"
+        behind a spinner for an import that was never started. Cleared, the
+        same line reads "Waiting for the import slot - N queued", which is what
+        is actually happening.
+
+        No counter moves: this folder has not finished. ``error`` is the fault
+        the page shows under "Recently landed" when there is one to show.
+        """
+        with self._lock:
+            self._current = None
+            if error is not None:
+                self._error = error
+        self._stop.wait(self._busy_backoff)
+        if not self._stop.is_set():
+            self._queue.put(folder)
 
     def _wait_for_gate(self) -> bool:
         """Block until the import slot + gates are free. ``False`` if shutting down."""
@@ -206,6 +271,13 @@ class AcquisitionQueue:
         return None
 
     def _result_for(self, job_id: str) -> tuple[LedgerOutcome, str | None]:
+        # The abort flag is read FIRST, and the two reads are not interchangeable:
+        # this one answers False once the slot holds another job, while state()
+        # raises there and lands on _raced_handoff. Read the other way round, a
+        # start() between them ledgers a cut-short folder "imported". Safe to
+        # read early - the flag is final before the phase goes terminal, and
+        # this runs only on a terminal phase.
+        aborted = self._import_registry.job_aborted(job_id)
         try:
             state = self._import_registry.state(job_id)
         except KeyError:
@@ -214,6 +286,14 @@ class AcquisitionQueue:
             return self._raced_handoff()
         if state.phase == ImportPhase.failed:
             return ("failed", state.error)
+        if state.stopped and aborted:
+            # A stop that ACTUALLY aborted ended the run at the album it was on,
+            # so nothing says this folder was handled - recording "imported"
+            # would retire it in the ledger and no webhook retry would ever
+            # offer it again. "failed" is the bucket the inbox list annotates
+            # (_entry_outcome). A stop accepted after the last abort point
+            # raises nothing and the folder imported in full.
+            return ("failed", _STOPPED_BEFORE_FINISH)
         if state.set_aside > 0:
             return ("set_aside", None)
         return ("imported", None)

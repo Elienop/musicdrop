@@ -228,7 +228,7 @@ export interface paths {
         post?: never;
         /**
          * Delete Album Endpoint
-         * @description Move the album's whole folder to Trash (reversible) and drop it from the
+         * @description Move the album's own files to Trash (reversible) and drop it from the
          *     library. 404 unknown album; 409 while a library job is running.
          *
          *     The dropped items' playlists get a fresh `.m3u8` afterwards: their exports
@@ -875,7 +875,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/import/{job_id}/pause": {
+    "/api/import/{job_id}/stop": {
         parameters: {
             query?: never;
             header?: never;
@@ -885,18 +885,10 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Pause Import
-         * @description Ask the active sweep to stop at its next album boundary.
-         *
-         *     The session aborts via beets' native clean abort at its next decision
-         *     hook: the current album finishes its decision point, the session unwinds,
-         *     the job ends ``phase=done`` with ``sweep.paused`` set, and the
-         *     import slot frees. Resume = start a new sweep of the same root (beets'
-         *     incremental history skips everything already done or banked). 404 for an
-         *     unknown job; 409 when the job is not a sweep or is no longer active;
-         *     repeating a pause on a still-active sweep is idempotent (204).
+         * Stop Import
+         * @description Stop the active import at the album it is on; what already landed stays.
          */
-        post: operations["pause_import_api_import__job_id__pause_post"];
+        post: operations["stop_import_api_import__job_id__stop_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2168,6 +2160,8 @@ export interface components {
             /** Tracks */
             tracks: components["schemas"]["Track"][];
             release?: components["schemas"]["ReleaseIdentity"] | null;
+            /** @description Set when some of the album's files are not in the library folder. */
+            outside_library: components["schemas"]["OutsideLibrary"] | null;
         };
         /**
          * AlbumDiffSide
@@ -2628,10 +2622,11 @@ export interface components {
             /** Error */
             error?: string | null;
             /**
-             * Error Retryable
-             * @default true
+             * Error Recovery
+             * @default decide_again
+             * @enum {string}
              */
-            error_retryable: boolean;
+            error_recovery: "decide_again" | "remove_duplicate" | "fix_folder";
             /** Album Id */
             album_id?: number | null;
             /**
@@ -2964,8 +2959,11 @@ export interface components {
          * @description Outcome of a reversible delete: how many albums went to Trash + where.
          *
          *     ``trashed_albums`` is 1 for a single-album delete, N for an artist (every
-         *     album of theirs). ``trash_path`` is the Trash location the files were moved
-         *     to (recoverable from there).
+         *     album of theirs). ``trash_path`` is where to look: the album's own folder
+         *     inside Trash when its files moved there; the folder its rows named when
+         *     nothing moved (already in Trash, or gone from the disk entirely); the Trash
+         *     root when it had no files at all, and for an artist delete, whose albums each
+         *     get a container of their own.
          */
         DeleteResult: {
             /** Trashed Albums */
@@ -3325,8 +3323,8 @@ export interface components {
          *     sweep-origin job: a new import replaces the slot (and this recap with
          *     it), and failed sweeps surface nothing. ``job_id`` targets the run page
          *     (``/import?job=…``), which lives exactly as long as this block does, so
-         *     the link can never dangle. ``paused`` distinguishes a paused sweep (it
-         *     ends ``phase=done`` with the flag set) from a completed one.
+         *     the link can never dangle. ``stopped`` distinguishes a sweep the user
+         *     paused (it ends ``phase=done`` with the flag set) from a completed one.
          */
         FinishedSweep: {
             /** Job Id */
@@ -3339,8 +3337,8 @@ export interface components {
             banked: number;
             /** Skipped Known */
             skipped_known: number;
-            /** Paused */
-            paused: boolean;
+            /** Stopped */
+            stopped: boolean;
         };
         /**
          * GroupDecision
@@ -3371,15 +3369,17 @@ export interface components {
          *
          *     ``apply`` selects a ranked option by index; ``search`` re-looks-up the album
          *     against a user-supplied release id/URL or a forced-non-VA name search and
-         *     re-parks (it never resolves the park); ``abort`` stops the whole import (the
-         *     session raises beets' ``ImportAbortError``, caught by ``run()``).
+         *     re-parks (it does not resolve the park).
          *
          *     ``rescan`` re-reads the album's folder from disk (the user changed the
          *     files on purpose) and re-runs beets' default lookup, re-parking like
          *     ``search``; it carries no payload.
+         *
+         *     Every action here answers ONE album. Ending the whole run is
+         *     ``POST /import/{job_id}/stop``, which the registry arms on the bridge.
          * @enum {string}
          */
-        ImportAction: "apply" | "skip" | "asis" | "astracks" | "abort" | "search" | "rescan";
+        ImportAction: "apply" | "skip" | "asis" | "astracks" | "search" | "rescan";
         /**
          * ImportAlbumStatus
          * @description Per-album state in the live feed.
@@ -3420,6 +3420,8 @@ export interface components {
              * @default false
              */
             did_not_land: boolean;
+            /** Note */
+            note?: string | null;
         };
         /**
          * ImportChoice
@@ -3500,6 +3502,11 @@ export interface components {
              * @enum {string}
              */
             origin: "manual" | "inbox" | "sweep" | "bank_apply";
+            /**
+             * Path
+             * @description The folder this import was started with, when it was exactly one.
+             */
+            path?: string | null;
             /** Set Aside */
             set_aside: number;
             sweep?: components["schemas"]["SweepStatus"] | null;
@@ -3513,22 +3520,20 @@ export interface components {
              * @description True while the worker is blocked on a parked album awaiting a decision.
              */
             awaiting_decision: boolean;
+            /**
+             * Stopped
+             * @description True once a stop was accepted for this job; stays true when it ends.
+             */
+            stopped: boolean;
+            /**
+             * Aborted
+             * @description True when the stop reached the worker and ended the run early.
+             */
+            aborted: boolean;
         };
         /**
          * ImportOptions
-         * @description Per-import overrides (replaces the reserved ``dict[str, str]``).
-         *
-         *     ``operation`` ``"default"`` falls through to the user's beets config (the
-         *     manual-import default). ``"move"``/``"copy"`` force that operation for this
-         *     import only. ``unattended`` ``True`` is the inbox path: no human review —
-         *     uncertain/duplicate albums are set aside rather than parked. ``sweep``
-         *     ``True`` is the banking sweep: an unattended, beets-incremental run that
-         *     BANKS every set-aside album (with its candidate payload) instead of just
-         *     skipping it, recorded as ``origin="sweep"``. A sweep is unattended by
-         *     definition — the session enforces ``unattended or sweep`` — so
-         *     ``{"sweep": true}`` alone is a complete sweep request. The sweep forces no
-         *     file operation: ``operation`` behaves exactly as for a manual import (the
-         *     in-library guard still force-corrects in-library sources to move).
+         * @description Per-import overrides for one import request.
          */
         ImportOptions: {
             /**
@@ -3547,6 +3552,11 @@ export interface components {
              * @default false
              */
             sweep: boolean;
+            /**
+             * Incremental
+             * @description false imports folders beets' import history already has; null follows the defaults.
+             */
+            incremental?: false | null;
         };
         /**
          * ImportPhase
@@ -3555,7 +3565,7 @@ export interface components {
          *     scanning  -> the worker is reading/grouping/looking up (nothing parked yet)
          *     reviewing -> an album is parked-and-waiting for a decision
          *     applying  -> reserved (beets exposes no signal to set it transiently)
-         *     done      -> the import finished (incl. a clean abort)
+         *     done      -> the import finished, whether it ran out or a stop ended it
          *     failed    -> the worker raised; ``error`` holds the message
          * @enum {string}
          */
@@ -3576,6 +3586,12 @@ export interface components {
              * @default 0
              */
             not_landed: number;
+            /**
+             * Already Known
+             * @description Album folders beets skipped as already imported.
+             * @default 0
+             */
+            already_known: number;
         };
         /**
          * ImportSearch
@@ -3943,6 +3959,22 @@ export interface components {
             path: string;
             /** File Count */
             file_count: number;
+        };
+        /**
+         * OutsideLibrary
+         * @description Where an album file sits when it is not in the library folder.
+         */
+        OutsideLibrary: {
+            /**
+             * Folder
+             * @description The folder holding an album file that is not in the library folder.
+             */
+            folder: string;
+            /**
+             * Holds Every Track
+             * @description True when every track of the album is a file in that one folder.
+             */
+            holds_every_track: boolean;
         };
         /**
          * ParkedAlbum
@@ -4915,9 +4947,9 @@ export interface components {
          * @description Body of ``POST /api/import``.
          *
          *     ``path`` is a server-side folder (maps 1:1 to ``beet import <path>``).
-         *     ``options`` carries per-import overrides (operation move/copy/default +
-         *     unattended). ``None`` falls through to today's manual default (the user's
-         *     beets config, attended review).
+         *     ``options`` carries per-import overrides (operation move/copy/default,
+         *     unattended, sweep, incremental). ``None`` falls through to today's manual
+         *     default (the user's beets config, attended review).
          */
         StartImportRequest: {
             /** Path */
@@ -4989,10 +5021,10 @@ export interface components {
             /** Current Folder */
             current_folder?: string | null;
             /**
-             * Paused
+             * Stopped
              * @default false
              */
-            paused: boolean;
+            stopped: boolean;
         };
         /** Track */
         Track: {
@@ -7904,7 +7936,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync holds the library. */
+            /** @description An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync holds the library, or two folders display under the same name. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -7922,7 +7954,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description A copy-mode import was asked for a folder inside the music library, or the request failed validation. */
+            /** @description The source folder does not exist or cannot be read, or a copy-mode import was asked for a folder inside the music library, or the request failed validation. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -7931,7 +7963,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The store layout is refused, so no import can start. */
+            /** @description The store layout is refused, the library folder is unavailable, or a start is taking longer than usual. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -8039,7 +8071,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description No import job has that id, or no album is parked at that index. */
+            /** @description No import job has that id, no album is parked at that index, or the import has finished. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8098,7 +8130,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description No import job has that id, no album is parked at that index, or the parked album has no embedded cover art. */
+            /** @description No import job has that id, no album is parked at that index, the import has finished, or the parked album has no embedded cover art. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8159,7 +8191,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description No import job has that id, or no album is parked at that index. */
+            /** @description No import job has that id, no album is parked at that index, or the import has finished. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8229,7 +8261,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description No import job has that id, or no album is parked at that index. */
+            /** @description No import job has that id, no album is parked at that index, or the import has finished. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8306,7 +8338,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description No import job has that id, or no duplicate is parked at that index. */
+            /** @description No import job has that id, no duplicate is parked at that index, or the import has finished. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8376,7 +8408,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description No import job has that id, or no duplicate is parked at that index. */
+            /** @description No import job has that id, no duplicate is parked at that index, or the import has finished. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8414,7 +8446,7 @@ export interface operations {
             };
         };
     };
-    pause_import_api_import__job_id__pause_post: {
+    stop_import_api_import__job_id__stop_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -8468,7 +8500,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description That import is not a sweep, or the sweep is no longer running. */
+            /** @description That import is no longer running. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -8662,7 +8694,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The YAML did not parse, a key has the wrong shape, or its directory:/library: would break the store layout; the body lists one item per problem. */
+            /** @description The YAML did not parse, a key has the wrong shape, its directory:/library: would break the store layout, or config.yaml on disk cannot be read or written; the body lists one item per problem. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -8716,6 +8748,15 @@ export interface operations {
             };
             /** @description Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login. */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description config.yaml on disk cannot be read, does not parse or is not a mapping; the detail says why. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8861,7 +8902,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description A submitted replace: pattern is not a valid regular expression, so the save was refused before anything was written; the body names the offending row. A malformed request body answers with FastAPI's validation shape instead. */
+            /** @description A submitted replace: pattern is not a valid regular expression, or config.yaml on disk cannot be read or written, does not parse or is not a mapping; the body names the problem. A malformed request body answers with FastAPI's validation shape instead. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -8936,7 +8977,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The config.yaml on disk breaks the store layout; the recovery line says how to fix it. */
+            /** @description config.yaml on disk is not a regular file, is unreadable, skips an include, breaks the store layout, or failed to load and the old config was put back; the recovery line says what to fix. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -8945,7 +8986,7 @@ export interface operations {
                     "application/json": components["schemas"]["StructuredErrorDetail"];
                 };
             };
-            /** @description The library rebuild failed during apply, but the saved config is safe on disk and will load on the next start. */
+            /** @description The rebuild failed and putting the old config back failed too; fix the error the recovery line quotes and Apply again. */
             500: {
                 headers: {
                     [name: string]: unknown;
@@ -11861,7 +11902,16 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The store layout is refused, so no import can start. */
+            /** @description Every folder handed over no longer exists, or cannot be read. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description The store layout is refused, the library folder is unavailable, or a start is taking longer than usual. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -11986,16 +12036,16 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Validation Error */
+            /** @description The folder no longer exists or cannot be read, or the request failed validation. */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorDetail"] | components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The store layout is refused, so no import can start. */
+            /** @description The store layout is refused, the library folder is unavailable, or a start is taking longer than usual. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -12311,7 +12361,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The row is not an undecided match row, so the search was refused (it is already decided, or its folder went stale). */
+            /** @description The row is not an undecided match row, so the search was refused (it is already decided, or its folder went stale or cannot be read). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -12396,7 +12446,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The row cannot be rescanned (already decided, its folder is gone, or it holds no audio files). */
+            /** @description The row cannot be rescanned (already decided, its folder is gone or cannot be read, or it holds no audio files). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -12679,7 +12729,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description A store-layout or identity refusal; the message names the cause. */
+            /** @description Trash could not be listed; the message names the setup fault. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -12773,7 +12823,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description A store-layout or identity refusal; the message names the cause. */
+            /** @description The entry was kept; the message names the cause and what to do. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -12943,7 +12993,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description Some Trash entries were removed and others could not be; the message names which are still there. */
+            /** @description Trash was not fully cleared; the message names the entries still there or the fault. */
             500: {
                 headers: {
                     [name: string]: unknown;
@@ -12952,7 +13002,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description A store-layout or identity refusal; the message names the cause. */
+            /** @description The entry was kept; the message names the cause and what to do. */
             503: {
                 headers: {
                     [name: string]: unknown;

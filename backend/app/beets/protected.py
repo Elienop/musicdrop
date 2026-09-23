@@ -10,7 +10,9 @@ per directory in the tree it walks.
 
 A leaf module — ``app.config``, ``app.fsutil`` and nothing else of this app's,
 both leaves themselves — so the movers, the remover and ``store_layout`` can all
-reach it. Residuals live in one place, the BACKLOG entry for this slice.
+reach it. It also holds :func:`rows_under_any`, the beets ``path:`` predicate the
+Trash spellings here are asked WITH, for the same reason. Residuals live in the
+BACKLOG entry for this slice.
 """
 
 from __future__ import annotations
@@ -18,10 +20,12 @@ from __future__ import annotations
 import logging
 import os
 import stat
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
+
+from beets.dbcore.query import OrQuery, PathQuery, Query
 
 from app.config import Settings, app_owned_dirs, export_dir
 from app.fsutil import BELOW_FLAGS
@@ -55,11 +59,15 @@ class ProtectedTrees:
     carried separately because ``ids`` keeps one owner per inode: the Trash is
     listed third, so for every directory after it ``ids[trash]`` says "the Trash
     directory" and an alias reads as no alias at all.
+
+    ``trash_spellings`` rides here because every caller that asks the library
+    about a Trash entry already takes this object (:func:`_trash_spellings`).
     """
 
     ids: ProtectedIds
     trash: tuple[int, int] | None
     trash_alias: tuple[str, str] | None
+    trash_spellings: tuple[Path, ...]
 
 
 #: What :func:`protected_trees` calls the Trash. Read back there to find the
@@ -169,7 +177,61 @@ def protected_trees(
         ((n, s) for ident, n, s in seen if ident == trash and n != _TRASH_NAME),
         None,
     )
-    return ProtectedTrees(ids=ids, trash=trash, trash_alias=alias)
+    return ProtectedTrees(
+        ids=ids,
+        trash=trash,
+        trash_alias=alias,
+        trash_spellings=_trash_spellings(settings, beets_dir, trash_dir),
+    )
+
+
+def _trash_spellings(settings: Settings, beets_dir: Path, trash_dir: Path) -> tuple[Path, ...]:
+    """Every spelling of the CURRENT Trash the app's own settings name, deduplicated.
+
+    **For the REFUSING side only** — Empty's gate. Delete's retry arm asks over
+    the current ``trash_dir`` alone, because it drops rows instead of keeping
+    them (``delete._all_rows_are_in_trash``).
+
+    A row holds the spelling the MOVER used; a check asks with the one the
+    settings resolve to NOW. Those differ after an ordinary ``mv trash
+    bigdisk-trash && ln -s bigdisk-trash trash``, or after the operator writes
+    the Trash's own location into Settings — measured on both Empty routes,
+    ``200`` with the album's only copy destroyed and the album still listed.
+
+    Four CANDIDATES — what this request resolved to, ITS resolution, the
+    configured string as written, and the default ``<beets_dir>/trash`` —
+    deduplicated to 1-3 on every layout measured. The resolution covers the
+    REVERSE door: rows written while a Trash was configured at a real path hold
+    that path, and once the setting is CLEARED every spelling the app names is
+    the default leaf, so the gate asked ``{D, D}`` and answered ``200`` with the
+    album's only copy destroyed
+    (``test_empty_one_refuses_after_the_operator_clears_a_configured_trash``).
+
+    Unguarded on purpose: ``Path.resolve()`` is non-strict, and what lands here
+    is only ever a QUERY PATTERN for the gate, so a wrong one makes it miss,
+    never act. Not exhaustive — a bind mount, or a Trash re-pointed somewhere
+    none of these name, stays a recorded residual.
+    """
+    spellings = [trash_dir, trash_dir.resolve()]
+    if settings.trash_dir:
+        spellings.append(Path(os.path.abspath(settings.trash_dir)))
+    spellings.append(beets_dir / "trash")
+    return tuple(dict.fromkeys(spellings))
+
+
+def rows_under_any(roots: Sequence[Path]) -> Query:
+    """beets' ``path:`` predicate for a file that IS, or is inside, any of ``roots``.
+
+    One definition, two callers, DIFFERENT roots. Empty's gate passes every
+    spelling (:func:`_trash_spellings`); Delete's retry arm passes the current
+    ``trash_dir`` alone, because it de-registers rather than refuses
+    (``delete._all_rows_are_in_trash``). Still only ``PathQuery`` — beets' own
+    relative-row, directory-arm and case handling — with ``OrQuery`` so a
+    multi-root ask stays ONE pass over the rows. Wrapped even for a single root:
+    ``OrQuery`` of one differs from the member by a paren pair alone (measured),
+    and the special case that unwrapped it survived mutation.
+    """
+    return OrQuery([PathQuery("path", os.fsencode(str(root))) for root in roots])
 
 
 def _note_walk_error(exc: OSError) -> None:
@@ -266,20 +328,32 @@ def refuse_protected_tree(root: str | Path, protected: ProtectedTrees, *, action
         raise protected_tree_error(root, hit[1], action)
 
 
-def refuse_a_held_store(root: str | Path, protected: ProtectedTrees, *, action: _Action) -> bool:
-    """Refuse a tree that HOLDS one of ours; answer ``True`` when it IS one.
+def open_if_one_of_ours(root: str | Path, protected: ProtectedTrees) -> int | None:
+    """A descriptor on ``root`` when it IS one of ours; ``None`` otherwise.
 
-    A tree holding an app store has no safe relocation. A tree that IS one has a
-    per-item path: the album's FILES go, the directory stays. One function, so
-    the delete route and ``delete_artist``'s pre-check refuse the same set.
+    The identity question only — no walk, so it says nothing about what the tree
+    CONTAINS — answered by ``fstat`` on the descriptor the caller then acts
+    through, as :func:`open_checked_dir` does for the Trash. The caller owns the
+    descriptor and must close it; for the per-item delete it is what keeps the
+    keep-file write inside the directory whose identity was checked.
+
+    ``BELOW_FLAGS``, so a symlink at the name answers ``None``
+    (``test_a_symlink_at_a_store_name_is_not_one_of_ours``). ``ValueError``
+    beside ``OSError``: a NUL in a stored path makes ``os.open`` raise that
+    instead (measured), and every path this cannot open answers ``None`` rather
+    than raising past a caller that has descriptors open.
     """
-    hit = _match(root, protected, None)
-    if hit is None:
-        return False
-    is_root, clause = hit
-    if not is_root:
-        raise protected_tree_error(root, clause, action)
-    return True
+    try:
+        fd = os.open(root, BELOW_FLAGS)
+    except (OSError, ValueError):
+        return None
+    try:
+        if _fstat_id(fd) in protected.ids:
+            return fd
+    except OSError:
+        pass
+    os.close(fd)
+    return None
 
 
 def open_checked_dir(path: Path, protected: ProtectedTrees) -> int:

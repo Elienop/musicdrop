@@ -709,7 +709,7 @@
           "albums"
         ],
         "summary": "Delete Album Endpoint",
-        "description": "Move the album's whole folder to Trash (reversible) and drop it from the\nlibrary. 404 unknown album; 409 while a library job is running.\n\nThe dropped items' playlists get a fresh `.m3u8` afterwards: their exports\nstill list files that now live in Trash, and a re-export prunes those lines\n(an unresolvable id simply drops out of ``m3u_entries``).",
+        "description": "Move the album's own files to Trash (reversible) and drop it from the\nlibrary. 404 unknown album; 409 while a library job is running.\n\nThe dropped items' playlists get a fresh `.m3u8` afterwards: their exports\nstill list files that now live in Trash, and a re-export prunes those lines\n(an unresolvable id simply drops out of ``m3u_entries``).",
         "operationId": "delete_album_endpoint_api_albums__album_id__delete",
         "parameters": [
           {
@@ -3424,7 +3424,7 @@
             }
           },
           "409": {
-            "description": "An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync holds the library.",
+            "description": "An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync holds the library, or two folders display under the same name.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3434,7 +3434,7 @@
             }
           },
           "422": {
-            "description": "A copy-mode import was asked for a folder inside the music library, or the request failed validation.",
+            "description": "The source folder does not exist or cannot be read, or a copy-mode import was asked for a folder inside the music library, or the request failed validation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3451,7 +3451,7 @@
             }
           },
           "503": {
-            "description": "The store layout is refused, so no import can start.",
+            "description": "The store layout is refused, the library folder is unavailable, or a start is taking longer than usual.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3615,7 +3615,7 @@
             }
           },
           "404": {
-            "description": "No import job has that id, or no album is parked at that index.",
+            "description": "No import job has that id, no album is parked at that index, or the import has finished.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3695,7 +3695,7 @@
             }
           },
           "404": {
-            "description": "No import job has that id, no album is parked at that index, or the parked album has no embedded cover art.",
+            "description": "No import job has that id, no album is parked at that index, the import has finished, or the parked album has no embedded cover art.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3789,7 +3789,7 @@
             }
           },
           "404": {
-            "description": "No import job has that id, or no album is parked at that index.",
+            "description": "No import job has that id, no album is parked at that index, or the import has finished.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3874,7 +3874,7 @@
             "description": "Successful Response"
           },
           "404": {
-            "description": "No import job has that id, or no album is parked at that index.",
+            "description": "No import job has that id, no album is parked at that index, or the import has finished.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3986,7 +3986,7 @@
             }
           },
           "404": {
-            "description": "No import job has that id, or no duplicate is parked at that index.",
+            "description": "No import job has that id, no duplicate is parked at that index, or the import has finished.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4069,7 +4069,7 @@
             "description": "Successful Response"
           },
           "404": {
-            "description": "No import job has that id, or no duplicate is parked at that index.",
+            "description": "No import job has that id, no duplicate is parked at that index, or the import has finished.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4141,14 +4141,14 @@
         }
       }
     },
-    "/api/import/{job_id}/pause": {
+    "/api/import/{job_id}/stop": {
       "post": {
         "tags": [
           "import"
         ],
-        "summary": "Pause Import",
-        "description": "Ask the active sweep to stop at its next album boundary.\n\nThe session aborts via beets' native clean abort at its next decision\nhook: the current album finishes its decision point, the session unwinds,\nthe job ends ``phase=done`` with ``sweep.paused`` set, and the\nimport slot frees. Resume = start a new sweep of the same root (beets'\nincremental history skips everything already done or banked). 404 for an\nunknown job; 409 when the job is not a sweep or is no longer active;\nrepeating a pause on a still-active sweep is idempotent (204).",
-        "operationId": "pause_import_api_import__job_id__pause_post",
+        "summary": "Stop Import",
+        "description": "Stop the active import at the album it is on; what already landed stays.",
+        "operationId": "stop_import_api_import__job_id__stop_post",
         "parameters": [
           {
             "name": "job_id",
@@ -4175,7 +4175,7 @@
             }
           },
           "409": {
-            "description": "That import is not a sweep, or the sweep is no longer running.",
+            "description": "That import is no longer running.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4390,7 +4390,7 @@
             }
           },
           "422": {
-            "description": "The YAML did not parse, a key has the wrong shape, or its directory:/library: would break the store layout; the body lists one item per problem.",
+            "description": "The YAML did not parse, a key has the wrong shape, its directory:/library: would break the store layout, or config.yaml on disk cannot be read or written; the body lists one item per problem.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4453,7 +4453,7 @@
                         "detail"
                       ],
                       "title": "ConfigValidationErrorDetail",
-                      "description": "The FOURTH real error body: ``POST /api/config/save``'s 422.\n\nBoth of that route's own 422s - the ruamel parse failure and the known-keys\nschema failure (``app/beets/config_editor.py::save``) - raise with a LIST of\n:class:`~app.models.config_editor.ValidationErrorItem` payloads, which\nStarlette renders verbatim under the outer ``detail`` key. The items are the\nSAME rows ``POST /api/config/validate`` returns on a 200, which is what lets\nthe editor feed a rejected Save straight into its CodeMirror gutter.\n\nFastAPI's ``HTTPValidationError`` is not this shape and cannot stand in for\nit: its items carry ``loc`` as an ARRAY of path segments and have no ``line``\nor ``column`` at all. The editor's CodeMirror gutter consumes the same row\nshape from ``POST /api/config/validate``'s 200 body, where it is correctly\ntyped; no live client reads this save 422 body today (the save mutation's\nerror handler covers 409 only and the 422 body is discarded). Declaring this\n422 as that model would still mistype the generated TypeScript - a\nwrongly-typed status is worse than an undeclared one."
+                      "description": "The FOURTH real error body: ``POST /api/config/save``'s 422.\n\nThat route's own 422s - a parse failure, a schema or store-layout row, and a\nconfig.yaml on disk it cannot read (``app/beets/config_editor.py::save``) -\nraise with a LIST of :class:`~app.models.config_editor.ValidationErrorItem`\npayloads, which Starlette renders verbatim under the outer ``detail`` key.\nThe items are the SAME rows ``POST /api/config/validate`` returns on a 200,\nwhich is what lets the editor feed a rejected Save straight into its\nCodeMirror gutter.\n\nFastAPI's ``HTTPValidationError`` is not this shape and cannot stand in for\nit: its items carry ``loc`` as an ARRAY of path segments and have no ``line``\nor ``column`` at all. The editor's CodeMirror gutter consumes the same row\nshape from ``POST /api/config/validate``'s 200 body, where it is correctly\ntyped; no live client reads this save 422 body today (the save mutation's\nerror handler covers 409 only and the 422 body is discarded). Declaring this\n422 as that model would still mistype the generated TypeScript - a\nwrongly-typed status is worse than an undeclared one."
                     },
                     {
                       "$ref": "#/components/schemas/HTTPValidationError"
@@ -4521,6 +4521,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/NamingConfig"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "config.yaml on disk cannot be read, does not parse or is not a mapping; the detail says why.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
                 }
               }
             }
@@ -4670,7 +4680,7 @@
             }
           },
           "422": {
-            "description": "A submitted replace: pattern is not a valid regular expression, so the save was refused before anything was written; the body names the offending row. A malformed request body answers with FastAPI's validation shape instead.",
+            "description": "A submitted replace: pattern is not a valid regular expression, or config.yaml on disk cannot be read or written, does not parse or is not a mapping; the body names the problem. A malformed request body answers with FastAPI's validation shape instead.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4700,7 +4710,7 @@
                               "type"
                             ],
                             "title": "NamingRuleError",
-                            "description": "One rejected ``replace:`` row of ``POST /api/config/naming/save``.\n\nThe same three keys as a :class:`~app.models.config_editor.ValidationErrorItem`\nand DELIBERATELY not that model: the naming save builds these dicts by hand\n(``app/beets/config_editor.py::save_naming``) with no ``line``/``column``,\nbecause a bad regex comes from a form row rather than from a position in the\nYAML document - ``loc`` is the row index (``\"replace[0]\"``), which is what\nthe panel would highlight. Reusing the five-field model here would promise a\nline number this route can never send."
+                            "description": "One rejected ``replace:`` row of ``POST /api/config/naming/save``, or its\nconfig.yaml on disk that cannot be read or written, does not parse or is not a mapping\n(``loc`` empty).\n\nThe same three keys as a :class:`~app.models.config_editor.ValidationErrorItem`\nand DELIBERATELY not that model: the naming save builds these dicts by hand\n(``app/beets/config_editor.py::save_naming``) with no ``line``/``column``,\nbecause a bad regex comes from a form row rather than from a position in the\nYAML document - ``loc`` is the row index (``\"replace[0]\"``), which is what\nthe panel would highlight. Reusing the five-field model here would promise a\nline number this route can never send."
                           },
                           "type": "array",
                           "title": "Detail"
@@ -4794,7 +4804,7 @@
             }
           },
           "422": {
-            "description": "The config.yaml on disk breaks the store layout; the recovery line says how to fix it.",
+            "description": "config.yaml on disk is not a regular file, is unreadable, skips an include, breaks the store layout, or failed to load and the old config was put back; the recovery line says what to fix.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4804,7 +4814,7 @@
             }
           },
           "500": {
-            "description": "The library rebuild failed during apply, but the saved config is safe on disk and will load on the next start.",
+            "description": "The rebuild failed and putting the old config back failed too; fix the error the recovery line quotes and Apply again.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8261,8 +8271,18 @@
               }
             }
           },
+          "422": {
+            "description": "Every folder handed over no longer exists, or cannot be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "The store layout is refused, so no import can start.",
+            "description": "The store layout is refused, the library folder is unavailable, or a start is taking longer than usual.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8376,7 +8396,7 @@
             }
           },
           "503": {
-            "description": "The store layout is refused, so no import can start.",
+            "description": "The store layout is refused, the library folder is unavailable, or a start is taking longer than usual.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8395,22 +8415,29 @@
               }
             }
           },
+          "422": {
+            "description": "The folder no longer exists or cannot be read, or the request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
           "409": {
             "description": "An import is already running, or a beets swap (such as a config Apply or duplicate resolve) or a lyrics backfill, an artist-art backfill, a reorganize backfill, or a disk sync holds the library, or two inbox folders display under the same name.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorDetail"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -8884,7 +8911,7 @@
             }
           },
           "409": {
-            "description": "The row is not an undecided match row, so the search was refused (it is already decided, or its folder went stale).",
+            "description": "The row is not an undecided match row, so the search was refused (it is already decided, or its folder went stale or cannot be read).",
             "content": {
               "application/json": {
                 "schema": {
@@ -8987,7 +9014,7 @@
             }
           },
           "409": {
-            "description": "The row cannot be rescanned (already decided, its folder is gone, or it holds no audio files).",
+            "description": "The row cannot be rescanned (already decided, its folder is gone or cannot be read, or it holds no audio files).",
             "content": {
               "application/json": {
                 "schema": {
@@ -9333,7 +9360,7 @@
             }
           },
           "503": {
-            "description": "A store-layout or identity refusal; the message names the cause.",
+            "description": "Trash could not be listed; the message names the setup fault.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9378,6 +9405,7 @@
             "required": true,
             "schema": {
               "type": "string",
+              "maxLength": 255,
               "title": "Folder"
             }
           }
@@ -9424,7 +9452,7 @@
             }
           },
           "503": {
-            "description": "A store-layout or identity refusal; the message names the cause.",
+            "description": "The entry was kept; the message names the cause and what to do.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9628,7 +9656,7 @@
             }
           },
           "500": {
-            "description": "Some Trash entries were removed and others could not be; the message names which are still there.",
+            "description": "Trash was not fully cleared; the message names the entries still there or the fault.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9638,7 +9666,7 @@
             }
           },
           "503": {
-            "description": "A store-layout or identity refusal; the message names the cause.",
+            "description": "The entry was kept; the message names the cause and what to do.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10023,6 +10051,17 @@
                 "type": "null"
               }
             ]
+          },
+          "outside_library": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OutsideLibrary"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when some of the album's files are not in the library folder."
           }
         },
         "type": "object",
@@ -10034,7 +10073,8 @@
           "track_count",
           "genre",
           "mb_albumid",
-          "tracks"
+          "tracks",
+          "outside_library"
         ],
         "title": "AlbumDetail"
       },
@@ -11082,10 +11122,15 @@
             ],
             "title": "Error"
           },
-          "error_retryable": {
-            "type": "boolean",
-            "title": "Error Retryable",
-            "default": true
+          "error_recovery": {
+            "type": "string",
+            "enum": [
+              "decide_again",
+              "remove_duplicate",
+              "fix_folder"
+            ],
+            "title": "Error Recovery",
+            "default": "decide_again"
           },
           "album_id": {
             "anyOf": [
@@ -11895,7 +11940,7 @@
           "trash_path"
         ],
         "title": "DeleteResult",
-        "description": "Outcome of a reversible delete: how many albums went to Trash + where.\n\n``trashed_albums`` is 1 for a single-album delete, N for an artist (every\nalbum of theirs). ``trash_path`` is the Trash location the files were moved\nto (recoverable from there)."
+        "description": "Outcome of a reversible delete: how many albums went to Trash + where.\n\n``trashed_albums`` is 1 for a single-album delete, N for an artist (every\nalbum of theirs). ``trash_path`` is where to look: the album's own folder\ninside Trash when its files moved there; the folder its rows named when\nnothing moved (already in Trash, or gone from the disk entirely); the Trash\nroot when it had no files at all, and for an artist delete, whose albums each\nget a container of their own."
       },
       "DiskSyncChange": {
         "properties": {
@@ -12802,9 +12847,9 @@
             "type": "integer",
             "title": "Skipped Known"
           },
-          "paused": {
+          "stopped": {
             "type": "boolean",
-            "title": "Paused"
+            "title": "Stopped"
           }
         },
         "type": "object",
@@ -12814,10 +12859,10 @@
           "auto_applied",
           "banked",
           "skipped_known",
-          "paused"
+          "stopped"
         ],
         "title": "FinishedSweep",
-        "description": "The last finished sweep's recap \u2014 ``ActiveImportStatus.last_sweep``.\n\nPopulated only while the registry's single slot still holds a DONE\nsweep-origin job: a new import replaces the slot (and this recap with\nit), and failed sweeps surface nothing. ``job_id`` targets the run page\n(``/import?job=\u2026``), which lives exactly as long as this block does, so\nthe link can never dangle. ``paused`` distinguishes a paused sweep (it\nends ``phase=done`` with the flag set) from a completed one."
+        "description": "The last finished sweep's recap \u2014 ``ActiveImportStatus.last_sweep``.\n\nPopulated only while the registry's single slot still holds a DONE\nsweep-origin job: a new import replaces the slot (and this recap with\nit), and failed sweeps surface nothing. ``job_id`` targets the run page\n(``/import?job=\u2026``), which lives exactly as long as this block does, so\nthe link can never dangle. ``stopped`` distinguishes a sweep the user\npaused (it ends ``phase=done`` with the flag set) from a completed one."
       },
       "GroupDecision": {
         "properties": {
@@ -12875,12 +12920,11 @@
           "skip",
           "asis",
           "astracks",
-          "abort",
           "search",
           "rescan"
         ],
         "title": "ImportAction",
-        "description": "The decisions the user can return for a parked album.\n\n``apply`` selects a ranked option by index; ``search`` re-looks-up the album\nagainst a user-supplied release id/URL or a forced-non-VA name search and\nre-parks (it never resolves the park); ``abort`` stops the whole import (the\nsession raises beets' ``ImportAbortError``, caught by ``run()``).\n\n``rescan`` re-reads the album's folder from disk (the user changed the\nfiles on purpose) and re-runs beets' default lookup, re-parking like\n``search``; it carries no payload."
+        "description": "The decisions the user can return for a parked album.\n\n``apply`` selects a ranked option by index; ``search`` re-looks-up the album\nagainst a user-supplied release id/URL or a forced-non-VA name search and\nre-parks (it does not resolve the park).\n\n``rescan`` re-reads the album's folder from disk (the user changed the\nfiles on purpose) and re-runs beets' default lookup, re-parking like\n``search``; it carries no payload.\n\nEvery action here answers ONE album. Ending the whole run is\n``POST /import/{job_id}/stop``, which the registry arms on the bridge."
       },
       "ImportAlbumStatus": {
         "type": "string",
@@ -12951,6 +12995,17 @@
             "type": "boolean",
             "title": "Did Not Land",
             "default": false
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
           }
         },
         "type": "object",
@@ -13149,6 +13204,7 @@
         "properties": {
           "name": {
             "type": "string",
+            "maxLength": 255,
             "title": "Name"
           }
         },
@@ -13200,6 +13256,18 @@
             "title": "Origin",
             "default": "manual"
           },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path",
+            "description": "The folder this import was started with, when it was exactly one."
+          },
           "set_aside": {
             "type": "integer",
             "title": "Set Aside"
@@ -13223,6 +13291,16 @@
             "type": "boolean",
             "title": "Awaiting Decision",
             "description": "True while the worker is blocked on a parked album awaiting a decision."
+          },
+          "stopped": {
+            "type": "boolean",
+            "title": "Stopped",
+            "description": "True once a stop was accepted for this job; stays true when it ends."
+          },
+          "aborted": {
+            "type": "boolean",
+            "title": "Aborted",
+            "description": "True when the stop reached the worker and ended the run early."
           }
         },
         "type": "object",
@@ -13234,7 +13312,9 @@
           "error",
           "set_aside",
           "elapsed_seconds",
-          "awaiting_decision"
+          "awaiting_decision",
+          "stopped",
+          "aborted"
         ],
         "title": "ImportJobState",
         "description": "Response of ``GET /api/import/{job}``: phase + progress + the live feed."
@@ -13260,11 +13340,24 @@
             "type": "boolean",
             "title": "Sweep",
             "default": false
+          },
+          "incremental": {
+            "anyOf": [
+              {
+                "type": "boolean",
+                "const": false
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Incremental",
+            "description": "false imports folders beets' import history already has; null follows the defaults."
           }
         },
         "type": "object",
         "title": "ImportOptions",
-        "description": "Per-import overrides (replaces the reserved ``dict[str, str]``).\n\n``operation`` ``\"default\"`` falls through to the user's beets config (the\nmanual-import default). ``\"move\"``/``\"copy\"`` force that operation for this\nimport only. ``unattended`` ``True`` is the inbox path: no human review \u2014\nuncertain/duplicate albums are set aside rather than parked. ``sweep``\n``True`` is the banking sweep: an unattended, beets-incremental run that\nBANKS every set-aside album (with its candidate payload) instead of just\nskipping it, recorded as ``origin=\"sweep\"``. A sweep is unattended by\ndefinition \u2014 the session enforces ``unattended or sweep`` \u2014 so\n``{\"sweep\": true}`` alone is a complete sweep request. The sweep forces no\nfile operation: ``operation`` behaves exactly as for a manual import (the\nin-library guard still force-corrects in-library sources to move)."
+        "description": "Per-import overrides for one import request."
       },
       "ImportPhase": {
         "type": "string",
@@ -13276,7 +13369,7 @@
           "failed"
         ],
         "title": "ImportPhase",
-        "description": "Coarse lifecycle phase of an import job (the registry owns transitions).\n\nscanning  -> the worker is reading/grouping/looking up (nothing parked yet)\nreviewing -> an album is parked-and-waiting for a decision\napplying  -> reserved (beets exposes no signal to set it transiently)\ndone      -> the import finished (incl. a clean abort)\nfailed    -> the worker raised; ``error`` holds the message"
+        "description": "Coarse lifecycle phase of an import job (the registry owns transitions).\n\nscanning  -> the worker is reading/grouping/looking up (nothing parked yet)\nreviewing -> an album is parked-and-waiting for a decision\napplying  -> reserved (beets exposes no signal to set it transiently)\ndone      -> the import finished, whether it ran out or a stop ended it\nfailed    -> the worker raised; ``error`` holds the message"
       },
       "ImportProgress": {
         "properties": {
@@ -13295,6 +13388,12 @@
           "not_landed": {
             "type": "integer",
             "title": "Not Landed",
+            "default": 0
+          },
+          "already_known": {
+            "type": "integer",
+            "title": "Already Known",
+            "description": "Album folders beets skipped as already imported.",
             "default": 0
           }
         },
@@ -14157,6 +14256,27 @@
           "file_count"
         ],
         "title": "OrphanFolder"
+      },
+      "OutsideLibrary": {
+        "properties": {
+          "folder": {
+            "type": "string",
+            "title": "Folder",
+            "description": "The folder holding an album file that is not in the library folder."
+          },
+          "holds_every_track": {
+            "type": "boolean",
+            "title": "Holds Every Track",
+            "description": "True when every track of the album is a file in that one folder."
+          }
+        },
+        "type": "object",
+        "required": [
+          "folder",
+          "holds_every_track"
+        ],
+        "title": "OutsideLibrary",
+        "description": "Where an album file sits when it is not in the library folder."
       },
       "ParkedAlbum": {
         "properties": {
@@ -15877,6 +15997,7 @@
         "properties": {
           "folder": {
             "type": "string",
+            "maxLength": 255,
             "title": "Folder"
           }
         },
@@ -16322,6 +16443,7 @@
         "properties": {
           "path": {
             "type": "string",
+            "maxLength": 4096,
             "minLength": 1,
             "title": "Path"
           },
@@ -16341,7 +16463,7 @@
           "path"
         ],
         "title": "StartImportRequest",
-        "description": "Body of ``POST /api/import``.\n\n``path`` is a server-side folder (maps 1:1 to ``beet import <path>``).\n``options`` carries per-import overrides (operation move/copy/default +\nunattended). ``None`` falls through to today's manual default (the user's\nbeets config, attended review)."
+        "description": "Body of ``POST /api/import``.\n\n``path`` is a server-side folder (maps 1:1 to ``beet import <path>``).\n``options`` carries per-import overrides (operation move/copy/default,\nunattended, sweep, incremental). ``None`` falls through to today's manual\ndefault (the user's beets config, attended review)."
       },
       "StartImportResponse": {
         "properties": {
@@ -16403,9 +16525,9 @@
             ],
             "title": "Current Folder"
           },
-          "paused": {
+          "stopped": {
             "type": "boolean",
-            "title": "Paused",
+            "title": "Stopped",
             "default": false
           }
         },

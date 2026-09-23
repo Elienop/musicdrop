@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
 
-import { useDeleteArtist } from "@/api/useDeleteLibrary";
+import { deleteRecovery, useDeleteArtist } from "@/api/useDeleteLibrary";
 import { Remove } from "@/components/icons";
 import { IconAction } from "@/components/system/IconAction";
 import {
@@ -17,8 +17,12 @@ import {
 } from "@/components/ui/alert-dialog";
 
 /**
- * Trash action for an entire artist: confirm -> move EVERY album folder of the
- * artist to Trash + drop them -> navigate back to the roster. Reversible.
+ * Trash action for an entire artist: confirm -> move every album's tracks, cover
+ * art and MusicDrop's lyric files to Trash + drop the albums from the library ->
+ * navigate back to the roster. Not the whole folders: anything else in them
+ * stays. Restore re-imports the tracks and leaves the cover and the lyric files
+ * in Trash (BACKLOG.md, open item), so the body promises "only the tracks" and
+ * never a put-back.
  */
 export function DeleteArtistAction({
   name,
@@ -50,15 +54,24 @@ export function DeleteArtistAction({
         <AlertDialogHeader>
           <AlertDialogTitle>Move every album by this artist to Trash?</AlertDialogTitle>
           <AlertDialogDescription>
-            All {albumCount} album{albumCount === 1 ? "" : "s"} by {name}{" "}
-            (folders, art, and lyric sidecars) are moved to the Trash folder and
-            removed from your library. Recoverable in Trash; Plex shows them as
-            unavailable until a rescan.
+            Tracks, cover art, and lyrics from {albumCount} album
+            {albumCount === 1 ? "" : "s"} by {name} move to Trash; other files
+            stay in {albumCount === 1 ? "the folder" : "their folders"}. Restore
+            re-imports only the tracks. Plex shows{" "}
+            {albumCount === 1 ? "the album" : "the albums"} as unavailable until
+            a rescan.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {del.isError && (
-          <p className="text-destructive text-sm" role="alert">
+          // The twin of the album dialog's alert — same grid-item floor, same
+          // measured overflow at 320px (DeleteAlbumAction.tsx has the numbers).
+          <p className="text-destructive min-w-0 text-sm break-words" role="alert">
             {del.error.message}
+            {/* The server's recovery hint, when it sent one — the twin of the
+                album dialog's (DeleteAlbumAction.tsx). */}
+            {deleteRecovery(del.error) !== null && (
+              <span className="mt-1 block">{deleteRecovery(del.error)}</span>
+            )}
           </p>
         )}
         <AlertDialogFooter>

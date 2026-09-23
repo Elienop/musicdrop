@@ -105,9 +105,9 @@ export const shadcnHighlight = syntaxHighlighting(
 );
 
 /**
- * The read-only triplet — kept named so both the initial factory config AND
- * the page-level "Cancel" handler (which dispatches the same triplet to
- * restore read-only after a discard) can share it.
+ * The read-only triplet — kept named so its users share it: the editor
+ * factories below, the page's handlers that restore read-only (Cancel,
+ * Apply, the conflict panel's Reload), and the conflict panel's two panes.
  *
  * Both layers are required: `EditorState.readOnly` blocks model mutation,
  * `EditorView.editable.of(false)` blocks DOM contenteditable. Neither alone
@@ -149,7 +149,7 @@ export function buildReadOnlyExtensions(
  *
  * The page calls this inside `useMemo` keyed by `initialDoc`, so the
  * Compartment identity is stable across re-renders for a given doc — only
- * a fresh snapshot (post-Apply refetch) rebuilds them.
+ * a read that brings new file text rebuilds them.
  *
  * Extension order is load-bearing:
  *   1. `basicSetup` — registers the default keymap.
@@ -198,6 +198,10 @@ export function buildExtensions(opts: {
       ]),
     ),
     editableCompartment.of(READ_ONLY_EXTENSION),
+    // Editable too. Turning read-only sets `contenteditable="false"` before the
+    // triplet's tabindex, and Chrome drops a focused editor's focus to <body>
+    // in between (measured after "Overwrite anyway").
+    EditorView.contentAttributes.of({ tabindex: "0" }),
     themeCompartment.of(opts.theme),
     EditorView.updateListener.of((u) => {
       if (u.docChanged) {

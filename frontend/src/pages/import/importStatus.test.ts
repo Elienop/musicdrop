@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
 
-import type { ImportJobState, SweepStatus } from "@/api/useImport";
+import type {
+  ImportAlbumSummary,
+  ImportJobState,
+  SweepStatus,
+} from "@/api/useImport";
 import {
   ELAPSED_AFTER_S,
   announceMessage,
@@ -12,13 +16,15 @@ function job(overrides: Partial<ImportJobState> = {}): ImportJobState {
   return {
     job_id: "j",
     phase: "reviewing",
-    progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+    progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
     albums: [],
     error: null,
     origin: "manual",
     set_aside: 0,
     elapsed_seconds: 0,
     awaiting_decision: false,
+    stopped: false,
+    aborted: false,
     ...overrides,
   };
 }
@@ -29,7 +35,7 @@ function sweepState(overrides: Partial<ImportJobState> = {}): ImportJobState {
   return {
     job_id: "s",
     phase: "scanning",
-    progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+    progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
     albums: [],
     error: null,
     origin: "sweep",
@@ -37,13 +43,15 @@ function sweepState(overrides: Partial<ImportJobState> = {}): ImportJobState {
     elapsed_seconds: 0,
     // A sweep is unattended by definition — it never blocks on a person.
     awaiting_decision: false,
+    stopped: false,
+    aborted: false,
     sweep: {
       processed: 0,
       auto_applied: 0,
       banked: 0,
       skipped_known: 0,
       current_folder: null,
-      paused: false,
+      stopped: false,
     },
     ...overrides,
   };
@@ -99,12 +107,98 @@ describe("announceMessage", () => {
       isError: false,
       notFound: false,
       data: job({
-        progress: { applied: 2, needs_review: 1, skipped: 1, not_landed: 0 },
+        progress: { applied: 2, needs_review: 1, skipped: 1, not_landed: 0, already_known: 0 },
       }),
     });
     expect(active).toMatch(/imported 2/i);
     expect(active).toMatch(/skipped 1/i);
     expect(active).toMatch(/awaiting review/i);
+  });
+
+  test("a live run owns the album that didn't land, in the terminal wording", () => {
+    // A refused Replace leaves `applied` and joins `not_landed` while the run is
+    // still going. Without this clause the one live region said "Imported 1."
+    // over a feed row reading "Nothing was imported." — the whole announcement
+    // is pinned, so a clause going missing or moving fails.
+    expect(
+      announceMessage({
+        isPending: false,
+        isError: false,
+        notFound: false,
+        data: job({
+          progress: { applied: 1, needs_review: 0, skipped: 2, not_landed: 3, already_known: 0 },
+        }),
+      }),
+    ).toBe("Imported 1. Skipped 2. 3 didn't land.");
+    // Gated on itself, like every other clause: a clean run gains nothing.
+    expect(
+      announceMessage({
+        isPending: false,
+        isError: false,
+        notFound: false,
+        data: job({
+          progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
+        }),
+      }),
+    ).toBe("Imported 1.");
+  });
+
+  /** A refused Replace on a bank apply: the row wears `needs_dup_resolution`
+   * (the directive run's status) AND the server's `did_not_land`. */
+  function notedDuplicateRow(
+    overrides: Partial<ImportAlbumSummary> = {},
+  ): ImportAlbumSummary {
+    return {
+      index: 0,
+      folder: "/music/incoming/dup",
+      artist: "X",
+      album: "Y",
+      recommendation: "strong",
+      confidence: 99,
+      status: "needs_dup_resolution",
+      album_id: null,
+      did_not_land: true,
+      note: "Replace could not use the Trash folder. Nothing was imported.",
+      ...overrides,
+    };
+  }
+
+  test("a refused Replace is announced once, not also as a duplicate to resolve", () => {
+    // `pendingDuplicates` is derived from the rows, so the server's "counted
+    // nowhere else" rule does not reach it. On status alone this one album was
+    // announced twice, the second time naming a resolution the read-only
+    // bank-apply feed cannot offer. WHOLE string: a clause moving or a second
+    // one appearing both fail.
+    expect(
+      announceMessage({
+        isPending: false,
+        isError: false,
+        notFound: false,
+        data: job({
+          origin: "bank_apply",
+          phase: "applying",
+          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 1, already_known: 0 },
+          albums: [notedDuplicateRow()],
+        }),
+      }),
+    ).toBe("Imported 0. 1 didn't land.");
+  });
+
+  test("...and an UN-noted duplicate on the same run still is", () => {
+    // The control: the exclusion is the server's flag, not the status.
+    expect(
+      announceMessage({
+        isPending: false,
+        isError: false,
+        notFound: false,
+        data: job({
+          origin: "bank_apply",
+          phase: "applying",
+          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
+          albums: [notedDuplicateRow({ did_not_land: false, note: null })],
+        }),
+      }),
+    ).toBe("Imported 0. 1 duplicate awaiting resolution.");
   });
 
   test("announces a parked duplicate (a blocking prompt the user must clear)", () => {
@@ -115,7 +209,7 @@ describe("announceMessage", () => {
       // `progress` has no duplicate counter — the announcer derives it from the
       // feed row, so a screen-reader user hears the worker is waiting on them.
       data: job({
-        progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0 },
+        progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
         albums: [
           {
             index: 0,
@@ -141,7 +235,7 @@ describe("announceMessage", () => {
         notFound: false,
         data: job({
           phase: "done",
-          progress: { applied: 3, needs_review: 0, skipped: 1, not_landed: 0 },
+          progress: { applied: 3, needs_review: 0, skipped: 1, not_landed: 0, already_known: 0 },
         }),
       }),
     ).toMatch(/import complete.*imported 3.*skipped 1/i);
@@ -177,7 +271,7 @@ describe("announceMessage", () => {
     const parked = (seconds: number) =>
       speak(
         job({
-          progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
+          progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0, already_known: 0 },
           elapsed_seconds: seconds,
           awaiting_decision: true,
         }),
@@ -189,7 +283,7 @@ describe("announceMessage", () => {
       speak(
         job({
           phase: "done",
-          progress: { applied: 3, needs_review: 0, skipped: 1, not_landed: 0 },
+          progress: { applied: 3, needs_review: 0, skipped: 1, not_landed: 0, already_known: 0 },
           elapsed_seconds: 840,
         }),
       ),
@@ -205,7 +299,7 @@ describe("announceMessage", () => {
       speak(
         job({
           phase: "done",
-          progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0 },
+          progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
           elapsed_seconds: 45,
         }),
       ),
@@ -234,7 +328,7 @@ describe("announceMessage", () => {
     expect(
       speak(
         job({
-          progress: { applied: 2, needs_review: 0, skipped: 0, not_landed: 0 },
+          progress: { applied: 2, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
           elapsed_seconds: 600,
           awaiting_decision: true,
         }),
@@ -246,7 +340,7 @@ describe("announceMessage", () => {
     expect(
       speak(
         job({
-          progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
+          progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0, already_known: 0 },
           elapsed_seconds: 600,
           awaiting_decision: false,
         }),
@@ -289,7 +383,7 @@ describe("announceMessage", () => {
         job({
           phase: "failed",
           error: "the session died",
-          progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
+          progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0, already_known: 0 },
           elapsed_seconds: 840,
           awaiting_decision: true,
         }),
@@ -301,7 +395,7 @@ describe("announceMessage", () => {
       speak(
         job({
           phase: "done",
-          progress: { applied: 3, needs_review: 1, skipped: 0, not_landed: 0 },
+          progress: { applied: 3, needs_review: 1, skipped: 0, not_landed: 0, already_known: 0 },
           elapsed_seconds: 840,
           awaiting_decision: true,
         }),
@@ -319,13 +413,155 @@ describe("announceMessage", () => {
         notFound: false,
         data: job({
           phase: "done",
-          progress: { applied: 3, needs_review: 0, skipped: 1, not_landed: 2 },
+          progress: { applied: 3, needs_review: 0, skipped: 1, not_landed: 2, already_known: 0 },
           elapsed_seconds: 840,
         }),
       }),
     ).toBe(
       "Import complete. Imported 3, skipped 1. 2 didn't land. Took 14 minutes.",
     );
+  });
+
+  // An abort reaches `done` without completing, and this is the one channel
+  // that said otherwise — the visible panel takes its title from the same flag.
+  test("a run the stop cut short is not announced as complete", () => {
+    const speak = (data: ImportJobState) =>
+      announceMessage({ isPending: false, isError: false, notFound: false, data });
+    const done = {
+      phase: "done" as const,
+      progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0, already_known: 0 },
+      set_aside: 1,
+      elapsed_seconds: 840,
+    };
+    expect(speak(job({ ...done, stopped: true, aborted: true }))).toBe(
+      "Import stopped. Imported 1, skipped 0. Took 14 minutes.",
+    );
+    // The control: the same run, untouched, still says complete — so the line
+    // above is about the flag and not about a dead branch.
+    expect(speak(job(done))).toBe(
+      "Import complete. Imported 1, skipped 0. Took 14 minutes.",
+    );
+    // The third reading, and the whole point of the second flag: the press was
+    // accepted after the last abort point, so the run finished. `stopped` alone
+    // would announce a completed import as stopped.
+    expect(speak(job({ ...done, stopped: true, aborted: false }))).toBe(
+      "Import complete. Imported 1, skipped 0. Took 14 minutes.",
+    );
+  });
+
+  // The gap between the press and the end of the run: the stop is accepted
+  // immediately, the worker then unwinds, and this channel kept reading the
+  // counters for the whole of it while the button read "Stopping…". A
+  // screen-reader user heard nothing about the press for up to a parked poll
+  // (10s) plus the unwind.
+  test("an accepted stop is announced at once, as one fixed thing", () => {
+    const speak = (data: ImportJobState) =>
+      announceMessage({ isPending: false, isError: false, notFound: false, data });
+    // The control below has to carry BOTH the things the stopped string drops,
+    // so it is a WORKING run: a run parked on a person already suppresses the
+    // elapsed clause (it names its own wait), which would have left the control
+    // proving only half of this.
+    const parked = {
+      phase: "applying" as const,
+      progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
+      awaiting_decision: false,
+      elapsed_seconds: 840,
+    };
+    // A sentence, the register this channel keeps — the visible pair is the
+    // button's "Stopping…" and a status line echoing it. And no counters, no
+    // elapsed clause: the page's throttle is off on this same flag and
+    // role="status" is atomic, so anything that moves is re-read in full.
+    expect(speak(job({ ...parked, stopped: true }))).toBe("Stopping the import.");
+    // The control: the same run, unstopped, still counts — so the line above is
+    // about the flag and not about a dead branch.
+    expect(speak(job(parked))).toBe("Imported 1. Running for 14 minutes.");
+    // ...and it stays fixed while everything data-bearing moves underneath it:
+    // the counters keep going after a stop is accepted, and the clock crosses a
+    // minute AND an hour boundary during a long unwind.
+    expect(
+      speak(
+        job({
+          ...parked,
+          stopped: true,
+          phase: "applying",
+          progress: { applied: 4, needs_review: 0, skipped: 2, not_landed: 1, already_known: 3 },
+          elapsed_seconds: 3700,
+        }),
+      ),
+    ).toBe("Stopping the import.");
+  });
+
+  // A sweep says its own thing for the same moment, and its branch is reached
+  // first — the job flag is set for a paused sweep too (one request sets both),
+  // so without that ordering every paused sweep would announce the manual
+  // wording instead.
+  test("a paused sweep keeps its own stopping sentence", () => {
+    expect(
+      announceMessage({
+        isPending: false,
+        isError: false,
+        notFound: false,
+        data: sweepState({
+          phase: "applying",
+          stopped: true,
+          sweep: {
+            processed: 3,
+            auto_applied: 2,
+            banked: 1,
+            skipped_known: 0,
+            current_folder: "/in/x",
+            stopped: true,
+          },
+        }),
+      }),
+    ).toBe("Stopping after this album.");
+  });
+
+  // The history skips reach no outcome record, so none of the three counters
+  // holds them: without its own clause the one live region says "Imported 0,
+  // skipped 0." for a run whose whole story is that it knew every folder.
+  // Pinned per channel here, not only through the page's role="status".
+  test("a finished run announces the history skips, and a clean one does not", () => {
+    const speak = (data: ImportJobState) =>
+      announceMessage({ isPending: false, isError: false, notFound: false, data });
+    expect(
+      speak(
+        job({
+          phase: "done",
+          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 2 },
+          elapsed_seconds: 840,
+        }),
+      ),
+    ).toBe("Import complete. Imported 0, skipped 0. 2 already known. Took 14 minutes.");
+    // The clause is gated on itself — a run with none of them gains no words.
+    expect(
+      speak(
+        job({
+          phase: "done",
+          progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
+          elapsed_seconds: 840,
+        }),
+      ),
+    ).toBe("Import complete. Imported 1, skipped 0. Took 14 minutes.");
+  });
+
+  // The failed side of the same clause, on the run the gate is about: nothing
+  // landed, nothing was skipped on its merits, so the imported/skipped pair is
+  // gated out and the history skips are the only news there is.
+  test("a failed run whose only news is a history skip announces it", () => {
+    expect(
+      announceMessage({
+        isPending: false,
+        isError: false,
+        notFound: false,
+        data: job({
+          phase: "failed",
+          error: "the session died",
+          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 4 },
+          elapsed_seconds: 840,
+        }),
+      }),
+    ).toBe("The import failed. 4 already known. Took 14 minutes.");
   });
 
   // A crash mid-apply is exactly when albums land or fail to land, and the
@@ -339,7 +575,7 @@ describe("announceMessage", () => {
         job({
           phase: "failed",
           error: "the session died",
-          progress: { applied: 200, needs_review: 0, skipped: 3, not_landed: 2 },
+          progress: { applied: 200, needs_review: 0, skipped: 3, not_landed: 2, already_known: 0 },
           elapsed_seconds: 840,
         }),
       ),
@@ -360,7 +596,7 @@ describe("announceMessage", () => {
             banked: 40,
             skipped_known: 10,
             current_folder: null,
-            paused: false,
+            stopped: false,
           },
         }),
       ),
@@ -383,7 +619,7 @@ describe("announceMessage", () => {
             banked: 0,
             skipped_known: 20,
             current_folder: null,
-            paused: false,
+            stopped: false,
           },
         }),
       ),
@@ -398,7 +634,7 @@ describe("announceMessage", () => {
       banked: 10,
       skipped_known: 5,
       current_folder: null,
-      paused: false,
+      stopped: false,
     };
     expect(
       speak(sweepState({ phase: "scanning", elapsed_seconds: 840, sweep: running })),
@@ -423,7 +659,7 @@ describe("announceMessage", () => {
         job({
           phase: "failed",
           error: "the session died",
-          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 5 },
+          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 5, already_known: 0 },
           elapsed_seconds: 840,
         }),
       ),
@@ -437,7 +673,7 @@ describe("announceMessage", () => {
           error: "the session died",
           origin: "inbox",
           set_aside: 5,
-          progress: { applied: 2, needs_review: 5, skipped: 0, not_landed: 0 },
+          progress: { applied: 2, needs_review: 5, skipped: 0, not_landed: 0, already_known: 0 },
           elapsed_seconds: 840,
         }),
       ),
@@ -455,7 +691,7 @@ describe("announceMessage", () => {
         banked: 4,
         skipped_known: 0,
         current_folder: "/in/x",
-        paused: false,
+        stopped: false,
       },
     });
     expect(
@@ -470,13 +706,18 @@ describe("announceMessage", () => {
   test("a pausing sweep is not announced as sweeping", () => {
     const data = sweepState({
       phase: "scanning",
+      // Both flags: one request sets the job's `stopped` AND the sweep's
+      // (`registry.py` `request_stop`). Carrying only the sweep's would test a
+      // state the server cannot produce — and would stop proving that the sweep
+      // branch is reached BEFORE the generic stopping one below it.
+      stopped: true,
       sweep: {
         processed: 12,
         auto_applied: 8,
         banked: 4,
         skipped_known: 0,
         current_folder: "/in/x",
-        paused: true,
+        stopped: true,
       },
     });
     const spoken = announceMessage({
@@ -509,13 +750,15 @@ describe("announceMessage", () => {
         data: sweepState({
           phase: "applying",
           elapsed_seconds: elapsed,
+          // The job flag too — one request sets both.
+          stopped: true,
           sweep: {
             processed: 6,
             auto_applied: 4,
             banked: 2,
             skipped_known: 0,
             current_folder: "/in/x",
-            paused: true,
+            stopped: true,
             ...over,
           },
         }),
@@ -546,7 +789,7 @@ describe("announceMessage", () => {
             banked: 2,
             skipped_known: 0,
             current_folder: "/in/x",
-            paused: false,
+            stopped: false,
             ...over,
           },
         }),
@@ -565,7 +808,7 @@ describe("announceMessage", () => {
         banked: 10,
         skipped_known: 0,
         current_folder: null,
-        paused: false,
+        stopped: false,
       },
     });
     expect(
@@ -573,13 +816,15 @@ describe("announceMessage", () => {
     ).toBe("Sweep complete. Processed 30, imported 20, banked 10.");
     const paused = sweepState({
       phase: "done",
+      // The job flag too — one request sets both.
+      stopped: true,
       sweep: {
         processed: 5,
         auto_applied: 3,
         banked: 2,
         skipped_known: 0,
         current_folder: null,
-        paused: true,
+        stopped: true,
       },
     });
     expect(

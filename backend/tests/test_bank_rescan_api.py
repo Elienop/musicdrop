@@ -1,5 +1,6 @@
 """POST /api/bank/{id}/rescan — wiring, gates, fingerprint refresh, stale rescue."""
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -158,6 +159,31 @@ def test_rescan_409_when_folder_gone(client: TestClient, bank_dir: Path, tmp_pat
     r = client.post(f"/api/bank/{item_id}/rescan")
     assert r.status_code == 409
     assert "no longer exists" in r.json()["detail"]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the permission bits this test sets")
+def test_rescan_409_names_a_permissions_fault_rather_than_500ing(
+    client: TestClient, bank_dir: Path, tmp_path: Path
+) -> None:
+    """The gone arm's sibling: the fingerprint's ``Path.is_dir`` re-raises EACCES.
+
+    Caught as ``FileNotFoundError`` only, it escaped this route as an unhandled
+    500 — and the obvious ``str(exc)`` fix would have put ``exc.filename``, an
+    absolute server path, in the body.
+    """
+    parent = tmp_path / "shut"
+    parent.mkdir()
+    folder = _folder(parent)
+    item_id = _seed(bank_dir, folder)
+    parent.chmod(0o600)
+    try:
+        r = client.post(f"/api/bank/{item_id}/rescan")
+    finally:
+        parent.chmod(0o755)
+
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == "That folder can’t be read. Permission denied."
+    assert str(folder) not in r.json()["detail"]
 
 
 def test_rescan_409_when_no_audio_remains(

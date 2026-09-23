@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+from functools import partial
 from pathlib import Path
 from typing import Annotated
 
@@ -33,6 +34,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
 from app.acquisition.inbox import coalesce_album_root, contain
+from app.api.acquisition import inbox_read
 from app.config import SLSKD_STORE, settings, store_dir
 from app.models.errors import ErrorDetail
 from app.models.slskd import (
@@ -185,7 +187,16 @@ async def slskd_webhook(
     # (resolve + ledger stat) all do blocking filesystem I/O — offload them so the
     # webhook handler never stalls the event loop (and the SSE stream) on a slow
     # NAS scan.
-    contained = await run_in_threadpool(contain, remapped, inbox_dir, strict=True)
+    #
+    # Under the SAME cap the acquisition GETs use, because these are inbox
+    # filesystem reads and this route is the one an unauthenticated producer
+    # drives: ``/api/slskd/webhook`` is in the auth gate's exempt set
+    # (secret-only, unrated), so N concurrent posts against a hung mount used to
+    # take N of anyio's 40 process-wide tokens and starve the scrypt derive
+    # behind sign-in - exactly what ``_INBOX_SCAN_SLOTS`` exists to stop, and
+    # what its "5 of 40" note claimed was already true. One hop at a time, so a
+    # webhook holds at most one token.
+    contained = await inbox_read(partial(contain, remapped, inbox_dir, strict=True))
     if contained is None:
         logger.warning(
             "slskd webhook: %r maps outside the inbox (or to its root); ignored",
@@ -193,6 +204,6 @@ async def slskd_webhook(
         )
         return WebhookAck(status="ignored")
 
-    album = await run_in_threadpool(coalesce_album_root, contained, inbox_dir)
-    await run_in_threadpool(request.app.state.acquisition_queue.enqueue, album)
+    album = await inbox_read(partial(coalesce_album_root, contained, inbox_dir))
+    await inbox_read(partial(request.app.state.acquisition_queue.enqueue, album))
     return WebhookAck(status="queued")

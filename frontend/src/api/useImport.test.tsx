@@ -1,18 +1,24 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import type { ReactNode } from "react";
 import { describe, expect, test } from "vitest";
 
+import { detailMessage } from "@/api/lib";
 import {
   CandidateNotFoundError,
   ImportConflictError,
   ImportJobNotFoundError,
+  holdExit,
   ImportStartRejectedError,
+  ImportUnavailableError,
+  postApplyStep,
+  startErrorSentence,
+  throwIfRefused,
   useDuplicatePrompt,
   useImportCandidate,
   useImportJob,
-  usePauseSweep,
+  useStopImport,
   useResolveImportDuplicate,
   useStartImport,
   useSubmitChoice,
@@ -70,6 +76,205 @@ describe("useStartImport", () => {
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(result.current.error).toBeInstanceOf(ImportConflictError);
   });
+
+  // One status, three server reasons (a running import, a held beets swap
+  // lock, a running backfill / disk sync), so the sentence has to come from the
+  // server — a class-only error made every caller pick one and be wrong for the
+  // other two.
+  test("a 409 carries the server's own reason; a bodyless one falls back", async () => {
+    server.use(
+      http.post(IMPORT_URL, () =>
+        HttpResponse.json(
+          { detail: "A library backfill is in progress; import available when it finishes" },
+          { status: 409 },
+        ),
+      ),
+    );
+    const { result } = renderHook(() => useStartImport(), { wrapper: wrapper() });
+    result.current.mutate({ path: "/music/incoming" });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error).toMatchObject({
+      name: "ImportConflictError",
+      message: "A library backfill is in progress; import available when it finishes",
+    });
+
+    server.use(http.post(IMPORT_URL, () => new HttpResponse(null, { status: 409 })));
+    const bodyless = renderHook(() => useStartImport(), { wrapper: wrapper() });
+    bodyless.result.current.mutate({ path: "/music/incoming" });
+
+    await waitFor(() => expect(bodyless.result.current.isError).toBe(true));
+    expect(bodyless.result.current.error).toMatchObject({
+      name: "ImportConflictError",
+      message: "The library is busy. Try again shortly.",
+    });
+  });
+
+  // 503 is the refused store layout: a retry cannot succeed until the layout
+  // changes, so it must not land in the generic "try again" arm.
+  test("a 503 becomes ImportUnavailableError with the refusal's sentence", async () => {
+    server.use(
+      http.post(IMPORT_URL, () =>
+        HttpResponse.json(
+          { detail: "the music folder is not mounted; imports are refused" },
+          { status: 503 },
+        ),
+      ),
+    );
+    const { result } = renderHook(() => useStartImport(), { wrapper: wrapper() });
+    result.current.mutate({ path: "/music/incoming" });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error).toBeInstanceOf(ImportUnavailableError);
+    expect(result.current.error).toMatchObject({
+      message: "the music folder is not mounted; imports are refused",
+    });
+  });
+
+  // Our route's 503 always carries a sentence, so a bodyless one is somebody
+  // else's — a proxy answering for a restarting container — and there a retry
+  // IS the right advice. It must not wear the refusal class, whose whole point
+  // is that retrying cannot help.
+  test("a bodyless 503 is the generic failure, not ImportUnavailableError", async () => {
+    server.use(
+      http.post(IMPORT_URL, () => new HttpResponse(null, { status: 503 })),
+    );
+    const { result } = renderHook(() => useStartImport(), { wrapper: wrapper() });
+    result.current.mutate({ path: "/music/incoming" });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error).not.toBeInstanceOf(ImportUnavailableError);
+    expect(result.current.error).toMatchObject({
+      message: "Failed to start import",
+    });
+  });
+
+  // The same sender, with an HTML body — what a reverse proxy actually returns.
+  // openapi-fetch keeps a non-JSON body as a string, which detailMessage cannot
+  // read, so this is the case the old class fallback was written for.
+  test("an HTML-bodied 503 (a proxy's) is the generic failure too", async () => {
+    server.use(
+      http.post(
+        IMPORT_URL,
+        () =>
+          new HttpResponse("<html><body>503 Service Unavailable</body></html>", {
+            status: 503,
+            headers: { "Content-Type": "text/html" },
+          }),
+      ),
+    );
+    const { result } = renderHook(() => useStartImport(), { wrapper: wrapper() });
+    result.current.mutate({ path: "/music/incoming" });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error).not.toBeInstanceOf(ImportUnavailableError);
+    expect(result.current.error).toMatchObject({
+      message: "Failed to start import",
+    });
+  });
+});
+
+// The helper the two inbox routes share. It speaks for exactly three statuses —
+// the ones whose bodies are OUR route's own refusal sentences — and returns for
+// everything else, so any other failure keeps the caller's generic copy through
+// `unwrap`. That narrowing was true and pinned by nothing: widening it to every
+// error status survived the whole suite (security-delta-review L-2). It matters
+// because a 500's detail on this branch interpolates absolute paths and OSError
+// text, which no alert should render.
+describe("throwIfRefused", () => {
+  function refusal(status: number, error?: unknown) {
+    return { error, response: new Response(null, { status }) };
+  }
+
+  // Each body is READABLE — the `detailMessage` assertion is the control, so a
+  // pass cannot come from an unreadable body instead of from the status check.
+  test.each([
+    [500, { detail: "Empty Trash: [Errno 13] Permission denied: '/srv/music/incoming'" }],
+    [404, { detail: "No such import job" }],
+  ])(
+    "a %i carrying a detail does not throw, so the caller's own sentence stands",
+    (status, body) => {
+      expect(detailMessage(body)).not.toBeNull();
+      expect(() => throwIfRefused(refusal(status, body))).not.toThrow();
+    },
+  );
+
+  test("a 409 with a detail throws ImportConflictError carrying it", () => {
+    const call = () =>
+      throwIfRefused(refusal(409, { detail: "A library backfill is in progress" }));
+    expect(call).toThrow(ImportConflictError);
+    expect(call).toThrow("A library backfill is in progress");
+  });
+
+  test("a 503 with a detail throws ImportUnavailableError carrying it", () => {
+    const call = () =>
+      throwIfRefused(refusal(503, { detail: "the music folder is not mounted" }));
+    expect(call).toThrow(ImportUnavailableError);
+    expect(call).toThrow("the music folder is not mounted");
+  });
+
+  // The 422 both inbox routes answer when every folder handed over has gone
+  // since the listing. Ignored here until 2026-09-20, which left the user
+  // reading the caller's "Failed to start inbox review" over a sentence the
+  // server had written for them.
+  test("a 422 with OUR detail throws ImportStartRejectedError carrying it", () => {
+    const call = () =>
+      throwIfRefused(refusal(422, { detail: "Those folders are no longer there" }));
+    expect(call).toThrow(ImportStartRejectedError);
+    expect(call).toThrow("Those folders are no longer there");
+  });
+
+  // The other direction, and the reason the 422 arm reads the STRING shape
+  // rather than `detailMessage`: `/acquisition/inbox/items/import` carries a
+  // body, so FastAPI can answer with its own validation 422. Its detail is an
+  // array of validator objects, and the `detailMessage` control proves that
+  // body IS readable — the message just isn't one to show anybody, so the
+  // caller's own sentence has to stand.
+  test("a FastAPI validation 422 stays machine copy and falls through", () => {
+    const body = { detail: [{ msg: "Input should be a valid string" }] };
+    expect(detailMessage(body)).toBe("Input should be a valid string");
+    expect(() => throwIfRefused(refusal(422, body))).not.toThrow();
+  });
+
+  // A bodyless 503 came from a proxy, where "try again" IS right; a bodyless
+  // 409 has no reason to offer; a bodyless 422 names nothing that went wrong.
+  // All three fall through to the caller's sentence.
+  test.each([409, 422, 503])("a bodyless %i falls through as well", (status) => {
+    expect(() => throwIfRefused(refusal(status))).not.toThrow();
+  });
+});
+
+// The sentence every start surface shares. Only the generic half differs
+// between call sites, and it is the one the caller passes in.
+describe("startErrorSentence", () => {
+  // The server's details carry no terminal punctuation and every client
+  // sentence does, so the join is normalised here rather than in the 47
+  // backend strings — a carried sentence gains a full stop when it ends in
+  // none of its own.
+  test("refusals carry the server's reason, ended with a full stop", () => {
+    expect(
+      startErrorSentence(new ImportConflictError("a backfill is running"), true, "G"),
+    ).toBe("a backfill is running.");
+    expect(
+      startErrorSentence(new ImportStartRejectedError("that folder is in your library"), true, "G"),
+    ).toBe("that folder is in your library.");
+    expect(
+      startErrorSentence(new ImportUnavailableError("the layout is refused"), true, "G"),
+    ).toBe("the layout is refused.");
+    expect(startErrorSentence(new Error("socket hang up"), true, "G")).toBe("G");
+    expect(startErrorSentence(null, false, "G")).toBeNull();
+  });
+
+  test("a sentence that already ends in punctuation is left alone", () => {
+    // The class fallbacks and every other client sentence are already ended;
+    // a second full stop would read as a typo.
+    expect(
+      startErrorSentence(new ImportConflictError(null), true, "G"),
+    ).toBe("The library is busy. Try again shortly.");
+    expect(
+      startErrorSentence(new ImportStartRejectedError("is the disk full?"), true, "G"),
+    ).toBe("is the disk full?");
+  });
 });
 
 describe("startImport 422 surfacing", () => {
@@ -96,11 +301,24 @@ describe("startImport 422 surfacing", () => {
     });
   });
 
-  test("an array-detail 422 (FastAPI validation) still throws with a human message", async () => {
+  test("an array-detail 422 (FastAPI validation) keeps the page's own copy", async () => {
+    // This route takes a body too, so FastAPI can answer with its OWN
+    // array-shaped 422 — and `StartImportRequest.path` carries max_length=4096,
+    // so a pasted long path is how a real user meets it. The validator's `msg`
+    // is machine copy: the two inbox routes already refuse to show it, and one
+    // body shape must not be user copy here and machine copy there.
     server.use(
       http.post(IMPORT_URL, () =>
         HttpResponse.json(
-          { detail: [{ loc: ["body", "path"], msg: "Field required", type: "missing" }] },
+          {
+            detail: [
+              {
+                loc: ["body", "path"],
+                msg: "String should have at most 4096 characters",
+                type: "string_too_long",
+              },
+            ],
+          },
           { status: 422 },
         ),
       ),
@@ -109,50 +327,126 @@ describe("startImport 422 surfacing", () => {
     const { result } = renderHook(() => useStartImport(), {
       wrapper: wrapper(),
     });
-    result.current.mutate({ path: "" });
+    result.current.mutate({ path: "/x".repeat(2500) });
 
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(result.current.error).toMatchObject({
       name: "ImportStartRejectedError",
-      message: "Field required",
+      message: "The import was rejected. Check the path and options.",
     });
+    expect((result.current.error as Error).message).not.toMatch(/4096 char/);
   });
 });
 
-const PAUSE_URL = `${window.location.origin}/api/import/j1/pause`;
+const STOP_URL = `${window.location.origin}/api/import/j1/stop`;
 
-describe("usePauseSweep", () => {
-  test("posts the pause and resolves on 204", async () => {
+describe("useStopImport", () => {
+  test("posts the stop and resolves on 204", async () => {
     let hits = 0;
+    let pausePosts = 0;
     server.use(
-      http.post(PAUSE_URL, () => {
+      http.post(STOP_URL, () => {
         hits += 1;
+        return new HttpResponse(null, { status: 204 });
+      }),
+      // The route this replaces. Registered so a hook still posting to it
+      // fails loudly here instead of erroring as an unhandled request under
+      // whichever test happens to run first.
+      http.post(`${window.location.origin}/api/import/j1/pause`, () => {
+        pausePosts += 1;
         return new HttpResponse(null, { status: 204 });
       }),
     );
 
-    const { result } = renderHook(() => usePauseSweep("j1"), {
+    const { result } = renderHook(() => useStopImport("j1"), {
       wrapper: wrapper(),
     });
     result.current.mutate();
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(hits).toBe(1);
+    expect(pausePosts).toBe(0);
   });
 
-  test("409/404 (sweep already over) resolve quietly — the refetch shows done", async () => {
+  test("409/404 (the run is already over) resolve quietly — the refetch shows done", async () => {
     server.use(
-      http.post(PAUSE_URL, () =>
-        HttpResponse.json({ detail: "only a sweep import can be paused" }, { status: 409 }),
+      http.post(STOP_URL, () =>
+        HttpResponse.json({ detail: "import job is no longer active" }, { status: 409 }),
       ),
     );
 
-    const { result } = renderHook(() => usePauseSweep("j1"), {
+    const { result } = renderHook(() => useStopImport("j1"), {
       wrapper: wrapper(),
     });
     result.current.mutate();
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
+  });
+
+  test("a 500 is a hard failure — the caller must not read it as stopped", async () => {
+    server.use(
+      http.post(STOP_URL, () => new HttpResponse(null, { status: 500 })),
+    );
+
+    const { result } = renderHook(() => useStopImport("j1"), {
+      wrapper: wrapper(),
+    });
+    result.current.mutate();
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+  });
+
+  test("a transport failure is a hard failure too — a different path to isError", async () => {
+    // The other half of the pair, and a DIFFERENT mechanism: a 500 reaches
+    // `isError` through the hook's own `throw`, a dead connection through
+    // fetch's rejection, before any status exists to read. The 404/409 arm
+    // above swallows two statuses, so "the request did not happen at all" has
+    // to be shown not to fall into it.
+    server.use(http.post(STOP_URL, () => HttpResponse.error()));
+
+    const { result } = renderHook(() => useStopImport("j1"), {
+      wrapper: wrapper(),
+    });
+    result.current.mutate();
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+  });
+
+  test("isPending holds until the refreshed job state lands", async () => {
+    // `onSettled` RETURNS its invalidations. Fired and forgotten, the mutation
+    // resolved with the 204 and every control reading `isPending || stopped`
+    // fell back to its idle label ("Stop this run", pressable) for one GET
+    // round-trip.
+    let gets = 0;
+    server.use(
+      http.post(STOP_URL, () => new HttpResponse(null, { status: 204 })),
+      http.get(`${window.location.origin}/api/import/j1`, async () => {
+        gets += 1;
+        // Only the refetch is slow — the first load must not be, or the hooks
+        // never reach the state under test.
+        if (gets > 1) await delay(120);
+        return HttpResponse.json(
+          makeJob({ job_id: "j1", awaiting_decision: true, stopped: gets > 1 }),
+        );
+      }),
+    );
+
+    const { result } = renderHook(
+      () => ({ job: useImportJob("j1"), stop: useStopImport("j1") }),
+      { wrapper: wrapper() },
+    );
+    await waitFor(() => expect(result.current.job.data).toBeDefined());
+    act(() => {
+      result.current.stop.mutate();
+    });
+
+    // The refetch has started, so the POST is long since resolved.
+    await waitFor(() => expect(gets).toBe(2));
+    expect(result.current.stop.isPending).toBe(true);
+
+    await waitFor(() => expect(result.current.stop.isPending).toBe(false));
+    // ...and what it was waiting for is what the controls read.
+    expect(result.current.job.data?.stopped).toBe(true);
   });
 });
 
@@ -162,7 +456,7 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
   return {
     job_id: "job-1",
     phase: "reviewing",
-    progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
+    progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0, already_known: 0 },
     albums: [],
     error: null,
     origin: "manual",
@@ -173,6 +467,9 @@ function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
     // set-aside feed row — a row status cannot answer this (an unattended
     // duplicate and a `search` re-lookup both wear one while beets works).
     awaiting_decision: false,
+    // Default: nobody pressed Stop.
+    stopped: false,
+    aborted: false,
     ...overrides,
   };
 }
@@ -202,7 +499,7 @@ describe("useImportJob", () => {
     const seq: ImportJobState[] = [
       makeJob({
         phase: "scanning",
-        progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+        progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
       }),
       makeJob({ phase: "done" }),
     ];
@@ -305,7 +602,7 @@ describe("useImportJob poll cadence", () => {
       await pollIntervalFor(
         makeJob({
           phase: "scanning",
-          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
           albums: [],
         }),
       ),
@@ -318,7 +615,7 @@ describe("useImportJob poll cadence", () => {
       await pollIntervalFor(
         makeJob({
           phase: "reviewing",
-          progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0 },
+          progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
           albums: [feedRow("applied")],
         }),
       ),
@@ -340,7 +637,7 @@ describe("useImportJob poll cadence", () => {
         await pollIntervalFor(
           makeJob({
             phase: "reviewing",
-            progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0 },
+            progress: { applied: 1, needs_review: 1, skipped: 0, not_landed: 0, already_known: 0 },
             albums: [feedRow(status)],
             awaiting_decision: false,
           }),
@@ -362,7 +659,7 @@ describe("useImportJob poll cadence", () => {
       await pollIntervalFor(
         makeJob({
           phase: "scanning",
-          progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0 },
+          progress: { applied: 1, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
           albums: [feedRow("applied")],
           awaiting_decision: true,
         }),
@@ -380,7 +677,7 @@ describe("useImportJob poll cadence", () => {
       await pollIntervalFor(
         makeJob({
           phase: "scanning",
-          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0 },
+          progress: { applied: 0, needs_review: 0, skipped: 0, not_landed: 0, already_known: 0 },
           albums: [],
           awaiting_decision: true,
         }),
@@ -656,5 +953,125 @@ describe("useDuplicatePrompt / useResolveImportDuplicate", () => {
     result.current.mutate({ index: 0, decision: { action: "skip_new" } });
 
     await waitFor(() => expect(result.current.isError).toBe(true));
+  });
+});
+
+describe("postApplyStep", () => {
+  /** A feed row for a DIFFERENT album, so "this album" is a real question. */
+  function otherRow(status: ImportAlbumSummary["status"]): ImportAlbumSummary {
+    return { ...feedRow(status), index: 9 };
+  }
+
+  // `decided` is what ImportJobRegistry.record_choice writes under the same
+  // lock that pushes the choice, so the row already reads `decided` when the
+  // 204 arrives — before beets has reached _resolve_duplicates. Treating it as
+  // an answer would end every wait before the duplicate question is asked.
+  test("a decided row with nothing else on it is not an answer yet", () => {
+    expect(postApplyStep(makeJob({ albums: [feedRow("decided")] }), 0)).toBe(
+      "wait",
+    );
+  });
+
+  test("a parked duplicate for this album is the next question", () => {
+    const state = makeJob({
+      albums: [feedRow("needs_dup_resolution")],
+      awaiting_decision: true,
+    });
+    expect(postApplyStep(state, 0)).toBe("duplicate");
+  });
+
+  // beets calls task.add at stages.py:319 (from _apply_choice at :210), after
+  // _resolve_duplicates at :188; the session flushes the id it assigned at the
+  // next album's choose_match. So an id on the row places the album past the
+  // duplicate question even while the status still reads `decided`.
+  test("a library album id means the duplicate question is behind us", () => {
+    const landed: ImportAlbumSummary = { ...feedRow("decided"), album_id: 7 };
+    expect(postApplyStep(makeJob({ albums: [landed] }), 0)).toBe("leave");
+  });
+
+  test("applied and skipped rows owe nothing more", () => {
+    expect(postApplyStep(makeJob({ albums: [feedRow("applied")] }), 0)).toBe(
+      "leave",
+    );
+    expect(postApplyStep(makeJob({ albums: [feedRow("skipped")] }), 0)).toBe(
+      "leave",
+    );
+  });
+
+  test("a row that is no longer in the feed owes nothing more", () => {
+    expect(postApplyStep(makeJob({ albums: [otherRow("decided")] }), 0)).toBe(
+      "leave",
+    );
+  });
+
+  // The backend gates `awaiting_decision` on an active phase, so a
+  // needs_dup_resolution row on a finished job is a set-aside nobody is blocked
+  // on — there is no prompt to open there.
+  test("a terminal job outranks a set-aside duplicate row", () => {
+    const state = makeJob({
+      phase: "done",
+      albums: [feedRow("needs_dup_resolution")],
+    });
+    expect(postApplyStep(state, 0)).toBe("leave");
+  });
+
+  test("a row back at needs_review is a re-park, not a departure", () => {
+    expect(
+      postApplyStep(makeJob({ albums: [feedRow("needs_review")] }), 0),
+    ).toBe("stay");
+  });
+});
+
+// One ladder, so the arms cannot race. Before this, the bound owned a second
+// `navigate` in its own effect; a duplicate that committed in the last
+// scheduling gap before the deadline left both calls in flight, last one wins.
+describe("holdExit", () => {
+  const base = { step: "wait", feedGone: false, expired: false } as const;
+
+  test("nothing said yet is a wait", () => {
+    expect(holdExit(base)).toBe("wait");
+  });
+
+  test("each signal on its own", () => {
+    expect(holdExit({ ...base, step: "duplicate" })).toBe("duplicate");
+    expect(holdExit({ ...base, step: "leave" })).toBe("leave");
+    expect(holdExit({ ...base, step: "stay" })).toBe("stay");
+    expect(holdExit({ ...base, feedGone: true })).toBe("leave");
+    expect(holdExit({ ...base, expired: true })).toBe("leave");
+  });
+
+  // The precedence, read as pairs: each row is a state both arms can be true
+  // in, and names which one wins.
+  test("the duplicate question outranks every other exit", () => {
+    expect(holdExit({ step: "duplicate", feedGone: true, expired: false })).toBe(
+      "duplicate",
+    );
+    expect(holdExit({ step: "duplicate", feedGone: false, expired: true })).toBe(
+      "duplicate",
+    );
+    expect(holdExit({ step: "duplicate", feedGone: true, expired: true })).toBe(
+      "duplicate",
+    );
+  });
+
+  test("the bound outranks a re-park, and leaving outranks the bound's wording", () => {
+    expect(holdExit({ step: "stay", feedGone: false, expired: true })).toBe(
+      "leave",
+    );
+    expect(holdExit({ step: "stay", feedGone: true, expired: false })).toBe(
+      "leave",
+    );
+    expect(holdExit({ step: "leave", feedGone: false, expired: true })).toBe(
+      "leave",
+    );
+  });
+
+  // A wait that the bound has not reached and the feed has not answered stays
+  // a wait even when the feed is merely erroring — `feedGone` is the narrow
+  // signal, not `isError`.
+  test("a live feed with nothing to say keeps waiting", () => {
+    expect(holdExit({ step: "wait", feedGone: false, expired: false })).toBe(
+      "wait",
+    );
   });
 });

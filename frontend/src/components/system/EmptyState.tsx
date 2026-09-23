@@ -50,7 +50,13 @@ export function EmptyState({
       data-tone={tone}
       className={cn(
         "flex flex-col items-center gap-3 text-center",
-        bordered ? "rounded-xl border py-16" : "py-24",
+        // `px-4` on the bordered branch: it had vertical padding only, so at
+        // 360px a long body line ran into the border (measured in Chromium
+        // (Orca), 2026-09-18: 6px of air for the import panel's three-segment
+        // counts line, and a wrapped line in a centred column is as wide as the
+        // box). The bare branch sits in the page column and keeps the page's own
+        // gutter.
+        bordered ? "rounded-xl border px-4 py-16" : "py-24",
         bordered &&
           (destructive
             ? "border-destructive/40 bg-destructive/5"

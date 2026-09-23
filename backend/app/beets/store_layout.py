@@ -57,6 +57,7 @@ __all__ = [
     "effective_config_paths",
     "layout_check_for_config",
     "lib_music_and_library",
+    "yaml_error_at",
 ]
 
 #: How each of the five inputs is spelled for the operator who has to change it.
@@ -106,7 +107,7 @@ class StoreLayoutError(Exception):
 
 #: What resolving an operator-supplied path can raise. Measured on this tree:
 #: ``RuntimeError("Symlink loop from ...")`` for a self-referencing symlink on
-#: Python 3.11 (what the image ships) and 3.12 (what the venv runs), and
+#: Python 3.11 and 3.12 (what the image ships and the venv runs), and
 #: ``ValueError("embedded null character")`` for a ``directory: "/music/\0evil"``,
 #: which ruamel accepts. ``OSError`` covers the strict-mode shape 3.13 uses and
 #: any I/O fault under the ``lstat`` chain.
@@ -1362,11 +1363,14 @@ def checked_protected_trees(
     """The identities the movers and the remover refuse, for THIS request.
 
     Taken beside :func:`checked_store_dirs`, from the pair it returned, by every
-    request site that hands a mover or the remover an identity set: the delete
-    ops, the Trash page's restore and DELETE routes, the artist-art store, and
-    the reorganize orphan sweep (``reorganize_jobs/runner.py``). Duplicates' resolve
-    calls it too and DISCARDS the set, because ``trash_album`` takes none (a
-    recorded residual) — what it wants is the creation. ``api/reorganize.py``
+    request site that needs an identity set: the Trash page's restore and DELETE
+    routes, the artist-art store and the reorganize orphan sweep
+    (``reorganize_jobs/runner.py``) hand it to a mover or the remover; the delete
+    ops read it themselves, to tell an album folder that IS one of ours from a
+    stranger's (``delete._trash_one``) — they pass no set to ``trash_album``,
+    which takes none. Duplicates' resolve calls it too and DISCARDS the set for
+    that reason (a recorded residual) — what it wants is the creation.
+    ``api/reorganize.py``
     reads ``protected_entries`` directly for the sweep's ignore list, which is a
     list of paths rather than a set of identities. The one destructive path that
     does NOT come through here is the import session's post-import cleanup
@@ -1503,8 +1507,11 @@ def _winning_source(cfg: confuse.Configuration, key: str) -> str | None:
     return None
 
 
-def _include_source(target: str, budget: int) -> tuple[confuse.ConfigSource, int]:
+def _include_source(target: str, written: str, budget: int) -> tuple[confuse.ConfigSource, int]:
     """One ``include:`` entry, read through ONE descriptor. With its size.
+
+    ``target`` is the entry resolved to a path; ``written`` is how the refusals
+    name it, as :func:`_as_written` gives it.
 
     ``os.stat`` then confuse's ``open`` asked the same NAME twice, and flipping a
     symlink between the two put the FIFO hang back — measured, the read ran until
@@ -1516,8 +1523,9 @@ def _include_source(target: str, budget: int) -> tuple[confuse.ConfigSource, int
     and the size comes back so the caller can subtract it.
 
     Raises ``ConfigReadError`` for the shapes beets prints-and-continues on, and
-    :func:`_unreadable_include` for the three it does not survive: a FIFO, a
-    descriptor with nothing to read, and a read the budget stops.
+    :func:`_unreadable_include` for the rest: a FIFO, a
+    descriptor with nothing to read, a read the budget stops, and a parse error
+    that is not a ``YAMLError``.
     """
     try:
         fd = os.open(target, os.O_RDONLY | os.O_NONBLOCK)
@@ -1530,10 +1538,10 @@ def _include_source(target: str, budget: int) -> tuple[confuse.ConfigSource, int
             # overlay for a file beets BLOCKS on at startup. The type test is
             # narrow on purpose — a directory, a socket and ``/dev/null`` are
             # shapes beets survives, and refusing those was the collateral.
-            raise _unreadable_include(f"{target!r} is a FIFO; beets would block on it")
+            raise _unreadable_include(f"{written!r} is a FIFO; beets would block on it")
         buf = bytes_at_most(fd, budget)
     except BlockingIOError as exc:
-        raise _unreadable_include(f"{target!r} had nothing to read") from exc
+        raise _unreadable_include(f"{written!r} had nothing to read") from exc
     except OSError as exc:
         # EISDIR for a directory: beets' own ``open`` answers the same and its
         # ``ConfigReadError`` arm carries on.
@@ -1542,9 +1550,18 @@ def _include_source(target: str, budget: int) -> tuple[confuse.ConfigSource, int
         os.close(fd)
     if buf is None:
         raise _unreadable_include(
-            f"{target!r} takes the include: list over its {_MAX_INCLUDE_BYTES}-byte budget"
+            f"{written!r} takes the include: list over its {_MAX_INCLUDE_BYTES}-byte budget"
         )
-    data = confuse.yaml_util.load_yaml_string(buf, target) or {}
+    try:
+        data = confuse.yaml_util.load_yaml_string(buf, target) or {}
+    except confuse.ConfigReadError:
+        raise  # a YAML error: beets prints it and skips the include
+    except Exception as exc:
+        # Everything else a parse raises escapes beets' include loop and ends the
+        # start: measured, ``KeyError`` for ``!!bool ture`` and ``AttributeError``
+        # for a ``!!timestamp`` that is not a date.
+        # The class alone: its text quotes the value, which can be a secret.
+        raise _unreadable_include(f"{written!r} raised {type(exc).__name__}") from exc
     if not isinstance(data, dict):
         # What ``YamlSource.load`` raises for the same document, so a beets start
         # over this file refuses too.
@@ -1552,12 +1569,69 @@ def _include_source(target: str, budget: int) -> tuple[confuse.ConfigSource, int
     return confuse.ConfigSource(data, filename=os.path.abspath(target)), len(buf)
 
 
+class SkippedInclude(NamedTuple):
+    """An ``include:`` entry beets would skip, as written, and one clause of why."""
+
+    name: str
+    reason: str
+
+
+def yaml_error_at(exc: object) -> str | None:
+    """``YAML error at line N`` from a PyYAML or ruamel ``problem_mark``, else ``None``.
+
+    Not the parser's problem text: for an undefined alias or an unknown tag it
+    quotes the token, which can be an unquoted secret.
+    """
+    mark = getattr(exc, "problem_mark", None)
+    return None if mark is None else f"YAML error at line {mark.line + 1}"
+
+
+def _skip_reason(exc: confuse.ConfigReadError) -> str:
+    """A YAML error's 1-based line, else the OS error, else the first line."""
+    reason = exc.reason
+    at = yaml_error_at(reason)
+    if at is not None:
+        return at
+    if isinstance(reason, OSError) and reason.strerror:
+        return reason.strerror
+    return str(reason).partition("\n")[0]
+
+
+def _as_written(view: confuse.Subview) -> str:
+    """An ``include:`` entry as written when it is a filename, else ``""``.
+
+    A later entry can come from inside an earlier include, and the repr of a
+    mapping there quoted its values (``OrderedDict({'password': ...})``).
+    """
+    raw = view.get()
+    return str(raw) if isinstance(raw, (str, bytes)) else ""
+
+
+def _loaded_paths(cfg: confuse.Configuration, document_file: str) -> tuple[str | None, str | None]:
+    """``directory:`` and ``library:`` as beets would load them from ``cfg``.
+
+    ``(None, None)`` when the document's OWN key resolves to no filename: the
+    schema paints that one, and two rows saying the same thing was the
+    collateral of reporting it here.
+    """
+    resolved: dict[str, str] = {}
+    for key in ("directory", "library"):
+        try:
+            resolved[key] = cfg[key].as_filename()
+        except confuse.ConfigError as exc:
+            source = _winning_source(cfg, key)
+            if source is not None and source != document_file:
+                raise _include_sets_a_non_path(key, source) from exc
+            return (None, None)
+    return (resolved["directory"], resolved["library"])
+
+
 class EffectivePaths(NamedTuple):
     """What beets would load, and the ``include:`` entries the gate skipped."""
 
     directory: str | None
     library: str | None
-    skipped: tuple[str, ...] = ()
+    skipped: tuple[SkippedInclude, ...] = ()
 
 
 def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> EffectivePaths:
@@ -1573,8 +1647,8 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
     no filename — a non-string ``directory:``, say — which the schema reports
     instead. When an INCLUDE is what supplied it the schema never sees the value,
     so this raises a row painted on ``include:``. ``skipped`` names the includes
-    beets drops and this gate did not merge; an advisory, because beets prints
-    them and carries on.
+    beets drops and this gate did not merge, as written in ``include:``, with
+    why: beets prints them and carries on, and Apply and boot refuse them.
     """
     cfg = _CandidateConfig(beets_dir)
     # Defaults first, so the document sits ABOVE them: `library: library.db` and
@@ -1591,23 +1665,25 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
     # exposes — which is bounded by the session gate, by the read budget, and by
     # the rows below, which narrow it to "this file parses as a mapping" rather
     # than "here is its content".
-    skipped: list[str] = []
+    skipped: list[SkippedInclude] = []
     # One read per resolved path, so a repeated entry costs one. The entry is
     # still ``set`` again at its own position: the LAST include wins, so dropping
     # the repeat would change which file decides ``directory:``.
     read: dict[str, confuse.ConfigSource] = {}
     budget = _MAX_INCLUDE_BYTES
+    written = ""
     try:
         entries = list(cfg["include"].sequence())
         if len(entries) > _MAX_INCLUDE_ENTRIES:
             raise _too_many_includes(len(entries))
         for view in entries:
+            written = _as_written(view)
             # Resolved HERE rather than up front: each entry resolves against
             # the sources set so far, which is what beets' own loop does.
             target = view.as_filename()
             merged = read.get(target)
             if merged is None:
-                merged, used = _include_source(target, budget)
+                merged, used = _include_source(target, written, budget)
                 budget -= used
                 read[target] = merged
             cfg.set(merged)
@@ -1618,36 +1694,25 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
         # the loop (``beets/__init__.py:29-38``), so the first unreadable entry ends
         # the merge. Measured with the guard placed per-entry instead, this function
         # reported an overlay's ``directory:`` that a real ``setup_beets`` over the
-        # same file did not load.
-        skipped.append(exc.name)
+        # same file did not load. Only ``_include_source`` raises this, inside
+        # the loop, so ``written`` holds that entry.
+        skipped.append(SkippedInclude(written, _skip_reason(exc)))
     except (confuse.ConfigError, TypeError, ValueError, RecursionError) as exc:
         # The shapes a real start does not survive: a non-list ``include:``, an
         # include whose top level is not a mapping, an entry holding a NUL, an
         # include nested past the recursion limit. Measured, all four escaped the
         # old ``except confuse.ConfigError`` and the three routes answered a bare
         # 500 or reported the document CLEAN.
-        raise _unreadable_include(str(exc)) from exc
-    names = tuple(skipped)
-    document_file = str(beets_dir / "config.yaml")
-    resolved: dict[str, str] = {}
-    for key in ("directory", "library"):
-        try:
-            resolved[key] = cfg[key].as_filename()
-        except confuse.ConfigError as exc:
-            source = _winning_source(cfg, key)
-            if source is not None and source != document_file:
-                raise _include_sets_a_non_path(key, source) from exc
-            # The document's OWN key: the schema paints that one, and two rows
-            # saying the same thing was the collateral of reporting it here.
-            return EffectivePaths(None, None, names)
-    return EffectivePaths(resolved["directory"], resolved["library"], names)
+        raise _unreadable_include(f"{written!r}: {exc}" if written else str(exc)) from exc
+    directory, library = _loaded_paths(cfg, str(beets_dir / "config.yaml"))
+    return EffectivePaths(directory, library, tuple(skipped))
 
 
 class LayoutCheck(NamedTuple):
     """A candidate document's refusal, and the includes the gate skipped."""
 
     error: StoreLayoutError | None
-    skipped_includes: tuple[str, ...] = ()
+    skipped_includes: tuple[SkippedInclude, ...] = ()
 
 
 def layout_check_for_config(
@@ -1664,7 +1729,7 @@ def layout_check_for_config(
     they are env-derived, and the two values that move through the editor are the
     two :func:`effective_config_paths` reads back out of the document.
     """
-    skipped: tuple[str, ...] = ()
+    skipped: tuple[SkippedInclude, ...] = ()
     try:
         paths = effective_config_paths(document, handle.beets_dir)
         skipped = paths.skipped

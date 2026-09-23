@@ -66,11 +66,16 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   through a symlink below the library root is skipped with a log line, and a bind mount is the
   supported way to put part of a library on another disk.
 - **Edit tags** — album & track, from the UI. A rename that would land the album's cover on a name another file already holds is refused before anything moves — the tag changes still write, the files stay put, and the preview says why (beets alone would silently rename the cover to a `.1` sibling).
-- **Import** — interactive candidate picker, resume, an import-time duplicate guard (duplicates always route to review, whatever `duplicate_action` says), and search-by-release-ID when the right match isn't offered. Unattended runs **bank** undecidable albums for later review instead of stalling, and the summary verifies each album actually **landed** in the library.
+- **Import** — interactive candidate picker, resume, an import-time duplicate guard (duplicates always route to review, whatever `duplicate_action` says — and when the match you apply is already in your library, the duplicate question opens next, on the same album), and search-by-release-ID when the right match isn't offered. **Stop this run** ends a folder import you started, at the album it is on: what already landed stays, and adding the folder again asks about the rest. Unattended runs **bank** undecidable albums for later review instead of stalling, and the summary verifies each album actually **landed** in the library. A start whose source folder is not there, or cannot be read, is refused up front with the reason — it no longer runs to a hollow *Import finished — 0 albums imported*. A banked row whose folder stopped answering says so and names the fix; **Rescan folder** clears it once the folder reads again.
 - **Duplicates** — find & resolve duplicate albums (resolve one, or resolve-all).
 - **Release identity** — which release an album is (source · label · country · media · disambiguation), with view-release links.
-- **Delete & Trash** — delete albums or artists into a reversible Trash; restore or empty it
-  under **Settings → Trash**. Three setup faults refuse a delete with a 503, and none of them
+- **Delete & Trash** — delete albums or artists into a Trash; restore or empty it under
+  **Settings → Trash**. A delete moves the album's tracks, its cover and its lyric files; any
+  other file in the folder stays where it is, and the folder stays while something is left in
+  it (a file your beets `clutter:` list names goes with the emptied folder, as in any beets
+  move). During the move MusicDrop puts a temporary `.musicdrop-keep` file in its own folders
+  above the album (inbox, Trash, playlists) so beets does not remove them, then deletes it; one
+  left behind by a crash is harmless and safe to delete. Three setup faults refuse a delete with a 503, and none of them
   drops a library row. The first is the music root being missing, empty or unreadable (an unmounted
   share), so a genuinely emptied library needs a remount (or beets' own CLI) before its
   leftover entries can be cleared. It is checked before the delete starts and again per album,
@@ -126,16 +131,11 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   albums it dropped that had no files left to move, and its advice is to *check* the Trash
   folder rather than a promise that anything is in it. That hedge is deliberate, and it now
   covers a narrower set: a move that stops PART-WAY — a copy across filesystems that fails
-  between the copy and the delete, or an album taken out of a shared folder file by file — can
-  leave some of it under Trash without this end being able to see it, so the honest instruction
-  is to look. **If removing the library rows fails after the whole folder reached Trash,
-  MusicDrop moves the folder back where it came from and reports the error**, so the files are
-  where the library last said they were and there is nothing in Trash for that album to find.
-  The message says only that much about the library: beets commits what it had already done on
-  the way out of a failed transaction, so the album may be untouched or may already be gone from
-  it, and the error says so and asks you to check before retrying. In the rare
-  case that moving it back fails too, the error names both paths, read from the disk, and tells
-  you not to empty Trash before comparing them.
+  between the copy and the delete, or a track that cannot be moved after others already were —
+  can leave some of it under Trash without this end being able to see it, so the honest
+  instruction is to look. **If removing the library rows fails after the files reached Trash,
+  the album stays listed and its files stay in Trash.** Delete the album again: the retry only
+  drops the rows. Until then **Empty refuses that entry**, because it is the album's only copy.
 - **Restore knows where things came from.** When MusicDrop moves a folder to Trash it
   records where that folder came from in a small JSON file alongside — one per Trash entry,
   under `<beets dir>/trash-origins/`, deliberately outside the trashed folder and outside
@@ -148,9 +148,10 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
     under your *current* naming rules rather than putting it back. The row says which of the
     three reasons applies: there is no record MusicDrop can use (it may predate origin
     records, its record may have failed to write, or that record may be unusable now — the
-    server log says which), its files came out of a folder shared with other music, or its
-    origin is no longer inside the library. Restore stays available in all three; the row just tells you it will
-    not be exact.
+    server log says which), its files were moved to Trash one by one — which is every album
+    you delete — or its origin is no longer inside the library. Restore stays available in all
+    three; the row just tells you it will not be exact. Restoring brings back the album's
+    tracks; what else the entry holds is what the entry lists.
   - **Files moved aside** — loose files MusicDrop moved out of the way when it replaced them:
     art a **Save art to library** run overwrote, or a portrait **Reset to auto** removed. They are
     not an album, so there is no Restore button — copy them out of the entry into the folder the row
@@ -191,7 +192,7 @@ beets and MusicDrop are co-located on the same host: beets' library (`library.db
   to a *folder* lists at zero tracks too, because nothing under it is read; a link a hand has
   placed at a media *file* is listed as that file and shows its tags. The hedge is dropped on
   the refusal, not on the count.
-- **beets config** — viewer + writable editor, with advisory notices for import keys MusicDrop forces (a saved value that only affects CLI runs is flagged, not silently accepted).
+- **beets config** — viewer + writable editor, with advisory notices for import keys MusicDrop forces (a saved value that only affects CLI runs is flagged, not silently accepted). `import.delete` is one of them: MusicDrop forces it off, so a copy-mode import leaves your download where it was; a source already inside the library is moved instead. **Apply** changes nothing and says what to fix when `config.yaml` is missing, has a YAML error (with its line), lists an `include:` beets would skip (and why), or sets a store layout MusicDrop refuses; if beets rejects a value while loading, Apply puts the running config back. MusicDrop won't start with a skipped include, or with more than 32 includes or 1 MiB of them. Saving a symlinked `config.yaml` writes the file it points to: the link stays, that file keeps its mode, and its folder must be writable. The read-only view hides every setting beets marks secret, whether or not its plugin is on; a copy made with a YAML anchor is not hidden.
 - **Naming** — edit beets path/replace rules with a live preview. **Reorganize** — re-apply them to existing files, and sweep emptied leftover folders into the Trash — the sweep offers only folders the walk found no audio beneath (it does not look inside dot-folders or through symlinks), and skips a live album's own art folder. A move that would silently rename an album's cover (a stray file already holds the cover's name at the destination) is refused instead: the preview flags it as an art conflict, and apply holds back just that album.
 - **Disk sync** — a `beet update` equivalent: preview-first removal of library entries whose files were deleted outside the app, plus tag refresh for files changed on disk.
 - **Library dashboard** — counts, duration, size, recently added.
@@ -232,7 +233,7 @@ services:
     restart: unless-stopped
 ```
 
-`docker compose up -d`, then open `http://<host>:3030`. First boot writes a starter beets config to `data/beets/config.yaml` with `directory: /music`; edit it under **Settings → Beets** (plugins, import behavior) — MusicDrop reads it like the beets CLI would, with one carve-out: in-app imports force a few `import.*` keys (`autotag`, `duplicate_action`, `singletons` — and `incremental` on sweep runs) so the review flow stays intact. The editor shows an advisory when a saved value won't take effect in-app; a CLI `beet import` still honours it. Optional integrations (slskd webhook, Plex) are configured under Settings or via `MUSICDROP_*` env vars; for slskd, mount its downloads dir (e.g. `/inbox`) and set `MUSICDROP_INBOX_DIR=/inbox`. The fanart.tv/Spotify artist-image credentials are **env-only** — Settings holds just the two on/off toggles: set `MUSICDROP_ARTIST_IMAGE_FANARTTV_API_KEY` to enable fanart.tv (`MUSICDROP_ARTIST_IMAGE_FANARTTV_CLIENT_KEY` is an optional extra passed alongside it), and both `MUSICDROP_ARTIST_IMAGE_SPOTIFY_CLIENT_ID` and `MUSICDROP_ARTIST_IMAGE_SPOTIFY_CLIENT_SECRET` for Spotify; with none set, portraits resolve from Deezer alone (which needs no key).
+`docker compose up -d`, then open `http://<host>:3030`. First boot writes a starter beets config to `data/beets/config.yaml` with `directory: /music`; edit it under **Settings → Beets** (plugins, import behavior) — MusicDrop reads it like the beets CLI would, with one carve-out: in-app imports force a few `import.*` keys (`autotag`, `duplicate_action`, `singletons` — and `incremental`, `incremental_skip_later` and `resume` on sweep, hardlink, bank-apply and **Import them again** runs) so the review flow stays intact, and force `delete` **off** so an import never removes the files it just filed. `copy`/`move`/`hardlink`/`reflink` stay yours on a manual import; an inbox import is always a move, so the folder leaves the inbox. A hardlink keeps your download, so MusicDrop uses beets' import history on those runs: adding a kept folder again skips albums beets has already imported; when that is all a run did, **Import them again** imports them anyway. If an import stops part-way, the album's page names the folder still outside the library. It offers to add that folder again only when the folder holds every track; adding a part-folder sends the already-filed tracks to Trash, and under `move` leaves the album short. A hardlink that cannot cross filesystems stops the second run too, until the operation or the mount changes. An import does not start while the music folder is missing, or empty while the library still lists tracks (the share is unmounted); queued inbox and bank work waits and resumes by itself once it is back. A new install's empty music folder is fine. A folder name the app cannot display is shown with a placeholder and still imports when that shown path is pasted back; two folders that display alike are refused rather than guessed. A folder that is not there is refused at the start, instead of running an import that finds nothing. The editor shows an advisory when a saved value won't take effect in-app; a CLI `beet import` still honours it. Optional integrations (slskd webhook, Plex) are configured under Settings or via `MUSICDROP_*` env vars; for slskd, mount its downloads dir (e.g. `/inbox`) and set `MUSICDROP_INBOX_DIR=/inbox`. The fanart.tv/Spotify artist-image credentials are **env-only** — Settings holds just the two on/off toggles: set `MUSICDROP_ARTIST_IMAGE_FANARTTV_API_KEY` to enable fanart.tv (`MUSICDROP_ARTIST_IMAGE_FANARTTV_CLIENT_KEY` is an optional extra passed alongside it), and both `MUSICDROP_ARTIST_IMAGE_SPOTIFY_CLIENT_ID` and `MUSICDROP_ARTIST_IMAGE_SPOTIFY_CLIENT_SECRET` for Spotify; with none set, portraits resolve from Deezer alone (which needs no key).
 
 A few more knobs are env-only, with defaults that suit most setups:
 
@@ -432,7 +433,7 @@ MusicDrop has no built-in backup, deliberately: its state is plain files under t
 **Authoritative** — losing it loses work, and nothing regenerates it:
 
 - `data/beets/library.db` — the beets library: every match, tag and organize decision, plus the `lyrics_checked` and `lyrics_instrumental` flags. A `library.db-before-*.bak` sibling is a beets pre-migration copy, the only way back to the previous schema; having none is normal.
-- `data/beets/config.yaml` — **Settings → Beets** and **Settings → Naming** both write this file in place and keep no previous copy.
+- `data/beets/config.yaml` — **Settings → Beets** and **Settings → Naming** both write this file in place and keep no previous copy. If it is a link, back up the file it points to.
 - `data/beets/bank/*.json` — albums banked for review. Pending decisions, not a cache.
 - `data/beets/playlists/*.json` and `data/beets/playlists/artwork/` — MusicDrop owns playlists; Plex is a push target, not a copy.
 - `<music>/.playlists/*.m3u8` — the Plex-readable exports. Rewritten only when a playlist changes, never rebuilt wholesale, so the music tree's restore is what covers them; `MUSICDROP_PLAYLISTS_EXPORT_DIR` takes them out of it — snapshot that path too.
@@ -458,7 +459,7 @@ Those are the shipped image's paths (`MUSICDROP_BEETS_DIR=/data/beets`, `MUSICDR
 
 You need not stop MusicDrop to take a snapshot. `library.db` is SQLite in its default rollback-journal mode (`journal_mode=delete`; neither beets nor MusicDrop switches it to WAL), so a `library.db-journal` sidecar exists only while a write transaction is open, and a snapshot atomic within the dataset captures the DB and that journal together — what SQLite needs to roll the interrupted transaction back. A snapshot of a running MusicDrop is crash-consistent; at worst one in-flight write is discarded.
 
-Separate datasets don't change that, so long as ONE snapshot operation covers both, and [`zfs-snapshot(8)`](https://openzfs.github.io/openzfs-docs/man/master/8/zfs-snapshot.8.html) promises a shared instant for exactly one form — `-r`: "[r]ecursive snapshots created through the `-r` option are all created at the same time". Take it over a common ancestor; within a pool one always exists (`zfs list` shows your layout), and on TrueNAS it is one Periodic Snapshot Task with **Recursive** ticked. Two *separate* operations — different pools, or a task each — are two instants, and moves fall through the gap: deleting to Trash moves a whole album folder from `/music` into `data/beets/trash/` under `/data`, and inbox drops import with `operation="move"`. Caught between the instants, that album is in both snapshots, in neither, or split across them — and `shutil.move` across filesystems is copy-then-delete, so a file can be captured truncated. The result is a folder to re-import or re-delete, not a damaged library; on that layout, snapshot with the container stopped, or at least never during a delete, a Trash restore, or an inbox import.
+Separate datasets don't change that, so long as ONE snapshot operation covers both, and [`zfs-snapshot(8)`](https://openzfs.github.io/openzfs-docs/man/master/8/zfs-snapshot.8.html) promises a shared instant for exactly one form — `-r`: "[r]ecursive snapshots created through the `-r` option are all created at the same time". Take it over a common ancestor; within a pool one always exists (`zfs list` shows your layout), and on TrueNAS it is one Periodic Snapshot Task with **Recursive** ticked. Two *separate* operations — different pools, or a task each — are two instants, and moves fall through the gap: deleting to Trash moves an album's files from `/music` into `data/beets/trash/` under `/data`, and inbox drops import with `operation="move"`. Caught between the instants, that album is in both snapshots, in neither, or split across them — and `shutil.move` across filesystems is copy-then-delete, so a file can be captured truncated. The result is a folder to re-import or re-delete, not a damaged library; on that layout, snapshot with the container stopped, or at least never during a delete, a Trash restore, or an inbox import.
 
 Quiescence comes from the process being gone, not from the shutdown grace: MusicDrop waits ~5s for an in-flight import to release the slot, but the beets worker is a daemon thread it cannot join, so past that bound the library closes under a still-running import. For the snapshot you keep as the restore point of record, snapshot after `docker compose down` returns.
 

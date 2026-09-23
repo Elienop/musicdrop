@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -15,6 +15,7 @@ import { ReleaseInfo } from "@/components/albums/ReleaseInfo";
 import {
   Cover as CoverIcon,
   Edit as EditIcon,
+  Info,
   Lyrics as LyricsIcon,
   MusicFallback,
   Spinner,
@@ -74,6 +75,10 @@ export function AlbumDetailPage() {
 
   return <AlbumDetailView album={data} />;
 }
+
+/** Links the h1 to the outside-library notice above it. One per page, so a
+ * constant is enough (the shape at ImportPage.tsx:338). */
+const OUTSIDE_NOTICE_ID = "album-outside-library";
 
 function AlbumDetailView({ album }: Readonly<{ album: AlbumDetail }>) {
   const missingQuery = useAlbumMissing(album.id, album.mb_albumid);
@@ -149,13 +154,22 @@ function AlbumDetailView({ album }: Readonly<{ album: AlbumDetail }>) {
         />
       )}
 
+      {/* Above the rail: the tracklist column stacks BELOW the whole cover
+          panel on a phone, which would put this after the artwork. */}
+      {album.outside_library !== null && (
+        <OutsideLibraryNotice outside={album.outside_library} />
+      )}
+
       {/* Rail layout (the artist-page idiom): the left side is dedicated to
           the cover — kept SQUARE and uncropped (covers are complete artworks,
           unlike portraits), dissolving into the page through the shared eased
           fade — with title/artist/meta and stacked actions below; the
           tracklist fills the right column. */}
       <div className="flex flex-col gap-8 lg:flex-row lg:items-start">
-        <aside className="w-96 shrink-0 max-lg:mx-auto lg:sticky lg:top-20">
+        {/* `max-w-full` pairs with `shrink-0`, which would otherwise hold the
+            rail at 384px inside a 320px viewport and scroll the document — the
+            skeleton below has carried it all along. */}
+        <aside className="w-96 max-w-full shrink-0 max-lg:mx-auto lg:sticky lg:top-20">
           {/* The rail is ONE bordered unit (Koito card treatment): the
               hairline wraps cover + title + stats + divider + actions
               together. The fade dissolves into the panel interior (page
@@ -184,6 +198,12 @@ function AlbumDetailView({ album }: Readonly<{ album: AlbumDetail }>) {
               <h1
                 id="album-detail-title"
                 tabIndex={-1}
+                // Route focus lands here, AFTER the notice above, so describe
+                // the h1 with it while it renders — otherwise the only way to
+                // meet it is to read backwards.
+                aria-describedby={
+                  album.outside_library === null ? undefined : OUTSIDE_NOTICE_ID
+                }
                 className="font-display text-display font-semibold tracking-tight break-words"
               >
                 {album.title}
@@ -343,6 +363,56 @@ function AlbumDetailView({ album }: Readonly<{ album: AlbumDetail }>) {
         </div>
       </div>
     </article>
+  );
+}
+
+/** A path with a `<wbr>` after each separator that has a component before it,
+ * so a line breaks after a `/` rather than mid-component, and the root slash
+ * is never stranded at a line end. Adds no text, so `textContent` is the raw
+ * path. Split on the string, not a lookbehind: Vite's default target promises
+ * Safari 16.0-16.3, which cannot parse one. */
+function breakablePath(path: string) {
+  const parts = path.split("/");
+  return parts.map((part, i) => {
+    const last = i === parts.length - 1;
+    const segment = last ? part : `${part}/`;
+    return (
+      <Fragment key={`${i}:${part}`}>
+        {segment}
+        {!last && segment !== "/" && <wbr />}
+      </Fragment>
+    );
+  });
+}
+
+/** Where some of the album's files are, when the backend reports a folder
+ * outside the library. Not `StatusBanner`: that primitive maps every tone to a
+ * live-region role, and this text is present at load and never changes. The
+ * remedy is shown only where the server says that one folder holds every track
+ * — re-adding a folder that holds only part of the album sweeps the rest to
+ * Trash — so the client makes no judgement of its own. */
+function OutsideLibraryNotice({
+  outside,
+}: Readonly<{ outside: NonNullable<AlbumDetail["outside_library"]> }>) {
+  return (
+    <p
+      id={OUTSIDE_NOTICE_ID}
+      className="text-muted-foreground flex items-start gap-2 rounded-xl border p-3 text-sm"
+    >
+      <Info className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      {/* The path needs both classes: `min-w-0` lowers this flex item's
+       * min-content floor, `break-words` splits the one component too long for
+       * a line (SettingsTrashPage's RestoreOutlook has the 320px numbers). */}
+      <span className="min-w-0">
+        Some files are in{" "}
+        <span className="text-foreground font-mono break-words">
+          {breakablePath(outside.folder)}
+        </span>
+        , outside your library folder.
+        {outside.holds_every_track &&
+          " If an import stopped part-way, add that folder again."}
+      </span>
+    </p>
   );
 }
 

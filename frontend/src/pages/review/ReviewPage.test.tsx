@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -74,6 +74,17 @@ function OriginProbe() {
     </p>
   );
 }
+
+/** An inbox row's Review button, by its accessible name. The name carries the
+ * row (the bank rows' `Ignore ${title}` dialect), because a refusal that names
+ * a folder is unusable next to eight buttons all called "Review"; the visible
+ * label still LEADS it, so 2.5.3 Label in Name holds. "Lost Tapes" is the row
+ * every single-row fixture below serves. */
+const ROW_REVIEW = /^review lost tapes$/i;
+/** The second row of the two-row fixtures. */
+const ROW_REVIEW_OTHER = /^review other tapes$/i;
+/** Either row of a two-row fixture — "Review all" does not match. */
+const ANY_ROW_REVIEW = /^review \w+ tapes$/i;
 
 describe("ReviewPage", () => {
   beforeEach(() => {
@@ -248,7 +259,7 @@ describe("ReviewPage", () => {
     );
     renderWithProviders(<ReviewPage />);
 
-    await userEvent.click(await screen.findByRole("button", { name: /^review$/i }));
+    await userEvent.click(await screen.findByRole("button", { name: ROW_REVIEW }));
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/import?job=jx"));
   });
 
@@ -269,6 +280,140 @@ describe("ReviewPage", () => {
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/import?job=jall"));
   });
 
+  /** The server's own refusal, served exactly as the route sends it. */
+  const SHARE_DOWN = "Library folder is empty. Is the music share mounted?";
+  const GENERIC = /try again in a moment/i;
+
+  /** One inbox row plus a canned answer from one of the two start routes. */
+  function serveRow(route: string, answer: Response) {
+    server.use(
+      http.get(ITEMS, () =>
+        HttpResponse.json({
+          items: [{ name: "Lost Tapes", mtime: 1, size: 10, track_count: 9, outcome: null }],
+        }),
+      ),
+      http.post(route, () => answer),
+    );
+  }
+
+  test.each([
+    ["per-item Review", IMPORT_ITEM, ROW_REVIEW],
+    ["Review all", REVIEW_ALL, /review all/i],
+  ])(
+    "%s shows the library's own 503 sentence, not the try-again copy",
+    async (_label, route, button) => {
+      serveRow(route, HttpResponse.json({ detail: SHARE_DOWN }, { status: 503 }));
+      renderWithProviders(<ReviewPage />);
+
+      await userEvent.click(await screen.findByRole("button", { name: button }));
+
+      // Nothing changes until the share comes back, so "try again in a moment"
+      // is false advice — the sentence has to be the server's.
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(SHARE_DOWN);
+      expect(alert).not.toHaveTextContent(GENERIC);
+      // The 503 family carries repr'd paths; Chromium gives no break at `/`.
+      expect(alert).toHaveClass("break-words");
+    },
+  );
+
+  /** A 409 the generic sentence names WRONGLY — the beets swap lock, not
+   * another import. Served without a full stop, as the route sends it. */
+  const SWAP_LOCK = "A library operation is in progress; import available when it finishes";
+
+  test.each([
+    ["per-item Review", IMPORT_ITEM, ROW_REVIEW],
+    ["Review all", REVIEW_ALL, /review all/i],
+  ])(
+    "%s shows the 409's own reason, not 'another import is running'",
+    async (_label, route, button) => {
+      serveRow(route, HttpResponse.json({ detail: SWAP_LOCK }, { status: 409 }));
+      renderWithProviders(<ReviewPage />);
+
+      await userEvent.click(await screen.findByRole("button", { name: button }));
+
+      // The generic copy would send the user off to wait for an import that is
+      // not running. `endStopped` supplies the full stop the route omits.
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(`${SWAP_LOCK}.`);
+      expect(alert).not.toHaveTextContent(GENERIC);
+    },
+  );
+
+  /** The source-missing refusal (2026-09-20). The batch route says it in the
+   * plural: it never shows the browser which inbox folders it handed over. */
+  const GONE_ONE = "That folder doesn’t exist.";
+  const GONE_ALL = "Those folders are no longer there.";
+
+  test.each([
+    ["per-item Review", IMPORT_ITEM, ROW_REVIEW, GONE_ONE],
+    ["Review all", REVIEW_ALL, /review all/i, GONE_ALL],
+  ])(
+    "%s shows the 422 source-missing sentence, not the try-again copy",
+    async (_label, route, button, sentence) => {
+      serveRow(route, HttpResponse.json({ detail: sentence }, { status: 422 }));
+      renderWithProviders(<ReviewPage />);
+
+      await userEvent.click(await screen.findByRole("button", { name: button }));
+
+      // The refusal exists to name what to fix. The generic copy would send the
+      // user back to retry a folder that is not there, or a permissions problem
+      // that retrying cannot clear.
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(sentence);
+      expect(alert).not.toHaveTextContent(GENERIC);
+    },
+  );
+
+  test("the per-item route's validation 422 keeps the page's own copy", async () => {
+    // That route takes a body, so FastAPI can send the ARRAY-shaped 422 whose
+    // `msg` is validator copy. The control for the test above: without it, a
+    // helper that forwards every 422 passes both.
+    serveRow(
+      IMPORT_ITEM,
+      HttpResponse.json(
+        {
+          detail: [
+            { loc: ["body", "name"], msg: "Input should be a valid string", type: "string_type" },
+          ],
+        },
+        { status: 422 },
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: ROW_REVIEW }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(GENERIC);
+    expect(alert).not.toHaveTextContent("Input should be");
+  });
+
+  test.each([
+    ["per-item Review", IMPORT_ITEM, ROW_REVIEW],
+    ["Review all", REVIEW_ALL, /review all/i],
+  ])(
+    "%s keeps the try-again copy for a bodyless 409",
+    async (_label, route, button) => {
+      // No reason to give, so the page's own sentence is the honest one.
+      serveRow(route, new HttpResponse(null, { status: 409 }));
+      renderWithProviders(<ReviewPage />);
+
+      await userEvent.click(await screen.findByRole("button", { name: button }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(GENERIC);
+    },
+  );
+
+  test("a bodyless 503 falls back to the try-again copy (a proxy's, not ours)", async () => {
+    serveRow(REVIEW_ALL, new HttpResponse(null, { status: 503 }));
+    renderWithProviders(<ReviewPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /review all/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(GENERIC);
+  });
+
   test("an in-flight inbox row warns before its per-row Review override", async () => {
     // The per-row button has no settle guard — it is an explicit "import THIS
     // one now". The row must therefore SAY the folder is still arriving, or the
@@ -287,9 +432,15 @@ describe("ReviewPage", () => {
 
     expect(await screen.findByText(/still downloading — importing now may catch only part/i))
       .toBeInTheDocument();
-    // the settled row keeps the plain affordance; only the in-flight one is hedged
-    expect(screen.getByRole("button", { name: "Review anyway" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Review" })).toBeInTheDocument();
+    // The settled row keeps the plain affordance; only the in-flight one is
+    // hedged — and each name leads with the visible label and ends with the
+    // row, so a screen-reader user can tell the eight apart (2.5.3).
+    expect(
+      screen.getByRole("button", { name: "Review anyway Half Arrived" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Review All Here" }),
+    ).toBeInTheDocument();
   });
 
   test("a no-op Review all says STILL DOWNLOADING when folders are in flight", async () => {
@@ -335,6 +486,267 @@ describe("ReviewPage", () => {
     expect(await screen.findByText(/inbox just cleared/i)).toBeInTheDocument();
   });
 
+  /** The refusal the whole source-check exists for: the share is mounted but the
+   * folder cannot be walked. The backend omits exactly that folder from the
+   * listing (it cannot count its tracks), so the refetch both mutations fire in
+   * `onSettled` empties the list the user pressed. */
+  const UNREADABLE = "That folder can’t be read. Permission denied.";
+
+  /** The listing the Review page polls: the row once, then nothing — the shape
+   * an unreadable folder produces the moment the probe runs again.
+   *
+   * The delay on the SECOND listing is load-bearing, not padding. The refetch
+   * is fired from the mutation's `onSettled` without being awaited, so in a
+   * browser it lands a round trip AFTER the refusal commits and the pressed
+   * button is still mounted and still focused at that commit — which is the
+   * whole reason the focus rescue is keyed on the listing as well. Undelayed,
+   * MSW answers inside the same microtask flush and React commits the empty
+   * list FIRST, which hides that ordering: the rescue then passes with the
+   * listing dependency deleted. Measured 2026-09-20. */
+  function serveVanishingRow(refusal: Response) {
+    let calls = 0;
+    server.use(
+      http.get(ITEMS, async () => {
+        calls += 1;
+        if (calls > 1) await delay(20);
+        return HttpResponse.json({
+          items:
+            calls === 1
+              ? [{ name: "Lost Tapes", mtime: 1, size: 10, track_count: 9, outcome: null }]
+              : [],
+        });
+      }),
+      http.post(IMPORT_ITEM, () => refusal),
+    );
+  }
+
+  test("the refusal outlives the refetch that empties the list", async () => {
+    serveVanishingRow(HttpResponse.json({ detail: UNREADABLE }, { status: 422 }));
+    renderWithProviders(<ReviewPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: ROW_REVIEW }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(UNREADABLE);
+
+    // The failed mutation invalidates ["inbox-items"]; the row is gone.
+    await waitFor(() =>
+      expect(screen.queryByText("Lost Tapes")).not.toBeInTheDocument(),
+    );
+
+    // The sentence is still readable, and the page does NOT answer a fault
+    // report with an all-clear.
+    expect(screen.getByRole("alert")).toHaveTextContent(UNREADABLE);
+    expect(screen.queryByText(/nothing to review/i)).not.toBeInTheDocument();
+  });
+
+  test("a refusal takes focus, so it is perceivable from the pressed row", async () => {
+    // role="alert" serves screen readers only. The alert sits above the list,
+    // nothing scrolls and every row button greys and returns, so a mouse user
+    // saw "the list flickered and nothing happened".
+    serveVanishingRow(HttpResponse.json({ detail: UNREADABLE }, { status: 422 }));
+    renderWithProviders(<ReviewPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: ROW_REVIEW }));
+
+    const alert = await screen.findByRole("alert");
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+  });
+
+  test("a refusal that leaves the row standing does NOT take focus", async () => {
+    // The other half of the rescue. `serveRow` keeps serving the row, which is
+    // what a 409 looks like: the button the user pressed is still there, still
+    // focused, and the walk back from a page-level alert is the rest of the
+    // page — the bank alone pages 48 rows. The sentence reaches the control
+    // through `aria-describedby` instead.
+    serveRow(IMPORT_ITEM, HttpResponse.json({ detail: SWAP_LOCK }, { status: 409 }));
+    renderWithProviders(<ReviewPage />);
+
+    const row = await screen.findByRole("button", { name: ROW_REVIEW });
+    await userEvent.click(row);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.id).toBeTruthy();
+    await waitFor(() => expect(row).toHaveAttribute("aria-describedby", alert.id));
+    expect(document.activeElement).toBe(row);
+    // Both start buttons carry it: either one can be the survivor.
+    expect(screen.getByRole("button", { name: /review all/i })).toHaveAttribute(
+      "aria-describedby",
+      alert.id,
+    );
+  });
+
+  test("Dismiss is the refusal's only expiry once the list has taken the buttons", async () => {
+    // A mutation error stands until that mutation re-runs, and the only
+    // controls that re-run it are the two start buttons — which is exactly
+    // what an unreadable folder takes off the page. Without this the count and
+    // "Nothing to review." stay gated for the rest of the session.
+    serveVanishingRow(HttpResponse.json({ detail: UNREADABLE }, { status: 422 }));
+    renderWithProviders(<ReviewPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: ROW_REVIEW }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(UNREADABLE);
+    await waitFor(() =>
+      expect(screen.queryByText("Lost Tapes")).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByRole("button", { name: /review all/i })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(await screen.findByText(/nothing to review/i)).toBeInTheDocument();
+    // Dismiss unmounts the node that holds focus, so it has to hand focus on:
+    // the page h1 is the landing useDeferredH1Focus uses.
+    expect(document.activeElement).toBe(
+      screen.getByRole("heading", { level: 1 }),
+    );
+  });
+
+  test("the header count stands down while a refusal stands", async () => {
+    // Same all-clear, one element up: a fault report with "0 awaiting a
+    // decision" over it. The count is also UNDERSTATED — the folder that
+    // cannot be read is the one the listing drops.
+    serveVanishingRow(HttpResponse.json({ detail: UNREADABLE }, { status: 422 }));
+    renderWithProviders(<ReviewPage />);
+
+    expect(await screen.findByText(/1 awaiting a decision/i)).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: ROW_REVIEW }));
+    await screen.findByRole("alert");
+
+    await waitFor(() =>
+      expect(screen.queryByText(/awaiting a decision/i)).not.toBeInTheDocument(),
+    );
+  });
+
+  test("the inbox-cleared message outlives the refetch that empties the list", async () => {
+    // The no-op's own self-unmounting sibling: "the inbox just cleared" fires
+    // exactly when the inbox emptied, which is what the start's `onSettled`
+    // refetch is about to discover — so inside the section it painted and was
+    // destroyed in one round trip, and the empty state only replaces the
+    // section when the bank and decision lists are empty too.
+    serveVanishingRow(
+      HttpResponse.json({ started: false, job_id: null, pending: 0, in_flight: 0 }),
+    );
+    renderWithProviders(<ReviewPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: ROW_REVIEW }));
+    expect(await screen.findByText(/inbox just cleared/i)).toBeInTheDocument();
+
+    await waitFor(() =>
+      expect(screen.queryByText("Lost Tapes")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText(/inbox just cleared/i)).toBeInTheDocument();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  /** Two rows and a start that never answers, so the in-flight posture can be
+   * read. `delay("infinite")` is the house shape (ImportPage's Start test). */
+  function serveTwoRowsHanging(route: string, count: { posts: number }) {
+    server.use(
+      http.get(ITEMS, () =>
+        HttpResponse.json({
+          items: [
+            { name: "Lost Tapes", mtime: 1, size: 10, track_count: 9, outcome: null },
+            { name: "Other Tapes", mtime: 2, size: 20, track_count: 4, outcome: null },
+          ],
+        }),
+      ),
+      http.post(route, async () => {
+        count.posts += 1;
+        await delay("infinite");
+        return HttpResponse.json({ started: true, job_id: "jx" });
+      }),
+    );
+  }
+
+  test("a starting Review all is aria-disabled, not disabled, and swallows the repeat", async () => {
+    // The Pagination rule, measured on the import page's Pause button: this
+    // button holds focus when it is pressed, so disabling it on its own commit
+    // strands keyboard focus on <body>. A running import and the OTHER start
+    // are reasons the control cannot be used at all and stay real `disabled`.
+    const count = { posts: 0 };
+    serveTwoRowsHanging(REVIEW_ALL, count);
+    renderWithProviders(<ReviewPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /review all/i }));
+
+    const button = await screen.findByRole("button", { name: /starting/i });
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveClass("aria-disabled:opacity-50");
+    // The rows belong to the other mutation, so they go the other way.
+    const rows = screen.getAllByRole("button", { name: ANY_ROW_REVIEW });
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row).toBeDisabled();
+    }
+
+    await userEvent.click(button);
+    expect(count.posts).toBe(1);
+  });
+
+  test("a starting row Review is aria-disabled while its neighbours are disabled", async () => {
+    const count = { posts: 0 };
+    serveTwoRowsHanging(IMPORT_ITEM, count);
+    renderWithProviders(<ReviewPage />);
+
+    const rows = await screen.findAllByRole("button", { name: ANY_ROW_REVIEW });
+    await userEvent.click(rows[0]);
+
+    const button = await screen.findByRole("button", { name: /starting/i });
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).not.toBeDisabled();
+    // The pressed row is the ONLY one holding focus; every other control is
+    // genuinely unavailable while the single import slot is being claimed.
+    expect(screen.getByRole("button", { name: ROW_REVIEW_OTHER })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /review all/i })).toBeDisabled();
+
+    await userEvent.click(button);
+    expect(count.posts).toBe(1);
+  });
+
+  test("the second refusal replaces the first — one slot, two mutations", async () => {
+    // TanStack keeps a mutation's error until THAT mutation re-runs, so a
+    // `reviewOne.error ?? reviewAll.error` slot showed the per-row sentence over
+    // a later "Review all" refusal that failed for a different reason.
+    server.use(
+      http.get(ITEMS, () =>
+        HttpResponse.json({
+          items: [{ name: "Lost Tapes", mtime: 1, size: 10, track_count: 9, outcome: null }],
+        }),
+      ),
+      http.post(IMPORT_ITEM, () =>
+        HttpResponse.json({ detail: GONE_ONE }, { status: 422 }),
+      ),
+      http.post(REVIEW_ALL, () =>
+        HttpResponse.json({ detail: SWAP_LOCK }, { status: 409 }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: ROW_REVIEW }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(GONE_ONE);
+
+    await userEvent.click(screen.getByRole("button", { name: /review all/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(`${SWAP_LOCK}.`),
+    );
+    expect(screen.getByRole("alert")).not.toHaveTextContent(GONE_ONE);
+  });
+
+  test("a failed inbox listing says so instead of reading as an empty backlog", async () => {
+    // The probe used to answer an empty listing on any non-ok response, which
+    // made `isError` unreachable — so the page's own guard against "a transient
+    // failure masquerading as a resolved backlog" was dead code.
+    server.use(http.get(ITEMS, () => new HttpResponse(null, { status: 500 })));
+    renderWithProviders(<ReviewPage />);
+
+    expect(
+      await screen.findByText(/couldn.t load what.s waiting in the inbox/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/nothing to review/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+  });
+
   test("inbox actions are disabled while an import is running", async () => {
     server.use(
       http.get(ACTIVE, () =>
@@ -351,7 +763,7 @@ describe("ReviewPage", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: /review all/i })).toBeDisabled(),
     );
-    expect(screen.getByRole("button", { name: /^review$/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: ROW_REVIEW })).toBeDisabled();
   });
 
   test("recent tally and last error surface from the status probe", async () => {
@@ -1111,10 +1523,10 @@ describe("ReviewPage", () => {
       http.get(ACTIVE, () =>
         HttpResponse.json({
           active: true, job_id: "s1", origin: "sweep", needs_review_count: 0,
-          sweep: { processed: 412, auto_applied: 268, banked: 144, skipped_known: 9, current_folder: "/library/Adele/21", paused: false },
+          sweep: { processed: 412, auto_applied: 268, banked: 144, skipped_known: 9, current_folder: "/library/Adele/21", stopped: false },
         }),
       ),
-      http.post(`${O}/api/import/s1/pause`, () => {
+      http.post(`${O}/api/import/s1/stop`, () => {
         paused = true;
         return new HttpResponse(null, { status: 204 });
       }),
@@ -1130,7 +1542,13 @@ describe("ReviewPage", () => {
     expect(banner).toHaveTextContent(/412 processed/);
     expect(banner).toHaveTextContent(/144 banked/);
     expect(banner).toHaveTextContent(/Now: 21/); // current folder's last segment
-    await userEvent.click(screen.getByRole("button", { name: /pause/i }));
+    const pause = screen.getByRole("button", { name: /pause/i });
+    // It swallows the repeat click while `aria-disabled` instead of disabling
+    // (keyboard focus stays on it), so it needs the app's dimming recipe —
+    // `disabled:opacity-50` never matches an aria-disabled control, and this
+    // was the one site in the app that looked pressable while inert.
+    expect(pause).toHaveClass("aria-disabled:opacity-50");
+    await userEvent.click(pause);
     await waitFor(() => expect(paused).toBe(true));
   });
 
@@ -1143,7 +1561,7 @@ describe("ReviewPage", () => {
       http.get(ACTIVE, () =>
         HttpResponse.json({
           active: true, job_id: "s1", origin: "sweep", needs_review_count: 0,
-          sweep: { processed: 7, auto_applied: 5, banked: 2, skipped_known: 0, current_folder: null, paused: false },
+          sweep: { processed: 7, auto_applied: 5, banked: 2, skipped_known: 0, current_folder: null, stopped: false },
         }),
       ),
       http.get(JOB, () => {
@@ -1225,7 +1643,7 @@ describe("ReviewPage", () => {
         auto_applied: 9,
         banked: 3,
         skipped_known: 2,
-        paused: false,
+        stopped: false,
       },
     };
 
@@ -1251,7 +1669,7 @@ describe("ReviewPage", () => {
         http.get(ACTIVE, () =>
           HttpResponse.json({
             ...doneSweep,
-            last_sweep: { ...doneSweep.last_sweep, skipped_known: 0, paused: true },
+            last_sweep: { ...doneSweep.last_sweep, skipped_known: 0, stopped: true },
           }),
         ),
       );
@@ -1300,7 +1718,7 @@ describe("ReviewPage", () => {
               banked: 2,
               skipped_known: 0,
               current_folder: null,
-              paused: false,
+              stopped: false,
             },
             last_sweep: {
               job_id: "s0",
@@ -1308,7 +1726,7 @@ describe("ReviewPage", () => {
               auto_applied: 14,
               banked: 6,
               skipped_known: 4,
-              paused: true,
+              stopped: true,
             },
           }),
         ),

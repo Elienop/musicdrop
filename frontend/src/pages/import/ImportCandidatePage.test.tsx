@@ -2,10 +2,24 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { delay, http, HttpResponse } from "msw";
-import { MemoryRouter, Route, Routes } from "react-router";
-import { beforeEach, describe, expect, test } from "vitest";
+import {
+  MemoryRouter,
+  Route,
+  Routes,
+  useLocation,
+  useNavigationType,
+  useParams,
+  useSearchParams,
+} from "react-router";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
-import type { Candidate } from "@/api/useImport";
+import type {
+  Candidate,
+  ImportAlbumSummary,
+  ImportJobState,
+} from "@/api/useImport";
+import { APPLY_NEXT_QUESTION_MS } from "@/api/useImport";
+import { albumOriginFromState } from "@/components/albums/album-grid";
 import { ImportCandidatePage } from "@/pages/import/ImportCandidatePage";
 import {
   containerQueryVariants,
@@ -17,6 +31,41 @@ import { server } from "@/test/msw-server";
 const CANDIDATE_URL = `${window.location.origin}/api/import/job-1/albums/1`;
 const CHOICE_URL = `${window.location.origin}/api/import/job-1/albums/1/choice`;
 const DUPLICATES_URL = `${window.location.origin}/api/import/:jobId/albums/:index/duplicates`;
+const JOB_URL = `${window.location.origin}/api/import/job-1`;
+
+/** One live-feed snapshot for album 1. `row: null` means the album is no longer
+ * in the feed at all. */
+function makeJob(
+  row: Partial<ImportAlbumSummary> | null,
+  overrides: Partial<ImportJobState> = {},
+): ImportJobState {
+  const album: ImportAlbumSummary = {
+    index: 1,
+    folder: "/drop/OK Computer",
+    artist: "Radiohead",
+    album: "OK Computer",
+    recommendation: "medium",
+    confidence: 76,
+    status: "decided",
+    album_id: null,
+    did_not_land: false,
+    ...row,
+  };
+  return {
+    job_id: "job-1",
+    phase: "reviewing",
+    progress: { applied: 0, needs_review: 1, skipped: 0, not_landed: 0, already_known: 0 },
+    albums: row === null ? [] : [album],
+    error: null,
+    origin: "manual",
+    set_aside: 0,
+    elapsed_seconds: 4,
+    awaiting_decision: false,
+    stopped: false,
+    aborted: false,
+    ...overrides,
+  };
+}
 
 function makeCandidate(overrides: Partial<Candidate> = {}): Candidate {
   return {
@@ -181,9 +230,17 @@ describe("ImportCandidatePage", () => {
   // The candidate screen runs an up-front library-collision check on mount;
   // default it to "clean" so the existing tests keep passing. Tests that need a
   // collision override this handler.
+  //
+  // The job feed is read only after a landing choice, to see whether beets has
+  // a second question for the album; default it to "the album landed", which is
+  // the outcome that sends the user back to the list. Tests about the next
+  // question override it.
   beforeEach(() => {
     server.use(
       http.get(DUPLICATES_URL, () => HttpResponse.json({ existing: [] })),
+      http.get(JOB_URL, () =>
+        HttpResponse.json(makeJob({ status: "applied", album_id: 7 })),
+      ),
     );
   });
 
@@ -1078,8 +1135,8 @@ describe("ImportCandidatePage", () => {
     const user = userEvent.setup();
     renderAt();
 
-    // Open the folded search row first (the toggle is never disabled), so the
-    // release field is mounted and we can assert it locks with the rest.
+    // Open the folded search row BEFORE the Apply: the toggle locks with the
+    // rest, so afterwards there would be no way to mount the release field.
     await user.click(await screen.findByRole("button", { name: /different release/i }));
     await user.click(screen.getByRole("button", { name: /^Apply/i }));
     // With the Apply in flight, the no-undo relookup controls must lock out —
@@ -1089,6 +1146,7 @@ describe("ImportCandidatePage", () => {
       expect(screen.getByRole("button", { name: /rescan folder/i })).toBeDisabled(),
     );
     expect(screen.getByLabelText(/release url or id/i)).toBeDisabled();
+    expect(screen.getByRole("button", { name: /different release/i })).toBeDisabled();
   });
 
   test("rescan rides the control bar and locks with the other tools", async () => {
@@ -1100,5 +1158,740 @@ describe("ImportCandidatePage", () => {
       "title",
       "Re-reads the folder from disk and matches it again.",
     );
+  });
+});
+
+/** beets asks two questions per album — the match, then the duplicate. These
+ * pin the second one arriving WHERE the first was answered, instead of the user
+ * being dropped on a list to go and find it. */
+describe("ImportCandidatePage — the next question after Apply", () => {
+  /** Renders the Review list. Counts its own renders, so "never passes through
+   * a list" is an assertion and not an absence at one moment. */
+  let reviewRenders = 0;
+  function ReviewProbe() {
+    reviewRenders += 1;
+    const navigationType = useNavigationType();
+    return (
+      <>
+        <p>Review page probe</p>
+        <p>{`Arrived by ${navigationType}`}</p>
+      </>
+    );
+  }
+
+  /** Stands in for the duplicate screen, echoing the three things the hop has
+   * to get right: the album, the job, and the origin it was handed. */
+  function DuplicateProbe() {
+    const { index } = useParams<{ index: string }>();
+    const [params] = useSearchParams();
+    const origin = albumOriginFromState(useLocation().state);
+    return (
+      <>
+        <p>
+          {`Duplicate probe index=${index} job=${params.get("job") ?? ""} ` +
+            `back=${origin?.label ?? "none"}|${origin?.to ?? "none"}`}
+        </p>
+        <p>{`Arrived by ${useNavigationType()}`}</p>
+      </>
+    );
+  }
+
+  /** The candidate screen with BOTH of its landing places mounted. `seed` puts
+   * something in the query cache first — the list page the user came through
+   * leaves its own job poll behind. */
+  function renderHop(seed?: (qc: QueryClient) => void) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    seed?.(qc);
+    return render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter
+          initialEntries={[
+            {
+              pathname: "/import/albums/1",
+              search: "?job=job-1",
+              state: { from: { label: "Review", to: "/review" } },
+            },
+          ]}
+        >
+          <Routes>
+            <Route path="/import/albums/:index" element={<ImportCandidatePage />} />
+            <Route
+              path="/import/albums/:index/duplicate"
+              element={<DuplicateProbe />}
+            />
+            <Route path="/review" element={<ReviewProbe />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  async function clickApply() {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /^Apply/i }));
+  }
+
+  /** One library collision, so the up-front check ANSWERS "there is something
+   * to collide with" and the screen holds for beets' verdict. Every routing
+   * test below is about what happens during that hold, so it is the default
+   * here; the empty answer is the fast path, pinned on its own. */
+  const COLLISION = {
+    album_id: 12,
+    album_artist: "Radiohead",
+    album: "OK Computer",
+    year: 1997,
+    track_count: 1,
+    format: "FLAC",
+    bitrate_kbps: null,
+    folder: "/library/Radiohead/OK Computer",
+    release: null,
+    tracks: [
+      { track: 1, disc: 1, title: "Airbag", format: "FLAC", bitrate_kbps: null },
+    ],
+  };
+
+  beforeEach(() => {
+    reviewRenders = 0;
+    server.use(
+      http.get(DUPLICATES_URL, () => HttpResponse.json({ existing: [COLLISION] })),
+      http.get(CANDIDATE_URL, () => HttpResponse.json(makeCandidate())),
+      http.post(CHOICE_URL, () => new HttpResponse(null, { status: 204 })),
+    );
+  });
+
+  // The common case, and the one the wait must not tax: the library check has
+  // answered "nothing matches", so the 204 returns the user to the list exactly
+  // as it did before this screen learned to wait — and the feed is never asked.
+  //
+  // The answer is SEEDED rather than fetched, so "already answered" holds on
+  // the first render: waiting for the fetch to commit has nothing on screen to
+  // wait for (an empty result renders nothing), and a click that beats it would
+  // exercise the unanswered branch instead. The key mirrors
+  // useImportDuplicates' own.
+  test("no predicted collision: the 204 returns to the list, with no feed poll", async () => {
+    let feedPolls = 0;
+    server.use(
+      http.get(DUPLICATES_URL, () => HttpResponse.json({ existing: [] })),
+      http.get(JOB_URL, () => {
+        feedPolls += 1;
+        return HttpResponse.json(
+          makeJob({ status: "needs_dup_resolution" }, { awaiting_decision: true }),
+        );
+      }),
+    );
+    renderHop((qc) =>
+      qc.setQueryData(["import", "duplicates", "job-1", 1, 0, 0], {
+        existing: [],
+      }),
+    );
+    await clickApply();
+
+    expect(await screen.findByText("Review page probe")).toBeInTheDocument();
+    // The strong half: a hold polls the feed at least once, and this feed says
+    // "duplicate", so a hold would have hopped instead of landing here.
+    expect(feedPolls).toBe(0);
+    expect(screen.queryByText(/duplicate probe/i)).not.toBeInTheDocument();
+    // Every post-decision exit replaces: Back must not re-enter a decided
+    // album, which answers the candidate GET with the not-found notice.
+    expect(screen.getByText("Arrived by REPLACE")).toBeInTheDocument();
+  });
+
+  // Each exit gets its own pin: they are four different `navigate` calls.
+  test("the hold's exits replace too", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(makeJob({ status: "decided", album_id: 7 })),
+      ),
+    );
+    renderHop();
+    await clickApply();
+
+    expect(await screen.findByText("Arrived by REPLACE")).toBeInTheDocument();
+  });
+
+  // The fast path belongs to both landing actions, not just Apply.
+  test("no predicted collision: Use as-is returns to the list too", async () => {
+    let feedPolls = 0;
+    server.use(
+      http.get(DUPLICATES_URL, () => HttpResponse.json({ existing: [] })),
+      http.get(JOB_URL, () => {
+        feedPolls += 1;
+        return HttpResponse.json(
+          makeJob({ status: "needs_dup_resolution" }, { awaiting_decision: true }),
+        );
+      }),
+    );
+    renderHop((qc) =>
+      qc.setQueryData(["import", "duplicates", "job-1", 1, 0, 0], {
+        existing: [],
+      }),
+    );
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /use as-is/i }));
+
+    expect(await screen.findByText("Review page probe")).toBeInTheDocument();
+    expect(feedPolls).toBe(0);
+  });
+
+  // Pending and errored are the OTHER side of the same `isSuccess` gate: an
+  // unanswered check cannot rule a collision out, so the screen holds and the
+  // feed decides. Pinned on the pending half, which is the one a test can hold
+  // still.
+  test("an unanswered library check holds too", async () => {
+    server.use(
+      http.get(DUPLICATES_URL, async () => {
+        await delay("infinite");
+        return HttpResponse.json({ existing: [] });
+      }),
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({ status: "needs_dup_resolution" }, { awaiting_decision: true }),
+        ),
+      ),
+    );
+    renderHop();
+    await clickApply();
+
+    expect(
+      await screen.findByText(
+        "Duplicate probe index=1 job=job-1 back=Review|/review",
+      ),
+    ).toBeInTheDocument();
+    expect(reviewRenders).toBe(0);
+  });
+
+  test("the parked duplicate opens for the same album, keeping the Review origin", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({ status: "needs_dup_resolution" }, { awaiting_decision: true }),
+        ),
+      ),
+    );
+    renderHop();
+    await clickApply();
+
+    expect(
+      await screen.findByText(
+        "Duplicate probe index=1 job=job-1 back=Review|/review",
+      ),
+    ).toBeInTheDocument();
+    // The whole point of the change: the Review list is not a stop on the way.
+    expect(reviewRenders).toBe(0);
+    expect(screen.getByText("Arrived by REPLACE")).toBeInTheDocument();
+  });
+
+  test("a candidate 404 during the wait does not cancel the hop", async () => {
+    // The choice's own onSettled invalidates the candidate query, and the
+    // re-read 404s once the worker has moved past the album. The job feed is
+    // what routes here, so that 404 must not swap in the "not waiting" notice.
+    let choiceMade = false;
+    server.use(
+      http.post(CHOICE_URL, () => {
+        choiceMade = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+      http.get(CANDIDATE_URL, () =>
+        choiceMade
+          ? new HttpResponse(null, { status: 404 })
+          : HttpResponse.json(makeCandidate()),
+      ),
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({ status: "needs_dup_resolution" }, { awaiting_decision: true }),
+        ),
+      ),
+    );
+    renderHop();
+    await clickApply();
+
+    expect(
+      await screen.findByText(
+        "Duplicate probe index=1 job=job-1 back=Review|/review",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  // Use as-is hands the album to beets to land exactly as Apply does, and beets
+  // asks the duplicate question for it too (the prompt's "new" side is built
+  // from the matched release OR the current files).
+  test("Use as-is waits for the same question", async () => {
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({ status: "needs_dup_resolution" }, { awaiting_decision: true }),
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderHop();
+    await user.click(await screen.findByRole("button", { name: /use as-is/i }));
+
+    expect(
+      await screen.findByText(
+        "Duplicate probe index=1 job=job-1 back=Review|/review",
+      ),
+    ).toBeInTheDocument();
+    expect(reviewRenders).toBe(0);
+  });
+
+  test("a pre-decision feed snapshot in the cache does not end the wait", async () => {
+    // The list page polls this exact query key, so its last snapshot — with
+    // this row still parked for review — is in the cache when the wait starts.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(
+          makeJob({ status: "needs_dup_resolution" }, { awaiting_decision: true }),
+        ),
+      ),
+    );
+    renderHop((qc) =>
+      qc.setQueryData(
+        ["import", "job", "job-1"],
+        makeJob({ status: "needs_review" }),
+      ),
+    );
+    await clickApply();
+
+    expect(
+      await screen.findByText(
+        "Duplicate probe index=1 job=job-1 back=Review|/review",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test("an unreadable job feed sends the user back without waiting out the bound", async () => {
+    server.use(http.get(JOB_URL, () => new HttpResponse(null, { status: 404 })));
+    renderHop();
+    await clickApply();
+
+    // Real timers here: the bound is APPLY_NEXT_QUESTION_MS and findBy gives up
+    // after 1s, so arriving is the feed error's doing and not the bound's.
+    expect(await screen.findByText("Review page probe")).toBeInTheDocument();
+  });
+
+  test("an album that just lands goes back where the user came from", async () => {
+    // Status stays `decided` (the registry writes it with the choice); the
+    // library album id is what says beets is past the duplicate question.
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(makeJob({ status: "decided", album_id: 7 })),
+      ),
+    );
+    renderHop();
+    await clickApply();
+
+    expect(await screen.findByText("Review page probe")).toBeInTheDocument();
+  });
+
+  test("a re-park for review releases the screen instead of moving it", async () => {
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(makeJob({ status: "needs_review" }))),
+    );
+    renderHop();
+    await clickApply();
+
+    // Still here, and usable again: a stale submit re-parks the album in place
+    // and the screen re-reads its match.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Apply/i })).toBeEnabled(),
+    );
+    // The release is announced, not left silent: the user's focus was on Apply,
+    // which went disabled during the hold.
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Match updated. Choose again.",
+    );
+    expect(reviewRenders).toBe(0);
+  });
+
+  // The hold's line lives in a region that is mounted from the first render and
+  // only ever swaps its text: a live region that APPEARS already holding its
+  // sentence is not reliably announced (the RouteAnnouncer shape).
+  test("the status region is mounted before there is anything to say", async () => {
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(makeJob({ status: "decided" }))),
+    );
+    renderHop();
+    await screen.findByRole("button", { name: /^Apply/i });
+
+    const region = screen.getByRole("status");
+    expect(region).toBeInTheDocument();
+    expect(region).toHaveTextContent("");
+    expect(region.className).toContain("sr-only");
+
+    await clickApply();
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Loading the duplicate question…",
+      ),
+    );
+    // The SAME node, not a second one that replaced it.
+    expect(screen.getByRole("status")).toBe(region);
+    expect(region.className).not.toContain("sr-only");
+  });
+
+  // The stale-submit arm releases onto whatever the choice's own invalidation
+  // fetched. When that GET beat the worker's re-park it 404'd, and nothing else
+  // refetches this query — the screen released onto the not-found notice.
+  test("a re-park after the choice's own 404 shows the fresh match, not the notice", async () => {
+    let choiceMade = false;
+    let served404 = false;
+    server.use(
+      http.post(CHOICE_URL, () => {
+        choiceMade = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+      http.get(CANDIDATE_URL, () => {
+        if (choiceMade && !served404) {
+          served404 = true;
+          return new HttpResponse(null, { status: 404 });
+        }
+        if (!choiceMade) return HttpResponse.json(makeCandidate());
+        const fresh = makeCandidate();
+        return HttpResponse.json(
+          makeCandidate({
+            search_revision: 1,
+            album_after: { ...fresh.album_after, album: "Amnesiac" },
+            options: [
+              {
+                ...fresh.options[0],
+                album: "Amnesiac",
+                album_after: { ...fresh.album_after, album: "Amnesiac" },
+              },
+            ],
+          }),
+        );
+      }),
+      // The re-park lands after that 404, which is the ordering the arm exists
+      // for.
+      http.get(JOB_URL, async () => {
+        await delay(60);
+        return HttpResponse.json(makeJob({ status: "needs_review" }));
+      }),
+    );
+    renderHop();
+    await clickApply();
+
+    expect(
+      await screen.findByRole("heading", { name: /Radiohead - Amnesiac/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/isn.t waiting for review/i),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Apply/i })).toBeEnabled();
+    expect(served404).toBe(true);
+  });
+
+  // The other half of that arm: the re-read takes a round trip, and the 404 it
+  // replaces is still the query's error for all of it. Held open here with a
+  // gate so the in-flight window is a fact of the test rather than a race.
+  test("the notice stays away while the re-read is still in flight", async () => {
+    let choiceMade = false;
+    let served404 = false;
+    let candidateGets = 0;
+    let openGate: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    server.use(
+      http.post(CHOICE_URL, () => {
+        choiceMade = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+      http.get(CANDIDATE_URL, async () => {
+        candidateGets += 1;
+        if (choiceMade && !served404) {
+          served404 = true;
+          return new HttpResponse(null, { status: 404 });
+        }
+        if (choiceMade) await gate;
+        return HttpResponse.json(makeCandidate());
+      }),
+      http.get(JOB_URL, async () => {
+        await delay(60);
+        return HttpResponse.json(makeJob({ status: "needs_review" }));
+      }),
+    );
+    renderHop();
+    await clickApply();
+
+    // The 404 has landed and the release has fired its re-read, which is now
+    // parked on the gate: the query is `error` AND `fetching` at this instant.
+    await waitFor(() => expect(candidateGets).toBe(3));
+    expect(screen.queryByText(/isn.t waiting for review/i)).toBeNull();
+    expect(screen.getByRole("button", { name: /^Apply/i })).toBeInTheDocument();
+
+    openGate();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Apply/i })).toBeEnabled(),
+    );
+  });
+
+  // A single 5xx is not an expired job: useImportJob keeps polling through it
+  // on purpose, so the hold rides the loop instead of dropping the user out.
+  test("a transient feed error rides the poll instead of ending the hold", async () => {
+    let calls = 0;
+    server.use(
+      http.get(JOB_URL, () => {
+        calls += 1;
+        if (calls === 1) return new HttpResponse(null, { status: 502 });
+        return HttpResponse.json(
+          makeJob({ status: "needs_dup_resolution" }, { awaiting_decision: true }),
+        );
+      }),
+    );
+    renderHop();
+    await clickApply();
+
+    // The retry is the poll's own next tick (IMPORT_POLL_MS = 1s), so the
+    // window has to outlast one tick — and stay well inside the 5s bound, or
+    // the test could not tell "rode the error" from "was rescued by the bound".
+    expect(
+      await screen.findByText(
+        "Duplicate probe index=1 job=job-1 back=Review|/review",
+        undefined,
+        { timeout: 3_000 },
+      ),
+    ).toBeInTheDocument();
+    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(reviewRenders).toBe(0);
+  });
+
+  // Every control on the screen, measured. During the hold the album is beets'
+  // and nothing on this page may change what was submitted.
+  test("the hold locks every control on the screen", async () => {
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(makeJob({ status: "decided" }))),
+    );
+    const { container } = renderHop();
+    await clickApply();
+    await screen.findByText("Loading the duplicate question…");
+
+    const controls = [
+      ...container.querySelectorAll<HTMLElement>(
+        "button, input, select, textarea",
+      ),
+    ];
+    // The list is non-empty and names what it covered, so a future control that
+    // slips the lock shows up here as a name rather than as a silent pass.
+    const live = controls
+      .filter((el) => !el.hasAttribute("disabled"))
+      .map((el) => el.textContent?.trim() || el.getAttribute("aria-label") || el.tagName);
+    expect(live).toEqual([]);
+    expect(controls.length).toBeGreaterThanOrEqual(5);
+  });
+
+  // The pressed control is the one that reports progress: all four decisions
+  // share one mutation, so an unqualified `isPending` spun Apply for a Use
+  // as-is — for the whole hold, not the POST.
+  test("Use as-is spins Use as-is, and leaves Apply alone", async () => {
+    server.use(
+      http.get(JOB_URL, () => HttpResponse.json(makeJob({ status: "decided" }))),
+    );
+    const user = userEvent.setup();
+    renderHop();
+    await user.click(await screen.findByRole("button", { name: /use as-is/i }));
+
+    expect(
+      await screen.findByRole("button", { name: /using as-is…/i }),
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Apply$/ })).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: /applying…/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  // The posture belongs to the action being submitted, not to "the bar is
+  // busy": @tanstack/query keeps `variables` after a mutation settles, so a
+  // failed Apply left "Applying…" on the button through the NEXT relookup.
+  test("a rescan after a failed Apply wears no decision's posture", async () => {
+    let posts = 0;
+    server.use(
+      http.post(CHOICE_URL, async () => {
+        posts += 1;
+        if (posts === 1) return new HttpResponse(null, { status: 500 });
+        // The rescan stays in flight for the whole assertion window.
+        await delay("infinite");
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderHop();
+    await clickApply();
+    expect(
+      await screen.findByText(/couldn.t submit that choice/i),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /rescan folder/i }));
+    await waitFor(() => expect(posts).toBe(2));
+    // The control half: the rescan IS in flight, so this is the window the
+    // stale posture was measured in, not a quiet screen.
+    expect(screen.getByRole("button", { name: /^Apply$/ })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /applying…/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /using as-is…/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /skipping…/i })).toBeNull();
+  });
+
+  // The failure notice is hidden for ONE re-read — the re-park arm's. Any other
+  // refetch of an errored candidate (here the search poll) must leave it up,
+  // or the screen alternates between the notice and a stale locked copy of the
+  // album at the poll cadence.
+  test("a failed poll keeps the notice up while the next read is in flight", async () => {
+    let gets = 0;
+    let openGate: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    server.use(
+      http.get(CANDIDATE_URL, async () => {
+        gets += 1;
+        if (gets === 1) return HttpResponse.json(makeCandidate());
+        if (gets === 2) return new HttpResponse(null, { status: 500 });
+        await gate;
+        return HttpResponse.json(makeCandidate());
+      }),
+    );
+    const user = userEvent.setup();
+    renderHop();
+    // A rescan starts the 700ms candidate poll without bumping the revision,
+    // so the reads keep coming until one lands.
+    await user.click(await screen.findByRole("button", { name: /rescan folder/i }));
+
+    expect(
+      await screen.findByText(/library didn.t respond/i, undefined, { timeout: 3_000 }),
+    ).toBeInTheDocument();
+    // The next read is parked on the gate: the query is `error` AND `fetching`,
+    // which is the instant the old `!isFetching` guard swapped the notice out.
+    await waitFor(() => expect(gets).toBeGreaterThanOrEqual(3), { timeout: 3_000 });
+    expect(screen.getByText(/library didn.t respond/i)).toBeInTheDocument();
+    openGate();
+  });
+
+  // The re-park release has a round trip in it, and the OLD match is on screen
+  // for all of it: locked, and saying nothing it cannot back up yet.
+  test("the re-park re-read stays locked and silent until the new match lands", async () => {
+    let choiceMade = false;
+    let served404 = false;
+    let gets = 0;
+    let openGate: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    server.use(
+      http.post(CHOICE_URL, () => {
+        choiceMade = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+      http.get(CANDIDATE_URL, async () => {
+        gets += 1;
+        if (!choiceMade) return HttpResponse.json(makeCandidate());
+        if (!served404) {
+          served404 = true;
+          return new HttpResponse(null, { status: 404 });
+        }
+        await gate;
+        const fresh = makeCandidate();
+        return HttpResponse.json(
+          makeCandidate({
+            search_revision: 1,
+            album_after: { ...fresh.album_after, album: "Amnesiac" },
+            options: [
+              {
+                ...fresh.options[0],
+                album: "Amnesiac",
+                album_after: { ...fresh.album_after, album: "Amnesiac" },
+              },
+            ],
+          }),
+        );
+      }),
+      http.get(JOB_URL, async () => {
+        await delay(60);
+        return HttpResponse.json(makeJob({ status: "needs_review" }));
+      }),
+    );
+    const user = userEvent.setup();
+    renderHop();
+    await clickApply();
+
+    await waitFor(() => expect(gets).toBe(3));
+    // Still the old match, so: no claim that anything was updated, and no way
+    // to Apply the release the worker has already replaced.
+    expect(screen.getByRole("heading", { name: /Radiohead - OK Computer/i })).toBeInTheDocument();
+    expect(screen.queryByText(/match updated/i)).toBeNull();
+    expect(screen.getByRole("button", { name: /^Apply$/ })).toBeDisabled();
+
+    openGate();
+    expect(
+      await screen.findByRole("heading", { name: /Radiohead - Amnesiac/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Match updated. Choose again.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Apply$/ })).toBeEnabled();
+
+    // And it does not outlive the match it describes: a fresh relookup makes it
+    // a statement about the previous one.
+    await user.click(screen.getByRole("button", { name: /rescan folder/i }));
+    await waitFor(() => expect(screen.queryByText(/match updated/i)).toBeNull());
+  });
+
+  test("the wait says so in one line, locks the decisions, and is bounded", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      // A row the worker never answers for: beets is still between the two
+      // questions, so nothing on the feed ends the wait.
+      server.use(
+        http.get(JOB_URL, () => HttpResponse.json(makeJob({ status: "decided" }))),
+      );
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderHop();
+      await user.click(await screen.findByRole("button", { name: /^Apply/i }));
+
+      expect(
+        await screen.findByText("Loading the duplicate question…"),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^Applying/i })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /^Skip/i })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /use as-is/i })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /rescan folder/i })).toBeDisabled();
+      expect(reviewRenders).toBe(0);
+
+      // The bound is five ticks of the active-import poll (1s), so the
+      // literals below straddle 5s. Read as literals on purpose: advancing by
+      // the constant itself would move with any value it is given.
+      expect(APPLY_NEXT_QUESTION_MS).toBe(5_000);
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(screen.queryByText("Review page probe")).not.toBeInTheDocument();
+      expect(screen.getByText("Loading the duplicate question…")).toBeVisible();
+
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(await screen.findByText("Review page probe")).toBeInTheDocument();
+      expect(screen.getByText("Arrived by REPLACE")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The other reason to hold reads differently: nothing is known to be coming,
+  // only that nothing has ruled it out. Pinned as the complement of the line in
+  // the bounded-wait test above, so a single hard-coded sentence fails one of
+  // the two.
+  test("an unanswered check gets the neutral line, not the duplicate one", async () => {
+    server.use(
+      http.get(DUPLICATES_URL, async () => {
+        await delay("infinite");
+        return HttpResponse.json({ existing: [] });
+      }),
+      // Nothing on the feed ends the wait, so the line stays up to be read.
+      http.get(JOB_URL, () => HttpResponse.json(makeJob({ status: "decided" }))),
+    );
+    renderHop();
+    await clickApply();
+
+    expect(
+      await screen.findByText("Checking for a duplicate…"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Loading the duplicate question…"),
+    ).not.toBeInTheDocument();
   });
 });

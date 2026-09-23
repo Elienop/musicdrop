@@ -42,11 +42,15 @@ export function CandidateReview({
   nowCoverUrl,
   selected,
   onSelect,
+  disabled = false,
 }: Readonly<{
   candidate: Candidate;
   nowCoverUrl: string | null;
   selected: number;
   onSelect: (index: number) => void;
+  /** Lock the release switcher — it re-pins what Apply imports, so it belongs
+   * to the same mutual exclusion as the decision buttons. */
+  disabled?: boolean;
 }> ) {
   // The release the preview should reflect: the selected option's own diff
   // merged over the candidate (or the candidate itself for the top match /
@@ -66,6 +70,7 @@ export function CandidateReview({
           options={candidate.options}
           selected={selected}
           onSelect={onSelect}
+          disabled={disabled}
         />
       )}
       {isTopFallback && (
@@ -214,10 +219,12 @@ function CandidateSwitcher({
   options,
   selected,
   onSelect,
+  disabled,
 }: Readonly<{
   options: Candidate["options"];
   selected: number;
   onSelect: (index: number) => void;
+  disabled: boolean;
 }> ) {
   return (
     <label className="flex flex-col gap-1.5">
@@ -226,8 +233,9 @@ function CandidateSwitcher({
         <select
           value={selected}
           onChange={(e) => onSelect(Number(e.target.value))}
+          disabled={disabled}
           aria-label="Candidate release"
-          className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-9 w-full appearance-none rounded-md border px-3 py-2 pr-9 text-sm shadow-xs focus-visible:ring-[3px] focus-visible:outline-none"
+          className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/70 h-9 w-full appearance-none rounded-md border px-3 py-2 pr-9 text-sm shadow-xs focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
         >
           {options.map((opt) => {
             const disambig = cleanDisambiguation(opt.disambiguation);

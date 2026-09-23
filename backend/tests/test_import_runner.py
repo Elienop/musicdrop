@@ -1,11 +1,18 @@
+import os
 import threading
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from beets.library import Library
 
 from app.beets.import_session import ImportBridge, WebImportSession
-from app.import_jobs.runner import BeetsImportRunner, InLibraryCopyError
+from app.import_jobs.runner import (
+    BeetsImportRunner,
+    InLibraryCopyError,
+    LibraryRootUnavailableError,
+    SourcePathMissingError,
+)
 from app.models.import_models import ImportOptions
 
 
@@ -133,7 +140,9 @@ def test_runner_passes_trash_dir_to_session(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(runner_mod, "WebImportSession", _FakeSession)
     monkeypatch.setattr(
-        runner_mod, "run_import_worker", lambda s, *, move=None, sweep=False, directive=None: None
+        runner_mod,
+        "run_import_worker",
+        lambda s, *, move=None, sweep=False, incremental=None, directive=None: None,
     )
 
     BeetsImportRunner(lib=object(), trash_dir=Path("/tmp/t"), trash_origins_dir=Path("/tmp/o")).run(
@@ -183,6 +192,7 @@ def test_runner_translates_options_operation_to_move(
         *,
         move: bool | None = None,
         sweep: bool = False,
+        incremental: Literal[False] | None = None,
         directive: object = None,
     ) -> None:
         captured["move"] = move
@@ -228,7 +238,9 @@ def test_runner_forwards_unattended_to_session(
 
     monkeypatch.setattr(runner_mod, "WebImportSession", _FakeSession)
     monkeypatch.setattr(
-        runner_mod, "run_import_worker", lambda s, *, move=None, sweep=False, directive=None: None
+        runner_mod,
+        "run_import_worker",
+        lambda s, *, move=None, sweep=False, incremental=None, directive=None: None,
     )
 
     finished = threading.Event()
@@ -272,6 +284,7 @@ def test_runner_forwards_sweep_and_bank_dir(
         *,
         move: bool | None = None,
         sweep: bool = False,
+        incremental: Literal[False] | None = None,
         directive: object = None,
     ) -> None:
         captured["worker_sweep"] = sweep
@@ -318,10 +331,25 @@ def test_validate_refuses_when_ANY_list_member_is_in_library(tmp_path: Path) -> 
     runner.validate([str(outside)], ImportOptions(operation="copy"))
 
 
+def _library_with_a_mounted_root(tmp_path: Path) -> Library:
+    """A Library whose music root exists and has an entry.
+
+    ``validate`` now asks ``require_library_root`` first, and a missing or empty
+    root is what a dropped share looks like — so a test about the copy guard has
+    to get past that one.
+    """
+    music = tmp_path / "music"
+    music.mkdir(exist_ok=True)
+    (music / ".keep").write_bytes(b"")
+    return Library(str(tmp_path / "library.db"), directory=str(music))
+
+
 def test_validate_refuses_in_library_copy(tmp_path: Path) -> None:
-    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    lib = _library_with_a_mounted_root(tmp_path)
     runner = BeetsImportRunner(lib)
-    folders = [str(tmp_path / "music" / "incoming")]
+    source = tmp_path / "music" / "incoming"
+    source.mkdir(parents=True)  # the source-existence guard runs ahead of this one
+    folders = [str(source)]
     options = ImportOptions(operation="copy")
     with pytest.raises(InLibraryCopyError):
         runner.validate(folders, options)
@@ -339,9 +367,69 @@ def test_validate_refuses_in_library_copy(tmp_path: Path) -> None:
 def test_validate_passes_safe_combinations(
     tmp_path: Path, path_suffix: str, options: ImportOptions | None
 ) -> None:
-    lib = Library(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
+    lib = _library_with_a_mounted_root(tmp_path)
     runner = BeetsImportRunner(lib)
-    runner.validate([str(tmp_path / path_suffix)], options)  # must not raise
+    source = tmp_path / path_suffix
+    source.mkdir(parents=True, exist_ok=True)  # past the source-existence guard
+    runner.validate([str(source)], options)  # must not raise
+
+
+def test_validate_refuses_while_the_music_root_is_unavailable(tmp_path: Path) -> None:
+    """Measured: with the root gone beets re-created it and filed the album there,
+    and a move emptied the download. Refuse before the slot is claimed.
+
+    One row makes the bare mountpoint a DROPPED SHARE: with no rows it is the
+    empty bind mount a fresh install has, which the import side forgives.
+    """
+    from beets.library import Item
+
+    lib = _library_with_a_mounted_root(tmp_path)
+    item = Item(album="A", albumartist="B", title="T", track=1)
+    item.path = os.fsencode(str(tmp_path / "music" / "B" / "A" / "01.flac"))
+    lib.add_album([item])
+    (tmp_path / "music" / ".keep").unlink()  # the bare-mountpoint shape
+    runner = BeetsImportRunner(lib)
+    with pytest.raises(LibraryRootUnavailableError):
+        runner.validate([str(tmp_path / "downloads" / "incoming")], None)
+
+
+def test_validate_lets_a_fresh_install_through(tmp_path: Path) -> None:
+    """An empty root with an empty database is a new install, not a dropped share."""
+    lib = _library_with_a_mounted_root(tmp_path)
+    (tmp_path / "music" / ".keep").unlink()
+    source = tmp_path / "downloads" / "incoming"
+    source.mkdir(parents=True)
+    BeetsImportRunner(lib).validate([str(source)], None)
+
+
+@pytest.mark.parametrize("options", [None, ImportOptions(operation="copy")])
+def test_validate_answers_rather_than_500ing_without_a_library(
+    tmp_path: Path, options: ImportOptions | None
+) -> None:
+    """A registry with no library attached must not AttributeError out of validate.
+
+    BOTH questions read the library: the root predicate, and the copy branch's
+    ``getattr(self._lib, "directory")``. Measured with only the first guarded:
+    ``validate(None, copy)`` -> ``AttributeError: 'NoneType' object has no
+    attribute 'directory'``.
+    """
+    source = tmp_path / "downloads" / "incoming"
+    source.mkdir(parents=True)
+    BeetsImportRunner(None).validate([str(source)], options)
+
+
+@pytest.mark.parametrize("options", [None, ImportOptions(operation="copy")])
+def test_validate_still_refuses_a_missing_source_without_a_library(
+    tmp_path: Path, options: ImportOptions | None
+) -> None:
+    """The no-library early return must not take the source guard with it.
+
+    The two library reads above it need a library; asking whether the folder is
+    on disk does not, and a registry with no library still creates jobs.
+    """
+    runner = BeetsImportRunner(None)
+    with pytest.raises(SourcePathMissingError, match=r"^That folder doesn’t exist\.$"):
+        runner.validate([str(tmp_path / "downloads" / "gone")], options)
 
 
 def test_runner_forwards_directive_to_session_and_worker(
@@ -362,6 +450,7 @@ def test_runner_forwards_directive_to_session_and_worker(
         *,
         move: bool | None = None,
         sweep: bool = False,
+        incremental: Literal[False] | None = None,
         directive: object = None,
     ) -> None:
         captured["worker_directive"] = directive
@@ -382,3 +471,52 @@ def test_runner_forwards_directive_to_session_and_worker(
     assert captured["session_directive"] is directive
     assert captured["worker_directive"] is directive
     assert captured["sweep"] is False  # an apply is never a sweep
+
+
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        # The "Import them again" retry, and beets' own ``-I``.
+        (ImportOptions(incremental=False), False),
+        # None is not False: it leaves the worker to decide from the resolved
+        # file operation (a hardlink run goes incremental).
+        (ImportOptions(), None),
+        (None, None),
+    ],
+)
+def test_runner_forwards_the_incremental_override_to_the_worker(
+    options: ImportOptions | None,
+    expected: Literal[False] | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.import_jobs.runner as runner_mod
+
+    captured: dict[str, object] = {}
+
+    class _FakeSession:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+    def _capture_worker(
+        session: object,
+        *,
+        move: bool | None = None,
+        sweep: bool = False,
+        incremental: Literal[False] | None = None,
+        directive: object = None,
+    ) -> None:
+        captured["incremental"] = incremental
+
+    monkeypatch.setattr(runner_mod, "WebImportSession", _FakeSession)
+    monkeypatch.setattr(runner_mod, "run_import_worker", _capture_worker)
+
+    finished = threading.Event()
+    BeetsImportRunner(lib=object()).run(
+        ["/music"],
+        ImportBridge(),
+        on_finish=finished.set,
+        on_error=lambda _message: None,
+        options=options,
+    )
+    assert finished.wait(timeout=2.0)
+    assert captured["incremental"] is expected

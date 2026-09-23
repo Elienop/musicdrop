@@ -7,6 +7,7 @@ case here starts from a clean confuse singleton.
 
 import copy
 import datetime as dt
+import hashlib
 import os
 from collections.abc import Iterator
 from datetime import datetime, timedelta
@@ -102,10 +103,13 @@ def test_yaml_text_empty_on_non_utf8_file(loaded_handle: LibraryHandle) -> None:
     """A config.yaml corrupted to non-UTF-8 must degrade to an empty editable doc
     (like a missing file), NOT 500 the settings page. ``decode`` raises
     ``UnicodeDecodeError`` (a ``ValueError``, not ``OSError``), so the read guard
-    has to catch it too — otherwise it escapes ``build_config_snapshot``."""
-    loaded_handle.config_path.write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
+    has to catch it too — otherwise it escapes ``build_config_snapshot``.
+
+    The sha is the file's own: the Save refuses such a file on the server."""
+    raw = b"\xff\xfe not valid utf-8 \x80\x81"
+    loaded_handle.config_path.write_bytes(raw)
     snap = build_config_snapshot(loaded_handle)  # must not raise
-    assert snap.yaml_text == ""
+    assert (snap.yaml_text, snap.sha256) == ("", hashlib.sha256(raw).hexdigest())
     # The merged view still renders from the in-memory beets.config.
     assert snap.effective_yaml != ""
 
@@ -183,6 +187,27 @@ def test_safety_net_masks_pwd_and_apisecret_variants(loaded_handle: LibraryHandl
     snap = build_config_snapshot(loaded_handle)
     assert "bp-leak" not in snap.effective_yaml
     assert "kodi-leak" not in snap.effective_yaml
+
+
+def test_safety_net_masks_a_key_named_key_or_ending_in_key(tmp_path: Path) -> None:
+    """fetchart declares ``fanarttv_key`` secret only while it is LOADED; with
+    fetchart off, the value sat in cleartext in the "secrets redacted" pane."""
+    (tmp_path / "config.yaml").write_text(
+        "library: library.db\n"
+        "directory: music\n"
+        "plugins: []\n"
+        "fetchart:\n  fanarttv_key: fan-leak\n  google_key: goo-leak\n"
+        "custom:\n  key: bare-leak\n  monkey: not-a-secret\n  keys_dir: /keys\n",
+        encoding="utf-8",
+    )
+    handle = setup_beets(str(tmp_path))
+    try:
+        effective = yaml.safe_load(build_config_snapshot(handle).effective_yaml)
+    finally:
+        close_library(handle.lib)
+    assert effective["fetchart"] == {"fanarttv_key": "REDACTED", "google_key": "REDACTED"}
+    # The control: a whole-name suffix, not a substring.
+    assert effective["custom"] == {"key": "REDACTED", "monkey": "not-a-secret", "keys_dir": "/keys"}
 
 
 @pytest.mark.parametrize(

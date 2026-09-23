@@ -53,7 +53,7 @@ albums holding BOTH forms:  123
 Read-only, safe to run at any time, on a live library.
 
 **Where the SQL runs: on the host.** The published image has **no `sqlite3` command** — it is
-built on `python:3.11-slim`, which ships the SQLite *library* but not the CLI. So every SQL step
+built on `python:3.12-slim`, which ships the SQLite *library* but not the CLI. So every SQL step
 in this document (this census, your own backup in section 5 step 2, the ledger `DELETE`, and every
 verification query) runs on the TrueNAS host, against `./data/beets/library.db`. Only the `beet`
 commands run in the container. **If the host has no `sqlite3` either, stop and read the Python

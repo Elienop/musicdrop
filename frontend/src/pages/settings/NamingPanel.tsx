@@ -2,11 +2,16 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { useApplyConfig, useBeetsConfig } from "@/api/useBeetsConfig";
+import {
+  applyRecoveryHint,
+  useApplyConfig,
+  useBeetsConfig,
+} from "@/api/useBeetsConfig";
 import { useLibraryJobActive } from "@/api/useLibraryJobActive";
 import {
   NAMING_KEY,
   type NamingConfig,
+  type NamingDraft,
   type NamingRuleInput,
   type RenderedRule,
   type ReplaceError,
@@ -19,6 +24,10 @@ import { SettingsSection } from "@/components/system/SettingsSection";
 import { StatusBanner } from "@/components/system/StatusBanner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  APPLY_FALLBACK,
+  saveFailureDetail,
+} from "@/pages/settings/configFailureText";
 import { NAMING_FIELDS, NAMING_FUNCTIONS } from "@/pages/settings/namingFields";
 
 const PREVIEW_DEBOUNCE_MS = 250;
@@ -55,7 +64,7 @@ const RECOMMENDED_REPLACE_RULES: { pattern: string; replacement: string }[] = [
  * singleton, then custom) — mirrors the backend `assemble_rules`. */
 function assemble(
   base: { default: string; comp: string; singleton: string },
-  custom: CustomRow[],
+  custom: NamingRuleInput[],
 ): NamingRuleInput[] {
   const rules: NamingRuleInput[] = [
     { query: "default", template: base.default },
@@ -66,8 +75,27 @@ function assemble(
   return rules;
 }
 
+/** The rules and replace rows Save sends. It leaves out a rule with no query
+ * and a replace row with no pattern, which the backend would not write either
+ * (`_naming_map`, `_replace_map`). It also leaves out a rule whose template is
+ * only whitespace; the backend drops only an empty one. */
+function saveBody(
+  base: { default: string; comp: string; singleton: string },
+  custom: NamingRuleInput[],
+  replace: NamingDraft["replace"],
+): NamingDraft {
+  return {
+    rules: assemble(base, custom).filter(
+      (r) => r.query !== "" && r.template.trim() !== "",
+    ),
+    replace: replace
+      .filter((r) => r.pattern !== "")
+      .map((r) => ({ pattern: r.pattern, replacement: r.replacement })),
+  };
+}
+
 export function NamingPanel() {
-  const { data, isPending, isError } = useNaming();
+  const { data, isPending, isError, error, refetch } = useNaming();
   if (isPending) {
     return (
       <SettingsSection title="Naming">
@@ -80,9 +108,23 @@ export function NamingPanel() {
   if (isError || !data) {
     return (
       <SettingsSection title="Naming">
-        <p className="text-destructive text-sm" role="alert">
-          Could not load naming config.
-        </p>
+        {/* SettingsTrashPage's load-error recipe; its comment measures why the
+          * alert needs `w-full` under `items-start`. */}
+        <div className="flex flex-col items-start gap-2">
+          <div role="alert" className="flex w-full max-w-prose flex-col gap-1">
+            <p className="text-destructive text-sm">
+              Could not load naming config.
+            </p>
+            {error?.onDisk && (
+              <p className="text-muted-foreground text-sm break-words">
+                {error.onDisk}
+              </p>
+            )}
+          </div>
+          <Button variant="outline" size="sm" onClick={() => void refetch()}>
+            Try again
+          </Button>
+        </div>
       </SettingsSection>
     );
   }
@@ -122,6 +164,22 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
   const config = useBeetsConfig();
   const applyPending = config.data?.apply_pending ?? false;
 
+  // Every draft edit goes through these, and ends the last Save's failure,
+  // whether it was about the draft or about config.yaml on disk: an alert
+  // hidden by the replace line and shown again would be announced twice for
+  // one Save.
+  function draftSetter<T>(
+    set: React.Dispatch<React.SetStateAction<T>>,
+  ): React.Dispatch<React.SetStateAction<T>> {
+    return (value) => {
+      if (save.isError) save.reset();
+      set(value);
+    };
+  }
+  const updateBase = draftSetter(setBase);
+  const updateCustom = draftSetter(setCustom);
+  const updateReplace = draftSetter(setReplace);
+
   // Tracks the focused template input so the Insert palette writes at the caret.
   const focusedRef = useRef<HTMLInputElement | null>(null);
 
@@ -131,31 +189,26 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
     [replace],
   );
 
-  // Whether the editable state differs from the on-disk snapshot — gates Save so
-  // an unchanged config can't be re-saved (which would needlessly advance mtime
-  // and re-light the apply-pending cue). The panel remounts on a fresh sha256,
-  // so `initial` is always the current on-disk config.
+  // Whether a Save would send something other than the on-disk snapshot. It
+  // gates Save (a re-Save would advance mtime and re-light the apply-pending
+  // cue) and Apply. It compares what Save sends, not the rows: a Save of rows
+  // the backend drops writes the same bytes, and a same-sha Save does not
+  // remount the panel, so a row-level flag would stay set with Apply off.
+  // The panel remounts on a fresh sha256, so `initial` is always the current
+  // on-disk config.
   const dirty = useMemo(() => {
-    const cur = JSON.stringify({
-      base,
-      custom: custom.map((c) => ({ query: c.query, template: c.template })),
-      replace: replaceDraft,
-    });
-    const init = JSON.stringify({
-      base: {
-        default: initial.default ?? "",
-        comp: initial.comp ?? "",
-        singleton: initial.singleton ?? "",
-      },
-      custom: initial.custom.map((c) => ({
-        query: c.query,
-        template: c.template,
-      })),
-      replace: initial.replace.map((r) => ({
-        pattern: r.pattern,
-        replacement: r.replacement,
-      })),
-    });
+    const cur = JSON.stringify(saveBody(base, custom, replaceDraft));
+    const init = JSON.stringify(
+      saveBody(
+        {
+          default: initial.default ?? "",
+          comp: initial.comp ?? "",
+          singleton: initial.singleton ?? "",
+        },
+        initial.custom,
+        initial.replace,
+      ),
+    );
     return cur !== init;
   }, [base, custom, replaceDraft, initial]);
 
@@ -183,10 +236,10 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
 
   function applyValue(name: string, value: string) {
     if (name === "default" || name === "comp" || name === "singleton") {
-      setBase((b) => ({ ...b, [name]: value }));
+      updateBase((b) => ({ ...b, [name]: value }));
     } else if (name.startsWith("custom-tmpl-")) {
       const id = Number(name.slice("custom-tmpl-".length));
-      setCustom((rows) =>
+      updateCustom((rows) =>
         rows.map((r) => (r.id === id ? { ...r, template: value } : r)),
       );
     }
@@ -210,15 +263,15 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
     });
   }
 
+  // One alert at a time, the latest action's: each click ends the other's
+  // failure. Neither fires while the other is in flight (the buttons say so),
+  // so a reset never drops a pending result.
   function handleSave() {
     setConflict(false);
-    const rules = assemble(base, custom).filter(
-      (r) => r.template.trim() !== "",
-    );
+    apply.reset();
     save.mutate(
       {
-        rules,
-        replace: replaceDraft.filter((r) => r.pattern !== ""),
+        ...saveBody(base, custom, replaceDraft),
         base_sha256: initial.sha256,
       },
       {
@@ -227,6 +280,18 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
         },
       },
     );
+  }
+
+  function handleApply() {
+    save.reset();
+    // A 409 means a job this panel has not seen holds the library. Ask the
+    // probes again so the "Apply paused" line speaks for it, and goes when
+    // the job ends.
+    apply.mutate(undefined, {
+      onError: (err) => {
+        if (err.status === 409) job.refetch();
+      },
+    });
   }
 
   function reloadFromDisk() {
@@ -239,8 +304,12 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
 
   const hasReplaceErrors = replaceErrors.length > 0;
   // A save error other than the 409 conflict (which has its own banner): a 422
-  // from a template/regex the preview missed, a 500, or a network failure.
+  // from a template/regex the preview missed or about config.yaml on disk, a
+  // 500, or a network failure.
   const saveError = save.isError && save.error?.status !== 409;
+  // An Apply failure other than the library-job 409, which the "Apply paused"
+  // line speaks for once the probes see the job.
+  const applyFailed = apply.isError && apply.error?.status !== 409;
 
   return (
     <SettingsSection title="Naming">
@@ -274,7 +343,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
           label="Default"
           name="default"
           value={base.default}
-          onChange={(v) => setBase((b) => ({ ...b, default: v }))}
+          onChange={(v) => updateBase((b) => ({ ...b, default: v }))}
           rendered={rendered(0)}
           focusedRef={focusedRef}
         />
@@ -282,7 +351,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
           label="Compilations"
           name="comp"
           value={base.comp}
-          onChange={(v) => setBase((b) => ({ ...b, comp: v }))}
+          onChange={(v) => updateBase((b) => ({ ...b, comp: v }))}
           rendered={rendered(1)}
           focusedRef={focusedRef}
         />
@@ -290,7 +359,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
           label="Singletons"
           name="singleton"
           value={base.singleton}
-          onChange={(v) => setBase((b) => ({ ...b, singleton: v }))}
+          onChange={(v) => updateBase((b) => ({ ...b, singleton: v }))}
           rendered={rendered(2)}
           focusedRef={focusedRef}
         />
@@ -306,7 +375,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
                 placeholder="query (e.g. albumtype:soundtrack)"
                 value={row.query}
                 onChange={(e) =>
-                  setCustom((rows) =>
+                  updateCustom((rows) =>
                     rows.map((r) =>
                       r.id === row.id ? { ...r, query: e.target.value } : r,
                     ),
@@ -319,7 +388,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
                 size="icon"
                 aria-label={`Remove custom rule ${i + 1}`}
                 onClick={() =>
-                  setCustom((rows) => rows.filter((r) => r.id !== row.id))
+                  updateCustom((rows) => rows.filter((r) => r.id !== row.id))
                 }
               >
                 <Remove className="size-4" aria-hidden="true" />
@@ -331,7 +400,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
               name={`custom-tmpl-${row.id}`}
               value={row.template}
               onChange={(v) =>
-                setCustom((rows) =>
+                updateCustom((rows) =>
                   rows.map((r) =>
                     r.id === row.id ? { ...r, template: v } : r,
                   ),
@@ -348,7 +417,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
             variant="outline"
             size="sm"
             onClick={() =>
-              setCustom((rows) => [
+              updateCustom((rows) => [
                 ...rows,
                 { id: mkId(), query: "", template: "" },
               ])
@@ -363,21 +432,31 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
 
       <ReplaceEditor
         rows={replace}
-        setRows={setReplace}
+        setRows={updateReplace}
         errors={replaceErrors}
       />
 
       <div className="border-border mt-2 flex flex-wrap items-center gap-3 border-t pt-3">
         <Button
           onClick={handleSave}
-          disabled={save.isPending || hasReplaceErrors || !dirty}
+          disabled={
+            save.isPending || apply.isPending || hasReplaceErrors || !dirty
+          }
         >
           {save.isPending ? "Saving…" : "Save naming"}
         </Button>
+        {/* Apply loads the file on disk, so it waits while a draft differs
+            from it, the same as on the Beets page. */}
         <Button
           variant="outline"
-          onClick={() => apply.mutate()}
-          disabled={apply.isPending || job.active || !applyPending}
+          onClick={handleApply}
+          disabled={
+            apply.isPending ||
+            save.isPending ||
+            job.active ||
+            !applyPending ||
+            dirty
+          }
         >
           {apply.isPending ? "Applying…" : "Apply"}
         </Button>
@@ -386,38 +465,51 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
             Invalid replace pattern. Fix to save.
           </p>
         )}
+        {/* Why Apply is off beside a draft. Gives way to the replace line
+            and the conflict banner, which name another step, and goes once a
+            Save is sent. It shows beside an Apply failure, whose recovery
+            does not contradict it. */}
+        {dirty && save.isIdle && !hasReplaceErrors && !conflict && (
+            <output className="text-muted-foreground text-sm block">
+              Unsaved changes. Save, then Apply.
+            </output>
+          )}
+        {/* "Saved. Click Apply" only while that is the next step: not beside
+            a draft Apply would not load, and not while Apply runs. */}
         {!hasReplaceErrors &&
           applyPending &&
+          !dirty &&
           !save.isPending &&
+          !apply.isPending &&
+          !saveError &&
+          !applyFailed &&
+          !conflict &&
           !job.active && (
             <output className="text-muted-foreground text-sm block">
               Saved. Click <span className="font-medium">Apply</span> to load
               it.
             </output>
           )}
-        {job.active && (
+        {/* Only when the file is waiting to be applied: beside a draft,
+            "available when it finishes" would be false. */}
+        {applyPending && job.active && !dirty && (
           <output className="text-muted-foreground text-sm block">
             Apply paused: {job.label} is running; available when it finishes.
           </output>
         )}
       </div>
 
-      {saveError && (
-        <p className="text-destructive text-sm" role="alert">
-          Save failed: {save.error?.message ?? "unknown error"}
+      {/* While a replace pattern is invalid, its own line is the recovery. */}
+      {saveError && !hasReplaceErrors && (
+        <p className="text-destructive text-sm break-words" role="alert">
+          Save failed. {saveFailureDetail(save.error?.onDisk)}
         </p>
       )}
-      {apply.isError &&
-        (apply.error?.status === 409 ? (
-          <output className="text-muted-foreground text-sm block">
-            A library job is running; Apply will be available when it finishes.
-          </output>
-        ) : (
-          <p className="text-destructive text-sm" role="alert">
-            Apply failed. Your config is saved on disk; try again or restart
-            MusicDrop.
-          </p>
-        ))}
+      {applyFailed && (
+        <p className="text-destructive text-sm break-words" role="alert">
+          Apply failed. {applyRecoveryHint(apply.error) ?? APPLY_FALLBACK}
+        </p>
+      )}
     </SettingsSection>
   );
 }

@@ -1098,6 +1098,51 @@ def test_move_sidecars_same_path_is_a_noop(
     assert caplog.records == []
 
 
+def test_only_a_regular_file_at_the_sidecar_name_is_carried(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A DIRECTORY at ``01 Song.lrc`` is not a sidecar. MEASURED both ways.
+
+    ``shutil.move`` on a directory source is a rename/copytree, so the whole tree
+    travelled: measured, ``01 T1.lrc/inside.bin`` landed inside the Trash
+    container. MusicDrop only ever writes real files here
+    (:mod:`app.beets.lyrics`), so anything else at the name belongs to someone
+    else — and this helper is shared by delete, reorganize and tag edit, so the
+    guard is asked once for all three.
+
+    The symlink half is CAUTION rather than a fix, and that is measured too: a
+    link at the name moved as a link with its target untouched, so nothing
+    escaped. It is skipped all the same, because a link MusicDrop did not write
+    is not MusicDrop's to relocate; the cost is that it stays beside no audio.
+    """
+    from app.beets.sidecars import move_sidecars
+
+    src, dst = tmp_path / "from", tmp_path / "to"
+    src.mkdir()
+    dst.mkdir()
+    audio_old, audio_new = src / "01 Song.flac", dst / "01 Song.flac"
+    audio_old.write_bytes(b"\x00")
+    holder = src / "01 Song.lrc"
+    holder.mkdir()
+    (holder / "inside.bin").write_bytes(b"not lyrics")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("private", encoding="utf-8")
+    (src / "01 Song.txt").symlink_to(secret)
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.sidecars"):
+        assert move_sidecars(str(audio_old), str(audio_new)) == []
+
+    assert (holder / "inside.bin").read_bytes() == b"not lyrics", "the directory stayed put"
+    assert not (dst / "01 Song.lrc").exists()
+    assert (src / "01 Song.txt").is_symlink(), "and so did the link"
+    assert not (dst / "01 Song.txt").exists()
+    assert secret.read_text(encoding="utf-8") == "private", "nothing followed the link"
+    assert [r.getMessage() for r in caplog.records] == [
+        f"lyric sidecar kept, not a regular file: {src / '01 Song.lrc'}",
+        f"lyric sidecar kept, not a regular file: {src / '01 Song.txt'}",
+    ]
+
+
 def test_reorganize_album_crash_midway_still_carries_moved_items_sidecars(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

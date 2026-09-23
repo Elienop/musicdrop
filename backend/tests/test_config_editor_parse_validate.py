@@ -2,8 +2,8 @@
 
 Per the Layer-3 plan (Task 2), these tests pin three load-bearing decisions:
 
-* ruamel parses `yes`/`no` as bool when `yaml.version = (1, 1)` (YAML 1.1
-  spec; ruamel SF #285) — verified by `test_parse_yes_no_as_bool`.
+* ruamel parses `yes`/`no` as bool, as YAML 1.1 and beets' PyYAML do
+  (`_Yaml11Resolver`) — verified by `test_parse_yes_no_as_bool`.
 * invalid YAML surfaces as a `ruamel.yaml.YAMLError` for the caller to map
   to HTTP 422 — verified by `test_parse_invalid_yaml_raises`.
 * schema errors carry a 1-based `(line, column)` derived from ruamel's
@@ -13,16 +13,23 @@ Per the Layer-3 plan (Task 2), these tests pin three load-bearing decisions:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from typing import Any, cast
+
+import beets
+import pytest
+import yaml as pyyaml
 
 # NOTE: plan-verbatim used `from ruamel.yaml import YAMLError`, but the
 # ruamel.yaml stubs only expose YAMLError from `ruamel.yaml.error` (its
 # canonical home). Same class object at runtime — verified via identity.
 # Using the canonical path keeps mypy --strict clean without a scoped
 # suppression directive.
-from ruamel.yaml.error import YAMLError
+from ruamel.yaml.error import MarkedYAMLError, YAMLError
 
-from app.beets.config_editor import parse_yaml, validate_known_keys
+from app.beets.config_editor import _yaml, atomic_write, parse_yaml, validate_known_keys
+from app.beets.setup import read_config_document
 
 
 def test_parse_yes_no_as_bool() -> None:
@@ -38,6 +45,45 @@ def test_parse_invalid_yaml_raises() -> None:
         pass
     else:
         raise AssertionError("expected YAMLError")
+
+
+_REUSED_ANCHOR = "a: &x 1\nb: *x\nplex:\n  token: &x Zq7Secret\n  user: &x u\n"
+
+
+def test_parse_refuses_a_reused_anchor_as_beets_does(recwarn: pytest.WarningsRecorder) -> None:
+    """ruamel only warned, quoting both lines; beets' PyYAML refuses the file.
+
+    An anchor reused AFTER its alias still refuses: PyYAML does too.
+    """
+    with pytest.raises(pyyaml.YAMLError, match="found duplicate anchor"):
+        pyyaml.safe_load(_REUSED_ANCHOR)
+
+    with pytest.raises(MarkedYAMLError) as caught:
+        parse_yaml(_REUSED_ANCHOR)
+
+    assert (caught.value.problem, caught.value.problem_mark.line + 1) == ("second occurrence", 4)
+    assert recwarn.list == []
+
+
+def test_parse_keeps_anchors_and_aliases_that_are_not_reused() -> None:
+    """The control: one anchor per name, aliased and merged."""
+    text = "a: &x 1\nb: *x\nc: &m {k: v}\nd:\n  <<: *m\n"
+
+    assert parse_yaml(text) == {"a": 1, "b": 1, "c": {"k": "v"}, "d": {"k": "v"}}
+
+
+def test_the_mapping_rule_covers_the_root_model_too() -> None:
+    """By rule, not by list: the root is a model as well. Validate and Save refuse a
+    non-mapping root before the schema; a caller that does not still gets our text."""
+    [row] = validate_known_keys(cast(dict[str, Any], []))
+
+    assert row.model_dump() == {
+        "loc": "",
+        "msg": "config.yaml must be a mapping of settings.",
+        "type": "model_type",
+        "line": None,
+        "column": None,
+    }
 
 
 def test_validate_returns_empty_on_valid(tmp_path: Path) -> None:
@@ -88,3 +134,84 @@ def test_validate_returns_line_col_for_invalid_plugin_in_list(tmp_path: Path) ->
     )
     errors = validate_known_keys(parse_yaml(text))
     assert any(e.loc == "plugins[1]" and e.line is not None for e in errors)
+
+
+# (the value as written, what beets' loader reads, what a save writes back)
+_SCALARS = [
+    ("y", "y", "y"),
+    ("N", "N", "N"),
+    ("1e400", "1e400", "1e400"),
+    ("0e5", "0e5", "0e5"),
+    ("+_1_", "+_1_", "+_1_"),
+    ("._5", "._5", "._5"),
+    ("no", False, "false"),
+    ("0644", 420, "0644"),
+    ("1.5e+3", 1500.0, "1.5e+3"),
+]
+
+
+@pytest.mark.parametrize("marker", ["", "---\n"], ids=["plain", "document-marker"])
+@pytest.mark.parametrize(("written", "read", "saved"), _SCALARS, ids=[row[0] for row in _SCALARS])
+def test_a_scalar_reads_and_saves_as_beets_reads_it(
+    tmp_path: Path, marker: str, written: str, read: object, saved: str
+) -> None:
+    """ruamel's own 1.1 table read ``y`` as True, ``1e400`` as a float and
+    ``+_1_`` as 1, and a save wrote ``true``, ``.inf``, ``0e0`` and ``1_``."""
+    text = f"{marker}k: {written}\n"
+    assert pyyaml.load(text, Loader=beets.config.loader) == {"k": read}
+    parsed = parse_yaml(text)["k"]
+    assert parsed == read
+    assert isinstance(parsed, type(read))
+    cfg = tmp_path / "config.yaml"
+
+    atomic_write(cfg, parse_yaml(text), _yaml())
+
+    assert cfg.read_text(encoding="utf-8") == f"k: {saved}\n"
+    assert read_config_document(cfg) == {"k": read}
+
+
+def test_the_resolver_table_beets_reads_with_keeps_its_shape() -> None:
+    """Tripwire for the table ``_Yaml11Resolver`` copies: PyYAML's, through beets' loader.
+
+    ``None`` must stay absent: ruamel appends that key's list to a first
+    character's list IN PLACE (``ruamel/yaml/resolver.py:357-358``), which
+    would grow the copy on every matching scalar of one load or dump.
+    """
+    table = beets.config.loader.yaml_implicit_resolvers
+    copied = _yaml().Resolver().versioned_resolver
+    assert copied == table
+    assert copied is not table
+    assert isinstance(table, dict)
+    assert None not in table
+    assert all(isinstance(first, str) and len(first) <= 1 for first in table)
+    pairs = [pair for entries in table.values() for pair in entries]
+    assert all(isinstance(tag, str) and isinstance(regex, re.Pattern) for tag, regex in pairs)
+    assert {tag for tag, _ in pairs} >= {
+        f"tag:yaml.org,2002:{kind}" for kind in ("bool", "int", "float", "null", "timestamp")
+    }
+
+
+def test_a_parse_and_dump_never_change_beets_loader_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PyYAML lets any library register a catch-all (``first=None``) resolver.
+    With one registered, a parse and dump used to grow beets' own lists, and
+    beets' own load of its default config slowed with every Save.
+
+    A subclass, so the real loader's table is never touched."""
+
+    class CatchAll(beets.config.loader):  # type: ignore[misc,name-defined]  # an untyped attribute
+        pass
+
+    never = re.compile(r"(?!)")
+    CatchAll.add_implicit_resolver("tag:example.com,2026:never", never, None)
+    monkeypatch.setattr(beets.config, "loader", CatchAll)
+    before = {first: list(pairs) for first, pairs in CatchAll.yaml_implicit_resolvers.items()}
+    text = "directory: /music\nimport: {write: no, copy: yes}\npaths:\n  default: $album/$title\n"
+
+    for _ in range(3):
+        atomic_write(tmp_path / "config.yaml", parse_yaml(text), _yaml())
+
+    assert CatchAll.yaml_implicit_resolvers == before
+    # ...and the table is still read from beets' loader, not held on our side.
+    assert _yaml().Resolver().versioned_resolver[None] == [("tag:example.com,2026:never", never)]

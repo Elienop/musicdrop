@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 
 import type { AlbumDetail } from "@/api/useAlbum";
-import { useDeleteAlbum } from "@/api/useDeleteLibrary";
+import { deleteRecovery, useDeleteAlbum } from "@/api/useDeleteLibrary";
 import { Remove } from "@/components/icons";
 import { IconAction } from "@/components/system/IconAction";
 import {
@@ -18,11 +18,14 @@ import {
 } from "@/components/ui/alert-dialog";
 
 /**
- * Trash action for a whole album: confirm -> move the album's entire folder
- * (tracks + art + lyric sidecars) to Trash + drop it -> navigate to the artist
- * page (this album is gone). Destructive but reversible. The Action button
- * preventDefaults so the dialog stays open showing "Moving…" until the move
- * resolves, then closes on success.
+ * Trash action for one album: confirm -> move the album's tracks, cover art and
+ * MusicDrop's lyric files to Trash + drop the album from the library -> navigate
+ * to the artist page (this album is gone). Anything else in the folder is left
+ * alone, and the folder survives while something is still in it, so the body
+ * must not promise the whole folder. Restore is not a put-back either: it
+ * re-imports the tracks and leaves the cover and lyrics in Trash — hence "only
+ * the tracks" (BACKLOG.md, open item). The Action button preventDefaults so the
+ * dialog stays open showing "Moving…" until the move resolves.
  */
 export function DeleteAlbumAction({ album }: Readonly<{ album: AlbumDetail }>) {
   const navigate = useNavigate();
@@ -48,14 +51,27 @@ export function DeleteAlbumAction({ album }: Readonly<{ album: AlbumDetail }>) {
         <AlertDialogHeader>
           <AlertDialogTitle>Move this album to Trash?</AlertDialogTitle>
           <AlertDialogDescription>
-            The whole album folder (tracks, cover art, and the lyric sidecars)
-            is moved to the Trash folder and removed from your library. It stays
-            recoverable in Trash; Plex shows it as unavailable until a rescan.
+            Tracks, cover art, and lyrics move to Trash; other files stay in the
+            folder. Restore re-imports only the tracks. Plex shows the album as
+            unavailable until a rescan.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {del.isError && (
-          <p className="text-destructive text-sm" role="alert">
+          // `min-w-0` is the load-bearing half. This <p> is a GRID item of
+          // AlertDialogContent, so it defaults to `min-width: auto` — its
+          // min-content width, which a 150-character path makes larger than the
+          // dialog. Measured at 320px: the <p> used 365 and painted to x=406,
+          // clipping the title, body and buttons. `break-words` alone does not
+          // lower that floor; it only chooses where lines break.
+          <p className="text-destructive min-w-0 text-sm break-words" role="alert">
             {del.error.message}
+            {/* The server's recovery hint, when it sent one — a half-done
+                delete leaves files in Trash and says to retry BEFORE emptying
+                it. Inside the same alert so it is announced with the failure,
+                not as a second interruption. */}
+            {deleteRecovery(del.error) !== null && (
+              <span className="mt-1 block">{deleteRecovery(del.error)}</span>
+            )}
           </p>
         )}
         <AlertDialogFooter>

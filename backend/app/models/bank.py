@@ -26,6 +26,26 @@ BankReason = Literal["needs_review", "needs_dup_resolution", "no_match"]
 # folder changed since banking (fingerprint mismatch at apply time).
 BankStatus = Literal["needs_review", "queued", "applying", "done", "failed", "ignored", "stale"]
 
+# What the operator has to DO about a ``failed`` row. The failed banner reads
+# two things off it - the sentence it prints and the action it offers - and
+# those are not the same question, which is why this is a named recovery and
+# not the boolean it replaced: "fix the folder, then decide again" needs the
+# retry wording suppressed WITHOUT the Duplicates link the old ``False`` also
+# turned on.
+#
+# * ``decide_again``     - re-deciding IS the recovery (every transient
+#   failure, and the drain's catch-all).
+# * ``remove_duplicate`` - the album is in the library twice already, so
+#   deciding again would import a third copy; the Duplicates page is where one
+#   of the two gets removed.
+# * ``fix_folder``       - the banked folder is still there but does not
+#   answer (a permission bit, an unsearchable parent, a symlink loop).
+#   Deciding again is the recovery, but only after the operator fixes it.
+#
+# Exactly the three the apply runner writes - no fourth value, and no second
+# flag whose combinations nothing would ever produce.
+BankFailureRecovery = Literal["decide_again", "remove_duplicate", "fix_folder"]
+
 # Same spellings as the live review's ImportAction where the action is the
 # same user gesture ("asis"/"astracks"); "ignore" is bank-only (keep the row,
 # don't import) and "duplicate" resolves a banked DuplicatePrompt.
@@ -128,13 +148,11 @@ class BankItem(BaseModel):
     status: BankStatus
     decided: BankDecision | None = None
     error: str | None = None
-    # Whether "decide again" is the sane recovery for THIS failure — the failed
-    # banner's headline, which would otherwise be one hardcoded sentence. Only
+    # Which recovery THIS failure needs (see ``BankFailureRecovery``). Only
     # meaningful while status is ``failed``; ``set_status`` (the sole writer of
-    # that status) always rewrites it, so a row can never surface a stale value.
-    # Default True: every failure retries except the merge that landed a second
-    # copy, and a row persisted before this field existed is retryable.
-    error_retryable: bool = True
+    # that status) always rewrites it, and every store writer that resets a row
+    # clears it beside the error - so a row cannot surface a stale value.
+    error_recovery: BankFailureRecovery = "decide_again"
     # The library album id the apply landed (set with status done when the
     # import's outcome carried one; None for skip_new dup resolutions and
     # astracks applies, which create no album entity).
@@ -144,6 +162,24 @@ class BankItem(BaseModel):
     banked_at: datetime
     decided_at: datetime | None = None
     resolved_at: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _recovery_from_the_legacy_flag(cls, data: object) -> object:
+        """Read a row persisted with the old ``error_retryable`` boolean.
+
+        Rows are re-read, never migrated, so every row banked before this field
+        existed still carries the flag. ``False`` meant exactly one thing - the
+        album landed in the library a second time, and the Duplicates page is
+        the recovery - so it maps onto ``remove_duplicate``. ``True`` and absent
+        both fall through to the ``decide_again`` default, which is what they
+        already render as. The stale key itself needs no handling: ``BankItem``
+        does not forbid extras, so pydantic drops it.
+        """
+        if isinstance(data, dict) and "error_recovery" not in data:
+            if data.get("error_retryable") is False:
+                return {**data, "error_recovery": "remove_duplicate"}
+        return data
 
     @model_validator(mode="after")
     def _payloads_match_reason_and_status(self) -> "BankItem":

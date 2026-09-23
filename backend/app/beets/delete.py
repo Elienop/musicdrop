@@ -1,8 +1,21 @@
 """Delete (reversible Trash) for whole albums and whole artists.
 
-Front-door delete: move an album's — or every album of an artist's — ENTIRE
-folder to Trash (audio + art + ``.lrc``/``.txt`` sidecars + extras) and drop it
-from the library, built on :func:`app.beets.trash.trash_album_folder`.
+Front-door delete: move an album's — or every album of an artist's — OWN files
+to Trash and drop it from the library, built on the per-item
+:func:`app.beets.trash.trash_album` (owner ruling ``decisions.md`` 58: per file,
+not per folder). That is beets' own ``Album.move``, so what travels is what beets
+tracks — every item from its OWN stored path, plus ``album.artpath`` — and
+:func:`_trash_one` adds the lyric sidecars MusicDrop wrote beside those tracks.
+Anything else in the folder stays, except a file the user's ``clutter:`` list
+names, which beets' prune deletes outright along with the folder it emptied,
+Trash not involved (measured with ``clutter: ['*.pdf']`` and a booklet). That
+prune climbs to ``lib.directory``, so an album alone in its folder takes the
+folder with it, and an app-owned directory in the chain is held by a keep-file
+for the length of the move (:func:`_keep_our_dirs`).
+
+Per item rather than per FOLDER because two albums can share one real directory
+under two spellings, and the folder move took both (measured,
+``dangling_rows = 2``); asking each item where it lives answers 0.
 
 The async ``_op`` functions mirror the duplicates-resolve op: gated behind the
 SAME library-job lock + 409 (Apply / import / lyrics / artist-art / reorganize),
@@ -13,10 +26,18 @@ relative item paths resolve on the worker thread (which doesn't inherit the
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
+import stat
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Final
 
+import beets
 from beets.library import Library
+from beets.util import bytestring_path, fnmatch_all
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
@@ -24,26 +45,20 @@ from app.beets.config_editor import _settings, _swap_lock
 from app.beets.library import (
     LibraryHandle,
     LibraryRootUnavailableError,
+    _abs_path,
     _coerce_str,
     _require_id,
     require_library_root,
 )
-from app.beets.protected import (
-    ProtectedTreeError,
-    ProtectedTrees,
-    refuse_a_held_store,
-)
+from app.beets.protected import ProtectedTrees, open_if_one_of_ours, rows_under_any
+from app.beets.sidecars import carry_sidecars, sidecar_base
 from app.beets.store_layout import StoreLayoutError, checked_protected_trees, checked_store_dirs
-from app.beets.trash import (
-    TrashDeleteIncompleteError,
-    TrashMoveIncompleteError,
-    TrashRowsNotRemovedError,
-    trash_album_folder,
-    whole_folder_root,
-)
-from app.beets.trash_origins import TrashOriginsStoreUnusableError
-from app.library_busy import library_job_active
+from app.beets.trash import TrashMoveIncompleteError, TrashRowUnreadableError, trash_album
+from app.beets.trash_origins import TrashOriginsStoreUnusableError, require_usable_store
+from app.library_busy import library_job_active, raise_if_swap_blocked_by_job
 from app.models.delete import DeleteResult
+
+_log = logging.getLogger(__name__)
 
 #: The promise the two 503 arms below add to the origin-store refusal, and the
 #: ONLY place it may be made. The store's own sentence carries no such clause
@@ -51,28 +66,17 @@ from app.models.delete import DeleteResult
 #: artist fan-out and duplicates' resolve-all reach it having already moved
 #: albums into Trash and dropped their rows — measured, a 500 that named one
 #: album moved to Trash and then said nothing had been deleted. Here it is a
-#: fact and not a hope: both arms sit above the transaction's first mutation,
-#: since ``require_usable_store`` is ``trash_album_folder``'s first statement,
-#: ahead of every branch of it, so the refusal reaches the first album and no
-#: further.
+#: fact and not a hope: both arms that drop a row guard first, checked
+#: structurally in tests/test_delete.py — ``trash_album`` opens with
+#: ``require_library_root`` then ``require_usable_store`` and nothing else, and
+#: :func:`_trash_one`'s retry arm calls ``require_usable_store`` before its own
+#: ``album.remove``. So the refusal reaches the first album and no further.
 _NOTHING_DELETED = "Nothing has been deleted."
 
 #: The layout refusal's own wording, and it can make the same promise for the
 #: same reason: ``_checked_store`` runs before the first mutation of either op,
 #: so the delete stops at the check with nothing moved and no row dropped.
 _NOTHING_DELETED_LAYOUT = "{} " + _NOTHING_DELETED
-
-#: The recovery line for the one state where the reader must not tidy Trash up
-#: before reading the message: the rows would not go AND the folder would not
-#: come back, so the files can be in Trash, at the album's own folder, or half
-#: at each. Named because TWO arms return it — the bare
-#: ``TrashDeleteIncompleteError``, and an artist fan-out that stopped on an
-#: album in that state. Tests compare it to a literal, not to this name, or the
-#: wording would only be pinned against itself.
-_DO_NOT_EMPTY_TRASH = (
-    "Do NOT empty the Trash folder before reading the message above: it says"
-    " where the files are now, from the disk. Compare both paths first."
-)
 
 
 class AlbumNotFoundError(Exception):
@@ -92,33 +96,18 @@ class ArtistDeletePartialError(Exception):
 
     Carries ``moved`` — how many of the artist's albums really had FILES
     relocated — because the 500's recovery line offers to find them in Trash,
-    and two of the primitive's branches drop an album's rows having moved
-    nothing at all (an album with no item rows, and a ghost whose folder is
-    already gone). Counted on the primitive's RETURN, so it is a floor and not a
-    census: the album this stopped on is never in it, and it can have files in
-    Trash all the same. :func:`_recovery` names the ways this file can point at,
-    not the whole list; nothing here distinguishes them from a failure that moved
-    nothing, which is why that hint asks rather than tells. The
-    ``album.remove``-after-the-move window used to be the worst of them and is
-    no longer in the set for the whole-folder path — the primitive puts the
-    folder back (``decisions.md`` 28 item 4) — but a move that stops part-way
-    and the per-item mover's own row-drop window still are.
-
-    Carries ``cause`` too, and for a narrower reason: one of the causes this can
-    wrap — :class:`~app.beets.trash.TrashDeleteIncompleteError`, the album whose
-    rows would not go AND whose folder would not come back — has a recovery line
-    of its own that must not be replaced by the Trash promise, because the whole
-    point of that line is to stop the reader emptying Trash before they have
-    read where their files are. Wrapping it hid that (measured: the fan-out
-    shipped "Files are recoverable in the Trash folder. Retry." for a state
-    whose own line says "Do NOT empty the Trash folder"), so :func:`_recovery`
-    reads through to it.
+    and two of the primitive's branches drop rows having moved nothing (an album
+    with no item rows, and a ghost). Counted on the primitive's RETURN, so it is
+    a floor and not a census: the album this stopped on is never in it and can
+    have files in Trash all the same, by a part-way move or by the row-drop
+    window (``trash_album`` commits each item's path INTO the Trash container
+    before removing the rows, with no undo). That is why :func:`_recovery` asks
+    rather than tells.
     """
 
-    def __init__(self, message: str, *, moved: int, cause: Exception | None = None) -> None:
+    def __init__(self, message: str, *, moved: int) -> None:
         super().__init__(message)
         self.moved = moved
-        self.cause = cause
 
 
 def delete_album(
@@ -130,7 +119,7 @@ def delete_album(
     protected: ProtectedTrees,
     dropped_item_ids: set[int] | None = None,
 ) -> DeleteResult:
-    """Move one album's whole folder to Trash and drop it. 404 on unknown id.
+    """Move one album's own files to Trash and drop it. 404 on unknown id.
 
     Binds ``music_dir_context`` (the threadpool thread doesn't inherit it, so the
     move would otherwise get a relative source path); one transaction so the DB
@@ -150,22 +139,347 @@ def delete_album(
         if dropped_item_ids is not None:
             dropped_item_ids.update(_require_id(i.id) for i in album.items())
         with lib.transaction():
-            trash_path = trash_album_folder(
+            trash_path = _trash_one(
                 lib, album, trash_dir=trash_dir, origins_dir=origins_dir, protected=protected
             )
     return DeleteResult(trashed_albums=1, trash_path=trash_path)
 
 
-def _refuse_held_stores(lib: Library, album_ids: list[int], protected: ProtectedTrees) -> None:
-    """Ask the whole-folder guard for every album, before the first one moves."""
-    for album_id in album_ids:
-        album = lib.get_album(album_id)
-        root = None if album is None else whole_folder_root(lib, album)
-        if root is not None:
-            # The same question the mover asks, so the pre-check refuses the same
-            # set: a folder that HOLDS a store stops the run, one that IS a store
-            # takes the per-item path album by album.
-            refuse_a_held_store(root, protected, action="moved")
+def _trash_one(
+    lib: Library, album: Any, *, trash_dir: Path, origins_dir: Path, protected: ProtectedTrees
+) -> str:
+    """:func:`~app.beets.trash.trash_album`, plus what the front door owes.
+
+    Two things the primitive's other callers do not get. The lyric sidecars go
+    with their tracks and the folder they leave is re-pruned
+    (:func:`_carry_the_sidecars`) — import Replace must NOT have that, since the
+    new album lands on the same stem and would lose lyrics the user still has
+    (measured). And every app-owned directory beets' prune could empty holds a
+    keep-file for the length of the move (:func:`_keep_our_dirs`). Prevention,
+    not repair: no path here creates a directory, which is what stops a delete
+    that REFUSED from planting one on a dead mountpoint
+    (``test_a_delete_that_refuses_leaves_the_mountpoint_empty``).
+
+    The first arm is the RETRY of a delete whose row drop raised, for a FULLY
+    moved album: moving the files again would allocate a second container and
+    record an origin naming a path inside Trash (measured, both Trash layouts),
+    so only the row drop is left. A part-way album takes the ordinary path and
+    its remaining files move
+    (``test_a_retry_after_a_part_way_move_finishes_the_move``).
+    """
+    items = list(album.items())
+    # ``trash_dir`` alone, NOT ``protected.trash_spellings``: see the twin.
+    if _all_rows_are_in_trash(lib, items, (trash_dir,)):
+        require_usable_store(origins_dir)
+        album.remove(delete=False)
+        return os.path.dirname(_abs_path(lib, items[0].path))
+    kept: list[_Kept] = []
+    moved_audio: list[tuple[str, str]] = []
+    try:
+        # Inside the ``try``, filling ``kept`` as it goes: collecting can raise
+        # (a broken ``clutter:`` value, measured) with descriptors already open;
+        # above the ``try`` that leaked one per directory.
+        _keep_our_dirs(lib, album, items, protected, kept)
+        trash_path = trash_album(
+            lib, album, trash_dir=trash_dir, origins_dir=origins_dir, moved_audio=moved_audio
+        )
+        _carry_the_sidecars(lib, moved_audio)
+    finally:
+        _release_our_dirs(kept)
+    return trash_path
+
+
+def _all_rows_are_in_trash(lib: Library, items: list[Any], roots: Sequence[Path]) -> bool:
+    """Whether every item row of this album names a regular file inside Trash.
+
+    ``protected.rows_under_any``, the helper Empty's gate uses, so both inherit
+    the engine's directory-prefix, relative-row and case handling — but over ONE
+    root, the current ``trash_dir``, where the gate asks every spelling. **Only
+    the refusing half may be generous:** this arm DROPS THE ROWS without moving
+    anything, which is safe only while the files are under the Trash
+    ``list_trashed_albums`` enumerates. Widened to ``trash_spellings`` it
+    de-registered an album whose files sat in an old default Trash the page does
+    not list
+    (``test_the_remedy_moves_rows_from_an_old_default_into_the_configured_trash``).
+
+    Each narrowing of the predicate, measured:
+
+    * ``it.path`` guarded — a NULL path is not "in Trash", so the album takes the
+      ordinary move, which refuses it by name; unguarded, the match raised as a
+      500 carrying the Python message
+      (``test_an_album_with_a_null_path_row_refuses_before_anything_moves``).
+    * ``lstat`` + ``S_ISREG``, not ``isfile`` — a symlink inside Trash onto a
+      live library file dropped the rows while the real file stayed, and the type
+      test keeps a GHOST out, which is what an unmounted share looks like to a
+      retry that skips ``require_library_root``
+      (``test_rows_inside_trash_with_their_files_gone_still_meet_the_root_guard``).
+    * ``all``, not ``any`` — a MIXED album is part-way moved and its un-moved
+      files would be left untracked
+      (``test_a_retry_after_a_part_way_move_finishes_the_move``).
+
+    ``PathQuery``'s directory arm carries a trailing separator, so a sibling
+    ``trash-old`` is not inside Trash
+    (``test_a_trash_old_sibling_is_not_read_as_being_in_trash``). Both entry
+    points bind ``music_dir_context`` around the whole delete; unbound, this
+    would miss a Trash inside ``directory:`` and take the ordinary move.
+    """
+    if not items:
+        return False
+    inside = rows_under_any(roots)
+    return all(
+        it.path and inside.match(it) and _is_regular_file(_abs_path(lib, it.path)) for it in items
+    )
+
+
+def _is_regular_file(path: str) -> bool:
+    """``S_ISREG`` without following a link, and without raising."""
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+#: Planted in an app-owned directory for the length of a Delete so beets' prune
+#: BREAKS there. FIXED and short by choice: a random name leaves an unbounded
+#: pile behind a kill. A killed run leaves one file per directory it reached, and
+#: the next Delete adopts each and leaves it
+#: (``test_a_leftover_keep_file_is_adopted_and_left_where_it_is``).
+KEEP_NAME: Final = ".musicdrop-keep"
+_KEEP_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+
+
+@dataclass
+class _Kept:
+    """One app-owned directory held open for the move, and the file WE planted in it.
+
+    ``planted`` is the keep-file's ``(st_dev, st_ino)`` when this delete created
+    it, and ``None`` when it did not (an adopted leftover, or a store that could
+    not be written in). Filled AFTER the record exists, which is why this is not
+    frozen — see :func:`_keep_our_dirs`.
+    """
+
+    path: str
+    fd: int
+    planted: tuple[int, int] | None = None
+
+
+def _keep_our_dirs(
+    lib: Library, album: Any, items: list[Any], protected: ProtectedTrees, kept: list[_Kept]
+) -> None:
+    """Hold beets' prune off every app-owned directory it could reach.
+
+    beets prunes inside ``Album.move``, climbing to ``lib.directory``, and
+    ``prune_dirs`` rmtree's an ancestor that is empty OR CLUTTER-ONLY — contents
+    and all. Measured three ways: the album root IS the store, the store is an
+    ancestor, and a multi-disc album whose root is the COMMONPATH. A file the
+    prune may not delete makes it break there, so the directory keeps its inode,
+    its mode and its contents.
+
+    Each directory is opened O_NOFOLLOW and identified by ``fstat`` on that
+    descriptor, and the keep-file is written through it, so a swap after the
+    check reaches neither. A store that cannot be written into is NOT protected
+    and says so in the log: a tidy-up may not fail a delete the user asked for.
+
+    ``kept`` is an OUT parameter, filled as each directory is taken, because the
+    caller's ``finally`` must release what was collected before a raise part-way
+    through (``test_a_delete_that_raises_while_collecting_leaks_no_descriptor``).
+    The descriptor is RECORDED before ``_plant`` runs on it, whose ``fstat`` can
+    raise (EIO/ESTALE) — measured, 1 leaked descriptor per attempt as one
+    expression (``test_a_plant_that_raises_leaks_no_descriptor``).
+    """
+    for path in _dirs_the_prune_can_reach(lib, items, art=getattr(album, "artpath", None)):
+        fd = open_if_one_of_ours(path, protected)
+        if fd is not None:
+            one = _Kept(path, fd)
+            kept.append(one)
+            one.planted = _plant(path, fd)
+    if kept and _keep_name_is_clutter():
+        _log.warning(
+            "clutter: matches %s, so MusicDrop's own directories may not be protected"
+            " from beets' prune during a delete",
+            KEEP_NAME,
+        )
+
+
+def _plant(path: str, fd: int) -> tuple[int, int] | None:
+    """Create the keep-file in ``fd``; its identity when THIS call created it."""
+    try:
+        file_fd = os.open(KEEP_NAME, _KEEP_FLAGS, 0o600, dir_fd=fd)
+    except FileExistsError:
+        # A killed run's leftover: it already holds the prune off, and leaving it
+        # puts the directory back exactly as this delete found it.
+        return None
+    except OSError:
+        _log.warning("not protected from beets' prune, cannot write in it: %s", path)
+        return None
+    # Outside the create's ``try``: the file exists from here on, so a close that
+    # raises may not leave it recorded as someone else's and orphan it.
+    try:
+        return _ident(os.fstat(file_fd))
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(file_fd)
+
+
+def _ident(st: os.stat_result) -> tuple[int, int]:
+    """The identity two stats are compared by."""
+    return (st.st_dev, st.st_ino)
+
+
+def _release_our_dirs(kept: list[_Kept]) -> None:
+    """Remove the keep-files this delete planted, and close the descriptors.
+
+    Only what is still the file this delete created: the name is re-stat'd
+    through the descriptor and compared with the identity ``_plant`` recorded, so
+    a file that ARRIVED at the name afterwards is left
+    (``test_a_file_that_replaces_the_keep_file_is_not_removed``). Stat and unlink
+    are two syscalls, so a swap in that window still loses the new file; both go
+    through the directory's own descriptor, which bounds them to this directory.
+
+    In a ``finally`` and silent about its own faults: the files have moved by the
+    time it runs, so a tidy-up may not turn a delete that happened into one that
+    failed (``test_a_keep_file_that_cannot_be_removed_does_not_fail_the_delete``).
+    """
+    for one in kept:
+        if one.planted is not None:
+            try:
+                if _ident(os.stat(KEEP_NAME, dir_fd=one.fd, follow_symlinks=False)) == one.planted:
+                    os.unlink(KEEP_NAME, dir_fd=one.fd)
+            except OSError:
+                _log.warning("could not remove %s in %s", KEEP_NAME, one.path)
+        with contextlib.suppress(OSError):
+            os.close(one.fd)
+
+
+def _keep_name_is_clutter() -> bool:
+    """Whether the user's ``clutter:`` list makes the keep-file invisible to the prune.
+
+    Asked through ``util.fnmatch_all``, the predicate ``prune_dirs`` itself
+    calls, with the same ``bytestring_path`` conversion.
+    """
+    patterns = [bytestring_path(str(p)) for p in beets.config["clutter"].as_str_seq()]
+    return fnmatch_all([bytestring_path(KEEP_NAME)], patterns)
+
+
+def _dirs_the_prune_can_reach(
+    lib: Library, items: list[Any], *, art: bytes | str | None = None
+) -> list[str]:
+    """The directories ``Album.move``'s prune could remove, deepest first.
+
+    Asked the way ``prune_dirs`` asks: from each item's directory upward,
+    stopping at ``lib.directory``, which it never removes and outside which it
+    removes nothing (``ancestry`` + the ``root in ancestors`` test).
+    ``lib.directory`` itself is never returned, or a keep-file would be planted
+    in the music root on every delete
+    (``test_no_keep_file_is_planted_in_the_music_root``).
+
+    TWO kinds of start. Per ITEM, not from the album root: one item in
+    ``music/B`` and another directly in the store have no common chain
+    (``test_a_store_holding_one_of_two_item_folders_survives``). And the cover's
+    own directory, because ``Album.move_art`` prunes from ``dirname(artpath)``
+    (beets 2.13.1 ``library/models.py:446``) — measured, an app store holding
+    only the cover was rmtree'd
+    (``test_a_store_holding_only_the_cover_survives_the_delete``).
+
+    A row with a NULL ``path`` names no directory, so it is skipped rather than
+    decoded: decoding raised a ``TypeError`` as a 500 ahead of ``trash_album``'s
+    named refusal
+    (``test_an_album_with_a_null_path_row_refuses_before_anything_moves``).
+    """
+    stop = os.path.normpath(os.fsdecode(lib.directory))
+    found: list[str] = []
+    seen: set[str] = set()
+    starts = [os.path.dirname(_abs_path(lib, it.path)) for it in items if it.path]
+    if art:
+        starts.append(os.path.dirname(_abs_path(lib, os.fsencode(art))))
+    for start in starts:
+        cur = os.path.normpath(start)
+        while cur != stop and cur not in seen and Path(cur).is_relative_to(stop):
+            seen.add(cur)
+            found.append(cur)
+            cur = os.path.dirname(cur)
+    return found
+
+
+def _carry_the_sidecars(lib: Library, moved_audio: list[tuple[str, str]]) -> None:
+    """Move each relocated track's lyric sidecars after it, unless a row claims one.
+
+    ``Album.move`` carries only what beets tracks, so a ``.lrc`` left behind
+    sits in a now audio-empty folder the reorganize orphan sweep trashes
+    separately, splitting one album's lyrics across two Trash entries.
+    :func:`~app.beets.sidecars.carry_sidecars` is the call reorganize and tag
+    edit make: it carries, re-prunes that item's directory with the user's
+    ``clutter:`` list, and swallows the prune's ``OSError``
+    (``test_a_prune_that_raises_does_not_fail_the_delete``).
+
+    A sidecar a REMAINING row can claim stays: two albums can hold
+    ``01 T1.flac`` and ``01 T1.mp3`` in one folder and share ``01 T1.lrc``
+    (measured — deleting the first carried the second's lyrics to Trash). Read
+    after the primitive returned, so the deleted album's own rows are gone and
+    no self-match has to be filtered out.
+    """
+    if not moved_audio:
+        return
+    claimed = _stems_in_use(lib, {os.path.dirname(old) for old, _ in moved_audio})
+    for old_audio, new_audio in moved_audio:
+        if sidecar_base(old_audio) in claimed:
+            continue
+        carry_sidecars(lib, old_audio, new_audio)
+
+
+#: Every item row under one directory's SUBTREE, both stored path forms — beets
+#: stores relative to ``lib.directory`` normally and absolute for outside/legacy
+#: rows. Wider than the question (one directory returned 41 rows, 40 from
+#: subfolders) and harmlessly so: a stem is an absolute path.
+#:
+#: One query per DIRECTORY, once per ALBUM, inside the delete's transaction.
+#: Measured at 100 000 rows: 11.1 ms for an album folder, 164.7 ms for a track
+#: filed in the music ROOT, where the relative prefix is empty and every row
+#: comes back — a 10-album artist delete on a flat library is ~1.6 s. Not hoisted
+#: to once per request: the read happens AFTER the mover returned, so the deleted
+#: album's own rows are already gone.
+_ROWS_UNDER_SQL = """
+SELECT path FROM items WHERE substr(path, 1, ?) = ? OR substr(path, 1, ?) = ?
+"""
+
+
+def _stems_in_use(lib: Library, directories: set[str]) -> set[str]:
+    """The sidecar stems the REMAINING item rows in ``directories`` occupy.
+
+    Stems compared whole, not as a prefix: ``01 T1.1.mp3`` — beets' own collision
+    divert — and ``01 T1.5 (remix).mp3`` both start with ``01 T1.`` and neither
+    owns ``01 T1.lrc`` (measured, the `.lrc` was left behind for nobody). Errs
+    toward CARRYING in both directions: a row this cannot match leaves the
+    sidecar travelling with its own track
+    (``test_a_delete_leaves_a_sidecar_another_albums_track_claims``,
+    ``test_a_beets_collision_divert_does_not_claim_the_other_albums_sidecar``).
+    Neither side is re-normalised, because both come from the mover; a
+    hand-edited row spelled ``//`` is not matched, which errs the same way, and
+    ``..`` is not claimed either (measured in this function).
+
+    NOT ``PathQuery``, unlike Empty's gate and the retry arm: this asks about the
+    music ROOT as well, where beets' predicate answers nothing —
+    ``relpath(music, music)`` is ``"."``, so its directory arm is ``"./"``, which
+    no stored row carries (measured, 0 hits). The raw prefix pair below asks
+    ``""`` instead and finds them
+    (``test_a_sidecar_claim_is_seen_for_tracks_in_the_music_root``).
+    """
+    stems: set[str] = set()
+    music = os.fsdecode(lib.directory)
+    with lib.transaction() as tx:
+        for directory in directories:
+            absolute = os.fsencode(os.path.join(directory, ""))
+            relative = absolute
+            with contextlib.suppress(ValueError):  # different drives: no relative spelling
+                rel = os.path.relpath(directory, music)
+                relative = b"" if rel == os.curdir else os.fsencode(os.path.join(rel, ""))
+            rows = tx.query(_ROWS_UNDER_SQL, (len(absolute), absolute, len(relative), relative))
+            stems.update(
+                base
+                for (raw,) in rows
+                if (base := sidecar_base(_abs_path(lib, os.fsencode(raw)))) is not None
+            )
+    return stems
 
 
 def delete_artist(
@@ -193,12 +507,11 @@ def delete_artist(
       transaction and the primitive re-checks per album, so a root that is
       already unavailable (or drops before the first move) raises
       ``LibraryRootUnavailableError``; an origin store that cannot be used
-      raises ``TrashOriginsStoreUnusableError`` from the primitive's own first
-      statement, ahead of every branch of it, so it reaches the first album and
-      no further. The op answers either with a 503. Nothing
-      has been DROPPED whenever that fires; nothing has moved either, unless the
-      share went during one album's own move, which the primitive catches with
-      that album's rows kept and part of its folder under the Trash container;
+      raises ``TrashOriginsStoreUnusableError`` ahead of every branch that drops
+      a row (see ``_NOTHING_DELETED``), so it reaches the first album and no
+      further. The op answers either with a 503: nothing has been DROPPED, and
+      nothing has moved unless the share went during one album's own move, which
+      the primitive catches with that album's rows kept;
     * **after at least one album** — the SAME error is re-raised as
       :class:`ArtistDeletePartialError`, because the 503's promise is no longer
       true. It reaches the user as the 500, naming how far the fan-out got.
@@ -224,41 +537,28 @@ def delete_artist(
         # Ahead of the transaction, not only inside the primitive: this is what
         # makes the 503's "nothing was dropped" a property of the whole
         # operation rather than a property of whichever album happened to be
-        # first. Cheap (one isdir + one scandir entry) against N folder moves.
+        # first. Cheap (one isdir + one scandir entry) against N album moves.
         require_library_root(lib)
-        # NO second pre-check for the origin store here, deliberately, and the
-        # asymmetry with the line above is the point. ``require_library_root``
-        # earns its place because the primitive only re-checks the ROOT inside
-        # one branch, so without it a fan-out could reach its second album
-        # before anything refused. ``require_usable_store`` needs no such help:
-        # it is ``trash_album_folder``'s FIRST statement — checked structurally,
-        # first non-docstring node of the body — ahead of every branch of it, so
-        # the first album already refuses with nothing dropped. A copy here
-        # changes no outcome any test can see: adding it back left the whole
-        # suite green (measured). That is not an argument that the
-        # delete tests would have caught one if it did, and the difference has
-        # been measured too — ``origin_recorded``'s refusing arm survives
-        # tests/test_delete.py + tests/test_trash.py and is killed
-        # only in tests/test_trash_origins_store.py, so this file's own pins are
-        # not where every delete-path guard lives. It would also refuse a
-        # fan-out over an artist with NO albums, which mutates nothing at all.
-        # Two counters, because they answer different questions and a run can
-        # have one without the other. ``mutated`` is albums whose ROWS are gone,
-        # which is what makes the 503's "nothing was dropped" false and so
-        # decides which tier a fault gets. ``moved`` is albums whose FILES are
-        # in Trash, which is the only thing the message and the recovery hint
-        # may claim: the primitive drops the rows of an empty album and of a
-        # ghost whose folder is already gone without relocating a byte.
+        # NO second pre-check for the origin store here, and the asymmetry with
+        # the line above is the point: ``trash_album`` only re-checks the ROOT
+        # inside one branch, so without the call above a fan-out could reach its
+        # second album before anything refused, while every branch that drops a
+        # row already asks ``require_usable_store`` first (``_NOTHING_DELETED``).
+        # A copy here changes no outcome the suite can see (measured), and it
+        # would refuse a fan-out over an artist with NO albums.
+        #
+        # NO identity pre-check either: the guard the whole-folder mover needed
+        # ("this folder HOLDS one of our stores") has no question to answer once
+        # each item moves from its own path — measured, a store held inside an
+        # album folder survives the per-item delete untouched.
+        #
+        # Two counters, because a run can have one without the other.
+        # ``mutated`` is albums whose ROWS are gone, which decides which tier a
+        # fault gets. ``moved`` is albums whose FILES are in Trash, the only
+        # thing the message and the recovery hint may claim: an album with no
+        # item rows and a ghost both drop rows without a byte relocating.
         mutated = 0
         moved = 0
-        # Every folder the fan-out would relocate WHOLE is asked before the first
-        # one moves, so the guard's own "Nothing was moved." is a property of the
-        # operation. Asked per album inside the loop it was not: an album in
-        # position two refused as the partial 500, in a sentence that says one
-        # album HAD been moved. Only the whole-folder arm is asked, because the
-        # per-item fallback never reaches that guard and a flat library, where
-        # every album root is the music dir, would otherwise refuse every album.
-        _refuse_held_stores(lib, album_ids, protected)
         with lib.transaction():
             for album_id in album_ids:
                 album = lib.get_album(album_id)
@@ -267,7 +567,7 @@ def delete_artist(
                 if dropped_item_ids is not None:
                     dropped_item_ids.update(_require_id(i.id) for i in album.items())
                 try:
-                    dest = trash_album_folder(
+                    dest = _trash_one(
                         lib,
                         album,
                         trash_dir=trash_dir,
@@ -287,33 +587,23 @@ def delete_artist(
                     # idea how far the delete had got.
                     #
                     # The message says "the albums it never reached are
-                    # untouched", and it says that rather than "the rest"
-                    # because the album it stopped ON can be touched. The
-                    # ``album.remove`` window used to be how: beets deletes the
-                    # album row and THEN sends ``album_removed`` to plugins with
-                    # no try/except around the handlers, so a listener that
-                    # raised left that album's folder in Trash with its row
-                    # gone. The primitive now moves that folder BACK
-                    # (``decisions.md`` 28 item 4), which does not make the
-                    # album untouched — its rows can be half-removed and beets
-                    # commits that on the way out — it only means the files are
-                    # no longer somewhere the message never mentions. Neither
-                    # counter below has counted that album either way: both
-                    # count returns from the primitive, so the fan-out cannot
-                    # name it, which is why the message speaks only of the ones
-                    # it never got to.
+                    # untouched" rather than "the rest" because the album it
+                    # stopped ON can be touched. The ``album.remove`` window is
+                    # how: beets deletes the album row and THEN sends
+                    # ``album_removed`` to plugins with no try/except, so a
+                    # listener that raises leaves that album's files in the Trash
+                    # container with its row gone, and there is no undo —
+                    # ``trash_album`` rewrote every stored path by TEMPLATE on
+                    # the way in. Both counters below count returns from the
+                    # primitive, so neither has counted that album either way.
                     #
-                    # A move that fails PART-WAY sits outside that window in the
-                    # other direction — the rows are KEPT, which is the safe
-                    # side. Two of the ways in: ``trash.py``'s post-condition
-                    # re-checks the root BEFORE it checks whether anything
-                    # landed, so a share dropping mid-move raises with some items
-                    # already under the Trash container, and a cross-filesystem
-                    # ``shutil.move`` is copy-then-delete, so a failure between
-                    # the two leaves the folder at both ends. Both are relayed
-                    # in the cause's own words, which is all this end can offer:
-                    # the second names the paths it was working on, the first
-                    # names the mount rather than the half-moved album.
+                    # A move that fails PART-WAY sits on the safe side of that
+                    # window: the rows are KEPT. Two ways in — ``trash.py``'s
+                    # post-condition re-checks the root BEFORE it checks whether
+                    # anything landed, and the move runs item by item, so a fault
+                    # mid-loop leaves the album's files at both ends. Both are
+                    # relayed in the cause's own words, which is all this end can
+                    # offer.
                     if mutated == 0:
                         # Nothing mutated yet, so the caller's own error still
                         # holds and the 503 tier stays open. It does NOT follow
@@ -328,15 +618,13 @@ def delete_artist(
 
 
 def _reached_trash(dest: str, trash_dir: Path) -> bool:
-    """Whether :func:`~app.beets.trash.trash_album_folder`'s answer names a real
-    Trash ENTRY — i.e. whether that album's files actually moved.
+    """Whether :func:`_trash_one`'s answer names a real Trash ENTRY — i.e.
+    whether that album's files actually moved.
 
-    The primitive returns ``str(trash_dir)`` itself from both branches that drop
-    an album's rows having relocated nothing (no item rows at all; a ghost whose
-    folder is already gone), and a path strictly INSIDE ``trash_dir`` whenever
-    something really moved. The shared-folder fallback's own ghost arm returns
-    the album's music-dir folder, which is outside Trash and so reads as "not
-    moved" too — the check is "is it in Trash", not "is it different".
+    Both arms that drop rows having relocated nothing answer outside
+    ``trash_dir``: the no-item-rows arm returns ``str(trash_dir)`` itself, and
+    ``trash_album``'s ghost arm the album's own music-dir folder. So the check is
+    "strictly IN Trash", not "different".
 
     That return value is the only signal the caller has, and the fan-out's
     partial-failure message may only claim what it can show.
@@ -355,36 +643,27 @@ def _partial(exc: Exception, *, moved: int, mutated: int, total: int) -> ArtistD
     and the 500 it becomes drops the recovery line that would send them there.
 
     Both shapes speak only of the albums this fan-out finished with: the counts
-    are of returns from the primitive, so neither says anything about the album
-    it stopped ON. That silence is deliberate — the album it stopped on is the
-    one case nothing here can observe (see :func:`_recovery`), and the second
-    shape used to fill it in with "nothing reached the Trash folder", which is
-    the album.remove window's exact opposite.
-
-    The closing clause is qualified for the same reason. It read "the rest are
-    untouched", and "the rest" takes in the album this stopped on, which can be
-    the most touched of all. The clause is STILL qualified now that the
-    whole-folder path undoes its own ``album.remove`` window
-    (:class:`~app.beets.trash.TrashRowsNotRemovedError`), because that undo
-    narrows the set rather than emptying it: the album can be half-moved with
-    its rows kept, it can have come back from Trash with the library's memory of
-    it already gone, and on the per-item path (a shared folder) it can be listed
-    with its files inside the Trash container. "Untouched" is false in all
-    three, and none of them is a state either counter can see.
+    are of returns from the primitive, so neither can say anything about the
+    album it stopped ON, which is the one case nothing here observes (see
+    :func:`_recovery`). Hence "the albums it never reached are untouched" rather
+    than "the rest": the album it stopped on can be half-moved with its rows
+    kept, or sitting whole in the Trash container with its row gone (the
+    ``album.remove`` window).
     """
     if moved:
         return ArtistDeletePartialError(
             f"the delete stopped after {moved} of {total} albums had been moved to Trash;"
             f" the albums it never reached are untouched ({exc})",
             moved=moved,
-            cause=exc,
         )
     return ArtistDeletePartialError(
         f"the delete stopped after dropping {mutated} of {total} albums that had no files"
         f" left to move; the albums it never reached are untouched ({exc})",
         moved=0,
-        cause=exc,
     )
+
+
+_DELETE_BUSY = "A library operation is in progress; delete available when it finishes"
 
 
 def _gate() -> None:
@@ -394,105 +673,37 @@ def _gate() -> None:
     files + DB those jobs touch, so it must not overlap them.
     """
     if library_job_active():
-        raise HTTPException(
-            status_code=409,
-            detail="A library operation is in progress; delete available when it finishes",
-        )
+        raise HTTPException(status_code=409, detail=_DELETE_BUSY)
 
 
 def _recovery(exc: Exception) -> str:
     """The 500's recovery hint. It may PROMISE Trash only if something is IN Trash.
 
-    Asked the other way round from how it started, because listing the failures
-    that moved nothing kept missing one. Exactly ONE failure here is KNOWN to
-    have a Trash entry — a fan-out that got past its first album and really
-    relocated files (``ArtistDeletePartialError`` with ``moved``) — so that is
-    the arm that states Trash as a fact, and everything else falls to a hint that
-    does not. Enumerating the other direction meant a new "moved nothing" path
-    was silently welcomed into the promise: a fan-out that fails on its FIRST
-    album re-raises the cause bare (nothing mutated, so the caller's own error
-    still holds), which is neither of the two cases the old list named, and the
-    user of a delete that touched nothing was sent to look in a Trash folder that
-    had never been created.
+    One failure here is KNOWN to have a Trash entry — a fan-out past its first
+    album (``ArtistDeletePartialError`` with ``moved``) — so it is the only arm
+    that states Trash as a fact. ``TrashMoveIncompleteError`` is raised BECAUSE
+    the files did not move, so its hint says where the album still is.
 
-    The five states, and the sentence each gets:
-
-    * a partial fan-out with files in Trash — the only Trash promise, and it
-      yields to the fourth bullet when the album the fan-out stopped ON is in
-      that state: the promise about the albums before it is true, but it is not
-      the sentence that reader needs first;
-    * ``TrashMoveIncompleteError``, raised precisely BECAUSE the files did not
-      move; its own message already says the library rows were kept, so the hint
-      says where the album still is;
-    * ``TrashRowsNotRemovedError`` — ``album.remove`` raised after the whole
-      folder had moved, and the folder was moved BACK. This one used to be the
-      worst inhabitant of the fallback below: the folder sat in Trash with its
-      origin record written and the album row already gone (beets deletes it and
-      THEN sends ``album_removed`` to plugins, ``beets/library/models.py:391-394``,
-      wrapping no handler in try/except, ``beets/plugins.py:614-627``), so the
-      Trash page offered an exact move-back on an entry whose owner this line
-      was telling there was nothing to look for — with Empty one click away.
-      Owner ruling ``decisions.md`` 28 item 4 closed it at the source, and the
-      sentence now says where the files really are: back in the music folder;
-    * ``TrashDeleteIncompleteError`` — that undo failed too. Its own message is
-      composed from the disk and names both paths, so this line's whole job is
-      to stop the reader emptying Trash before they have read it. Reached
-      through ``ArtistDeletePartialError.cause`` as well as bare: wrapped, it
-      used to be answered with the Trash promise above, which is the one
-      instruction this state must not give;
-    * everything else — the arm that cannot know, so it ASKS rather than tells.
-      Most of what lands here moved nothing: a fan-out stopped before its first
-      album, one whose albums were all ghosts or empty rows, most faults inside a
-      single-album delete. What is left in it that DID leave bytes under Trash is
-      now one case rather than two — a move that stops PART-WAY, which keeps the
-      rows: a cross-filesystem ``shutil.move`` is copy-then-delete and a failure
-      between the two leaves the bytes at both ends, and the per-item fallback
-      moves item by item, so a fault mid-loop (or a share dropping there — see
-      :func:`~app.beets.trash._require_move_happened`) leaves some of them under
-      the Trash container. That fallback is also the one the per-item mover's own
-      ``album.remove`` window lands in: ``trash_album`` commits each item's path
-      INTO the Trash container before it removes the rows, and it gets no undo
-      (see :func:`~app.beets.trash.trash_album`), so this sentence still has to
-      ask rather than tell.
-
-    So the fallback names Trash as a place to CHECK, and stops there. It used to
-    read the answer out for the user as well — "if the album's folder is there it
-    can be restored from there; if it is not, nothing moved and there is nothing
-    to restore" — and the second bullet's state falsifies both halves at once.
-    Measured on 2026-09-02, with ``Item.move`` raising on the second item of an
-    album in a shared folder (``tests/test_delete.py``'s
-    ``_shared_folder_two_track_library``): what sits in Trash is the CONTAINER,
-    holding the one item that made it, not the album's folder; no origin record
-    was written, because ``trash_album`` writes
-    one only after the move; and the album is still in the library with that
-    item's row pointing inside Trash. Telling that user their files can be
-    restored from Trash is as wrong as telling the previous one there is nothing
-    there. Naming Trash as a place to look is one look for the user who moved
-    nothing, against a lost album for the user who did.
+    Everything else cannot know, and most of it moved nothing — but two states
+    leave bytes under Trash: a move that stops PART-WAY (rows kept, files at both
+    ends) and the ``album.remove`` window, where every file is in Trash and the
+    album is still listed. The second is why the fallback names Empty last: one
+    Empty click there destroyed the only copy (measured) and the retry arm is
+    what recovers it, so the sentence says retry FIRST
+    (``test_delete_album_500_does_not_read_the_answer_out_of_a_half_moved_album``
+    and the other whole-string pins on ``_RETRY_BEFORE_EMPTY``).
     """
-    if isinstance(exc, ArtistDeletePartialError):
-        # Read THROUGH the wrapper first: the album this stopped on can be in a
-        # state whose own line is the one that matters more than the promise
-        # about the albums before it. Only the double failure qualifies — the
-        # others below either kept their rows (``TrashMoveIncompleteError``) or
-        # left nothing in Trash (``TrashRowsNotRemovedError``), so the fan-out's
-        # own promise is still the more useful sentence for those.
-        if isinstance(exc.cause, TrashDeleteIncompleteError):
-            return _DO_NOT_EMPTY_TRASH
-        if exc.moved:
-            return "Files are recoverable in the Trash folder. Retry."
+    if isinstance(exc, ArtistDeletePartialError) and exc.moved:
+        return "Files are recoverable in the Trash folder. Retry."
     if isinstance(exc, TrashMoveIncompleteError):
         return "The files were not moved and the library still has the album. Retry."
-    if isinstance(exc, TrashRowsNotRemovedError):
-        return (
-            "The files were moved back, so there is nothing in Trash for this album."
-            " Check whether the album is still listed before retrying."
-        )
-    if isinstance(exc, TrashDeleteIncompleteError):
-        return _DO_NOT_EMPTY_TRASH
+    # Refused before the container is made, so "nothing moved" is a fact here,
+    # and a plain retry would refuse again — the remedy has to change the row.
+    if isinstance(exc, TrashRowUnreadableError):
+        return "Nothing was moved. Fix the row in beets, then retry."
     return (
-        "Check the Trash folder before retrying: a delete that stops part-way can"
-        " leave some or all of the files there. Retry."
+        "A delete that stops part-way can leave some or all of the files in Trash."
+        " Retry before emptying Trash: emptying now can destroy the only copy."
     )
 
 
@@ -551,6 +762,8 @@ async def delete_album_op(
     app = request.app
     _gate()
     async with _swap_lock(app):
+        # Asked again, now the lock is ours: see ``library_busy``'s swap-lock note.
+        raise_if_swap_blocked_by_job(message=_DELETE_BUSY)
         handle, trash_dir, origins_dir, protected = _checked_store(app)
         try:
             return await run_in_threadpool(
@@ -594,11 +807,6 @@ async def delete_album_op(
         # having already moved albums (see ``_NOTHING_DELETED``).
         except TrashOriginsStoreUnusableError as exc:
             raise HTTPException(status_code=503, detail=exc.worded_with(_NOTHING_DELETED)) from exc
-        # The identity guard, same tier and same promise: it runs before the
-        # folder moves, so nothing has been dropped. A fan-out past its first
-        # album re-raises as ArtistDeletePartialError and takes the 500 below.
-        except ProtectedTreeError as exc:
-            raise HTTPException(status_code=503, detail=f"{exc} {_NOTHING_DELETED}") from exc
         except Exception as exc:
             raise _failed(exc) from exc
 
@@ -617,6 +825,8 @@ async def delete_artist_op(
     app = request.app
     _gate()
     async with _swap_lock(app):
+        # Asked again, now the lock is ours: see ``library_busy``'s swap-lock note.
+        raise_if_swap_blocked_by_job(message=_DELETE_BUSY)
         handle, trash_dir, origins_dir, protected = _checked_store(app)
         try:
             return await run_in_threadpool(
@@ -641,10 +851,5 @@ async def delete_artist_op(
         # below, whose message names how far the fan-out got.
         except TrashOriginsStoreUnusableError as exc:
             raise HTTPException(status_code=503, detail=exc.worded_with(_NOTHING_DELETED)) from exc
-        # The identity guard, same tier and same promise: it runs before the
-        # folder moves, so nothing has been dropped. A fan-out past its first
-        # album re-raises as ArtistDeletePartialError and takes the 500 below.
-        except ProtectedTreeError as exc:
-            raise HTTPException(status_code=503, detail=f"{exc} {_NOTHING_DELETED}") from exc
         except Exception as exc:
             raise _failed(exc) from exc

@@ -65,6 +65,37 @@ describe("JobProgress", () => {
     expect(onStop).toHaveBeenCalledTimes(1);
   });
 
+  it("puts Stop on the app's stop register, which carries the inline glyph step", () => {
+    render(<JobProgress label="Import" state="running" onStop={vi.fn()} />);
+    const stop = screen.getByRole("button", { name: "Stop" });
+    // Every other Stop/Pause BUTTON in the app is `outline sm`; this one was
+    // `xs`. (Reorganize also has a second stop control, the detail rail's
+    // size-10 `IconAction`, which is a different register on purpose.)
+    expect(stop).toHaveAttribute("data-variant", "outline");
+    expect(stop).toHaveAttribute("data-size", "sm");
+    // And the size is what decides the glyph, which is why the two are pinned
+    // together: the button hands its svg a size token, and `twMerge` keeps
+    // exactly one. `sm` leaves the base 16px; `xs` replaces it with 12px, where
+    // Phosphor's light stroke is 0.563px — a hairline, and off the app's
+    // 16/20/40 icon scale. Asserted on the class string because jsdom computes
+    // no Tailwind, so the token IS the measurement available here.
+    expect(stop.className).toContain("[&_svg:not([class*='size-'])]:size-4");
+    expect(stop.className).not.toContain("[&_svg:not([class*='size-'])]:size-3");
+  });
+
+  it("sizes the View caret on the inline glyph step, not the button's 12px", () => {
+    renderWithProviders(
+      <JobProgress label="Import" state="running" href="/import" />,
+    );
+    const svg = screen.getByRole("link", { name: "View" }).querySelector("svg");
+    // The button stays `ghost xs`; only the glyph is sized. `xs` hands an
+    // UNSIZED svg `size-3` (12px), where Phosphor light is a 0.563px stroke;
+    // its selector excludes a glyph that carries its own size- class, which is
+    // what this asserts. Owner's call 2026-09-20.
+    expect(svg).not.toBeNull();
+    expect(svg?.getAttribute("class")).toContain("size-4");
+  });
+
   it("omits the Stop button when onStop is not given", () => {
     render(<JobProgress label="Import" state="running" />);
     expect(

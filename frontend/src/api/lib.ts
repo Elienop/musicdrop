@@ -75,19 +75,29 @@ export async function errorDetail(res: Response, fallback: string): Promise<stri
  * apply — the message carries the real cause), and the auto-declared
  * HTTPValidationError `{detail: [{msg, ...}, ...]}` (422 caveat — the OpenAPI
  * schema promises the array, the runtime sometimes sends the string). Null
- * when none match — callers fall back to their own copy. */
+ * when none match — callers fall back to their own copy.
+ *
+ * A BLANK detail is no detail: `""` (or whitespace) used to pass the `??` in
+ * every caller and render an empty alert, and on the import panel an empty
+ * `aria-describedby` target with it. No route sends one today; the shapes above
+ * are read off the wire, so nothing here is guaranteed by a type. */
 export function detailMessage(body: unknown): string | null {
   if (body === null || typeof body !== "object" || !("detail" in body)) {
     return null;
   }
   const detail = (body as { detail: unknown }).detail;
   if (typeof detail === "string") {
-    return detail;
+    return nonBlank(detail);
   }
   if (Array.isArray(detail)) {
-    return detail.length > 0 ? firstValidationMessage(detail) : null;
+    return detail.length > 0 ? nonBlank(firstValidationMessage(detail)) : null;
   }
-  return structuredDetailMessage(detail);
+  return nonBlank(structuredDetailMessage(detail));
+}
+
+/** The sentence, or null when there is nothing in it to read. */
+function nonBlank(message: string | null): string | null {
+  return message !== null && message.trim() !== "" ? message : null;
 }
 
 /** First entry's `msg` of an HTTPValidationError detail array, when the first

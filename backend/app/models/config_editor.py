@@ -17,7 +17,15 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Annotated, Final, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+)
 
 
 def loc_to_dot_sep(loc: tuple[str | int, ...]) -> str:
@@ -152,6 +160,40 @@ class ImportSection(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
+    @field_validator(
+        "copy",
+        "move",
+        "write",
+        "autotag",
+        "singletons",
+        "incremental",
+        "delete",
+        "link",
+        "hardlink",
+        "reflink",
+        mode="before",
+    )
+    @classmethod
+    def _reject_quoted_bool(cls, value: object, info: ValidationInfo) -> object:
+        """Refuse a string, which beets never reads as this bool.
+
+        Pydantic's lax bool reads ``'no'``/``'off'``/``'false'``/``'0'`` as
+        False. beets does not: it tests most of these flags with a bare ``if``
+        on the raw view, and a non-empty string is truthy — so ``move: 'no'``
+        saved clean, fired no advisory, and handed the user a MOVE they believed
+        they had turned off. ``write`` it reads with ``.get(bool)``, which
+        raises on a string (``beets/importer/stages.py:296``). Unquoted ``no``
+        parses to a real bool and never reaches this; unquoted ``y`` and
+        ``maybe`` are strings, as beets reads them. ``reflink`` keeps
+        ``"auto"``, a real beets value.
+        """
+        if info.field_name == "reflink":
+            if isinstance(value, str) and value != "auto":
+                raise ValueError("must be a bool or auto: write yes, no or auto, without quotes")
+        elif isinstance(value, str):
+            raise ValueError("must be a bool: write yes or no, without quotes")
+        return value
+
     copy: bool = True  # type: ignore[assignment]  # beets YAML key; shadows BaseModel.copy()
     move: bool = False
     write: bool = True
@@ -159,6 +201,13 @@ class ImportSection(BaseModel):
     singletons: bool = False
     incremental: bool = False
     duplicate_action: Literal["skip", "keep", "remove", "merge", "ask"] = "ask"
+    # The four file keys the editor used to drop on the floor. Unmodeled, a
+    # ``delete: yes`` typed here saved clean, fired no advisory, and removed the
+    # user's downloads on the next import. Defaults are beets' own.
+    delete: bool = False
+    link: bool = False
+    hardlink: bool = False
+    reflink: bool | Literal["auto"] = False
 
 
 class MatchSection(BaseModel):
@@ -191,7 +240,8 @@ class ValidationErrorItem(BaseModel):
     (CodeMirror reference manual)."""
 
     loc: str
-    """Dotted path, e.g. ``"import.copy"``. Empty string for YAML parse errors."""
+    """Dotted path, e.g. ``"import.copy"``. Empty for a YAML parse error or a file
+    that cannot be read or written."""
 
     msg: str
     type: str
@@ -255,15 +305,70 @@ def _singletons_advisory(section: ImportSection) -> str | None:
 
 
 def _incremental_advisory(section: ImportSection) -> str | None:
+    # The hardlink clause is stated, not detected: ``import_advisories``
+    # validates one key at a time, so ``section.hardlink`` here is always the
+    # default whatever the file says.
     if not section.incremental:
         return None
     return (
-        "MusicDrop honours import.incremental, and that is the trap: beets' taghistory"
-        " records every folder a sweep finished OR skipped, so re-importing one of those"
-        " folders from MusicDrop is skipped before anything runs and reports nothing."
-        " (A sweep forces it on and a bank apply forces it off, whatever this says.)"
-        " `beet import` from the command line behaves the same way."
+        "MusicDrop honours import.incremental: a folder in beets' import history is"
+        " skipped and counted as already known. A sweep or a hardlink import forces it"
+        " on and sets incremental_skip_later itself; a bank apply and Import them again"
+        " force it off. `beet import` behaves the same way."
     )
+
+
+def _delete_advisory(section: ImportSection) -> str | None:
+    # The predicate stays ``section.delete`` alone, not "delete AND copy": under
+    # ``{hardlink: yes, delete: yes}`` beets clears ``delete`` itself, so the
+    # value destroys nothing there — but it is still inert in the app, which is
+    # what the user needs told. Only the CAUSAL clause carries "with copy on",
+    # which is false for every non-copy config.
+    if not section.delete:
+        return None
+    return (
+        "MusicDrop forces import.delete off on every import it runs: with copy on,"
+        " beets would remove your downloads after filing them. To move a download into"
+        " the library instead, set import.move. This value has no effect in the app —"
+        " `beet import` from the command line still honours it."
+    )
+
+
+def _always_moves_advisory(key: str) -> Callable[[ImportSection], str | None]:
+    """The rule for a filing flag that an inbox import overrides.
+
+    One message, three keys, because the loop validates one key at a time — so a
+    single rule reading all three would see two defaults, and keying per flag
+    names the setting the user actually typed.
+
+    The user it lands on is the one who sets ``hardlink: yes`` because they seed
+    their downloads: clicking Import on an INBOX row moves the file out of the
+    seeding folder. It is honoured on a manual import, "Review now", a sweep and
+    a bank apply, so the message says where it applies rather than that it is
+    ignored.
+    """
+
+    # Only a hardlink forces the history keys (``run_import_worker``), and an
+    # ``incremental: no`` beside it fires no rule of its own, so it is said here.
+    history = (
+        " A manual hardlink import turns beets' import history on, so a kept folder"
+        " added again is skipped."
+        if key == "hardlink"
+        else ""
+    )
+
+    def rule(section: ImportSection) -> str | None:
+        if not getattr(section, key):
+            return None
+        return (
+            f"MusicDrop honours import.{key} on a manual import, a sweep and a bank apply."
+            + history
+            + " Inbox imports move and Trash restore sets the file operation itself, so a"
+            " download filed from the inbox leaves the inbox. `beet import` from the command"
+            " line always honours it."
+        )
+
+    return rule
 
 
 #: The advisory rules, in the order they are reported. Each entry is a key under
@@ -276,12 +381,31 @@ def _incremental_advisory(section: ImportSection) -> str | None:
 #: has no way to learn is that MusicDrop overrides it (``run_import_worker``
 #: snapshots, forces and restores these keys around every session —
 #: ``incremental`` excepted: it is honoured on the default review path and
-#: forced only for sweep/bank-apply runs, which is what its advisory says).
+#: forced by four exclusive arms, sweep, bank-apply, hardlink and the per-run
+#: ``incremental: False`` that "Import them again" and Review send
+#: (``import_session.run_import_worker``), which is what its advisory says).
+#:
+#: ``link``/``hardlink``/``reflink`` are HONOURED on a manual import, a sweep
+#: and a bank apply, and overridden by the inbox routes, which name
+#: ``operation="move"``, and by Trash restore, whose two arms each name their
+#: own: ``move=True`` for the ordinary re-import (``trash_manage.restore_album``,
+#: the arm every album Delete reaches — ``_MOVED_ITEMS_NOTE``) and
+#: ``in_place=True`` for the move-back (``trash_manage._restore_to_origin``),
+#: whose folder is already at the destination. Their advisory is worded per-key
+#: and per-PATH, not
+#: "MusicDrop overrides this", because the override belongs to the request rather
+#: than to the saved config. A config with every file operation off has no rule
+#: at all — beets imports in place, which is its own behaviour with no override
+#: to name. What each import resolved to is LOGGED by ``run_import_worker``.
 _IMPORT_ADVISORY_RULES: Final[tuple[tuple[str, Callable[[ImportSection], str | None]], ...]] = (
     ("autotag", _autotag_advisory),
     ("duplicate_action", _duplicate_action_advisory),
     ("singletons", _singletons_advisory),
     ("incremental", _incremental_advisory),
+    ("delete", _delete_advisory),
+    ("link", _always_moves_advisory("link")),
+    ("hardlink", _always_moves_advisory("hardlink")),
+    ("reflink", _always_moves_advisory("reflink")),
 )
 
 

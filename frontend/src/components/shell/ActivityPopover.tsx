@@ -108,7 +108,12 @@ export function ActivityButton() {
                     className="mt-3 mr-2 shrink-0"
                     onClick={() => dismiss(row.id)}
                   >
-                    <Close aria-hidden="true" />
+                    {/* The button keeps its icon-xs box; only the glyph moves
+                        to the spec's inline 16 step. Owner's call 2026-09-20:
+                        `icon-xs` carries `[&_svg:not([class*='size-'])]:size-3`,
+                        so an unsized glyph renders 12px, where Phosphor light
+                        (12 of 256 units) is a 0.563px sub-pixel stroke. */}
+                    <Close aria-hidden="true" className="size-4" />
                   </Button>
                 )}
               </li>

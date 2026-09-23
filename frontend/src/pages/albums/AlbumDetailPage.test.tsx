@@ -37,6 +37,8 @@ function makeDetail(overrides: Partial<AlbumDetail> = {}): AlbumDetail {
     track_count: 3,
     genre: "Alternative Rock",
     mb_albumid: null,
+    // The ordinary album: every file under the library folder.
+    outside_library: null,
     tracks: [
       makeTrack({
         id: 1,
@@ -626,5 +628,135 @@ describe("AlbumDetailPage", () => {
     expect(
       await screen.findByRole("region", { name: "Tracklist" }),
     ).toBeInTheDocument();
+  });
+
+  /** The notice's whole sentence — the test's own copy of the production
+   * string, so a reworded half fails rather than a fragment still matching. */
+  const factOnly = (folder: string) =>
+    `Some files are in ${folder}, outside your library folder.`;
+  const withRemedy = (folder: string) =>
+    `${factOnly(folder)} If an import stopped part-way, add that folder again.`;
+
+  /** One path component at Linux's NAME_MAX, with nothing to break at — the
+   * string the wrapping classes exist for. */
+  const TORTURE_FOLDER = `/downloads/${"z".repeat(255)}`;
+
+  /** Serve one album whose files sit outside the library folder. */
+  function serveOutside(folder: string, holds_every_track: boolean) {
+    server.use(
+      http.get(DETAIL_URL, () =>
+        HttpResponse.json(
+          makeDetail({ outside_library: { folder, holds_every_track } }),
+        ),
+      ),
+    );
+  }
+
+  test("states the fact AND the remedy when that folder holds every track", async () => {
+    const folder = "/downloads/Radiohead - OK Computer";
+    serveOutside(folder, true);
+    renderDetail(1);
+
+    // The path sits in its own span, so getByText's node text stops short of
+    // it — textContent carries the assembled sentence.
+    const notice = await screen.findByText(/outside your library folder/);
+    expect(notice.textContent).toBe(withRemedy(folder));
+
+    // A fact, not a failure: nothing announces, and the calm muted tone.
+    expect(
+      notice.closest('[role="status"],[role="alert"],[aria-live],output'),
+    ).toBeNull();
+    expect(notice.closest(".text-muted-foreground")).not.toBeNull();
+
+    // Route focus lands on the h1, which comes after the notice, so the h1
+    // has to carry it — otherwise it is reachable only by reading backwards.
+    const heading = screen.getByRole("heading", { name: "OK Computer" });
+    expect(heading).toHaveAccessibleDescription(withRemedy(folder));
+
+    const tracklist = screen.getByRole("region", { name: "Tracklist" });
+    expect(
+      notice.compareDocumentPosition(tracklist) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  test("states the fact ALONE when that folder holds only part of the album", async () => {
+    const folder = "/downloads/OK Computer/disc1";
+    serveOutside(folder, false);
+    renderDetail(1);
+
+    // Re-adding a part-folder sweeps the rest to Trash, so the remedy is the
+    // server's call to make, not a sentence the page always shows.
+    const notice = await screen.findByText(/outside your library folder/);
+    expect(notice.textContent).toBe(factOnly(folder));
+    expect(screen.queryByText(/add that folder again/)).toBeNull();
+  });
+
+  test("says nothing about the library folder when the album is wholly inside it", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+    renderDetail(1);
+
+    // Wait for the loaded page first — on the skeleton this would pass for
+    // the wrong reason.
+    const heading = await screen.findByRole("heading", { name: "OK Computer" });
+    expect(screen.queryByText(/outside your library folder/)).toBeNull();
+    expect(heading).not.toHaveAttribute("aria-describedby");
+  });
+
+  test("a 255-character path component renders whole and keeps both wrapping classes", async () => {
+    serveOutside(TORTURE_FOLDER, true);
+    renderDetail(1);
+
+    const notice = await screen.findByText(/outside your library folder/);
+    // Nothing clamped or truncated, and the <wbr>s between the separators add
+    // no text of their own.
+    expect(notice.textContent).toBe(withRemedy(TORTURE_FOLDER));
+
+    // jsdom lays nothing out, so these are tripwires, not the oracle: the
+    // 320px measurement is. `min-w-0` lowers the flex item's min-content
+    // floor; `break-words` splits the one component no line can hold.
+    const path = screen.getByText(TORTURE_FOLDER);
+    expect(path).toHaveClass("break-words");
+    expect(path.closest(".min-w-0")).not.toBeNull();
+    // One break opportunity, after `/downloads/` — the root slash gets none.
+    expect(path.querySelectorAll("wbr")).toHaveLength(1);
+  });
+
+  test("the cover rail cannot outgrow a narrow viewport (max-w-full beside shrink-0)", async () => {
+    server.use(http.get(DETAIL_URL, () => HttpResponse.json(makeDetail())));
+    renderDetail(1);
+
+    // `shrink-0` alone holds the rail at its w-96 (384px) inside a 320px
+    // viewport and scrolls the whole document sideways — every 320px shot of
+    // this page shows that scrollbar. The skeleton has carried the pair since
+    // it was written; the live rail did not.
+    const heading = await screen.findByRole("heading", { name: "OK Computer" });
+    const rail = heading.closest("aside");
+    expect(rail).toHaveClass("w-96", "max-w-full", "shrink-0");
+  });
+
+  test("a break opportunity follows every separator except the root one", async () => {
+    // An 11-character first component is the case the root <wbr> spoils: at
+    // 320px line 1 would end on a lone "/" with the component below it.
+    const folder = "/music-inbox/slskd/OK Computer";
+    serveOutside(folder, true);
+    renderDetail(1);
+
+    const notice = await screen.findByText(/outside your library folder/);
+    expect(notice.textContent).toBe(withRemedy(folder));
+
+    const path = screen.getByText(folder);
+    // Three separators, two break opportunities.
+    expect(path.querySelectorAll("wbr")).toHaveLength(2);
+    // Everything before the FIRST opportunity is the root slash plus the whole
+    // first component, so a line can never end on the lone "/".
+    const nodes = [...path.childNodes];
+    const firstBreak = nodes.findIndex((n) => n.nodeName === "WBR");
+    expect(
+      nodes
+        .slice(0, firstBreak)
+        .map((n) => n.textContent)
+        .join(""),
+    ).toBe("/music-inbox/");
   });
 });

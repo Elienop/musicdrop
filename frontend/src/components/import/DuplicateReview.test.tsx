@@ -84,6 +84,46 @@ describe("DuplicateComparison", () => {
     expect(screen.queryByText("Track comparison")).not.toBeInTheDocument();
   });
 
+  // Opt-in: the import flow arrives here from the match question it just
+  // answered and says so; the bank flow has no first question to continue from.
+  test("the eyebrow renders when given and is absent when not", () => {
+    const { unmount } = render(
+      <DuplicateComparison
+        prompt={makePrompt()}
+        incomingCoverUrl={null}
+        eyebrow="Next question for this album"
+      />,
+    );
+    expect(screen.getByText("Next question for this album")).toBeVisible();
+    unmount();
+
+    render(<DuplicateComparison prompt={makePrompt()} incomingCoverUrl={null} />);
+    expect(
+      screen.queryByText("Next question for this album"),
+    ).not.toBeInTheDocument();
+  });
+
+  // The eyebrow and the blurb under the h1 used the same register, so only
+  // position said which was context and which was explanation. The eyebrow now
+  // carries the tree's label register — the one the panel headings below it use.
+  test("the eyebrow reads in a different register from the blurb", () => {
+    render(
+      <DuplicateComparison
+        prompt={makePrompt()}
+        incomingCoverUrl={null}
+        eyebrow="Next question for this album"
+      />,
+    );
+    const eyebrow = screen.getByText("Next question for this album");
+    const blurb = screen.getByText(/choose what to do before importing/i);
+    expect(eyebrow.className).not.toBe(blurb.className);
+    // The same label register as the panel headings below it. Compared against
+    // the NON-accent one: "Importing (new)" carries the accent colour, which is
+    // the only difference between the two.
+    const panelLabel = screen.getByText("Already in library");
+    expect(eyebrow.className).toBe(panelLabel.className);
+  });
+
   test("shows each side's release identity so 'same release?' is answerable", () => {
     const base = makePrompt();
     const prompt = {

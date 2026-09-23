@@ -1,6 +1,6 @@
 # data/beets/config.yaml — MusicDrop starter
-# This file is yours. MusicDrop reads it; it never writes back.
-# Edit and restart MusicDrop to apply changes.
+# This file is yours. MusicDrop's Settings pages can edit it too.
+# Click Apply there, or restart MusicDrop, to load your changes.
 
 # Library location. Paths are relative to this file's directory.
 directory: ../music         # imported files land here

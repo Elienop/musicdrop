@@ -44,7 +44,7 @@ from app.auth.gate import SessionGateMiddleware, boot_auth_posture
 from app.auth.session import load_or_create_session_secret, session_secret_path
 from app.bank.store import reconcile_interrupted
 from app.beets.library import LibraryHandle, close_library
-from app.beets.setup import setup_beets
+from app.beets.setup import CONFIG_ERRORS, setup_beets
 from app.beets.store_layout import StoreLayoutError, checked_store_dirs
 from app.body_limit import BodySizeLimitMiddleware
 from app.config import resolve_artist_image_cache_dir, resolve_cover_thumb_cache_dir, settings
@@ -70,7 +70,7 @@ def _resolve_library() -> LibraryHandle:
     """Run beets' startup and return the opened library handle.
 
     Delegates to setup_beets, which mirrors beets' own _setup: ensure BEETSDIR
-    exists, copy the starter config.yaml on first run, force-resolve confuse,
+    exists, copy the starter config.yaml on first run, read it with confuse,
     load the plugins listed in the user's config, then open the library with
     path formats + replacements and fire library_opened. Always returns a
     handle (the dir/file are created if missing). Sync helper: runs once at
@@ -91,6 +91,9 @@ def _resolve_library() -> LibraryHandle:
 #: level-tagged line naming a setting that the layout gate below prints.
 _BEETS_STARTUP_FAILED = (OSError, RuntimeError, ValueError, sqlite3.Error)
 
+#: uvicorn's own error logger; ``_boot_log`` below says why app records go there.
+_UVICORN_ERROR_LOGGER = "uvicorn.error"
+
 
 def _boot_log() -> logging.Logger:
     """The logger a refusal to start goes to.
@@ -100,7 +103,56 @@ def _boot_log() -> logging.Logger:
     handler, with no level tag — and the operator grepping for why the process
     died has only ``docker logs``.
     """
-    return logging.getLogger("uvicorn.error")
+    return logging.getLogger(_UVICORN_ERROR_LOGGER)
+
+
+def wire_app_log_namespace() -> None:
+    """Give the ``app.*`` loggers the handler uvicorn writes its own records on.
+
+    Under the shipped CMD (``Dockerfile``, no ``--log-config``) uvicorn
+    configures only ``uvicorn``/``uvicorn.error``/``uvicorn.access`` and leaves
+    root at WARNING with no handler, so every ``app.*`` record reached stderr
+    through logging's ``lastResort``: no level, no timestamp, no logger name -
+    and INFO dropped entirely. ``_boot_log`` works around it for boot refusals
+    by logging to ``uvicorn.error``; this is the same fix for the namespace.
+
+    The ``uvicorn``/``uvicorn.error`` pair ONLY, and the walk STOPS there
+    (measured: ``uvicorn.error`` carries no handler of its own - it propagates
+    to ``uvicorn``, which owns the one that prints, so reading
+    ``getLogger("uvicorn.error").handlers`` finds nothing and this no-ops).
+    Not ``uvicorn.access``, whose formatter reads each record's args as the
+    access tuple and would raise on an ordinary one; and never root, which off
+    uvicorn is where pytest's own capture handlers live.
+
+    What arrives is uvicorn's own line, ``<LEVEL>: <message>`` - its formatter
+    prints no logger name, so an app record reads exactly like uvicorn's. That
+    is the same trade the ``operator_logger`` convention already makes; a
+    name-carrying format would mean a second formatter, not this handler.
+
+    Propagation stays on: root has no handler under that config, so nothing
+    double-prints, and ``caplog`` (a root handler) keeps seeing app records.
+    Adding each handler at most once makes repeat calls (a second app in one
+    test process) idempotent.
+
+    Does NOTHING when uvicorn's loggers have no handler, which is every run
+    that is not under uvicorn (pytest, another ASGI server): nothing is touched
+    and ``lastResort`` behaves exactly as before.
+    """
+    handlers: list[logging.Handler] = []
+    for name in (_UVICORN_ERROR_LOGGER, "uvicorn"):
+        source = logging.getLogger(name)
+        handlers.extend(h for h in source.handlers if h not in handlers)
+        if not source.propagate:
+            break
+    if not handlers:
+        return
+    app_logger = logging.getLogger("app")
+    for handler in handlers:
+        if handler not in app_logger.handlers:
+            app_logger.addHandler(handler)
+    # Without this the effective level is root's WARNING and INFO stays dropped
+    # even with a handler attached. uvicorn's own, so ``--log-level`` carries.
+    app_logger.setLevel(logging.getLogger(_UVICORN_ERROR_LOGGER).getEffectiveLevel())
 
 
 def _refuse_boot(message: str, *args: object) -> None:
@@ -158,6 +210,9 @@ def _build_artist_image_service(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # FIRST, so every record below reaches the operator level-tagged rather
+    # than through ``lastResort`` (see the helper). No-op off uvicorn.
+    wire_app_log_namespace()
     # Open the beets library once at startup (a SQLite connection we keep for
     # the process lifetime) and close it on shutdown. setup_beets always returns
     # a handle — missing BEETSDIR / config.yaml are created from the starter —
@@ -171,6 +226,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # is written down.
     try:
         handle = _resolve_library()
+    except CONFIG_ERRORS as exc:
+        # ``%r`` of the exception: a YAML error's own text spans several lines.
+        # "or one of its includes": beets' read follows ``include:``, so a typed
+        # value or a skipped include can be the fault. "cannot be used", not
+        # "beets rejected": MusicDrop refuses some includes beets would load.
+        _refuse_boot(
+            "refusing to start: config.yaml or one of its includes under %s=%r"
+            " cannot be used (%r). Fix it.",
+            "MUSICDROP_BEETS_DIR",
+            settings.beets_dir,
+            exc,
+        )
+        raise
     except _BEETS_STARTUP_FAILED as exc:
         _refuse_boot(
             "refusing to start: beets could not open the library under %s=%r. %s: %s."
@@ -274,7 +342,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.acquisition_queue = acquisition_queue
     app.state.inbox_dir = inbox_dir
     app.state.acquisition_ledger = ledger  # the Review page lists + annotates the inbox backlog
-    acquisition_queue.start()
 
     # Bank reconciliation: rows stuck in "applying" from a mid-apply crash
     # revert to needs_review with a note (never blind-requeued).
@@ -324,7 +391,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         swap_lock=app.state.beets_swap_lock,
     )
     app.state.bank_apply_runner = bank_apply_runner
-    bank_apply_runner.start()
 
     # Build the artist-image stack once: the disk cache + the persisted enabled
     # toggle are shared on app.state so the override + settings endpoints reach
@@ -378,6 +444,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.artist_background_source = build_fanart_background_source(http_client, settings)
 
+    # Both drains start here, after every refusal above: a boot refused earlier
+    # leaves no drain thread running (measured: the inbox drain used to outlive
+    # the bank refusal). ``Thread.start`` can raise, so a failed second start
+    # stops the first; after that the ``finally`` stops both.
+    acquisition_queue.start()
+    try:
+        bank_apply_runner.start()
+    except BaseException:
+        acquisition_queue.stop()
+        raise
     try:
         yield
     finally:
@@ -558,7 +634,7 @@ app.add_middleware(
 # (app/auth/cookies.py), so there is no boot-time value to report. Wording it
 # as a state would be a claim the process cannot make — an operator behind a
 # TLS proxy and one on the LAN read the same line and both read the truth.
-logging.getLogger("uvicorn.error").info(
+logging.getLogger(_UVICORN_ERROR_LOGGER).info(
     "security posture: %s; extra write origins: %s; allowed hosts: IP literals, localhost%s;"
     " auth: %s; session cookie: Secure on HTTPS requests, plain otherwise",
     "prod (static_dir set)" if settings.static_dir else "dev (static_dir empty)",

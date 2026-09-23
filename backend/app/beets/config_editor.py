@@ -1,6 +1,7 @@
 """Layer-3 config editor — write-side helpers.
 
-ruamel.yaml is used ONLY for the write path (load -> mutate -> dump).
+ruamel.yaml parses what Validate, Save and the Naming routes read, and writes
+what Save stores (load -> mutate -> dump).
 Per the maintainer (Anthon van der Neut, https://yaml.dev/doc/ruamel.yaml/detail/),
 the default ``YAML()`` is ``typ='rt'`` — round-trip — which preserves comments,
 key order, block style, scalar quoting style, and anchors. Booleans always
@@ -11,10 +12,10 @@ The default ``extra='ignore'`` on Pydantic (per Pydantic v2 docs § Models)
 is correct here: we never round-trip through the schema, only validate.
 Unknown beets/plugin keys live on disk in the ruamel ``CommentedMap``.
 
-Currently exports: ``parse_yaml``, ``validate_known_keys``,
-``store_layout_report``, ``atomic_write``, ``read_naming``, ``save``,
-``save_naming``, and ``apply`` (asyncio-locked threadpool rebuild that swaps
-``app.state.beets_library``).
+Currently exports: ``parse_yaml``, ``parse_error_text``, ``settings_mapping``,
+``NOT_A_MAPPING``, ``validate_known_keys``, ``store_layout_report``,
+``atomic_write``, ``read_naming``, ``save``, ``save_naming``, and ``apply``
+(asyncio-locked threadpool rebuild that swaps ``app.state.beets_library``).
 
 Save writes the submitted document straight back to disk (the editor serves and
 edits the RAW ``config.yaml``): there is no secret-preserve merge — masking the
@@ -28,7 +29,9 @@ import asyncio
 import hashlib
 import io
 import logging
+import os
 import re
+import stat
 import threading
 from collections.abc import Collection
 from pathlib import Path
@@ -40,28 +43,41 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.composer import Composer, ComposerError
 from ruamel.yaml.error import YAMLError
+from ruamel.yaml.events import AliasEvent
+from ruamel.yaml.resolver import VersionedResolver
 
 # ``build_config_snapshot`` is used by save()/apply() to return the post-write
 # snapshot (raw editable doc + redacted effective view + freshness fields).
 from app.beets.config_snapshot import build_config_snapshot
 from app.beets.library import LibraryHandle
 
-# ``setup_beets`` / ``reset_beets_globals`` are bound at MODULE LEVEL on
-# purpose: the Apply 500-branch test monkeypatches ``app.beets.config_editor``
-# directly (the name the handler captured at import time), so the lambda fires
-# inside ``_rebuild_beets_handle``. Importing them inside the function body
-# would defeat that patch and the 500 path would silently call the real
-# beets setup.
-from app.beets.setup import reset_beets_globals, setup_beets
+# Bound at MODULE LEVEL on purpose: the Apply tests monkeypatch
+# ``app.beets.config_editor`` directly (the name the handler captured at import
+# time). Importing them inside the function body would defeat that patch and
+# the test would silently call the real beets setup.
+from app.beets.setup import (
+    CONFIG_ERRORS,
+    BeetsConfigRead,
+    ConfigFileMissing,
+    ConfigUnreadable,
+    open_beets,
+    read_beets_config,
+    read_config_document,
+    reset_beets_globals,
+    running_config,
+)
 from app.beets.store_layout import (
+    SkippedInclude,
     StoreLayoutError,
     checked_store_dirs,
     layout_check_for_config,
+    yaml_error_at,
 )
 from app.config import Settings
 from app.config import settings as _module_settings
-from app.library_busy import library_job_active
+from app.library_busy import swap_blocked_by_job
 from app.models.config_api import BeetsConfigSnapshot
 from app.models.config_editor import (
     ConfigAdvisory,
@@ -77,15 +93,80 @@ from app.models.config_editor import (
 from app.playlists.atomic import write_atomic_text
 
 __all__ = [
+    "NOT_A_MAPPING",
     "apply",
     "atomic_write",
+    "parse_error_text",
     "parse_yaml",
     "read_naming",
     "save",
     "save_naming",
+    "settings_mapping",
     "store_layout_report",
     "validate_known_keys",
 ]
+
+
+#: A YAML implicit-resolver table: first character -> ``(tag, regex)`` pairs.
+_ImplicitResolvers = dict[str | None, list[tuple[str, re.Pattern[str]]]]
+
+
+class _Yaml11Resolver(VersionedResolver):
+    """Resolves every plain scalar as beets' loader does, on load and on dump.
+
+    ruamel's own YAML 1.1 table is not PyYAML's: it reads ``y`` / ``n`` as
+    bools and ``+_1_`` as an int (``ruamel/yaml/resolver.py:32,65``). Measured:
+    ``replace: {'ñ': n}`` came back as ``False``, and a save wrote it as one.
+    The dump asks the same table whether a string needs quotes.
+
+    ``yaml.version = (1, 1)`` alone does not hold on load: a ``---`` with no
+    ``%YAML`` line sets it back to ``None`` (``ruamel/yaml/parser.py:319-321``),
+    and ruamel then uses 1.2 (``ruamel/yaml/compat.py:28``). Scanner, parser and
+    constructor ask ``processing_version``; measured without it, ``0644`` after
+    a ``---`` read as 644, where beets reads 420.
+    """
+
+    _table: _ImplicitResolvers | None = None
+
+    @property
+    def processing_version(self) -> tuple[int, int]:
+        return (1, 1)
+
+    @property
+    def versioned_resolver(self) -> _ImplicitResolvers:
+        # The loader beets reads config.yaml with (``setup.read_config_document``).
+        # Copied per instance, lists included: ruamel extends the list it gets in
+        # place (``ruamel/yaml/resolver.py:357-358``). Measured with a ``None``
+        # key registered: a parse and dump of beets' default config added 229
+        # entries to beets' own lists.
+        if self._table is None:
+            live = cast(_ImplicitResolvers, beets.config.loader.yaml_implicit_resolvers)
+            self._table = {first: list(pairs) for first, pairs in live.items()}
+        return self._table
+
+
+class _RefusingComposer(Composer):
+    """Refuses a reused anchor, as beets' loader does (PyYAML ``composer.py:74-77``).
+
+    ruamel only warns (``ruamel/yaml/composer.py:130-137``), and the warning
+    quotes both lines of the file. Measured: a token on such a line reached
+    stderr, Save wrote the file, and the next start refused it. Not a
+    ``warnings`` filter: those are process-wide, and measured, one set at import
+    no longer held inside a pytest test.
+    """
+
+    def compose_node(self, parent: Any, index: Any) -> Any:
+        if not self.parser.check_event(AliasEvent):
+            event = self.parser.peek_event()
+            anchor = event.anchor
+            if anchor is not None and anchor in self.anchors:
+                raise ComposerError(
+                    f"found duplicate anchor {anchor!r}; first occurrence",
+                    self.anchors[anchor].start_mark,
+                    "second occurrence",
+                    event.start_mark,
+                )
+        return super().compose_node(parent, index)
 
 
 def _yaml() -> YAML:
@@ -95,9 +176,16 @@ def _yaml() -> YAML:
 
     * default ``typ='rt'`` (do NOT pass it explicitly — maintainer warns
       against it).
-    * ``yaml.version = (1, 1)`` so ``yes`` / ``no`` parse as bool (ruamel
-      SF #285 — https://sourceforge.net/p/ruamel-yaml/tickets/285/ — and
-      YAML 1.1 spec).
+    * :class:`_Yaml11Resolver`, so ``yes`` / ``no`` are bools with or without a
+      ``---`` or a ``%YAML`` line, as beets reads them.
+    * :class:`_RefusingComposer`, so a reused anchor is refused, as beets does.
+    * ``version = (1, 1)`` for the dump. The serializer keeps its own copy
+      (``ruamel/yaml/main.py:319``), and the dump reads it for an octal's prefix
+      (``representer.py:609``) and to quote ``?`` / ``:`` in a flow collection
+      (``emitter.py:1096,1109``). Measured without it: ``0644`` was written as
+      ``!!int '0o644'``, and a ``replace`` key ``\\?`` was written bare in a flow
+      mapping, which beets cannot parse. A load can change it (a ``---`` sets
+      ``None``, ``%YAML 1.2`` sets ``(1, 2)``); every dump uses a fresh instance.
     * ``preserve_quotes = True`` so the user's quoting style survives a
       round-trip.
     * ``indent(mapping=2, sequence=4, offset=2)`` — ruamel-recommended block
@@ -105,6 +193,8 @@ def _yaml() -> YAML:
     * ``width = 4096`` so long strings don't get rewrapped.
     """
     yaml = YAML()
+    yaml.Resolver = _Yaml11Resolver
+    yaml.Composer = _RefusingComposer
     yaml.version = (1, 1)
     yaml.preserve_quotes = True
     yaml.indent(mapping=2, sequence=4, offset=2)
@@ -112,12 +202,21 @@ def _yaml() -> YAML:
     return yaml
 
 
+def parse_error_text(exc: Exception) -> str:
+    """A parse failure's lint text: YAML's own, else the class name too (``KeyError: 'ture'``)."""
+    return str(exc) if isinstance(exc, YAMLError) else f"{type(exc).__name__}: {exc}"
+
+
 def parse_yaml(text: str) -> CommentedMap:
     """Parse YAML text into a ruamel ``CommentedMap``.
 
     Raises:
-        ruamel.yaml.YAMLError: on parse failure. Callers map this to HTTP 422
-            with the ``problem_mark`` line/column (see ``api/config_.py``).
+        ruamel.yaml.YAMLError: on a syntax error, with a ``problem_mark``.
+        Exception: not only YAMLError; measured ``KeyError`` (``!!bool ture``),
+            ``ValueError`` (``!!float abc``), ``IndexError`` (``!!int ''``),
+            ``AttributeError`` (``!!set x``), ``TypeError`` (a tagged flow
+            collection as a key) and ``RecursionError`` (deep nesting). A caller
+            that wants every parse failure catches ``Exception``.
     """
     # ruamel.yaml's `YAML.load` returns `Any` in the bundled stubs; in
     # round-trip mode the result is a `CommentedMap` for a YAML mapping (the
@@ -188,6 +287,10 @@ def _merged_line_col(node: Any, key: str | int) -> tuple[int, int] | tuple[None,
     return (None, None)
 
 
+#: The one sentence for a top level beets does not read as settings.
+NOT_A_MAPPING: Final = "config.yaml must be a mapping of settings."
+
+
 def validate_known_keys(
     data: CommentedMap | dict[str, Any],
 ) -> list[ValidationErrorItem]:
@@ -198,7 +301,11 @@ def validate_known_keys(
 
     * ``loc`` — the Pydantic loc tuple rendered as a dotted path (e.g.
       ``"import.copy"``).
-    * ``msg`` / ``type`` — verbatim from Pydantic.
+    * ``msg`` / ``type`` — verbatim from Pydantic, except ``msg`` for a
+      ``model_type`` error: Pydantic's names the model class ("…instance of
+      ImportSection"), so it is "must be a mapping of settings." (the editor
+      shows the ``loc`` before it), or :data:`NOT_A_MAPPING` at the root. That
+      is every field typed as a model, at any depth.
     * ``line`` / ``column`` — resolved via ``_line_col_for_path`` when
       ``data`` is a ``CommentedMap`` (i.e. it came from ``parse_yaml``).
       When ``data`` is a plain ``dict`` (e.g. callers that already
@@ -219,10 +326,14 @@ def validate_known_keys(
             col: int | None = None
             if root is not None:
                 line, col = _line_col_for_path(root, err["loc"])
+            loc = loc_to_dot_sep(err["loc"])
+            msg = str(err["msg"])
+            if err["type"] == "model_type":
+                msg = "must be a mapping of settings." if loc else NOT_A_MAPPING
             out.append(
                 ValidationErrorItem(
-                    loc=loc_to_dot_sep(err["loc"]),
-                    msg=str(err["msg"]),
+                    loc=loc,
+                    msg=msg,
                     type=str(err["type"]),
                     line=line,
                     column=col,
@@ -245,13 +356,13 @@ class StoreLayoutReport(NamedTuple):
     advisories: list[ConfigAdvisory]
 
 
-def _skipped_include_advisory(name: str) -> ConfigAdvisory:
-    """An include beets would drop. Advisory, not an error: beets starts."""
+def _skipped_include_advisory(skipped: SkippedInclude) -> ConfigAdvisory:
+    """An include beets would drop. An advisory: the file may exist by Apply time."""
     return ConfigAdvisory(
         key="include",
         message=(
-            f"beets could not read {name!r}, so it skips that entry and stops"
-            " reading include: there. Nothing listed after it is merged."
+            f"beets cannot read the include {skipped.name!r} ({skipped.reason}). Apply and"
+            " a restart refuse this config until it can."
         ),
     )
 
@@ -275,8 +386,7 @@ def store_layout_report(
     filename — ``KnownKeysSchema`` reports both. A missing ``library:`` is held
     to beets' own ``library.db`` default instead, which is what the next boot
     opens; the schema requires that key too, so at Validate and Save the default
-    adds no row and only Apply's on-disk read reaches it. The ``isinstance`` on
-    ``data`` is load-bearing; ruamel returns ``None`` for an empty document.
+    adds no row and only Apply's on-disk read reaches it.
 
     ``reported_keys`` suppress exactly one row: a single-UNUSABLE-VALUE refusal
     on a key the schema also reported, where both say the same thing. Measured,
@@ -285,10 +395,10 @@ def store_layout_report(
     ``directory: /`` the schema's "not writable" and the layout row are different
     facts, and only the second names the loss.
     """
-    if not isinstance(data, dict) or "directory" not in data:
+    if "directory" not in data:
         return StoreLayoutReport([], [])
     check = layout_check_for_config(document=data, settings=settings, handle=handle)
-    advisories = [_skipped_include_advisory(name) for name in check.skipped_includes]
+    advisories = [_skipped_include_advisory(skipped) for skipped in check.skipped_includes]
     error = check.error
     if error is None:
         return StoreLayoutReport([], advisories)
@@ -320,7 +430,7 @@ def _strip_yaml_directive(text: str) -> str:
     """Drop a leading ``%YAML 1.1`` directive line and its ``---`` document-start.
 
     ruamel emits this two-line prologue whenever ``yaml.version`` is set. We keep
-    the version on the dumper (it drives 1.1 scalar-quoting — see ``atomic_write``)
+    the version on the dumper (octal prefix, flow quoting — see :func:`_yaml`)
     but the directive itself is unwanted churn in the user's config.yaml, so we
     peel it off the dumped text. Only a directive at the very top is stripped; a
     ``---`` is removed only when it directly follows the directive (never a
@@ -358,20 +468,25 @@ def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
     over would mask "the user just saved" and the Apply button would never light
     up. First write: the umask default. See ``write_atomic_bytes`` for what
     ``None`` does when the target is not a regular file.
+
+    A symlinked ``dst`` is written through: the resolved path is published, so
+    the link stays and its target gets the bytes and keeps its mode. The temp
+    goes in the target's folder, so that folder must be writable.
     """
     # Dump to a buffer and strip the "%YAML 1.1" directive prologue (see
     # _strip_yaml_directive) rather than write ``yaml.dump(data, f)`` directly:
     # ruamel injects that header on every dump whenever ``yaml.version`` is set,
     # churning the user's hand-edited config.yaml (diff noise, a changed CAS sha,
-    # a no-op save that isn't byte-identical). The version MUST stay (1,1) on the
-    # dump side — clearing it would switch the emitter to the YAML-1.2 resolver,
-    # which writes bool-token strings ("no"/"yes"/"on"/"off"/"y"/"n") and
-    # sexagesimals ("d:d:d") UNQUOTED; those silently reload as bool/int and
-    # corrupt config (e.g. a naming ``replace`` rule value "no" becomes False,
-    # crashing beets' re.compile on Apply). 1.1 keeps them quoted.
+    # a no-op save that isn't byte-identical). Both 1.1 settings stay on the dump
+    # side (see :func:`_yaml`): the resolver quotes a string that would read
+    # back as a bool or an int ("no"; a naming ``replace`` pattern "no" became
+    # False, crashing beets' re.compile on Apply), and ``yaml.version`` keeps
+    # octals as ``0644`` and quotes ``?`` in a flow collection.
     buf = io.StringIO()
     yaml.dump(data, buf)
-    write_atomic_text(dst, _strip_yaml_directive(buf.getvalue()), mode=None)
+    # realpath, not one readlink: a relative link and a chain resolve too.
+    target = Path(os.path.realpath(dst))
+    write_atomic_text(target, _strip_yaml_directive(buf.getvalue()), mode=None)
 
 
 # Serializes the read-SHA -> compare -> atomic-write of ``save``/``save_naming``
@@ -388,17 +503,21 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
 
     1. **Parse** with ruamel — bad YAML -> HTTP 422 with ``problem_mark`` line/col.
     2. **Schema validate** via ``KnownKeysSchema`` — known-key errors -> 422 with
-       per-error ``ValidationErrorItem`` payloads. Then the same
+       per-error ``ValidationErrorItem`` payloads; a text with no YAML node is
+       validated as ``{}``, and any other top level that is not a mapping is one
+       :data:`NOT_A_MAPPING` row (:func:`settings_mapping`). Then the same
        :func:`store_layout_report` row ``POST /api/config/validate`` paints
        in the gutter: a ``directory:`` that would put the music library at or
        under Trash (or over the origin store) is refused HERE, before the write,
        because the file this writes is also the file the process boots from — a
        config saved in that shape would refuse to start on the next restart.
     3. **SHA-256 CAS** — compare ``req.base_sha256`` to the SHA-256 of the
-       on-disk bytes. Mismatch -> 409 with ``current_yaml_text`` (raw on-disk
-       file) and ``current_sha256`` so the frontend's merge view can render
-       the diff. SHA-256 alone is the CAS token (no mtime check): nanosecond
-       mtime ints overflow JavaScript's ``Number.MAX_SAFE_INTEGER`` and
+       on-disk bytes; a file it cannot read -> 422, and nothing is created. A
+       file that is not UTF-8 -> 422 too, whatever the base.
+       Mismatch -> 409 with ``current_yaml_text`` (raw on-disk file) and
+       ``current_sha256`` so the frontend's merge view can render the diff.
+       SHA-256 alone is the CAS token (no mtime check): nanosecond mtime ints
+       overflow JavaScript's ``Number.MAX_SAFE_INTEGER`` and
        silently corrupt across the JSON wire — the SHA already covers every
        bytes-changed edit, including the rare ``os.utime`` "preserve mtime,
        change content" case (see ``test_save_409_on_sha_change``). The CAS token
@@ -408,7 +527,7 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
        own mode preserved (``mode=None``). The submitted document is written
        verbatim (no secret-preserve merge: the editor serves and edits the raw
        file). Mode bits only: atime/mtime advance so step 5's freshness signal
-       fires.
+       fires. A symlinked config.yaml's target is written; an OS error -> 422.
     5. **Return new snapshot** — ``apply_pending`` will be ``True`` because the
        mtime advanced past ``handle.file_mtime_at_load`` (this is the load-bearing
        reason ``atomic_write`` preserves the mode and not the mtime — a frozen
@@ -427,16 +546,16 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
     # 1. Parse with ruamel.
     try:
         new_map = parse_yaml(req.yaml_text)
-    # Same three as Validate's arm: ruamel raises RecursionError past the nesting
-    # limit and ValueError on an over-long integer.
-    except (YAMLError, RecursionError, ValueError) as exc:
+    # Broad, as Validate's arm is: parsing changes nothing, so whatever it raises
+    # is a parse error.
+    except Exception as exc:
         mark = getattr(exc, "problem_mark", None)
         raise HTTPException(
             status_code=422,
             detail=[
                 {
                     "loc": "",
-                    "msg": str(exc),
+                    "msg": parse_error_text(exc),
                     "type": "yaml_parse",
                     "line": (mark.line + 1) if mark else None,
                     "column": mark.column if mark else None,
@@ -448,6 +567,21 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
     # list, same 422: to the editor both are lint rows on the same document, and
     # splitting them into two statuses would make the gutter and the Save button
     # disagree about what "there is an error" means.
+    settings_map = settings_mapping(req.yaml_text, new_map)
+    if settings_map is None:
+        raise HTTPException(
+            status_code=422,
+            detail=[
+                {
+                    "loc": "",
+                    "msg": NOT_A_MAPPING,
+                    "type": "model_type",
+                    "line": None,
+                    "column": None,
+                }
+            ],
+        )
+    new_map = settings_map
     schema_errors = validate_known_keys(new_map)
     errors = (
         schema_errors
@@ -469,24 +603,43 @@ def save(handle: LibraryHandle, req: SaveRequest, *, settings: Settings) -> Beet
     # concurrent save can't pass the same-base check and clobber this one
     # (last-writer-wins).
     with _SAVE_LOCK:
-        on_disk_bytes = handle.config_path.read_bytes()
-        on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
-        if on_disk_sha != req.base_sha256:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "detail": "File changed on disk",
-                    "current_yaml_text": on_disk_bytes.decode("utf-8"),
-                    "current_sha256": on_disk_sha,
-                },
-            )
+        # A 422 when the read fails, and no write: the file is not created,
+        # because Apply's recovery for a missing file is to restore it. A 422
+        # too when the write fails.
+        try:
+            on_disk_bytes = _read_on_disk(handle.config_path)
+            # Before the compare: its 409 hands out the sha "Overwrite anyway" sends.
+            on_disk_text = _on_disk_text(on_disk_bytes)
+            on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
+            if on_disk_sha != req.base_sha256:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "detail": "File changed on disk",
+                        "current_yaml_text": on_disk_text,
+                        "current_sha256": on_disk_sha,
+                    },
+                )
 
-        # 4. Atomic write. The editor serves and edits the RAW file (secrets
-        # included), so the submitted document IS the intended file — write it
-        # straight back. There is deliberately no secret-preserve merge: masking
-        # the served text is what used to clobber list-nested credentials with
-        # "REDACTED" and flatten the user's comments/anchors on the round-trip.
-        atomic_write(handle.config_path, new_map, yaml)
+            # 4. Atomic write. The editor serves and edits the RAW file (secrets
+            # included), so the submitted document IS the intended file — write it
+            # straight back. There is deliberately no secret-preserve merge: masking
+            # the served text is what used to clobber list-nested credentials with
+            # "REDACTED" and flatten the user's comments/anchors on the round-trip.
+            _write_on_disk(handle.config_path, new_map, yaml)
+        except _UnusableOnDisk as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=[
+                    {
+                        "loc": "",
+                        "msg": str(exc),
+                        "type": _ON_DISK_ERROR_TYPE,
+                        "line": None,
+                        "column": None,
+                    }
+                ],
+            ) from exc
 
     # 5. Return the new snapshot. apply_pending will be True because mtime
     # advanced past handle.file_mtime_at_load — Task 8's Apply endpoint clears it.
@@ -528,23 +681,124 @@ def _beets_default_naming() -> tuple[dict[str, str], dict[str, str]]:
     return (paths, replace)
 
 
-def read_naming(handle: LibraryHandle) -> NamingConfig:
-    """Parse the on-disk ``paths:``/``replace:`` into structured rows + CAS sha,
-    falling back per key to beets' built-in defaults so the panel reflects the
-    *effective* naming even when the user relies on the defaults (no explicit
-    ``paths:``/``replace:`` block).
+def _unparsed_on_disk(exc: Exception) -> str:
+    """The Naming routes' 422 text for a config.yaml on disk that does not parse.
 
-    ``previews`` and ``replace_errors`` are left empty here — the router fills
-    them by calling the renderer with ``handle.lib`` (this function stays
-    config-only, no library access)."""
-    on_disk_bytes = handle.config_path.read_bytes()
-    sha = hashlib.sha256(on_disk_bytes).hexdigest()
-    doc = parse_yaml(on_disk_bytes.decode("utf-8"))
+    One line, and no text from the file: measured, ruamel's ran to 11 lines, and
+    for a duplicate key it quoted both values. The Beets editor shows it whole.
+    """
+    at = yaml_error_at(exc)
+    cause = "" if at is None else f": {at}"
+    return f"config.yaml does not parse{cause}. Fix it in Settings → Beets."
 
+
+class _UnusableOnDisk(Exception):
+    """config.yaml on disk cannot be edited as settings; ``str()`` is the 422 text."""
+
+
+#: The ``type`` on a 422 row about config.yaml ON DISK rather than the submitted
+#: text: it cannot be read or written, does not parse, or is not a mapping.
+_ON_DISK_ERROR_TYPE: Final = "config_on_disk"
+
+
+def _read_on_disk(config_path: Path) -> bytes:
+    """config.yaml's bytes for both save routes and the Naming GET; an OS error is a 422.
+
+    Only a regular file is opened, the test ``os.path.isfile`` makes and confuse
+    reads the user file under (``confuse/sources.py:94-96``). Measured: a FIFO
+    blocked the open while a save held ``_SAVE_LOCK``, until a restart.
+    """
+    try:
+        if not stat.S_ISREG(config_path.stat().st_mode):
+            raise _UnusableOnDisk("config.yaml is not a regular file.")
+        return config_path.read_bytes()
+    except OSError as exc:
+        raise _UnusableOnDisk(
+            f"config.yaml could not be read: {exc.strerror or type(exc).__name__}."
+        ) from exc
+
+
+def _write_on_disk(config_path: Path, data: CommentedMap, yaml: YAML) -> None:
+    """:func:`atomic_write` for both save routes; an OS error is a 422.
+
+    Measured before: a 500. A failure before the publish leaves the file, and a
+    link at it, as they were; only the folder fsync runs after the publish.
+    """
+    try:
+        atomic_write(config_path, data, yaml)
+    except OSError as exc:
+        raise _UnusableOnDisk(
+            f"config.yaml could not be written: {exc.strerror or type(exc).__name__}."
+        ) from exc
+
+
+def _empty_mapping_keeping(text: str) -> CommentedMap | None:
+    """``text``, which parsed to ``None``, as an empty mapping that keeps its comments.
+
+    ``None`` when it does not come back as one: an explicit null (``~``) is a
+    node, and the ``{}`` appended after it does not replace it.
+    """
+    if text and not text.endswith("\n"):
+        text += "\n"  # else ``{}`` would sit inside the last comment
+    try:
+        doc = parse_yaml(text + "{}\n")
+    # Broad: whatever this raises is about the ``{}`` added here, not the file.
+    except Exception:
+        return None
+    return doc if isinstance(doc, CommentedMap) else None
+
+
+def settings_mapping(text: str, doc: object) -> CommentedMap | None:
+    """``doc``, parsed from ``text``, as a mapping of settings; ``None`` when it is not one.
+
+    beets reads an empty, comment-only or falsy top level as no settings
+    (``load_yaml(...) or {}``, ``confuse/sources.py:101``). Here only a text with
+    no YAML node is: an empty mapping. ``~``, ``[]``, ``false`` and a scalar are
+    ``None``, and so is ``---`` then ``...``: the ``{}`` added is a second document.
+    """
+    if doc is None:
+        doc = _empty_mapping_keeping(text)
+    return doc if isinstance(doc, CommentedMap) else None
+
+
+def _on_disk_text(on_disk_bytes: bytes) -> str:
+    """config.yaml's text for both save routes and the Naming GET; not UTF-8 is a 422.
+
+    Not "does not parse": the Beets editor opens such a file empty. Measured on
+    the Beets Save: one "Overwrite anyway" replaced a UTF-16 file beets reads.
+    """
+    try:
+        return on_disk_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise _UnusableOnDisk("config.yaml is not UTF-8.") from exc
+
+
+def _on_disk_mapping(text: str) -> CommentedMap:
+    """config.yaml's text as the Naming routes edit it, per :func:`settings_mapping`.
+
+    A file with no YAML node is an empty mapping; a save keeps its comments,
+    except one above ``---``, and writes one after ``--- `` indented four spaces.
+    Every other top level that is not a mapping is refused, because a save could
+    not keep their comments.
+    """
+    try:
+        doc = parse_yaml(text)
+    # Broad, as Validate's arm is: see :func:`parse_yaml`.
+    except Exception as exc:
+        raise _UnusableOnDisk(_unparsed_on_disk(exc)) from exc
+    mapping = settings_mapping(text, doc)
+    if mapping is None:
+        raise _UnusableOnDisk(NOT_A_MAPPING)
+    return mapping
+
+
+def _split_paths(
+    paths_raw: object,
+) -> tuple[str | None, str | None, str | None, list[NamingRuleInput]]:
+    """``paths:`` as ``(default, comp, singleton, custom rules)``; ``None`` where unset."""
     # ``or {}`` is not enough — a truthy scalar/list (from a hand-corrupted
     # config like ``paths: somestring``) would survive it and then ``.items()``
     # would raise. Coerce any non-mapping to empty so read never 500s.
-    paths_raw = doc.get("paths")
     paths = paths_raw if isinstance(paths_raw, dict) else {}
     default = comp = singleton = None
     custom: list[NamingRuleInput] = []
@@ -559,6 +813,26 @@ def read_naming(handle: LibraryHandle) -> NamingConfig:
             singleton = tmpl
         else:
             custom.append(NamingRuleInput(query=skey, template=tmpl))
+    return default, comp, singleton, custom
+
+
+def read_naming(handle: LibraryHandle) -> NamingConfig:
+    """Parse the on-disk ``paths:``/``replace:`` into structured rows + CAS sha,
+    falling back per key to beets' built-in defaults so the panel reflects the
+    *effective* naming even when the user relies on the defaults (no explicit
+    ``paths:``/``replace:`` block).
+
+    ``previews`` and ``replace_errors`` are left empty here — the router fills
+    them by calling the renderer with ``handle.lib`` (this function stays
+    config-only, no library access)."""
+    try:
+        on_disk_bytes = _read_on_disk(handle.config_path)
+        doc = _on_disk_mapping(_on_disk_text(on_disk_bytes))
+    except _UnusableOnDisk as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    sha = hashlib.sha256(on_disk_bytes).hexdigest()
+
+    default, comp, singleton, custom = _split_paths(doc.get("paths"))
 
     # Per-key fallback to beets' bundled defaults. ``paths`` IS merged per-key in
     # beets, so a user who set only ``default`` still inherits ``comp``/
@@ -625,12 +899,13 @@ def save_naming(handle: LibraryHandle, req: SaveNamingRequest) -> BeetsConfigSna
     1. **Regex validate** — any ``replace`` pattern that fails ``re.compile`` ->
        422 (beets' ``get_replacements()`` would otherwise raise on config load).
     2. **SHA-256 CAS** — ``req.base_sha256`` vs the on-disk bytes; mismatch -> 409
-       with ``current_sha256`` (same shape as ``save``'s 409).
+       with ``current_sha256`` (same shape as ``save``'s 409). A file that is
+       not UTF-8 -> 422 first, whatever the base.
     3. **ruamel round-trip** — load the on-disk doc, replace ONLY the ``paths:``
        and ``replace:`` nodes (empty -> drop the key); every other key, comment,
        and secret is untouched.
     4. **Atomic write** + return the standard snapshot (``apply_pending`` True
-       until Apply reloads beets).
+       until Apply reloads beets). An OS error -> 422.
 
     No :func:`store_layout_report` step, unlike :func:`save`: step 3 rewrites
     exactly two nodes and neither is ``directory:``, so the music root this
@@ -658,82 +933,216 @@ def save_naming(handle: LibraryHandle, req: SaveNamingRequest) -> BeetsConfigSna
     # 2. CAS. Read → compare → merge → write under _SAVE_LOCK so a concurrent
     # save can't pass the same-base check and clobber this one.
     with _SAVE_LOCK:
-        on_disk_bytes = handle.config_path.read_bytes()
-        on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
-        if on_disk_sha != req.base_sha256:
+        try:
+            on_disk_bytes = _read_on_disk(handle.config_path)
+            # Before the compare, as in :func:`save`.
+            on_disk_text = _on_disk_text(on_disk_bytes)
+            on_disk_sha = hashlib.sha256(on_disk_bytes).hexdigest()
+            if on_disk_sha != req.base_sha256:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "detail": "File changed on disk",
+                        "current_yaml_text": on_disk_text,
+                        "current_sha256": on_disk_sha,
+                    },
+                )
+
+            # 3. Round-trip merge — only the two nodes change.
+            doc = _on_disk_mapping(on_disk_text)
+            paths = _naming_map(req.rules)
+            if paths:
+                doc["paths"] = paths
+            else:
+                doc.pop("paths", None)
+            replace = _replace_map(req.replace)
+            if replace:
+                doc["replace"] = replace
+            else:
+                doc.pop("replace", None)
+
+            # 4. Atomic write + snapshot.
+            _write_on_disk(handle.config_path, doc, yaml)
+        except _UnusableOnDisk as exc:
             raise HTTPException(
-                status_code=409,
-                detail={
-                    "detail": "File changed on disk",
-                    "current_yaml_text": on_disk_bytes.decode("utf-8"),
-                    "current_sha256": on_disk_sha,
-                },
-            )
-
-        # 3. Round-trip merge — only the two nodes change.
-        doc = parse_yaml(on_disk_bytes.decode("utf-8"))
-        paths = _naming_map(req.rules)
-        if paths:
-            doc["paths"] = paths
-        else:
-            doc.pop("paths", None)
-        replace = _replace_map(req.replace)
-        if replace:
-            doc["replace"] = replace
-        else:
-            doc.pop("replace", None)
-
-        # 4. Atomic write + snapshot.
-        atomic_write(handle.config_path, doc, yaml)
+                status_code=422,
+                detail=[{"loc": "", "msg": str(exc), "type": _ON_DISK_ERROR_TYPE}],
+            ) from exc
     return build_config_snapshot(handle)
 
 
-def on_disk_layout_error(handle: LibraryHandle, settings: Settings) -> StoreLayoutError | None:
-    """The refusal ``config.yaml`` AS IT SITS ON DISK would cause, or ``None``.
+class ApplyRefusal(NamedTuple):
+    """A 422 body: ``recovery`` is printed after "Apply failed. " on the Settings page."""
+
+    message: str
+    recovery: str
+
+
+def _unreadable_recovery(subject: str, line: int | None) -> str:
+    where = "" if line is None else f" (line {line})"
+    return (
+        f"beets could not read {subject}{where}, so nothing was changed."
+        " Fix the file and Apply again."
+    )
+
+
+#: Printed after "Apply failed. " on the Settings page.
+_MISSING_CONFIG_RECOVERY: Final = (
+    "MusicDrop found no regular file at config.yaml, so nothing was changed."
+    " Restore the file and Apply again."
+)
+
+
+def _cause(exc: Exception) -> str:
+    """``exc``'s text for a recovery line: the class name when it has none, no final period."""
+    return (str(exc) or type(exc).__name__).rstrip(".")
+
+
+def _rebuild_recovery(exc: Exception) -> str:
+    """The 500 recovery when the rebuild failed and so did putting the old config back.
+
+    Both Apply surfaces print only this line, so it carries beets' own text.
+    Measured: fixing the file and applying again loads it, and boot refuses the
+    same file (``tests/test_config_boot.py``), so neither line offers a restart.
+    """
+    cause = _cause(exc)
+    if isinstance(exc, CONFIG_ERRORS):
+        return (
+            f"beets rejected a value in the config: {cause}. Fix it and Apply again;"
+            " MusicDrop will not start until you do."
+        )
+    return f"Apply stopped partway: {cause}. Fix that and Apply again."
+
+
+def _restored_refusal(exc: Exception) -> ApplyRefusal:
+    """The 422 when the rebuild failed with ``exc`` and the old config was put back."""
+    cause = _cause(exc)
+    if isinstance(exc, CONFIG_ERRORS):
+        recovery = (
+            f"beets rejected a value in the config: {cause}, so nothing was changed."
+            " Fix it and Apply again; MusicDrop will not start until you do."
+        )
+    else:
+        recovery = f"Apply stopped: {cause}, so nothing was changed. Fix that and Apply again."
+    return ApplyRefusal(f"Apply failed and put the old config back: {exc}", recovery)
+
+
+def _read_refusal(exc: Exception) -> ApplyRefusal:
+    """The refusal for a config.yaml beets could not read, whichever step found it."""
+    if isinstance(exc, ConfigFileMissing):
+        return ApplyRefusal(f"Apply refused: {exc}", _MISSING_CONFIG_RECOVERY)
+    if isinstance(exc, ConfigUnreadable):
+        return ApplyRefusal(f"Apply refused: {exc}", _unreadable_recovery(exc.subject, exc.line))
+    return ApplyRefusal(
+        f"Apply refused: config.yaml could not be read: {exc}",
+        _unreadable_recovery("config.yaml", None),
+    )
+
+
+def _skipped_include_refusal(skipped: SkippedInclude) -> ApplyRefusal:
+    return ApplyRefusal(
+        f"Apply refused: beets would skip the include {skipped.name!r}: {skipped.reason}",
+        f"beets could not read the include {skipped.name!r} ({skipped.reason}), so nothing"
+        " was changed. Fix it and Apply again.",
+    )
+
+
+def on_disk_refusal(handle: LibraryHandle, settings: Settings) -> ApplyRefusal | None:
+    """Why Apply must not load config.yaml AS IT SITS ON DISK, or ``None``.
 
     Apply's input is the file, not a request body, so a hand edit (or an editor
     session from before a restart) can carry a ``directory:`` no Save ever saw.
     Read fresh here rather than from the handle: ``handle.lib.directory`` is the
     music root of the load being replaced.
 
-    Silent on an unreadable or unparseable file. That is not this check's
-    question — ``setup_beets`` will fail on the same file moments later and
-    :func:`apply` already answers 500 with the restart hint — and returning a
-    layout refusal for a YAML syntax error would name the wrong problem.
+    Parsed with beets' own loader (:func:`read_config_document`), not ruamel:
+    measured, the two disagree both ways (ruamel refuses a duplicate key PyYAML
+    keeps the last of; PyYAML refuses a ``!!python/name`` tag ruamel accepts),
+    and the ruamel check was blind to the first, so Apply tore down and loaded
+    a refused layout. Runs BEFORE beets' own read because that read opens every
+    include by name and blocks on a FIFO; :func:`layout_check_for_config`
+    reads them through one non-blocking descriptor with a byte budget.
 
-    ``RecursionError`` and ``ValueError`` are the two Save and Validate also
-    catch around ``parse_yaml``: ruamel raises them past the nesting limit and on
-    an over-long integer. This call sits OUTSIDE Apply's rebuild handler, so
-    either one left the route answering a bare 500. ``UnicodeDecodeError`` is not
-    named because it IS a ``ValueError``.
+    A skipped include is refused (owner ruling 2026-09-21): beets prints it to
+    stderr and loads without it (``beets/__init__.py:37-38``).
     """
     try:
-        doc = parse_yaml(handle.config_path.read_text(encoding="utf-8"))
-    except (OSError, YAMLError, RecursionError, ValueError):
-        return None
-    if not isinstance(doc, CommentedMap):
-        return None
-    return layout_check_for_config(document=doc, settings=settings, handle=handle).error
+        document = read_config_document(handle.config_path)
+    except ConfigUnreadable as exc:
+        return _read_refusal(exc)
+    check = layout_check_for_config(document=document, settings=settings, handle=handle)
+    if check.skipped_includes:
+        return _skipped_include_refusal(check.skipped_includes[0])
+    if check.error is not None:
+        # The headline is the refused PAIR, not a fixed sentence: this used to
+        # read "config.yaml would move the music library" for every refusal,
+        # including the ones where the Trash is what moved.
+        return ApplyRefusal(f"Apply refused: {check.error.headline}", str(check.error))
+    return None
 
 
-def _rebuild_beets_handle(old: LibraryHandle, beets_dir: str) -> LibraryHandle:
-    """Tear down beets process-globals and re-run ``setup_beets()``.
+def _rebuild_beets_handle(old: LibraryHandle, read: BeetsConfigRead) -> LibraryHandle:
+    """Tear down beets process-globals and install the already-read config.
 
     Blocking — runs in FastAPI's threadpool. Pure of the request scope so unit
-    tests can drive it directly without an ASGI lifecycle. Order matters:
-    ``reset_beets_globals(old)`` closes the previous library's SQLite handle
-    AND clears confuse + plugin caches, so the subsequent ``setup_beets`` re-
-    reads ``config.yaml`` from scratch instead of replaying the previous load.
+    tests can drive it directly without an ASGI lifecycle. ``read`` comes from
+    :func:`read_beets_config`, which :func:`apply` runs BEFORE this, so a
+    config.yaml beets cannot read is refused while nothing has been torn down.
+    ``reset_beets_globals(old, keep_config=True)`` closes the previous
+    library's SQLite handle AND clears the plugin state, so :func:`open_beets`
+    reloads plugins from scratch. The confuse config is NOT cleared: request
+    threads keep reading the old one until ``open_beets`` installs ``read``.
 
-    Note: if ``setup_beets()`` raises, the old handle is already torn down —
-    the process is in a degraded state and serves errors until restart. The
-    :func:`apply` 500 path surfaces this with a ``recovery`` hint pointing
-    at restart; we deliberately do NOT try to "undo" the teardown on failure
-    because confuse + plugins + SQLite would each need their own rollback,
-    which is exactly the kind of half-recovered state the restart hint avoids.
+    If ``open_beets`` raises, :func:`apply` puts the old config back with
+    :func:`_restore_beets_handle` (owner ruling 2026-09-23).
     """
-    reset_beets_globals(old)
-    return setup_beets(beets_dir)
+    reset_beets_globals(old, keep_config=True)
+    return open_beets(read)
+
+
+def _restore_beets_handle(running: BeetsConfigRead) -> LibraryHandle:
+    """Load ``running`` (:func:`running_config`) again, after a failed rebuild.
+
+    The same two steps as :func:`_rebuild_beets_handle`. The teardown runs again
+    because the failed rebuild may have registered the new config's plugins, and
+    ``load_plugins`` loads nothing while any are (``beets/plugins.py:456``); the
+    old library is already closed.
+    """
+    reset_beets_globals(keep_config=True)
+    return open_beets(running)
+
+
+async def _rebuild_or_restore(
+    old: LibraryHandle, read: BeetsConfigRead
+) -> tuple[LibraryHandle, Exception | None]:
+    """The new handle and ``None``, or the restored old one and the rebuild's error.
+
+    Raises:
+        HTTPException: 500, when putting the old config back failed too.
+    """
+    running = running_config(old)
+    try:
+        return await run_in_threadpool(_rebuild_beets_handle, old, read), None
+    except Exception as exc:
+        failure = exc
+    try:
+        return await run_in_threadpool(_restore_beets_handle, running), failure
+    except Exception:
+        # Catch-all: whichever step raised, the process now runs on a partial
+        # load. The response quotes the rebuild's error, the one to fix; this
+        # record keeps the restore's.
+        logging.getLogger("uvicorn.error").exception(
+            "Apply could not put the old config back after: %s", failure
+        )
+        # ``message`` (NOT ``detail``) for the inner key: Starlette already
+        # wraps the payload in an outer ``detail``.
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": f"Apply failed during rebuild: {failure}",
+                "recovery": _rebuild_recovery(failure),
+            },
+        ) from failure
 
 
 def _swap_lock(app: FastAPI) -> asyncio.Lock:
@@ -775,83 +1184,62 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
 
     Sequence (spec § "Layer 3 - Backend: Apply flow"):
 
-    1. **Import gate** — 409 while an import is active; the rebuild tears down
-       the SQLite connection its worker holds.
-    2. **Per-app lock** — two Applies racing through ``reset_beets_globals`` +
-       ``setup_beets`` could close the library twice.
-    2b. **Containment gate** — 422 on a refused store layout in the config ON
-       DISK (:func:`on_disk_layout_error`, ``store_layout._ROWS``). Before the
-       rebuild, because a failure after its teardown strands the process with no
-       working config; 422 and not 409, because the page renders every Apply 409
-       as the library-job sentence.
-    3. **Threadpool rebuild** — blocking I/O; any exception maps to 500 with the
-       restart hint.
-    4. **Atomic swap** — ``app.state.beets_library`` is replaced only after the
-       rebuild succeeds. On a 500 the OLD handle is already torn down
-       (:func:`_rebuild_beets_handle`), so the process is degraded until restart.
+    1. **Per-app lock** — two Applies racing through the teardown and rebuild
+       could close the library twice.
+    2. **Job gate** — 409 while a library job holds the library, checked AFTER
+       taking the lock (:func:`swap_blocked_by_job`), so no job runs or starts
+       while the config is replaced.
+    2b. **File gate** — 422 when config.yaml ON DISK is missing, unreadable,
+       skips an include, or has a refused store layout (:func:`on_disk_refusal`).
+       Before beets' read: that read blocks on a FIFO include, and loads a
+       refused layout or skips an include without raising. 422 and not 409,
+       because the page renders every Apply 409 as the library-job sentence.
+    2c. **Read** — :func:`read_beets_config`, beets' own read of the file. 422
+       when it fails, with nothing torn down yet.
+    3. **Threadpool rebuild** — blocking I/O (:func:`_rebuild_or_restore`). When
+       it raises after the teardown, the config, plugins and library that were
+       running are loaded again. 500 only when that fails too.
+    4. **Atomic swap** — ``app.state.beets_library`` becomes the new handle, or
+       the restored one, and the import registry is re-attached to it.
     4b. **Backstop** — the same layout question, asked of what beets actually
-       loaded. 422, with the new handle already swapped in and the refusal
+       loaded. 422, with the handle already swapped in and the refusal
        recorded on the import registry.
     5. **Return snapshot** — ``apply_pending`` is ``False``: the new handle's
-       ``file_mtime_at_load`` captured the on-disk mtime during ``setup_beets``.
+       ``file_mtime_at_load`` is the mtime :func:`read_beets_config` captured.
+       After a restore, the 422 instead: the restored handle keeps the old
+       mtime, so the saved file still reads as not applied.
     """
     app = request.app
 
-    # Outside lock: best-effort gate; TOCTOU acceptable for single-user
-    # self-host (an import can still arrive between this check and the swap,
-    # but the worst case is a 500 inside the rebuild — the registry's own
-    # threading.Lock guarantees the import either finished or hasn't started
-    # touching beets yet, and the 500 path's recovery hint covers the rest).
-    # Pulling the gate inside the asyncio.Lock would block Apply behind
-    # any concurrent Apply request even when no import is active, which is
-    # worse UX for the single-user case this product targets.
-    if library_job_active():
-        raise HTTPException(
-            status_code=409,
-            detail="Import in progress; Apply available when it finishes / lyrics backfill",
-        )
-
     async with _swap_lock(app):
+        # Inside the lock, not before it. The rebuild replaces
+        # ``beets.config.sources``, dropping the overlay a running import forces
+        # (``delete: False``, ``duplicate_action``), and beets' importer reads
+        # ``config["import"]`` through a live view; measured, that view read the
+        # user's ``delete: yes`` after the swap. A gate read before the acquire
+        # let a job claim in between (test_config_apply_claim_race.py).
+        if swap_blocked_by_job():
+            raise HTTPException(
+                status_code=409,
+                detail="Import in progress; Apply available when it finishes / lyrics backfill",
+            )
         old: LibraryHandle = app.state.beets_library
         settings = _settings(app)
-        layout_error = await run_in_threadpool(on_disk_layout_error, old, settings)
-        if layout_error is not None:
-            # The headline is the refused PAIR, not a fixed sentence: this used
-            # to read "config.yaml would move the music library" for every
-            # refusal, including the ones where the Trash is what moved.
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "message": f"Apply refused: {layout_error.headline}",
-                    "recovery": str(layout_error),
-                },
-            )
+        refusal = await run_in_threadpool(on_disk_refusal, old, settings)
+        if refusal is not None:
+            raise HTTPException(status_code=422, detail=refusal._asdict())
         try:
-            new = await run_in_threadpool(_rebuild_beets_handle, old, settings.beets_dir)
+            # ``old.beets_dir``, the dir resolved at boot, not the setting: the
+            # gate above read that dir, and a symlinked setting re-pointed since
+            # made the restore open another dir's library.
+            read = await run_in_threadpool(read_beets_config, str(old.beets_dir))
         except Exception as exc:
-            # Catch-all is deliberate: the rebuild reaches into beets'
-            # private surface (LazyConfig._materialized, plugin caches),
-            # plus filesystem + SQLite — any failure leaves the process in a
-            # degraded state where the old handle may be partially closed.
-            # Surfacing a structured 500 with the recovery hint is more
-            # useful than re-raising into the ASGI 500 path.
-            #
-            # ``message`` (NOT ``detail``) for the inner key so the rendered
-            # response body is ``{"detail": {"message": ..., "recovery": ...}}``
-            # — Starlette already wraps our payload in an outer ``detail``,
-            # so an inner ``detail`` would produce the confusing
-            # ``{"detail": {"detail": ...}}`` shape the FE would have to
-            # special-case. The 409 sibling stays a flat ``detail: str``;
-            # this is the structured form of the same convention.
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "message": f"Apply failed during rebuild: {exc}",
-                    "recovery": (
-                        "Restart MusicDrop. The saved config is on disk; cold start will load it."
-                    ),
-                },
-            ) from exc
+            # Nothing is torn down yet, so the old config, plugins and library
+            # keep serving. Broad on purpose: whatever the read raised, the
+            # process is unchanged. Step 2b read the same file, so this arm is
+            # reached when the file changed in between.
+            raise HTTPException(status_code=422, detail=_read_refusal(exc)._asdict()) from exc
+        new, failure = await _rebuild_or_restore(old, read)
         app.state.beets_library = new
         # Re-attach the fresh lib to the LIVE import registry. The lifespan
         # attaches the lib exactly once (main.py), and the registry's runner
@@ -869,11 +1257,11 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
         from app.playlists.store import get_playlists_dir
 
         # 4b. Backstop — the same question, asked of what beets ACTUALLY loaded.
-        # Step 2b reproduces beets' include merge over the candidate document;
+        # Step 2b reads config.yaml and its includes itself, before beets does;
         # this one reads ``new.lib.directory`` and ``new.lib.path`` off the live
-        # handle, so a divergence between that reproduction and beets (an
-        # ``include:`` shape we read differently, a beets upgrade) is caught here
-        # instead of shipping a refused layout into the process.
+        # handle, so a file edited between the two reads, or a divergence
+        # between step 2b's include merge and beets' (a beets upgrade), is
+        # caught here instead of shipping a refused layout into the process.
         #
         # It also supplies the pair the registry needs. Resolving those two paths
         # raises on a symlink loop, outside every ``except StoreLayoutError`` the
@@ -891,22 +1279,31 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
             # started in this state was accepted and wrote into the beets data
             # dir, so ``start`` now refuses with this sentence.
             # ``.exception``: the record carries the traceback with the
-            # sentence, like the three boot refusals.
+            # sentence, like the three boot refusals. After a restore the
+            # config running is the old one, and the rejected value is still in
+            # config.yaml, so the answer is the restore's.
             logging.getLogger("uvicorn.error").exception(
-                "Apply loaded a config whose store layout is refused: %s", exc
+                "Apply %s a config whose store layout is refused: %s",
+                "loaded" if failure is None else "put back",
+                exc,
             )
+            did = "loaded config.yaml" if failure is None else "put the old config back"
             get_registry().attach_library(
                 new.lib,
                 None,
                 bank_dir=get_bank_dir(),
                 playlists_dir=get_playlists_dir(),
                 trash_origins_dir=None,
-                refusal=f"Apply loaded config.yaml, but {exc}",
+                refusal=f"Apply {did}. {exc}",
             )
+            if failure is not None:
+                raise HTTPException(
+                    status_code=422, detail=_restored_refusal(failure)._asdict()
+                ) from failure
             raise HTTPException(
                 status_code=422,
                 detail={
-                    "message": f"Apply loaded config.yaml, but {exc.headline}",
+                    "message": f"Apply loaded config.yaml. {exc.headline}.",
                     "recovery": f"{exc} Then restart MusicDrop.",
                 },
             ) from exc
@@ -918,5 +1315,9 @@ async def apply(request: Request) -> BeetsConfigSnapshot:
             playlists_dir=get_playlists_dir(),
             trash_origins_dir=origins_dir,
         )
+        if failure is not None:
+            raise HTTPException(
+                status_code=422, detail=_restored_refusal(failure)._asdict()
+            ) from failure
 
     return build_config_snapshot(new)

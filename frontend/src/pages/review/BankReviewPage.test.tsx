@@ -92,6 +92,7 @@ function bankItem(over: Record<string, unknown> = {}) {
     status: "needs_review",
     decided: null,
     error: null,
+    error_recovery: "decide_again",
     album_id: null,
     banked_at: "2026-06-12T08:00:00Z",
     decided_at: null,
@@ -556,6 +557,47 @@ describe("BankReviewPage", () => {
     }
   });
 
+  /**
+   * The control for the test above, on the CANDIDATE screen. The degraded
+   * "couldn't re-check" arm asserts the same premise `FailedDuplicateStrip` is
+   * withheld for — "if the apply failed because this album is already in your
+   * library" — which a `fix_folder` failure explicitly is not. It also swapped
+   * the bar to ignore-only (`primary={null}`), withdrawing the "decide again"
+   * its own banner instructs.
+   *
+   * The `hasCollision` arm is deliberately NOT gated on `error_recovery`, so
+   * this test pins the degraded arm only: a listed collision is real whatever
+   * made the apply fail.
+   */
+  test("a fix_folder row whose re-check errors keeps Apply and claims no duplicate", async () => {
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json(
+          bankItem({
+            status: "failed",
+            error: "That folder can’t be read. Permission denied.",
+            error_recovery: "fix_folder",
+            decided: { action: "apply", candidate_index: 0, duplicate_action: null },
+          }),
+        ),
+      ),
+      http.get(DUP, () => HttpResponse.json({ detail: "boom" }, { status: 500 })),
+    );
+    renderRow();
+    await screen.findByRole("heading", { name: /Music Has the Right/ });
+    // The banner still explains the failure, so the page has settled.
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Fix the folder or its share/);
+    // The false premise, in none of its halves.
+    expect(
+      screen.queryByRole("region", { name: "Resolve as a duplicate" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/re-check your library/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /replace old/i })).not.toBeInTheDocument();
+    // The remedy the banner names is still on the bar.
+    expect(screen.getByRole("button", { name: /apply/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /use as-is/i })).toBeInTheDocument();
+  });
+
   test("a failed row with no collision shows the error and the normal retry footer", async () => {
     server.use(
       http.get(ITEM, () =>
@@ -582,7 +624,11 @@ describe("BankReviewPage", () => {
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
-  test("a stale row offers Review now: starts an attended import of the folder, deletes the row, navigates", async () => {
+  // `incremental: false` is beets' `-I`. Banking the folder recorded it in
+  // beets' import history, and this screen deletes the row on success — so
+  // without the override a keep-downloads run skips every album here and the
+  // album is in neither the bank nor the library.
+  test("a stale row offers Review now: starts an attended import of the folder past beets' history, deletes the row, navigates", async () => {
     let importBody: unknown = null;
     let deleted = false;
     server.use(
@@ -599,8 +645,122 @@ describe("BankReviewPage", () => {
     renderRow();
     await userEvent.click(await screen.findByRole("button", { name: /review now/i }));
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/import?job=jx"));
-    expect(importBody).toEqual({ path: "/inbox/BoC" });
+    expect(importBody).toEqual({
+      path: "/inbox/BoC",
+      options: {
+        operation: "default",
+        unattended: false,
+        sweep: false,
+        incremental: false,
+      },
+    });
     expect(deleted).toBe(true);
+  });
+
+  test("while the re-scan is starting Review now is aria-disabled, not disabled, and swallows the repeat", async () => {
+    // The Pagination rule (the import page's Pause button carries the
+    // measurement): this button holds focus when it is pressed, so disabling it
+    // on that commit strands keyboard focus on <body> — and the failure sentence
+    // right above it invites another press. The import-slot gate stays a real
+    // `disabled`, pinned by the test below.
+    let posts = 0;
+    server.use(
+      http.get(ITEM, () => HttpResponse.json(bankItem({ status: "stale", error: "changed" }))),
+      http.post(IMPORT_URL, async () => {
+        posts += 1;
+        await delay("infinite");
+        return HttpResponse.json({ job_id: "jx" });
+      }),
+    );
+    renderRow();
+    const button = await screen.findByRole("button", { name: /review now/i });
+    await userEvent.click(button);
+
+    await waitFor(() => expect(button).toHaveAttribute("aria-disabled", "true"));
+    expect(button).not.toBeDisabled();
+
+    await userEvent.click(button);
+    expect(posts).toBe(1);
+  });
+
+  test("a stale-row start failure carries the server's own reason", async () => {
+    // One of the three refusals behind this status. A hard-coded "an import is
+    // already running" sent the user off to wait for an import that was not
+    // running.
+    server.use(
+      http.get(ITEM, () => HttpResponse.json(bankItem({ status: "stale", error: "changed" }))),
+      http.post(IMPORT_URL, () =>
+        HttpResponse.json(
+          { detail: "A library operation is in progress; import available when it finishes" },
+          { status: 409 },
+        ),
+      ),
+    );
+    renderRow();
+    await userEvent.click(await screen.findByRole("button", { name: /review now/i }));
+    // By text, not by role: the stale screen's own warning banner is an alert
+    // too, so the role alone matches two nodes here. The full stop is the
+    // client's — server details carry none, every sentence in the app does, and
+    // `startErrorSentence` is the one place the two conventions meet.
+    const alert = await screen.findByText(
+      "A library operation is in progress; import available when it finishes.",
+    );
+    expect(alert).toHaveAttribute("role", "alert");
+    // A 503 on this arm carries repr'd paths, which Chromium will not break
+    // at `/` (the Trash page measured the same family at 320px).
+    expect(alert).toHaveClass("break-words");
+    expect(screen.queryByText(/an import is already running;/i)).not.toBeInTheDocument();
+    // The button keeps focus through the failure, so the sentence describes it.
+    expect(
+      screen.getByRole("button", { name: /review now/i }),
+    ).toHaveAttribute("aria-describedby", alert.id);
+    expect(alert.id).not.toBe("");
+  });
+
+  // The 409 and the hint open on the same clause, and the hint is the fuller
+  // sentence (it names the slot AND what still works), so once the probe
+  // catches up the alert stands down rather than repeating it one line above.
+  test("the start alert stands down once the import-slot hint is up", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let started = false;
+      server.use(
+        http.get(ITEM, () => HttpResponse.json(bankItem({ status: "stale", error: "changed" }))),
+        http.post(IMPORT_URL, () => {
+          started = true;
+          return HttpResponse.json(
+            { detail: "An import is already running" },
+            { status: 409 },
+          );
+        }),
+        http.get(ACTIVE, () =>
+          HttpResponse.json(
+            started
+              ? { active: true, job_id: "j9", origin: "manual", needs_review_count: 0 }
+              : { active: false, origin: "manual", needs_review_count: 0 },
+          ),
+        ),
+      );
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderRow();
+      await user.click(await screen.findByRole("button", { name: /review now/i }));
+      // The probe still reads idle, so the alert is the only thing that speaks.
+      expect(
+        await screen.findByText("An import is already running."),
+      ).toBeInTheDocument();
+
+      // The idle probe cadence is 30s (useActiveImport).
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(await screen.findByText(/needs the import slot/i)).toBeInTheDocument();
+      expect(
+        screen.queryByText("An import is already running."),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /review now/i }),
+      ).toHaveAttribute("aria-describedby", "stale-rescan-hint");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("the stale re-scan is gated while an import runs — with the visible reason", async () => {
@@ -719,13 +879,13 @@ describe("BankReviewPage", () => {
    * resolves quietly — it fails the row and parks the runner's own reason on
    * it, which FailedBanner renders VERBATIM.
    *
-   * The row carries `error_retryable: false` — the shape the runner now
-   * produces for this failure. That reason forbids deciding again (it would
-   * import a THIRD copy), so the emphasized line must not instruct the retry
-   * the muted line under it rules out, and the banner must point at the
+   * The row carries `error_recovery: "remove_duplicate"` — the recovery the
+   * runner names for this failure. That reason forbids deciding again (it
+   * would import a THIRD copy), so the emphasized line must not instruct the
+   * retry the muted line under it rules out, and the banner must point at the
    * recovery that works. The duplicate actions stay ENABLED regardless: the
    * strip is the escape hatch for the ordinary already-in-library failure, and
-   * a not-retryable headline is a copy change, not a lockout.
+   * dropping the retry sentence is a copy change, not a lockout.
    *
    * FIXTURE CONTRACT — the literal below is `_MERGE_NOT_MERGED_ERROR` from
    * `backend/app/bank/apply_runner.py`, duplicated VERBATIM on purpose: that
@@ -749,7 +909,7 @@ describe("BankReviewPage", () => {
             confidence: null,
             status: "failed",
             error: MERGE_FAILED_ERROR,
-            error_retryable: false,
+            error_recovery: "remove_duplicate",
             decided: { action: "duplicate", candidate_index: null, duplicate_action: "merge" },
           }),
         ),
@@ -779,38 +939,151 @@ describe("BankReviewPage", () => {
   });
 
   /**
-   * The DEFAULT arm. Ordinary failures stay retryable, and a row banked before
-   * `error_retryable` existed carries no such key at all — the fixture factory
-   * omits it, so the first render IS that old shape. Both must keep the retry
-   * instruction and offer no Duplicates link.
-   *
-   * Rendered twice because the two inputs reach the arm by different routes:
-   * absent leans on the `!== false` predicate, `true` on the value itself, so
-   * narrowing the check to `=== true` survives the second and dies on the first.
+   * The DEFAULT arm. An ordinary failure keeps the retry instruction and
+   * offers no Duplicates link. A row banked before the field existed reaches
+   * the page as `decide_again` as well: `_recovery_from_the_legacy_flag` in
+   * `backend/app/models/bank.py` fills it on read, so the frontend is never
+   * handed the key missing and needs no fallback of its own.
    */
-  test("a retryable failure keeps the retry headline, field true or absent", async () => {
-    server.use(
-      http.get(ITEM, () => HttpResponse.json(bankItem({ status: "failed", error: "beets exited 1" }))),
-    );
-    const absent = renderRow();
-    expect(
-      await within(absent.container).findByText("The apply failed. Decide again to retry."),
-    ).toBeInTheDocument();
-    expect(
-      within(absent.container).queryByRole("link", { name: "Open Duplicates" }),
-    ).not.toBeInTheDocument();
-
+  test("an ordinary failure keeps the retry headline and offers no Duplicates link", async () => {
     server.use(
       http.get(ITEM, () =>
-        HttpResponse.json(bankItem({ status: "failed", error: "beets exited 1", error_retryable: true })),
+        HttpResponse.json(
+          bankItem({ status: "failed", error: "beets exited 1", error_recovery: "decide_again" }),
+        ),
       ),
     );
-    const explicit = renderRow();
+    renderRow();
     expect(
-      await within(explicit.container).findByText("The apply failed. Decide again to retry."),
+      await screen.findByText("The apply failed. Decide again to retry."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open Duplicates" })).not.toBeInTheDocument();
+  });
+
+  /**
+   * The THIRD arm. The banked folder is still there and no longer answers, so
+   * deciding again IS the remedy — but only after the operator makes it
+   * readable, which is why this headline carries the step and the bare retry
+   * instruction would be wrong.
+   *
+   * The no-link assertion is the control for the banner's affirmative
+   * `remove_duplicate` test: a condition written as "not decide_again" renders
+   * a Duplicates link here and passes every other test in this file.
+   *
+   * FIXTURE CONTRACT — like the merge block above, `UNREADABLE` is production
+   * copy duplicated VERBATIM, not an illustration: the apply runner stores
+   * `unreadable_source_sentence(exc)` on this arm, which builds
+   * `f"That folder can’t be read. {unreadable_reason(exc)}."` in
+   * `backend/app/import_jobs/runner.py`. Typographic apostrophe included. If
+   * the backend rewords it, update this string to match — a mismatch here is
+   * a drift alarm, not a test bug.
+   */
+  test("an unreadable folder asks for the fix first, and offers no Duplicates link", async () => {
+    const UNREADABLE = "That folder can’t be read. Permission denied.";
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json(
+          bankItem({ status: "failed", error: UNREADABLE, error_recovery: "fix_folder" }),
+        ),
+      ),
+    );
+    renderRow();
+    const banner = await screen.findByRole("alert");
+    expect(
+      within(banner).getByText(
+        "The apply failed. Fix the folder or its share, then decide again.",
+      ),
+    ).toBeInTheDocument();
+    expect(within(banner).getByText(UNREADABLE)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open Duplicates" })).not.toBeInTheDocument();
+    // The default arm's instruction, which this row must not also carry.
+    expect(banner).not.toHaveTextContent("Decide again to retry.");
+  });
+
+  /**
+   * The duplicate strip is the no-match screen's escape hatch for the ordinary
+   * "already in your library" failure. Both rows below are that screen —
+   * `parked: null` AND `duplicate: null`, which the factory does not default to
+   * — because the candidate and duplicate screens never render the strip and a
+   * test on them would pass whatever the condition said.
+   *
+   * The pair is one assertion and its control: withholding the strip is only
+   * meaningful if it renders for the row beside it.
+   *
+   * THREE rows, not two, because the gate is written `!== "fix_folder"` and
+   * only a `remove_duplicate` fixture distinguishes that from the narrower
+   * `=== "decide_again"`. Without it that narrowing survives the whole file
+   * while changing real behaviour: a no-match row decided THROUGH this strip
+   * can fail as `remove_duplicate` via the merge-not-merged arm, and the
+   * prompt is only stored when the session published one — so `duplicate`
+   * stays null and the row comes straight back to this screen, where the
+   * strip's copy ("already in your library") is TRUE and must stay offered.
+   */
+  test("the no-match screen offers the duplicate strip on an ordinary failure", async () => {
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json(
+          bankItem({
+            parked: null,
+            duplicate: null,
+            status: "failed",
+            error: "beets exited 1",
+            error_recovery: "decide_again",
+          }),
+        ),
+      ),
+    );
+    renderRow();
+    expect(
+      await screen.findByRole("region", { name: "Resolve as a duplicate" }),
+    ).toBeInTheDocument();
+  });
+
+  test("the no-match screen offers the duplicate strip on a remove_duplicate failure", async () => {
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json(
+          bankItem({
+            parked: null,
+            duplicate: null,
+            status: "failed",
+            error:
+              "the album landed in your library as a second copy and the merge never ran",
+            error_recovery: "remove_duplicate",
+          }),
+        ),
+      ),
+    );
+    renderRow();
+    expect(
+      await screen.findByRole("region", { name: "Resolve as a duplicate" }),
+    ).toBeInTheDocument();
+  });
+
+  test("the no-match screen withholds the duplicate strip from an unreadable folder", async () => {
+    server.use(
+      http.get(ITEM, () =>
+        HttpResponse.json(
+          bankItem({
+            parked: null,
+            duplicate: null,
+            status: "failed",
+            error: "That folder can’t be read. Permission denied.",
+            error_recovery: "fix_folder",
+          }),
+        ),
+      ),
+    );
+    renderRow();
+    // Wait on the banner so the assertion below runs against a SETTLED page,
+    // not an empty one — a `queryBy` on a still-loading route passes for free.
+    expect(
+      await screen.findByText(
+        "The apply failed. Fix the folder or its share, then decide again.",
+      ),
     ).toBeInTheDocument();
     expect(
-      within(explicit.container).queryByRole("link", { name: "Open Duplicates" }),
+      screen.queryByRole("region", { name: "Resolve as a duplicate" }),
     ).not.toBeInTheDocument();
   });
 

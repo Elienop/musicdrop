@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from itertools import islice
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from beets.dbcore.query import MatchQuery, ParsingError
 from beets.dbcore.types import DelimitedString
@@ -32,7 +32,8 @@ from mediafile import MediaFile
 from app.artwork.normalize import normalize_artist_name
 from app.beets.release_identity import release_identity
 from app.etag import stat_etag
-from app.models.album import Album, AlbumDetail, Track
+from app.fsutil import is_in_library_source
+from app.models.album import Album, AlbumDetail, OutsideLibrary, Track
 from app.models.artist import Artist
 from app.models.import_models import ExistingAlbum
 from app.models.search import SearchEntity, SearchResults, SearchTrack, TypedSearchPage
@@ -60,7 +61,8 @@ class LibraryHandle:
     need to import beets themselves, keeping the adapter the sole beets
     importer (CLAUDE.md rule 3). The handle bundles the opened ``Library`` with
     the metadata the read-only Config view needs: the path of the user-owned
-    ``config.yaml``, when ``setup_beets()`` ran, and the file's mtime at load —
+    ``config.yaml``, when beets last loaded it (boot or Apply), and the file's
+    mtime at load —
     used to flag "restart required" when the file changes on disk.
     """
 
@@ -100,7 +102,16 @@ class LibraryRootUnavailableError(Exception):
     (``app.beets.disk_sync``) and the Trash primitives' missing-folder handling
     (``app.beets.trash``). A second, looser copy of the check is the failure this
     placement exists to prevent.
+
+    ``empty`` marks the arm where the root is there and readable but holds
+    nothing. :func:`require_importable_library_root` is its one reader (grep);
+    the other callers treat the three arms alike
+    (``test_the_strict_predicates_refuse_an_empty_root_with_an_empty_database``).
     """
+
+    def __init__(self, message: str, *, empty: bool = False) -> None:
+        super().__init__(message)
+        self.empty = empty
 
 
 def _music_dir(lib: Library) -> str:
@@ -141,7 +152,54 @@ def require_library_root(lib: Library) -> None:
             f"Library folder is unreadable{reason}. Check its permissions and the mount."
         ) from exc
     if not has_entry:
-        raise LibraryRootUnavailableError("Library folder is empty. Is the music share mounted?")
+        raise LibraryRootUnavailableError(
+            "Library folder is empty. Is the music share mounted?", empty=True
+        )
+
+
+#: Does the library hold ANY track row? Deterministic and O(first hit) — no
+#: ``ORDER BY RANDOM()``, so two polls a second apart cannot disagree.
+_ANY_ITEM_SQL = """
+SELECT 1 FROM items LIMIT 1
+"""
+
+
+def _library_has_any_item(lib: Library) -> bool:
+    """True when the items table holds at least one row."""
+    with lib.transaction() as tx:
+        return bool(tx.query(_ANY_ITEM_SQL))
+
+
+def require_importable_library_root(lib: object) -> str | None:
+    """:func:`require_library_root` for the IMPORT side, which forgives a fresh install.
+
+    Forgives the EMPTY arm when the items table holds no row (a new install's
+    bare ``/music`` bind mount); missing and unreadable still refuse, and Trash,
+    Delete, Restore and disk sync keep :func:`require_library_root`. The ``cast``
+    is the only one — the registry and runner must not import beets.
+
+    Returns the music root it FORGAVE, or ``None`` when nothing was forgiven, and
+    logs nothing itself: the two callers disagree about what the fact is worth.
+    ``import_jobs.registry.ImportJobRegistry.start`` WARNs it once per ACCEPTED
+    start, after the slot claim (a refused start records nothing — security seat
+    L-1, 2026-09-19); ``import_jobs.gates`` polls this at 2 Hz
+    while any other job holds the slot (``_gate_answer`` asks the root before
+    ``has_active_job``), so it would emit one record every 0.5 s for the length
+    of that job.
+
+    The forgiven arm's key is "the items table holds no row", which is not
+    "this install has never imported" — a ``library:`` edited to a new path, a
+    database restored from before any import, or a repointed ``BEETSDIR`` all
+    reach it on a configured install. BACKLOG records the three.
+    """
+    library = cast(Library, lib)
+    try:
+        require_library_root(library)
+    except LibraryRootUnavailableError as exc:
+        if not (exc.empty and not _library_has_any_item(library)):
+            raise
+        return _music_dir(library)
+    return None
 
 
 #: How many DISTINCT albums :func:`require_library_present` asks about before it
@@ -254,9 +312,8 @@ def _sampled_library_files(lib: Library, size: int) -> list[str]:
     out of 5 and the check ACCEPTED, while the same rows re-filed under
     ``$albumartist/$album/$title`` were refused.
 
-    Raw SQL rather than ``lib.albums()``/``album.items()`` for the same reason
-    ``trash._folder_is_shared`` uses it: materializing beets models to read one
-    path each costs seconds at 75k tracks. Paths are resolved through
+    Raw SQL rather than ``lib.albums()``/``album.items()``: materializing beets
+    models to read one path each costs seconds at 75k tracks. Paths are resolved through
     :func:`_abs_path` because the DB stores them relative to ``lib.directory``
     in the normal case.
     """
@@ -771,24 +828,97 @@ def _to_track(item: Any) -> Track:
     )
 
 
+def _row_path(item: Any) -> str:
+    """The item's file path, normalised — the one spelling judged AND shown."""
+    return os.path.abspath(os.fsdecode(item.path))
+
+
+def _inside_library(lib: Library, item: Any) -> bool:
+    """True iff the item's file lives under the library dir; no filesystem read.
+
+    Mirrors beets' guard in ``Item.try_sync`` (``library/models.py:1027``).
+    ``commonpath``, not a prefix test: ``<music>`` and ``<music>-inbox`` are
+    different folders. No-disk pinned by
+    ``test_the_containment_question_records_no_filesystem_read``.
+    """
+    libdir = os.path.abspath(os.fsdecode(lib.directory))
+    return os.path.commonpath([_row_path(item), libdir]) == libdir
+
+
+def _outside_library(lib: Library, items: list[Any]) -> OutsideLibrary | None:
+    """The folder of the album's first outside row, and whether it holds them all.
+
+    ``holds_every_track`` is conservative: a pathless row, a row in the library
+    or a row in another folder makes it false. Only that shape re-adds safely
+    (``test_the_offered_remedy_finishes_the_album_and_trashes_nothing``).
+
+    TWO predicates, asked in that order. :func:`_inside_library` is lexical and
+    is beets' own guard, which ``app.beets.edit`` must predict byte for byte;
+    the question HERE is the opposite one — are these files really outside? —
+    and a library reachable at two spellings (a symlinked root, a bind mount)
+    answers it wrongly. Measured 2026-09-19: an album whose rows name the root
+    through a symlinked alias rendered the notice with ``holds_every_track:
+    true`` and the "add that folder again" remedy, which re-imports and re-tags
+    an album that was already filed.
+
+    :func:`~app.fsutil.is_in_library_source` is asked per row, and only once
+    that row's lexical answer says "outside", so a lexically-inside row records
+    no filesystem read (``test_the_containment_question_records_no_filesystem_read``).
+    It swallows every OSError and answers False, so an unmounted or unreadable
+    root leaves the notice showing — the safe direction for a notice.
+
+    A row counts as outside when BOTH answer so, which is why the physical
+    question lives in the search rather than after it. Measured 2026-09-19 (code
+    seat F1): asking it about the first lexically-outside row alone answered
+    ``None`` for a two-row album whose first row spelled the root through an
+    alias and whose second row was genuinely outside — the stranded row went
+    unreported. Cost is one ``realpath``/``samefile`` chain per lexically-outside
+    row, bounded by the album's track count.
+    """
+    outside = next(
+        (
+            it
+            for it in items
+            if it.path
+            and not _inside_library(lib, it)
+            and not is_in_library_source(lib.directory, _row_path(it))
+        ),
+        None,
+    )
+    if outside is None:
+        return None
+    folder = os.path.dirname(_row_path(outside))
+    return OutsideLibrary(
+        folder=folder,
+        holds_every_track=all(
+            bool(it.path) and os.path.dirname(_row_path(it)) == folder for it in items
+        ),
+    )
+
+
 def get_album_detail(lib: Library, album_id: int) -> AlbumDetail | None:
     """Return an album with its tracklist, or ``None`` when the album is missing.
 
     Tracks are sorted by ``(disc, track)`` so the tracklist reads in play order.
+    ``music_dir_context`` is bound because the outside-library read below expands
+    DB-relative paths; unbound, a whole album reads as outside.
     """
-    album = lib.get_album(album_id)
-    if album is None:
-        return None
-    items = list(album.items())
-    tracks = sorted(
-        (_to_track(item) for item in items),
-        key=lambda t: (t.disc, t.track),
-    )
-    return AlbumDetail(
-        **_album_fields(album, track_count=len(items), genre=_album_genre(album, items)),
-        tracks=tracks,
-        release=release_identity(album, album.mb_albumid),
-    )
+    with lib.music_dir_context():
+        album = lib.get_album(album_id)
+        if album is None:
+            return None
+        items = list(album.items())
+        tracks = sorted(
+            (_to_track(item) for item in items),
+            key=lambda t: (t.disc, t.track),
+        )
+        return AlbumDetail(
+            **_album_fields(album, track_count=len(items), genre=_album_genre(album, items)),
+            tracks=tracks,
+            release=release_identity(album, album.mb_albumid),
+            # Not display_path: wire.py scrubs at the sink (main.py:459).
+            outside_library=_outside_library(lib, items),
+        )
 
 
 def list_artists(lib: Library) -> list[Artist]:

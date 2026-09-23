@@ -1,3 +1,5 @@
+import { useId } from "react";
+
 import type { DuplicateAction, DuplicatePrompt } from "@/api/useImport";
 import {
   Close,
@@ -25,16 +27,40 @@ type ExistingAlbum = DuplicatePrompt["existing"][number];
 export function DuplicateComparison({
   prompt,
   incomingCoverUrl,
+  eyebrow,
 }: Readonly<{
   prompt: DuplicatePrompt;
   incomingCoverUrl: string | null;
+  /** Optional label above the h1. The import flow uses it to say this is the
+   * second question about an album the user has already decided once; the bank
+   * flow has no first question, so it passes nothing. */
+  eyebrow?: string;
 }> ) {
+  const eyebrowId = useId();
   return (
     <>
       <div className="flex flex-col gap-1">
+        {/* The tree's label register, the same one the panel headings below use
+            ("Importing (new)"). NOT SectionLabel: that is an <h2>, and an h2
+            above the page h1 inverts heading order. */}
+        {eyebrow !== undefined && (
+          <p
+            id={eyebrowId}
+            className="text-muted-foreground text-xs font-medium tracking-wide uppercase"
+          >
+            {eyebrow}
+          </p>
+        )}
         {/* THE page h1 — decision screens own their h1 directly (the Task-7
-            detail-page idiom); tabIndex -1 keeps RouteAnnouncer's contract. */}
-        <h1 tabIndex={-1} className="font-display text-display font-semibold tracking-tight">
+            detail-page idiom); tabIndex -1 keeps RouteAnnouncer's contract.
+            `aria-describedby` puts the eyebrow on the focus path: both
+            announcers move focus HERE, so a line that only sits above the
+            heading is never read. */}
+        <h1
+          tabIndex={-1}
+          aria-describedby={eyebrow === undefined ? undefined : eyebrowId}
+          className="font-display text-display font-semibold tracking-tight"
+        >
           Already in your library
         </h1>
         <p className="text-muted-foreground text-sm">

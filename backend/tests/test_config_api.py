@@ -17,6 +17,9 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from app.beets.library import LibraryHandle
+from tests.conftest import answer_before_a_fifo_blocks
+
 
 def test_get_config_returns_snapshot(client: TestClient) -> None:
     r = client.get("/api/config")
@@ -124,3 +127,27 @@ def test_get_config_survives_non_string_yaml_key(client: TestClient) -> None:
     assert r.status_code == 200
     parsed = yaml.safe_load(r.json()["effective_yaml"])
     assert parsed["substitute"] == {112: "One Twelve"}
+
+
+@pytest.mark.parametrize("shape", ["fifo", "device-link"])
+def test_get_config_serves_a_config_that_is_not_a_regular_file_as_empty(
+    client: TestClient, beets_library: LibraryHandle, shape: str
+) -> None:
+    """As confuse reads it. Measured before: a FIFO blocked the request."""
+    cfg = beets_library.config_path
+    cfg.unlink()
+    if shape == "fifo":
+        os.mkfifo(cfg)
+    else:
+        cfg.symlink_to("/dev/null")
+
+    r = answer_before_a_fifo_blocks(lambda: client.get("/api/config"), cfg)
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["yaml_text"], body["sha256"], body["file_modified_at"], body["apply_pending"]) == (
+        "",
+        "",
+        None,
+        True,
+    )

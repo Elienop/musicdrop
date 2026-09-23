@@ -100,22 +100,40 @@ def test_webhook_queues_valid_event(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 
 def test_webhook_offloads_blocking_fs_io(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # contain / coalesce_album_root / enqueue do blocking FS I/O and must run in
-    # the threadpool, not on the event loop.
+    """contain / coalesce_album_root / enqueue must not run on the event loop.
+
+    Spied at ``app.api.acquisition``'s threadpool call rather than this
+    module's, because the three hops go through ``inbox_read`` - which proves
+    two things at once: they are still offloaded, and they are offloaded UNDER
+    ``_INBOX_SCAN_SLOTS``. This route is the only unauthenticated producer of
+    inbox filesystem work (the webhook is in the auth gate's exempt set), so N
+    concurrent posts against a hung mount used to take N of anyio's 40
+    process-wide tokens and starve the scrypt derive behind sign-in - while the
+    limiter's own note claimed the acquisition surface cost at most 5 of 40.
+    """
     _write_config(tmp_path)
     monkeypatch.setattr(settings, "beets_dir", str(tmp_path / "beets"))
     (tmp_path / "beets" / "inbox" / "Artist" / "Album").mkdir(parents=True)
     app.dependency_overrides.clear()
 
+    import app.api.acquisition as acq_mod
     import app.api.slskd as slskd_mod
 
+    # ``vars`` because mypy's no-implicit-reexport forbids reading the
+    # re-imported name off the module object.
+    assert vars(slskd_mod)["inbox_read"] is acq_mod.inbox_read  # the capped seam
+
     offloaded: list[str] = []
+    peak = 0
 
     async def spy(func: Callable[..., object], *args: object, **kwargs: object) -> object:
-        offloaded.append(getattr(func, "__name__", repr(func)))
+        nonlocal peak
+        # ``partial`` carries no ``__name__``; the wrapped callable does.
+        offloaded.append(getattr(getattr(func, "func", func), "__name__", repr(func)))
+        peak = max(peak, int(acq_mod._INBOX_SCAN_SLOTS.borrowed_tokens))
         return await run_in_threadpool(func, *args, **kwargs)
 
-    monkeypatch.setattr(slskd_mod, "run_in_threadpool", spy)
+    monkeypatch.setattr(acq_mod, "run_in_threadpool", spy)
     with TestClient(app) as client:
         monkeypatch.setattr(app.state, "acquisition_queue", _probe_queue(tmp_path))
         _configure(
@@ -129,6 +147,8 @@ def test_webhook_offloads_blocking_fs_io(tmp_path: Path, monkeypatch: pytest.Mon
         r = client.post("/api/slskd/webhook", headers={"X-API-Key": "hook"}, json=_VALID)
         assert r.json() == {"status": "queued"}
     assert {"contain", "coalesce_album_root", "enqueue"} <= set(offloaded)
+    # A token was held while each ran - a bare ``run_in_threadpool`` holds none.
+    assert peak == 1, peak
 
 
 def test_webhook_ignores_non_directory_complete(

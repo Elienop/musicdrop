@@ -40,12 +40,15 @@ from beets.library import Library
 from beets.util import MoveOperation, syspath
 from fastapi import Request
 
-from app.beets.library import _album_genre, _genre_values, _require_id
+# ``_inside_library`` lives in the base adapter so the move phase here and the
+# album detail's outside-library read ask ONE containment question.
+from app.beets.library import _album_genre, _genre_values, _inside_library, _require_id
 
 # An edit that renames a file performs the SAME move reorganize does, under a
-# different trigger — so it reuses reorganize's divert prediction and its sidecar
-# carry rather than growing second copies that would drift apart.
-from app.beets.reorganize import art_preflight, carry_sidecars, collisions_by_dest
+# different trigger — so it reuses reorganize's divert prediction and the shared
+# sidecar carry rather than growing second copies that would drift apart.
+from app.beets.reorganize import art_preflight, collisions_by_dest
+from app.beets.sidecars import carry_sidecars
 from app.models.edit import (
     AlbumDiffSide,
     AlbumEditPreview,
@@ -404,18 +407,6 @@ def preview_album_edit(
             move_plan=move_plan,
             move_refusals=move_refusals,
         )
-
-
-def _inside_library(lib: Library, item: Any) -> bool:
-    """True iff the item's file lives under the library dir.
-
-    Mirrors beets ``Item.try_sync``'s guard: a file outside the library is never
-    relocated, so it takes no part in the move phase at all — not even in the
-    collision pre-flight, whose whole subject is names inside the library.
-    """
-    current = os.path.abspath(os.fsdecode(item.path))
-    libdir = os.path.abspath(os.fsdecode(lib.directory))
-    return os.path.commonpath([current, libdir]) == libdir
 
 
 def _move_refusals(lib: Library, dests: list[tuple[Any, bytes]]) -> dict[int, str]:
@@ -801,15 +792,15 @@ async def apply_album_edit_op(
     from fastapi.concurrency import run_in_threadpool
 
     from app.beets.config_editor import _swap_lock
-    from app.library_busy import library_job_active
+    from app.library_busy import library_job_active, raise_if_swap_blocked_by_job
 
     app = request_obj.app
+    busy = "A library operation is in progress; edit available when it finishes"
     if library_job_active():
-        raise HTTPException(
-            status_code=409,
-            detail="A library operation is in progress; edit available when it finishes",
-        )
+        raise HTTPException(status_code=409, detail=busy)
     async with _swap_lock(app):
+        # Asked again, now the lock is ours: see ``library_busy``'s swap-lock note.
+        raise_if_swap_blocked_by_job(message=busy)
         handle = app.state.beets_library
         write = bool(should_write(None))
         move = bool(should_move(None))

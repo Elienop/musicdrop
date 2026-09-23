@@ -14,9 +14,17 @@ a browsable multi-album queue. There is no apply-ready shape.
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import AfterValidator, BaseModel, Field, StringConstraints
 
 from app.models.import_models import ImportOptions, ImportOrigin, Recommendation
+
+
+def _without_a_nul(path: str) -> str:
+    """Refuse an embedded NUL: ``os.path.realpath`` 500'd the start and beets'
+    ``lstat`` failed the job (``test_a_nul_in_the_posted_path_is_refused_before_any_job``)."""
+    if "\x00" in path:
+        raise ValueError("a folder path cannot contain a null character")
+    return path
 
 
 class ImportPhase(StrEnum):
@@ -25,7 +33,7 @@ class ImportPhase(StrEnum):
     scanning  -> the worker is reading/grouping/looking up (nothing parked yet)
     reviewing -> an album is parked-and-waiting for a decision
     applying  -> reserved (beets exposes no signal to set it transiently)
-    done      -> the import finished (incl. a clean abort)
+    done      -> the import finished, whether it ran out or a stop ended it
     failed    -> the worker raised; ``error`` holds the message
     """
 
@@ -59,9 +67,9 @@ class StartImportRequest(BaseModel):
     """Body of ``POST /api/import``.
 
     ``path`` is a server-side folder (maps 1:1 to ``beet import <path>``).
-    ``options`` carries per-import overrides (operation move/copy/default +
-    unattended). ``None`` falls through to today's manual default (the user's
-    beets config, attended review).
+    ``options`` carries per-import overrides (operation move/copy/default,
+    unattended, sweep, incremental). ``None`` falls through to today's manual
+    default (the user's beets config, attended review).
     """
 
     # Non-blank after stripping (a blank/whitespace path is a 422). Otherwise
@@ -73,7 +81,20 @@ class StartImportRequest(BaseModel):
     # ``POST /api/config/save`` — so an allowlist here would restrict the owner
     # from their own feature while crossing no privilege boundary. Read the
     # BACKLOG entry before adding validation.
-    path: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    # ``max_length`` is PATH_MAX, a DoS bound not an allowlist: the resolve walks
+    # one component at a time — ~331 ms at the cap, 3.5 min at 80 KB without it.
+    # It bounds the string, not the TIME (a ``..``-amplified path: 18.8 s over
+    # 20 000 entries), so the resolver refuses that segment and the route resolves
+    # off the loop (test_the_posted_path_resolve_runs_off_the_event_loop). Off the
+    # loop REDUCES the stall rather than removing it: the dominant cost is
+    # pure-Python pathlib joins holding the GIL, and the loop serves nobody for
+    # 175-334 ms of those ~331 across five runs (security seat, measured
+    # 2026-09-19).
+    path: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=4096),
+        AfterValidator(_without_a_nul),
+    ]
     options: ImportOptions | None = None
 
 
@@ -94,9 +115,17 @@ class ImportProgress(BaseModel):
     skipped: int
     # Albums resolved as an album-landing action (auto-apply / decided apply|asis
     # / dup keep_both|replace) for which no library album id ever arrived — the
-    # session died before beets ran task.add. Only ever nonzero on a TERMINAL
-    # (done/failed) job: mid-run an id can simply trail its row by one poll.
+    # session died before reporting one. Mid-run only NOTED rows count; the
+    # id-based reading waits for a TERMINAL job, where an id cannot trail a poll.
     not_landed: int = 0
+    # Disjoint from every other counter: beets' task factory consults its history
+    # BEFORE any session hook, so a history-skipped folder emits no outcome and no
+    # feed row (tests/test_import_incremental_e2e.py). It also answers "already
+    # imported" for a RESUME record, which needs the user's own ``resume: yes``.
+    already_known: int = Field(
+        default=0,
+        description="Album folders beets skipped as already imported.",
+    )
 
 
 class ImportAlbumSummary(BaseModel):
@@ -121,11 +150,13 @@ class ImportAlbumSummary(BaseModel):
     # trail its row by one poll; the first poll after done carries every id).
     album_id: int | None = None
     # True when this row was resolved as an album-landing action but no library
-    # album id ever arrived — beets never ran task.add for it (the session
-    # died/aborted). Only ever True on a TERMINAL (done/failed) job; mid-run the
-    # id may simply not have arrived yet, so the flag stays False. astracks and
-    # dup-merge never flag (they land without an id of their own).
+    # album id ever arrived (the session died/aborted), or the row carries a
+    # ``note``. Without a note it waits for a TERMINAL job; astracks and dup-merge
+    # do not flag on the id alone (they land without one).
     did_not_land: bool = False
+    # Up to three short sentences when a Replace imported nothing, naming what
+    # stopped it and how many copies had moved. The row's status is untouched.
+    note: str | None = None
 
 
 class SweepStatus(BaseModel):
@@ -147,7 +178,9 @@ class SweepStatus(BaseModel):
     banked: int = 0
     skipped_known: int = 0
     current_folder: str | None = None
-    paused: bool = False
+    # A stop was accepted for this sweep. The UI calls it "Pause" because
+    # sweeping the same folder again resumes it (incremental history).
+    stopped: bool = False
 
 
 class FinishedSweep(BaseModel):
@@ -157,8 +190,8 @@ class FinishedSweep(BaseModel):
     sweep-origin job: a new import replaces the slot (and this recap with
     it), and failed sweeps surface nothing. ``job_id`` targets the run page
     (``/import?job=…``), which lives exactly as long as this block does, so
-    the link can never dangle. ``paused`` distinguishes a paused sweep (it
-    ends ``phase=done`` with the flag set) from a completed one.
+    the link can never dangle. ``stopped`` distinguishes a sweep the user
+    paused (it ends ``phase=done`` with the flag set) from a completed one.
     """
 
     job_id: str
@@ -166,7 +199,7 @@ class FinishedSweep(BaseModel):
     auto_applied: int
     banked: int
     skipped_known: int
-    paused: bool
+    stopped: bool
 
 
 class ImportJobState(BaseModel):
@@ -181,9 +214,16 @@ class ImportJobState(BaseModel):
     # Where the import came from: "manual" (the web Start flow) or "inbox" (the
     # unattended acquisition seam). Defaulted so manual imports need no change.
     origin: ImportOrigin = "manual"
+    # So a reloaded page can re-post it ("Import them again" sends the same
+    # folder with ``incremental: false``). None for a multi-folder start.
+    path: str | None = Field(
+        default=None,
+        description="The folder this import was started with, when it was exactly one.",
+    )
     # Albums left in the source for a later manual pass: needs_review (uncertain)
     # + needs_dup_resolution (a library duplicate). For an unattended import this
-    # is everything that did not auto-apply.
+    # is everything that did not auto-apply, and a ``note`` row counts in
+    # not_landed only.
     set_aside: int
     # Sweep-origin jobs surface counters instead of the per-album feed (their
     # ``albums`` list stays empty by design). None for manual/inbox jobs.
@@ -204,6 +244,21 @@ class ImportJobState(BaseModel):
     # works. Only the registry knows which, so it says so here.
     awaiting_decision: bool = Field(
         description="True while the worker is blocked on a parked album awaiting a decision.",
+    )
+    # True from the moment a stop is accepted, and still true once the job ends
+    # ``done`` — that is what titles the done view "Import stopped". For a sweep
+    # it carries the same value as ``sweep.stopped`` (one request sets both);
+    # the sweep block exists for the active probe, which has no job state.
+    stopped: bool = Field(
+        description="True once a stop was accepted for this job; stays true when it ends.",
+    )
+    # What ``stopped`` cannot say: whether the stop reached the worker. A stop
+    # accepted after the last album's placement has no abort point left to land
+    # on, so the run finishes whole — and at a terminal phase ``stopped and not
+    # aborted`` is exactly that case, which the done panel must not describe as
+    # "the rest stayed in the folder".
+    aborted: bool = Field(
+        description="True when the stop reached the worker and ended the run early.",
     )
 
 
@@ -231,7 +286,7 @@ class ActiveImportStatus(BaseModel):
     # idle ``{active: false}`` fallback type-checks against the same model.
     origin: ImportOrigin = "manual"
     # How many albums the active import has set aside (needs_review +
-    # needs_dup_resolution) — the FE inbox cue's "N set aside for review".
+    # needs_dup_resolution, minus ``note`` rows) — the FE inbox cue's count.
     needs_review_count: int = 0
     # The active sweep's counters (None when the active job is not a sweep, or
     # idle) — the FE sweep banner reads this off the existing probe.

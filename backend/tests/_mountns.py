@@ -37,9 +37,9 @@ def run_probe(name: str, work: Path, *, timeout: int = 180) -> list[str]:
     """Run ``tests/probes/<name>.py`` under ``unshare -Urm``; return its stdout lines.
 
     ``--propagation private`` is what ``unshare -m`` already does. The child
-    inherits this process's environment, which the rootdir conftest has floored
-    (``BEETSDIR`` and ``MUSICDROP_BEETS_DIR`` under the test tree), and adds only
-    the import root.
+    inherits this process's environment, which the rootdir conftest has floored,
+    and adds only the import root. It starts in ``work``, so its ``Settings()``
+    reads no ``backend/.env``.
     """
     backend = Path(__file__).resolve().parent.parent
     done = subprocess.run(
@@ -47,7 +47,7 @@ def run_probe(name: str, work: Path, *, timeout: int = 180) -> list[str]:
         capture_output=True,
         text=True,
         timeout=timeout,
-        cwd=str(backend),
+        cwd=str(work),
         env={**os.environ, "PYTHONPATH": str(backend)},
         check=False,
     )

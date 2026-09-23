@@ -79,7 +79,9 @@ def art_trash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ArtTrashStore:
 
 
 @pytest.fixture
-def client(cache: ArtistImageCache, art_trash: ArtTrashStore) -> Iterator[TestClient]:
+def client(
+    cache: ArtistImageCache, art_trash: ArtTrashStore, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[TestClient]:
     app.dependency_overrides[get_artist_image_cache] = lambda: cache
     # The from-url tests monkeypatch fetch_image_bytes, so this client is unused;
     # override the dep so it doesn't reach into app.state (lifespan doesn't run).
@@ -90,6 +92,8 @@ def client(cache: ArtistImageCache, art_trash: ArtTrashStore) -> Iterator[TestCl
     # refill they are not about.
     app.dependency_overrides[get_artist_image_service] = lambda: _OffService()
     app.dependency_overrides[get_library] = lambda: _StubHandle()
+    # The reset reads the handle off ``app.state`` once it holds the swap lock.
+    monkeypatch.setattr(app.state, "beets_library", _StubHandle(), raising=False)
     yield TestClient(app)
     app.dependency_overrides.clear()
 

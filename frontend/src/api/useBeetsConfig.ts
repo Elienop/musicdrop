@@ -46,6 +46,45 @@ function configOpError(
   });
 }
 
+/**
+ * The recovery hint an Apply 422 or 500 carries, nested as
+ * `{detail: {message, recovery}}` (config_editor.apply). Null for any other
+ * shape or a blank string, so the caller falls back to its own sentence.
+ */
+export function applyRecoveryHint(
+  err: ConfigOpError | null | undefined,
+): string | null {
+  const detail = (err?.body as { detail?: unknown } | undefined)?.detail;
+  if (detail && typeof detail === "object" && "recovery" in detail) {
+    const recovery = (detail as { recovery?: unknown }).recovery;
+    if (typeof recovery === "string" && recovery.trim()) return recovery;
+  }
+  return null;
+}
+
+/** The `type` of a Save 422 row about config.yaml on disk
+ * (config_editor._ON_DISK_ERROR_TYPE). The schema types `type` as a string. */
+const CONFIG_ON_DISK = "config_on_disk";
+
+/**
+ * The server's sentence from a `config_on_disk` row of a Save 422, from either
+ * `POST /api/config/save` or `POST /api/config/naming/save`. Null for any other
+ * body (validation rows, a 409, a 500), so the caller keeps its own sentence.
+ */
+export function configOnDiskMessage(body: unknown): string | null {
+  const detail = (body as { detail?: unknown } | null | undefined)?.detail;
+  if (!Array.isArray(detail)) return null;
+  for (const row of detail as unknown[]) {
+    if (row && typeof row === "object" && "type" in row && "msg" in row) {
+      const { type, msg } = row as { type: unknown; msg: unknown };
+      if (type === CONFIG_ON_DISK && typeof msg === "string" && msg.trim()) {
+        return msg;
+      }
+    }
+  }
+  return null;
+}
+
 async function fetchConfig(): Promise<BeetsConfigSnapshot> {
   return unwrap(await client.GET("/api/config"), "Failed to load config");
 }
@@ -100,10 +139,10 @@ export function useSaveConfig() {
  * Reload beets in-process (`POST /api/config/apply`). No body — the registry
  * gates this server-side on the import-active probe; if the user clicks Apply
  * during an import the backend returns 409 and the page rehydrates the gate
- * before re-enabling. The 500 branch carries a recovery hint in `body` so the
- * SettingsPage can render it inline. Cache invalidation hits both the snapshot
- * (the post-reload `BeetsConfigSnapshot` has `apply_pending = false` and a new
- * mtime) AND the `["active-import"]` probe (an import may have started+ended
+ * before re-enabling. The 422 and 500 branches carry a recovery hint in `body`
+ * ({@link applyRecoveryHint}); both Apply surfaces render it inline. Cache
+ * invalidation hits both the snapshot (the post-reload `BeetsConfigSnapshot`
+ * has `apply_pending = false` and a new mtime) AND the `["active-import"]` probe (an import may have started+ended
  * during the rebuild — cheaper to refetch than to reason about the race).
  */
 export function useApplyConfig() {

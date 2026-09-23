@@ -3,12 +3,19 @@ import type { ImportJobState, SweepStatus } from "@/api/useImport";
 /** A sweep that has accepted Pause and is still finishing its current album.
  *
  * One predicate for one concept: the announcer drops its elapsed clause on this,
- * and the page turns its announcement throttle off on it, and those two must not
- * be able to disagree. The origin check is redundant against today's backend —
- * `sweep` is only ever populated for a sweep origin — but the contract permits
- * the pair, and the message branch below reads the same two fields. */
-export function isPausedSweep(data: ImportJobState | undefined): boolean {
-  return data?.origin === "sweep" && data.sweep?.paused === true;
+ * and {@link sweepMessage}'s paused branch drops its counters, and those two
+ * must not be able to disagree. The origin check is redundant against today's
+ * backend — `sweep` is only ever populated for a sweep origin — but the contract
+ * permits the pair, and the message branch below reads the same two fields.
+ *
+ * The page's announcement throttle is NOT keyed on this: it reads the job's own
+ * `stopped`, which one request sets for both controls, so the bypass covers a
+ * manual stop too.
+ *
+ * The field is `stopped` because one route stops every import; a sweep's own
+ * word for it stays "pause" everywhere the user can read it. */
+function isPausedSweep(data: ImportJobState | undefined): boolean {
+  return data?.origin === "sweep" && data.sweep?.stopped === true;
 }
 
 /** The single spoken status for the whole run — it is the one `aria-live`
@@ -56,15 +63,46 @@ export function announceMessage(args: {
     return sweepMessage(data.sweep, data.phase) + clause;
   }
   if (done) {
-    const { applied, skipped, not_landed } = data.progress;
+    const { applied, skipped, not_landed, already_known } = data.progress;
+    // A run the stop actually ended reached `done` without completing, so it
+    // must not be announced as complete — the counts after it are still the
+    // run's own. Same first two words as the panel title, and the whole string
+    // is longer, so an exact-text query still singles the title out (the
+    // "Sweep paused" workaround above).
+    //
+    // `aborted`, not `stopped`, so this channel agrees with the panel beside
+    // it: a stop accepted after the last abort point left the run to finish,
+    // and "Import stopped." over a full set of counts would contradict it.
+    const opening = data.aborted ? "Import stopped." : "Import complete.";
     // The done PANEL has always shown the lost count and the failed
     // announcement gained it; this channel was the one place it went missing.
+    // `already_known` is in none of the three buckets either — beets skips
+    // those folders before tagging, so they reach no outcome record — and the
+    // panel's counts line names them, so this channel must too.
     return (
-      `Import complete. Imported ${applied}, skipped ${skipped}.` +
+      `${opening} Imported ${applied}, skipped ${skipped}.` +
       notLandedClause(not_landed) +
+      knownClause(already_known) +
       clause
     );
   }
+  // An accepted stop, still unwinding — an active phase, and the one moment
+  // this channel said nothing about the press. It kept reading the counters
+  // ("Imported 1. 1 album awaiting review.") while the button read "Stopping…",
+  // so a screen-reader user heard nothing for up to a parked poll (10s) plus the
+  // unwind, then "Import stopped."
+  //
+  // One fixed string, the treatment the sweep's paused branch already has: no
+  // counters and no elapsed clause, so the announcement cannot change until the
+  // run ends. Both halves are needed — the page turns its throttle off on this
+  // same flag, and the counters keep moving after a stop is accepted (the last
+  // album emits two outcome records), so a data-bearing string would re-read the
+  // whole sentence on every poll.
+  //
+  // A full sentence, which is this channel's register — the visible pair is
+  // the button's "Stopping…" and a status line echoing it, and the done panel
+  // reads "Import stopped".
+  if (data.stopped) return "Stopping the import.";
   if (data.phase === "scanning" && data.albums.length === 0) {
     return "Scanning the folder for albums." + clause;
   }
@@ -124,7 +162,7 @@ function elapsedClause(
  * carry the numbers on screen and the terminal announcement repeats them. */
 function sweepMessage(sweep: SweepStatus, phase: ImportJobState["phase"]): string {
   if (phase !== "done") {
-    if (sweep.paused) return "Stopping after this album.";
+    if (sweep.stopped) return "Stopping after this album.";
     // The moving triple only. `role="status"` is atomic, so a live sweep
     // re-reads this whole string every poll for as long as it runs — the same
     // repetition the elapsed clause was gated to stop. `skipped_known` decides
@@ -132,8 +170,8 @@ function sweepMessage(sweep: SweepStatus, phase: ImportJobState["phase"]): strin
     return `Sweeping. ${sweepCounts(sweep)}`;
   }
   // Spoken once, and a claim about the whole run — so every category it holds.
-  const counts = sweepCounts(sweep) + knownClause(sweep);
-  return sweep.paused ? `Sweep paused. ${counts}` : `Sweep complete. ${counts}`;
+  const counts = sweepCounts(sweep) + knownClause(sweep.skipped_known);
+  return sweep.stopped ? `Sweep paused. ${counts}` : `Sweep complete. ${counts}`;
 }
 
 /** The sweep's spoken counters. `skipped_known` joins only when it is nonzero:
@@ -145,11 +183,12 @@ function sweepCounts(sweep: SweepStatus): string {
   return `Processed ${sweep.processed}, imported ${sweep.auto_applied}, banked ${sweep.banked}.`;
 }
 
-/** The fourth tile's number, for the announcements spoken once. Folders skipped
- * before tagging never reach `processed`, so a re-run that skipped twenty and
- * then crashed reported nothing while a tile read 20. */
-function knownClause(sweep: SweepStatus): string {
-  return sweep.skipped_known > 0 ? ` ${sweep.skipped_known} already known.` : "";
+/** The history-skip clause. Folders skipped before tagging never reach
+ * `processed`, so a re-run that skipped twenty and then crashed reported nothing
+ * while a tile read 20. Takes the count, not a job: a sweep passes
+ * `sweep.skipped_known`, every other origin `progress.already_known`. */
+function knownClause(count: number): string {
+  return count > 0 ? ` ${count} already known.` : "";
 }
 
 /** A failed sweep's counters, empty when it did nothing at all.
@@ -159,13 +198,15 @@ function knownClause(sweep: SweepStatus): string {
  * sweep keeps the unconditional triple: zeros there mean "not yet", but on a
  * terminal panel they are a claim about the whole run. */
 function failedSweepCounts(sweep: SweepStatus): string {
-  const known = knownClause(sweep).trimStart();
+  const known = knownClause(sweep.skipped_known).trimStart();
   if (sweep.processed + sweep.auto_applied + sweep.banked === 0) return known;
-  return sweepCounts(sweep) + knownClause(sweep);
+  return sweepCounts(sweep) + knownClause(sweep.skipped_known);
 }
 
-/** The lost-album clause both terminal announcements owe. `not_landed` is only
- * ever nonzero on a terminal job, so it drops out of a clean run. */
+/** The lost-album clause every FEED-COUNTING announcement owes, the live one
+ * included: a refused Replace stops counting as applied the moment it is
+ * refused. A sweep counts on `sweep` and calls none of this. Straight
+ * apostrophe: this string is spoken, never seen. */
 function notLandedClause(notLanded: number): string {
   return notLanded > 0 ? ` ${notLanded} didn't land.` : "";
 }
@@ -186,6 +227,10 @@ function notLandedClause(notLanded: number): string {
  * ignoring `skipped_known` said only "The sweep failed." for a re-run that
  * skipped twenty known folders, while a tile read 20.
  *
+ * `already_known` is gated on itself too, through {@link knownClause}: those
+ * folders are skipped before tagging, so they reach no outcome record and none
+ * of the three counters holds them.
+ *
  * `set_aside` gets a clause because it is in NONE of the three buckets: the
  * server's `_is_imported` and `_is_skipped` both refuse a `needs_review` /
  * `needs_dup_resolution` row, and it never landed either. Without it a crashed
@@ -198,10 +243,11 @@ function failedMessage(data: ImportJobState): string {
     const counts = failedSweepCounts(sweep);
     return counts === "" ? "The sweep failed." : `The sweep failed. ${counts}`;
   }
-  const { applied, skipped, not_landed } = data.progress;
+  const { applied, skipped, not_landed, already_known } = data.progress;
   let m = "The import failed.";
   if (applied + skipped > 0) m += ` Imported ${applied}, skipped ${skipped}.`;
   m += notLandedClause(not_landed);
+  m += knownClause(already_known);
   if (data.set_aside > 0) {
     m += ` ${data.set_aside} album${data.set_aside === 1 ? "" : "s"} set aside.`;
   }
@@ -213,9 +259,18 @@ function failedMessage(data: ImportJobState): string {
  * is blocked on it (an unattended duplicate sets this status and skips on) —
  * either way the user has something to clear, so a screen-reader user must hear
  * it. Whether the worker is blocked is `awaiting_decision`; the spinner and the
- * poll cadence read that instead. */
-function pendingDuplicates(data: ImportJobState): number {
-  return data.albums.filter((a) => a.status === "needs_dup_resolution").length;
+ * poll cadence read that instead.
+ *
+ * Exported because the visible status line counts the same thing and two copies
+ * of the filter disagreed with the server. `did_not_land` rows are excluded: a
+ * refused Replace on a bank apply wears `needs_dup_resolution` AND the flag, so
+ * status alone counted that album twice, once as lost and once as a duplicate
+ * awaiting a resolution nothing on the page offers. The server's flag decides,
+ * never `note` — the registry's `_is_set_aside` does the same. */
+export function pendingDuplicates(data: ImportJobState): number {
+  return data.albums.filter(
+    (a) => a.status === "needs_dup_resolution" && !a.did_not_land,
+  ).length;
 }
 
 /** Whether the announcement names something the run is waiting for. The one
@@ -227,12 +282,18 @@ function namesAWait(data: ImportJobState): boolean {
 
 /** Active (non-terminal) non-sweep runs: count what's applied + flag pending
  * decisions (review, duplicate) so a screen-reader user hears the import is
- * waiting on them. */
+ * waiting on them.
+ *
+ * The lost clause belongs here as well as on the two terminal announcements: a
+ * refused Replace leaves `applied` and joins `not_landed` while the run is still
+ * going, so without it this channel said "Imported 1" over a row reading
+ * "Nothing was imported." {@link notLandedClause} is the one source. */
 function progressMessage(data: ImportJobState): string {
-  const { applied, skipped, needs_review } = data.progress;
+  const { applied, skipped, needs_review, not_landed } = data.progress;
   const needs_dup = pendingDuplicates(data);
   let m = `Imported ${applied}.`;
   if (skipped > 0) m += ` Skipped ${skipped}.`;
+  m += notLandedClause(not_landed);
   if (needs_review > 0) {
     m += ` ${needs_review} album${needs_review === 1 ? "" : "s"} awaiting review.`;
   }

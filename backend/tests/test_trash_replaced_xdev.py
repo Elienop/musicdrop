@@ -163,3 +163,62 @@ def test_a_real_cross_device_move_aside_carries_mode_mtime_and_the_symlink(
     assert record is not None
     assert record.moved == "files", "a hand copy back, not a folder move-back"
     assert record.origin == str(folder)
+
+
+def test_a_delete_across_a_real_filesystem_boundary_carries_audio_and_sidecars(
+    tmp_path: Path, shm_trash: Path
+) -> None:
+    """The front-door delete on the SHIPPED layout: /music and /data are two mounts.
+
+    Every other delete test puts Trash beside the library, where ``os.rename``
+    succeeds and ``shutil.move``'s copy-then-unlink fallback never runs — for the
+    audio (beets' own ``util.move``) or for the lyric sidecars (``move_sidecars``
+    uses ``shutil.move`` rather than ``os.replace`` for exactly this reason).
+    Here the kernel picks the fallback itself, and what this asserts is that the
+    delete still lands whole: both tracks, the tracked cover and the sidecar in
+    the container, the source folder pruned, the album dropped.
+    """
+    from beets.library import Item
+
+    from app.beets.delete import delete_album
+    from app.beets.library import _require_id
+    from tests.conftest import beets_dir_for, build_library, origins_for
+
+    music = tmp_path / "music"
+    folder = music / "Art" / "Alb"
+    folder.mkdir(parents=True)
+    lib = build_library(str(beets_dir_for(tmp_path) / "library.db"), str(music))
+    items = []
+    for i in (1, 2):
+        track = folder / f"{i:02d} T{i}.mp3"
+        track.write_bytes(b"\x00")
+        item = Item(album="Alb", albumartist="Art", artist="Art", title=f"T{i}", track=i)
+        item.path = os.fsencode(str(track))
+        items.append(item)
+    album = lib.add_album(items)
+    cover = folder / "cover.jpg"
+    cover.write_bytes(b"\xff\xd8\xffcover")
+    album.artpath = os.fsencode(str(cover))
+    album.store()
+    (folder / "01 T1.lrc").write_text("[00:01.00] x", encoding="utf-8")
+    album_id = _require_id(album.id)
+    origins = origins_for(shm_trash)
+
+    result = delete_album(
+        lib,
+        album_id,
+        trash_dir=shm_trash,
+        origins_dir=origins,
+        protected=protected_for(lib, trash_dir=shm_trash, origins_dir=origins),
+    )
+
+    landed = Path(result.trash_path)
+    assert landed.stat().st_dev != music.stat().st_dev, "the move really crossed a boundary"
+    assert sorted(p.name for p in landed.iterdir()) == [
+        "01 T1.lrc",
+        "01 T1.mp3",
+        "02 T2.mp3",
+        "cover.jpg",
+    ]
+    assert lib.get_album(album_id) is None
+    assert not folder.exists(), "the vacated folder was pruned, sidecar and all"

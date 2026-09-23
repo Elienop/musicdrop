@@ -27,12 +27,14 @@ import contextlib
 import logging
 import os
 import stat
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
 from beets.library import Item, Library
 
+from app.beets.delete import KEEP_NAME
 from app.beets.import_session import ImportBridge, WebImportSession, run_import_worker
 from app.beets.library import (
     _coerce_int,
@@ -49,6 +51,7 @@ from app.beets.protected import (
     protected_match,
     protected_tree_error,
     refuse_protected_tree,
+    rows_under_any,
 )
 from app.beets.trash_origins import (
     clear_trash_origins,
@@ -139,11 +142,20 @@ _NO_RECORD_NOTE = (
     " (the server log says which). Restoring re-imports it, so beets files it under your"
     " current naming rules rather than putting it back."
 )
-#: ``moved="items"``: the album's files were taken out of a folder it shared.
-_SHARED_FOLDER_NOTE = (
-    "This album's files were moved out of a folder it shared with other music, so"
-    " MusicDrop cannot put them back exactly. Restoring re-imports the album under your"
-    " current naming rules."
+#: ``moved="items"``: the album's own files were moved out of their folder one by
+#: one. That is EVERY album deleted since owner ruling ``decisions.md`` 58, not
+#: only one that shared a folder, so the sentence says what is true of all of
+#: them — Restore re-imports the tracks under the current naming.
+#:
+#: It names no sidecar: of ``trash.trash_album``'s four callers only ``delete``
+#: carries the lyric files (``delete._carry_the_sidecars``); import Replace and
+#: duplicates-resolve must not, since the new copy lands on the same stem and
+#: would lose lyrics the user still has (``trash.trash_album``, measured). The
+#: entry's listing says what it holds.
+_MOVED_ITEMS_NOTE = (
+    "MusicDrop moved this album's files out of their folder one by one, so it cannot"
+    " put them back exactly. Restoring re-imports the tracks under your current naming"
+    " rules."
 )
 #: ``moved="files"``: loose files MusicDrop moved aside to replace them
 #: (``trash.trash_replaced_files`` — a curated poster, an uploaded portrait).
@@ -430,7 +442,8 @@ def _unopenable_name_under(entry: Path) -> str | None:
     before anything is handed to beets — which cannot be gated from here: its
     importer opens every file in the folder it is given that its
     ``ignore``/hidden globs do not skip (``mutagen.wave.WAVE`` on a FIFO,
-    ``importer/tasks.py:1141``), and on the move-back arm the app's own
+    ``ImportTaskFactory.read_item``, ``importer/tasks.py:1128`` in the installed
+    beets 2.13.1), and on the move-back arm the app's own
     :func:`_holds_media` walk opens them again afterwards.
 
     ``followlinks=True`` because beets' own walk follows them: ``sorted_walk``
@@ -702,7 +715,7 @@ def _restore_fields(
     if record.moved == "files":
         return "by_hand", _MOVED_ASIDE_NOTE, origin
     if record.moved != "folder":
-        return "import", _SHARED_FOLDER_NOTE, origin
+        return "import", _MOVED_ITEMS_NOTE, origin
     if move_back_target(record, music_dir=music_dir) is None:
         return "import", _OUTSIDE_LIBRARY_NOTE, origin
     return "move_back", None, origin
@@ -1082,7 +1095,8 @@ def _restore_to_origin(
         # up front, because beets' discovery is the AUTHORITY on "was there an
         # album here" and :func:`_holds_media` is a heuristic that does not
         # replicate it: beets applies ``ignore``/``ignore_hidden``, extracts
-        # archives, and remuxes before reading (``importer/tasks.py:1141-1168``).
+        # archives, and remuxes before reading (``ImportTaskFactory.read_item``,
+        # ``importer/tasks.py:1128`` in the installed beets 2.13.1).
         # Asking the probe only once beets has already answered "nothing landed"
         # makes it a tie-breaker on a decided question instead of a gate that
         # could decide it alone, and the import costs nothing on a folder with
@@ -1468,7 +1482,9 @@ def resolve_trash_child(trash_dir: Path, rel: str) -> Path:
     return dest
 
 
-def empty_one(folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees) -> EmptyResult:
+def empty_one(
+    folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees, lib: Library
+) -> EmptyResult:
     """Permanently remove one trashed entry — a folder or a loose file.
 
     Its OWN record goes with it, strictly AFTER: a failed ``rmtree`` raises out
@@ -1481,10 +1497,21 @@ def empty_one(folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees) 
     Raises :class:`~app.beets.protected.ProtectedTreeError` (503) when the entry
     is or holds one of the app's own directories by inode, when the name stopped
     naming what the guard was asked about (see :func:`_remove_checked_entry`,
-    which both delete paths share), and when the entry's parent is no longer the
-    Trash this request checked.
+    which both delete paths share), when the entry's parent is no longer the
+    Trash this request checked, and when the LIBRARY still names a file inside it
+    (:func:`_listed_entries`).
+
+    ``folder_abs`` is the RESOLVED entry, and only the removal uses it. The
+    cross-check asks ``protected.trash_spellings`` instead, because the rows hold
+    whichever spelling Delete moved with: on a default Trash whose leaf is a
+    link, one spelling answered ``200`` and destroyed the album's only copy.
     """
     path = Path(folder_abs)
+    kept = _listed_entries(lib, protected.trash_spellings, [path.name]).get(path.name)
+    if kept is not None:
+        raise ProtectedTreeError(
+            f"Refused: {path.name!r} — {kept.cause}. {kept.fix} Nothing was removed."
+        )
     # The resolved parent: ``folder_abs`` comes from ``resolve_trash_child``, so
     # every component above the entry is already what it resolved to. Opened
     # through the sweep's own check rather than a bare ``os.open``: the entry's
@@ -1500,6 +1527,94 @@ def empty_one(folder_abs: str, *, origins_dir: Path, protected: ProtectedTrees) 
         raise _refusal_error(path, refusal)
     delete_trash_origin(origins_dir, path.name)
     return EmptyResult(removed=1)
+
+
+@dataclass(frozen=True)
+class _Listed:
+    """Why one Trash entry is being kept, and the one control that clears it."""
+
+    cause: str
+    fix: str
+
+
+#: What an entry an ALBUM row names reads with. Delete moves the files and THEN
+#: drops the rows, so a row naming Trash means the drop did not happen and the
+#: entry is the album's only copy — measured, one Empty destroyed it while the
+#: album stayed listed. Deleting the album again finishes it
+#: (``delete._trash_one``'s retry arm), after which the rows are gone.
+_LISTED_ALBUM: Final = _Listed(
+    "the library still lists files inside", "Delete the album again, then empty Trash."
+)
+
+#: The same refusal for an entry only ALBUM-LESS rows name: "delete the album
+#: again" names nothing a singleton's owner can press, so they get their own
+#: remedy. A wrong refusal costs a click; a wrong removal costs the only copy.
+_LISTED_TRACK: Final = _Listed(
+    "the library still lists a track inside",
+    "Move that entry out of Trash, or remove the track with beets.",
+)
+
+#: Best cause first: an entry named by rows of both kinds reads with the remedy
+#: that clears it, and this is the order the 503 lists its clauses in.
+_CAUSES: Final = (_LISTED_ALBUM, _LISTED_TRACK)
+
+
+def _listed_entries(
+    lib: Library, roots: Sequence[Path], names: Sequence[str]
+) -> dict[str, _Listed]:
+    """Which of ``names`` the library still lists a file inside, and why.
+
+    Asked of beets: ``PathQuery`` is its own ``path:`` predicate — the path itself
+    or anything under it, with relative DB rows and case sensitivity handled by
+    beets. One query for the whole Trash per request (normally zero rows), then
+    each hit is bucketed per entry by the same predicate; ``album_id`` picks the
+    remedy the refusal names.
+
+    ``roots`` is every spelling the app's own settings give the current Trash
+    (:func:`~app.beets.protected._trash_spellings`), because the rows hold the
+    one the mover used. Asked as one ``OrQuery`` so it stays one pass. Only this
+    side is generous: ``delete._all_rows_are_in_trash`` shares the helper but
+    asks over the current ``trash_dir`` alone, because refusing keeps the files
+    while that arm drops the rows.
+
+    ``lib.music_dir_context()`` because relative rows need beets' music dir bound
+    (``test_empty_one_refuses_a_relative_row_with_the_music_dir_context_unbound``).
+
+    Cost at 100 000 relative rows, no hit: **24 ms for one root spelling**, then
+    roughly +17 ms per further one (45 / 61 / 76 ms). Linear in the spellings,
+    not in the entries (1 and 50 agree to 0.5 ms), and that length is 1 on an
+    ordinary default Trash, 2-3 once a link is involved. Absolute rows cost
+    slightly MORE (29 ms). Min of 15, against a fixture built in a fresh
+    directory.
+
+    Residual: beets compares path strings, so an alias none of ``roots`` spells —
+    a bind mount, a second symlink, NFD against NFC, ``STRASSE`` against
+    ``Straße`` — is not recognised and Empty removes the entry. Measured in
+    ``tests/probes/alias_rows.py``, recorded in BACKLOG with what IS covered.
+    """
+    if not names:
+        return {}
+    kept: dict[str, _Listed] = {}
+    with lib.music_dir_context():
+        hits = list(lib.items(rows_under_any(roots)))
+        # Cost only: building the per-entry queries probes the filesystem for
+        # case sensitivity once per pattern (20.6 ms for 500 entries at three
+        # spellings, measured), and a healthy Trash has no hit at all.
+        if not hits:
+            return {}
+        inside = {name: rows_under_any([root / name for root in roots]) for name in names}
+        for item in hits:
+            for name, query in inside.items():
+                if query.match(item):
+                    _keep(kept, name, _LISTED_ALBUM if item.album_id else _LISTED_TRACK)
+    return kept
+
+
+def _keep(kept: dict[str, _Listed], name: str, cause: _Listed) -> None:
+    """Record why an entry is kept, keeping the best cause found for it."""
+    current = kept.get(name)
+    if current is None or _CAUSES.index(cause) < _CAUSES.index(current):
+        kept[name] = cause
 
 
 def _refusal_error(path: Path, refusal: _Refusal) -> ProtectedTreeError:
@@ -1703,21 +1818,130 @@ def _remove_checked_entry(name: str, *, dir_fd: int, protected: ProtectedTrees) 
     return None
 
 
+def _listed_message(
+    listed: list[tuple[str, _Listed]], *, refused: list[str], removed: int, failed: list[str]
+) -> str:
+    """The 503 sentence when the library still lists what an entry holds.
+
+    Every entry still in Trash is in one of the clauses: listed here with the
+    control that clears IT, refused in the clause below, could-not-be-removed in
+    the count — the sweep's other two raises are never reached once this one
+    fires (``test_an_empty_all_that_keeps_a_listed_entry_still_names_the_stuck_one``).
+    """
+    stuck = f", {len(failed)} could not be removed ({_capped(failed)})" if failed else ""
+    also = ""
+    if refused:
+        shown, those = _refused_clauses(refused)
+        also = f" Also refused: {shown} — move {those} out of Trash."
+    return f"Refused: {_listed_clauses(listed)} Removed {removed}{stuck}.{also}"
+
+
+def _listed_clauses(listed: list[tuple[str, _Listed]]) -> str:
+    """One clause per CAUSE, in :data:`_CAUSES` order, each naming its own control.
+
+    Grouped rather than one clause per entry: a sweep of a hundred stuck albums
+    would otherwise repeat the same sentence a hundred times, and each group is
+    capped the way :func:`_capped` caps everything else here.
+    """
+    clauses = []
+    for cause in _CAUSES:
+        named = [name for name, found in listed if found is cause]
+        if named:
+            clauses.append(f"{_capped(named)} — {cause.cause}. {cause.fix}")
+    return " ".join(clauses)
+
+
+def _refused_clauses(refused: list[str]) -> tuple[str, str]:
+    """The refused entries as one capped clause, and the pronoun for them.
+
+    Already whole clauses ("'X' contains the inbox (…)"), so joined rather than
+    re-``repr``'d by :func:`_capped`. ONE definition, read by both 503s, so the
+    cap cannot drift between them
+    (``test_a_sixth_refused_entry_is_counted_not_named``).
+    """
+    more = f" and {len(refused) - 5} more" if len(refused) > 5 else ""
+    those = "those entries" if len(refused) > 1 else "that entry"
+    return f"{'; '.join(refused[:5])}{more}", those
+
+
 def _refused_message(refused: list[str], *, removed: int, failed: list[str]) -> str:
     """The 503 sentence for entries the guard would not let the sweep remove."""
-    shown = "; ".join(refused[:5])
-    more = f" and {len(refused) - 5} more" if len(refused) > 5 else ""
+    shown, those = _refused_clauses(refused)
     # The failed entries ride along NAMED, the way the partial below names
     # them: this raise outranks it, so a bare count left an entry that could
     # not be removed invisible on every retry.
     stuck = f", {len(failed)} could not be removed ({_capped(failed)})" if failed else ""
-    those = "those entries" if len(refused) > 1 else "that entry"
-    return (
-        f"Refused: {shown}{more}. Removed {removed}{stuck}; move {those} out of Trash, then retry."
-    )
+    return f"Refused: {shown}. Removed {removed}{stuck}; move {those} out of Trash, then retry."
 
 
-def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) -> EmptyResult:
+@dataclass
+class _Sweep:
+    """What one pass over the Trash root removed, and what each survivor cost."""
+
+    removed: int = 0
+    listed: list[tuple[str, _Listed]] = field(default_factory=list)
+    refused: list[str] = field(default_factory=list)
+    failed: list[str] = field(default_factory=list)
+    first: OSError | None = None
+
+
+def _sweep_entries(
+    names: Sequence[str],
+    still_listed: dict[str, _Listed],
+    *,
+    dir_fd: int,
+    origins_dir: Path,
+    protected: ProtectedTrees,
+) -> _Sweep:
+    """Decide each name's fate through ``dir_fd``: listed, refused, failed or removed.
+
+    A symlinked entry is acted on as the LINK: following it would ``rm -rf`` a
+    directory merely pointed at, and ``rmtree`` refuses one, which used to wedge
+    every entry after it in ``iterdir`` order.
+
+    Each origin record is dropped right after its entry.
+    """
+    sweep = _Sweep()
+    for name in names:
+        # Its OWN list: the rest of the Trash is still emptied, and the fix
+        # for these is not the fix the protected entries get.
+        found = still_listed.get(name)
+        if found is not None:
+            sweep.listed.append((display_path(name), found))
+            continue
+        try:
+            refusal = _remove_checked_entry(name, dir_fd=dir_fd, protected=protected)
+        except OSError as exc:
+            # Carry on. One entry the app cannot remove -- a root-owned file, a
+            # permission bit, a share that dropped half way -- used to abort the
+            # whole sweep and take the count with it, so the user was told
+            # nothing and could not tell 1-of-12 from 11-of-12. The entry stays
+            # in Trash either way; only the reporting was ever at stake.
+            sweep.failed.append(display_path(name))
+            sweep.first = sweep.first or exc
+            continue
+        if refusal is not None:
+            # The partial note rides on the clause: the summary says
+            # "Removed 0" for an entry whose contents are already gone.
+            note = f" ({_PARTIAL})" if refusal.partial else ""
+            sweep.refused.append(f"{display_path(name)!r} {refusal.clause}{note}")
+            continue
+        delete_trash_origin(origins_dir, name)
+        # The count is the top-level entries this Empty removed, with one
+        # exception: the app's own keep-file, which a killed delete can leave
+        # in a Trash inside the music library and which made one visible
+        # entry read as ``removed=2``. Skipping every dot-leading name
+        # instead read ``removed: 0`` while a hidden folder and its contents
+        # were destroyed (measured), and a zero also suppresses the
+        # orphan-record sweep.
+        if name != KEEP_NAME:
+            sweep.removed += 1
+    return sweep
+
+
+def empty_all(
+    trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees, lib: Library
+) -> EmptyResult:
     """Permanently remove every unprotected entry under ``trash_dir``.
 
     The root is opened once through
@@ -1729,27 +1953,22 @@ def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) 
     Each entry is pinned the same way by :func:`_remove_checked_entry`, which is
     where the guard and the removal are tied to one identity.
 
-    An entry that is or holds one of the app's own directories by inode is left
-    where it is and named in a :class:`~app.beets.protected.ProtectedTreeError`
-    (503) carrying the failed count, raised AFTER the others are removed.
+    Three causes leave an entry behind, each NAMED in the single error this
+    raises after the others are removed: the library still lists files inside it
+    (:func:`_listed_entries`), it is or holds one of the app's own directories by
+    inode, or its removal failed. The first two answer 503
+    (:func:`_listed_message`, :func:`_refused_message`); a sweep whose only fault
+    is a failed removal answers 500.
 
-    A symlinked entry is acted on as the LINK: following it would ``rm -rf`` a
-    directory merely pointed at, and ``rmtree`` refuses one, which used to wedge
-    every entry after it in ``iterdir`` order.
-
-    Each origin record is dropped inside the loop, right after its entry. The
-    whole store is swept only when this call REMOVED something AND Trash is
-    empty afterwards: emptiness alone would destroy every record when the share
-    has dropped.
+    Each name is decided and acted on by :func:`_sweep_entries`, which drops
+    each origin record right after its entry. The whole store is swept only when
+    this call REMOVED something AND Trash is empty afterwards: emptiness alone
+    would destroy every record when the share has dropped.
 
     The residual list is the BACKLOG entry for this slice.
     """
     if not trash_dir.exists():
         return EmptyResult(removed=0)
-    removed = 0
-    failed: list[str] = []
-    refused: list[str] = []
-    first: OSError | None = None
     fd = open_checked_dir(trash_dir, protected)
     try:
         # Inside a ``with``, like ``_Remover.children``: the dup an fd
@@ -1757,36 +1976,31 @@ def empty_all(trash_dir: Path, *, origins_dir: Path, protected: ProtectedTrees) 
         # re-enumerates through this same ``fd``.
         with os.scandir(fd) as entries:
             names = sorted(entry.name for entry in entries)
-        for name in names:
-            try:
-                refusal = _remove_checked_entry(name, dir_fd=fd, protected=protected)
-            except OSError as exc:
-                # Carry on. One entry the app cannot remove -- a root-owned file, a
-                # permission bit, a share that dropped half way -- used to abort the
-                # whole sweep and take the count with it, so the user was told
-                # nothing and could not tell 1-of-12 from 11-of-12. The entry stays
-                # in Trash either way; only the reporting was ever at stake.
-                failed.append(display_path(name))
-                first = first or exc
-                continue
-            if refusal is not None:
-                # The partial note rides on the clause: the summary below says
-                # "Removed 0" for an entry whose contents are already gone.
-                note = f" ({_PARTIAL})" if refusal.partial else ""
-                refused.append(f"{display_path(name)!r} {refusal.clause}{note}")
-                continue
-            delete_trash_origin(origins_dir, name)
-            removed += 1
+        # ONE query for the whole sweep, before the first removal, inside the
+        # swap lock (cost in :func:`_listed_entries`).
+        still_listed = _listed_entries(lib, protected.trash_spellings, names)
+        sweep = _sweep_entries(
+            names, still_listed, dir_fd=fd, origins_dir=origins_dir, protected=protected
+        )
     finally:
         os.close(fd)
-    if refused:
-        raise ProtectedTreeError(_refused_message(refused, removed=removed, failed=failed))
+    removed, failed = sweep.removed, sweep.failed
+    if sweep.listed:
+        # First, because it is the only refusal here about LOSING data: those
+        # entries hold the album's one copy (see ``_LISTED_ALBUM``). It carries
+        # the other two causes with it — a raise that outranked them left an
+        # entry that could not be removed invisible on every retry.
+        raise ProtectedTreeError(
+            _listed_message(sweep.listed, refused=sweep.refused, removed=removed, failed=failed)
+        )
+    if sweep.refused:
+        raise ProtectedTreeError(_refused_message(sweep.refused, removed=removed, failed=failed))
     if failed:
         # Named, not just counted: the user's next move is to look at them.
         raise TrashEmptyPartialError(
             f"removed {removed} of {removed + len(failed)}."
             f" {len(failed)} could not be removed and are still in Trash: {_capped(failed)}."
-            f" The first failure was: {_one_full_stop(str(first))}"
+            f" The first failure was: {_one_full_stop(str(sweep.first))}"
         )
     # Suppressed rather than allowed to escape: everything above has already
     # happened, so a ``trash_dir`` that stopped answering between the loop and

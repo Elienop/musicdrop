@@ -1,36 +1,62 @@
 import { yaml } from "@codemirror/lang-yaml";
 import { MergeView } from "@codemirror/merge";
-import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { useEffect, useRef } from "react";
 
 import { Button } from "@/components/ui/button";
+import { READ_ONLY_EXTENSION } from "@/pages/settings/codemirror-config";
 
 /**
- * Conflict resolution view: shown when Save returns 409 (the on-disk YAML
- * advanced past the CAS tokens we sent). The page hands us BOTH docs:
+ * Each pane's theme: CodeMirror's dark variant, as the main editor uses.
  *
- *  - `local`  — what the user has in their CM6 editor right now (the draft
- *               that lost the CAS race).
- *  - `server` — the freshest disk text the 409 body carried back.
+ * A focused pane's ring is the app's focus dialect (`.focus-ring` in
+ * styles.css, 3px at ring/70), 3.96:1 on the panel. It replaces
+ * CodeMirror's own outline, which is drawn outside `.cm-editor`, where the
+ * merge view's `overflow: hidden` wrapper clips it. The ring is inside. It
+ * needs no z-index: the gutter's z-index 200 counts only inside
+ * `.cm-scroller`, a stacking context at z-index 0, and a positioned
+ * `::after` with no z-index paints after it in tree order. Stacked no
+ * higher, it stays under the sticky topbar.
+ *
+ * `@codemirror/merge` draws the change markers at 1-3px from the pane's
+ * left edge, under the ring; 4px of padding moves them past it.
+ */
+const PANE_THEME = EditorView.theme(
+  {
+    "&.cm-focused": { outline: "none" },
+    "&.cm-focused::after": {
+      content: '""',
+      position: "absolute",
+      inset: "0",
+      pointerEvents: "none",
+      boxShadow:
+        "inset 0 0 0 3px color-mix(in oklab, var(--ring) 70%, transparent)",
+    },
+    ".cm-changeGutter": { width: "6px", paddingLeft: "4px" },
+  },
+  { dark: true },
+);
+
+/**
+ * Conflict resolution view: shown when Save returns 409, or when a read brings
+ * a new file version while a draft differs from it. The page hands us BOTH
+ * docs:
+ *
+ *  - `local`  — what the user has in their CM6 editor right now (the draft).
+ *  - `server` — the newer file: the 409 body's text, or that read's text.
  *
  * The user picks an exit:
  *
  *  - **Reload (drop my edits)** — abandon `local`, accept `server` as the
  *    new baseline. Page invalidates + re-fetches the snapshot.
- *  - **Overwrite anyway** — force-Save `local` with the server's fresh
- *    `sha256` token (carried by the 409 body) so the second Save can't lose
- *    the same race.
+ *  - **Overwrite anyway** — force-Save `local` with the newer file's `sha256`
+ *    (from the 409 body or the read), so the second Save can't lose the same
+ *    race.
  *
- * The diff itself is a `@codemirror/merge` `MergeView`:
- *   - `a` side = `local`, editable in principle (but we don't surface the
- *     edits — Reload/Overwrite are the only two paths out). Keeping `a`
- *     editable preserves the revert affordance: `revertControls: "b-to-a"`
- *     means each changed chunk has a "<- revert" button that copies the
- *     server's version of that chunk INTO `a`, so a user who only wants to
- *     accept a subset of disk-side changes can still do that visually.
- *   - `b` side = `server`, locked read-only via the standard CM6 triplet
- *     (`EditorState.readOnly` + `EditorView.editable.of(false)`).
+ * The diff itself is a `@codemirror/merge` `MergeView`, a plain diff: both
+ * sides are read-only (`a` = `local`, `b` = `server`) and there are no revert
+ * controls, because Overwrite saves the main editor's draft, not this pane.
+ * Its options:
  *   - `collapseUnchanged: {}` folds identical regions to a "show more"
  *     affordance so the diff stays focused on the actual divergence.
  *   - `highlightChanges: true` + `gutter: true` colour the changed lines and
@@ -70,25 +96,19 @@ export function SettingsConflict({
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    // The main editor's read-only set: no input, and still in the Tab order,
+    // so a keyboard user can move through the diff. Each pane is named with
+    // the panel's own words.
+    const pane = (name: string) => [
+      yaml(),
+      READ_ONLY_EXTENSION,
+      EditorView.contentAttributes.of({ "aria-label": name }),
+      PANE_THEME,
+    ];
     const mv = new MergeView({
       parent: host,
-      a: {
-        doc: local,
-        extensions: [yaml()],
-      },
-      b: {
-        doc: server,
-        extensions: [
-          yaml(),
-          EditorState.readOnly.of(true),
-          EditorView.editable.of(false),
-        ],
-      },
-      // "b-to-a" = revert chunks FROM server (b) BACK INTO local (a) — i.e.
-      // the user is editing the left side and can pull individual disk-side
-      // chunks across. Direction matches the spec's "your edits on the
-      // left, the on-disk version on the right" framing.
-      revertControls: "b-to-a",
+      a: { doc: local, extensions: pane("Your edits") },
+      b: { doc: server, extensions: pane("On-disk version") },
       highlightChanges: true,
       gutter: true,
       // Empty config = use the default (collapse runs of identical lines

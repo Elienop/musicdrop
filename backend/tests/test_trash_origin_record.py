@@ -44,6 +44,7 @@ from beets import config
 from beets.library import Album, Item, Library
 
 from app.beets import trash_origins as trash_origins_mod
+from app.beets.delete import delete_album
 from app.beets.import_session import ImportBridge, WebImportSession, run_import_worker
 from app.beets.library import LibraryRootUnavailableError, _require_id
 from app.beets.trash import (
@@ -51,7 +52,6 @@ from app.beets.trash import (
     resolve_trash_dir,
     resolve_trash_origins_dir,
     trash_album,
-    trash_album_folder,
     trash_folder,
 )
 from app.beets.trash_manage import (
@@ -83,9 +83,11 @@ from app.models.trash import RestoreResult
 from tests.conftest import (
     beets_dir_for,
     build_library,
+    library_with_no_rows,
     make_test_handle,
     origins_for,
     protected_for,
+    trash_the_folder_as_released,
     write_leased,
 )
 
@@ -180,29 +182,6 @@ def _bystander(lib: Library, tmp_path: Path) -> None:
     item = Item(album="Album", albumartist="Bystander", artist="Bystander", title="T", track=1)
     item.path = os.fsencode(str(dst))
     lib.add_album([item]).store()
-
-
-def test_trash_album_folder_records_the_folder_it_came_from(tmp_path: Path) -> None:
-    lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
-    source = str(tmp_path / "music" / "Portishead" / "Dummy")
-    album = _dummy(lib)
-
-    with lib.transaction():
-        dest = Path(
-            trash_album_folder(
-                lib,
-                album,
-                trash_dir=tmp_path / "trash",
-                origins_dir=_origins(tmp_path),
-                protected=protected_for(
-                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
-                ),
-            )
-        )
-
-    record = _record(tmp_path, dest)
-    assert record.origin == source
-    assert record.moved == "folder"  # a whole directory moved -> a move-back is exact
 
 
 def test_trash_folder_records_the_husk_origin(tmp_path: Path) -> None:
@@ -315,14 +294,11 @@ def test_write_trash_origin_swallows_a_failing_write(tmp_path: Path, name: str) 
     """The binding secondary invariant, pinned at the contract rather than a caller.
 
     This is a NEW write on the delete path, so its failure must be no worse than
-    today (folder in Trash, no record). TWO of the three callers run
-    ``album.remove()`` a statement or two later (``trash.trash_album`` for the
-    per-item mover, ``trash.trash_album_folder``'s whole-folder branch for the
-    other), so anything escaping here keeps the library rows while the files are
-    already in Trash — and on the whole-folder path it would now also trip the
-    move-back the row drop is wrapped in, undoing a delete because its
-    bookkeeping failed. Named rather than cited by line, because the line cites
-    this used to give into ``trash.py`` went stale.
+    today (folder in Trash, no record). ``trash.trash_album`` runs
+    ``album.remove()`` a statement or two later, so anything escaping here keeps
+    the library rows while the files are already in Trash. Named rather than
+    cited by line, because the line cites this used to give into ``trash.py``
+    went stale.
 
     Parametrised over the NAME because the failure handler interpolates it, and
     an ASCII fixture exercises the swallow without ever exercising the handler's
@@ -387,8 +363,8 @@ def test_an_album_is_refused_when_the_store_is_not_a_folder(tmp_path: Path, fold
     more: a regular FILE at the store path is a store that cannot be used, and
     the ruling (``decisions.md`` 28) is that such a delete does not run. What it
     now pins is the whole "nothing happened" — rows kept, files where they were,
-    no Trash dir at all — because the refusal fires ahead of every branch of
-    ``trash_album_folder``, not merely ahead of its ``mkdir``.
+    no Trash dir at all — because the refusal fires ahead of every branch of the
+    delete, not merely ahead of its ``mkdir``.
 
     The three NAME arms are kept, and not because the refusal message carries
     the name (it does not — it names the store and nothing else): what has to be
@@ -406,12 +382,11 @@ def test_an_album_is_refused_when_the_store_is_not_a_folder(tmp_path: Path, fold
     album_root = Path(album_folder(lib, list(album.items())))
     origins = _origins(tmp_path)
     origins.write_bytes(b"not a directory")
-    tx = lib.transaction()
     trash = tmp_path / "trash"
     trees = protected_for(lib, trash_dir=trash, origins_dir=origins)
 
-    with pytest.raises(TrashOriginsStoreUnusableError), tx:
-        trash_album_folder(lib, album, trash_dir=trash, origins_dir=origins, protected=trees)
+    with pytest.raises(TrashOriginsStoreUnusableError):
+        delete_album(lib, album_id, trash_dir=trash, origins_dir=origins, protected=trees)
 
     assert lib.get_album(album_id) is not None, "the rows must survive the refusal"
     assert len(list(album_root.glob("*.flac"))) == 2, "the files must not have moved"
@@ -845,14 +820,8 @@ def test_listing_offers_a_move_back_for_a_recorded_album(tmp_path: Path) -> None
     lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
     album = _dummy(lib)
     with lib.transaction():
-        trash_album_folder(
-            lib,
-            album,
-            trash_dir=tmp_path / "trash",
-            origins_dir=_origins(tmp_path),
-            protected=protected_for(
-                lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
-            ),
+        trash_the_folder_as_released(
+            lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
         )
 
     (row,) = list_trashed_albums(
@@ -907,8 +876,44 @@ def test_listing_marks_a_shared_folder_row_as_an_import_but_shows_its_origin(
     )
     assert row.restore_mode == "import"
     assert row.origin == str(tmp_path / "music" / "Portishead" / "Dummy")
+    # WHOLE, not a fragment: the note used to say the album "shared a folder",
+    # which per-file Delete makes false for every album it moves (owner ruling
+    # ``decisions.md`` 58) — and a fragment assertion could not see that.
+    assert row.restore_note == (
+        "MusicDrop moved this album's files out of their folder one by one, so it cannot"
+        " put them back exactly. Restoring re-imports the tracks under your current naming"
+        " rules."
+    )
+
+
+def test_a_replace_written_entry_gets_a_note_claiming_no_sidecar_it_does_not_hold(
+    tmp_path: Path,
+) -> None:
+    """``trash_album`` on its own — the call shape import Replace makes.
+
+    Four callers write ``moved="items"`` and share this note. Only
+    ``app.beets.delete`` follows the move with ``_carry_the_sidecars``; Replace,
+    duplicates-resolve and ``duplicates`` deliberately do not, so the ``.lrc``
+    stays at the old stem. The note used to promise "the cover and lyric files
+    stay in this Trash entry" for all four.
+    """
+    lib = _seeded_library(tmp_path, folder="Portishead/Dummy")
+    album = _dummy(lib)
+    lyric = Path(os.fsdecode(album.items()[0].path)).with_suffix(".lrc")
+    lyric.write_text("[00:00.00] one\n", encoding="utf-8")
+    with lib.transaction():
+        trash_album(lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path))
+
+    # The entry cannot keep what never arrived in it.
+    assert lyric.exists()
+    assert list((tmp_path / "trash").rglob("*.lrc")) == []
+
+    (row,) = list_trashed_albums(
+        tmp_path / "trash", origins_dir=_origins(tmp_path), music_dir=str(tmp_path / "music")
+    )
     assert row.restore_note is not None
-    assert "shared" in row.restore_note
+    assert "lyric" not in row.restore_note
+    assert "cover" not in row.restore_note
 
 
 def test_listing_marks_an_origin_outside_the_library_as_an_import(tmp_path: Path) -> None:
@@ -1036,14 +1041,8 @@ def test_restore_puts_an_album_back_at_its_exact_origin(tmp_path: Path) -> None:
     album = _dummy(lib)
     with lib.transaction():
         dest = Path(
-            trash_album_folder(
-                lib,
-                album,
-                trash_dir=tmp_path / "trash",
-                origins_dir=_origins(tmp_path),
-                protected=protected_for(
-                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
-                ),
+            trash_the_folder_as_released(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
             )
         )
     assert not source.exists()
@@ -1081,14 +1080,8 @@ def test_restore_recreates_an_artist_folder_that_was_swept_away(tmp_path: Path) 
     album = _dummy(lib)
     with lib.transaction():
         dest = Path(
-            trash_album_folder(
-                lib,
-                album,
-                trash_dir=tmp_path / "trash",
-                origins_dir=_origins(tmp_path),
-                protected=protected_for(
-                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
-                ),
+            trash_the_folder_as_released(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
             )
         )
     artist_dir.rmdir()
@@ -1142,14 +1135,8 @@ def test_restore_never_links_the_album_when_the_user_config_asks_for_links(
     album = _dummy(lib)
     with lib.transaction():
         dest = Path(
-            trash_album_folder(
-                lib,
-                album,
-                trash_dir=tmp_path / "trash",
-                origins_dir=_origins(tmp_path),
-                protected=protected_for(
-                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
-                ),
+            trash_the_folder_as_released(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
             )
         )
 
@@ -1177,6 +1164,8 @@ def test_in_place_and_move_are_mutually_exclusive_and_leak_no_config(tmp_path: P
     # raise may have been assigned yet.
     config["import"]["link"] = True
     config["import"]["hardlink"] = True
+    config["import"]["reflink"] = "auto"
+    config["import"]["delete"] = True
     lib = _seeded_library(tmp_path, folder="Weird Folder")
     session = WebImportSession(
         lib,
@@ -1195,6 +1184,8 @@ def test_in_place_and_move_are_mutually_exclusive_and_leak_no_config(tmp_path: P
     assert config["import"]["move"].get(bool) is False
     assert config["import"]["link"].get(bool) is True
     assert config["import"]["hardlink"].get(bool) is True
+    assert config["import"]["reflink"].get() == "auto"
+    assert config["import"]["delete"].get(bool) is True
 
 
 def test_a_landed_in_place_restore_hands_the_link_flags_back(tmp_path: Path) -> None:
@@ -1223,14 +1214,8 @@ def test_a_landed_in_place_restore_hands_the_link_flags_back(tmp_path: Path) -> 
     album = _dummy(lib)
     with lib.transaction():
         dest = Path(
-            trash_album_folder(
-                lib,
-                album,
-                trash_dir=tmp_path / "trash",
-                origins_dir=_origins(tmp_path),
-                protected=protected_for(
-                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
-                ),
+            trash_the_folder_as_released(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
             )
         )
 
@@ -1358,14 +1343,8 @@ def test_restore_refuses_when_the_origin_is_occupied_and_keeps_the_files_in_tras
     album = _dummy(lib)
     with lib.transaction():
         dest = Path(
-            trash_album_folder(
-                lib,
-                album,
-                trash_dir=tmp_path / "trash",
-                origins_dir=_origins(tmp_path),
-                protected=protected_for(
-                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
-                ),
+            trash_the_folder_as_released(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
             )
         )
     source.mkdir(parents=True)
@@ -1396,14 +1375,8 @@ def test_restore_returns_the_folder_to_trash_when_the_album_is_already_in_the_li
     album = _dummy(lib)
     with lib.transaction():
         dest = Path(
-            trash_album_folder(
-                lib,
-                album,
-                trash_dir=tmp_path / "trash",
-                origins_dir=_origins(tmp_path),
-                protected=protected_for(
-                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
-                ),
+            trash_the_folder_as_released(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
             )
         )
     replacement = Item(
@@ -1452,15 +1425,7 @@ def test_a_row_with_NO_record_also_refuses_an_unavailable_music_share(tmp_path: 
     origins = origins_for(trash)
     album = _dummy(lib)
     with lib.transaction():
-        dest = Path(
-            trash_album_folder(
-                lib,
-                album,
-                trash_dir=trash,
-                origins_dir=origins,
-                protected=protected_for(lib, trash_dir=trash, origins_dir=origins),
-            )
-        )
+        dest = Path(trash_the_folder_as_released(lib, album, trash_dir=trash, origins_dir=origins))
     delete_trash_origin(origins, dest.name)  # a pre-feature row
     assert read_trash_origin(origins, dest.name) is None
     shutil.rmtree(tmp_path / "music")
@@ -1483,14 +1448,8 @@ def test_restore_refuses_to_move_into_an_unavailable_music_share(tmp_path: Path)
     album = _dummy(lib)
     with lib.transaction():
         dest = Path(
-            trash_album_folder(
-                lib,
-                album,
-                trash_dir=tmp_path / "trash",
-                origins_dir=_origins(tmp_path),
-                protected=protected_for(
-                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
-                ),
+            trash_the_folder_as_released(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
             )
         )
     shutil.rmtree(tmp_path / "music")
@@ -1798,14 +1757,8 @@ def test_an_album_named_with_a_no_break_space_keeps_its_exact_restore(tmp_path: 
 
     with lib.transaction():
         dest = Path(
-            trash_album_folder(
-                lib,
-                album,
-                trash_dir=tmp_path / "trash",
-                origins_dir=_origins(tmp_path),
-                protected=protected_for(
-                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
-                ),
+            trash_the_folder_as_released(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
             )
         )
 
@@ -1992,8 +1945,8 @@ def test_a_failed_restore_whose_undo_also_fails_says_where_the_folder_went(
     That retaken entry is also why the sentence talks about BOTH paths rather
     than "no longer in Trash": ``_whereabouts`` reads the DISK, and the disk has
     something at each path. Nothing can tell a stranger's folder from a
-    half-finished copy of ours, so the message says so and the record survives —
-    see ``test_the_record_survives_a_trash_entry_that_still_exists``.
+    half-finished copy of ours, so the message says so and the record survives,
+    which the last assertion here checks.
     """
     lib = _seeded_library(tmp_path, folder="Weird Folder")
     origin = tmp_path / "music" / "Weird Folder"
@@ -2001,14 +1954,8 @@ def test_a_failed_restore_whose_undo_also_fails_says_where_the_folder_went(
     album_id = _require_id(album.id)
     with lib.transaction():
         entry = Path(
-            trash_album_folder(
-                lib,
-                album,
-                trash_dir=tmp_path / "trash",
-                origins_dir=_origins(tmp_path),
-                protected=protected_for(
-                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
-                ),
+            trash_the_folder_as_released(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
             )
         )
 
@@ -2074,14 +2021,8 @@ def test_a_media_album_whose_import_lands_nothing_still_goes_back_to_trash(
     album = _dummy(lib)
     with lib.transaction():
         entry = Path(
-            trash_album_folder(
-                lib,
-                album,
-                trash_dir=tmp_path / "trash",
-                origins_dir=_origins(tmp_path),
-                protected=protected_for(
-                    lib, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
-                ),
+            trash_the_folder_as_released(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)
             )
         )
 
@@ -2362,6 +2303,7 @@ def test_empty_one_removes_the_origin_record(
             str(dest),
             origins_dir=_origins(tmp_path),
             protected=protected_for(trash_dir=tmp_path / "trash", origins_dir=_origins(tmp_path)),
+            lib=library_with_no_rows(tmp_path),
         ).removed
 
     assert removed == 1
@@ -2399,8 +2341,9 @@ def test_empty_one_keeps_the_record_when_the_removal_itself_fails(tmp_path: Path
         entry_path = str(dest)
         origins = _origins(tmp_path)
         trees = protected_for(trash_dir=tmp_path / "trash", origins_dir=origins)
+        lib = library_with_no_rows(tmp_path)
         with pytest.raises(OSError):
-            empty_one(entry_path, origins_dir=origins, protected=trees)
+            empty_one(entry_path, origins_dir=origins, protected=trees, lib=lib)
     finally:
         (tmp_path / "trash").chmod(0o700)
 
@@ -2438,6 +2381,7 @@ def test_empty_all_removes_every_origin_record_including_a_symlinked_entry(
             trash,
             origins_dir=origins,
             protected=protected_for(trash_dir=trash, origins_dir=origins),
+            lib=library_with_no_rows(tmp_path),
         ).removed
         == 3
     )
@@ -2477,6 +2421,7 @@ def test_empty_all_leaves_a_record_whose_entry_was_removed_outside_the_app(
             trash,
             origins_dir=origins,
             protected=protected_for(trash_dir=trash, origins_dir=origins),
+            lib=library_with_no_rows(tmp_path),
         ).removed
         == 0
     )
@@ -2668,12 +2613,8 @@ def test_a_landed_restore_drops_the_record_keyed_on_the_TRASH_name(tmp_path: Pat
 
     with lib.transaction():
         dest = Path(
-            trash_album_folder(
-                lib,
-                album,
-                trash_dir=tmp_path / "trash",
-                origins_dir=origins,
-                protected=protected_for(lib, trash_dir=tmp_path / "trash", origins_dir=origins),
+            trash_the_folder_as_released(
+                lib, album, trash_dir=tmp_path / "trash", origins_dir=origins
             )
         )
     assert dest.name == "Weird Folder (1)", "the names must really differ for this to test anything"

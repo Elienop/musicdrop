@@ -307,8 +307,9 @@ def test_prod_posture_rejects_testserver_and_honors_the_setting(tmp_path: Path) 
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
-        env=env,
-        cwd=backend,
+        env={**env, "PYTHONPATH": str(backend)},
+        # Not ``backend``: ``Settings()`` reads ``.env`` from the cwd.
+        cwd=tmp_path,
         timeout=180,
         check=False,
     )
@@ -404,8 +405,9 @@ def _real_uvicorn(
     backend = Path(__file__).resolve().parents[1]
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "0"],
-        cwd=backend,
-        env=env,
+        # Not ``backend``: ``Settings()`` reads ``.env`` from the cwd.
+        cwd=beets_dir.parent,
+        env={**env, "PYTHONPATH": str(backend)},
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

@@ -9,8 +9,11 @@ class DeleteResult(BaseModel):
     """Outcome of a reversible delete: how many albums went to Trash + where.
 
     ``trashed_albums`` is 1 for a single-album delete, N for an artist (every
-    album of theirs). ``trash_path`` is the Trash location the files were moved
-    to (recoverable from there).
+    album of theirs). ``trash_path`` is where to look: the album's own folder
+    inside Trash when its files moved there; the folder its rows named when
+    nothing moved (already in Trash, or gone from the disk entirely); the Trash
+    root when it had no files at all, and for an artist delete, whose albums each
+    get a container of their own.
     """
 
     trashed_albums: int

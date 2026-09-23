@@ -242,13 +242,25 @@ def resolve_display_path(base: Path, rel: str) -> Path:
 
     Containment is deliberately NOT checked here: every caller already has its
     own traversal guard, and this must not become a second, weaker one.
+
+    A ``..``/``.`` segment gets the literal path too, unscanned: ``..`` re-scans
+    one directory per repeat — 18.8 s over 20 000 entries at the posted path's
+    cap (``test_resolve_display_path_does_not_scan_behind_a_dotdot_segment``).
     """
-    if PLACEHOLDER not in rel:
+    if PLACEHOLDER not in rel or any(seg in {"..", "."} for seg in rel.split("/")):
         return base / rel
     resolved = base
     for part in Path(rel).parts:
         resolved = _match_display_child(resolved, part) if PLACEHOLDER in part else resolved / part
     return resolved
+
+
+def resolve_posted_path(path: str) -> str:
+    """Map a WHOLE display-form server path back onto the real one (base
+    ``Path()``: pathlib drops it when the joined part is absolute)."""
+    if PLACEHOLDER not in path:
+        return path
+    return str(resolve_display_path(Path(), path))
 
 
 def _match_display_child(parent: Path, display_name: str) -> Path:

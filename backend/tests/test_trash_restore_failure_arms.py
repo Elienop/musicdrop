@@ -38,7 +38,6 @@ import pytest
 from beets import config
 from beets.library import Item, Library
 
-from app.beets.trash import trash_album_folder
 from app.beets.trash_manage import (
     TrashRestoreIncompleteError,
     _restore_to_origin,
@@ -47,7 +46,12 @@ from app.beets.trash_manage import (
 )
 from app.beets.trash_origins import read_trash_origin
 from app.models.trash import RestoreResult
-from tests.conftest import build_library, origins_for, protected_for
+from tests.conftest import (
+    build_library,
+    origins_for,
+    protected_for,
+    trash_the_folder_as_released,
+)
 
 SAMPLE = Path(__file__).parent / "fixtures" / "silent.flac"
 
@@ -107,14 +111,11 @@ def _trash_the_album(lib: Library, tmp_path: Path) -> Path:
     album = next(a for a in lib.albums() if a.album == "Dummy")
     with lib.transaction():
         return Path(
-            trash_album_folder(
+            trash_the_folder_as_released(
                 lib,
                 album,
                 trash_dir=tmp_path / "trash",
                 origins_dir=origins_for(tmp_path / "trash"),
-                protected=protected_for(
-                    lib, trash_dir=tmp_path / "trash", origins_dir=origins_for(tmp_path / "trash")
-                ),
             )
         )
 

@@ -22,6 +22,7 @@ from app.beets.duplicates import find_import_duplicates
 from app.beets.library import LibraryHandle
 from app.beets.research import NoAudioFilesError, rescan_folder, research_folder
 from app.config import BANK_STORE, settings, store_dir
+from app.import_jobs.runner import SourcePathMissingError, refuse_unless_absent
 from app.models.bank import (
     BankBulkDeleteRequest,
     BankBulkDeleteResponse,
@@ -53,6 +54,29 @@ router = APIRouter(tags=["bank"])
 def get_bank_dir() -> Path:
     """Empty ``MUSICDROP_BANK_DIR`` -> ``<beets_dir>/bank``."""
     return store_dir(settings, BANK_STORE, Path(settings.beets_dir))
+
+
+def _current_fingerprint(folder: str) -> str | None:
+    """The banked folder's fingerprint as it is now, or ``None`` if it is gone.
+
+    ``FileNotFoundError`` is ``folder_fingerprint``'s own "gone" signal, raised
+    by hand with no errno - an errno test would miss it. Catching that one
+    ALONE let a PermissionError escape as a 500, so every other ``OSError``
+    goes to ``refuse_unless_absent``, which returns for an absent errno and
+    otherwise raises the shared sentence. Not ``str(exc)``, which on an OSError
+    interpolates ``exc.filename`` - an absolute server path - into the body.
+
+    A folder the OS refuses to answer for did NOT go stale, which is why that
+    arm raises instead of answering ``None``. The two callers read ``None``
+    differently: search flips the row stale, rescan answers 409.
+    """
+    try:
+        return folder_fingerprint(Path(folder))
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        refuse_unless_absent(exc)
+        return None
 
 
 @router.get("/bank")
@@ -142,7 +166,8 @@ async def bank_item_duplicates(
             "model": ErrorDetail,
             "description": (
                 "The row is not an undecided match row, so the search was refused"
-                " (it is already decided, or its folder went stale)."
+                " (it is already decided, or its folder went stale or cannot be"
+                " read)."
             ),
         },
     },
@@ -171,13 +196,10 @@ async def search_bank_item(item_id: str, search: ImportSearch) -> BankSearchResp
     # The flip below is intentionally unguarded (no expected=): the mismatch is
     # a fact about the disk, and a decision racing past the pre-check would hit
     # the apply runner's own fingerprint re-check and land on stale anyway.
-    def _current_fingerprint() -> str | None:
-        try:
-            return folder_fingerprint(Path(item.folder))
-        except FileNotFoundError:
-            return None
-
-    current = await run_in_threadpool(_current_fingerprint)
+    try:
+        current = await run_in_threadpool(_current_fingerprint, item.folder)
+    except SourcePathMissingError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     if current is None or current != item.fingerprint:
         error = _STALE_GONE_ERROR if current is None else _STALE_CHANGED_ERROR
         await run_in_threadpool(lambda: store.set_status(bank_dir, item_id, "stale", error=error))
@@ -218,8 +240,8 @@ async def search_bank_item(item_id: str, search: ImportSearch) -> BankSearchResp
         409: {
             "model": ErrorDetail,
             "description": (
-                "The row cannot be rescanned (already decided, its folder is gone,"
-                " or it holds no audio files)."
+                "The row cannot be rescanned (already decided, its folder is gone"
+                " or cannot be read, or it holds no audio files)."
             ),
         },
     },
@@ -246,13 +268,10 @@ async def rescan_bank_item(item_id: str) -> BankItem:
     # Fingerprint FIRST: it describes the folder version being blessed. An
     # edit racing the lookup below surfaces as a mismatch at apply time and
     # goes stale — the safe direction.
-    def _current_fingerprint() -> str | None:
-        try:
-            return folder_fingerprint(Path(item.folder))
-        except FileNotFoundError:
-            return None
-
-    fingerprint = await run_in_threadpool(_current_fingerprint)
+    try:
+        fingerprint = await run_in_threadpool(_current_fingerprint, item.folder)
+    except SourcePathMissingError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     if fingerprint is None:
         raise HTTPException(
             status_code=409, detail="the banked folder no longer exists; remove the row"

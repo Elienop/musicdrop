@@ -29,6 +29,29 @@ vi.stubGlobal(
     }) as MediaQueryList,
 );
 
+// jsdom has no ResizeObserver. Radix's Checkbox measures the control with one
+// (`react-use-size`) to size the hidden bubble input it renders for native form
+// participation — and it renders that input only INSIDE a <form>, which is why
+// the six older Checkbox call sites (five files) never needed this and the one
+// in ReleaseSearchRow's search form does. A no-op class is enough: nothing in
+// the app reads an entry, and nothing in the app's own source branches on the
+// global being present. A dependency does: @floating-ui/dom's `autoUpdate`
+// defaults `elementResize` to `typeof ResizeObserver === "function"`, so every
+// Radix popper now constructs this and calls observe on two elements. With a
+// no-op that never fires, those calls are the whole difference.
+class NoopResizeObserver {
+  observe(): void {
+    /* no layout engine to observe */
+  }
+  unobserve(): void {
+    /* no layout engine to observe */
+  }
+  disconnect(): void {
+    /* no layout engine to observe */
+  }
+}
+vi.stubGlobal("ResizeObserver", NoopResizeObserver);
+
 // jsdom has no EventSource. The app's useEventStream opens one at the shell, so
 // every App-rendering test needs a stand-in. A no-op class is enough here; the
 // dedicated useEventStream test installs its own capturing mock.
@@ -94,4 +117,15 @@ afterEach(() => {
   cleanup();
   server.resetHandlers();
 });
-afterAll(() => server.close());
+// A file's last test can leave 0 ms timers queued: cleanup() unmounting a
+// Radix overlay queues FocusScope's focus restore, and a query settling at the
+// end queues TanStack's notify flush. vitest tears jsdom down when the file
+// ends without waiting for them, so one can run after `window` is deleted and
+// Node's own CustomEvent is back, and the run exits 1 with every test passed
+// ("Failed to execute 'dispatchEvent' on 'EventTarget'", "window is not
+// defined"). One macrotask first lets them run while jsdom is still installed:
+// timers with the same delay fire in the order they were queued.
+afterAll(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  server.close();
+});

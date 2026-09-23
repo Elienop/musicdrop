@@ -74,15 +74,29 @@ resolver at an empty tmp dir, and the gate rejected the suite's own cookie —
 measured on this branch as ``tests/test_health.py`` failing ``401 == 200``. So
 the resolver is pinned HERE too, at the same place and for the same reason the
 ``BEETSDIR`` floor is: before anything can import ``app.main``.
+
+**The third floor: no ``backend/.env``, no dev-box data.** ``Settings`` reads
+``env_file=".env"`` relative to the cwd, and pytest runs from ``backend/``, so a
+local run took every ``MUSICDROP_*`` the developer's ``.env`` sets (a real
+``MUSICDROP_BEETS_DIR`` among them) where CI, which has no ``.env``, took the
+defaults. The singleton is built when ``app.config`` is first imported, so that
+import runs with the cwd in a sandbox holding no ``.env``, and the class stops
+reading the file for every ``Settings()`` a test builds. The two image caches
+default to the REPO ROOT's ``data/cache`` (the dev instance's real one, toggle
+files included) and ``import plexapi`` reads ``~/.config/plexapi``; environment
+variables set here point all three into a sandbox, before the import. Child
+processes inherit them through ``{**os.environ}``. A child pytest loads this
+floor. The hash CLI (``tests/test_auth_credentials.py``) runs from
+``backend/`` and imports no ``app.config``; the other Python children start in
+a scratch cwd. So none reads ``.env``.
 """
 
+import contextlib
 import os
 import tempfile
 from pathlib import Path
 
 from confuse.util import config_dirs
-
-import app.auth.source as _password_source
 
 #: The suite's throwaway ``BEETSDIR``. ``TemporaryDirectory`` keeps a finalizer
 #: that removes it at interpreter exit; ``ignore_cleanup_errors`` so a lingering
@@ -111,6 +125,25 @@ PLATFORM_BEETS_DIRS: tuple[Path, ...] = tuple(Path(d) / "beets" for d in config_
 #: stored hash, exactly as they do on a machine that has never run setup.
 SUITE_PASSWORD_HASH_PATH = SUITE_BEETSDIR / "suite-password-hash"
 
+#: Stands in for the repo root's ``data/`` and for ``~/.config/plexapi``. A
+#: sandbox of its own, not the BEETSDIR one: the caches are stores the layout
+#: rule compares, and this directory holds no ``.env``.
+_DATA_SANDBOX = tempfile.TemporaryDirectory(
+    prefix="musicdrop-suite-data-", ignore_cleanup_errors=True
+)
+SUITE_DATA_DIR = Path(_DATA_SANDBOX.name).resolve()
+
+# THE THIRD FLOOR, first half: set before ``app.config`` and ``plexapi`` read them.
+os.environ["MUSICDROP_ARTIST_IMAGE_CACHE_DIR"] = str(SUITE_DATA_DIR / "artist-images")
+os.environ["MUSICDROP_COVER_THUMB_CACHE_DIR"] = str(SUITE_DATA_DIR / "cover-thumbs")
+os.environ["PLEXAPI_CONFIG_PATH"] = str(SUITE_DATA_DIR / "plexapi-config.ini")
+
+# Imported HERE, from the sandbox: the ``Settings()`` singleton reads ``.env``
+# from the cwd while ``app.config`` is imported.
+with contextlib.chdir(SUITE_DATA_DIR):
+    import app.auth.source as _password_source
+    import app.config as _app_config
+
 # THE SECOND FLOOR, and it has to be applied by importing the resolver's module
 # here: ``app.main`` reads it while IT is imported, so a fixture cannot get in
 # first. Assigning the module attribute (rather than the env var or
@@ -118,3 +151,7 @@ SUITE_PASSWORD_HASH_PATH = SUITE_BEETSDIR / "suite-password-hash"
 # through — the same seam ``tests/conftest.py::password_hash_file`` re-pins per
 # test, which saves and restores this value.
 _password_source.live_password_hash_path = lambda: SUITE_PASSWORD_HASH_PATH
+
+# THE THIRD FLOOR, second half: every later ``Settings()`` skips ``.env`` too.
+# Environment variables still apply, as they do in CI.
+_app_config.Settings.model_config["env_file"] = None

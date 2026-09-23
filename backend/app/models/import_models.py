@@ -8,7 +8,7 @@ so beets internals never leak past the adapter boundary. No beets imports here.
 from enum import StrEnum
 from typing import Literal, Self
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from app.models.album import ReleaseIdentity
 
@@ -16,24 +16,40 @@ ImportOrigin = Literal["manual", "inbox", "sweep", "bank_apply"]
 
 
 class ImportOptions(BaseModel):
-    """Per-import overrides (replaces the reserved ``dict[str, str]``).
+    """Per-import overrides for one import request."""
 
-    ``operation`` ``"default"`` falls through to the user's beets config (the
-    manual-import default). ``"move"``/``"copy"`` force that operation for this
-    import only. ``unattended`` ``True`` is the inbox path: no human review —
-    uncertain/duplicate albums are set aside rather than parked. ``sweep``
-    ``True`` is the banking sweep: an unattended, beets-incremental run that
-    BANKS every set-aside album (with its candidate payload) instead of just
-    skipping it, recorded as ``origin="sweep"``. A sweep is unattended by
-    definition — the session enforces ``unattended or sweep`` — so
-    ``{"sweep": true}`` alone is a complete sweep request. The sweep forces no
-    file operation: ``operation`` behaves exactly as for a manual import (the
-    in-library guard still force-corrects in-library sources to move).
-    """
-
+    # This docstring is published VERBATIM as the OpenAPI schema description, so
+    # it stays one sentence and the detail lives here:
+    #
+    # ``operation`` "default" falls through to the user's beets config (the
+    # manual-import default); "move"/"copy" force that operation for this import
+    # only. ``unattended`` True is the inbox path: no human review — uncertain
+    # and duplicate albums are set aside rather than parked. ``sweep`` True is
+    # the banking sweep: an unattended, beets-incremental run that BANKS every
+    # set-aside album (with its candidate payload), recorded as origin="sweep".
+    # A sweep is unattended by definition (the session enforces ``unattended or
+    # sweep``) and forces no file operation.
+    #
+    # ``incremental`` admits False and null only. False is ``beet import -I``.
+    # There is no True: under a ``hardlink: yes`` config it would turn history on
+    # WITHOUT the ``incremental_skip_later`` guard null installs, so it is weaker
+    # than sending nothing. Widening to bool later is a non-breaking contract
+    # change; narrowing after a release is not.
     operation: Literal["default", "move", "copy"] = "default"
     unattended: bool = False
     sweep: bool = False
+    incremental: Literal[False] | None = Field(
+        default=None,
+        description=(
+            "false imports folders beets' import history already has; null follows the defaults."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _sweep_owns_incremental(self) -> Self:
+        if self.sweep and self.incremental is not None:
+            raise ValueError("A sweep sets incremental itself.")
+        return self
 
 
 class Recommendation(StrEnum):
@@ -237,6 +253,12 @@ class AlbumOutcome(BaseModel):
     # however it was chosen (strong auto-apply or a user apply/asis decision),
     # and a non-applied follow-up status could regress a decided feed row.
     album_id: int | None = None
+    # Why an album the user asked to Replace imported nothing: the old copy was
+    # not disposed of (unreadable, no Trash wired, a refused store layout, a
+    # failed move), so beets was answered SKIP. Carried on its own follow-up
+    # outcome (same album_index) and attached to the feed row without touching
+    # its status. None on every other outcome.
+    note: str | None = None
 
 
 class ImportAction(StrEnum):
@@ -244,19 +266,20 @@ class ImportAction(StrEnum):
 
     ``apply`` selects a ranked option by index; ``search`` re-looks-up the album
     against a user-supplied release id/URL or a forced-non-VA name search and
-    re-parks (it never resolves the park); ``abort`` stops the whole import (the
-    session raises beets' ``ImportAbortError``, caught by ``run()``).
+    re-parks (it does not resolve the park).
 
     ``rescan`` re-reads the album's folder from disk (the user changed the
     files on purpose) and re-runs beets' default lookup, re-parking like
     ``search``; it carries no payload.
+
+    Every action here answers ONE album. Ending the whole run is
+    ``POST /import/{job_id}/stop``, which the registry arms on the bridge.
     """
 
     apply = "apply"
     skip = "skip"
     asis = "asis"
     astracks = "astracks"
-    abort = "abort"
     search = "search"
     rescan = "rescan"
 

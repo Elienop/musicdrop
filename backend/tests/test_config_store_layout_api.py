@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import socket
 from pathlib import Path
@@ -450,53 +451,46 @@ def test_apply_still_reloads_an_acceptable_on_disk_config(
     assert app.state.beets_library is not handle_before
 
 
-def test_apply_lets_an_unparseable_config_reach_the_rebuild(
+def test_apply_reports_an_unparseable_config_as_unreadable_not_as_a_layout(
     client: TestClient, beets_library: LibraryHandle
 ) -> None:
     """A YAML syntax error is NOT a layout refusal, and must not be reported as one.
 
     The containment gate reads the same file; returning its message for a broken
-    document would name the wrong problem and point at the wrong setting. It
-    stays silent and lets ``setup_beets`` fail on its own, which is the 500 with
-    the restart hint.
+    document would name the wrong problem and point at the wrong setting.
     """
-    beets_library.config_path.write_text("directory: [unclosed\n", encoding="utf-8")
+    beets_library.config_path.write_text("a: 1\ndirectory: [unclosed\nb: 2\n", encoding="utf-8")
     r = client.post("/api/config/apply")
-    assert r.status_code == 500
-    assert "Apply failed during rebuild" in r.json()["detail"]["message"]
+    assert r.status_code == 422
+    assert r.json()["detail"]["recovery"] == (
+        "beets could not read config.yaml (line 3), so nothing was changed."
+        " Fix the file and Apply again."
+    )
 
 
-def test_apply_answers_its_own_body_for_the_two_shapes_ruamel_does_not_call_yaml(
-    client: TestClient, beets_library: LibraryHandle
+@pytest.mark.parametrize(
+    "text",
+    [f"library: library.db\ndirectory: {'9' * 5000}\n", "a: " + "[" * 5000 + "]" * 5000 + "\n"],
+    ids=["an-integer-too-long-to-build", "nested-past-the-limit"],
+)
+def test_apply_answers_its_own_body_for_the_two_shapes_yaml_does_not_call_yaml(
+    client: TestClient, beets_library: LibraryHandle, text: str
 ) -> None:
-    """``RecursionError`` and ``ValueError`` are parse failures too.
+    """``ValueError`` and ``RecursionError`` are parse failures too.
 
-    The pre-check runs OUTSIDE the rebuild's handler, so an on-disk document
-    ruamel answers with either of those escaped the route as a bare 500 with no
-    body at all. Both are hand-editable: a 5000-digit integer hits CPython's
-    4300-digit ``int()`` limit, and 400 levels of nesting exhaust the parser.
-
-    The route arm is the digit one — a 400-deep document reaches the snapshot
-    build, whose PyYAML dump has its own recursion limit — so the nesting shape
-    is asked of the pre-check directly. Its answer is ``None``: not a layout
-    refusal, the same silence the syntax error above gets.
+    The pre-check runs OUTSIDE the rebuild's handler, so either one escaping it
+    is a bare 500 with no body. Both are hand-editable: a 5000-digit integer
+    hits CPython's 4300-digit ``int()`` limit, and 5000 nested ``[`` exhaust
+    PyYAML's recursive parser (measured).
     """
-    from app.beets.config_editor import on_disk_layout_error
-    from app.config import settings
-
-    beets_library.config_path.write_text(
-        f"library: library.db\ndirectory: {'9' * 5000}\n", encoding="utf-8"
-    )
+    beets_library.config_path.write_text(text, encoding="utf-8")
 
     r = client.post("/api/config/apply")
 
-    assert r.status_code == 500, r.text
-    assert set(r.json()["detail"]) == {"message", "recovery"}
-
-    beets_library.config_path.write_text(
-        "".join(" " * level + "b:\n" for level in range(400)), encoding="utf-8"
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["recovery"] == (
+        "beets could not read config.yaml, so nothing was changed. Fix the file and Apply again."
     )
-    assert on_disk_layout_error(beets_library, settings) is None
 
 
 # --------------------------------------------------------------------------
@@ -699,8 +693,8 @@ def test_an_include_that_makes_directory_a_non_path_answers_a_lint_row(
 
 @pytest.mark.parametrize(
     "yaml_text",
-    ["a: " + "[" * 5000 + "]" * 5000 + "\n", "a: " + "1" * 5000 + "\n"],
-    ids=["nested-past-the-limit", "an-integer-too-long-to-build"],
+    ["a: " + "[" * 5000 + "]" * 5000 + "\n", "a: " + "1" * 5000 + "\n", "a: !!bool ture\n"],
+    ids=["nested-past-the-limit", "an-integer-too-long-to-build", "a-mistyped-bool-tag"],
 )
 def test_a_document_ruamel_will_not_parse_answers_the_parse_row(
     client: TestClient, beets_library: LibraryHandle, yaml_text: str
@@ -865,42 +859,51 @@ def test_a_directory_that_arrives_through_a_merge_key_gets_a_gutter_line(
     assert missing[0]["line"] is None
 
 
-def test_apply_refuses_after_the_rebuild_on_a_real_pre_check_divergence(
-    client: TestClient, beets_library: LibraryHandle
+def test_apply_refuses_after_the_rebuild_when_the_file_changes_after_the_gate(
+    client: TestClient,
+    beets_library: LibraryHandle,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The backstop, driven by a divergence that exists rather than by a patch.
+    """The backstop, driven by the gap it exists for: two reads of one file.
 
-    DUPLICATE ``directory:`` keys. ``on_disk_layout_error`` parses with ruamel,
-    which raises ``DuplicateKeyError`` (a ``YAMLError``) and is answered with
-    ``None`` — the pre-check is blind by its own rules. beets parses the same
-    file with PyYAML, which takes the LAST key, so the rebuild loads a music
-    root that IS the beets dir. Measured both halves before writing this:
-    ruamel raised, PyYAML returned ``{'directory': '/b', ...}``.
-
-    The previous version monkeypatched ``on_disk_layout_error`` to ``None``,
-    which proved the mechanism runs and nothing about whether it is reachable.
+    The gate reads config.yaml, then beets reads it again. An edit landing
+    between the two loads a layout the gate never saw. The edit is made by the
+    real read's caller, not by stubbing either check, so both checks run on
+    real files.
 
     The handle IS swapped — the rebuild closed the old library, so there is
     nothing to put back — and D5's invariant is asserted with it: the import
     registry holds the SAME library the app now serves, not the closed one.
     """
+    from app.beets import config_editor
+    from app.beets.setup import read_beets_config as real_read
+    from app.beets.store_layout import StoreLayoutError, checked_store_dirs
     from app.import_jobs.registry import get_registry
     from app.main import app
 
-    beets_library.config_path.write_text(
-        f"directory: {beets_library.beets_dir.parent}\n"
-        f"library: library.db\n"
-        f"directory: {beets_library.beets_dir}\n",
-        encoding="utf-8",
-    )
+    def _edited_after_the_gate(beets_dir: str) -> object:
+        beets_library.config_path.write_text(
+            f"library: library.db\ndirectory: {beets_library.beets_dir}\n", encoding="utf-8"
+        )
+        return real_read(beets_dir)
+
+    monkeypatch.setattr(config_editor, "read_beets_config", _edited_after_the_gate)
     handle_before = app.state.beets_library
 
-    r = client.post("/api/config/apply")
+    with caplog.at_level(logging.ERROR, logger="uvicorn.error"):
+        r = client.post("/api/config/apply")
 
     assert r.status_code == 422, r.text
+    live_settings = config_editor._settings(app)
+    with pytest.raises(StoreLayoutError) as refused:
+        checked_store_dirs(live_settings, app.state.beets_library)
+    assert [rec.getMessage() for rec in caplog.records if rec.name == "uvicorn.error"] == [
+        f"Apply loaded a config whose store layout is refused: {refused.value}"
+    ]
     body = r.json()["detail"]
     assert body["message"] == (
-        "Apply loaded config.yaml, but The beets data directory is the music library"
+        "Apply loaded config.yaml. The beets data directory is the music library."
     )
     assert "The beets data directory is the music library" in body["recovery"]
     assert body["recovery"].endswith("Then restart MusicDrop.")
@@ -915,10 +918,64 @@ def test_apply_refuses_after_the_rebuild_on_a_real_pre_check_divergence(
     started = client.post("/api/import", json={"path": str(beets_library.beets_dir.parent)})
     assert started.status_code == 503, started.text
     detail = started.json()["detail"]
-    assert "The beets data directory is the music library" in detail
     # The refusal used to be built as "but {headline}. {exc}" while str(exc)
     # already opens with the headline, so the 503 said it twice.
-    assert detail.count("The beets data directory is the music library") == 1
+    assert detail == f"Apply loaded config.yaml. {refused.value}"
+
+
+def test_a_restore_onto_a_refused_layout_answers_the_restore_not_loaded(
+    client: TestClient,
+    beets_library: LibraryHandle,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A backstop 422 leaves a refused layout running; the next Apply fails and puts it back.
+
+    Measured before: the 422 said "Apply loaded config.yaml, but" and offered a
+    restart, which boot refuses while the rejected value is still in the file.
+    """
+    from app.beets import config_editor
+    from app.beets.setup import read_beets_config as real_read
+    from app.beets.store_layout import StoreLayoutError, checked_store_dirs
+    from app.main import app
+
+    def _edited_after_the_gate(beets_dir: str) -> object:
+        beets_library.config_path.write_text(
+            f"library: library.db\ndirectory: {beets_library.beets_dir}\n", encoding="utf-8"
+        )
+        return real_read(beets_dir)
+
+    monkeypatch.setattr(config_editor, "read_beets_config", _edited_after_the_gate)
+    assert client.post("/api/config/apply").status_code == 422
+    monkeypatch.setattr(config_editor, "read_beets_config", real_read)
+    live_settings = config_editor._settings(app)
+    with pytest.raises(StoreLayoutError) as refused:
+        checked_store_dirs(live_settings, app.state.beets_library)
+    music = beets_library.beets_dir.parent / "music"
+    beets_library.config_path.write_text(
+        f"directory: {music}\nlibrary: library.db\nplugins:\n  - musicbrainz\nmusicbrainz: no\n",
+        encoding="utf-8",
+    )
+    cause = "musicbrainz must be a dict, not bool"
+    caplog.clear()
+
+    with caplog.at_level(logging.ERROR, logger="uvicorn.error"):
+        r = client.post("/api/config/apply")
+
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {
+        "message": f"Apply failed and put the old config back: {cause}",
+        "recovery": (
+            f"beets rejected a value in the config: {cause}, so nothing was changed."
+            " Fix it and Apply again; MusicDrop will not start until you do."
+        ),
+    }
+    assert [rec.getMessage() for rec in caplog.records if rec.name == "uvicorn.error"] == [
+        f"Apply put back a config whose store layout is refused: {refused.value}"
+    ]
+    started = client.post("/api/import", json={"path": str(music)})
+    assert started.status_code == 503, started.text
+    assert started.json()["detail"] == f"Apply put the old config back. {refused.value}"
 
 
 def test_a_document_with_no_directory_key_gets_the_schema_row_and_no_layout_row(
@@ -1088,7 +1145,7 @@ def test_the_include_reproduction_agrees_with_a_real_beets_startup(
     import beets
 
     from app.beets.library import close_library
-    from app.beets.setup import setup_beets
+    from app.beets.setup import open_beets, read_beets_config
     from app.beets.store_layout import effective_config_paths
 
     beets_dir = tmp_path / "beets"
@@ -1100,7 +1157,8 @@ def test_the_include_reproduction_agrees_with_a_real_beets_startup(
     text = f"directory: {music}\nlibrary: library.db\n{include_block}"
     (beets_dir / "config.yaml").write_text(text, encoding="utf-8")
 
-    handle = setup_beets(str(beets_dir))
+    # beets' own read and open, without the boot's refusal of a skipped include.
+    handle = open_beets(read_beets_config(str(beets_dir)))
     try:
         from_beets = (
             beets.config["directory"].as_filename(),
@@ -1129,7 +1187,7 @@ def test_the_include_reproduction_agrees_with_beets_on_the_shapes_it_tolerates(
     import beets
 
     from app.beets.library import close_library
-    from app.beets.setup import setup_beets
+    from app.beets.setup import open_beets, read_beets_config
     from app.beets.store_layout import effective_config_paths
 
     beets_dir = tmp_path / "beets"
@@ -1155,7 +1213,8 @@ def test_the_include_reproduction_agrees_with_beets_on_the_shapes_it_tolerates(
     text = f"directory: {music}\nlibrary: library.db\ninclude:\n  - {name}\n"
     (beets_dir / "config.yaml").write_text(text, encoding="utf-8")
 
-    handle = setup_beets(str(beets_dir))
+    # beets' own read and open, without the boot's refusal of a skipped include.
+    handle = open_beets(read_beets_config(str(beets_dir)))
     try:
         from_beets = (
             beets.config["directory"].as_filename(),
@@ -1182,13 +1241,11 @@ def test_an_include_beets_drops_is_an_advisory_and_not_an_error(
 ) -> None:
     """Four shapes a real beets START survives, so none of them is a lint row.
 
-    Measured against ``setup_beets`` over the same file: each one makes beets
-    print one stderr line (``/dev/null`` not even that) and boot with the
-    document's own ``directory:``. The gate refused all four, so a config beets
-    loads was reported broken — and Apply answered 422 on it.
-
-    The advisory says what beets does instead, because the entry IS dropped and
-    every include listed after it is skipped with it.
+    Measured against beets' own read and open over the same file: each one
+    makes beets print one stderr line (``/dev/null`` not even that) and load the
+    document's own ``directory:``. The gate once refused all four as lint rows.
+    Since the owner ruling of 2026-09-21, Apply and boot refuse the three beets
+    prints, so the advisory says that; Validate stays a lint pass.
     """
     music = Path(beets_library.lib.directory.decode())
     name = "overlay.yaml"
@@ -1215,9 +1272,62 @@ def test_an_include_beets_drops_is_an_advisory_and_not_an_error(
         # beets does exactly that, silently, so there is nothing to advise on.
         assert _advisories(client, text) == []
     else:
+        reason = "No such device or address" if shape == "socket" else "Is a directory"
         rows = _advisories(client, text)
-        assert len(rows) == 1, rows
-        assert name in str(rows[0]["message"]), rows
+        assert [row["message"] for row in rows] == [
+            f"beets cannot read the include {name!r} ({reason}). Apply and a restart refuse"
+            " this config until it can."
+        ]
+
+
+@pytest.mark.parametrize(
+    ("shape", "reason"),
+    [
+        ("yaml", "YAML error at line 3"),
+        pytest.param(
+            "permission",
+            "Permission denied",
+            marks=pytest.mark.skipif(
+                os.geteuid() == 0, reason="root ignores the permission bits this test sets"
+            ),
+        ),
+    ],
+)
+def test_a_skipped_include_names_why_at_validate(
+    client: TestClient, beets_library: LibraryHandle, shape: str, reason: str
+) -> None:
+    """Owner ruling 2026-09-21: a YAML error in the refusal carries its line number."""
+    bad = beets_library.beets_dir / "bad.yaml"
+    bad.write_text("a: 1\nfoo: [unclosed\n", encoding="utf-8")
+    if shape == "permission":
+        bad.chmod(0)
+    text = _with_include(Path(beets_library.lib.directory.decode()), "bad.yaml")
+
+    assert [row["message"] for row in _advisories(client, text)] == [
+        f"beets cannot read the include 'bad.yaml' ({reason}). Apply and a restart refuse"
+        " this config until it can."
+    ]
+
+
+@pytest.mark.parametrize(
+    ("entry", "shown", "reason"),
+    [
+        ('"m\\nFAKE \\e[31mx.yaml"', "'m\\nFAKE \\x1b[31mx.yaml'", "No such file or directory"),
+        ("''", "''", "Is a directory"),
+    ],
+    ids=["control-characters", "empty"],
+)
+def test_a_skipped_include_is_named_escaped_at_validate(
+    client: TestClient, beets_library: LibraryHandle, entry: str, shown: str, reason: str
+) -> None:
+    """Named raw before: a newline and an ESC reached the advisory, and an empty
+    entry read "the include  (Is a directory)"."""
+    text = _with_include(Path(beets_library.lib.directory.decode()), entry)
+
+    assert [row["message"] for row in _advisories(client, text)] == [
+        f"beets cannot read the include {shown} ({reason}). Apply and a restart refuse"
+        " this config until it can."
+    ]
 
 
 def test_a_symlinked_include_is_followed_the_way_beets_follows_it(
@@ -1331,6 +1441,46 @@ def test_one_request_reads_a_bounded_total_of_include_bytes(
     assert _layout_rows(client, _with_include(music, "big1.yaml")) == []
 
 
+@pytest.mark.parametrize(
+    ("shape", "reason"),
+    [
+        ("fifo", "is a FIFO; beets would block on it"),
+        ("oversized", "takes the include: list over its 1048576-byte budget"),
+        ("terminal", "had nothing to read"),
+        ("mistyped-tag", "raised KeyError"),
+    ],
+)
+def test_an_include_the_gate_cannot_use_is_named_as_written(
+    client: TestClient, beets_library: LibraryHandle, shape: str, reason: str
+) -> None:
+    """Round 8 named these four by the resolved absolute path; the others as written."""
+    music = Path(beets_library.lib.directory.decode())
+    target = beets_library.beets_dir / "overlay.yaml"
+    terminal: tuple[int, int] | None = None
+    if shape == "fifo":
+        os.mkfifo(target)
+    elif shape == "oversized":
+        with target.open("wb") as fh:
+            fh.truncate(2 << 20)
+    elif shape == "terminal":
+        # A terminal with nothing typed: a non-blocking read answers EAGAIN.
+        terminal = os.openpty()
+        target.symlink_to(os.ttyname(terminal[1]))
+    else:
+        target.write_text("x: !!bool ture\n", encoding="utf-8")
+
+    try:
+        rows = _layout_rows(client, _with_include(music, "overlay.yaml"))
+    finally:
+        for fd in terminal or ():
+            os.close(fd)
+
+    assert [r["msg"] for r in rows] == [
+        f"`include:` in config.yaml could not be read: 'overlay.yaml' {reason}."
+        " Fix the include: list."
+    ], rows
+
+
 def test_a_repeated_include_entry_is_read_once(
     client: TestClient, beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1351,9 +1501,9 @@ def test_a_repeated_include_entry_is_read_once(
     reads: list[str] = []
     real = store_layout._include_source
 
-    def counted(target: str, budget: int) -> tuple[object, int]:
+    def counted(target: str, written: str, budget: int) -> tuple[object, int]:
         reads.append(target)
-        return real(target, budget)
+        return real(target, written, budget)
 
     monkeypatch.setattr(store_layout, "_include_source", counted)
 
@@ -1420,3 +1570,42 @@ def test_a_library_that_is_a_directory_draws_one_row_at_validate(
     rows = [e for e in r.json()["errors"] if e["loc"] == "library"]
     assert len(rows) == 1, rows
     assert rows[0]["type"] != "store_layout", rows
+
+
+def test_a_mistyped_bool_tag_names_its_error_at_validate_and_save(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """ruamel raises ``KeyError('ture')``; the bare ``'ture'`` said nothing."""
+    text = "a: !!bool ture\n"
+
+    r = client.post("/api/config/validate", json={"yaml_text": text})
+    assert [e["msg"] for e in r.json()["errors"]] == ["KeyError: 'ture'"], r.json()
+
+    saved = client.post(
+        "/api/config/save",
+        json={"yaml_text": text, "base_sha256": _sha(beets_library.config_path)},
+    )
+    assert [e["msg"] for e in saved.json()["detail"]] == ["KeyError: 'ture'"], saved.text
+
+
+def test_a_mistyped_bool_tag_in_an_include_is_a_row_at_validate_and_a_422_at_save(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """PyYAML reads the include; the ``KeyError`` was a bare 500 on both routes."""
+    bad = beets_library.beets_dir / "bad.yaml"
+    bad.write_text("x: !!bool ture\n", encoding="utf-8")
+    text = _with_include(Path(beets_library.lib.directory.decode()), "bad.yaml")
+    row = (
+        "`include:` in config.yaml could not be read: 'bad.yaml' raised KeyError."
+        " Fix the include: list."
+    )
+
+    rows = _layout_rows(client, text)
+    assert [r["msg"] for r in rows] == [row], rows
+
+    saved = client.post(
+        "/api/config/save",
+        json={"yaml_text": text, "base_sha256": _sha(beets_library.config_path)},
+    )
+    assert saved.status_code == 422, saved.text
+    assert [e["msg"] for e in saved.json()["detail"]] == [row], saved.text

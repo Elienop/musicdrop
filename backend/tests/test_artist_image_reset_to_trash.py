@@ -99,11 +99,15 @@ def store(handle: LibraryHandle) -> tuple[Path, Path]:
 
 
 @pytest.fixture
-def client(cache: ArtistImageCache, handle: LibraryHandle) -> Iterator[TestClient]:
+def client(
+    cache: ArtistImageCache, handle: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[TestClient]:
     app.dependency_overrides[get_artist_image_cache] = lambda: cache
     app.dependency_overrides[get_artist_image_http_client] = lambda: object()
     app.dependency_overrides[get_artist_image_service] = lambda: _OffService()
     app.dependency_overrides[get_library] = lambda: handle
+    # The reset reads the handle off ``app.state`` once it holds the swap lock.
+    monkeypatch.setattr(app.state, "beets_library", handle, raising=False)
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -494,6 +498,42 @@ def test_the_move_and_the_clear_run_under_the_beets_swap_lock(
     assert seen == {"move": True, "clear": True}
 
 
+def test_the_reset_uses_the_library_current_once_it_holds_the_lock(
+    client: TestClient,
+    cache: ArtistImageCache,
+    edit_lib: Library,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An Apply that swaps the handle and releases before this route's acquire is seen.
+
+    The handle used to come from a dependency, resolved before the lock, so the
+    move ran against the pre-Apply library and music dir.
+    """
+    from app.library_busy import raise_if_swap_lock_held as real_gate
+
+    swapped = make_test_handle(edit_lib, beets_dir_for(tmp_path))
+    real_store = artists_mod._checked_art_trash_store
+    used: list[LibraryHandle] = []
+
+    def apply_lands_after_the_gate(app_: Any) -> None:
+        real_gate(app_)
+        monkeypatch.setattr(app.state, "beets_library", swapped)
+
+    def store_spy(handle_: LibraryHandle, settings_: Any) -> ArtTrashStore:
+        used.append(handle_)
+        return real_store(handle_, settings_)
+
+    monkeypatch.setattr(artists_mod, "raise_if_swap_lock_held", apply_lands_after_the_gate)
+    monkeypatch.setattr(artists_mod, "_checked_art_trash_store", store_spy)
+    cache.write_override("ABBA", PNG, "image/png")
+
+    assert client.post(RESET, params={"name": "ABBA"}).status_code == 200
+
+    assert len(used) == 1
+    assert used[0] is swapped
+
+
 def test_a_held_swap_lock_refuses_the_reset_instead_of_queueing_behind_it(
     client: TestClient, cache: ArtistImageCache, store: tuple[Path, Path]
 ) -> None:
@@ -648,3 +688,41 @@ def test_a_trash_aliased_onto_another_store_answers_503_with_its_own_cause(
     assert str(trash_dir) not in detail
     assert list(trash_dir.iterdir()) == [], "nothing moved"
     assert isinstance(cache.get("ABBA"), CachedImage), "the upload is still served"
+
+
+def test_the_refill_looks_up_the_mbid_in_the_library_live_when_it_runs(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fill runs after the swap lock is released; an Apply may land first."""
+    from app.api.artists import get_artist_image_filler
+    from app.beets import library as library_mod
+
+    lookups: list[Any] = []
+
+    class _OnService:
+        def is_enabled(self) -> bool:
+            return True
+
+    class _CapturingFiller:
+        async def fill(
+            self, service: object, name: str, *, get_mbid: Any, grace_seconds: float
+        ) -> None:
+            lookups.append(get_mbid)
+
+    app.dependency_overrides[get_artist_image_service] = lambda: _OnService()
+    app.dependency_overrides[get_artist_image_filler] = lambda: _CapturingFiller()
+    assert client.post(RESET, params={"name": "ABBA"}).status_code == 200
+
+    after_apply = Mock()
+    monkeypatch.setattr(app.state, "beets_library", after_apply)
+    seen: list[object] = []
+
+    def _lookup(lib: object, name: str) -> str:
+        seen.append(lib)
+        return "the-mbid"
+
+    monkeypatch.setattr(library_mod, "get_artist_mbid", _lookup)
+
+    (get_mbid,) = lookups
+    assert get_mbid() == "the-mbid"
+    assert seen == [after_apply.lib]

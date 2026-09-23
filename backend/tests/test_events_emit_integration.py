@@ -99,6 +99,8 @@ def art_client(
 
     app.dependency_overrides[get_artist_image_service] = lambda: _OffService()
     app.dependency_overrides[get_library] = lambda: SimpleNamespace(lib=object())
+    # The reset reads the handle off ``app.state`` once it holds the swap lock.
+    monkeypatch.setattr(app.state, "beets_library", SimpleNamespace(lib=object()), raising=False)
     yield TestClient(app), broker, cache
     app.dependency_overrides.clear()
     if hasattr(app.state, "event_broker"):

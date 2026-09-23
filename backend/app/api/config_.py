@@ -10,14 +10,16 @@ via a ``get_library`` override.
 from typing import Final
 
 from fastapi import APIRouter, Request
-from ruamel.yaml.error import YAMLError
 
 from app.beets.config_editor import (
+    NOT_A_MAPPING,
     StoreLayoutReport,
     _settings,
+    parse_error_text,
     parse_yaml,
     read_naming,
     save_naming,
+    settings_mapping,
     store_layout_report,
     validate_known_keys,
 )
@@ -82,8 +84,9 @@ _SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
     (
         # The rows carry a 1-based line and 0-based column where there is one,
         # and a malformed request body answers with FastAPI's own shape instead.
-        "The YAML did not parse, a key has the wrong shape, or its directory:/"
-        "library: would break the store layout; the body lists one item per problem."
+        "The YAML did not parse, a key has the wrong shape, its directory:/library:"
+        " would break the store layout, or config.yaml on disk cannot be read or written; the"
+        " body lists one item per problem."
     ),
 )
 
@@ -92,14 +95,16 @@ _SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
 #: three keys and no ``line``/``column``, because a bad regex comes from a form
 #: row (``loc`` is ``replace[<index>]``) rather than from a position in the YAML
 #: document. Sharing one model would promise a line number this route can never
-#: send - see app/models/errors.py::NamingRuleError.
+#: send - see app/models/errors.py::NamingRuleError. A config.yaml on disk that
+#: cannot be read or written, does not parse or is not a mapping is one row with an empty
+#: ``loc``.
 _NAMING_SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
     NamingValidationErrorDetail,
     (
-        "A submitted replace: pattern is not a valid regular expression, so the"
-        " save was refused before anything was written; the body names the"
-        " offending row. A malformed request body answers with FastAPI's"
-        " validation shape instead."
+        "A submitted replace: pattern is not a valid regular expression, or"
+        " config.yaml on disk cannot be read or written, does not parse or is not a mapping; the"
+        " body names the problem. A malformed request body answers with FastAPI's validation"
+        " shape instead."
     ),
 )
 
@@ -124,16 +129,18 @@ def validate_config(req: ValidateRequest, request: Request) -> ValidateResponse:
     # ``config_editor.save`` calls, so the gutter and the Save refusal are
     # computed from one function.
     try:
-        data = parse_yaml(req.yaml_text)
-    # Not YAMLError alone: ruamel raises RecursionError on a document nested past
-    # the limit and ValueError on an integer over 4300 digits, both bare 500s.
-    except (YAMLError, RecursionError, ValueError) as e:
+        parsed = parse_yaml(req.yaml_text)
+    # Broad: parsing changes nothing, so whatever it raises is a parse error.
+    # Measured beyond YAMLError: RecursionError past the nesting limit, ValueError
+    # on an integer over 4300 digits, KeyError on ``!!bool ture``; each was a
+    # bare 500.
+    except Exception as e:
         mark = getattr(e, "problem_mark", None)
         return ValidateResponse(
             errors=[
                 ValidationErrorItem(
                     loc="",
-                    msg=str(e),
+                    msg=parse_error_text(e),
                     type="yaml_parse",
                     line=(mark.line + 1) if mark else None,
                     column=mark.column if mark else None,
@@ -143,6 +150,13 @@ def validate_config(req: ValidateRequest, request: Request) -> ValidateResponse:
             # still sent: ``advisories`` is a required field, and a client that
             # had to test for its presence would be defending against a shape
             # this route never produces.
+            advisories=[],
+        )
+    # The Naming routes' rule and sentence, not Pydantic's, which names a class.
+    data = settings_mapping(req.yaml_text, parsed)
+    if data is None:
+        return ValidateResponse(
+            errors=[ValidationErrorItem(loc="", msg=NOT_A_MAPPING, type="model_type")],
             advisories=[],
         )
     # Two independent channels: an advisory is a valid setting MusicDrop
@@ -188,7 +202,7 @@ def save_config(req: SaveRequest, request: Request) -> BeetsConfigSnapshot:
     # The rest of the contract is here rather than in the docstring, which
     # FastAPI publishes whole: the response is the freshly-built
     # ``BeetsConfigSnapshot``, whose ``apply_pending`` is ``True`` until Apply
-    # reloads beets' globals; 422 on a parse, schema or store-layout failure;
+    # reloads beets' globals; 422 on a parse, schema, store-layout, read or write failure;
     # 409 on a CAS mismatch.
     #
     # A comment, not a docstring paragraph — FastAPI publishes the docstring as
@@ -200,7 +214,18 @@ def save_config(req: SaveRequest, request: Request) -> BeetsConfigSnapshot:
     return save_config_op(handle, req, settings=_settings(request.app))
 
 
-@router.get("/config/naming")
+@router.get(
+    "/config/naming",
+    responses={
+        422: {
+            "model": ErrorDetail,
+            "description": (
+                "config.yaml on disk cannot be read, does not parse or is not a mapping;"
+                " the detail says why."
+            ),
+        },
+    },
+)
 def get_naming(request: Request) -> NamingConfig:
     """Current ``paths:``/``replace:`` split into rows, with live previews."""
     handle: LibraryHandle = request.app.state.beets_library
@@ -238,7 +263,7 @@ def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSn
     # must read (see app/models/errors.py). Both are raised inside
     # apply_config_op (app/beets/config_editor.py), not here.
     responses={
-        # The ONLY 409 reachable from this route is the `library_job_active()`
+        # The ONLY 409 reachable from this route is the `swap_blocked_by_job()`
         # gate in `apply` (config_editor.py). The CAS "file changed on disk"
         # 409s live in `save` / `save_naming`, which this route never calls, so
         # naming them here would document a cause Apply cannot produce.
@@ -253,18 +278,21 @@ def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSn
         # Same structured body as the 500 and for the same reader: the page
         # prints `detail.recovery` after "Apply failed. ". A 409 could not carry
         # it — the frontend renders every Apply 409 as the library-job sentence.
+        # No "nothing was changed" here: the post-load backstop in `apply`
+        # refuses AFTER the new handle is swapped in.
         422: {
             "model": StructuredErrorDetail,
             "description": (
-                "The config.yaml on disk breaks the store layout; the recovery line"
-                " says how to fix it."
+                "config.yaml on disk is not a regular file, is unreadable, skips an include,"
+                " breaks the store layout, or failed to load and the old config was put back;"
+                " the recovery line says what to fix."
             ),
         },
         500: {
             "model": StructuredErrorDetail,
             "description": (
-                "The library rebuild failed during apply, but the saved config"
-                " is safe on disk and will load on the next start."
+                "The rebuild failed and putting the old config back failed too; fix the"
+                " error the recovery line quotes and Apply again."
             ),
         },
     },

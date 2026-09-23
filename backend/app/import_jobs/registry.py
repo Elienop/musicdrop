@@ -11,6 +11,7 @@ phase via callbacks while API threads read state and push the choice.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -46,10 +47,16 @@ from app.models.import_models import (
     ParkedAlbum,
 )
 
+#: Operator-facing records go to ``uvicorn.error``, for the reason
+#: ``import_jobs.gates`` states: under the Dockerfile CMD uvicorn leaves
+#: app-namespace loggers at WARNING.
+operator_logger = logging.getLogger("uvicorn.error")
+
 # Phases in which a job still owns the single import slot.
 _ACTIVE_PHASES = {ImportPhase.scanning, ImportPhase.reviewing, ImportPhase.applying}
 # Feed statuses that count as "set aside" (left in the source for a later pass):
-# an uncertain match awaiting review, or an unresolved library duplicate.
+# an uncertain match awaiting review, or an unresolved library duplicate. The
+# count itself is _is_set_aside, which also excludes a noted row.
 _SET_ASIDE_STATUSES = {
     ImportAlbumStatus.needs_review,
     ImportAlbumStatus.needs_dup_resolution,
@@ -100,6 +107,10 @@ class ImportJob:
     # Where this import came from: "manual" (the web Start flow) or "inbox" (the
     # unattended acquisition seam). Surfaced on the job state + the active probe.
     origin: ImportOrigin = "manual"
+    # The single folder this job was started with, or None when it was started
+    # with several (beets takes each as its own toppath). Surfaced on the job
+    # state so a reloaded Import page can re-post the same folder.
+    path: str | None = None
     # Sweep-origin jobs count instead of accumulating feed rows: a whole-library
     # sweep would otherwise hold thousands of _FeedAlbum dicts. None for
     # manual/inbox jobs (their feed is untouched).
@@ -124,6 +135,14 @@ class ImportJob:
     # None while the job is still running.
     started_monotonic: float = field(default_factory=time.monotonic)
     ended_monotonic: float | None = None
+    # A stop was ACCEPTED for this job (``request_stop``) — not that anything
+    # was cut short. A stop accepted after the last abort point (the final
+    # album's placement, the post-run Trash pass) leaves every album landed.
+    # One-way; the done view reads it. The truthful counts do NOT: a row that
+    # landed nothing says so itself (``_did_not_land``), whoever stopped the run.
+    # What was actually aborted is the bridge's own signal
+    # (:meth:`ImportJobRegistry.job_aborted`).
+    stopped: bool = False
 
     def stop_clock(self) -> None:
         """Freeze the elapsed clock at the FIRST terminal transition.
@@ -210,6 +229,15 @@ class ImportJobRegistry:
         self._playlists_dir = playlists_dir
         self._refusal = refusal
 
+    @property
+    def library(self) -> object | None:
+        """The attached beets Library, or None before ``attach_library``.
+
+        Read by the import gate, which must ask the adapter whether the music
+        root is there before a background drain claims any work.
+        """
+        return self._lib
+
     def _resolve_runner(self) -> ImportRunner:
         if self._runner is not None:
             return self._runner
@@ -256,7 +284,8 @@ class ImportJobRegistry:
         in whatever is still downloading beside them). A bare string is the
         single-folder shorthand every other caller uses.
         ``options`` threads per-import overrides (operation move/copy,
-        unattended, sweep) to the runner; ``None`` is today's manual default.
+        unattended, sweep, incremental) to the runner; ``None`` is today's
+        manual default.
         ``origin`` (manual/inbox/sweep/bank_apply) is recorded on the job and
         surfaced on the job state + the active probe. ``directive`` is the
         bank apply runner's translated decision, threaded to the session so
@@ -266,7 +295,7 @@ class ImportJobRegistry:
             raise LibraryRefusedError(self._refusal)
         paths = [source] if isinstance(source, str) else list(source)
         runner = self._resolve_runner()
-        runner.validate(paths, options)
+        forgiven = runner.validate(paths, options)
         # options.sweep is the single source of truth for the sweep origin:
         # callers never pass origin="sweep" themselves, and the inbox/manual
         # call sites stay untouched.
@@ -292,10 +321,23 @@ class ImportJobRegistry:
                 id=uuid.uuid4().hex,
                 bridge=ImportBridge(),
                 origin=origin,
+                path=paths[0] if len(paths) == 1 else None,
                 sweep=SweepStatus() if origin == "sweep" else None,
                 directive_astracks=directive is not None and directive.action == "astracks",
             )
             self._job = job
+
+        # After the slot claim and the busy check, so the record is about a
+        # start that was ACCEPTED and is about to file. Logged in ``validate``
+        # it fired per start ATTEMPT: three starts, one of them a 409, wrote
+        # three records while nothing was filed (measured 2026-09-19, security
+        # seat L-1).
+        if forgiven is not None:
+            operator_logger.warning(
+                "import gate: %s is empty and the library holds no track; filing this"
+                " import there. Stop now if the music share is not mounted.",
+                forgiven,
+            )
 
         try:
             runner.run(
@@ -356,16 +398,65 @@ class ImportJobRegistry:
             self._notify_changed()
 
     @staticmethod
-    def _did_not_land(row: _FeedAlbum, *, astracks_directive: bool = False) -> bool:
+    def _resolved_as_landing(row: _FeedAlbum) -> bool:
+        """Resolved as an action that puts this album in the library.
+
+        The "decided" half of :meth:`_is_imported`, before the did-not-land
+        veto.
+        """
+        if row.duplicate_action is not None:
+            return row.duplicate_action in _DUP_IMPORTED_ACTIONS
+        return row.status is ImportAlbumStatus.applied or (
+            row.status is ImportAlbumStatus.decided and row.decided_action in _APPLY_ACTIONS
+        )
+
+    @staticmethod
+    def _did_not_land(
+        row: _FeedAlbum, *, astracks_directive: bool = False, next_landed: bool | None = None
+    ) -> bool:
         """Resolved as an album-landing action but no library album id ever
-        arrived — the session died/aborted before beets ran task.add.
+        arrived — the session died/aborted before it reported one. That is before
+        ``task.add``, or during placement with the album row already written
+        (``test_a_stop_during_placement_leaves_rows_naming_the_download``).
         astracks and dup-merge are exempt: they land without an id of their
         own (singletons form no Album row; a merge lands under the merged
         task's row). A bank astracks apply (``astracks_directive``) emits an
         `applied` outcome for the SAME reason — its singletons never form an
-        Album row — so an idless applied row on such a job is exempt too."""
+        Album row — so an idless applied row on such a job is exempt too.
+
+        A NOTE is the session saying so itself, checked first: its only emitter
+        (``_replace_refused``) answers beets SKIP before ``task.add``, so no id
+        can follow (``test_a_noted_row_is_not_counted_as_imported_mid_run``).
+
+        The MERGE exemption is conditional on ``next_landed`` — did the row
+        AFTER this one land. beets answers MERGE by pushing a fresh task back
+        through ``lookup_candidates`` then ``user_query`` (beets 2.13.1
+        ``importer/stages.py:190-207``, the ``DuplicateAction.MERGE`` branch of
+        ``user_query``; ``already_merged`` holds only the duplicate's own paths,
+        so it does not bubble), and the pipeline is serial (``threaded: False``),
+        so the row after a merge row IS the merged task's. That task lands with
+        an id, or parks, skips, or is cut short — the last three leave nothing
+        behind the merge. Position cannot answer this: a merged task that parked
+        claims its row before it lands
+        (``test_a_parked_merged_task_leaves_the_merge_row_not_landed``).
+
+        ``next_landed`` is the next row's own imported verdict, not just "has an
+        id", so a merged task answered `as tracks` still lands for the merge
+        above it. ``None`` means there is no next row, which is the merged task
+        never reaching ``choose_match``.
+
+        The astracks exemptions are unconditional: ``choose_item`` and the
+        singleton arm of ``get_duplicate_action`` hold a stop back while an
+        expansion is in flight, so a started expansion reaches its last track
+        (``test_an_astracks_expansion_holds_the_stop_until_the_next_albums_hook``)
+        and its idless
+        row did land."""
+        if row.outcome.note is not None:
+            return True
         if row.outcome.album_id is not None:
             return False
+        if row.duplicate_action is DuplicateAction.merge:
+            return not next_landed
         if (
             astracks_directive
             and row.duplicate_action is None
@@ -381,7 +472,11 @@ class ImportJobRegistry:
 
     @staticmethod
     def _is_imported(
-        row: _FeedAlbum, *, astracks_directive: bool = False, terminal: bool = True
+        row: _FeedAlbum,
+        *,
+        astracks_directive: bool = False,
+        terminal: bool = True,
+        next_landed: bool | None = None,
     ) -> bool:
         """Imported: auto-applied, a parked album resolved apply-like, or a
         duplicate resolved keep_both/replace/merge — AND it actually landed (a
@@ -395,23 +490,57 @@ class ImportJobRegistry:
         the premature veto — otherwise the applied bucket transiently reads 0.
         The default (``terminal=True``) is state()'s post-finish reading, taken
         once _drain_locked has flushed every follow-up id — the point at which
-        asserting did-not-land is correct."""
-        if row.duplicate_action is not None:
-            decided = row.duplicate_action in _DUP_IMPORTED_ACTIONS
-        else:
-            decided = row.status is ImportAlbumStatus.applied or (
-                row.status is ImportAlbumStatus.decided and row.decided_action in _APPLY_ACTIONS
-            )
+        asserting did-not-land is correct. A NOTED row is already known not to
+        have landed, so it is vetoed in every phase."""
+        if row.outcome.note is not None:
+            return False
+        decided = ImportJobRegistry._resolved_as_landing(row)
         if not terminal:
             return decided
         return decided and not ImportJobRegistry._did_not_land(
-            row, astracks_directive=astracks_directive
+            row, astracks_directive=astracks_directive, next_landed=next_landed
         )
+
+    @staticmethod
+    def _landing_map(job: ImportJob, *, terminal: bool) -> dict[int, bool]:
+        """Per-index "counted imported", resolved from the LAST row backwards.
+
+        A merge row's verdict is the row after it (see :meth:`_did_not_land`),
+        so each answer feeds the row above and a merge of a merge resolves in
+        one pass. ``dict.get`` gives ``None`` for the row after the last one,
+        which is the "no merged task ever ran" reading.
+        """
+        landed: dict[int, bool] = {}
+        for index in sorted(job.albums, reverse=True):
+            landed[index] = ImportJobRegistry._is_imported(
+                job.albums[index],
+                astracks_directive=job.directive_astracks,
+                terminal=terminal,
+                next_landed=landed.get(index + 1),
+            )
+        return landed
+
+    @staticmethod
+    def _is_set_aside(row: _FeedAlbum) -> bool:
+        """Awaiting a decision — and in none of applied, skipped or not_landed.
+
+        The page reads the buckets as disjoint, so a NOTED row counted here as
+        well as in not_landed reported one album twice. Both sites that count
+        set-aside rows — ``state()`` and the active probe — call this
+        (``test_a_noted_directive_row_did_not_land_in_both_phases``; the no-note
+        control is ``test_a_set_aside_row_without_a_note_counts_as_set_aside``).
+        """
+        return row.status in _SET_ASIDE_STATUSES and row.outcome.note is None
 
     @staticmethod
     def _is_skipped(row: _FeedAlbum) -> bool:
         """The terminal complement of _is_imported for albums that landed nothing
-        (auto-skip, a non-apply choice, or a skip_new duplicate)."""
+        (auto-skip, a non-apply choice, or a skip_new duplicate).
+
+        A NOTED row failed rather than being skipped by choice, and is counted by
+        not_landed instead — measured ``skipped == 0`` in both noted shapes
+        (``test_a_noted_row_is_not_counted_as_imported_mid_run``,
+        ``test_a_noted_directive_row_did_not_land_in_both_phases``)."""
         if row.duplicate_action is not None:
             return row.duplicate_action not in _DUP_IMPORTED_ACTIONS
         return row.status is ImportAlbumStatus.skipped or (
@@ -448,11 +577,18 @@ class ImportJobRegistry:
     def _drain_outcomes_locked(self, job: ImportJob) -> None:
         """Pull new outcomes into the feed (caller holds ``self._lock``).
 
-        Create-row / status-upgrade / album-id-attach ladder per outcome.
+        Note-attach / create-row / status-upgrade / album-id-attach ladder per
+        outcome.
         """
         for outcome in job.bridge.drain_outcomes():
             row = job.albums.get(outcome.album_index)
-            if row is None:
+            if outcome.note is not None and row is not None:
+                # A Replace that imported nothing because the old copy was not
+                # disposed of. The decision stands (``decided`` on an attended
+                # run, needs_dup_resolution on a directive one) and only the
+                # reason is new, so the status ladder is left alone.
+                row.outcome = row.outcome.model_copy(update={"note": outcome.note})
+            elif row is None:
                 job.albums[outcome.album_index] = _FeedAlbum(
                     outcome=outcome,
                     status=_OUTCOME_STATUS.get(outcome.status, ImportAlbumStatus.needs_review),
@@ -612,12 +748,16 @@ class ImportJobRegistry:
         The up-front duplicate check needs the folder for its exclude-under
         guard; raises KeyError exactly like ``candidate`` when nothing is
         parked there.
+
+        Phase-gated like the choice write: a terminal job has no worker left to
+        answer, so serving its stored ParkedAlbum shows a review screen whose
+        Apply can only 404 (``test_a_finished_job_serves_no_parked_candidate``).
         """
         self.drain(job_id)
         job = self._require(job_id)
         with self._lock:
             row = job.albums.get(index)
-            if row is None or row.parked is None:
+            if job.phase not in _ACTIVE_PHASES or row is None or row.parked is None:
                 raise KeyError(index)
             return row.parked
 
@@ -627,15 +767,18 @@ class ImportJobRegistry:
         Reads the current files' first item on demand (the worker is parked, so
         the source is still in place). Serves a parked candidate OR a parked
         duplicate (both record the current-files art source on the bridge).
-        KeyError when the job/album is unknown, has no art source, or is not
-        parked at all - the API maps that to 404, same as the Candidate route.
+        KeyError when the job/album is unknown, has no art source, is not
+        parked at all, or the job is no longer active - the API maps that to
+        404, same as the Candidate route. The phase gate is :meth:`parked_album`'s:
+        the worker is gone, so the source may no longer be in place either.
         """
         self.drain(job_id)
         job = self._require(job_id)
         with self._lock:
             row = job.albums.get(index)
             if (
-                row is None
+                job.phase not in _ACTIVE_PHASES
+                or row is None
                 or row.art_source is None
                 or (row.parked is None and row.duplicate is None)
             ):
@@ -668,7 +811,13 @@ class ImportJobRegistry:
                 row.decided_action = choice.action
 
     def duplicate_prompt(self, job_id: str, index: int) -> DuplicatePrompt:
-        """Return the parked DuplicatePrompt at ``index`` (KeyError if none)."""
+        """Return the stored DuplicatePrompt at ``index`` (KeyError if none).
+
+        NOT phase-gated, and the route does not call it: the bank apply runner
+        reads this after the job is terminal, to store the collision a failed
+        apply published (``BankApplyRunner._refresh_stored_duplicate``). What a
+        client asks for is :meth:`parked_duplicate`.
+        """
         self.drain(job_id)
         job = self._require(job_id)
         with self._lock:
@@ -676,6 +825,24 @@ class ImportJobRegistry:
             if row is None or row.duplicate is None:
                 raise KeyError(index)
             return row.duplicate
+
+    def parked_duplicate(self, job_id: str, index: int) -> DuplicatePrompt:
+        """:meth:`duplicate_prompt` for a client: the prompt only while it is live.
+
+        The phase gate is :meth:`parked_album`'s, on the other park channel — a
+        terminal job has no worker to answer, so serving the prompt shows a
+        resolve screen whose decision can only 404
+        (``test_a_finished_job_serves_no_parked_duplicate``).
+
+        The phase is read AFTER the prompt, which is the safe order here: a job
+        can only move INTO a terminal phase, so a flip between the two reads
+        refuses rather than serves.
+        """
+        prompt = self.duplicate_prompt(job_id, index)
+        job = self.get(job_id)
+        if job is None or job.phase not in _ACTIVE_PHASES:
+            raise KeyError(index)
+        return prompt
 
     def record_duplicate_decision(
         self, job_id: str, index: int, decision: DuplicateDecision
@@ -695,25 +862,50 @@ class ImportJobRegistry:
                 row.status = ImportAlbumStatus.decided
                 row.duplicate_action = decision.action
 
-    def request_pause(self, job_id: str) -> None:
-        """Ask the active sweep to abort cleanly at its next album boundary.
+    def request_stop(self, job_id: str) -> None:
+        """Stop the active import at the album it is on — any origin.
 
-        Sets the bridge pause event the session checks at the top of every
-        decision hook (-> beets' native ImportAbortError -> run() unwinds ->
-        on_finish -> phase done, slot freed). KeyError for an unknown job
-        (API: 404); RuntimeError when the job is not a sweep or no longer
-        active (API: 409). Pausing an already-pausing active sweep is a no-op.
+        The bridge arms every abort point and frees a worker already parked on a
+        question (-> beets' native ImportAbortError -> run() unwinds -> on_finish
+        -> phase done, slot freed). What already landed stays; the album it
+        stopped on is neither imported nor recorded in beets' incremental
+        history, so adding that folder again asks about it.
+
+        Returns as soon as the stop is armed, not when the worker has unwound: a
+        release lookup already in flight finishes first, and the job stays in an
+        active phase until the next abort point is reached. An "as tracks"
+        expansion in flight is one abort point for the whole album, so every
+        remaining track is looked up and resolved before the stop lands
+        (``import_session.choose_item``) — deliberate: the alternative splits
+        the album across two locations.
+
+        KeyError for an unknown job (API: 404); RuntimeError when the job is no
+        longer active (API: 409). Repeating a stop on an active job is a no-op.
         """
         with self._lock:
             job = self._job
             if job is None or job.id != job_id:
                 raise KeyError(job_id)
-            if job.origin != "sweep" or job.sweep is None:
-                raise RuntimeError("only a sweep import can be paused")
             if job.phase not in _ACTIVE_PHASES:
-                raise RuntimeError("the sweep is no longer running")
-            job.sweep.paused = True
-            job.bridge.request_pause()
+                raise RuntimeError("that import is no longer running")
+            job.stopped = True
+            if job.sweep is not None:
+                job.sweep.stopped = True
+            job.bridge.request_stop()
+
+    def job_aborted(self, job_id: str) -> bool:
+        """Whether this job's worker actually raised beets' abort.
+
+        The same bridge flag ``ImportJobState.aborted`` carries, read on its own
+        because the acquisition ledger MUST read it before ``state()``: this
+        answers False for a job no longer in the slot, where ``state()`` raises
+        and lands on ``_raced_handoff``
+        (``test_result_for_reads_the_abort_flag_before_the_slot_can_be_replaced``).
+        ``ImportJob.stopped`` only says a stop was accepted, and a stop accepted
+        after the last abort point leaves the folder fully imported.
+        """
+        job = self.get(job_id)
+        return job is not None and job.bridge.abort_raised()
 
     def state(self, job_id: str) -> ImportJobState:
         """Drain, then return the full job state for the GET endpoint."""
@@ -724,26 +916,25 @@ class ImportJobRegistry:
             # Only assert "did not land" on a terminal job — mid-run a landed
             # row's follow-up id can still be one drain behind. The applied count
             # shares the same guard so a just-applied idless row still counts
-            # (see _is_imported's terminal param).
+            # (see _is_imported's terminal param). A NOTED row is exempt from the
+            # wait: its note says nothing was imported and no id can follow.
             terminal = job.phase in (ImportPhase.done, ImportPhase.failed)
-            applied = sum(
-                1
-                for a in job.albums.values()
-                if self._is_imported(a, astracks_directive=astracks, terminal=terminal)
-            )
+            # One backwards pass, because a merge row's verdict is the next
+            # row's (see _did_not_land). Both counts read it.
+            landed = self._landing_map(job, terminal=terminal)
+            applied = sum(1 for verdict in landed.values() if verdict)
             needs_review = sum(
                 1 for a in job.albums.values() if a.status is ImportAlbumStatus.needs_review
             )
             skipped = sum(1 for a in job.albums.values() if self._is_skipped(a))
-            set_aside = sum(1 for a in job.albums.values() if a.status in _SET_ASIDE_STATUSES)
-            not_landed = (
-                sum(
-                    1
-                    for a in job.albums.values()
-                    if self._did_not_land(a, astracks_directive=astracks)
+            set_aside = sum(1 for a in job.albums.values() if self._is_set_aside(a))
+            not_landed = sum(
+                1
+                for index, a in job.albums.items()
+                if (terminal or a.outcome.note is not None)
+                and self._did_not_land(
+                    a, astracks_directive=astracks, next_landed=landed.get(index + 1)
                 )
-                if terminal
-                else 0
             )
             return ImportJobState(
                 job_id=job.id,
@@ -753,10 +944,22 @@ class ImportJobRegistry:
                     needs_review=needs_review,
                     skipped=skipped,
                     not_landed=not_landed,
+                    # Read from the BRIDGE, like awaiting_decision below: a
+                    # history-skipped folder emits no outcome, so the feed rows
+                    # never show one. For a sweep, from the counter the drain
+                    # above just refreshed — the bridge keeps counting between
+                    # the two lock holds, and one response must not carry two
+                    # values for the same number.
+                    already_known=(
+                        job.sweep.skipped_known
+                        if job.sweep is not None
+                        else job.bridge.known_skips()
+                    ),
                 ),
                 albums=self._summaries(job),
                 error=job.error,
                 origin=job.origin,
+                path=job.path,
                 set_aside=set_aside,
                 sweep=job.sweep.model_copy() if job.sweep is not None else None,
                 elapsed_seconds=job.elapsed_seconds(),
@@ -769,12 +972,18 @@ class ImportJobRegistry:
                 # that dies while an album is parked leaves a registered slot
                 # and nobody waiting.
                 awaiting_decision=job.phase in _ACTIVE_PHASES and job.bridge.has_unanswered_park(),
+                stopped=job.stopped,
+                # From the bridge, the same flag :meth:`job_aborted` reads: the
+                # worker sets it at its one raise site, before on_finish, so a
+                # terminal job's answer is settled.
+                aborted=job.bridge.abort_raised(),
             )
 
     def active_status(self) -> ActiveImportStatus:
         """The active-import probe: ``active`` + resume ``job_id`` (invariant:
         equal), plus the live job's ``origin`` and set-aside count (the FE inbox
-        cue's "N set aside for review").
+        cue's "N set aside for review"). The count is :meth:`_is_set_aside`, the
+        same predicate ``state()`` uses, so the badge and the page agree.
 
         Drains the active job first so the count tracks the worker's latest
         outcomes; returns the idle ``{active: false}`` shape (with the defaulted
@@ -806,7 +1015,7 @@ class ImportJobRegistry:
                 return ActiveImportStatus(
                     active=False, job_id=None, last_sweep=self._last_sweep_locked()
                 )
-            set_aside = sum(1 for a in job.albums.values() if a.status in _SET_ASIDE_STATUSES)
+            set_aside = sum(1 for a in job.albums.values() if self._is_set_aside(a))
             return ActiveImportStatus(
                 active=True,
                 job_id=job.id,
@@ -838,7 +1047,7 @@ class ImportJobRegistry:
             auto_applied=s.auto_applied,
             banked=s.banked,
             skipped_known=s.skipped_known,
-            paused=s.paused,
+            stopped=s.stopped,
         )
 
     # ----- helpers -----
@@ -852,8 +1061,10 @@ class ImportJobRegistry:
     @staticmethod
     def _summaries(job: ImportJob) -> list[ImportAlbumSummary]:
         # did_not_land is only asserted on a terminal job (mid-run a landed
-        # row's follow-up id can trail by one drain).
+        # row's follow-up id can trail by one drain) — except on a NOTED row,
+        # which says itself that nothing was imported and can gain no id.
         terminal = job.phase in (ImportPhase.done, ImportPhase.failed)
+        landed = ImportJobRegistry._landing_map(job, terminal=terminal)
         rows: list[ImportAlbumSummary] = []
         for index in sorted(job.albums):
             row = job.albums[index]
@@ -868,9 +1079,12 @@ class ImportJobRegistry:
                     confidence=outcome.confidence,
                     status=row.status,
                     album_id=outcome.album_id,
-                    did_not_land=terminal
+                    note=outcome.note,
+                    did_not_land=(terminal or outcome.note is not None)
                     and ImportJobRegistry._did_not_land(
-                        row, astracks_directive=job.directive_astracks
+                        row,
+                        astracks_directive=job.directive_astracks,
+                        next_landed=landed.get(index + 1),
                     ),
                 )
             )

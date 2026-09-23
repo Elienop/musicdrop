@@ -110,6 +110,8 @@ def client(
         ordered=((DEEZER, source),)
     )
     app.dependency_overrides[get_library] = lambda: _StubHandle()
+    # The reset reads the handle off ``app.state`` once it holds the swap lock.
+    monkeypatch.setattr(app.state, "beets_library", _StubHandle(), raising=False)
     monkeypatch.setattr(library_mod, "get_artist_mbid", lambda lib, name: None)
     yield TestClient(app)
     app.dependency_overrides.clear()

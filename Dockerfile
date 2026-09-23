@@ -8,7 +8,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # ── Backend deps (uv -> venv) ─────────────────────────────────────────────
-FROM python:3.11-slim AS backend-builder
+FROM python:3.12-slim AS backend-builder
 COPY --from=ghcr.io/astral-sh/uv:0.7 /uv /uvx /usr/local/bin/
 WORKDIR /app
 COPY backend/pyproject.toml backend/uv.lock ./
@@ -16,7 +16,7 @@ COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --frozen --no-cache
 
 # ── Runtime ───────────────────────────────────────────────────────────────
-FROM python:3.11-slim
+FROM python:3.12-slim
 ARG APP_VERSION=dev
 RUN apt-get update \
     && apt-get install -y --no-install-recommends gosu \

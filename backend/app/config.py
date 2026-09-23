@@ -74,8 +74,9 @@ class Settings(BaseSettings):
     # listing walks, and Empty Trash would delete the records it needs.
     # Empty string = default to <beets_dir>/trash-origins, computed at resolve
     # time from the live library handle (already absolute), like trash_dir. Set an
-    # absolute path to override — one NOT under the music library, because a
-    # whole-folder delete above the store moves the records into Trash with it.
+    # absolute path to override — one NOT under the music library, because the
+    # orphan sweep's whole-folder move (trash_folder) on a folder above the store
+    # would take the records into Trash with it.
     # Same table and same call sites as trash_dir (app/beets/store_layout.py).
     # (env MUSICDROP_TRASH_ORIGINS_DIR)
     trash_origins_dir: str = ""

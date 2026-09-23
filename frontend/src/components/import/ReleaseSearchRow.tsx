@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { ImportSearch } from "@/api/useImport";
 import { Info, Spinner } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
   Popover,
@@ -95,16 +96,29 @@ export function ReleaseSearchRow({
         </Button>
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
+        {/* The app's Checkbox, not a native input: a native one paints the
+            browser's own blue and ignores the theme. The id comes off `formId`,
+            which the caller already guarantees unique, so two of these rows can
+            coexist without the label pointing at the wrong box. The label is a
+            sibling `htmlFor`, the BrowsePage facet idiom — it names the control
+            AND clicking the words toggles it, with one accessible name. */}
+        <div className="flex items-center gap-2 text-sm">
+          <Checkbox
+            id={`${formId}-force-non-va`}
             checked={forceNonVa}
-            onChange={(e) => setForceNonVa(e.target.checked)}
+            onCheckedChange={(checked) => setForceNonVa(checked === true)}
             disabled={busy}
-            className="size-4"
           />
-          <span>Not a compilation</span>
-        </label>
+          {/* shadcn's own Label recipe for the disabled state: the primitive's
+              root carries `peer`, so the words dim with the box while `busy`
+              instead of staying at full opacity above a 50% control. */}
+          <label
+            htmlFor={`${formId}-force-non-va`}
+            className="cursor-pointer peer-disabled:cursor-not-allowed peer-disabled:opacity-50"
+          >
+            Not a compilation
+          </label>
+        </div>
         <Popover>
           <PopoverTrigger asChild>
             <Button

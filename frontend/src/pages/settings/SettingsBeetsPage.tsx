@@ -1,4 +1,5 @@
 import type { Diagnostic } from "@codemirror/lint";
+import { EditorView } from "@codemirror/view";
 import { useQueryClient } from "@tanstack/react-query";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -9,6 +10,8 @@ import {
   type ConfigAdvisory,
   type ConfigOpError,
   type ValidationErrorItem,
+  applyRecoveryHint,
+  configOnDiskMessage,
   useApplyConfig,
   useBeetsConfig,
   useSaveConfig,
@@ -27,6 +30,10 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { DiskSyncPanel } from "./DiskSyncPanel";
 import { ReorganizeLibraryPanel } from "./ReorganizeLibraryPanel";
+import {
+  APPLY_FALLBACK,
+  saveFailureDetail,
+} from "@/pages/settings/configFailureText";
 import { SettingsConflict } from "@/pages/settings/SettingsConflict";
 import {
   READ_ONLY_EXTENSION,
@@ -85,26 +92,14 @@ function parseConflictBody(err: unknown): ConflictState | null {
 }
 
 /**
- * The recovery hint an Apply 500 carries. The backend nests it as
- * `{detail: {message, recovery}}` (see config_editor.apply); pull the string
- * out, or return null for any other status/shape so the caller falls back to
- * generic copy.
- */
-function applyRecoveryHint(err: ConfigOpError | null | undefined): string | null {
-  const detail = (err?.body as { detail?: unknown } | undefined)?.detail;
-  if (detail && typeof detail === "object" && "recovery" in detail) {
-    const recovery = (detail as { recovery?: unknown }).recovery;
-    if (typeof recovery === "string" && recovery.trim()) return recovery;
-  }
-  return null;
-}
-
-/**
  * Derive the page state from the in-flight mutation flags + the
  * snapshot's `apply_pending` + local `dirty`. The mutation flags take
  * priority because they describe an in-flight action — a `saving` state
  * mid-Save should not flicker back to `dirty` if the user happens to keep
- * typing during the round-trip.
+ * typing during the round-trip. A draft outranks `apply_pending` (owner
+ * ruling 2026-09-23, "Edit works while pending"): once it differs from the
+ * file the page is in its edit state, so Save is on and Apply is off until
+ * the draft is Saved or discarded.
  */
 function derivePageState(
   applying: boolean,
@@ -114,9 +109,27 @@ function derivePageState(
 ): PageState {
   if (applying) return "applying";
   if (saving) return "saving";
-  if (applyPending) return "apply_pending";
   if (dirty) return "dirty";
+  if (applyPending) return "apply_pending";
   return "clean";
+}
+
+/**
+ * Focus the editor and scroll its caret into view, below the sticky topbar
+ * (81px measured at widths 375 to 1920, plus CodeMirror's default margin of
+ * 5). `view.focus()` alone never scrolls, and the buttons that call this sit
+ * below the 500px editor. "nearest" moves nothing once the caret is 86px
+ * inside the editor and the window.
+ */
+function focusEditor(view: EditorView | undefined) {
+  if (!view) return;
+  view.focus();
+  view.dispatch({
+    effects: EditorView.scrollIntoView(view.state.selection.main.head, {
+      y: "nearest",
+      yMargin: 86,
+    }),
+  });
 }
 
 export function SettingsBeetsPage() {
@@ -133,9 +146,11 @@ export function SettingsBeetsPage() {
   // resolve 1-based line numbers into character offsets; the page-level Edit
   // button needs `view.dispatch(...)` to flip the compartment.
   const editorRef = useRef<ReactCodeMirrorRef | null>(null);
-  // `null` while clean; the buffered draft once the user starts typing. We
-  // intentionally don't seed it from `data.yaml_text` — keeping it null lets
-  // an Apply-then-edit cycle pick up the fresh disk text without a remount.
+  // The editor's own text: set by every edit and by Reload, cleared by Cancel
+  // and by a read of a new file, unless an open draft differs from that file.
+  // `null` means the editor shows `data.yaml_text`. It is also the editor's
+  // `value`, so a read cannot replace an open draft, and a Save's own text
+  // stays on screen until its re-read lands.
   const [localText, setLocalText] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [conflict, setConflict] = useState<ConflictState | null>(null);
@@ -156,25 +171,6 @@ export function SettingsBeetsPage() {
   // validate response, so a cleared advisory disappears on the next tick.
   const [advisories, setAdvisories] = useState<ConfigAdvisory[]>([]);
 
-  // Resync local state whenever the snapshot's content hash advances (post-Save
-  // / post-Apply React Query invalidation refetches and gets a new sha256).
-  // Without this, an Apply refetch would swap CodeMirror's `value` prop but
-  // leave `dirty=true` and a stale `localText` draft — the page would wedge
-  // showing the editor as dirty with no actual diff against the new doc.
-  // Tracking the hash (not just data) is precise: identity-equal refetches
-  // (e.g. background revalidations that returned an unchanged snapshot) won't
-  // clobber an in-progress edit. sha256 is also the only CAS token — the
-  // snapshot intentionally omits mtime_ns because nanosecond ints overflow
-  // JavaScript's Number.MAX_SAFE_INTEGER.
-  const prevSha = useRef<string | undefined>(data?.sha256);
-  useEffect(() => {
-    if (data?.sha256 && data.sha256 !== prevSha.current) {
-      prevSha.current = data.sha256;
-      setLocalText(null);
-      setDirty(false);
-    }
-  }, [data?.sha256]);
-
   // Latest-callback refs. The CM6 extension list is memoized (so Compartments
   // stay stable across renders), but the linter source + Mod-s handler need to
   // see the *current* `data`/`localText` on every fire — not the closures
@@ -189,9 +185,10 @@ export function SettingsBeetsPage() {
   // Compartments must NOT be module-level singletons: under React 19
   // StrictMode dev-mode double-mounts the first dispatch can target a
   // torn-down view, and two concurrently-mounted SettingsPages would clobber
-  // each other's read-only state. Keying by `data?.yaml_text` recomputes on
-  // a snapshot swap (post-Apply refetch) which is exactly when the editor
-  // remounts anyway.
+  // each other's read-only state. Keying by `data?.yaml_text` recomputes when
+  // a read brings new file text. The editor does not remount then: @uiw
+  // reconfigures the same view with the new list, whose compartments start
+  // read-only.
   const { extensions, editableCompartment } = useMemo(
     () =>
       buildExtensions({
@@ -205,6 +202,51 @@ export function SettingsBeetsPage() {
       }),
     [data?.yaml_text],
   );
+
+  // A read that brings a new file version (its sha256, the only CAS token; the
+  // snapshot omits mtime_ns, which overflows a JS number). Tracking the hash,
+  // not the data, lets a re-read of the same file leave everything alone.
+  // - It ends an Apply refusal and a Save failure, which were about the file
+  //   as it was, unless that action is still in flight: its answer is still
+  //   to come.
+  // - With a draft that differs from the new file, the draft stays and the
+  //   conflict panel offers the new file. New file text rebuilds the
+  //   extensions read-only, so editing is turned back on.
+  // - Otherwise the editor takes the new file and the page is clean. A draft
+  //   equals it when, for one, the read lands inside the page's own Save. An
+  //   open panel closes: it would offer an older file, and its Reload would
+  //   pair that text with this sha.
+  const prevSha = useRef<string | undefined>(data?.sha256);
+  const resetApply = applyMutation.reset;
+  const applyInFlight = applyMutation.isPending;
+  const resetSave = save.reset;
+  const saveInFlight = save.isPending;
+  useEffect(() => {
+    if (!data?.sha256 || data.sha256 === prevSha.current) return;
+    prevSha.current = data.sha256;
+    if (!applyInFlight) resetApply();
+    if (!saveInFlight) resetSave();
+    if (dirty && localText !== data.yaml_text) {
+      setConflict({ serverDoc: data.yaml_text, sha: data.sha256 });
+      editorRef.current?.view?.dispatch({
+        effects: editableCompartment.reconfigure([]),
+      });
+      return;
+    }
+    setLocalText(null);
+    setDirty(false);
+    setConflict(null);
+  }, [
+    data?.sha256,
+    data?.yaml_text,
+    dirty,
+    localText,
+    applyInFlight,
+    resetApply,
+    saveInFlight,
+    resetSave,
+    editableCompartment,
+  ]);
 
   // Extensions for the read-only "Effective config" pane. Content-independent
   // (the doc rides in via the `value` prop, which @uiw keeps synced on
@@ -257,18 +299,16 @@ export function SettingsBeetsPage() {
 
   function handleSave() {
     if (!data) return;
-    // Bail out when the page isn't in `dirty` state. CM6's Mod-s keymap fires
-    // whenever the editor has focus — including read-only mode — so without
-    // this guard a stray Ctrl+S would re-Save the unchanged snapshot, which
-    // succeeds, advances mtime, and lights up the (misleading) apply_pending
-    // banner. We also block re-firing during an in-flight Save and while a
-    // conflict modal is open (the user has Reload/Overwrite to choose from,
-    // not a redo-Save).
-    if (!dirty || save.isPending || conflict) return;
-    // Same guard as the disabled button — never fire Save while there are
-    // unresolved lint errors. The button is disabled, but Mod-s would
-    // otherwise bypass it.
-    if (lintErrors > 0) return;
+    // The Save button's own predicate, because CM6's Mod-s keymap fires
+    // whenever the editor has focus and bypasses the button. `dirty` page
+    // state excludes an unchanged doc (a re-Save would advance mtime and light
+    // the apply_pending banner), an in-flight Save and an in-flight Apply.
+    // Lint errors block it as they block the button. It also does nothing
+    // while the conflict panel is open: Reload and Overwrite are the choices.
+    if (pageState !== "dirty" || lintErrors > 0 || conflict) return;
+    // The latest action owns the one alert: a Save ends the last Apply's. No
+    // Apply is in flight here, so this never drops an Apply's answer.
+    applyMutation.reset();
     const text = localText ?? data.yaml_text;
     save.mutate(
       {
@@ -278,17 +318,14 @@ export function SettingsBeetsPage() {
       {
         onSuccess: () => {
           setDirty(false);
-          setLocalText(null);
         },
-        onError: (err) => {
-          // 409 = CAS mismatch -> open the conflict panel. 422 is handled by
-          // the lint source on the editor's next debounce tick (the linter
-          // re-runs after the save resolves), so we don't need to do anything
-          // here. Any other status falls through (React Query exposes via
-          // `save.error` if a future banner wants to surface it).
-          const c = parseConflictBody(err);
-          if (c) setConflict(c);
-        },
+        // 409 = CAS mismatch -> open the conflict panel. Every other error,
+        // 422 included, shows the "Save failed" alert below. A 422 about the
+        // editor text is also painted by the lint source on its next debounce
+        // tick; from then on the lint line is the recovery and the alert
+        // gives way. A 422 about config.yaml on disk has no lint row, so the
+        // alert prints its sentence.
+        onError: openConflict,
       },
     );
   }
@@ -299,13 +336,19 @@ export function SettingsBeetsPage() {
   asyncSourceRef.current = asyncSource;
   onSaveRef.current = handleSave;
 
+  /** Open (or refresh) the conflict panel for a 409 on either Save path. */
+  function openConflict(err: unknown) {
+    const c = parseConflictBody(err);
+    if (c) setConflict(c);
+  }
+
   function handleEdit() {
-    // Entering a fresh edit session clears any stale Save/Apply failure banner
-    // from a prior attempt: a settled error mutation keeps its error state until
-    // reset, so without this the old alert would resurface the moment the doc is
-    // dirty again.
+    // Entering a fresh edit session clears a stale Save failure: a settled
+    // error mutation keeps its error state until reset, so without this the
+    // old alert would resurface the moment the doc is dirty again. An Apply
+    // refusal stays: it is true of the file until a Save or a new file
+    // version ends it.
     save.reset();
-    applyMutation.reset();
     const view = editorRef.current?.view;
     if (view) {
       view.dispatch({
@@ -319,10 +362,9 @@ export function SettingsBeetsPage() {
     if (!data) return;
     const view = editorRef.current?.view;
     if (view) {
-      // Restore read-only + reset the doc back to the snapshot. The doc reset
-      // is required because `value={data.yaml_text}` on `<CodeMirror>` only
-      // applies on remount; once the user has typed, CM6 owns the doc and
-      // we have to dispatch the change explicitly.
+      // Restore read-only + reset the doc back to the snapshot. @uiw syncs
+      // the `value` prop (`localText ?? data.yaml_text`) only once its typing
+      // latch has passed; the dispatch makes the change immediate.
       view.dispatch({
         effects: editableCompartment.reconfigure(READ_ONLY_EXTENSION),
         changes: {
@@ -331,37 +373,49 @@ export function SettingsBeetsPage() {
           insert: data.yaml_text,
         },
       });
+      // Cancel is shown only beside a draft, so the click unmounts it.
+      focusEditor(view);
     }
     setLocalText(null);
     setDirty(false);
     // Cancel also dismisses any conflict modal from a prior failed Save —
     // the user explicitly chose to drop their edits, so there's nothing
-    // left for the diff view to resolve. The lint count is reset too: the
-    // doc is back to the clean snapshot, which has no errors (it's what
-    // beets is already running on).
+    // left for the diff view to resolve. The lint count is reset too; the
+    // doc reset re-runs the linter, which counts the file's own rows again.
     setConflict(null);
     setLintErrors(0);
-    // Discarding also clears a prior Save/Apply failure banner — the page is
-    // returning to clean, so a lingering "Save failed" would be a false alarm.
+    // Discarding also clears a Save failure, whose alert shows only beside a
+    // draft. An Apply refusal stays, as it does through every edit: the file
+    // is the one Apply refused.
     save.reset();
-    applyMutation.reset();
   }
 
   function handleApply() {
-    applyMutation.mutate();
+    // The editor takes no edits while Apply runs (Edit opens it again after).
+    // Apply is on only while the draft equals the file, so nothing is lost.
+    editorRef.current?.view?.dispatch({
+      effects: editableCompartment.reconfigure(READ_ONLY_EXTENSION),
+    });
+    // A 409 means a job this page has not seen holds the library. Ask the
+    // probes again so the "Apply paused" line speaks for it, and goes when
+    // the job ends.
+    applyMutation.mutate(undefined, {
+      onError: (err) => {
+        if (err.status === 409) job.refetch();
+      },
+    });
   }
 
   function handleConflictReload() {
     if (!conflict) return;
     const view = editorRef.current?.view;
     if (view) {
-      // Drop the user's local edits in the editor itself — replace its doc
-      // with the fresh on-disk text that the 409 body carried back. Without
-      // this dispatch the editor visually keeps the stale local edit even
-      // though React state thinks we're clean (the `value={data.yaml_text}`
-      // prop only applies on remount; CM6 owns the doc after the first user
-      // keystroke). Also flip the editor back to read-only so the page state
-      // is internally consistent with the cleared `dirty` flag.
+      // Drop the user's local edits in the editor itself: replace its doc
+      // with the panel's file, from the 409 body or from the read that
+      // opened the panel. @uiw syncs the `value` prop (`localText ??
+      // data.yaml_text`) only once its typing latch has passed; the dispatch
+      // makes the change immediate. Also flip the editor back to read-only
+      // so the page state is consistent with the cleared `dirty` flag.
       view.dispatch({
         effects: editableCompartment.reconfigure(READ_ONLY_EXTENSION),
         changes: {
@@ -370,19 +424,23 @@ export function SettingsBeetsPage() {
           insert: conflict.serverDoc,
         },
       });
+      // Before the panel's focused button unmounts, or focus drops to <body>.
+      focusEditor(view);
     }
-    setLocalText(null);
+    // The editor holds the panel's file until the re-read below lands.
+    setLocalText(conflict.serverDoc);
     setDirty(false);
     setConflict(null);
     setLintErrors(0);
-    // Refresh the snapshot so its CAS sha matches the new on-disk bytes —
-    // the next Save (after a fresh Edit) sends the right base_sha256 from
-    // React Query's cache instead of the stale pre-409 value.
+    // Read the file again: the next Save sends the snapshot's sha. Once a read
+    // with a new sha lands, the text and the sha come from one file version:
+    // that read puts its own text in the editor (the effect above).
     void queryClient.invalidateQueries({ queryKey: ["beets-config"] });
   }
 
   function handleConflictOverwrite() {
-    if (!conflict || !data) return;
+    // No Save while an Apply is in flight, from this button either.
+    if (!conflict || !data || applyMutation.isPending) return;
     const text = localText ?? data.yaml_text;
     save.mutate(
       {
@@ -390,14 +448,34 @@ export function SettingsBeetsPage() {
         base_sha256: conflict.sha,
       },
       {
+        // Focus goes to the editor before the panel's focused button
+        // unmounts, here and on a non-409 failure.
         onSuccess: () => {
           setDirty(false);
-          setLocalText(null);
           setConflict(null);
+          focusEditor(editorRef.current?.view);
+        },
+        // Another writer since the first 409: the panel takes the newer file
+        // and token, the same as for the first 409. Any other failure closes
+        // the panel: the Save alert shows it, and Save is the way to retry.
+        // Focus goes to the editor, where the draft is; the alert and Save sit
+        // just below it.
+        onError: (err) => {
+          if (err.status === 409) {
+            openConflict(err);
+            return;
+          }
+          setConflict(null);
+          focusEditor(editorRef.current?.view);
         },
       },
     );
   }
+
+  // An Apply failure other than the library-job 409, which the "Apply paused"
+  // line speaks for once the probes see the job.
+  const applyFailed =
+    applyMutation.isError && applyMutation.error?.status !== 409;
 
   return (
     <div className="flex flex-col gap-8">
@@ -405,13 +483,15 @@ export function SettingsBeetsPage() {
         <header className="flex flex-col gap-1">
           <SectionLabel>Beets configuration</SectionLabel>
           <p className="text-muted-foreground text-sm">
-            Loaded from <code className="font-mono">{data.config_path}</code>
+            Loaded from{" "}
+            <code className="font-mono break-all">{data.config_path}</code>
           </p>
         </header>
 
         <ConfigStateBanner
           state={pageState}
           jobActive={job.active}
+          applyFailed={applyFailed}
           data={data}
         />
 
@@ -419,20 +499,26 @@ export function SettingsBeetsPage() {
 
         <CodeMirror
           ref={editorRef}
-          value={data.yaml_text}
+          value={localText ?? data.yaml_text}
           height="500px"
           // `theme="none"` opts out of @uiw/react-codemirror's default theme so
           // our shadcnTheme variables are the only thing setting colors.
           theme="none"
           extensions={extensions}
-          onChange={(value) => setLocalText(value)}
+          onChange={(value) => {
+            setLocalText(value);
+            // A draft edit ends the last Save's failure, whether it was about
+            // the text or about config.yaml on disk: an alert hidden by the
+            // lint line and shown again would be announced twice for one Save.
+            if (save.isError) save.reset();
+          }}
         />
 
         <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="outline"
             onClick={handleEdit}
-            disabled={pageState !== "clean"}
+            disabled={pageState !== "clean" && pageState !== "apply_pending"}
           >
             Edit
           </Button>
@@ -488,35 +574,39 @@ export function SettingsBeetsPage() {
 
         {/* Surface Save/Apply failures — otherwise the spinner just ends and the
             banner silently returns to its resting state, so the user never
-            learns the click failed. Each is co-gated on the page state the error
-            belongs to (apply_pending / dirty) so a stale error can't outlive it:
-            a settled mutation keeps its error until reset, so an externally
-            resolved apply_pending or a discarded edit would otherwise leave a
-            false alarm behind. A 409 on Save opens the conflict panel above; a
-            409 on Apply is the library-job gate (a transient status, not an
-            error). Everything else is a destructive alert. */}
-        {applyMutation.isError &&
-          pageState === "apply_pending" &&
-          (applyMutation.error?.status === 409 ? (
-            <output className="text-muted-foreground text-sm block">
-              A library job is running; Apply will be available when it
-              finishes.
-            </output>
-          ) : (
-            <p className="text-destructive text-sm" role="alert">
-              Apply failed.{" "}
-              {applyRecoveryHint(applyMutation.error) ??
-                "Your config is saved on disk — try again or restart MusicDrop."}
-            </p>
-          ))}
-        {save.isError && save.error?.status !== 409 && pageState === "dirty" && (
-          <p className="text-destructive text-sm" role="alert">
-            Save failed. Your changes weren’t written — try again.
+            learns the click failed. Each is co-gated on page state so a stale
+            error can't outlive it: a settled mutation keeps its error until
+            reset. The Apply refusal is about the file, so it shows beside a
+            draft too; it stays mounted through edits and Cancel (so it is not
+            announced again) until handleSave, a new file version or another
+            Apply ends it. The Save failure shows only beside a draft. A 409
+            on Save opens the conflict panel below; a 409 on Apply is the
+            library-job gate, which the "Apply paused" line speaks for.
+            Everything else is a destructive alert. The Save alert also gives
+            way to the lint line, which is then the recovery. */}
+        {applyFailed &&
+          (pageState === "apply_pending" || pageState === "dirty") && (
+          <p className="text-destructive text-sm break-words" role="alert">
+            Apply failed.{" "}
+            {applyRecoveryHint(applyMutation.error) ?? APPLY_FALLBACK}
           </p>
         )}
+        {save.isError &&
+          save.error?.status !== 409 &&
+          pageState === "dirty" &&
+          lintErrors === 0 && (
+            <p className="text-destructive text-sm break-words" role="alert">
+              Save failed.{" "}
+              {saveFailureDetail(configOnDiskMessage(save.error?.body))}
+            </p>
+          )}
 
         {conflict && (
+          // Keyed by the newer file's sha, from a 409 or from a read, so a
+          // second 409 or a newer read remounts the panel and moves focus to
+          // it, the same as the first.
           <SettingsConflict
+            key={conflict.sha}
             local={localText ?? data.yaml_text}
             server={conflict.serverDoc}
             onReload={handleConflictReload}
@@ -643,10 +733,13 @@ function ConfigAdvisories({
 function ConfigStateBanner({
   state,
   jobActive,
+  applyFailed,
   data,
 }: Readonly<{
   state: PageState;
   jobActive: boolean;
+  /** An Apply failure alert shows; its sentence carries the recovery. */
+  applyFailed: boolean;
   data: BeetsConfigSnapshot;
 }> ) {
   if (state === "clean") {
@@ -666,7 +759,7 @@ function ConfigStateBanner({
         />
         <span>
           <strong>Unsaved changes.</strong> Save to write to{" "}
-          <code className="font-mono">{data.config_path}</code>.
+          <code className="font-mono break-all">{data.config_path}</code>.
         </span>
       </output>
     );
@@ -687,7 +780,12 @@ function ConfigStateBanner({
     );
   }
   // apply_pending — same copy the tests pin; the system banner supplies the
-  // warning chrome + role="alert".
+  // warning chrome + role="alert". Beside an Apply failure the tail goes: the
+  // alert's sentence is the recovery, and "click Apply" would contradict one
+  // that says to fix something first. While a job runs it goes too: the
+  // "Apply paused" line under the buttons speaks for the job.
+  const tail =
+    applyFailed || jobActive ? "." : "; click Apply to load it into beets.";
   return (
     <StatusBanner tone="warning" icon={Warning}>
       <p>
@@ -695,18 +793,20 @@ function ConfigStateBanner({
         {data.file_modified_at && (
           <> ({new Date(data.file_modified_at).toLocaleTimeString()})</>
         )}
-        {jobActive
-          ? "; Apply available once the running job finishes."
-          : "; click Apply to load it into beets."}
+        {tail}
       </p>
     </StatusBanner>
   );
 }
 
 /** Resolve `ValidationErrorItem[]` into CodeMirror `Diagnostic[]` keyed off
- * 1-based line numbers. Defensive against out-of-range lines (a server line
- * count that drifts past the current draft would otherwise throw in
- * `state.doc.line(n)`); we drop those rather than dropping the whole array. */
+ * 1-based line numbers. A row whose line is null (a parse error with no
+ * position, e.g. `!!bool ture`) is kept as a point at the start of line 1: it
+ * counts toward the error line, gets a gutter marker and disables Save (the
+ * server would refuse a Save of the text Validate rejected), without
+ * underlining text that may be fine. Validate's lines come from the text it
+ * was sent, so a row past the last line means the draft changed since; CM6
+ * then drops the whole result, and the row counts only until the next pass. */
 function mapErrorsToDiagnostics(
   errors: ValidationErrorItem[],
   ref: ReactCodeMirrorRef | null,
@@ -714,26 +814,24 @@ function mapErrorsToDiagnostics(
   const view = ref?.view;
   if (!view) return [];
   const totalLines = view.state.doc.lines;
-  return errors
-    .filter(
-      (e): e is ValidationErrorItem & { line: number } =>
-        e.line != null && e.line >= 1 && e.line <= totalLines,
-    )
-    .map((e) => {
-      const line = view.state.doc.line(e.line);
-      // Clamp `from` to the line's range. A backend column past line-end (drift
-      // between the server's view and the live buffer, or a 0-based vs 1-based
-      // off-by-one) would otherwise produce `from > to` and trigger CM6's
-      // range invariant; capping at `line.to` degrades to a whole-line mark
-      // instead of crashing the linter.
-      const from = Math.min(line.from + (e.column ?? 0), line.to);
-      return {
-        from,
-        to: line.to,
-        severity: "error" as const,
-        message: `${e.loc}: ${e.msg}`,
-      };
-    });
+  return errors.map((e) => {
+    const n = e.line;
+    const placed = n != null && n >= 1 && n <= totalLines;
+    const line = view.state.doc.line(placed ? n : 1);
+    // Clamp `from` to the line's range. A backend column past line-end (drift
+    // between the server's view and the live buffer, or a 0-based vs 1-based
+    // off-by-one) would otherwise produce `from > to` and trigger CM6's
+    // range invariant; capping at `line.to` degrades to a point at the line's
+    // end instead of crashing the linter. An unplaced row's column belongs to no
+    // line here, so it is ignored.
+    const column = placed ? (e.column ?? 0) : 0;
+    return {
+      from: Math.min(line.from + column, line.to),
+      to: placed ? line.to : line.from,
+      severity: "error" as const,
+      message: e.loc ? `${e.loc}: ${e.msg}` : e.msg,
+    };
+  });
 }
 
 function isConfigOpError(err: unknown): err is ConfigOpError {

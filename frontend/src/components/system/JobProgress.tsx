@@ -59,7 +59,15 @@ export function JobProgress({
         </div>
         <StateChip state={state} />
         {onStop !== undefined && (
-          <Button variant="outline" size="xs" onClick={onStop}>
+          // `sm`, not the row's `xs`, and no size class on the glyph: this is
+          // the app's one stop register — every other Stop/Pause (the run
+          // page's "Stop this run", the sweep's "Pause sweep", Reorganize, Disk
+          // sync, Artist art, album lyrics) is `outline sm`. The register is
+          // also what puts the glyph on the spec's inline 16 step: `xs`
+          // overrides the button's svg token to `size-3`, and a 12px box gives
+          // Phosphor's light stroke (12u of a 256 viewBox) 0.563px — a grey
+          // hairline at 1x, and off the 16/20/40 scale entirely.
+          <Button variant="outline" size="sm" onClick={onStop}>
             <Stop aria-hidden="true" />
             Stop
           </Button>
@@ -68,7 +76,9 @@ export function JobProgress({
           <Button variant="ghost" size="xs" asChild>
             <Link to={href}>
               View
-              <Forward aria-hidden="true" />
+              {/* Sized for the same reason as the popover's dismiss glyph:
+                  `xs` would render it 12px. Owner's call 2026-09-20. */}
+              <Forward aria-hidden="true" className="size-4" />
             </Link>
           </Button>
         )}

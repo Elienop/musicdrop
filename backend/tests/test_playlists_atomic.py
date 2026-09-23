@@ -352,9 +352,9 @@ def test_a_symlink_at_the_target_is_replaced_by_a_regular_file(
     donates no mode under ``mode=None``, because the stat behind that regime does
     not follow it (a followed link would hand over its target's 0o600).
 
-    That replacement is LOGGED. Measured: a dotfiles-symlinked, credential-
-    bearing ``config.yaml`` became a 0o644 regular file after a Save, with
-    nothing anywhere saying the link was gone."""
+    That replacement is LOGGED. Measured before ``config.yaml``'s Save resolved
+    its link: a dotfiles-symlinked, credential-bearing ``config.yaml`` became a
+    0o644 regular file, with nothing anywhere saying the link was gone."""
     outside = tmp_path / "outside.txt"
     outside.write_bytes(b"untouched")
     outside.chmod(0o600)

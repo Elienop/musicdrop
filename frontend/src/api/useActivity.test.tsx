@@ -122,7 +122,7 @@ describe("useActivity", () => {
         banked: 144,
         skipped_known: 9,
         current_folder: "/library/Adele",
-        paused: false,
+        stopped: false,
       },
     };
     const { result } = renderActivity();

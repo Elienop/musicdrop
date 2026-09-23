@@ -370,7 +370,7 @@ export function BankSection() {
                 offset: 0,
               })
             }
-            className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-8 appearance-none rounded-md border px-2 pr-7 text-sm shadow-xs focus-visible:ring-[3px] focus-visible:outline-none"
+            className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/70 h-8 appearance-none rounded-md border px-2 pr-7 text-sm shadow-xs focus-visible:ring-[3px] focus-visible:outline-none"
           >
             {BANK_FILTERS.map((f) => (
               <option key={f.value} value={f.value}>
@@ -384,7 +384,7 @@ export function BankSection() {
             onChange={(e) =>
               setParams({ filter, reason: toBankReason(e.target.value), offset: 0 })
             }
-            className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-8 appearance-none rounded-md border px-2 pr-7 text-sm shadow-xs focus-visible:ring-[3px] focus-visible:outline-none"
+            className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/70 h-8 appearance-none rounded-md border px-2 pr-7 text-sm shadow-xs focus-visible:ring-[3px] focus-visible:outline-none"
           >
             {BANK_REASON_FILTERS.map((f) => (
               <option key={f.value} value={f.value}>
@@ -478,11 +478,14 @@ function BankRow({
     recommendationLabel(row.recommendation),
   ].filter((b): b is string => Boolean(b));
   // NOT in `meta`: that slot is `shrink-0`, so in the row arm its used width is
-  // max-content and it can neither shrink nor wrap. This string is `str(exc)`
-  // from the apply runner (`app/bank/apply_runner.py`) — unbounded — so in that
-  // slot the meta cell's ink starved the sibling subtitle and painted across
-  // the row's own controls. Measurements are in BACKLOG under "A failed bank
-  // row's error overran the row"; keep them there, not here.
+  // max-content and it can neither shrink nor wrap. This string is the apply
+  // runner's row error (`app/bank/apply_runner.py`, `_row_error`), whose
+  // non-OSError arm keeps `str(exc)` verbatim — beets' own exceptions write
+  // absolute paths and a search URL into the message, so that arm is unbounded
+  // — and in that slot its ink starved the sibling subtitle and painted across
+  // the row's own controls. (The OSError arm is narrower: the OS `strerror`
+  // only.) Measurements are in BACKLOG under "A failed bank row's error
+  // overran the row"; keep them there, not here.
   // `line-clamp-2` bounds the row: the whole string is reached through the
   // row's own Open link, where `BankReviewPage` renders it untruncated in a
   // `role="alert"` banner. `title` is a hover extra, not that route — a <p>

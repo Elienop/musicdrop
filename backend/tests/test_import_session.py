@@ -1,9 +1,12 @@
+import ast
 import contextlib
 import logging
 import os
+import queue
 import shutil
 import threading
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, ClassVar, cast
@@ -25,6 +28,7 @@ from app.beets.import_session import (
     ImportBridge,
     InLibraryCopyError,
     WebImportSession,
+    _SourceFiles,
     is_in_library_source,
     run_import_worker,
 )
@@ -34,6 +38,7 @@ from app.models.import_models import (
     AlbumOutcome,
     AlbumOutcomeStatus,
     Candidate,
+    DuplicatePrompt,
     ImportAction,
     ImportChoice,
     ImportSearch,
@@ -165,6 +170,32 @@ class _BindOnlyLib:
         return contextlib.nullcontext()
 
 
+class _PostRunReads:
+    """Everything ``run_import_worker`` reads off a session around ``run()``.
+
+    One base instead of the same four lines in every stand-in below: the in-library
+    guard reads ``paths``; the post-run Trash pass reads the trash pair and
+    ``_replace_album_ids``; the single playlist re-export point reads
+    ``_playlists_dir`` and ``_dropped_item_ids``. ``None``/empty makes both
+    post-run halves return before touching ``lib``, which is what these
+    config-flag tests want.
+
+    A stand-in breaks the moment production reads an attribute it never set, and
+    the re-export is called from a ``finally`` that no broad ``except`` wraps — so
+    a missing one fails the test loudly rather than logging and passing.
+    """
+
+    lib = _BindOnlyLib()
+    paths: ClassVar[list[bytes]] = []
+    _replace_album_ids: ClassVar[set[int]] = set()
+    _trash_dir: ClassVar[Path | None] = None
+    _trash_origins_dir: ClassVar[Path | None] = None
+    _playlists_dir: ClassVar[Path | None] = None
+    _dropped_item_ids: ClassVar[set[int]] = set()
+    # The post-run Trash pass asks this which rows are the import's own.
+    _source_files: ClassVar[_SourceFiles] = _SourceFiles()
+
+
 def _make_session(bridge: ImportBridge) -> WebImportSession:
     """Construct a session without a real Library (we never call run()).
 
@@ -189,6 +220,15 @@ def _make_session(bridge: ImportBridge) -> WebImportSession:
     # the banked-replace seed gates on. A __new__ fake breaks the moment
     # production reads an attribute it never set, so this is not optional.
     session._landed_album_ids = set()
+    # __init__ is skipped, so seed the set the duplicate hook fills when IT moved
+    # a copy to Trash; the banked seed drops those entries before its own guards.
+    session._hook_replaced_album_ids = set()
+    # __init__ is skipped, so seed the refusal latch the banked seed reads first
+    # (a refused Replace disables the seed for the rest of the run) and the
+    # dropped-row ids the single playlist re-export point reads.
+    session._replace_was_refused = False
+    session._dropped_item_ids = set()
+    session._playlists_dir = None
     # __init__ is skipped, so default the astracks-in-flight flag choose_item
     # now reads (armed by choose_match when a park is decided "as tracks").
     session._astracks_in_flight = False
@@ -198,6 +238,9 @@ def _make_session(bridge: ImportBridge) -> WebImportSession:
     # __init__ is skipped, so give run_import_worker something to bind its
     # music-dir context on (see _BindOnlyLib).
     session.lib = _BindOnlyLib()  # type: ignore[assignment]  # bind-only stand-in, not a Library
+    # __init__ is skipped, so seed the record of what the run is READING; both
+    # Replace routes ask it which library rows are the import's own.
+    session._source_files = _SourceFiles()
     return session
 
 
@@ -494,40 +537,6 @@ def test_unattended_worker_runs_to_completion_without_parking(
     assert any(o.status is AlbumOutcomeStatus.needs_review for o in outcomes)
 
 
-def test_abort_choice_raises_import_abort(monkeypatch: pytest.MonkeyPatch) -> None:
-    from beets.importer.session import ImportAbortError
-
-    config["threaded"] = False
-    match = _build_match(BeetsRec.medium)
-    bridge = ImportBridge()
-    session = _make_session(bridge)
-    task = _make_task(match, monkeypatch, BeetsRec.medium)
-
-    raised: dict[str, bool] = {"abort": False}
-    done = threading.Event()
-
-    def worker() -> None:
-        try:
-            task.choose_match(session)
-        except ImportAbortError:
-            raised["abort"] = True
-        finally:
-            done.set()
-
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
-    parked = bridge.get_parked(timeout=2.0)
-    assert parked is not None
-    # The abort action makes the session raise beets' ImportAbortError out of
-    # choose_match; beets' run() loop (chunk 2) catches it to stop the import.
-    bridge.push_choice(parked.album_index, ImportChoice(action=ImportAction.abort))
-    assert done.wait(timeout=2.0)
-    t.join(timeout=2.0)
-    assert raised["abort"] is True
-    # The aborted album's reply slot was cleaned up (no bridge leak).
-    assert bridge.pending_count() == 0
-
-
 @pytest.mark.anyio
 async def test_bridge_ferries_candidate_out_and_choice_in_across_threads(
     monkeypatch: pytest.MonkeyPatch,
@@ -571,15 +580,7 @@ def test_run_import_worker_forces_single_threaded_and_runs(
     config["threaded"] = True  # ambient default; the worker must override it.
     seen: dict[str, Any] = {}
 
-    class FakeSession:
-        # The post-run trash pass reads these off the session; trash_dir=None
-        # makes it return early before touching lib/get_album.
-        lib = _BindOnlyLib()
-        # The in-library guard reads session.paths; empty -> guard no-ops.
-        paths: ClassVar[list[bytes]] = []
-        _replace_album_ids: ClassVar[set[int]] = set()
-        _trash_dir = None
-
+    class FakeSession(_PostRunReads):
         def run(self) -> None:
             seen["threaded"] = bool(config["threaded"])
 
@@ -1369,12 +1370,7 @@ def test_run_import_worker_forces_duplicate_action_ask() -> None:
     config["import"]["duplicate_action"] = "keep"  # user config says keep-both
     seen: dict[str, Any] = {}
 
-    class FakeSession:
-        lib = _BindOnlyLib()
-        paths: ClassVar[list[bytes]] = []
-        _replace_album_ids: ClassVar[set[int]] = set()
-        _trash_dir = None
-
+    class FakeSession(_PostRunReads):
         def run(self) -> None:
             seen["dup_action"] = config["import"]["duplicate_action"].get()
 
@@ -1396,12 +1392,7 @@ def test_run_import_worker_forces_autotag_on_and_restores_it() -> None:
     config["import"]["autotag"] = False  # hostile user config
     seen: dict[str, Any] = {}
 
-    class FakeSession:
-        lib = _BindOnlyLib()
-        paths: ClassVar[list[bytes]] = []
-        _replace_album_ids: ClassVar[set[int]] = set()
-        _trash_dir = None
-
+    class FakeSession(_PostRunReads):
         def run(self) -> None:
             seen["autotag"] = config["import"]["autotag"].get(bool)
 
@@ -1414,7 +1405,11 @@ def test_run_import_worker_forces_autotag_on_and_restores_it() -> None:
 def test_run_import_worker_trashes_replace_ids_after_run(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Recorded Replace ids are moved to Trash AFTER run() returns, by id.
+    """Seeded Replace ids are moved to Trash AFTER run() returns, by id.
+
+    The BANKED route only: the duplicate hook trashes its own copies before beets
+    places anything, so the only thing left for this pass is a banked replace the
+    hook never saw (``_seed_replace_from_directive``).
 
     The fake library carries a ``directory`` and a ``path`` because the post-run
     pass re-checks the store layout before it moves anything: the Trash pair was
@@ -1437,6 +1432,11 @@ def test_run_import_worker_trashes_replace_ids_after_run(
     monkeypatch.setattr("app.config.settings.beets_dir", str(tmp_path / "beets"))
 
     class _Album:
+        # ``albumartist``/``album``: the pass reads a label BEFORE any removal,
+        # so its warnings can name an album whose rowid is about to be free.
+        albumartist = "Radiohead"
+        album = "OK Computer"
+
         def __init__(self, album_id: int) -> None:
             self.id = album_id
 
@@ -1456,10 +1456,16 @@ def test_run_import_worker_trashes_replace_ids_after_run(
         def transaction(self) -> Any:
             return contextlib.nullcontext()
 
-    class FakeSession:
+    class FakeSession(_PostRunReads):
         lib = _Lib()
-        paths: ClassVar[list[bytes]] = []
         _replace_album_ids: ClassVar[set[int]] = {11, 22}
+        # Its OWN set, not the base's: this stand-in reaches the pass, which
+        # updates it in place, and a shared class attribute would carry the ids
+        # into the next test.
+        _dropped_item_ids: ClassVar[set[int]] = set()
+        # Nothing landed, so the pass has no just-imported file to protect and
+        # every row of both albums is trashable.
+        _landed_album_ids: ClassVar[set[int]] = set()
         _trash_dir = tmp_path / "trash"
         # Wired as a PAIR with _trash_dir: the post-run pass skips unless both
         # are set, so a fake with only one silently stops trashing.
@@ -1476,13 +1482,8 @@ def test_run_import_worker_trashes_replace_ids_after_run(
     assert sorted(trashed) == [11, 22]
 
 
-class _ScopedMoveSession:
+class _ScopedMoveSession(_PostRunReads):
     """Minimal session that records config['import']['move'] seen during run()."""
-
-    lib = _BindOnlyLib()
-    paths: ClassVar[list[bytes]] = []
-    _replace_album_ids: ClassVar[set[int]] = set()
-    _trash_dir = None
 
     def __init__(self) -> None:
         self.seen: bool | None = None
@@ -1781,13 +1782,13 @@ def test_worker_leaves_outside_source_untouched(
     assert seen == {"move": False}
 
 
-def test_bridge_pause_event_round_trips() -> None:
+def test_bridge_stop_event_round_trips() -> None:
     bridge = ImportBridge()
-    assert bridge.pause_requested() is False
-    bridge.request_pause()
-    assert bridge.pause_requested() is True
-    bridge.request_pause()  # idempotent
-    assert bridge.pause_requested() is True
+    assert bridge.stop_requested() is False
+    bridge.request_stop()
+    assert bridge.stop_requested() is True
+    bridge.request_stop()  # idempotent
+    assert bridge.stop_requested() is True
 
 
 def test_bridge_known_skip_counter() -> None:
@@ -1824,15 +1825,17 @@ def test_default_construction_is_not_sweep(tmp_path: Path) -> None:
     assert session.unattended is False
 
 
-def test_pause_aborts_at_top_of_each_hook(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_stop_aborts_at_top_of_each_hook(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B2(c), the between-questions arm: a worker scanning or mid-lookup reaches
+    its next hook and stops there, having asked nothing."""
     from beets.importer.session import ImportAbortError
 
     match = _build_match(BeetsRec.medium)
     bridge = ImportBridge()
     session = _make_session(bridge)
     task = _make_task(match, monkeypatch, BeetsRec.medium)
-    bridge.request_pause()
-    # The pause is checked FIRST in every decision hook, so each raises beets'
+    bridge.request_stop()
+    # The stop is checked FIRST in every decision hook, so each raises beets'
     # native clean abort without parking, banking, or emitting anything.
     with pytest.raises(ImportAbortError):
         session.choose_match(task)
@@ -1842,6 +1845,397 @@ def test_pause_aborts_at_top_of_each_hook(monkeypatch: pytest.MonkeyPatch) -> No
         session.get_duplicate_action(task, [])
     assert bridge.pending_count() == 0
     assert bridge.drain_outcomes() == []
+
+
+def test_an_astracks_expansion_holds_the_stop_until_the_next_albums_hook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stop waits out an "as tracks" album rather than cutting it in half.
+
+    beets re-pipelines each file of an astracks choice as its own singleton and
+    runs it through the remaining stages alone, so every track is placed and
+    written to incremental history separately. Aborting between track 3 and
+    track 4 leaves the album half in the library and half in the download
+    folder, in move mode with the landed half gone from the source. Both arms
+    that reach choose_item are covered: the attended flag and the banked
+    directive.
+    """
+    from beets.importer.session import ImportAbortError
+
+    from app.models.bank import BankApplyDirective
+
+    match = _build_match(BeetsRec.medium)
+
+    for arm in ("attended", "directive"):
+        bridge = ImportBridge()
+        session = _make_session(bridge)
+        task = _make_task(match, monkeypatch, BeetsRec.medium)
+        if arm == "attended":
+            session._astracks_in_flight = True
+        else:
+            session._directive = BankApplyDirective(action="astracks")
+        bridge.request_stop()
+
+        # Every remaining track of THIS album still imports.
+        for _ in range(3):
+            assert session.choose_item(task) is Action.ASIS, arm
+
+        # The stop lands at the next album's choose_match, which checks it
+        # before it clears the flag. (An astracks album that is the run's last
+        # leaves no next hook - the run then simply finishes.)
+        with pytest.raises(ImportAbortError):
+            session.choose_match(task)
+
+    # The control: with no expansion armed, choose_item is an abort point.
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+    bridge.request_stop()
+    with pytest.raises(ImportAbortError):
+        session.choose_item(task)
+
+
+def test_a_stop_releases_a_worker_parked_on_the_match_question(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B2(a), the owner's case: the run is parked on the match question and the
+    stop is the only thing that arrives. The worker unwinds through beets' own
+    abort, and its reply slot is gone — no leak, nobody left waiting."""
+    from beets.importer.session import ImportAbortError
+
+    config["threaded"] = False
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+
+    raised: dict[str, bool] = {"abort": False}
+    done = threading.Event()
+
+    def worker() -> None:
+        try:
+            task.choose_match(session)
+        except ImportAbortError:
+            raised["abort"] = True
+        finally:
+            done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    parked = bridge.get_parked(timeout=2.0)
+    assert parked is not None
+    assert bridge.has_unanswered_park() is True  # the worker IS blocked
+
+    bridge.request_stop()
+    assert done.wait(timeout=2.0)
+    t.join(timeout=2.0)
+    assert raised["abort"] is True
+    assert bridge.pending_count() == 0
+    assert bridge.has_unanswered_park() is False
+
+
+def _outcome_of(call: Callable[[], object], *, deadline: float = 2.0) -> str:
+    """What a call that must NOT block did: "abort", "returned" or "blocked".
+
+    Run on a thread with a deadline on purpose. A missing stop check does not
+    make an inline call fail — it parks forever, and this suite has no pytest
+    timeout, so one regression would hang the whole run instead of reporting one
+    test (measured: a driver killed at 400 s with no summary line). Any other
+    exception is named rather than read as a block.
+
+    On the "blocked" reading the daemon thread stays parked for the rest of the
+    process. It holds a per-test ImportBridge and nothing else, so it poisons no
+    later test — unlike the e2e file's helper, whose wedged worker holds the
+    process-global config-force lock.
+    """
+    from beets.importer.session import ImportAbortError
+
+    result: dict[str, str] = {}
+
+    def run() -> None:
+        try:
+            call()
+            result["out"] = "returned"
+        except ImportAbortError:
+            result["out"] = "abort"
+        except Exception as exc:  # named in the result, not swallowed
+            result["out"] = f"raised {exc.__class__.__name__}"
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(timeout=deadline)
+    return result.get("out", "blocked")
+
+
+def test_a_stop_between_the_hook_check_and_the_park_aborts_instead_of_blocking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B2(c), the race the sweep never had, CONSTRUCTED rather than hoped for.
+
+    The needs_review outcome is the last thing choose_match emits before it
+    parks, so firing the stop from there puts it exactly in the window: after
+    ``_check_stop`` passed, before the park registers. The ordering is the
+    test's and not the scheduler's.
+    """
+    match = _build_match(BeetsRec.medium)
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+
+    real_note = session._note_outcome_awaiting_album_id
+
+    def note_then_stop(outcome: Any, task_: Any) -> None:
+        real_note(outcome, task_)
+        bridge.request_stop()
+
+    monkeypatch.setattr(session, "_note_outcome_awaiting_album_id", note_then_stop)
+
+    assert _outcome_of(lambda: session.choose_match(task)) == "abort"
+    # Nothing registered and nothing pushed: the consumer is never shown an
+    # album whose worker has already gone.
+    assert bridge.pending_count() == 0
+    assert bridge.has_unanswered_park() is False
+    assert bridge.get_parked(timeout=0) is None
+
+
+def test_a_park_started_after_a_stop_registers_nothing() -> None:
+    """Both park channels refuse to block once a stop is in force (B2(c))."""
+    from app.models.import_models import DuplicatePrompt, IncomingAlbum
+
+    bridge = ImportBridge()
+    bridge.request_stop()
+    assert _outcome_of(lambda: bridge.park(_parked_album(0))) == "abort"
+    prompt = DuplicatePrompt(
+        album_index=1,
+        incoming=IncomingAlbum(
+            album_artist="Radiohead",
+            album="In Rainbows",
+            year=2007,
+            track_count=10,
+            format="FLAC",
+            bitrate_kbps=900,
+            folder="/incoming/a",
+            has_current_art=False,
+        ),
+        existing=[],
+    )
+    assert _outcome_of(lambda: bridge.park_duplicate(prompt)) == "abort"
+    assert bridge.pending_count() == 0
+    assert bridge.has_unanswered_park() is False
+    assert bridge.get_parked(timeout=0) is None
+    assert bridge.get_parked_duplicate(timeout=0) is None
+
+
+def test_a_stop_leaves_a_decision_already_on_its_way_alone() -> None:
+    """The release skips an answered slot: that worker acts on the decision it
+    was given and stops at its next hook. Without the skip the put would raise
+    ``queue.Full`` out of ``request_stop`` (a maxsize-1 slot), 500ing the route.
+    """
+    import queue
+
+    from app.beets.import_session import _answer, _release_on_stop, _ReplySlot
+
+    slot: _ReplySlot[ImportChoice] = _ReplySlot(queue.Queue(maxsize=1))
+    _answer(slot, ImportChoice(action=ImportAction.apply), "taken")
+    _release_on_stop(slot)  # no raise
+    assert slot.reply.get_nowait() == ImportChoice(action=ImportAction.apply)
+
+
+def test_a_stop_refuses_a_decision_into_the_park_it_released() -> None:
+    """Both push channels refuse from the stop on.
+
+    ``request_stop`` marks a released slot answered and the worker's wake
+    empties its queue, but the slot stays REGISTERED until that worker retakes
+    the lock to delete it. Built by hand rather than raced, so the window is not
+    one a test has to win: a registered slot whose sentinel has been consumed.
+    """
+    import queue
+
+    from app.beets.import_session import _STOP_REQUESTED, _ReplySlot
+    from app.models.import_models import DuplicateAction, DuplicateDecision
+
+    bridge = ImportBridge()
+    slot: _ReplySlot[ImportChoice] = _ReplySlot(queue.Queue(maxsize=1))
+    dup_slot: _ReplySlot[DuplicateDecision] = _ReplySlot(queue.Queue(maxsize=1))
+    bridge._replies[0] = slot
+    bridge._dup_replies[1] = dup_slot
+
+    bridge.request_stop()
+    assert slot.reply.get_nowait() is _STOP_REQUESTED  # the worker's reply.get()
+    assert dup_slot.reply.get_nowait() is _STOP_REQUESTED
+    assert (slot.reply.empty(), dup_slot.reply.empty()) == (True, True)
+    assert (slot.answered, dup_slot.answered) == (True, True)  # registered and answered
+
+    choice = ImportChoice(action=ImportAction.apply)
+    decision = DuplicateDecision(action=DuplicateAction.merge)
+    with pytest.raises(KeyError):
+        bridge.push_choice(0, choice)
+    with pytest.raises(KeyError):
+        bridge.push_duplicate_decision(1, decision)
+    # No orphan decision left behind for a worker that is already unwinding.
+    assert (slot.reply.empty(), dup_slot.reply.empty()) == (True, True)
+
+
+def _dup_prompt_for(index: int) -> DuplicatePrompt:
+    from app.models.import_models import IncomingAlbum
+
+    return DuplicatePrompt(
+        album_index=index,
+        incoming=IncomingAlbum(
+            album_artist="Radiohead",
+            album="In Rainbows",
+            year=2007,
+            track_count=10,
+            format="FLAC",
+            bitrate_kbps=900,
+            folder="/incoming/a",
+            has_current_art=False,
+        ),
+        existing=[],
+    )
+
+
+def test_every_abort_raise_site_records_the_cut_short(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each site that raises beets' abort records it, so a stop that cut nothing
+    short stays distinguishable from one that did.
+
+    ``ImportJobRegistry.job_aborted`` reads this, and the inbox ledger reads that
+    (``_result_for``): a raise site that skipped the record would write a folder
+    "imported" that stopped mid-album. Five sites, three methods — ``_check_stop``
+    plus both orderings of each park.
+    """
+    from beets.importer.session import ImportAbortError
+
+    match = _build_match(BeetsRec.medium)
+
+    # 1. _check_stop, through choose_item (a worker between questions).
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+    bridge.request_stop()
+    assert bridge.abort_raised() is False  # the stop alone records nothing
+    with pytest.raises(ImportAbortError):
+        session.choose_item(task)
+    assert bridge.abort_raised() is True
+
+    def park_on(b: ImportBridge, channel: str) -> Callable[[], object]:
+        if channel == "candidate":
+            return lambda: b.park(_parked_album(0))
+        return lambda: b.park_duplicate(_dup_prompt_for(0))
+
+    # 2 + 3. Both parks, stop already set at registration.
+    for channel in ("candidate", "duplicate"):
+        bridge = ImportBridge()
+        bridge.request_stop()
+        assert bridge.abort_raised() is False
+        call = park_on(bridge, channel)
+        with pytest.raises(ImportAbortError):
+            call()
+        assert bridge.abort_raised() is True, channel
+
+    # 4 + 5. Both parks, released by the stop's sentinel (parked FIRST). The
+    # park blocks, so it runs on a thread and the stop comes from here.
+    for channel in ("candidate", "duplicate"):
+        bridge = ImportBridge()
+        outcome: dict[str, str] = {}
+        call = park_on(bridge, channel)
+
+        def worker(fn: Callable[[], object] = call, out: dict[str, str] = outcome) -> None:
+            try:
+                fn()
+                out["r"] = "returned"
+            except ImportAbortError:
+                out["r"] = "abort"
+
+        worker_thread = threading.Thread(target=worker, daemon=True)
+        worker_thread.start()
+        deadline = time.monotonic() + 2.0
+        while bridge.pending_count() == 0 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        bridge.request_stop()
+        worker_thread.join(2.0)
+        assert outcome.get("r") == "abort", channel
+        assert bridge.abort_raised() is True, channel
+
+
+def _raises_import_abort(node: ast.Raise) -> bool:
+    """The raised expression names ``ImportAbortError`` — bare, called, or as an
+    attribute (``importer.ImportAbortError()``). An import alias is not seen."""
+    exc = node.exc.func if isinstance(node.exc, ast.Call) else node.exc
+    if isinstance(exc, ast.Name):
+        return exc.id == "ImportAbortError"
+    return isinstance(exc, ast.Attribute) and exc.attr == "ImportAbortError"
+
+
+def test_beets_abort_is_raised_only_inside_abort_now() -> None:
+    """What keeps the caller list above complete: one raise site, and it records.
+
+    A ``raise ImportAbortError`` written anywhere else stops the run without
+    setting the flag, and the acquisition ledger (``queue.py`` ``_result_for``)
+    then files a folder that was cut short as fully imported. Read from the
+    files on disk rather than ``inspect.getsource``, which serves stale bytecode;
+    matched on the exception node, not the statement's spelling.
+    """
+    app_root = Path(__file__).resolve().parents[1] / "app"
+    sites: list[tuple[str, str]] = []
+    for path in sorted(app_root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        # ast.walk is breadth-first, so a nested def overwrites the outer one
+        # and every node ends up under the def that encloses it most closely.
+        holder = {
+            child: node.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            for child in ast.walk(node)
+        }
+        sites += [
+            (str(path.relative_to(app_root)), holder.get(node, "<module>"))
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Raise) and _raises_import_abort(node)
+        ]
+    assert sites == [("beets/import_session.py", "abort_now")]
+
+
+@pytest.mark.parametrize("channel", ["candidate", "duplicate"])
+def test_a_park_reaches_the_consumer_inside_its_registration_lock(channel: str) -> None:
+    """Registration and queueing are one critical section, on BOTH channels.
+
+    Queueing outside it left a gap in which a stop released the slot and the
+    worker handed the album to the consumer anyway. Measured by firing
+    request_stop from inside the put: it cannot complete while the park holds
+    the lock, so it lands strictly after both steps.
+    """
+    bridge = ImportBridge()
+    at_put = threading.Event()
+    stop_returned = threading.Event()
+
+    class _FireStopOnPut(queue.Queue[Any]):
+        def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:
+            at_put.set()
+            t = threading.Thread(target=bridge.request_stop, daemon=True)
+            t.start()
+            t.join(timeout=0.5)
+            if not t.is_alive():
+                stop_returned.set()
+            super().put(item, block, timeout)
+
+    if channel == "candidate":
+        bridge._out = _FireStopOnPut()  # white-box: the park channel
+        outcome = _outcome_of(lambda: bridge.park(_parked_album(0)), deadline=3.0)
+        queued = bridge.get_parked(timeout=0) is not None
+    else:
+        bridge._dup_out = _FireStopOnPut()
+        outcome = _outcome_of(lambda: bridge.park_duplicate(_dup_prompt_for(0)), deadline=3.0)
+        queued = bridge.get_parked_duplicate(timeout=0) is not None
+
+    assert outcome == "abort"
+    assert at_put.is_set()  # the park DID queue its album
+    assert stop_returned.is_set() is False  # ...and the stop could not land mid-park
+    assert queued  # the consumer has it
+    assert bridge.pending_count() == 0
+    assert bridge.has_unanswered_park() is False
 
 
 def test_already_imported_counts_known_skips() -> None:
@@ -1858,13 +2252,8 @@ def test_already_imported_counts_known_skips() -> None:
     assert bridge.known_skips() == 1
 
 
-class _SweepConfigSession:
+class _SweepConfigSession(_PostRunReads):
     """Minimal session recording the sweep-relevant config seen during run()."""
-
-    lib = _BindOnlyLib()
-    paths: ClassVar[list[bytes]] = []
-    _replace_album_ids: ClassVar[set[int]] = set()
-    _trash_dir = None
 
     def __init__(self) -> None:
         self.seen: dict[str, Any] = {}
@@ -2028,13 +2417,24 @@ def test_directive_apply_with_no_candidates_skips(monkeypatch: pytest.MonkeyPatc
 def _directive_dup_setup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[WebImportSession, ImportTask, Any]:
-    """A directive-mode session + APPLY-chosen task + one real library duplicate."""
+    """A directive-mode session + APPLY-chosen task + one real library duplicate.
+
+    The music root is created holding an unrelated folder: present and non-empty,
+    as a real library's root is, while the duplicate's own file is never written
+    (it is a ghost, which is what the replace arm below turns on).
+
+    The Trash pair is wired because the replace arm now disposes of the duplicate
+    ITSELF (it answers beets KEEP): unwired, it would refuse and answer SKIP.
+    """
     from beets.library import Library as BeetsLibrary
 
     match = _build_match(BeetsRec.strong)
     session = _make_session(ImportBridge())
     session.unattended = True
     session._replace_album_ids = set()
+    session._trash_dir = tmp_path / "trash"
+    session._trash_origins_dir = tmp_path / "trash-origins"
+    (tmp_path / "music" / "Someone Else").mkdir(parents=True, exist_ok=True)
     lib = BeetsLibrary(str(tmp_path / "library.db"), directory=str(tmp_path / "music"))
     session.lib = lib
     dup_item = Item(
@@ -2070,13 +2470,20 @@ def test_directive_duplicate_actions_map_like_attended(
     )
     assert session2.get_duplicate_action(task2, [existing2]) is BeetsDuplicateAction.MERGE
 
-    # replace records the ids for the post-run Trash pass (KEEP, never hard-delete)
+    # replace: the duplicate here is a GHOST (its item path names a file that was
+    # never created), so there is nothing to move — the hook drops its rows and
+    # answers KEEP, which is what stops beets from re-running find_duplicates and
+    # hard-deleting whatever THAT query returns.
     session3, task3, existing3 = _directive_dup_setup(tmp_path, monkeypatch)
     session3._directive = BankApplyDirective(
         action="duplicate", duplicate_action=DuplicateAction.replace
     )
+    ghost_id = _require_id(existing3.id)
+    assert not os.path.exists(os.fsdecode(next(iter(existing3.items())).path))
     assert session3.get_duplicate_action(task3, [existing3]) is BeetsDuplicateAction.KEEP
-    assert session3._replace_album_ids == {int(existing3.id)}
+    assert session3.lib.get_album(ghost_id) is None  # disposed of by the hook, in the hook
+    assert session3._hook_replaced_album_ids == {ghost_id}
+    assert session3._replace_album_ids == set()  # nothing left for the post-run pass
 
     # keep_both imports alongside the existing copy
     session4, task4, existing4 = _directive_dup_setup(tmp_path, monkeypatch)
@@ -2160,6 +2567,38 @@ def test_banked_replace_seeds_the_trash_set_when_the_hook_never_fired(tmp_path: 
     session._landed_album_ids = {existing_id + 500}  # the new album landed
     session._seed_replace_from_directive()
     assert session._replace_album_ids == {existing_id}
+
+
+def test_a_refused_replace_stops_the_banked_seed_for_the_rest_of_the_run(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A Replace the hook refused disables the seed for the whole run.
+
+    The dangerous shape is a run where one Replace failed part-way (copy A
+    reached Trash, copy B raised, so nothing was imported and the user was told)
+    while some OTHER task in the same run landed normally. That landing satisfies
+    the seed's "something landed" gate, and the seed would then enforce the
+    banked entry for copy B — moving the user's only copy out of the library on
+    the strength of an import that never happened.
+
+    The latch is set by ``_replace_refused``, which every refusal goes through;
+    ``test_a_failed_first_move_imports_nothing_and_leaves_the_library_alone``
+    (tests/test_import_replace_ordering.py) drives that end to end. The control
+    for this test is ``test_banked_replace_seeds_the_trash_set_when_the_hook
+    _never_fired`` directly above: identical, minus the latch, and it seeds.
+    """
+    session, existing_id = _replace_seed_setup(tmp_path)
+    session._directive = _replace_directive(_existing_album_model(existing_id))
+    session._landed_album_ids = {existing_id + 500}  # another task landed
+    session._replace_was_refused = True  # ...but a Replace in this run refused
+
+    with caplog.at_level(logging.WARNING, logger="app.beets.import_session"):
+        session._seed_replace_from_directive()
+
+    assert session._replace_album_ids == set()
+    assert any("was refused" in r.getMessage() for r in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]
 
 
 def test_banked_replace_seed_skips_an_identity_mismatch(tmp_path: Path) -> None:

@@ -9,6 +9,7 @@ import { AlbumDetailPage } from "@/pages/albums/AlbumDetailPage";
 const album: AlbumDetail = {
   id: 7, album_artist: "Radiohead", title: "In Rainbows", year: 2007,
   track_count: 2, genre: "Rock", mb_albumid: "rel-1",
+  outside_library: null,
   tracks: [
     { id: 1, title: "15 Step", track: 1, disc: 1, duration_seconds: 100, artist: "Radiohead", mb_trackid: "t1", has_lyrics: false, instrumental: false },
     { id: 2, title: "Bodysnatchers", track: 2, disc: 1, duration_seconds: 100, artist: "Radiohead", mb_trackid: "t2", has_lyrics: false, instrumental: false },

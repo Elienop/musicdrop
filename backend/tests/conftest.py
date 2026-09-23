@@ -40,10 +40,12 @@ import hashlib
 import os
 import signal
 import socket
-from collections.abc import Iterator
+import threading
+import time
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import pytest
 from fastapi.testclient import TestClient
@@ -123,6 +125,43 @@ def low_cost_stored_hash(password: str, *, n: int = 1024, r: int = 8, p: int = 1
             base64.b64encode(digest).decode("ascii"),
         )
     )
+
+
+#: How long a request may take before :func:`answer_before_a_fifo_blocks` calls
+#: it blocked. The routes it guards answer in under 0.1 s.
+FIFO_DEADLINE_SECONDS = 5.0
+
+T = TypeVar("T")
+
+
+def answer_before_a_fifo_blocks(call: Callable[[], T], fifo: Path) -> T:
+    """``call()``'s result, or a failure (not a hang) if it is still running at the deadline.
+
+    A read blocked opening ``fifo`` is then released by a writer that opens and
+    closes it, so a blocked save gives ``_SAVE_LOCK`` back to the tests after it.
+    """
+    answered: list[T] = []
+    raised: list[Exception] = []
+
+    def run() -> None:
+        try:
+            answered.append(call())
+        except Exception as exc:
+            raised.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(FIFO_DEADLINE_SECONDS)
+    blocked = worker.is_alive()
+    release_by = time.monotonic() + 10
+    while worker.is_alive() and time.monotonic() < release_by:
+        with contextlib.suppress(OSError):
+            os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+        time.sleep(0.05)
+    assert not blocked, f"still blocked on {fifo} after {FIFO_DEADLINE_SECONDS} s"
+    if raised:
+        raise raised[0]
+    return answered[0]
 
 
 def _install_session_cookie_on_every_test_client() -> None:
@@ -350,6 +389,57 @@ def build_library(
     return Library(path, directory=directory)
 
 
+def library_with_no_rows(tmp_path: Path) -> "Library":
+    """An empty library for a test that must pass one but has no rows to protect.
+
+    ``empty_one``/``empty_all`` take a ``Library`` because the cross-check that
+    keeps an Empty from destroying an album's only copy fails OPEN without one —
+    a data-safety guard whose off switch is forgetting an argument. Tests about
+    the SWEEP rather than about that guard pass this: a real library, one real
+    query, zero rows.
+    """
+    return build_library(str(beets_dir_for(tmp_path) / "library.db"), str(tmp_path / "music"))
+
+
+def trash_the_folder_as_released(
+    lib: "Library", album: Any, *, trash_dir: Path, origins_dir: Path
+) -> Path:
+    """Put ``album`` in Trash the way RELEASED versions' whole-folder mover did.
+
+    That mover is gone, but records it wrote are on users' disks and restore by
+    MOVE-BACK, so the shape has to be buildable without it. Captured from a real
+    run before the deletion: the album's folder moved WHOLE to
+    ``<trash>/<folder name>`` (files, art and sidecars alike, tracked or not),
+    the origin record ``<origins>/<entry name>.json`` holding
+    ``{"moved": "folder", "origin": <the folder>, ...}``, and the album's rows
+    dropped afterwards.
+
+    Hand-written rather than routed through ``trash_folder``: this is a FIXTURE
+    for a released on-disk shape, and it must not move when a live mover does.
+    The ``(n)`` suffix is the allocator's, kept because a test that deletes the
+    same album twice depends on it; ``_fit_name``'s NAME_MAX shortening is NOT
+    reproduced — a test about that boundary belongs on a live mover.
+    """
+    import shutil
+
+    from app.beets.trash_origins import write_trash_origin
+
+    items = list(album.items())
+    folders = {os.path.dirname(os.fsdecode(it.path)) for it in items}
+    assert len(folders) == 1, f"the released mover moved ONE folder, got {sorted(folders)}"
+    source = folders.pop()
+    trash_dir.mkdir(parents=True, exist_ok=True)
+    dest = trash_dir / os.path.basename(source)
+    counter = 1
+    while dest.exists():
+        dest = trash_dir / f"{os.path.basename(source)} ({counter})"
+        counter += 1
+    shutil.move(source, str(dest))
+    write_trash_origin(origins_dir, dest.name, origin=source, moved="folder")
+    album.remove(delete=False)
+    return dest
+
+
 @pytest.fixture
 def anyio_backend() -> str:
     """Run anyio-marked async tests on asyncio only (no trio dependency)."""
@@ -467,10 +557,11 @@ def _clear_beets_globals() -> Iterator[None]:
     would see the leaked state. Centralising here means individual test files
     no longer have to remember to repeat this fixture.
 
-    Implementation note: confuse's ``LazyConfig.clear()`` (core.py:749) does
-    NOT reset ``_materialized``; without flipping it back to False the next
-    ``setup_beets()`` force-resolve short-circuits at ``LazyConfig.resolve()``'s
-    guard (core.py:728) and the user's ``config.yaml`` is silently ignored.
+    Implementation note: the reset drops every confuse source, ``config.set()``
+    override and redaction and re-arms the lazy read (confuse's
+    ``LazyConfig.clear()`` alone leaves ``_materialized`` set, core.py:749).
+    ``setup_beets()`` re-reads ``config.yaml`` either way; the reset is for the
+    tests that read ``beets.config`` without calling it.
 
     The env loop below SAVES AND RESTORES; it does not redirect. That is safe
     only because ``backend/conftest.py`` sets ``BEETSDIR`` at import, before any

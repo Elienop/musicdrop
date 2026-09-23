@@ -452,7 +452,13 @@ def test_lifespan_opens_library_from_settings(
     )
     close_library(lib)
 
-    cfg = tmp_path / "config.yaml"
+    # A SIBLING of the music dir: the store layout refuses a beets dir that
+    # contains the library. ``Library(...)`` above already materialized
+    # beets.config; this passed while setup_beets skipped a materialized config
+    # and booted on the sandbox's (``directory: ~/Music``), not this file.
+    beets_dir = tmp_path / "beets"
+    beets_dir.mkdir()
+    cfg = beets_dir / "config.yaml"
     cfg.write_text(
         f"directory: {music_dir}\n"
         f"library: {db_path}\n"
@@ -460,11 +466,13 @@ def test_lifespan_opens_library_from_settings(
         "import:\n  autotag: yes\n"
     )
 
-    monkeypatch.setattr(settings, "beets_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "beets_dir", str(beets_dir))
 
     app.dependency_overrides.clear()
     with TestClient(app) as client:  # context-manager form runs the lifespan
         assert app.state.beets_library is not None
+        # The config.yaml written above is the one that loaded.
+        assert app.state.beets_library.lib.directory == str(music_dir).encode()
         resp = client.get("/api/albums")
     assert resp.status_code == 200
     body = resp.json()
@@ -477,8 +485,8 @@ def test_lifespan_opens_library_from_settings(
     # ``client`` fixture skips the lifespan, so nothing else can see it.
     from app.import_jobs.registry import registry as import_registry
 
-    assert import_registry._trash_origins_dir == tmp_path / "trash-origins"
-    assert import_registry._trash_dir == tmp_path / "trash"
+    assert import_registry._trash_origins_dir == beets_dir / "trash-origins"
+    assert import_registry._trash_dir == beets_dir / "trash"
 
 
 def test_album_detail_exposes_musicbrainz_ids(edit_lib: "Library") -> None:

@@ -59,7 +59,11 @@ from app.config import settings as _module_settings
 from app.etag import size_scoped_etag
 from app.events.emit import emit_art_changed, emit_library_changed
 from app.fsutil import open_root
-from app.library_busy import raise_if_library_busy, raise_if_swap_lock_held
+from app.library_busy import (
+    no_claim_in_flight,
+    raise_if_library_busy,
+    raise_if_swap_lock_held,
+)
 from app.models.artist import (
     Artist,
     ArtistImageOverrideResult,
@@ -937,7 +941,6 @@ async def reset_artist_image_endpoint(
     name: Annotated[str, Query(min_length=1)],
     cache: Annotated[ArtistImageCache, Depends(get_artist_image_cache)],
     service: Annotated[ArtistImageService, Depends(get_artist_image_service)],
-    handle: Annotated[LibraryHandle, Depends(get_library)],
     filler: Annotated[ArtistImageFiller, Depends(get_artist_image_filler)],
 ) -> ArtistImageResetResult:
     """Forget this artist's portrait so it is looked up again; an uploaded or
@@ -959,9 +962,15 @@ async def reset_artist_image_endpoint(
     async with _swap_lock(request.app):
         # Asked AGAIN, now that the lock is ours: the gate above read a flag the
         # pre-check's own 409 window and the acquire can outlive, and a sweep
-        # that started meanwhile re-stores the slot this is about to clear. A
-        # 409 raised here leaves the lock through ``async with``.
-        _gate_artist_art_busy()
+        # that started meanwhile re-stores the slot this is about to clear. Under
+        # the claim lock, so a sweep claim already past its swap check is seen.
+        # A 409 raised here leaves the lock through ``async with``.
+        with no_claim_in_flight():
+            _gate_artist_art_busy()
+        # Read under the lock, as every other holder reads it: a dependency
+        # resolves before the acquire, and an Apply swapping in between left
+        # this route on the pre-Apply library and music dir.
+        handle: LibraryHandle = request.app.state.beets_library
         moved_to_trash = await _move_override_to_trash(handle, settings, cache, name)
         # The AUTOMATIC slot too: a present ``.bin`` means the resolve path never
         # runs, so clearing only the override lands the user back on the image
@@ -978,7 +987,11 @@ async def reset_artist_image_endpoint(
         await filler.fill(
             service,
             name,
-            get_mbid=lambda: beets_library.get_artist_mbid(handle.lib, name),
+            # The handle at CALL time: the fill runs after the lock is released,
+            # and an Apply landing first would leave ``handle`` closed.
+            get_mbid=lambda: beets_library.get_artist_mbid(
+                request.app.state.beets_library.lib, name
+            ),
             grace_seconds=0.0,
         )
     # UNSCOPED on purpose: the artist image is served under a NORMALIZED name
@@ -1221,8 +1234,8 @@ def _start(
             "model": StructuredErrorDetail,
             "description": (
                 # Also the status for a fault PART-WAY through the fan-out. The
-                # promise excludes the album it stopped on: that folder is moved
-                # back out of Trash when dropping its rows failed.
+                # promise excludes the album it stopped on: its files can be
+                # under Trash with its rows kept, or with them gone.
                 "Deleting the artist failed; the message names how far the fan-out got,"
                 " and the body promises recovery from the Trash folder only when albums"
                 " really reached it."

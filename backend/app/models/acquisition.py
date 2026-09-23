@@ -5,9 +5,9 @@ No beets imports — these are plain data shapes the API and the ledger persist.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, StringConstraints
 
 # How an inbox folder ended up after the unattended import drained it.
 LedgerOutcome = Literal["imported", "set_aside", "failed"]
@@ -80,7 +80,10 @@ class InboxListing(BaseModel):
 class ImportInboxItemRequest(BaseModel):
     """Body of ``POST /api/acquisition/inbox/items/import`` — one folder by name."""
 
-    name: str
+    # One inbox entry name; 255 CHARACTERS is NAME_MAX and admits every name (a
+    # display form has no more characters than the name has bytes). Unbounded:
+    # 73.2 s from 64 KB over 20 000 entries (test_the_sibling_name_fields_are_bounded).
+    name: Annotated[str, StringConstraints(max_length=255)]
 
 
 class ReviewInboxResponse(BaseModel):

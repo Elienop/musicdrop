@@ -11,6 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from beets.library import Library
+
 from app.beets.protected import (
     ProtectedTreeError,
     ProtectedTrees,
@@ -31,6 +33,10 @@ M, B = src / "music", src / "data"
 T, O = base / "trash", base / "origins"  # noqa: E741 -- O is the origin store everywhere here
 T.mkdir()
 O.mkdir()
+
+#: ``empty_all`` takes a library because its cross-check fails open without one.
+#: Nothing here is in a library, so an empty one answers for every entry.
+lib = Library(str(base / "probe.db"), directory=str(M))
 
 inside = M / "musicdrop"
 inside.mkdir()
@@ -67,7 +73,9 @@ def trees() -> ProtectedTrees:
 def bare() -> ProtectedTrees:
     """No protected identities, but a real Trash: this tree before the guard."""
     st = os.stat(T)
-    return ProtectedTrees(ids={}, trash=(st.st_dev, st.st_ino), trash_alias=None)
+    return ProtectedTrees(
+        ids={}, trash=(st.st_dev, st.st_ino), trash_alias=None, trash_spellings=(T,)
+    )
 
 
 print("spelled-rule", layout())
@@ -82,7 +90,7 @@ entry = T / "Looks Like An Album"
 entry.mkdir()
 subprocess.run(["mount", "--bind", str(B), str(entry)], check=True)
 try:
-    empty_all(T, origins_dir=O, protected=bare())
+    empty_all(T, origins_dir=O, protected=bare(), lib=lib)
     print("control-empty-all RAN")
 except ProtectedTreeError:
     print("control-empty-all REFUSED")
@@ -94,7 +102,7 @@ print("control-lost-the-db", not (B / "library.db").exists())
 
 (B / "library.db").write_bytes(b"db")
 try:
-    empty_all(T, origins_dir=O, protected=trees())
+    empty_all(T, origins_dir=O, protected=trees(), lib=lib)
     print("guarded-empty-all RAN")
 except ProtectedTreeError:
     print("guarded-empty-all REFUSED")

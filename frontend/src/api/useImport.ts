@@ -56,25 +56,165 @@ export function importCoverUrl(jobId: string, index: number): string {
   return `/api/import/${jobId}/albums/${index}/cover`;
 }
 
-/** Thrown when a start is rejected because an import is already running (409).
- * Lets the entry screen surface a "an import is already running" message with a
- * link to it, instead of the generic failure. */
+/** Thrown when `POST /api/import` answers 409. Lets the entry screen surface a
+ * message with a link to the running import, instead of the generic failure.
+ *
+ * Carries the server's own sentence, because the status has three reasons
+ * (backend/app/api/import_.py `ensure_import_can_start` + the registry's
+ * single-slot refusal): an import already running, a held beets swap lock, or a
+ * running backfill / disk sync. The fallback is the sentence true for all
+ * three. */
 export class ImportConflictError extends Error {
-  constructor() {
-    super("An import is already running");
+  constructor(detail?: string | null) {
+    super(detail ?? "The library is busy. Try again shortly.");
     this.name = "ImportConflictError";
   }
 }
 
+/** Thrown when `POST /api/import` answers 503 WITH a reason. Carries the
+ * refusal's own sentence, which is the only part that says whether retrying is
+ * worth anything — the status has three causes and they do not agree. A layout
+ * Apply refused and a music share that is not there change nothing until the
+ * operator acts; the third, a start that waited out the one start token
+ * (backend/app/api/import_.py `_START_BUSY_DETAIL`), is transient and says
+ * "Try again in a moment" itself. So: show the sentence, and do not read a
+ * retry policy off the class.
+ *
+ * `detail` is REQUIRED, so this class can only speak for a 503 our route sent:
+ * the route's own always carries a sentence (backend/app/api/import_.py
+ * `detail=str(exc)`), so a bodyless one came from a proxy answering for a
+ * restarting container, where "try again" IS the right advice. That one falls
+ * through to the caller's generic sentence, the same as a 502. */
+export class ImportUnavailableError extends Error {
+  constructor(detail: string) {
+    super(detail);
+    this.name = "ImportUnavailableError";
+  }
+}
+
 /** Thrown when a start is rejected with a 422 (e.g. the in-library guard
- * refusing copy-mode). Carries the backend's reason. The detail body is read
- * through detailMessage: our guards send `{detail: string}` while the OpenAPI
- * schema declares the array shape — both must surface (carry-forward). */
+ * refusing copy-mode, or every handed-over folder having gone between the
+ * listing and the start). Carries the backend's reason.
+ *
+ * Every route that can send this reads the body through the SAME reader,
+ * {@link ourRefusalSentence}: the `{detail: string}` shape our guards write, and
+ * nothing else. `POST /api/import` used to read it through `detailMessage`,
+ * which also unwraps FastAPI's ARRAY shape — so one body shape was user copy
+ * here and machine copy on the two inbox routes. `StartImportRequest.path`
+ * carries `max_length=4096`, so pasting a longer path showed the user "String
+ * should have at most 4096 characters.": accurate, and not a sentence anyone
+ * wrote for a person. It takes the generic fallback below instead. */
 export class ImportStartRejectedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ImportStartRejectedError";
   }
+}
+
+/** The server's OWN refusal sentence out of an error body — the `{detail:
+ * "..."}` shape and nothing else. Null for every other shape, so the caller
+ * keeps its generic copy.
+ *
+ * Narrower than `detailMessage`, and only the 422 arm needs it. `POST
+ * /acquisition/inbox/items/import` and `POST /api/import` both take a body, so
+ * FastAPI can answer with its OWN validation 422, whose `detail` is an array of
+ * validator objects. `detailMessage` reads that array's first `msg`, which is
+ * machine copy ("Input should be a valid string", "String should have at most
+ * 4096 characters") — accurate, and not a sentence anyone wrote for a person.
+ * The shape IS the test: only our guards send a string.
+ *
+ * Every 422 arm in this module goes through here, so one body shape can never
+ * be user copy on one route and machine copy on its sibling.
+ *
+ * Blankness stays `detailMessage`'s rule (a whitespace detail is no detail)
+ * rather than a second copy of it here. */
+function ourRefusalSentence(body: unknown): string | null {
+  if (body === null || typeof body !== "object" || !("detail" in body)) {
+    return null;
+  }
+  return typeof (body as { detail: unknown }).detail === "string"
+    ? detailMessage(body)
+    : null;
+}
+
+/** Raise the carrying class for a refusal that came with the server's own
+ * sentence — 409 → {@link ImportConflictError}, 422 →
+ * {@link ImportStartRejectedError}, 503 → {@link ImportUnavailableError} — and
+ * do nothing otherwise, so a caller keeps `unwrap`'s generic message for every
+ * other outcome.
+ *
+ * This is `startImport`'s branch, shared: the two inbox routes refuse for the
+ * same reasons `POST /api/import` does. A 409 there is as often the swap lock
+ * or a backfill as another import, and naming the wrong one sends the user off
+ * to wait for an import that is not running (the defect BankReviewPage records
+ * for its own copy); a 503 is a refused layout, a share that is not there, or a
+ * start still waiting for the one start token, which is the one of the three
+ * where trying again IS the advice — see {@link ImportUnavailableError}; a 422
+ * is the source having gone since the listing OR being unreadable, and "try
+ * again" is false for both. A sentence the server wrote
+ * for the user has to reach the user on EVERY route that sends it — while this
+ * helper ignored 422 the two inbox routes fell through to `unwrap` and showed
+ * "Failed to start inbox review" over it.
+ *
+ * A BODYLESS refusal keeps the caller's own sentence: a 503 with no detail came
+ * from a proxy (see {@link ImportUnavailableError}), and a bodyless 409 has no
+ * reason to offer. */
+export function throwIfRefused(result: {
+  error?: unknown;
+  response: Response;
+}): void {
+  const { status } = result.response;
+  // 422 first, and through the narrower reader: it is the one status whose body
+  // can come from FastAPI rather than from us, and only our own string detail
+  // may be shown — see {@link ourRefusalSentence}.
+  if (status === 422) {
+    const rejection = ourRefusalSentence(result.error);
+    if (rejection !== null) {
+      throw new ImportStartRejectedError(rejection);
+    }
+    return;
+  }
+  if (status !== 409 && status !== 503) return;
+  const reason = detailMessage(result.error);
+  if (reason === null) return;
+  throw status === 409
+    ? new ImportConflictError(reason)
+    : new ImportUnavailableError(reason);
+}
+
+/** The one sentence a failed start can take, for every surface that starts an
+ * import. A refusal (409 / 422 / 503) carries the server's own reason; anything
+ * else takes the caller's `generic` sentence, which is the only part that
+ * differs between call sites. Returns null while there is no error.
+ *
+ * One helper, not one per page: the finished panel and the Bank's stale row each
+ * held a copy of these branches. The entry screen keeps its own conflict copy —
+ * it has the Resume banner and the active-import probe, so it can name the
+ * control. */
+export function startErrorSentence(
+  error: unknown,
+  isError: boolean,
+  generic: string,
+): string | null {
+  if (
+    error instanceof ImportConflictError ||
+    error instanceof ImportStartRejectedError ||
+    error instanceof ImportUnavailableError
+  ) {
+    return endStopped(error.message);
+  }
+  return isError ? generic : null;
+}
+
+/** A carried server sentence with a full stop, when it ends in no terminal
+ * punctuation of its own.
+ *
+ * The two conventions differ: the literal `detail=` strings under
+ * `backend/app/api/` were counted at 47 without terminal punctuation to 5 with,
+ * while every client sentence in this app has one. Rather than churn the 47, the
+ * join is normalised here, where all three refusals pass through. */
+function endStopped(sentence: string): string {
+  return /[.!?…]$/u.test(sentence) ? sentence : `${sentence}.`;
 }
 
 /** Thrown when the polled job id is unknown or expired (backend 404). Lets the
@@ -103,13 +243,29 @@ async function startImport(
   body: StartImportRequest,
 ): Promise<StartImportResponse> {
   const { data, error, response } = await client.POST("/api/import", { body });
+  // Each refusal carries the server's own sentence (the route declares an
+  // ErrorDetail body for all three); for 409 and 422 a bodyless answer falls
+  // back to a class sentence, which is why the reader's null passes through.
+  // 422 reads through the NARROW reader, exactly as the inbox routes do: this
+  // route takes a body, so FastAPI can answer with its own array-shaped
+  // validation 422, which is machine copy wherever it lands.
   if (response.status === 409) {
-    throw new ImportConflictError();
+    throw new ImportConflictError(detailMessage(error));
   }
   if (response.status === 422) {
     throw new ImportStartRejectedError(
-      detailMessage(error) ?? "The import was rejected. Check the path and options.",
+      ourRefusalSentence(error) ??
+        "The import was rejected. Check the path and options.",
     );
+  }
+  // 503 is the exception: only throw the carrying class when there is a
+  // sentence to carry. A bodyless/HTML 503 is a proxy's, not ours, and falls to
+  // the generic failure below — see {@link ImportUnavailableError}.
+  if (response.status === 503) {
+    const reason = detailMessage(error);
+    if (reason !== null) {
+      throw new ImportUnavailableError(reason);
+    }
   }
   if (error || !data) {
     throw new Error("Failed to start import");
@@ -170,6 +326,103 @@ export function isTerminalPhase(phase: ImportPhase): boolean {
  * (`ImportBridge.has_unanswered_park`, backend/app/beets/import_session.py). */
 export function isWorking(state: ImportJobState): boolean {
   return ACTIVE_PHASES.has(state.phase) && !state.awaiting_decision;
+}
+
+/** How long a decision screen holds still after a landing choice, waiting for
+ * the job feed to say whether beets has a second question for the SAME album.
+ *
+ * What the window actually reads: the hold arms {@link useImportJob} by
+ * flipping its `enabled` (the query is disabled until then), and a stale,
+ * newly-enabled query fetches at once — that first read, then four
+ * {@link IMPORT_POLL_MS} polls. The fifth poll is due AT the bound and has no
+ * reader. (The choice mutation's `onSettled` invalidation is NOT what fetches:
+ * @tanstack/query-core 5.102.2 runs hook-level `onSettled` before mutate-level
+ * `onSuccess` (mutation.js:107-109 -> mutationObserver.js:74-77), so at
+ * invalidation time this key still has no enabled observer, and
+ * `invalidateQueries` refetches `type: "active"` only (queryClient.js:143).)
+ *
+ * The window covers one pipeline step, not a lookup: beets asks the duplicate
+ * question in the same stage as the match, with nothing over the network in
+ * between (`user_query` runs `task.choose_match` at
+ * beets/importer/stages.py:163 and `_resolve_duplicates` at :188). Building the
+ * prompt reads the library and the incoming files, which is what the slack is
+ * for. On the bound the user goes back where they came from. */
+export const APPLY_NEXT_QUESTION_MS = 5 * IMPORT_POLL_MS;
+
+/** What should happen to a decision screen after its landing choice (apply /
+ * as-is) was accepted, read off one poll of the job feed. */
+export type PostApplyStep =
+  /** beets parked the duplicate question for this album — open it. */
+  | "duplicate"
+  /** The album re-parked for review (a stale submit) — hold this screen. */
+  | "stay"
+  /** Nothing more is owed here — go back to the list. */
+  | "leave"
+  /** The feed does not say yet. */
+  | "wait";
+
+/**
+ * Route the candidate screen after a landing choice, from the feed row alone.
+ *
+ * `decided` is NOT a leave signal and is the reason this reads more than the
+ * status: `ImportJobRegistry.record_choice` sets it under the same lock that
+ * pushes the choice (backend/app/import_jobs/registry.py), so the row already
+ * says `decided` when the 204 arrives — before beets has run
+ * `_resolve_duplicates`. What proves the duplicate question is behind us is
+ * `album_id`: the session flushes it at the NEXT album's `choose_match`
+ * (`_flush_album_ids`, backend/app/beets/import_session.py), and beets calls
+ * `task.add` at stages.py:319 from `_apply_choice` (:210), after
+ * `_resolve_duplicates` (:188).
+ *
+ * Terminal is read first: the backend gates `awaiting_decision` on an active
+ * phase, so a `needs_dup_resolution` row on a finished job is a set-aside
+ * nobody is blocked on, not a prompt to open.
+ */
+export function postApplyStep(
+  state: ImportJobState,
+  index: number,
+): PostApplyStep {
+  if (isTerminalPhase(state.phase)) return "leave";
+  const row = state.albums.find((album) => album.index === index);
+  if (row === undefined) return "leave";
+  if (row.status === "needs_dup_resolution") return "duplicate";
+  if (row.status === "needs_review") return "stay";
+  if (row.status === "applied" || row.status === "skipped") return "leave";
+  if (typeof row.album_id === "number") return "leave";
+  return "wait";
+}
+
+/** Everything that can end a hold, read together. */
+export interface HoldSignals {
+  /** What the latest feed read says about this album ({@link postApplyStep}),
+   * or "wait" when no feed fetched after the choice has arrived yet. */
+  step: PostApplyStep;
+  /** The job itself is gone — not a transient feed error, which the poll loop
+   * is built to ride out. */
+  feedGone: boolean;
+  /** The bound elapsed. */
+  expired: boolean;
+}
+
+/**
+ * The ONE ordered exit ladder for a hold. Every arm that can end the wait is
+ * resolved here so exactly one fires, rather than by two effects racing to
+ * call `navigate`.
+ *
+ * Precedence, highest first:
+ *
+ * 1. `duplicate` — the question the hold exists to catch. It outranks the
+ *    bound, so a prompt committed in the last scheduling gap still opens.
+ * 2. `leave` — the job is gone, or the row says nothing more is owed
+ *    (terminal phase / row gone / landed / applied / skipped).
+ * 3. the bound — `expired` also leaves, below `duplicate` and `leave` (a feed
+ *    `stay` sits BELOW it: clause 4).
+ * 4. `stay` — the album re-parked for review; release the screen in place.
+ */
+export function holdExit({ step, feedGone, expired }: HoldSignals): PostApplyStep {
+  if (step === "duplicate") return "duplicate";
+  if (feedGone || step === "leave" || expired) return "leave";
+  return step === "stay" ? "stay" : "wait";
 }
 
 async function fetchJob(jobId: string): Promise<ImportJobState> {
@@ -446,34 +699,46 @@ export function useResolveImportDuplicate(jobId: string) {
   });
 }
 
-async function pauseImport(jobId: string): Promise<void> {
-  const { error, response } = await client.POST("/api/import/{job_id}/pause", {
+async function stopImport(jobId: string): Promise<void> {
+  const { error, response } = await client.POST("/api/import/{job_id}/stop", {
     params: { path: { job_id: jobId } },
   });
-  // 404 (job gone) / 409 (not a sweep any more / already finished) both mean
-  // "there is nothing left to pause" — the refetch below shows the real state.
-  // A repeat pause on a still-active sweep is an idempotent 204 server-side.
+  // 404 (job gone) / 409 (already finished) both mean "there is nothing left to
+  // stop" — the refetch below shows the real state. A repeat stop on a still
+  // active job is an idempotent 204 server-side.
   if (response.status === 404 || response.status === 409) {
     return;
   }
   if (error || !response.ok) {
-    throw new Error("Failed to pause the sweep");
+    throw new Error("Failed to stop the import");
   }
 }
 
 /**
- * Ask the active sweep to stop at its next album boundary
- * (`POST /api/import/{job}/pause`). On settle, refresh the job state AND the
- * active probe so every sweep surface (run page, Review banner, activity row)
- * flips to "pausing"/done together.
+ * Ask the running import to stop (`POST /api/import/{job}/stop`). One route for
+ * both controls: the run page's "Stop this run" ends a manual import at the
+ * album it is on, and the sweep's "Pause sweep" is the same request — a sweep
+ * asks its question at album boundaries only, and beets' incremental history
+ * makes sweeping the same folder again a resume, which is why that surface
+ * still says "pause".
+ *
+ * On settle, refresh the job state AND the active probe so every surface (run
+ * page, Review banner, activity row) flips together.
+ *
+ * `onSettled` RETURNS the invalidations, so `isPending` holds until the refetched
+ * job state lands. Fired and forgotten, the mutation resolved first and every
+ * control that reads `isPending || stopped` fell back to its idle label for one
+ * GET round-trip — "Stop this run" / "Pause sweep", pressable, a few hundred ms
+ * after the press. Harmless (the repeat is an idempotent 204) and visible.
  */
-export function usePauseSweep(jobId: string) {
+export function useStopImport(jobId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => pauseImport(jobId),
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["import", "job", jobId] });
-      void queryClient.invalidateQueries({ queryKey: ["active-import"] });
-    },
+    mutationFn: () => stopImport(jobId),
+    onSettled: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["import", "job", jobId] }),
+        queryClient.invalidateQueries({ queryKey: ["active-import"] }),
+      ]),
   });
 }

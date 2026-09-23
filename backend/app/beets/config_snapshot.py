@@ -5,7 +5,7 @@ The snapshot carries two YAML views:
 * ``yaml_text`` — the RAW on-disk ``config.yaml``, byte-for-byte. This is the
   editable document; Save writes it back verbatim, so it is served unredacted.
 * ``effective_yaml`` — the fully-merged effective config (read-only), with
-  secrets redacted in two passes:
+  secrets redacted in three passes:
 
   1. ``beets.config.flatten(redact=True)`` honors confuse's per-view ``redact``
      flag, which bundled plugins set (e.g. ``spotify.client_secret`` at
@@ -14,6 +14,10 @@ The snapshot carries two YAML views:
      masks any value whose KEY matches the pattern — protection against
      third-party plugins that forgot to mark their fields ``.redact = True``,
      AND against pass 1 skipping a subtree entirely (see below).
+  3. ``BEETS_DECLARED_SECRETS`` masks, by dotted path, every key the installed
+     beets marks ``.redact = True``. Pass 1 only knows a flag once its plugin
+     has loaded, and pass 2 misses ten of them by name (``smartplaylist.prefix``,
+     ``subsonic.user``, ``spotify.client_id``...). Runs in the same walk as 2.
 
 Pass 1 is NOT a floor. ``View.flatten`` does ``try: view.flatten() except
 ConfigTypeError: view.get()``, so a view that is not a mapping is dumped
@@ -37,7 +41,7 @@ and the ``redact`` flag buys nothing for it::
     beets.config.flatten(redact=True)["kodi"]
     -> [{'host': '10.0.0.5', 'port': 8080, 'user': 'myuser', 'pwd': 4815162342}]
 
-For those plugins pass 2 is the ONLY defence. Treat it as load-bearing, not as
+For those plugins passes 2 and 3 are the ONLY defence. Treat it as load-bearing, not as
 a belt-and-braces extra.
 
 ``_plain_redacted`` applies that second pass while COPYING: ``flatten()`` only
@@ -52,6 +56,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import stat
 from datetime import UTC, datetime
 from typing import Any
 
@@ -59,6 +64,7 @@ import beets
 import yaml
 from confuse import REDACTED_TOMBSTONE
 
+from app.beets.declared_secrets import BEETS_DECLARED_SECRETS
 from app.beets.library import LibraryHandle
 from app.models.config_api import BeetsConfigSnapshot
 
@@ -73,13 +79,17 @@ from app.models.config_api import BeetsConfigSnapshot
 # is often not the plugin's module name — kodiupdate registers ``kodi``):
 #   spotify.client_secret, lyrics.genius_api_key, beatport.{apikey,apisecret},
 #   kodi[].pwd, subsonic.pass, emby.{password,apikey}, plex.token, auth_token
+# and a key named ``key`` or ending ``_key``: fetchart.{fanarttv,google,
+#   lastfm}_key leaked whenever fetchart was not loaded. Measured over beets
+#   2.13's bundled defaults (61 plugins loaded, the other 18 grepped), those
+#   three are the only default keys this arm adds.
 # over-redacts (harmless): tokenizer, passwordless, secrets, and one real
 #                          bundled default — ``spotify.tokenfile``, a FILENAME.
 #                          The key itself is masked; nothing leaks.
 # does NOT inspect VALUES: a path like ``directory: /home/me/api_keys`` stays
 #                          intact because the key ``directory`` doesn't match.
 SECRET_KEY_PATTERN = re.compile(
-    r"(secret|token|password|pwd|pass|api_?key|api_?secret|auth_?token)",
+    r"((?:^|_)key$|secret|token|password|pwd|pass|api_?key|api_?secret|auth_?token)",
     re.IGNORECASE,
 )
 
@@ -88,11 +98,11 @@ def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
     """Build the config snapshot: the RAW on-disk file (editable) + the merged
     effective view (read-only, redacted) + freshness fields."""
     # Effective (read-only) view — the fully-merged config incl. beets + every
-    # loaded plugin's defaults, secrets redacted. Two passes: confuse's per-view
-    # ``redact`` flag, then the SECRET_KEY_PATTERN safety-net for third-party
-    # plugins that forgot to mark their fields ``.redact = True``.
+    # loaded plugin's defaults, secrets redacted: confuse's per-view ``redact``
+    # flag, then one walk that masks beets' declared secrets by path (loaded or
+    # not) and the SECRET_KEY_PATTERN safety-net for third-party plugins.
     flat = beets.config.flatten(redact=True)
-    plain = _plain_redacted(flat, None, SECRET_KEY_PATTERN)
+    plain = _plain_redacted(flat, None, (), SECRET_KEY_PATTERN)
     effective_yaml = yaml.safe_dump(plain, sort_keys=False, default_flow_style=False)
 
     # Editable document — the user's own config.yaml, byte-for-byte (comments,
@@ -114,11 +124,14 @@ def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
     sha256 = ""
     yaml_text = ""
     try:
-        raw = handle.config_path.read_bytes()
-        current_mtime = handle.config_path.stat().st_mtime
-        file_modified_at = datetime.fromtimestamp(current_mtime, tz=UTC)
-        sha256 = hashlib.sha256(raw).hexdigest()
-        yaml_text = raw.decode("utf-8")
+        # Only a regular file is opened, as confuse reads it; measured, a FIFO
+        # blocked this read until a writer opened it.
+        if stat.S_ISREG(handle.config_path.stat().st_mode):
+            raw = handle.config_path.read_bytes()
+            current_mtime = handle.config_path.stat().st_mtime
+            file_modified_at = datetime.fromtimestamp(current_mtime, tz=UTC)
+            sha256 = hashlib.sha256(raw).hexdigest()
+            yaml_text = raw.decode("utf-8")
     except (OSError, UnicodeDecodeError):
         pass
 
@@ -135,7 +148,9 @@ def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
     )
 
 
-def _plain_redacted(value: Any, key: object, pattern: re.Pattern[str]) -> Any:
+def _plain_redacted(
+    value: Any, key: object, path: tuple[object, ...], pattern: re.Pattern[str]
+) -> Any:
     """Return a fresh, plain, secret-masked copy of a flattened-confuse value.
 
     Masking and plain-ifying are ONE pass on purpose: masking in place is not an
@@ -158,7 +173,8 @@ def _plain_redacted(value: Any, key: object, pattern: re.Pattern[str]) -> Any:
     ``dict``/``list``/scalars, and any subclass — including the confuse
     ``OrderedDict`` every flattened level is — raises a ``RepresenterError``.
 
-    Masking rules. ``dict`` and ``list`` values are recursed into first —
+    Masking rules. A declared path (below) is masked first, whole. Otherwise
+    ``dict`` and ``list`` values are recursed into —
     without the list branch a plugin config like
     ``accounts: [{api_token: "..."}, ...]`` would slip through. A list does NOT
     propagate its own key to its items (``key=None``), so a bare list of strings
@@ -205,6 +221,13 @@ def _plain_redacted(value: Any, key: object, pattern: re.Pattern[str]) -> Any:
     disagreement is in the safe direction — pass 2 reveals a null, never a
     value. Do not "fix" it by masking nulls here without re-deciding the above.
 
+    Declared secrets. ``path`` is the chain of mapping keys down to ``value``;
+    a list adds no component, so ``kodi[].user`` is ``("kodi", "user")`` in
+    either the list or the mapping shape. A value at a path in
+    ``BEETS_DECLARED_SECRETS`` is masked whatever it holds, null included,
+    because that is what pass 1 renders for the same key once its plugin loads.
+    The null carve-out above is for the regex's guesses, not for these.
+
     The KEY guard is ``isinstance(key, str)``, not ``key is not None``. YAML
     keys are not necessarily strings: ``substitute: {112: One Twelve}`` (a band
     name) gives an ``int`` key, and ``types: {no: int}`` gives ``False``,
@@ -222,10 +245,12 @@ def _plain_redacted(value: Any, key: object, pattern: re.Pattern[str]) -> Any:
     ``object`` forces the ``isinstance`` at the type level too, so the runtime
     hole cannot be reopened without mypy objecting.
     """
+    if path in BEETS_DECLARED_SECRETS:
+        return REDACTED_TOMBSTONE
     if isinstance(value, dict):
-        return {k: _plain_redacted(v, k, pattern) for k, v in value.items()}
+        return {k: _plain_redacted(v, k, (*path, k), pattern) for k, v in value.items()}
     if isinstance(value, list):
-        return [_plain_redacted(item, None, pattern) for item in value]
+        return [_plain_redacted(item, None, path, pattern) for item in value]
     if value is not None and isinstance(key, str) and pattern.search(key):
         return REDACTED_TOMBSTONE
     return value

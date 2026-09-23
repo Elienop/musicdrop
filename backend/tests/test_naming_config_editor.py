@@ -26,14 +26,14 @@ def _sha(p: Path) -> str:
 
 
 def test_config_saves_hold_the_save_lock_during_write(
-    beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch
+    beets_library: LibraryHandle, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """save/save_naming must run their CAS read->write under _SAVE_LOCK so a
     concurrent save can't pass the same-base check and clobber the other."""
     import app.beets.config_editor as ce
 
     cfg_path = beets_library.config_path
-    cfg_path.write_text("directory: /tmp/music\nlibrary: library.db\n")
+    cfg_path.write_text(f"directory: {tmp_path / 'music'}\nlibrary: library.db\n")
     orig = ce.atomic_write
     locked_during: list[bool] = []
 
@@ -107,11 +107,13 @@ def test_save_naming_keeps_boolean_token_replace_rules_as_strings(
 ) -> None:
     # Regression: save_naming builds a FRESH CommentedMap of plain-str values, so
     # their quoting is decided by the dumper's YAML-version resolver, NOT by
-    # preserve_quotes. A bool-token pattern/replacement ("no"/"off"/"y") must be
+    # preserve_quotes. A bool-token pattern/replacement ("no"/"off") must be
     # emitted QUOTED so it reloads as a string. If the dumper used the 1.2 resolver
-    # (what clearing yaml.version does), these dump BARE, then confuse/PyYAML and
-    # ruamel-1.1 re-type them to bool — beets' re.compile(False) crashes on Apply
-    # for a bool KEY, and a bool VALUE is silently dropped (`repl or ''`).
+    # (what dropping both ``_Yaml11Resolver`` and ``yaml.version`` does; either
+    # alone still quotes them), these dump BARE, then confuse/PyYAML
+    # re-type them to bool — beets' re.compile(False) crashes on Apply for a bool
+    # KEY, and a bool VALUE is silently dropped (`repl or ''`). "y" is a bool only
+    # in ruamel's own 1.1 table: beets reads it bare as a string.
     import yaml as pyyaml
 
     cfg_path = beets_library.config_path
@@ -121,7 +123,7 @@ def test_save_naming_keeps_boolean_token_replace_rules_as_strings(
         replace=[
             ReplaceRuleInput(pattern="no", replacement="_"),  # bool-token KEY
             ReplaceRuleInput(pattern="[<>]", replacement="off"),  # bool-token VALUE
-            ReplaceRuleInput(pattern="ñ", replacement="y"),  # bool-token VALUE
+            ReplaceRuleInput(pattern="ñ", replacement="y"),  # a bool in ruamel's table only
         ],
         base_sha256=_sha(cfg_path),
     )

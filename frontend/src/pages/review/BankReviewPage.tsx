@@ -14,11 +14,7 @@ import {
   useDeleteBankItem,
 } from "@/api/useBank";
 import type { DuplicateAction } from "@/api/useImport";
-import {
-  ImportConflictError,
-  ImportStartRejectedError,
-  useStartImport,
-} from "@/api/useImport";
+import { startErrorSentence, useStartImport } from "@/api/useImport";
 import { BackLink } from "@/components/albums/album-grid";
 import { AlreadyInLibrary } from "@/components/import/AlreadyInLibrary";
 import { CandidateReview } from "@/components/import/CandidateReview";
@@ -80,7 +76,7 @@ export function BankReviewPage() {
           bordered
           icon={Info}
           title="This row is no longer in the bank"
-          body="It may have been applied, ignored, or removed. Head back to see what's waiting."
+          body="It may have been applied, ignored, or removed. Head back to see what’s waiting."
           action={
             <Button variant="outline" size="sm" asChild>
               <Link to="/review">Back to Review</Link>
@@ -222,35 +218,42 @@ function RescanControl({
 
 const NO_HIT_FEEDBACK = "No release found. Showing your previous matches.";
 
+/** One sentence per recovery the runner names, never the error TEXT — the same
+ * stance the strip below takes. `remove_duplicate` drops the retry instruction
+ * its own reason forbids (deciding again would import a third copy);
+ * `fix_folder` keeps it, behind the step that has to come first.
+ *
+ * `fix_folder` names the share as well as the folder because the runner's arm
+ * is "any OSError whose errno is NOT ENOENT/ENOTDIR/ENAMETOOLONG" — that also
+ * catches ESTALE, EIO, EROFS and EHOSTDOWN, which on a self-hosted box most
+ * often mean the share dropped rather than the folder being wrong. */
+const FAILED_HEADLINE: Record<BankItem["error_recovery"], string> = {
+  decide_again: "The apply failed. Decide again to retry.",
+  remove_duplicate: "The apply failed.",
+  fix_folder: "The apply failed. Fix the folder or its share, then decide again.",
+};
+
 /** The failed-apply banner. role=alert via StatusBanner's destructive tone.
  *
- * The headline branches on the row's `error_retryable` flag, never on the
- * error TEXT — the same stance the strip below takes, for the same reason.
- * The runner marks a row not-retryable when deciding again would import a
- * THIRD copy, so the emphasized line must not instruct the retry that the
- * muted reason under it forbids; recovery is removing one of the two copies,
- * which the Duplicates link reaches. Absent or true keeps the retry headline —
- * rows banked before the flag existed are retryable. */
+ * Headline and action read `error_recovery` independently. The link is an
+ * affirmative test for `remove_duplicate`: the Duplicates page is the recovery
+ * for that failure alone, so a recovery added later gets no link until someone
+ * decides it should have one. */
 function FailedBanner({ item }: Readonly<{ item: BankItem }>) {
-  const retryable = item.error_retryable !== false;
   const failure = (item.error ?? "").trim();
   return (
     <StatusBanner
       tone="destructive"
       icon={Warning}
       action={
-        retryable ? undefined : (
+        item.error_recovery === "remove_duplicate" ? (
           <Button variant="outline" size="sm" asChild>
             <Link to="/duplicates">Open Duplicates</Link>
           </Button>
-        )
+        ) : undefined
       }
     >
-      <p className="font-medium">
-        {retryable
-          ? "The apply failed. Decide again to retry."
-          : "The apply failed."}
-      </p>
+      <p className="font-medium">{FAILED_HEADLINE[item.error_recovery]}</p>
       {/* This is the diagnosis surface, so the string is NOT clamped — only
           stopped from painting out of its column. `break-words` breaks the
           unbroken paths beets puts in these messages; it lowers no ancestor's
@@ -266,11 +269,18 @@ function FailedBanner({ item }: Readonly<{ item: BankItem }>) {
   );
 }
 
-/** Duplicate-resolution strip for FAILED rows. The apply runner fails a row
- * that meets an unanticipated library duplicate with "decide again with a
- * duplicate action" — `{action: "duplicate"}` is accepted on any decidable
- * row, so the strip is offered on every failed row (harmless otherwise)
- * rather than sniffing the error string. */
+/** Duplicate-resolution strip for FAILED rows on the no-match screen — its one
+ * render site, not every failed row (the candidate and duplicate screens show
+ * `FailedBanner` without it). The apply runner fails a row that meets an
+ * unanticipated library duplicate with "decide again with a duplicate action",
+ * and `{action: "duplicate"}` is accepted on any decidable row, so the offer
+ * keys on `error_recovery` rather than sniffing the error string.
+ *
+ * Withheld from a `fix_folder` row for one reason only: its copy says the
+ * album is already in your library, which that failure explicitly is not. The
+ * other actions stay enabled — the banner tells a `fix_folder` row to decide
+ * again, so "a retry would fail identically" is NOT the argument here (it
+ * would apply equally to Use as-is, As tracks and Ignore). */
 function FailedDuplicateStrip({
   busy,
   pending,
@@ -383,7 +393,18 @@ function BankCandidateScreen({ item }: Readonly<{ item: BankItem }>) {
   // Offer the four duplicate actions on a real collision OR — as a fallback —
   // when the re-check ERRORS on an already-failed row, so the failed-banner's
   // "decide again with a duplicate action" instruction stays followable.
-  const showDupActions = hasCollision || (dups.isError && item.status === "failed");
+  //
+  // The collision arm is NOT gated on `error_recovery`: a listed collision is
+  // real whatever made the apply fail. The error arm IS, for the same reason
+  // FailedDuplicateStrip is withheld — it can only assert the album is already
+  // in the library, which a `fix_folder` failure explicitly is not. Gating it
+  // also keeps Apply/Use as-is/As tracks on the bar, which is the remedy that
+  // row's own banner names.
+  const showDupActions =
+    hasCollision ||
+    (dups.isError &&
+      item.status === "failed" &&
+      item.error_recovery !== "fix_folder");
 
   const submit = makeSubmit(decide, navigate, setPendingDup);
 
@@ -676,7 +697,7 @@ function NoMatchScreen({ item }: Readonly<{ item: BankItem }>) {
         <p className="text-muted-foreground font-mono text-xs" title={item.folder}>
           {item.folder}
         </p>
-        {item.status === "failed" && (
+        {item.status === "failed" && item.error_recovery !== "fix_folder" && (
           <FailedDuplicateStrip
             busy={busyAll}
             pending={pendingDup}
@@ -877,21 +898,18 @@ function RemoveRowButton({ itemId }: Readonly<{ itemId: string }>) {
  * needs the import slot, so it gates on the active probe with the visible
  * reason below (never a disabled-button title).
  */
-/** The one sentence a failed re-scan start can take: a running import names
- * the conflict, a rejected start carries the server's own reason, and
- * anything else is the generic backend failure. */
-function startErrorMessage(error: unknown, isError: boolean): string | null {
-  if (error instanceof ImportConflictError) {
-    return "An import is already running; try again when it finishes.";
-  }
-  if (error instanceof ImportStartRejectedError) {
-    return error.message;
-  }
-  if (isError) {
-    return "Couldn’t start the re-scan. Check the backend, then try again.";
-  }
-  return null;
-}
+/** The generic half of a failed re-scan start — the only part that is this
+ * screen's own. The refusals (409 / 422 / 503) carry the server's own reason
+ * through {@link startErrorSentence}: a 409 has three different causes and
+ * naming the wrong one sent the user off to wait for an import that was not
+ * running. */
+const START_FAILED = "Couldn’t start the re-scan. Check the backend, then try again.";
+
+/** The id linking that sentence to the button it belongs to — "Review now"
+ * keeps focus through a failed start (it is only `aria-disabled` while
+ * pending), so the alert is what a keyboard user hears on coming back to it.
+ * One screen, one alert, like the import panel's. */
+const STALE_START_ERROR_ID = "stale-start-error";
 
 function StaleScreen({ item }: Readonly<{ item: BankItem }>) {
   const navigate = useNavigate();
@@ -904,7 +922,21 @@ function StaleScreen({ item }: Readonly<{ item: BankItem }>) {
 
   function reviewNow() {
     start.mutate(
-      { path: item.folder },
+      {
+        path: item.folder,
+        // `incremental: false` is beets' own `-I`. The sweep that banked this
+        // folder recorded it in beets' import history, so without the override a
+        // run that keeps its files skips every album here — and the row is
+        // deleted on success either way, leaving the album in neither the bank
+        // nor the library. The other three fields are the manual default, which
+        // the generated ImportOptions marks required.
+        options: {
+          operation: "default",
+          unattended: false,
+          sweep: false,
+          incremental: false,
+        },
+      },
       {
         onSuccess: async (res) => {
           // Best-effort tombstone cleanup — a failed delete leaves a row the
@@ -916,7 +948,7 @@ function StaleScreen({ item }: Readonly<{ item: BankItem }>) {
     );
   }
 
-  const startError = startErrorMessage(start.error, start.isError);
+  const startError = startErrorSentence(start.error, start.isError, START_FAILED);
 
   return (
     <Shell
@@ -939,8 +971,18 @@ function StaleScreen({ item }: Readonly<{ item: BankItem }>) {
       <p className="text-muted-foreground font-mono text-xs" title={item.folder}>
         {item.folder}
       </p>
-      {startError && (
-        <p className="text-destructive text-sm" role="alert">
+      {/* Not while an import runs: the hint under the buttons is the fuller
+          sentence (it names the slot AND what still works), and the server's
+          409 opens on the same clause — the two stacked in one column repeated
+          "an import is already running" twice, the alert first and shorter. */}
+      {startError && !importActive && (
+        // `break-words`: a 503 here carries repr'd paths, which Chromium will
+        // not break at `/` (the Trash page's measured family).
+        <p
+          id={STALE_START_ERROR_ID}
+          className="text-destructive text-sm break-words"
+          role="alert"
+        >
           {startError}
         </p>
       )}
@@ -956,10 +998,31 @@ function StaleScreen({ item }: Readonly<{ item: BankItem }>) {
         <Button
           variant="outline"
           size="sm"
-          className="ml-auto"
-          disabled={busy || importActive}
-          aria-describedby={importActive ? "stale-rescan-hint" : undefined}
-          onClick={reviewNow}
+          className="ml-auto aria-disabled:opacity-50"
+          // The pending half is `aria-disabled`, not `disabled`: this button
+          // holds focus when it is clicked, and disabling it on that commit
+          // strands keyboard focus on <body> (the Pagination rule — the import
+          // page's Pause button carries the measurement). The other two
+          // mutations and a running import belong to controls elsewhere, so they
+          // stay `disabled`. The click is swallowed below.
+          disabled={remove.isPending || rescan.isPending || importActive}
+          aria-disabled={start.isPending}
+          // Both descriptions, joined — the import-slot hint and the failure
+          // sentence. They are mutually exclusive today (the alert is gated on
+          // `!importActive` above), so this is the shape rather than a second
+          // branch to keep in step with that gate.
+          aria-describedby={
+            [
+              importActive ? "stale-rescan-hint" : null,
+              startError && !importActive ? STALE_START_ERROR_ID : null,
+            ]
+              .filter((id) => id !== null)
+              .join(" ") || undefined
+          }
+          onClick={() => {
+            if (busy) return;
+            reviewNow();
+          }}
         >
           {start.isPending ? (
             <>

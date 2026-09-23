@@ -18,6 +18,7 @@ import logging
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -323,6 +324,70 @@ def test_resolve_display_path_survives_a_nul_behind_a_placeholder(tmp_path: Path
 def test_resolve_display_path_returns_the_literal_when_nothing_matches(tmp_path: Path) -> None:
     # No match = the caller's own existence check produces its normal 404.
     assert resolve_display_path(tmp_path, BAD_DISPLAY) == tmp_path / BAD_DISPLAY
+
+
+def test_resolve_display_path_does_not_scan_behind_a_dotdot_segment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The amplifier: ``..`` sends the walk back to a directory it already scanned.
+
+    Measured before this refusal, at the posted path's 4096-character cap over a
+    20 000-entry directory: 18.8 s of ``os.scandir``, all of it on the event
+    loop. After: 0.1 ms. Nothing the app displays carries a ``..`` segment, so
+    the literal path is the honest answer and each caller's own guard refuses it.
+    """
+    tmp_path.joinpath(BAD_BYTES.decode("utf-8", "surrogateescape")).mkdir()
+    scans: list[str] = []
+    real_scandir = os.scandir
+
+    def counting_scandir(path: Any = ".") -> Any:
+        scans.append(str(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", counting_scandir)
+
+    rel = "/".join([BAD_DISPLAY, ".."] * 3)
+    resolved = resolve_display_path(tmp_path, rel)
+
+    assert scans == []  # not one directory was read
+    assert resolved == tmp_path / rel
+
+
+def test_resolve_display_path_does_not_scan_behind_a_dot_segment(tmp_path: Path) -> None:
+    """``.`` is refused on the same rule, and the difference is visible.
+
+    pathlib DROPS a bare ``.`` from ``parts``, so it never amplified and the
+    refusal changes only one thing: a placeholder component that would have
+    matched a real entry is left literal instead. The matching entry is what
+    makes that observable — without it both answers are the same path.
+    """
+    raw = tmp_path.joinpath(BAD_BYTES.decode("utf-8", "surrogateescape"))
+    (raw / "x").mkdir(parents=True)
+
+    resolved = resolve_display_path(tmp_path, f"{BAD_DISPLAY}/./x")
+
+    assert resolved == tmp_path / BAD_DISPLAY / "x"  # literal: nothing was matched
+    assert resolved != raw / "x"  # what the scan would have returned
+    assert not resolved.exists()
+
+
+def test_resolve_display_path_still_scans_when_the_path_is_ordinary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control: the refusal must not cost the resolver its ordinary job."""
+    raw = tmp_path.joinpath(BAD_BYTES.decode("utf-8", "surrogateescape"))
+    raw.mkdir()
+    scans: list[str] = []
+    real_scandir = os.scandir
+
+    def counting_scandir(path: Any = ".") -> Any:
+        scans.append(str(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", counting_scandir)
+
+    assert resolve_display_path(tmp_path, BAD_DISPLAY) == raw
+    assert scans == [str(tmp_path)]
 
 
 def test_ambiguous_display_name_is_not_a_value_error() -> None:

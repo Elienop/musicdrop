@@ -26,12 +26,23 @@ const PREFIX_TITLES: readonly (readonly [string, string])[] = [
   ["/playlists/", "Playlists"],
 ];
 
+/** The import duplicate prompt, `/import/albums/:index/duplicate`. It needs its
+ * own arm rather than a PREFIX_TITLES row: the distinguishing segment is the
+ * LAST one and the index between is dynamic, which `startsWith` cannot express
+ * — and `/import/albums/` already matches it, so a prefix row could never win.
+ * Without this, applying a match and landing on the duplicate question changed
+ * no title and no announcer text, so the hop was silent. */
+const IMPORT_DUPLICATE = /^\/import\/albums\/[^/]+\/duplicate$/;
+
 /** Resolve the human page title for a pathname; unknown routes (the `*`
  * NotFound catch-all) read "Not found". Exported for unit tests. */
 export function titleForPathname(pathname: string): string {
   const exact = EXACT_TITLES.get(pathname);
   if (exact !== undefined) {
     return exact;
+  }
+  if (IMPORT_DUPLICATE.test(pathname)) {
+    return "Duplicate decision";
   }
   if (pathname.startsWith("/artists/")) {
     // /artists/:artistName — the segment IS the artist, so the title can

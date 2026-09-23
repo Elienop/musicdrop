@@ -94,24 +94,488 @@ entry carries a dated correction block where the pass changed it._
    operation (vault `decisions` #51), so this lands with item 7.
 7. **Download providers** (owner ruling 2026-09-14, vault `decisions` #51; not started). Replaces
    the saved "Download folders" idea; Add from folder's path is a free-text field today.
-   - **Operation.** Imports MOVE by default: an atomic rename when the download folder and the
-     library are one mount of one filesystem; otherwise beets' `util.move` copies then deletes. A
-     per-provider HARDLINK toggle serves sources whose files must stay (seeding; downloaders that
-     skip a track whose file exists — yubal, and deemix under its default `DONT_OVERWRITE`), and
-     falls back to COPY when the link fails.
+   - **Operation.** ONE GLOBAL SETTING, not a per-provider mode — owner ruling 2026-09-15
+     (`decisions` #53): *"instead of branching this into each provider it will be a use it or not
+     setting"*. Off writes `move: yes`, on writes `hardlink: yes`, into beets' own `import:` keys;
+     the app adds no per-import choice. Hardlink serves sources whose files must stay (seeding;
+     downloaders that skip a track whose file exists — yubal, and deemix under its default
+     `DONT_OVERWRITE`). A link that cannot be made fails the import loudly — beets raises
+     `Cannot hard link across devices.` (`util/__init__.py:587-589`) — and MusicDrop does not
+     downgrade it to a copy: `decisions` #57 drops the fallback #51 described. While it is on,
+     no download folder empties itself, and the setting's own text must say so. NOT BUILT YET:
+     there is no switch route and no switch UI — `config_editor` models `hardlink` only for its
+     advisory — so today the user edits `import:` by hand in Settings -> Beets, which is the
+     same keys with a worse face.
+     slskd's auto-import keeps MOVING until branch 2 — the inbox routes and the drain send
+     `operation="move"`, overriding the global switch by design, and `config_editor`'s
+     link/hardlink/reflink advisory is where that is currently disclosed.
    - **A provider holds** a name, a kind (slskd, or a plain folder), the folder MusicDrop reads,
      the operation and, only when the source reports its own container paths (slskd today), that
      reported root (today's `downloads_prefix`).
-   - **Beyond beets.** beets picks move, copy, link, then hardlink, in that order, and ships
-     `copy: yes` (2.13.1, `importer/stages.py`, `config_default.yaml`), so a hardlink import needs
-     `move: no`, `copy: no`, `hardlink: yes`; the per-import `operation` (`default`, `move`,
-     `copy`) sets only move and copy. MusicDrop adds: a hardlink arm in `run_import_worker`'s
-     snapshot/restore beside that override (it already restores `hardlink`); a probe with a real
-     `os.link` into the library, because `util.hardlink` raises on EXDEV with no fallback and two
-     bind mounts of one filesystem share `st_dev`; the in-library guard (`is_in_library_source`,
+   - **Beyond beets.** beets resolves the flags TWICE and the orders differ: `set_config` keeps
+     one of move > link > hardlink > reflink, each clearing `copy` (`importer/session.py:114-138`),
+     and the files stage then takes `copy` if it survived, telling `reflink: auto` apart from
+     `reflink` (`importer/stages.py:278-291`). It ships `copy: yes` (2.13.1,
+     `config_default.yaml`), and `hardlink` beats it, so a hardlink import needs `hardlink: yes`
+     and `move: no` (beets' default).
+     An explicit per-import `operation` (`move`, `copy`) now pins all five file flags plus
+     `delete`, and `delete` is pinned off on every path including `default` — so a hardlink
+     provider can no longer have its source removed. MusicDrop forces NO file flag for a
+     hardlink and runs NO link probe (`decisions` #53, #57): a `default` import leaves the
+     user's `hardlink: yes` to beets, and only turns beets' import history on for that run
+     (the kept-folders bullet below). Still owed: the in-library guard (`is_in_library_source`,
      refusing copy today) covering hardlink; and a note that `write: yes` changes a hardlinked
      downloader's own file (mutagen opens it `rb+`) — acceptable for non-torrent sources, as *arr
      only documents it.
+   - **Removing the source is a FIRST-CLASS feature, not `import.delete`.** MusicDrop forces
+     `import.delete` off on every import path, because it is the only hard `unlink` beets performs
+     on the app's behalf — `ImportTask.cleanup` calls `util.remove(old_path, False)`
+     (`importer/tasks.py:332`): no Trash, no origin record, no undo, triggered by a config value
+     with no UI affordance. That pin is not a refusal of the capability. If source
+     removal is ever wanted, the shape follows #53 — ONE global setting, not a per-provider
+     mode — and it moves the source to MusicDrop's **Trash**: visible, reversible, consistent
+     with delete/replace, rather than honouring the beets key. The global hardlink/move switch
+     never selects `copy` + `delete` anyway (off is `move`, on is `hardlink`), so the pin removes
+     a route the design does not use.
+     `copy` + `delete` is also a strictly worse move: a mid-album copy failure can leave a partial
+     album filed *and* the originals gone, because `cleanup`'s "only delete what was copied" guard
+     (`tasks.py:328-331`) only covers the items that made it.
+   - **DEFERRED — the in-place footgun has no pre-import warning.** A config with every file
+     operation off (`copy: no, move: no`) makes beets import IN PLACE, and MusicDrop's editor
+     makes that two keystrokes. Measured on a default import: library rows point *into the
+     download folder* (`same_inode_as_download: [True, True]`, not symlinks), so the library
+     depends on files outside the music root and every feature that moves, reorganises, trashes
+     or deletes an album then operates on a path outside it. `link: yes` is the same class from
+     the other side (a symlink in the library whose target is the download); `hardlink: yes`
+     shares the inode, so a tag write through the library rewrites the download too — which is
+     what would bite a seeding user. Surfaced today only by the per-import `file operation` log
+     line. It gets NO config advisory on purpose: every rule on that surface is "MusicDrop
+     overrides this, the CLI still honours it", and in-place is beets' own behaviour with no
+     escape hatch to name — and the rule loop validates one key at a time, so a predicate over
+     five flags reads four defaults (it fired on `copy: no, hardlink: yes`, a hardlink import).
+     The warning belongs in the import panel, where the user can act on it.
+   - **Kept folders rely on beets' import history — BUILT 2026-09-18 on
+     `feat/import-keep-downloads`.** A run whose resolved file operation is hardlink forces
+     `incremental` on, with `incremental_skip_later` so a skipped album is offered again; a
+     sweep forces `incremental_skip_later` off (a user's `yes` made every sweep re-bank the
+     same folders). The way past the history is beets' own `-I` — `ImportOptions.incremental:
+     false` (the wire admits `false` and `null`; `true` is a 422) — sent by **Import them again** and always by the
+     Bank's Review now. `copy`, `link` and `reflink` configs are left to the user (`decisions`
+     #53: the setting writes `hardlink`), though `link: yes` shares the same-file hazard below
+     (measured: `util.samefile` follows the symlink).
+     Recorded by the 2026-09-18 review seats:
+     - **HIGH — CLOSED 2026-09-18 on this branch (Replace moves the old copy to Trash first).**
+       Under hardlink or link, re-importing a folder whose album is still in the library and
+       answering Replace left one album whose rows named files that were gone: beets skips
+       `unique_path` when source and destination are the same file
+       (`library/models.py:1044-1045`), so the new rows resolved to the old paths, and the
+       post-run Trash pass then moved those files away. The `hardlink` and `link` params of
+       `test_replacing_a_duplicate_leaves_an_album_whose_files_exist` pass unmarked now; see
+       "Replace disposes of the old copy before beets places the new one" below. STILL OPEN
+       from this bullet: *Keep both* on the same files leaves two albums over one set of
+       files, beets' own behaviour and untested; whether the duplicate question should offer
+       anything but Skip there is an owner call.
+     - **A mixed run cannot name what it skipped.** beets skips a known folder before any hook
+       fires, MusicDrop keeps a bare counter, and Import them again is withheld when anything
+       else happened — so "1 imported · 2 already known" names no folder and offers no control.
+       Future shape: known folders as read-only feed rows with a per-row "import anyway",
+       bounded (a sweep skips thousands). Its own slice.
+     - ~~**An attended run cannot be stopped.**~~ Import them again on a parent of N kept albums
+       parks N duplicate questions and holds the single import slot; **"Stop this run"**
+       (`feat/import-keep-downloads`, 2026-09-19) ends it at the question it is on. The
+       N-questions half stays true; its remedy is the Stop.
+     - **beets' state file fails open, silently.** `ImportState._open` swallows any read error
+       at DEBUG (`importer/state.py:73-85`, a missing file included) and `_save` then
+       overwrites the file, so a truncated `state.pickle` loses the whole history with no
+       signal. The visible result is a duplicate question instead of a skip, not a silent
+       second import. Recorded, not guarded (`decisions` #57): probing the pickle ourselves is
+       a layer around beets.
+     - **The bank row is deleted when Review now's start returns 202,** not when the import
+       ends, and a failed delete is swallowed.
+     - **Touch targets.** `Button size="sm"` is 32px and the frontend has no coarse-pointer
+       floor — a primitive-level decision, not a call-site override.
+   - **An import that stops part-way is noticed, not repaired — BUILT 2026-09-19 on
+     `feat/import-keep-downloads`.** beets writes the rows before it places the files
+     (`importer/stages.py`: `task.add` in `user_query`, placement last), so a stop during
+     placement leaves rows naming the download folder — every row, when a hardlink across
+     filesystems fails on the first track. `AlbumDetail.outside_library` names one such folder
+     and the album page says so. It is a fact, not a cause: an `in_place` import and rows left
+     in a Trash outside the music folder read the same (an edited `directory:` does NOT —
+     in-library rows are stored relative and follow it; measured). beets' `PathQuery` cannot
+     ask it — the library root normalises to `.` and matches nothing (2.13.1) — so the read
+     reuses `_inside_library`, the mirror of beets' own `Item.try_sync` guard; string work only.
+     **Two predicates since 2026-09-19, asked in order.** `_inside_library` is lexical because
+     `app/beets/edit.py` must predict beets' own lexical guard byte for byte, but the album
+     page asks the opposite question — *are these files really outside?* — and the security
+     seat measured an album whose rows spell the root through a symlinked alias rendering the
+     notice with `holds_every_track: true` and the remedy; following it re-imports and, with the
+     starter config's `import.write: yes`, re-tags an album that was already filed (not
+     destructive — measured: all four files stayed and Trash stayed empty). The physical
+     predicate `is_in_library_source` (realpath prefix, then `samefile` up the chain) is now a
+     second opinion asked per row, and only once THAT row's lexical answer says "outside", so a
+     lexically-inside row still records no filesystem read, and it swallows every `OSError` → an
+     unmounted or unreadable root leaves a real notice showing. Per row, not once: asking it about
+     the first lexically-outside row alone hid a genuinely-stranded second row behind an
+     alias-spelled first one (code seat F1, measured 2026-09-19). It moved from
+     `app/beets/import_session.py` to `app/fsutil.py` and is re-exported, because `import_session`
+     already imports `library` and that arrow cannot be reversed. Reachability, stated honestly:
+     MusicDrop's own imports file into `lib.directory` whatever the operation — move, copy,
+     hardlink, link or reflink — so only a beets CLI add or an `in_place` import through the alias
+     produces such rows.
+     **The app offers "add that folder again" only when every track row is a file in that one
+     folder** (`holds_every_track`). That is the shape where beets asks no duplicate question —
+     every row names a file the task is importing, so `find_duplicates` excludes the album and
+     `remove_replaced` absorbs the rows — measured under move, copy and hardlink: one whole
+     album, nothing in Trash. Everywhere else the page states the fact alone, because the
+     review seats measured the remedy doing harm: on a multi-disc download the field names one
+     disc, and re-adding it + Replace sweeps the other disc's download files into Trash; after
+     a stop under `move` (every inbox import) the download holds only the remainder, and
+     re-adding it + Replace leaves a one-track album with the placed track in Trash. In both
+     the notice then cleared. Both are recoverable from Trash.
+     NOT BUILT, recorded: a copy/hardlink stop AFTER some tracks landed is safe to re-add
+     (measured) but rows alone cannot tell it from the `move` one, so it gets no in-app remedy;
+     what finishes a `move` straddle is not established (Merge left it unchanged in one probe);
+     naming a multi-disc album's common parent; a real failed `copy` leaves a partial file that
+     beets steps around with a `.1` name; following the sentence on a TRASH ENTRY under `move`
+     leaves a 0-track Trash row whose Restore can never succeed (no app-store refusal at
+     import start on this branch); a hardlink that cannot cross filesystems stops the second
+     run the same way until the operation or the mount changes.
+     OPEN, OWNER'S CALL — the physical predicate silences a staging folder INSIDE the music
+     root reached through a symlink. Measured 2026-09-19 (security seat L-4): `env/dlalias` ->
+     `env/music/_incoming`, one album's rows spelled through the alias. Two servers, same DB:
+     before the second opinion the notice named `.../env/dlalias/Ghost`, after it `null`. The row is
+     physically inside and lexically outside, so beets will not relativize or move it — the
+     album stays half-managed and the page says nothing. The alias shape the fix targets is the
+     common one and stays fixed; this is the row where the notice's CONDITION (now physical) and
+     its REMEDY (which predicts beets, whose guard is lexical `commonpath`) disagree. Two
+     options, neither taken this round: (1) narrow the suppression to the alias it was written
+     for — suppress only when the row's realpath differs from the row's own folder by the root
+     prefix alone, keeping the measured alias fix and restoring the notice for a staging folder;
+     (2) keep the physical condition and give the state its own sentence ("These files are in
+     your music folder under a different path spelling; beets will not manage them until the
+     spelling matches"), which is a third value on `AlbumDetail.outside_library` and therefore a
+     contract change. Whichever way it goes, `backend/tests/test_album_outside_library.py` should
+     carry a row spelling a folder INSIDE the root through a symlink; it has none today.
+     OWNER'S CALLS: the failed run's panel does not point at the half album (its row reads "did
+     not land" with no link, because the session reported no album id before it died); the
+     notice has no "add this folder" control (`ImportAgainButton` already starts an import
+     from a known path, and `/import` takes no `?path=`); the list pages carry no marker;
+     `StatusBanner` forces `role="status"` and `items-center` (27 usages in 11 files; two
+     static banners carry the live role today, three call sites work around the alignment) —
+     a role opt-out plus top alignment is its own change.
+   - **Residual (security seat, 2026-09-19, Low): the physical second opinion is asked once per
+     lexically-outside ROW.** Measured: 12 `lstat` per row against 12 per album before the per-row
+     form; 5.16 ms at 200 rows against 0.027 ms flat. Off the event loop (`run_in_threadpool`), so the
+     loop is safe; the cost is a hung share, where every `lstat` can block for a mount timeout and
+     the worst case is the alias-spelled album the fix targets (it never short-circuits).
+     `library.py` caps its own presence sample at 5 for the same reason. Remedies, owner's pick:
+     hoist the root's `realpath` out of the per-row loop (about half the per-row cost); memoize the
+     answer per row FOLDER (rows of one album usually share one, so one or two chains per album; a
+     file-level symlink is the shape that would differ); or cap the rows asked like the presence
+     sample. Not changed on this branch. Same seat, informational: the forgiven-root record counts
+     ACCEPTED starts and its sentence says "filing this import there" — an accepted start that then
+     files nothing still leaves the record.
+   - **An import refuses to start without the music folder, and a shown path posts back —
+     BUILT 2026-09-19 on `feat/import-keep-downloads`** (PLAN §3 items 9, 10, 11, 12; each
+     reproduced through the real route first). Measured before: with `directory:` missing or a
+     bare mountpoint, beets refused nothing under move, copy or hardlink — it re-created the root
+     on the container's own disk and a `move` emptied the download. Now `BeetsImportRunner.validate`
+     asks `require_importable_library_root` (the import-side reading of `require_library_root`,
+     the predicate Trash, Delete, Restore and disk sync ask unchanged) → 503 on `POST /api/import` and both inbox
+     routes — except a fresh install: an EMPTY root with no item rows (`SELECT 1 FROM items LIMIT
+     1`; a random one-album sample opened the gate 9 polls in 400 beside a pathless row) lets the
+     first import start
+     (Docker hands every new install an empty `/music` and the app never creates it; the review
+     seat measured every new install refused before this arm was forgiven; Trash, Delete, Restore
+     and disk sync keep the stricter predicate). **That arm's key is "the `items` table holds no
+     row", which is not "this install has never imported":** a `library:` edited to a path that
+     does not exist yet, a `library.db` lost or restored from before any import beside an intact
+     `config.yaml`, and a repointed `BEETSDIR`/`MUSICDROP_BEETS_DIR` each reach it on a configured
+     install, and the security seat measured an attended import filing four files onto a bare
+     mountpoint through it (2026-09-19). Narrowed rather than closed: `require_importable_library_root`
+     returns the root it forgave and `ImportJobRegistry.start` WARNs it on `uvicorn.error` once per
+     ACCEPTED start, after the slot claim (a refused start records nothing), naming the root it is
+     about to file into — the one record that makes a shadowed-mountpoint import diagnosable
+     afterwards. The log sits there and not inside the predicate because the gate polls the same
+     predicate at 2 Hz while another job holds the slot. A `?first_run` flag or a setup-screen gate would close the hole instead of
+     narrowing it; that is an owner call, not taken here. The shared gate both background drains poll asks
+     it too, so the slskd drain and the bank apply wait with zero row writes and zero folder walks (measured over 10 s at production
+     intervals: 120 `scandir` + 120 `isdir` per minute, nothing else) and resume without a restart
+     — one WARNING when the wait starts, one INFO when it ends; an OS error from the root question
+     inside the gate reads as "wait" too (measured: a raise there killed the acquisition thread
+     and failed the bank row; while the drains are parked the acquisition status endpoint reports
+     no wait — residual. Measured 2026-09-19 with the share renamed away: `phase: running` with
+     `current` set to the parked folder, not `idle`, because `_process_one` sets the phase before
+     `_wait_for_gate`. A third `waiting` phase is the honest shape and is a contract change, so it
+     is an owner call, not taken here). The posted path is capped at 4 096 characters
+     (PATH_MAX): the placeholder resolver is quadratic and runs on the event loop — 80 KB stalled
+     it 210 s. The cap bounds the string, not the time: a placeholder component that matches an
+     entry, alternated with `..`, re-scanned the same directory per repeat (17 s at 20 000 entries;
+     a health check queued behind it waited 16.8 s), and the inbox item `name` and Trash restore
+     `folder` reach the same resolver with no bound at all (25 s / 82 s from 64 KB). Second round:
+     the shared resolver refuses a `..` or `.` segment in a placeholder path (the app's own
+     displayed paths carry none; a user-typed one posted back with a placeholder is refused, not
+     resolved; the amplified case fell from 19.0 s to 0.1 ms), the two sibling fields are
+     capped at 255 characters (NAME_MAX; an over-long name is now a 422 where it was a 404), and
+     the import route resolves off the event loop because the densest 4 096-character path still
+     cost ~312 ms on it. Third round, all re-measured against a real uvicorn (2026-09-19): the
+     threadpool REDUCES that stall rather than removing it — the dominant cost is pure-Python
+     `pathlib`/`posixpath.join` work, which holds the GIL (`os.scandir` profiled at ~0.5%), so
+     2048 components cost ~331 ms of request time and 175-334 ms of loop stall over five runs
+     with a 2 ms poller, against a ~0.25 ms health baseline (re-measured 2026-09-19; the earlier
+     413/236 ms pair came from a 10 ms poller too coarse to see the worst gap). And the siblings
+     do not "resolve one component": all of them consume their value as a RELATIVE path
+     (`resolve_display_path` iterates `Path(rel).parts`), so 255 characters admit 128 components
+     (`"x/" * 127 + "x"` is 255 characters and 128 components) — the cap was
+     reasoned about as a NAME cap and applied to a PATH. `DELETE /api/trash?folder=` had no bound
+     at all: 3600 components stalled the loop 2091 ms (2797 ms with one non-UTF-8 self-referential
+     symlink planted in the Trash), so it is capped at 255 like its siblings and the bound test is
+     parametrised over the query SHAPE as well as the two body ones. Letting the refusal escape `start`
+     instead killed the acquisition daemon thread and burned every queued bank row (measured), and
+     catching-and-reverting cost ~120 row writes/min; no backoff cap was built because there is
+     nothing left to cap. A NUL in the posted path is a 422 (it 500'd on copy through the
+     in-library guard's `realpath`, and started-then-failed otherwise; `os.fsencode` does not
+     raise on it). A folder whose name UTF-8 cannot carry is shown with U+FFFD; posting that shown
+     path back — "Import them again", the album page's `outside_library.folder` — maps it onto the
+     real folder through the existing `resolve_display_path`, 409 when two folders display alike;
+     a path with no placeholder reaches beets byte-for-byte as typed. Review-all with one settled
+     folder vanished between listing and start was already harmless (pinned, no code).
+     NOT BUILT: a nonexistent path still starts and ends `done` with 0 albums ("a typo looks like
+     success") — ~22 lines because any new refusal at `start` needs an arm in the acquisition
+     drain (which has no catch-all); importing a Trash ENTRY under `move` files the album and
+     leaves an empty entry listed, importing the Trash ROOT sweeps every trashed album into the
+     library and orphans its origin records (noisy, nothing lost); a parent of the library — see
+     the `POST /import` footgun entry, now measured on a POPULATED library. The registry and
+     runner reach the library through one `cast` (`require_importable_library_root`) because
+     `import_jobs/` must not import beets; an adapter-exported `Protocol` with `directory: bytes`
+     type-checks against a real `Library` (seat, measured with mypy) and would retire the cast and
+     `validate`'s `getattr`/`noqa` — ~5 signatures + 2 registry tests that pass `object()`. Not
+     this branch.
+     - **`aria-disabled:opacity-50` is copied onto ~20 buttons.** The pending recipe
+       (`aria-disabled`, click swallowed) has no dim of its own, so each site adds the class,
+       and a pending button keeps its hover fill. Lifting both into `buttonVariants` beside
+       `disabled:opacity-50` is a primitive-level decision.
+   - **Replace disposes of the old copy before beets places the new one — BUILT 2026-09-18 on
+     `feat/import-keep-downloads`** (`decisions` #58, corrected the same day). The duplicate
+     hook moves every duplicate that has files to Trash, drops the rows of one that has none,
+     and answers beets KEEP; the new album lands on the old paths (no `.1`, no `[2]`). It
+     answers KEEP and NOT beets' own `remove` on purpose: `remove_duplicates` re-runs
+     `find_duplicates` after the user has answered, and on an as-is import `task.add` has by
+     then rewritten albumartist — measured: a compilation shown as a duplicate of
+     `('A','Comp X')` had `('Various Artists','Comp X')`, an album nobody was shown, hard-deleted
+     outside Trash with no error. Every row of a duplicate goes to Trash with its album,
+     wherever its file lives (an in-place import, a changed `directory:` and a symlinked album
+     folder all put files outside the music folder legitimately). The one exception is a row
+     naming a file the run itself is reading: it is dropped and the file left alone (measured:
+     after a half-finished import, re-importing the folder and answering Replace had moved the
+     import's own source file out of the download folder). "The same file" is the same
+     directory entry (the entry's own inode plus its holding directory's, links not followed),
+     on both routes: beets' own byte comparison missed a symlink-alias spelling of the
+     download folder, a bare inode would match a hardlinked library copy, and a followed link
+     would match a `link`-mode library entry — both of which must still reach Trash. A bank
+     apply whose collision holds an album its banked prompt did not name refuses the whole
+     Replace ("The library changed since this was set aside. Decide again."), the bank row
+     fails retryable, and the row's stored prompt is replaced with the collision that apply
+     saw, so deciding again is a decision about what the library holds now. Filtering instead
+     was measured wrong twice (the un-named album went unclassified and beets wrote through
+     its dangling links; where it did dispose, a second copy stayed and the new album took
+     `.1` names). If
+     the music root looks unmounted, a duplicate's files cannot be read or are links to
+     nowhere, no Trash is wired, the store layout is refused or a move fails, beets is answered
+     SKIP, nothing is imported, and the feed row carries a short `note` saying why (a bank
+     apply fails its row with the same text). Those checks run over every album in the
+     collision, asked about or not, because they are about where beets is about to write. The
+     banked route (`_seed_replace_from_directive`) still trashes after the run, because a bank
+     apply can import nothing; it moves nothing of an old album that names the same directory
+     entry (resolved path, file inode plus holding-directory inode) as an album landed in that
+     run — a refiled hardlink sibling in another folder still reaches Trash. Accepted: two
+     hardlinks of one file in ONE folder read as one entry, and that album's files stay in
+     place untracked. What the 2026-09-18 seats left open:
+     - **OWNER'S CALL — a Replace decided on a bank row with no stored prompt replaces whatever
+       collides at apply time.** That is the documented recovery for "the album duplicates one
+       already in your library - decide again with a duplicate action", and what a Rescan
+       leaves (it clears the stored prompt). The user is shown no list. Closing it: an empty
+       list refuses once and stores the live collision, as the stale refusal now does — sized
+       at ~6 production lines, seven tests pin today's behaviour, and every such row would
+       need two tries.
+     - **OWNER'S CALL — the finished panel wears the green Success check when something
+       didn't land.** `JobDone` always passes `icon={Success}`, so a run whose only album was a
+       refused Replace reads "Import finished" with a green check over "0 albums imported ·
+       1 didn't land" (UI/UX seat, 2026-09-18). Older than this branch: a session that died
+       before `task.add` reads the same. A tone decision, not a bug fix.
+     - **MEDIUM — the banked post-run route cannot refuse a placement onto broken links.** It
+       runs after beets has placed the new album, so the hook's refusals do not exist there.
+       Measured by the security seat: a library copy made of links to nowhere, its DB fields
+       renamed so beets' byte-exact duplicate query misses it while the banked identity check
+       (case-folded) still matches — the new album's audio landed outside the music library,
+       `errors: []`, no note. Needs the old copy's stored paths to equal the new album's
+       destination while its duplicate key differs (a `beet modify` without `-M`, a case-only
+       re-tag). Not fixed with another guard: the later slice that drops the `find_duplicates`
+       wrap can hand the banked albums to the duplicate hook, where the refusals already are.
+     - **A dropped share with a stray entry on its mountpoint** (`.stfolder`, `lost+found`)
+       passes `require_library_root`, so every duplicate reads as having no files and its rows
+       are dropped while its files sit untouched on the unmounted share. Bounded to the albums
+       the user asked to replace. The stronger `require_library_present` was measured to refuse
+       a small library whose only album is the ghost, which is the flow ghost Replace exists
+       for. A refusal at import start is planned (slice 7) and covers a share that is down
+       when the run begins, not one that drops mid-run.
+     - **BUG in beets' placement, reachable on `main` — an import onto a dangling symlink
+       writes OUTSIDE the library.** `util.unique_path` asks `os.path.exists`, which is False
+       for a link to nowhere, so beets writes to that name and the bytes land wherever the link
+       points. Measured against beets 2.13.1 with a dangling destination: `copy`, `hardlink`
+       and `reflink: auto` create the file at the link's target with no error; `move` replaces
+       the link (safe); `link` fails loudly with "File exists". Measured end to end through a
+       Replace before the refusal below existed: a `link: yes` library whose download folder
+       was moved or deleted (the entries dangle), re-imported. NOT measured, expected from the
+       same mechanism: Keep both, or a plain import after a disk sync dropped the rows. A
+       Replace answered through the duplicate prompt (attended, or a bank apply whose collision
+       beets finds) refuses in that state ("The old copy's files are broken links. Nothing was
+       imported.") and deletes nothing, links included, so the user has to remove the links by
+       hand; the banked post-run route does not (the MEDIUM above). Clearing a dangling link at
+       a library path, or refusing placement onto one, needs its own decision.
+     - **Trash on another filesystem receives a full copy of a `link`-mode entry.** beets'
+       cross-device move reads through the symlink for the content and removes only the link
+       (`util/__init__.py`, the `copyfileobj` fallback), so nothing is lost but Trash holds a
+       copy of a file the download folder still has. Space, not safety. Code-read, not run.
+     - **Two unbuilt shapes in the banked route's file identity.** A holder directory renamed
+       from outside between the two stats reads a shared file as unshared (needs an external
+       change during a run); a row naming a FIFO reads as present and a cross-device move would
+       block on opening it. Neither was constructed.
+     - **beets' error text reaches the job error unscrubbed**, absolute host path included
+       (`FilesystemError: … while copying /music/…`). Accepted: the reader is the authenticated
+       owner of those paths, and the path is what lets them fix the problem.
+     - **A ghost's surviving cover stays in the folder, and beets overwrites it later.** When the
+       old album's audio is gone but its cover is not, Replace drops the rows and leaves the
+       cover untouched (`trash_album` cannot move art when no item moved, measured). The new
+       album's `artpath` starts empty, and the next art save for it goes through beets'
+       `Album.set_art`, which removes whatever sits at the art destination before writing
+       (`library/models.py`, `util.remove(artdest)`, no `unique_path`) — so the old cover is
+       replaced then, with no Trash entry. beets' own behaviour for any untracked file at that
+       name, not only after a Replace.
+     - **One refused Replace fails the whole bank row**, even when a sibling album of the same
+       folder landed; a retry re-imports the folder and the sibling then surfaces as a
+       duplicate. A bank row is a folder and has one status.
+     - **Not run on the shipped Docker layout** (Trash on another filesystem than the music).
+       `trash_album`'s cross-device behaviour is unchanged, but its failure now arrives before
+       the import instead of after it.
+   - **Delete moves an album's own files to Trash, not its folder — BUILT 2026-09-18 on
+     `feat/import-keep-downloads`** (`decisions` #58; reverses #28 item 4). Tracks, the tracked
+     cover and MusicDrop's lyric files go; anything else in the folder stays, and the folder
+     stays only while something is left in it. Closes the released case-insensitive loss for
+     audio: measured both ways on a casefold tmpfs, 2 dangling rows under the folder move, 0
+     now. beets prunes folders its move empties, climbing to the music root; a keep-file holds
+     it off the app's own folders (inbox, Trash, playlists) for the length of the move, so
+     Delete never removes one and never creates a directory (putting a pruned folder back was
+     measured to create it on a dropped share's bare mountpoint, after which the mount check
+     passed). The whole-folder album mover (`trash_album_folder`, its undo,
+     `TrashRowsNotRemovedError`, `TrashDeleteIncompleteError`) is REMOVED; entries further
+     down that name it describe released versions. Restore still reads the `moved="folder"`
+     records those versions wrote. Open:
+     - **Restore brings back the audio only — owner's call.** Delete then Restore re-imports
+       the tracks; the cover and the `.lrc` files stay in Trash, the origin record is consumed
+       and a 0-track row remains (measured; the lyric half is pinned, the cover half is not).
+       Every deleted album now, where it used to be shared-folder albums only. Item 6 above
+       (import carries sidecars) would return the lyrics for every import; the cover needs
+       Restore to set it from the entry.
+     - **A failed row removal leaves the album listed with its files in Trash.** The error
+       says to retry before emptying, a retry finishes the delete, and Empty refuses an entry
+       the library still lists ("Delete the album again, then empty Trash."; a lone track gets
+       "move that entry out of Trash"). The check is beets' own `path:` query (`PathQuery`),
+       shared by Empty and the delete-retry side through one helper (`protected.rows_under_any`),
+       asked over DIFFERENT roots — Empty's gate over every candidate spelling, the retry arm
+       over the current Trash alone (only the refusing half may be generous: the retry arm
+       drops rows without moving files, so widened it de-registered an album whose files sat
+       in an old default Trash the page does not list; measured paired, then narrowed)
+       — three rounds of hand-rolled path SQL, root spellings and inode confirms were deleted
+       for it (owner, 2026-09-19: do not over-engineer what beets already has). It is asked
+       with four CANDIDATE spellings the app's own settings name for the current Trash — the
+       checked Trash, its resolution, the configured string as written, and the default
+       `<beets_dir>/trash` — deduplicated to 1 on an ordinary default layout and 2-3 once a
+       link is involved, in one `OrQuery` pass. One spelling was not enough: a row holds the
+       spelling the mover used THEN, the settings resolve NOW, and `resolve_trash_dir` returns
+       a configured path resolved and the default unresolved — measured through the routes
+       with no hand-edited row (`mv trash bigdisk-trash && ln -s bigdisk-trash trash`;
+       configuring a linked default Trash; clearing a configured one): Empty answered 200 with
+       the only copy gone and the album still listed. Each now refuses, and the remedy clears
+       it. RESIDUAL, recorded not guarded — beets has no identity beyond the path string: a
+       Trash reachable only under some other spelling is not recognised and Empty removes the
+       entry (measured in `tests/probes/alias_rows.py`: a bind mount, a second symlink, NFD
+       against NFC, `STRASSE` against `Straße`). One such path needs no hand-edited row: the
+       same relocate-and-symlink done TWICE (`trash -> disk1-trash`, then `mv disk1-trash
+       disk2-trash && ln -sfn`) — nothing remembers `disk1`, no spelling list can name it, and
+       Empty answered 200 with the album still listed (review seats, measured through the
+       route; not in that probe). A hand-built
+       `<trash>//Entry//01.mp3` row is matched by the root query (the retry arm treats it as
+       in Trash) and not by the per-entry query (Empty removes the entry); `..` is matched by
+       both; `Album.move` normpaths what it stores, so the app writes neither. beets probes
+       case sensitivity per PATTERN, so the root query and an entry query can sit on
+       differently flagged mounts (code-read, not built). Enumerating more spellings by hand
+       is the machinery that was deleted. Cost at 100 000 relative rows, no hit, fresh
+       fixture: ~24 ms with one spelling, +11 to +17 ms per further one (two independent
+       runs; an earlier 98 ms figure came from a fixture directory reused across four builds).
+       An item row with a NULL or empty `path` (beets stores `b''` for a pathless item;
+       nothing in the app adds one) is refused by name before anything moves:
+       "Nothing was moved. Fix the row in beets, then retry." The album-page notice built on
+       this branch matches the failed-row-removal state when Trash is outside the music
+       folder (rows naming files outside the library). The first attempt's lyric files are not recovered by the retry: they stay
+       beside where the audio was, for the orphan sweep. A delete that stopped PART-WAY (some
+       tracks moved) still gets a second Trash entry on retry.
+     - **A `clutter:` pattern matching `.musicdrop-keep`** (`.*`, `*`) turns the protection off;
+       it is logged, not prevented (a config advisory would be the place). A file the user's
+       `clutter:` names is removed with the emptied folder, permanently, as in any beets move
+       — measured with `['*']`: the album's other tracks count as clutter and never reach
+       Trash.
+     - **The keep-file's release checks identity before it unlinks**, so a file that arrives
+       at the name after the plant is left alone; the stat-to-unlink window is narrowed to
+       that one directory, not closed. A plant whose own `fstat` faults (EIO on a stale
+       share) leaves its keep-file behind; the descriptor is still released.
+     - **An artist delete on a FLAT library reads the library once per album** for the
+       sidecar claim (`_stems_in_use`, the one hand-rolled path predicate left — beets has
+       no "who shares this stem" query): 11 ms per album nested, 165 ms per album in a flat
+       100 000-row root, so ~1.6 s for ten albums inside the swap lock. Hoisting the read to
+       once per artist is the fix.
+     - **Under `hardlink: yes` a Replace leaves the trashed old copy and the new library
+       file on one inode** (measured through the branch's own flow). Nothing compares inodes
+       there today; any future identity check on Trash must include the holding directory.
+     - **A cover both case-insensitive twins track still travels with whichever is deleted**
+       (characterized in `tests/probes/casefold_delete.py`).
+     - **The casefold pin may skip on CI.** It needs a casefold tmpfs and an unprivileged user
+       namespace; `MUSICDROP_REQUIRE_CASEFOLD` is set nowhere in `.github/`. Read the first CI
+       run's skip line before calling the loss pinned anywhere but the dev box.
+     - **Only Delete holds the prune off an app folder.** Duplicates resolve and import
+       Replace call the same mover without the keep-file (an album imported in place into the
+       inbox, then replaced) — measured. Reorganize, tag-edit moves and import run beets'
+       prune over the same chains with nothing planted — read in the code, not driven. Empty
+       or clutter-only directories only. One shared "hold our folders" step for every mover
+       is its own slice.
+   - **BUG, on `main` — a playlist can silently name a different song.** Playlist entries
+     store a bare beets item id (`app/playlists/store.py`, `StoredEntry.item_id`), nothing
+     prunes an id whose item is gone, and SQLite hands a freed rowid to the next insert.
+     Measured 2026-09-18 with a real store and library, no Replace involved: delete the newest
+     album, import a different one — the stored ids `[1, 2]` went from `Airbag 1/2` to
+     unresolved to `Idioteque 1/2`, and the next `.m3u8` export names the new files. Reached
+     only when the deleted items held the highest ids (the newest album). After a Replace of
+     the newest album the same reuse re-points the entries at the replacement copy, which
+     happens to be what the user wants there, by accident. The fix is not designed.
+   - ~~**KNOWN LIMIT — a raced config Apply drops the pin and re-shadows the new config.**~~ —
+     **CLOSED 2026-09-21** on `feat/import-keep-downloads` (PR #232). Every forced `import.*`
+     key is an overlay on a process global, and beets' importer reads `config["import"]` live
+     (`importer/session.py:91-138`, `:188-191`; no per-session config), so an Apply that swapped
+     the sources mid-import dropped the pin (measured: `delete: False` became the user's `yes`,
+     `duplicate_action: ask` became `remove`). Closed by mutual exclusion rather than by asserting
+     the value where beets reads it: Apply and the other swap-lock holders now check the job
+     slots under the claim lock AFTER taking the swap lock (`library_busy.swap_blocked_by_job`),
+     so no import runs while Apply replaces the config. The artist-image reset checks only the
+     artist-art slot and touches no beets config. The same gap let an overlapping copy-import pick
+     up Trash restore's forced `move`; closed by the same check. Search words: overlay, pin,
+     delete, Apply, swap lock, claim lock, TOCTOU.
+   - **Upgrade note owed in the release.** A user running `copy: yes, delete: yes` today has
+     manual imports of a plain folder silently removing the source; after the pin they keep it, so
+     that folder stops self-emptying. Inbox/slskd paths are unaffected (they send
+     `operation="move"`). Name `move` as the supported alternative. Also name the new boot
+     refusals (owner ruling 2026-09-21): a config that started on the previous release stops at
+     boot if an `include:` is missing or broken, or if the include list is over 32 entries or
+     1 MiB. Before, beets loaded it without the include and said so only on stderr.
    - **Reference.** Lidarr v3.1.0 applies "Use Hardlinks instead of Copy" only on its copy path,
      as hardlink-else-copy (`TrackFileMovingService`, `DiskTransferService`), and keeps Remote
      Path Mappings per client host.
@@ -132,6 +596,23 @@ entry carries a dated correction block where the pass changed it._
    (TRaSH Guides: one dataset with subfolders). Say that instead of implying the split is the
    recommended shape.
 
+9. **Settings gets a Lidarr-style Tasks / Jobs / Logs section** (owner, 2026-09-19, parked:
+   *"lets leave this for after we finish what is important here"*). Today the activity popover
+   (`frontend/src/components/shell/ActivityPopover.tsx`) is the only surface for the six job
+   sources composed in `frontend/src/api/useActivity.ts`, and the operator log is terminal-only.
+   Shape to design, not decided: one Settings route listing running and finished jobs with their
+   outcomes, plus a readable log. Depends on the done-row dismiss under Open bugs, which is the
+   small half of the same complaint.
+
+10. **Replace the six native `<select>`s with the shadcn Select** (owner, 2026-09-19, on the
+    candidate page: *"the check button is blue as well"* — the native dropdown's checked mark and
+    focus tint are the browser's blue, not the app's tokens; the two native checkboxes on the same
+    screens were swapped for the shadcn Checkbox on `feat/import-keep-downloads`). No Select
+    primitive is installed yet (`frontend/src/components/ui/` has no `select.tsx`;
+    `components.json` exists, so `npx shadcn add select`). Sites: `CandidateReview.tsx`,
+    `BankSection.tsx` (two), `BrowsePage.tsx`, `Pagination.tsx`, `PlexSettingsPanel.tsx`. One pass,
+    all six, so the family stays one shape; the Pagination one is the only page-size control.
+
 The 40 banked #143 Plex review Minors stay fully adjudicated (2026-08-25, every item
 re-verified against v0.44.0): 12 shipped as the triage fix slice (see Recently shipped), 12
 recorded below, 3 accepted as deliberate, 3 were already fixed. Of the 12 recorded, the
@@ -139,6 +620,441 @@ three that sat under Open bugs shipped in #184; the nine under Deferred minors r
 Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 ## Open bugs / hardening
+
+- **Activity popover: a finished job's "Done" row cannot be dismissed and stays until the server
+  forgets the outcome.** Owner, 2026-09-19, from the TrueNAS instance: three Done rows (lyrics,
+  artist art, Reorganize) with *"no way to clear them"*. Cause: each job registry keeps its last
+  outcome until that job kind runs again or the process restarts, and the popover shows whatever the
+  server reports; `useActivity()` drops a dismissed row only when its state is `failed`
+  (`frontend/src/api/useActivity.ts`, the dismissed filter) and `ActivityPopover.tsx` draws the ✕
+  for failed rows only. Fix shape (frontend only): draw the ✕ on done rows and let the filter drop a
+  dismissed done row; safe because every run mints its own uuid id, so a dismissal cannot hide the
+  next run. Open choice: dismissals live in `sessionStorage`, so a dismissed row returns in a new
+  tab; `localStorage` would make a done row's dismissal stick, and would also make failed rows'
+  dismissals per-browser instead of per-tab. On `main`; not this branch's change.
+- ~~**Test-order flake: a SUBSET run of `backend/tests/test_import_start_guards.py` fails with
+  `confuse.exceptions.NotFoundError: timeout not found`**~~ — **CLOSED 2026-09-21** on
+  `feat/import-keep-downloads` (PR #232). **The cause recorded here was wrong in four places**, all
+  corrected by a diagnosis agent's measurements and re-checked against the code:
+  - **Not pre-existing against `main`.** The file, the two leaking tests and both victims were all new
+    on this branch (2026-09-19, PR #232); "pre-existing" was only true of later rounds on the branch.
+  - **The worker thread never raises.** Two tests started a real import and returned without draining
+    it, against the file's own rule (`_drive`, see the comment at `test_import_start_guards.py:174`).
+    The leftover worker RELOADS beets' config just after the between-test reset, and confuse's
+    `LazyConfig.read()` sets `_materialized = True` BEFORE it loads the sources
+    (`confuse/core.py:724`), so for ~5 ms the config looks loaded but holds no defaults. The NEXT test
+    to read `timeout` (`beets/library/library.py:83`, via `build_library`) raised — an innocent
+    neighbour, never the test that leaked.
+  - **In the test body, not SETUP** (pytest reports `when=call`), and **not the `clear()` hazard
+    conftest describes** — it is `read()` setting the flag before loading while another thread lives.
+  - **Not a design question.** Two drains closed it.
+  Why the full suite hid it: by then each test's `tmp_path` setup scans a temp dir of ~7,500 entries
+  and runs a few ms slower, so the neighbour usually arrived after the window closed. Measured: the
+  two-file subset failed **3 of 12** plain and **5 of 5** with the window held open; after the fix
+  **0 of 12** plain and **0 of 5** held open, and removing either drain alone leaves that test's
+  import alive at the reset (the second also fails its neighbour again). Search words: flake,
+  subset, order-dependent, `timeout not found`, LazyConfig, `_materialized`, `_drive`, drain.
+- **`POST /api/trash/restore` and `DELETE /api/trash` still resolve caller-named relative paths
+  on the event loop.** Same class as the import start, which was moved off it on 2026-09-20 after
+  the security seat measured a **10002.7 ms** loop gap against a 2.1 ms idle baseline on a hung
+  mount (FUSE stand-in with a sleeping `getattr`; the same probe on the previous commit read
+  2.4 ms). These two routes take the same 255-character / 128-component input shape and were not in
+  that round's scope. A hung share therefore still freezes every other route, live updates and
+  `/api/health` — and the image's `HEALTHCHECK --timeout=5s --retries=3` (`Dockerfile:44`) marks the
+  container unhealthy after ~15 s, which a supervisor (autoheal, a k8s liveness probe) acts on by
+  restarting mid-operation. Fix shape: `run_in_threadpool(partial(...))` around the resolve block,
+  exactly as `app/api/import_.py` and `app/api/acquisition.py` now do; the house test oracle is
+  `asyncio.get_running_loop()` inside the probed callee asserting `on_loop == [False]`, NOT a timing
+  assertion (a timing oracle is vacuous here — under the mutant the blocking call owns the loop, so
+  the `await` that starts the timer cannot resume until the stall ends and the measurement reads
+  clean). Search words: event loop, blocking stat, hung mount, NFS, healthcheck, threadpool.
+- **Forty concurrent import starts exhaust the process-wide thread pool, and `/api/health` keeps
+  answering 200 while they do.** Measured 2026-09-20 on a real uvicorn against a hung FUSE mount.
+  `ImportJobRegistry.start` calls `runner.validate` BEFORE `claim_slot` (`registry.py:298` vs
+  `:314-315`), so the single-job slot does not bound how many source stats are in flight. anyio's
+  default thread limiter is **40 and process-wide** (anyio 4.13.0), and FastAPI draws from it for
+  every sync `Depends` callable — all 18 of this app's are plain `def` — and for the scrypt derive
+  at `app/api/auth.py:459`. With 40 stuck: `/api/health` 200 in 0.65 ms, `/api/imports/active`
+  timed out at 20 s, `POST /api/auth/login` timed out at 20 s. **The single-request case got
+  strictly better** in the same round (on `main` ONE request took `/api/health` to 18.0 s against a
+  0.0005 s baseline; now one request costs one token and everything else stays sub-3 ms), so this
+  is a saturation-only regression — but a specific one: a dead app now reads healthy, where before
+  the loop stall took the healthcheck down with it. The shipped `docker-compose.yml:44` sets only
+  `restart: unless-stopped`, which acts on exit rather than on `unhealthy`, so nothing auto-restarts
+  either way today — the cost is to operator monitoring and to any autoheal/k8s liveness probe.
+  There is no `--limit-concurrency` (`Dockerfile:61`) and no inbound rate limiting anywhere
+  (`TokenBucketLimiter` is the OUTBOUND artwork fetcher). Caps SHIPPED 2026-09-20: a 1-token limiter on the
+  import-start path (bounded at 30 s, then 503) and a 4-token limiter on the inbox filesystem
+  reads, which the slskd webhook's three hops now also take. This entry stays for the two halves a
+  cap does not fix: the healthcheck still answers 200 on the loop while the app cannot serve a
+  route that touches a disk, and **the inbox reads' WAIT is unbounded** — a hung mount parks
+  `GET /acquisition/status`, `GET /acquisition/inbox/items` and `POST /acquisition/review-inbox`
+  at the limiter with no answer and no sentence. Two seats rated that High; it is recorded rather
+  than fixed because the same callers hung inside `os.walk` before the cap existed (so it is not
+  a regression) and bounding it means a 503 on two polled GETs — a contract change plus new UI
+  handling. Fix shape if taken: `anyio.move_on_after(~5s)` around the acquire, mirroring
+  `import_start_admission`, with a short sentence naming the share.
+  Search words: anyio, thread limiter, 40 tokens, saturation, healthcheck lies, liveness.
+- **`POST /api/acquisition/review-inbox` reports an UNREADABLE inbox as "nothing to review".**
+  `app/acquisition/inbox.py:219-222` (`settled_folders`) and `:154-157` (`count_pending`) both
+  return `[]`/`0` on any `OSError`, so with the inbox share unreadable the route answers
+  `200 {"started": false, "pending": 0, "in_flight": 0}` — "your inbox is empty" — for a share the
+  app cannot read. Measured identically on `main` and this branch, so pre-existing, and the safe
+  direction by design (skipping beats sweeping a folder mid-write). But it is the one route where
+  the 2026-09-20 permissions diagnosis does not reach the user: the same misconfiguration says
+  "can't be read" on the two start routes and "all clear" here. Fix shape: let `settled_folders`
+  distinguish empty from unreadable (return `None`, or raise) and have the route answer 422 with
+  the same `strerror` sentence — a return-contract change with several callers, which is why it is
+  recorded rather than folded into that round. Search words: inbox, unreadable, empty, settled,
+  OSError swallowed.
+- **`xs` and `icon-xs` buttons render an unsized glyph at 12px, off the design system's icon
+  scale.** `frontend/src/components/ui/button.tsx:29` gives those sizes
+  `[&_svg:not([class*='size-'])]:size-3`, and twMerge keeps exactly one of the two same-prefix
+  tokens, so the base 16px is replaced rather than joined. At 12px Phosphor's light stroke (12 of
+  256 units) is **0.563px** — sub-pixel on a 1x display, a grey hairline rather than a line. The
+  spec's steps are inline 16 / banner 20 / hero 40. Two live sites were moved to 16px on
+  2026-09-20 by the owner's call (the Activity popover's dismiss glyph and the job row's View
+  caret, both by an explicit `size-4` on the glyph so the buttons keep their own box). **The sweep has an EMPTY population** — measured
+  2026-09-20 (UI seat): those two WERE the only `xs`/`icon-xs` buttons in the app (`size="xs"` →
+  `JobProgress.tsx`, `size="icon-xs"` → `ActivityPopover.tsx`), and both now opt out with an
+  explicit `size-4`. So the `size-3` rule currently governs nothing and is a trap armed for the
+  next `xs` button rather than a live defect. Note `xs`/`icon-xs`/`icon-sm`/`icon-lg`/`icon-xl`
+  are this project's additions, not shadcn's canonical four, so changing that token is fixing a
+  local default and not overriding a primitive.
+  Search words: icon scale, xs, icon-xs, hairline, sub-pixel, twMerge, size-3.
+- **The "Review all" refusal no longer NAMES a folder — do not rebuild it.** Deleted 2026-09-20
+  (~90 app lines, 4 tests), because it named the WRONG folder in every scenario it can reach.
+  Measured three ways: `os.stat` on a folder SUCCEEDS at `0o000`, `0o444` and `0o111`, so a
+  folder's own permissions can never raise the `EACCES` this arm needed; the only shape that does
+  is the INBOX PREFIX losing `+x`, and then every child refuses identically; end to end,
+  `missing_source_error` stops at the first non-absent errno, so the sentence read
+  `“Artist - Album A” can’t be read. Permission denied.` for a healthy folder. The batch 422 now
+  uses the shared singular. The forged-clause sanitiser (`_nameable`, `_QUOTES`, `_NAME_CAP`) went
+  with it — that hole existed only because a peer-chosen string was interpolated into operator
+  prose. Unsettled: ESTALE on a child that is itself a mountpoint might single one child out; not
+  reproducible without NFS. Search words: Review all, names the folder, _nameable, forged clause.
+- **A dropped unreadable folder is named only in the log.** `status.error` carries the shared
+  path-free sentence, deliberately: interpolating the basename there would open a second forge
+  surface for one line of text. But `has_audio` returns False for that folder, so it appears in no
+  listing — the operator has only the WARNING line (`%r`) to identify which folder. Reversible if
+  the sanitized basename is wanted there too. Search words: drop, status.error, which folder.
+- **The queue's GLOBAL defer arm is deliberately unbounded.** The unreadable arm is terminal (a
+  drop, not a retry), but the `RuntimeError` / `LibraryRootUnavailableError` arm defers, because
+  its condition is global rather than per-folder: bounding it would drop every queued download
+  during a long NAS outage. Deliberate, not an oversight. Search words: defer, unbounded, share outage, NAS.
+- **The Review page's refusal has no automatic expiry.** A folder whose permissions are fixed on
+  the server reappears in the listing with the stale red sentence above it until the operator
+  presses Dismiss. Auto-clearing on any refetch was rejected because the refetch that drops the
+  folder is exactly the one the sentence must survive; the only honest predicate found was "a later
+  listing gained a row it did not have while the refusal stood", which over-clears when an
+  unrelated download lands. Search words: refusal, expiry, dismiss, stale sentence.
+- **`logger.exception`'s traceback re-opens log injection for beets' own errors.**
+  `app/bank/apply_runner.py` — all three `item.folder` sites now use `%r`, and `str(OSError)`
+  renders `filename` with `%r` so a newline is escaped there. But `str(beets.util.FilesystemError)`
+  interpolates the path RAW, so a folder named `Album\n<forged record>` produces a complete forged
+  line inside the traceback, bypassing the `%r` on the format argument. Reachability through
+  `_apply_one` is thin (DB reads and JSON writes), so this is a residual rather than a demonstrated
+  hole. Search words: log injection, traceback, logger.exception, FilesystemError, beets.
+  **Sharper since 2026-09-21** (security seat, PR pending): `_row_error`'s OSError arm now tells
+  the operator to "check the server log", so this stream is the remedy the app points at rather
+  than a residual nobody reads. And now that app records carry uvicorn's `LEVEL:` prefix, a forged
+  line reading `WARNING:  ...` sits among genuine ones. Still Low under this threat model - the
+  actor is an unauthenticated remote peer gaining a deception / anti-forensics primitive in
+  `docker logs`, not code execution or data access.
+- ~~**A pre-existing flaky test, with a control.** `beets.config["timeout"]` raises
+  `confuse.NotFoundError` inside `build_library`~~ — **CLOSED 2026-09-21** (PR #232). The same flake
+  as the "Test-order flake" entry above, recorded twice; its cause, the correction of what was
+  recorded here ("pre-existing", "during test SETUP", "resetting confuse deterministically is a design
+  question") and the measurements are all in that entry. Search words: confuse, LazyConfig,
+  NotFoundError, timeout, flaky, build_library.
+- **Backend user-facing copy is half-curly: sweep the rest.** Owner's call 2026-09-20 — app copy
+  uses TYPOGRAPHIC punctuation, because the user never sees a `.py` file, they see one page, and
+  the frontend already uses `’` (153 sites) and quotes user data with `“ ”`
+  (`Results for “jazz”`). That round converted the two sentences it added
+  (`That folder can’t be read.`, `That folder doesn’t exist.`) and their pins; its third, the
+  batch `“<name>” can’t be read.`, has since been deleted with the naming feature.
+  **Not swept**: the other user-facing backend sentences still use straight apostrophes, so the same alert can show both dialects —
+  e.g. `Couldn't reach the slskd server.` (`app/slskd/service.py`), `Couldn't reach the Plex
+  server.` (`app/plex/service.py`), `Couldn't read the library files.` /
+  `Couldn't save this playlist.` (`app/api/playlists.py`), `Rescan isn't available for this
+  album.` (`app/beets/import_session.py`). Measured: an AST pass over `backend/app` finds 175
+  string literals containing a straight apostrophe, but the large majority are DOCSTRINGS, which
+  are not in scope — the sweep is only the sentences that reach a response body or a rendered
+  field, on the order of 30-40. Each has test pins, so it is mechanical but not trivial.
+  **The lint blocker is already cleared**: ruff's `RUF001/2/3` flag `’` as confusable with
+  `'` (20 errors on this round's three sentences alone), so `backend/pyproject.toml` now sets
+  `allowed-confusables = ["\u2019", "\u201c", "\u201d"]` — the rule stays live for what it is
+  for (a Cyrillic `а` or Greek `ο` in an identifier still fails), so the sweep needs no
+  further config. Search words: apostrophe, curly, typographic, U+2019, copy dialect,
+  straight quote, RUF001, allowed-confusables.
+- **The acquisition queue's dedupe key is recomputed through `resolve()` twice, so a symlink that
+  disappears leaks a `_dedupe` entry and the queued count never returns to zero.** Measured
+  2026-09-20 (security seat, while auditing the drain): `enqueue` and `_process_one` each compute
+  `str(folder.resolve())` independently (`backend/app/acquisition/queue.py`). With a symlinked
+  parent alive at enqueue and gone by process time the two keys differ
+  (`.../real/album` vs `.../link/album`; control: a plain directory gives matching keys), `_finish`
+  then discards a key that is not in `_dedupe`, the set leaks the entry, `status().queued` is
+  permanently off by one and `_phase` never returns to `"idle"` (`queue.py:271`). Pre-existing —
+  both keys were already recomputed before the source-missing round — but that round's new terminal
+  arm is a third way to reach it. Fix shape: resolve once at enqueue and carry the key with the
+  item, rather than re-deriving it from a path whose resolution can change. Search words: dedupe,
+  resolve, symlink, queued count, phase never idle.
+- **Timing flake family — a registry test polls for the album ROW, then pushes a reply before the
+  worker has PARKED its slot.** Seen in three full `make coverage` runs on 2026-09-19 while two review
+  seats ran suites on the same box: `test_import_duplicate_api.py::test_record_duplicate_decision_unblocks_and_marks`
+  (`KeyError: no duplicate parked at index 0`, `ImportBridge.push_duplicate_decision`) and
+  `test_import_registry.py::test_record_choice_duplicate_raises_runtimeerror` (`KeyError: no album
+  parked at index 0`, `ImportBridge.push_choice`). Both tests are unchanged since `main`; the same
+  file's `_poll_dup_prompt` docstring names the race (outcomes drain first, parked rows second). 0 of
+  10 module runs failed under coverage on either tree when run alone. Fix shape: poll the parked
+  prompt (or the bridge's slot), not the row, in every registry test that pushes a reply. Not fixed.
+  **Checked 2026-09-21: a DIFFERENT cause from the `timeout not found` flake, and genuinely
+  pre-existing** — these tests use `FakeImportRunner`, which never reads beets config, and fail with
+  `KeyError: no … parked at index 0`; both files and both named test bodies are byte-identical to
+  `origin/main`. `fakes.py` and `registry.py` did change on this branch, so its rate here versus
+  `main` is unmeasured.
+- ~~**No test runs on the Python that ships.**~~ — **CLOSED 2026-09-23** (PR #232). The image
+  was `python:3.11-slim` while `backend/.python-version` has pinned 3.12 since the scaffold, so
+  local and CI tested 3.12 only. Owner's call: ship 3.12 (`Dockerfile`). Measured before the
+  switch: ruff, mypy and 4270 tests pass on 3.11.16 as well. Patch releases can still differ (CI
+  takes the runner's 3.12.3, the image the latest 3.12), which is how a test pinning CPython's
+  NUL-path wording surfaced this.
+- ~~**Frontend flake: a Radix focus-scope timer outlives `MergePlaylistDialog.test.tsx`.**~~ —
+  **CLOSED 2026-09-23** (PR #232). Not one file: a file's last test can leave a 0 ms timer
+  (Radix FocusScope's focus restore on unmount, TanStack's notify flush) that vitest's jsdom
+  teardown races; when it loses, the run exits 1 with every test passed. The shared
+  `src/test/setup.ts` `afterAll` now waits one macrotask first. Measured: full runs 7 of 26 red
+  before, 0 of 17 after; a forced reproduction 10/10 → 0/10, and 3/3 again with the line removed
+  (re-run by hand). No library drains this itself (RTL `cleanup()` is synchronous; vitest's
+  `teardownTimeout` only bounds the wait). Report: `docs/superpowers/reports/2026-09-23-flake/`.
+- ~~**Acquisition drain threads outlive their tests**~~ — **CLOSED 2026-09-21** on
+  `feat/import-keep-downloads` (PR #232). This entry called the leak harmless; it was not. With
+  `tests/test_store_layout_boot.py` run before `tests/test_import_start_guards.py`, 4 tests failed
+  (code-review seat, re-run by hand). The cause was the lifespan: `acquisition_queue.start()` ran
+  before the bank-reconcile refusal, which re-raises without stopping it. The start now follows
+  that refusal. Thread census over the full suite: no drain thread alive after any test (on the
+  parent commit, 1, left by `test_an_unreadable_import_bank_gets_the_one_error_line_too`). Search
+  words: thread leak, acquisition, drain, census.
+- **Save accepts a config that stops MusicDrop starting** (security seat, 2026-09-21, measured;
+  owner: record it, fix on the next branch). Three ways, each measured: Validate is clean and
+  Save writes the file, then the next start refuses it.
+  - A value beets rejects only when it reads it typed: `musicbrainz: no`, `plugins: 5`,
+    `directory: 5` (`ConfigTypeError`).
+  - A skipped include, which Validate and Save only advise on; Apply and boot refuse it.
+  - YAML that ruamel accepts and PyYAML refuses: `!!python/object/apply:…` tags, complex keys
+    such as `? [a]`, and a bare `=` or `<<`. (A NEL/LS/PS character in a value, or `{k: 0:}`,
+    is read too, but a Save rewrites it into YAML beets loads.)
+  - Anchor names outside `[A-Za-z0-9_-]`: `&x.y`, `&é`, `&a&b` save with a 200, and beets'
+    scanner then refuses the file. A `:` ends the anchor name for beets: it reads `k: &a:b 1` as
+    `':b 1'`, refuses it only once an alias uses it (in its parser), and sees `&t:x` beside
+    `&t:y` as a reused anchor where the editor does not (review seats, 2026-09-23, measured;
+    predates the branch).
+  - A ruamel warning prints the whole value of an explicit `!!float` tag that holds an `e` and
+    no dot (`!!float Zq7Secrt`) to stderr (`ruamel/yaml/constructor.py:1148`, the round-trip
+    constructor). The value is
+    then refused. Only the operator can write that tag (security seat, measured; predates the
+    branch).
+  - An `!!omap` sequence counts as a mapping to the editor at any depth (`import: !!omap
+    [copy: yes]`, or the top level): Validate is clean, Save writes it back (`[copy: yes]` as
+    `[copy: true]`), and beets refuses the file ("expected a mapping node, but found
+    sequence"); Apply refuses before unloading anything. The reverse too: beets accepts
+    `!!omap {…}` (`confuse/yaml_util.py:83`) and the editor refuses it (review seats,
+    2026-09-23, measured; predates the branch).
+  - Validate rows that name internals: a non-string `directory:` or `library:` (including one
+    typed with no value yet) reads "Input is not a valid path for <class 'pathlib.Path'>", and
+    a bad `import.reflink` gives two rows, `import.reflink.bool` and
+    `import.reflink.literal['auto']`, both with no line (review seats, 2026-09-23, measured).
+  - **The planned fix, owner ruling 2026-09-23 ("Cut and ship", after asking whether this was
+    over-engineered):** Validate and Save check the text with beets' own loader and typed reads
+    (`confuse.YamlSource` with `beets.config.loader`, which Apply already reads config.yaml
+    through: `read_config_document`, `app/beets/setup.py:111`), and keep ruamel only for
+    writing, because it keeps comments. That closes this whole list at once and deletes the
+    editor's `_RefusingComposer` (`app/beets/config_editor.py`), which exists only to make
+    ruamel refuse a reused anchor as PyYAML does. Do NOT keep patching ruamel or rewording
+    Pydantic messages one case at a time.
+  - Not a start refusal, but the same typed-read gap: `write`, `copy` or `move` set to a number
+    (`write: 1`) passes Validate and Save, and beets' `.get(bool)` refuses it. An import refuses
+    it before adding any row (the pre-check), and an album edit answers a bare 500 (review seats,
+    2026-09-23, measured).
+  Apply is no longer part of the harm: when beets rejects a value after the teardown, Apply puts
+  the running config back and answers 422 with beets' error (owner ruling 2026-09-23). It
+  answers 500 only if that restore fails too. Validate and Save DO refuse an include list over
+  Apply's caps (32 entries or 1 MiB; code-review seat, measured). The Naming save answers 200 on
+  a file of the third kind and writes it back with only its two keys changed (security seat).
+  The other direction is safe but blocks editing: ruamel refuses a duplicate key that beets
+  loads (PyYAML keeps the last), and a bare value starting with `%`, such as
+  `default: %the{$albumartist}/…` as beets' own docs write it (confuse allows it,
+  `confuse/yaml_util.py:70-73`). So Validate, Save and the Naming routes refuse a file Apply and
+  boot accept (review seats, measured). A negative leading-zero int (`-0644`) is the reverse: a
+  ruamel bug writes it back as `!!int '0-644'`, which beets cannot load, so Apply answers 422
+  and a restart refuses. The editor's resolver reads a copy of beets' own loader table (PR #232
+  rounds 10-11): over 101,360 plain values, each resolves to the type beets gives it except the
+  negative leading-zero int. Still different: tagged values (`!!str x` reads as a ruamel
+  TaggedScalar, `!!bool 'y'` as True where beets errors), a timestamp with more than 6 fraction
+  digits (ruamel rounds, beets truncates), and the YAML listed above (review seats, measured).
+  Fix shape not designed: Validate would parse with beets' own loader (as
+  `setup.read_config_document` does) and ask beets' typed reads, not only ruamel. Search words:
+  L4, ConfigTypeError, musicbrainz, boot,
+  validate, save, include, typed read, ruamel, PyYAML, duplicate key, y/n, implicit resolver.
+- **Small residuals of Apply's restore and the include gate** (review seats, 2026-09-23).
+  - Each restore installs the plugins' default sources again: 5 more per restore with two
+    plugins. The values are unchanged. The list resets on the next good Apply or restart.
+  - A refused config's `pluginpath` stays importable after the restore, ahead of the bundled
+    plugins: beets adds it (`beets/plugins.py:381,385`) before the check that fails. Setting
+    `pluginpath` already runs the operator's code, so this adds no power.
+  - ~~The Naming panel shows "Could not load naming config." for its 422s.~~ **CLOSED
+    2026-09-23** on `feat/import-keep-downloads` (PR #232): the Naming panel's load and Save and
+    Settings → Beets' Save now print the server's `config_on_disk` sentence. It showed the fixed
+    text for a `config.yaml` that cannot be read, does not parse, or is not a mapping, because
+    the frontend never read that body.
+  - ruamel's round-trip drops a comment that sits before `---` and any `%YAML` line, and
+    indents a comment that follows `--- ` on the same line, on Save and the Naming save alike.
+    These comment changes alter no value beets reads. A NEL character (U+0085) in a submitted
+    string comes back as a space.
+  - ~~Validate and Save accept a reused YAML anchor.~~ **CLOSED 2026-09-23** on
+    `feat/import-keep-downloads` (PR #232). ruamel only warned (`ruamel/yaml/composer.py:130-137`),
+    and the warning printed both file lines to stderr, secrets included. Save then wrote a file
+    boot refuses. The editor's composer now refuses it, as PyYAML does (`yaml/composer.py:74-77`),
+    wherever both read the anchor names alike (see the anchor-name item above).
+  - A `config.yaml` that is not UTF-8, cannot be read, or is not a regular file opens as an
+    empty editor and does not say why. Its only lint rows are the two "Field required" rows
+    (`directory`, `library`) on line 1. For a missing, unreadable or non-regular file the banner
+    says "config.yaml is saved but not loaded yet", which is false (code seat, measured for
+    absent, EACCES, a FIFO and a directory). Since Edit works while Apply is pending, such a
+    page also invites a draft that every Save refuses with a 422 naming the cause, for example
+    "config.yaml could not be read: No such file or directory." (UI seat, measured). beets loads
+    a UTF-16 file with a BOM, so such a file can be running. Both Saves refuse a non-UTF-8 file
+    with 422 "config.yaml is not UTF-8.", whatever sha they are sent, and write nothing. On
+    `main` a Save from the empty editor replaced the file (measured: a Plex token lost; fixed in
+    PR #232). Re-save the file as UTF-8 to edit it here. Search words: UTF-16, BOM, empty editor,
+    sha256, not UTF-8, 422.
+  - Save, the Naming routes and `GET /api/config` open `config.yaml` only when it is a regular
+    file. A FIFO swapped in between that check and the open still blocks, the same gap confuse's
+    own `os.path.isfile` read and Apply's gate have. The check bounds the file's type, not its
+    size: our routes read a huge or sparse regular `config.yaml` whole. beets reads a huge VALID
+    file whole at boot too, but PyYAML reads in 4 KiB chunks and stops at the first NUL
+    (`yaml/reader.py:146-178`), so for a sparse file of NULs our routes would exhaust memory
+    where boot refuses at once (security seat, measured with a finite 256 KiB file). Only
+    someone with write access to the beets dir can plant one; no cap was added.
+  - Validate's message for a non-list `include:` or a non-string entry names ruamel's internal
+    types (`ScalarFloat`, `CommentedMap`) where Apply's says `float`, `OrderedDict`.
+  - At boot, the starter config is written through a dangling `config.yaml` link, to wherever it
+    points (`setup.py` ~196-203). Only someone with write access to the beets dir can plant one.
+  - A Save resolves a symlinked `config.yaml` twice: to read it, and again (`realpath`) to write
+    it (owner ruling 2026-09-23: write through the link). A link re-pointed between the two sends
+    the bytes to the new target. Another file there keeps its mode, and its own text is lost
+    with no 409. A dangling target is created with the umask default, missing folders included.
+    A loop replaces the link where it closes, possibly in another folder, with a regular file at
+    the umask default. Only someone who already controls `config.yaml`'s content can re-point
+    it, and that content already runs commands (beets' hook plugin on `library_opened`).
+    `realpath(strict=True)` would refuse the dangling and loop cases (review seats, measured).
+  - The folder fsync runs after the publish, so an EIO there answers "config.yaml could not be
+    written" after the new bytes landed. A retry on the same base then answers 409 (measured
+    with an injected EIO).
+  - A Save publishes a new file, so only the mode carries over: the owner becomes the app's, the
+    group the app's (or the folder's, in a setgid folder), and a per-file ACL entry, extended
+    attributes and another hard link to the old file do not follow. For a regular
+    `config.yaml` this predates the branch (security seat, measured). A Save killed mid-write
+    leaves its temp, new text included, in the target's folder until a later Save there sweeps
+    it after an hour.
+  - The artwork toggle reads its `_enabled.json` at startup with no regular-file check
+    (`artwork/toggle.py:25`, from `main.py:404`): a FIFO there blocks startup (security seat,
+    measured; predates this branch). Only someone with write access to the data dir can plant one.
+  - The bank, slskd, Plex and playlist stores and the password-hash file re-read
+    `MUSICDROP_BEETS_DIR` on every call, so they follow a beets-dir symlink re-pointed while
+    MusicDrop runs. Apply uses the dir resolved at boot. Measured: after a re-point to a dir with
+    no hash file, the password reads as not set and first-run setup opens. Deleting the file
+    reaches the same state, so this adds no power. Replacing the booted dir itself with a link
+    (`mv beetsA beetsA.old; ln -s beetsB beetsA`) also moves Apply to `beetsB`: a good Apply
+    loads it, and a failed one restores into it while answering that nothing was changed.
+  - The boot refusal line names only the exception class for a tagged value in an include
+    (`!!bool`, `!!int`), but the traceback uvicorn prints for the failed startup still carries
+    the cause, and with it the value. beets prints the same line.
+  - The GET artist-image route's refill closure keeps the library handle from its dependency.
+    A lookup that races an Apply can read the old library. It is read-only.
+  - A FIFO swapped in between the boot gate's open of an include and beets' own open still hangs
+    boot. It needs write access to the beets dir.
+  Search words: restore, sources, pluginpath, naming 422, get_mbid, FIFO, include race, `---`,
+  re-pointed symlink, password hash, first-run, traceback, __cause__.
+- **`_CONFIG_FORCE_LOCK` may no longer be reachable under contention** (code-review seat,
+  2026-09-21, reasoned; not measured). Its two callers are the import worker, which runs only
+  while its slot is claimed, and the Trash restore, which now refuses while any import holds a
+  slot. So the Restore arm for `ImportConfigBusyError` was deleted as unreachable (a timeout now
+  surfaces as Restore's 500). If a measurement confirms that no two callers can overlap, delete
+  the lock and its 5 s timeout (`app/beets/import_session.py`) rather than keep a guard nothing
+  reaches. Search words: force lock, ImportConfigBusyError, restore, overlay, reachability.
+- **Settings → Beets and Naming: small residuals left by PR #232** (review seats and
+  implementers, rounds 15–18, 2026-09-23; recorded, not built, under the owner's "Cut and ship").
+  - The Save button stays on while the conflict panel is open, and a click does nothing (Ctrl+S
+    already checks for the panel). Predates the branch.
+  - Text typed during a Save's round trip is lost when the re-read arrives. Predates the branch;
+    a fix needs a design call.
+  - After an Apply 409 whose job has already ended, the click shows nothing new.
+  - A conflict panel opened by a read takes focus while the operator is typing; since round 17
+    "Overwrite anyway" is four Tabs away, not two. Keys meant for the editor can still land:
+    Shift+Tab (dedent) then Space presses Cancel and drops the draft; three Tabs then Space
+    presses Reload. Neither writes. Changing that is a design call.
+  - A read that closes a conflict panel while focus is inside it drops focus to `<body>`. A fix
+    needs to know whether focus was in the panel, so it is a new mechanism.
+  - The panel's "N unchanged lines" bar opens by click only (`@codemirror/merge`'s collapse
+    widget). Predates the branch.
+  - The main editor, where focus lands after Reload, Overwrite and Cancel, shows focus only by
+    its 1 px caret, and neither it nor the Effective config editor has an accessible name. The
+    conflict panes have both since round 18.
+  - Paths wrap two ways: `break-all` (the Beets page's config path, `PlexSettingsPanel`) splits
+    mid-name, while `breakablePath` (`AlbumDetailPage.tsx`) breaks after each `/`. Sharing the
+    helper is the consistent fix.
+  - The diff box's rounded corners clip the focused pane's square ring corners.
+  - No test covers Naming's reset of a Save failure when a custom rule or replace row is edited
+    (`updateCustom`, `updateReplace`); only the base fields are pinned. Predates the branch.
+  - After a Save or "Overwrite anyway", the "saved but not loaded yet" alert above the editor can
+    sit under the 81px topbar (measured at y 10–56 at 2755 px wide and −30 at 375 px); the Apply
+    button below stays in view, and the alert is announced. Edit's focus does not scroll either.
+  - `focusEditor`'s `yMargin: 86` is the topbar measured at the default font size; a larger root
+    font size grows the topbar past it. CodeMirror's `EditorView.scrollMargins` could follow the
+    real height, and would also keep arrow-key scrolling clear of the topbar.
+  - The settings pages import `codemirror`, `@codemirror/view`, `@codemirror/state`,
+    `@codemirror/language` and `@lezer/highlight`, none declared in `package.json`; they resolve
+    as other packages' dependencies. Predates the branch.
+  - `SettingsConflict.test.tsx` pins the pane ring by exact `cssText`, so an equivalent rewrite of
+    the rule fails it.
+  - `browse/BrowsePage.tsx` ~334 and `browse/BrowsePage.test.tsx` ~91 give the topbar as 4.5rem
+    (`py-3` + `h-12`); it is 81px, set by its 56px `icon-xl` buttons. The rail still clears it.
+  - Text and sha can still come from two file versions in two cases no person can reach: another
+    writer puts the old bytes back before Reload's re-read lands (A-B-A), or a read lands and
+    Edit, a key and Ctrl+S all follow within @uiw's 200 ms typing latch. Both predate the branch.
+  - Naming: a Save that writes the same bytes still leaves Apply off with no line when two rules
+    share a query, two replace rows share a pattern, a custom rule is named `default`, `comp`
+    or `singleton`, a base template the file lacks is cleared (the read fills beets' default),
+    or every replace row is removed from a file with no `replace:` block. A rule with a template
+    and no query, or a query and a blank template, leaves Save off with no reason; Save would
+    write nothing for either.
+  - Naming cannot remove a row that is on disk but that Save drops (a custom rule with an empty
+    template or query, a replace row with an empty pattern): removing it is not a change, so
+    Save stays off. The Beets editor can. Since round 17.
+  - Naming drops a draft without a word when a read brings a new file version: the panel
+    remounts on the file's sha (`NamingPanel.tsx`, `key={data.sha256}`). The Beets page opens
+    the conflict panel instead. Predates the branch.
+  - The tests' timed waits cannot fail correct code, but a mutant kill behind the 300 ms wait
+    past @uiw's typing latch can pass on a slow run: the latch is 200 ticks of a 1 ms interval,
+    measured 211-220 ms idle and about 450 ms with a busy event loop.
+  Search words: conflict panel, Save button, round trip, draft lost, focus, Apply 409, Tab,
+  Overwrite, Cancel, same bytes, A-B-A, typing latch, unchanged lines.
+- **The config view hides a secret by its setting name, not its value** (security seat,
+  2026-09-21, measured; owner: match beets, record it). A secret copied elsewhere with a YAML
+  anchor or merge key (`other: {<<: *sub}`, `note: *alias`) shows in plain text, as it does in
+  `beet config`. Only the operator can write that. No fix planned. Search words: redact, anchor,
+  alias, merge key, secret, mask.
+- **`GET /api/config` can fail once while an Apply swaps the config** (code-review seat,
+  2026-09-21: about 7 failed polls in 1200 Applies against a nonstop poll). One confuse lookup
+  reads the source list once, so single reads are safe; `flatten()` makes many lookups and can span
+  the swap. The next poll recovers. Not fixed. Search words: flatten, swap, effective view, Apply.
+- **A metadata-source lookup racing `load_plugins` can still cache a partial answer** (security
+  seat, 2026-09-21, reasoned, not measured). `setup.open_beets` clears the `functools.cache` after
+  `load_plugins`; a lookup that computed its answer before the clear and stores it after keeps it
+  until the next Apply. Needs an album page's missing-tracks report inside an Apply plus a thread
+  switch between two bytecodes. Search words: metadata_plugins, functools.cache,
+  find_metadata_source_plugins.
 
 - ~~**`/import`'s feed row starves its title exactly like the two `/review` rows did**~~ —
   **CLOSED 2026-09-11** (on `fix/phone-width-rows-and-hit-areas`; PR + squash sha cited at
@@ -453,7 +1369,19 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   for a manual import, and the shipped starter config is `copy: yes` / `move: no`
   (`app/beets/config.starter.yaml:20-21`), so a stock install fills the library disk with
   a copy of every music file it can reach — while an operator who set `move: yes` gets the
-  destructive version of the same typo. (2) There is no cheap pre-flight: nothing reports
+  destructive version of the same typo. **Measured again 2026-09-19 on a POPULATED library:**
+  a source that is a PARENT of the music folder (or the beets dir, which holds `music/`) makes
+  beets walk the library's own album folders as candidates — re-tagged by whatever the lookup
+  returns, files MOVED to the new tag's path, the old folder pruned, the old row dropped by
+  `remove_replaced` — under `copy` as well, because an in-library source is force-corrected to
+  `move`; the real download is then set aside as a "duplicate" of the album just manufactured
+  from the user's files. `is_in_library_source` asks "source inside library"; the missing
+  question is "library inside source", one predicate. Which side dies is decided by the walk's
+  lexical order (security seat, measured): with the library folder sorting first, the library's
+  own album is applied at 29% confidence, its files moved, its folder and artist folder pruned,
+  its row dropped, and the real download is rejected as that album's duplicate; with the
+  download sorting first, the download imports and the library's own folder lands in the review
+  queue as a set-aside pointing inside the library. (2) There is no cheap pre-flight: nothing reports
   how many candidate folders a path contains before the slot is committed to it. Fix shape
   (smallest first): refuse — or interstitially confirm — a path that is a filesystem root
   or an ancestor of the configured music library; then a `dry_run` probe returning a
@@ -861,7 +1789,9 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   album-id branch and the queued copy); `replace` rides a new internal
   `BankApplyDirective.replace_existing` into
   the session, which unions the stored ids into the SAME post-run Trash pass the hook-recorded
-  ids use (`WebImportSession._seed_replace_from_directive`); `merge` cannot be forced at all
+  ids use (`WebImportSession._seed_replace_from_directive`; true when this shipped — since
+  2026-09-18 on `feat/import-keep-downloads` the hook disposes of its own duplicates before
+  placement and that pass serves this banked route only); `merge` cannot be forced at all
   (beets performs it inside the hook) so it is REPORTED honestly — an album that landed with
   no `needs_dup_resolution` on the feed now fails with wording that says a second copy landed
   and steers to removing one, never to a blind re-decide that would import a third;
@@ -1782,7 +2712,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   i.e. it removes a flat library's presence check rather than correcting it.
   Regression: `test_library_presence_sampling.py::test_a_flat_layout_does_not_sample_the_music_root_against_itself`
   (the predicate, with the flatness of the fixture asserted from `Item.destination()`) and
-  `test_trash.py::test_trash_album_folder_refuses_a_dropped_flat_share_masked_by_a_stray`
+  `test_trash.py::test_trash_album_refuses_a_dropped_flat_share_masked_by_a_stray`
   (end to end, so the ghost arm is what is proven guarded). Both were mutation-tested by
   restoring `dirname` + `isdir`.
 
@@ -1852,6 +2782,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   both states: `test_trash.py::test_trash_album_folder_puts_the_folder_back_when_the_rows_will_not_go`
   (the DB shape) and `::test_the_move_back_says_nothing_about_rows_a_listener_already_took`
   (the listener shape, where the album row is measured gone and its 14 item rows remain).
+  *(Both tests, the undo and the two exceptions went with the whole-folder album mover when
+  this branch removed it — see "Delete moves an album's own files to Trash" under Next up.)*
   **RESIDUAL 2 — the per-item mover `trash_album` gets no undo** (duplicates resolve, import
   Replace, and the shared-folder fallback of the front-door delete). A raise at its own
   `album.remove` still leaves an album the library LISTS whose item rows point inside the
@@ -2423,6 +3355,89 @@ because a recorded decision is what stops the question being reopened from scrat
 scan here for something to pick up — scan *Open bugs / hardening*. Revisit an item only if
 the condition it names has changed.
 
+- **The source-missing refusal asks "is there nothing to import", not "is every source there"**
+  (2026-09-20, `feat/import-keep-downloads`). A start whose sources are all absent is refused with
+  `That folder doesn't exist.` before any job exists; one absent member of a list is NOT refused.
+  Decided, with the reasoning, because the narrow predicate looks like an oversight:
+  * **A stat cannot close the window it appears to close.** The inbox route re-derives its folder
+    list server-side milliseconds before the start, and a folder is as free to vanish after the
+    stat as before it. A guard placed over a race it cannot win is worse than none, because the
+    next reader trusts the path afterwards.
+  * **beets already answers the one-member case.** A missing toppath takes the single-FILE branch,
+    `read_item` returns `None`, that toppath contributes nothing and the rest import.
+    `test_review_all_survives_a_folder_that_vanished_since_the_listing` pinned this BEFORE the
+    refusal existed, in as many words, and still does.
+  * **The check is existence, never `is_dir`.** beets imports a single file as one track; an
+    `is_dir` guard would take away something the engine can do. Pinned by
+    `test_a_source_that_is_a_FILE_is_not_refused_by_the_existence_guard`.
+  * **Absent and unreadable are told apart.** `os.path.exists` answers False for `EACCES` exactly
+    as for absent, which would have reported the commonest self-hosted misconfiguration (a PUID/GID
+    mismatch on a mounted share) as a typo. The check is one `os.stat` per path with an errno
+    split: `ENOENT`/`ENOTDIR`/`ENAMETOOLONG` keep `That folder doesn't exist.`, anything else says
+    `That folder can't be read. {strerror}.` — `strerror` is the OS's own summary and carries no
+    path, the same reasoning `app/beets/library.py` already relies on. The classification rides on
+    the exception (`unreadable: bool`) so the batch route's plural copy cannot re-bury it.
+  * **`startImport`'s own 422 branch stays asymmetric with the shared helper, deliberately.**
+    `throwIfRefused` shows only our own STRING detail, so FastAPI's array-shaped validation 422
+    stays machine copy; `useImport.ts`'s `startImport` still reads both shapes, which its docstring
+    records as carry-forward. The one body-validation 422 `POST /api/import` can send in practice is
+    the 4096-character path cap, where the validator's own message is MORE useful than the page's
+    generic sentence. Revisit if a second body rule lands.
+  * **The batch sentence is plural even when the batch held one folder.** `settled_folders` can
+    legitimately return a single folder, and if it vanishes the user reads "Those folders are no
+    longer there." about one. Accepted rather than made number-aware: the route is a batch route,
+    the browser is never shown which folders it handed over, and a count-dependent ternary would
+    put two spellings of one refusal in the code to fix a sentence that is not wrong, only loose.
+  * **It is a guard, not the cure.** The typo that prompted it came from a free-text path field.
+    The folder browser in *Next up* removes the typo at its source; this refusal is what stands in
+    until then.
+
+- **"Stop this run" — what it deliberately does not do** (2026-09-19, `feat/import-keep-downloads`,
+  replacing the run page's "Start over"). Stop is beets' own `ImportAbortError` raised at the next
+  session hook, so the album it lands on is asked again when the folder is added again; what
+  already landed stays. "Asked again" holds under the two settings the app writes (`move`,
+  `hardlink`, vault `decisions` #53); a user-written `copy:`/`link:`/`reflink:` keeps no beets
+  history, so a re-add offers the landed albums again as duplicate questions, never as a second
+  import. Decided, not bugs:
+  * **Offered on manual runs only.** The API accepts any origin, but an inbox or bank drain starts
+    the next queued item as soon as the stopped one ends, so a Stop there would read as "nothing
+    happened". The page shows the control for `origin === "manual"`.
+  * **"Stopping…" has no bound.** A lookup already in flight finishes first, and an "as tracks"
+    expansion in flight is one abort point for the whole album (every remaining track is looked up
+    and resolved), because the alternative splits one album across two locations. Each remaining
+    track is a MusicBrainz lookup of its own (beets' singleton pipeline calls `tag_item` per
+    track), so on a long album that "Stopping…" is minutes, not seconds; not timed.
+  * **A stop accepted after the last abort point ends the run whole, and the page says so.**
+    `stopped` says a stop was accepted; `aborted` (on the contract since the pre-push round) says the
+    stop reached the worker and ended the run early. Every verdict (ledger outcome, bank row status,
+    applied count) reads the landed evidence first, and the done panel keys its stop-specific copy
+    ("Import stopped", the rest stayed in the folder, the Add-from-folder CTA) on `aborted`, so a
+    stop that landed after the last album had been placed renders as the finished run it was, with
+    one muted line for the presser: "Nothing was left to stop." (manual runs only; one predicate
+    and two assertions to remove if the owner prefers silence). The
+    one window left: a stop accepted after the last hook on a run that then genuinely imports
+    nothing names the stop, not the lookup, in the bank row's error.
+  * **One merged album counts as two applied** — the merge row and the merged task's row are both
+    counted, pinned by `test_a_merge_that_landed_before_the_stop_still_counts_imported`. Pre-branch
+    behaviour; whoever revisits the merge exemption moves the count with it.
+  * **The Stop concept is `StopCircle` at the app's one icon weight** — owner's call 2026-09-20,
+    replacing the filled `Stop` square this entry used to record. It went through both alternatives
+    in one evening, and the order matters: the fill came off first (a plain re-export, so
+    `ICON_WEIGHT` reaches it through `IconContext` like every other concept), then the owner saw the
+    result RENDERED in Orca at 40 px and switched the glyph to the ringed one. The two seats that
+    originally called the light square "an empty checkbox" were right about the shape even though
+    the token measurements said the confusion was unlikely — `--muted-foreground` at 7.63:1 against
+    a real checkbox border's `--input` at 1.47:1, and `/import` renders no `Checkbox` at all (they
+    live on `/import/albums/:index`, which never co-renders). **A measurement that says "unlikely to
+    be confused" is not the same as looking at it.** The ring carries the "control" meaning the fill
+    used to, without leaving the single weight, and the sweep's paused panel — the same `EmptyState`
+    with a light `Pause` — still agrees with it. **Do not re-add a weight wrapper** —
+    `icons.test.ts` pins glyph and weight together, in both directions.
+  * **Smaller, left as read by the UI seat:** at 360 the error line above the button indents it
+    by the pair's right alignment; the pending label ("Stopping…") shrinks the button and shifts its
+    glyph, as the sweep's "Pausing…" already does; the done panel's two CTAs point at two homes
+    (`/import` and `/review`), now at one weight; "run" is the owner's word.
+
 - **The three app-owned writers are deliberately NOT descriptor-anchored** (2026-09-12,
   `fix/descriptor-anchored-library-writes`). `config.yaml`, the two artist-image toggle files and
   playlist artwork are written under the beets data dir and the playlists store, not below the
@@ -2905,8 +3920,8 @@ the condition it names has changed.
 - **`_make_fetchart_plugin`'s global-config overlay race is a documented residual — now
   documented HERE, not only in its own docstring** (recorded 2026-08-28). The cover-fetch
   path mutates the process-global beets config (`fetchart.set({"auto": False})`) and
-  restores it in a `finally`; a concurrent config Apply clearing `beets.config` between
-  the two would leave a stale `fetchart.auto` overlay for the process lifetime. The
+  restores it in a `finally`; a concurrent config Apply replacing `beets.config`'s sources
+  between the two would leave a stale `fetchart.auto` overlay for the process lifetime. The
   docstring at `app/beets/cover.py:128-131` names the hole, labels it a documented
   residual, and names the eventual fix (removing the persistent overlay). Genuinely
   narrow: single user, requires an Apply mid-fetch. Recorded so "documented" is true for
@@ -3004,6 +4019,18 @@ the condition it names has changed.
 
 ## Open questions
 
+- **What should a "Try again" button do while it retries, and where should focus go after?**
+  (PR #232 round-13 UI seat, owner call.) This covers every Try again or Retry button that calls
+  a query's `refetch()` (`grep -rn "refetch" frontend/src --include=*.tsx`): Trash, the Naming
+  panel's load error since #232, `ErrorState`'s Retry, the import pages' notices, and more. They
+  give no sign on a repeat failure: the same alert returns (after about a second where the query
+  retries once; at once where it sets `retry: false`, as `useImport.ts:531,654` and
+  `useAlbum.ts:59` do) and a screen reader announces nothing. On success the button disappears
+  and keyboard focus drops to `<body>`. The one exception is the login page's "Check again"
+  (`RecheckStatus`, `pages/LoginPage.tsx:778`), which shows "Checking…" while it fetches: the
+  in-app pattern to copy. A fix belongs to all of them at once: a busy label while fetching,
+  and a chosen focus target on success.
+
 - **Should duplicates resolve / resolve-all gain 503 parity with the delete routes?**
   (#189, owner call.) Both currently keep their established structured-500 absorb shape
   with the honest root-unavailable message embedded — consistent with their other
@@ -3034,6 +4061,114 @@ the condition it names has changed.
   not reproduced; end state is a refusal with an honest message, not damage.
 
 ## Deferred minors (cosmetic / self-healing — carried from earlier waves)
+
+### From the 2026-09-21 pre-push review of `feat/import-keep-downloads`
+
+Three seats reviewed that round's diff. Everything Critical/High/Medium was fixed on the branch;
+these are what was left, with the measurement that produced each.
+
+- **The failed-row banner sits ABOVE the `h1` the app focuses** (UI seat). On all three bank
+  screens `FailedBanner` renders before the heading, and both `useDeferredH1Focus` and
+  `RouteAnnouncer` put focus on `h1[tabindex="-1"]`. A screen-reader user arriving cold reads
+  forward from the heading and never reaches the banner; heading navigation skips it because it
+  sits under no heading. `role="alert"` should rescue it, but the region and its text enter the
+  DOM in the same commit and an effect moves focus immediately after — the classic live-region
+  miss. Nothing focuses this banner (verified: `useFocusAfterMutation` has one caller,
+  `PlaylistDetailPage`, and no `StatusBanner` is focusable). Cheapest candidate is
+  `aria-describedby` from the h1 to the banner; cost is that the long strerror gets spelled into
+  the heading's description. **Needs a real screen-reader pass before choosing.** Preexisting;
+  this round sharpened it by withholding the duplicate strip, which removed the only
+  forward-of-h1 trace that something was wrong on the no-match screen.
+- **The sticky control bar pins a doomed CTA while the instruction scrolls away** (UI seat). On a
+  `fix_folder` no-match row, Use as-is / As tracks all queue an apply that fails identically until
+  the folder is fixed, and `makeSubmit` navigates to `/review` on success so the failure arrives
+  minutes later on another page. `ReviewControlBar` is `sticky bottom-0`; the banner is not. Do
+  NOT fix by disabling them — Ignore must stay live, and a disabled bar plus a flag that only a
+  rescan clears is a lockout. Now that a rescan discharges the row, "Fix the folder, then rescan."
+  became an honest sentence; that is the likely fix.
+- **`unreadable_reason` is safe by caller convention, not by type** (security seat).
+  `app/import_jobs/runner.py` — every docstring in the chain justifies safety with "`str(OSError)`
+  interpolates `exc.filename`", but `filename` is the wrong slot: for `OSError(errno, strerror,
+  filename)` the CALLER chooses `strerror`. Measured: `OSError(EACCES, f"cannot read {path}")`
+  returns `(cannot read /tmp/…/album)` — leaks. It is safe today because every raise site in the
+  app passes a fixed strerror and puts the path in the third slot, and installed beets 2.13.1 has
+  zero `raise OSError` with a custom strerror. `os.strerror(exc.errno)` would make it structural
+  and also fixes the next item. **Corrected 2026-09-21 — the shape written here first was wrong:**
+  bare `os.strerror(exc.errno)` raises `TypeError: 'NoneType' object cannot be interpreted as an
+  integer` on exactly the errno-less subclasses the next bullet names (measured), turning a cosmetic
+  string into a crash. It needs the guard:
+  `os.strerror(exc.errno) if exc.errno is not None else "the reason was not reported"`.
+  Search words: strerror, caller convention, unreadable_reason, os.strerror errno None TypeError.
+- **`unreadable_reason` degrades to `errno None`** (security seat). `shutil.Error`,
+  `shutil.SameFileError` and `urllib.error.URLError` are `OSError` subclasses built with one
+  argument, so both `strerror` and `errno` are None and the operator reads "the server could not
+  complete this row (errno None)". No leak, no information either. Reachability through
+  `_apply_one` is thin. Covered by the `os.strerror` fix above **only in its guarded form**.
+- **A non-`OSError` escapes both fingerprint guards on a non-UTF-8 filename** (security seat,
+  2026-09-21; PREEXISTING — the arms are unchanged by the Sonar round). `app/bank/fingerprint.py:40`
+  does `f"{rel}\n{size}\n{mtime_ns}\n".encode()`, but `os.walk` returns names decoded with
+  `surrogateescape`, so an audio file with a non-UTF-8 name raises `UnicodeEncodeError` — not an
+  `OSError`, so it escapes every `except` arm of both `api/bank.py::_current_fingerprint` and
+  `bank/apply_runner.py::_row_stopped_by_folder_check`. Measured end to end through the rescan route
+  with `raise_server_exceptions=False`: **500 `Internal Server Error`, and the folder path is NOT in
+  the body** (`str(UnicodeEncodeError)` names the offending character and position, never the
+  string), and `main.py` sets no `debug=True`, so no traceback is returned. So this is robustness —
+  a 500 where a 409 was designed, plus a cryptic row error on the apply side — **not disclosure**.
+  Remediation is one call, not a mechanism: `digest.update(os.fsencode(...))`, measured to round-trip
+  the exact bytes the OS gave (`os.fsencode("02 tr\udcffack.mp3")` -> `b'02 tr\xffack.mp3'`) so the
+  digest stays stable. NOT verified: the search route and a live apply drain were reasoned from the
+  identical arm structure, not driven. Search words: surrogateescape, UnicodeEncodeError,
+  fsencode, fingerprint, non-UTF-8 filename.
+- **Two registers in one slot** (UI seat). `FailedBanner`'s muted line takes lower-case
+  dash-joined continuations from `_row_error` AND capitalised standalone sentences from
+  `unreadable_source_sentence` ("That folder can't be read. Permission denied."). `_row_error`'s
+  docstring claims the slot reads "lower-case and dash-joined", which is now false for the arm
+  this round added. beets' own `state.error` lands there too, so the mixing predates this round;
+  the docstring is the part worth correcting.
+- **`FAILED_HEADLINE[item.error_recovery]` has no fallback** (UI seat). The old `!== false`
+  predicate was undefined-safe; a direct index is not. Only triggerable in dev against a stale
+  separate backend — one Docker image ships both halves, and the legacy validator fills old rows
+  on read — and the failure is a blank headline with the muted reason still shown. `??
+  FAILED_HEADLINE.decide_again` is one token if it ever bites.
+- **`--sidebar-ring` is an unconsumed third copy of the ring violet** (`styles.css`). Declared and
+  mapped to `--color-sidebar-ring`, used by no utility; staged for the Phase 2 sidebar per its own
+  comment. It is the token a future ring change silently misses — the 2026-09-21 alpha sweep did.
+  Either delete it or note that it must track `--ring`.
+- **The ring-alpha pin test matches class names in COMMENTS, not just class strings**
+  (`ui/checkbox.test.tsx`). It scans source bytes through `?raw`, so a comment quoting
+  `focus-visible:ring-ring/70` counts as a site (13 seen, 11 real). Harmless today and the
+  `>= 10` control is satisfied by real sites alone, but a future comment mentioning `/50` fails
+  the test confusingly. Comment-stripping across TS+CSS was judged more complexity than it buys.
+  Related trap, measured the same day: spelling a utility literally in a comment makes Tailwind's
+  scanner EMIT it — a dead `.focus-visible\:ring-destructive\/20` rule reached `dist` that way.
+- **`_SUMMARY_EXCLUDE`'s comment reads as a complete list and is not** (`app/bank/store.py`).
+  `_summary_of` builds `BankItemSummary(**item.model_dump(exclude=_SUMMARY_EXCLUDE))`, so
+  `error_recovery` is passed as an unknown kwarg and dropped by pydantic's `extra="ignore"` —
+  exactly what `error_retryable` did before, so no regression. The comment ("the heavy fields a
+  summary drops") is what misleads.
+- **The 503 sentence sends a benign concurrent start to inspect a healthy share** (quality seat).
+  `import_.py` — the comment states the server cannot tell a second start from a stat that never
+  returned, then optimises the copy for the wedged branch alone. Two genuinely concurrent starts
+  (the inbox route plus a manual POST, the first finishing normally) now yield only "Check that
+  your music share is responding." The owner chose this wording deliberately on 2026-09-20
+  ("name what's true"); recorded because the justification in the comment argues both ways.
+
+- **The duplicate route's 404 sentence does not name the finished-job case** (2026-09-19). After a
+  stop releases a parked duplicate, `GET /import/{job}/albums/{i}/duplicate` 404s like the cover and
+  the decision routes; its OpenAPI description still reads "No import job has that id, or no
+  duplicate is parked at that index." — true once released, but silent on why. The candidate route
+  carries the same sentence. Reword both on the next contract-touching round (a regen of
+  `openapi.json` and `schema.d.ts`); wording only.
+- **The paused sweep's fallback CTA is solid while every other start-again CTA is outline**
+  (design seat, 2026-09-19). `SweepDoneCta` renders its `/import` "Import another folder" fallback
+  with the default variant; `JobFailed`, `JobNotFound` and the stopped panel all use outline. One
+  token; not on this branch's diff.
+- **The done panel's counts line omits set-aside** (UI seat, 2026-09-19): "1 album imported · 0
+  skipped" over a Needs-review row. Add the set-aside count to the line, or drop the line where a
+  row already says it.
+- **The stopped panel's "Add from folder" could prefill the path** (UI seat idea, 2026-09-19). The
+  run knows its folder; the CTA sends the user to an empty form. Small; only if the folder browser
+  of branch 2 does not make it moot.
 
 - **Settings → Trash's per-row Empty confirms with "Delete permanently?" / "Delete"** (2026-09-14,
   PR #227 browser pass). The trigger's accessible name is "Empty <album>", Empty all's dialog says
@@ -3338,7 +4473,9 @@ Added by the 2026-08-28 sweeps:
   facet still advertises the whole library's Vinyl total, and ticking it returns a
   fraction of the promised number — reads as a filtering bug, is a labelling choice. Was
   in two docstrings and on no board.
-- The shipped starter-config header makes two false claims that become the header of the
+- ~~The shipped starter-config header makes two false claims.~~ **CLOSED 2026-09-23** on
+  `feat/import-keep-downloads` (PR #232): the header now says the Settings pages edit the file and
+  Apply loads it. Existing files keep their old header. It became the header of the
   USER'S own file on first run (`config.starter.yaml:2-3`): "MusicDrop reads it; it never
   writes back" (the config editor's save and save-naming both `atomic_write` it) and
   "Edit and restart MusicDrop to apply changes" (`POST /api/config/apply` re-arms beets
@@ -3369,6 +4506,18 @@ Added by the 2026-08-28 sweeps:
   dead CSS". Also stale: the header at `styles.css:26-28` promises a Phase 3 sweep of
   leftover `dark:` utilities; zero remain (the only two `dark` hits are a CodeMirror JS
   option, not utilities).
+
+- **Duplicate screen at 320 px: the page scrolls sideways by 10 px, and the "Importing (new)"
+  card's text column collapses beside the cover** (measured 2026-09-19 in Orca's browser on the
+  scratch server: docScrollW 315 vs clientW 305; the track-comparison table measures 449 px inside
+  its own scroll container, so the 10 px come from elsewhere on the page; the card's text shows two
+  to five characters per line — "D.", "C..", "1967 · 1 track" wrapped word by word). Seen while
+  verifying the post-Apply hop; not that change's element. `DuplicateReview.tsx`.
+- **Bank review page: two message lines mount WITH their text, so a screen reader may not
+  announce them** (`BankReviewPage.tsx` `messages` — the collision line and the unpinned-option
+  note). The same idiom was fixed on the candidate screen and in `ReviewControlBar`'s
+  "Checking your library…" region (always mounted, `sr-only` while empty, text swapped) in the
+  post-Apply hop change; this page was left as found. Same fix, one page.
 
 ## Recently shipped
 

@@ -41,11 +41,24 @@ describe("titleForPathname", () => {
   it("uses static section titles for opaque dynamic segments", () => {
     expect(titleForPathname("/albums/42")).toBe("Album");
     expect(titleForPathname("/import/albums/3")).toBe("Import decision");
-    expect(titleForPathname("/import/albums/3/duplicate")).toBe(
-      "Import decision",
-    );
     expect(titleForPathname("/settings/integrations")).toBe("Settings");
     expect(titleForPathname("/playlists/abc-123")).toBe("Playlists");
+  });
+
+  // beets asks two questions per album and Apply now lands on the second
+  // without a list in between. Both routes reading "Import decision" made that
+  // hop silent: same title, same announcer text, nothing spoken. The prefix
+  // table cannot express it — `/import/albums/` matches the duplicate path too,
+  // and the distinguishing segment is the last one.
+  it("gives the import duplicate prompt its own title", () => {
+    expect(titleForPathname("/import/albums/3/duplicate")).toBe(
+      "Duplicate decision",
+    );
+    // The match question keeps its own, and a stray deeper path is not it.
+    expect(titleForPathname("/import/albums/3")).toBe("Import decision");
+    expect(titleForPathname("/import/albums/3/duplicate/x")).toBe(
+      "Import decision",
+    );
   });
 
   it("titles unknown routes as Not found", () => {
