@@ -6,10 +6,10 @@
 export const APPLY_FALLBACK =
   "Your config is saved on disk — try again or restart MusicDrop.";
 
-/** After "Save failed.": the server's `config_on_disk` sentence plus what to
- * do next, or the fixed sentence for any other failure. */
+/** After "Save failed.": the server's `config_on_disk` sentence as sent, or
+ * the fixed sentence for any other failure. Nothing is added to the server's
+ * sentence: an added recovery line doubled the Apply alert's, or the server's
+ * own. */
 export function saveFailureDetail(onDisk: string | null | undefined): string {
-  return onDisk
-    ? `${onDisk} Fix that and Save again.`
-    : "Your changes weren’t written — try again.";
+  return onDisk ?? "Your changes weren’t written — try again.";
 }

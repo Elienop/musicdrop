@@ -9,8 +9,10 @@
  * `.cm-content` contenteditable rather than the obsolete read-only `<pre>`
  * the L1/L2 tests used.
  */
+import { forEachDiagnostic } from "@codemirror/lint";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
+import { EditorView } from "@uiw/react-codemirror";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { createMemoryRouter, Navigate, RouterProvider } from "react-router";
@@ -574,6 +576,8 @@ describe("SettingsPage", () => {
     const banner = await screen.findByText(/apply failed/i);
     expect(banner).toHaveAttribute("role", "alert");
     expect(banner).toHaveTextContent(/MUSICDROP_TRASH_DIR/);
+    // An Apply refusal can quote two paths, as this one does; the alert wraps.
+    expect(banner).toHaveClass("break-words");
     expect(
       screen.queryByText(/a library job is running/i),
     ).not.toBeInTheDocument();
@@ -630,8 +634,9 @@ describe("SettingsPage", () => {
       ],
     });
     expect(banner).toHaveAttribute("role", "alert");
+    // Nothing is appended: the sentence is the whole alert.
     expect(banner).toHaveTextContent(
-      /^Save failed\. config\.yaml could not be written: Permission denied\. Fix that and Save again\.$/,
+      /^Save failed\. config\.yaml could not be written: Permission denied\.$/,
     );
   });
 
@@ -940,6 +945,101 @@ describe("SettingsPage", () => {
     // The inline helper text replaces the (mouse-only) tooltip for screen
     // readers, so assert it's present.
     expect(screen.getByText(/1 validation error/i)).toBeInTheDocument();
+  });
+
+  /** Edit and type against a Validate answering `row`; return the editor's
+   * document and its diagnostics once the marker shows. */
+  async function lintsWith(row: components["schemas"]["ValidationErrorItem"]) {
+    defaultMocks();
+    server.use(
+      http.post(VALIDATE_URL, () =>
+        HttpResponse.json({ errors: [row], advisories: [] }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    const content = await findEditorContent();
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    content.focus();
+    await user.keyboard("x");
+    await waitFor(
+      () => {
+        expect(document.querySelector(".cm-lint-marker-error")).not.toBeNull();
+      },
+      { timeout: 4000 },
+    );
+    const view = EditorView.findFromDOM(content);
+    if (!view) throw new Error("no EditorView");
+    const found: { from: number; to: number; message: string }[] = [];
+    forEachDiagnostic(view.state, (d, from, to) =>
+      found.push({ from, to, message: d.message }),
+    );
+    return { doc: view.state.doc, found };
+  }
+
+  /** The row counts: the helper names it and Save stays disabled. */
+  function expectSaveBlocked() {
+    expect(screen.getByText(/validation error/)).toHaveTextContent(
+      /^1 validation error; fix to save\.$/,
+    );
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
+  }
+
+  test("a Validate row with no line is marked on line 1 and blocks Save", async () => {
+    // A parse error with no position (`!!bool ture`) comes back line: null.
+    const { doc, found } = await lintsWith({
+      loc: "",
+      msg: "KeyError: 'ture'",
+      type: "yaml_parse",
+      line: null,
+      column: null,
+    });
+    const line1 = doc.line(1);
+    expect(found).toEqual([
+      { from: line1.from, to: line1.to, message: "KeyError: 'ture'" },
+    ]);
+    expectSaveBlocked();
+  });
+
+  test("a Validate row past the last line is marked on line 1 and blocks Save", async () => {
+    const { doc, found } = await lintsWith({
+      loc: "import.copy",
+      msg: "must be a boolean",
+      type: "schema_type",
+      line: 99,
+      column: 3,
+    });
+    // Its column belongs to no line here, so the whole of line 1 is marked.
+    const line1 = doc.line(1);
+    expect(found).toEqual([
+      {
+        from: line1.from,
+        to: line1.to,
+        message: "import.copy: must be a boolean",
+      },
+    ]);
+    expectSaveBlocked();
+  });
+
+  test("a Validate row with a line in range keeps its line and column", async () => {
+    // Control for the two above: only an unplaced row moves to line 1.
+    const { doc, found } = await lintsWith({
+      loc: "library",
+      msg: "must be a path",
+      type: "schema_type",
+      line: 2,
+      column: 3,
+    });
+    const line2 = doc.line(2);
+    expect(line2.text).toBe("library: library.db");
+    expect(found).toEqual([
+      {
+        from: line2.from + 3,
+        to: line2.to,
+        message: "library: must be a path",
+      },
+    ]);
+    expectSaveBlocked();
   });
 
   test("Mod-s in clean state does not fire Save (read-only guard)", async () => {

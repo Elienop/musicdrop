@@ -283,6 +283,8 @@ test("an Apply 422 shows the server's recovery sentence, not the restart advice"
   expect(alert).toHaveTextContent(
     /^Apply failed\. beets could not read config\.yaml, so nothing was changed\. Fix the file and Apply again\.$/,
   );
+  // A store-layout refusal's sentence quotes two paths; the alert must wrap.
+  expect(alert).toHaveClass("break-words");
 });
 
 test("an Apply failure without a recovery line falls back to the fixed sentence", async () => {
@@ -292,14 +294,20 @@ test("an Apply failure without a recovery line falls back to the fixed sentence"
   );
 });
 
-/** Edit the default template, click Save against a Save 422 answering `error`,
- * and return the alert it raises. `onReady` runs once the panel has loaded. */
+/** Edit the default template, click Save against a Save answering `status`
+ * (422 unless given) with `error`, and return the alert it raises. `onReady`
+ * runs once the panel has loaded. */
 async function saveFails(
   error: NamingSave422,
   {
     applyPending = false,
+    status = 422,
     onReady = async () => {},
-  }: { applyPending?: boolean; onReady?: () => Promise<void> } = {},
+  }: {
+    applyPending?: boolean;
+    status?: number;
+    onReady?: () => Promise<void>;
+  } = {},
 ) {
   type Stub = (path: string) => Promise<unknown>;
   const get = vi.mocked(client.GET).getMockImplementation() as unknown as
@@ -318,7 +326,7 @@ async function saveFails(
       : get(path)) as never);
   vi.mocked(client.POST).mockImplementation((async (path: string) =>
     path === "/api/config/naming/save"
-      ? { data: undefined, error, response: { ok: false, status: 422 } }
+      ? { data: undefined, error, response: { ok: false, status } }
       : post(path)) as never);
   wrap(<NamingPanel />);
   const def = await screen.findByDisplayValue(/\$albumartist/);
@@ -338,16 +346,16 @@ const WRITE_FAULT: NamingSave422 = {
   ],
 };
 
-test("a Save 422 about config.yaml on disk shows the server's sentence and the fix", async () => {
+test("a Save 422 about config.yaml on disk shows the server's sentence, nothing appended", async () => {
   const alert = await saveFails(WRITE_FAULT);
   expect(alert).toHaveTextContent(
-    /^Save failed\. config\.yaml could not be written: Permission denied\. Fix that and Save again\.$/,
+    /^Save failed\. config\.yaml could not be written: Permission denied\.$/,
   );
-  // A server sentence can carry a long unbroken token (a path).
+  // The sentence is the server's, not ours: the alert wraps whatever it sends.
   expect(alert).toHaveClass("break-words");
 });
 
-test("the Save fix line follows the row's type, not its text", async () => {
+test("the Save sentence follows the row's type, not its text", async () => {
   const alert = await saveFails({
     detail: [{ ...WRITE_FAULT.detail[0], type: "value_error" }],
   });
@@ -366,6 +374,54 @@ test("a failed Save hides the Saved cue", async () => {
   });
   expect(alert).toHaveTextContent(/^Save failed\./);
   expect(screen.queryByText(/^Saved\. Click/)).not.toBeInTheDocument();
+});
+
+test("a Save conflict hides the Saved cue", async () => {
+  const banner = await saveFails(
+    { detail: [] },
+    {
+      applyPending: true,
+      status: 409,
+      // The cue shows while nothing has failed.
+      onReady: async () => {
+        expect(await screen.findByText(/^Saved\. Click/)).toBeInTheDocument();
+      },
+    },
+  );
+  expect(banner).toHaveTextContent(/your save was refused/);
+  expect(screen.queryByText(/^Saved\. Click/)).not.toBeInTheDocument();
+});
+
+test("the Save alert gives way to an invalid replace pattern", async () => {
+  const alert = await saveFails({
+    detail: [{ loc: "default", msg: "bad template", type: "value_error" }],
+  });
+  // It shows until the pattern is marked.
+  expect(alert).toHaveTextContent(
+    /^Save failed\. Your changes weren’t written — try again\.$/,
+  );
+  type Stub = (path: string) => Promise<unknown>;
+  const post = vi.mocked(client.POST).getMockImplementation() as unknown as
+    | Stub
+    | undefined;
+  if (!post) throw new Error("saveFails mocks missing");
+  vi.mocked(client.POST).mockImplementation((async (path: string) =>
+    path === "/api/config/naming/preview"
+      ? {
+          data: {
+            rendered: naming.previews,
+            replace_errors: [
+              { index: 0, pattern: "[", message: "unterminated set" },
+            ],
+          },
+          response: { ok: true, status: 200 },
+        }
+      : post(path)) as never);
+  await userEvent.type(screen.getByDisplayValue(/\$albumartist/), "Y");
+  expect(
+    await screen.findByText("Invalid replace pattern. Fix to save."),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/^Save failed/)).not.toBeInTheDocument();
 });
 
 test("a Save 422 for a bad replace: pattern keeps the fixed sentence", async () => {
@@ -403,7 +459,7 @@ test("a load 422 about config.yaml on disk shows the headline, then the server's
     "Could not load naming config.",
     PARSE_FAULT,
   ]);
-  // A server sentence can carry a long unbroken token (a path).
+  // The sentence is the server's, not ours: the alert wraps whatever it sends.
   expect(alert.children[1]).toHaveClass("break-words");
 });
 

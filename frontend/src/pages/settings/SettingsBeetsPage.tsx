@@ -275,8 +275,9 @@ export function SettingsBeetsPage() {
           // 409 = CAS mismatch -> open the conflict panel. Every other error,
           // 422 included, shows the "Save failed" banner below. A 422 about the
           // editor text is also painted by the lint source on its next
-          // debounce tick; a 422 about config.yaml on disk has no lint row, so
-          // the banner prints its sentence.
+          // debounce tick (a row with no line goes on line 1); a 422 about
+          // config.yaml on disk has no lint row, so the banner prints its
+          // sentence.
           const c = parseConflictBody(err);
           if (c) setConflict(c);
         },
@@ -494,7 +495,7 @@ export function SettingsBeetsPage() {
               finishes.
             </output>
           ) : (
-            <p className="text-destructive text-sm" role="alert">
+            <p className="text-destructive text-sm break-words" role="alert">
               Apply failed.{" "}
               {applyRecoveryHint(applyMutation.error) ?? APPLY_FALLBACK}
             </p>
@@ -695,9 +696,11 @@ function ConfigStateBanner({
 }
 
 /** Resolve `ValidationErrorItem[]` into CodeMirror `Diagnostic[]` keyed off
- * 1-based line numbers. Defensive against out-of-range lines (a server line
- * count that drifts past the current draft would otherwise throw in
- * `state.doc.line(n)`); we drop those rather than dropping the whole array. */
+ * 1-based line numbers. A row whose line is null (a parse error with no
+ * position, e.g. `!!bool ture`) or out of range (the draft changed since it
+ * was sent) is marked on the whole of line 1 rather than dropped, so it still
+ * counts toward the error line and disables Save: the server would refuse a
+ * Save of the text Validate rejected. */
 function mapErrorsToDiagnostics(
   errors: ValidationErrorItem[],
   ref: ReactCodeMirrorRef | null,
@@ -705,26 +708,24 @@ function mapErrorsToDiagnostics(
   const view = ref?.view;
   if (!view) return [];
   const totalLines = view.state.doc.lines;
-  return errors
-    .filter(
-      (e): e is ValidationErrorItem & { line: number } =>
-        e.line != null && e.line >= 1 && e.line <= totalLines,
-    )
-    .map((e) => {
-      const line = view.state.doc.line(e.line);
-      // Clamp `from` to the line's range. A backend column past line-end (drift
-      // between the server's view and the live buffer, or a 0-based vs 1-based
-      // off-by-one) would otherwise produce `from > to` and trigger CM6's
-      // range invariant; capping at `line.to` degrades to a whole-line mark
-      // instead of crashing the linter.
-      const from = Math.min(line.from + (e.column ?? 0), line.to);
-      return {
-        from,
-        to: line.to,
-        severity: "error" as const,
-        message: `${e.loc}: ${e.msg}`,
-      };
-    });
+  return errors.map((e) => {
+    const n = e.line;
+    const placed = n != null && n >= 1 && n <= totalLines;
+    const line = view.state.doc.line(placed ? n : 1);
+    // Clamp `from` to the line's range. A backend column past line-end (drift
+    // between the server's view and the live buffer, or a 0-based vs 1-based
+    // off-by-one) would otherwise produce `from > to` and trigger CM6's
+    // range invariant; capping at `line.to` degrades to a whole-line mark
+    // instead of crashing the linter. An unplaced row's column belongs to no
+    // line here, so it is ignored.
+    const column = placed ? (e.column ?? 0) : 0;
+    return {
+      from: Math.min(line.from + column, line.to),
+      to: line.to,
+      severity: "error" as const,
+      message: e.loc ? `${e.loc}: ${e.msg}` : e.msg,
+    };
+  });
 }
 
 function isConfigOpError(err: unknown): err is ConfigOpError {

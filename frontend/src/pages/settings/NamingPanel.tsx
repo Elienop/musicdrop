@@ -413,6 +413,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
           applyPending &&
           !save.isPending &&
           !saveError &&
+          !conflict &&
           !job.active && (
             <output className="text-muted-foreground text-sm block">
               Saved. Click <span className="font-medium">Apply</span> to load
@@ -426,7 +427,8 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
         )}
       </div>
 
-      {saveError && (
+      {/* While a replace pattern is invalid, its own line is the recovery. */}
+      {saveError && !hasReplaceErrors && (
         <p className="text-destructive text-sm break-words" role="alert">
           Save failed. {saveFailureDetail(save.error?.onDisk)}
         </p>
@@ -437,7 +439,7 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
             A library job is running; Apply will be available when it finishes.
           </output>
         ) : (
-          <p className="text-destructive text-sm" role="alert">
+          <p className="text-destructive text-sm break-words" role="alert">
             Apply failed.{" "}
             {applyRecoveryHint(apply.error) ?? APPLY_FALLBACK}
           </p>
