@@ -366,29 +366,13 @@ test("the Save sentence follows the row's type, not its text", async () => {
 });
 
 test("a failed Save hides the Saved cue", async () => {
-  const alert = await saveFails(WRITE_FAULT, {
-    applyPending: true,
-    // The cue shows while nothing has failed.
-    onReady: async () => {
-      expect(await screen.findByText(/^Saved\. Click/)).toBeInTheDocument();
-    },
-  });
+  const alert = await saveFailsTypedBack(fail(422, WRITE_FAULT));
   expect(alert).toHaveTextContent(/^Save failed\./);
   expect(screen.queryByText(/^Saved\. Click/)).not.toBeInTheDocument();
 });
 
 test("a Save conflict hides the Saved cue", async () => {
-  const banner = await saveFails(
-    { detail: [] },
-    {
-      applyPending: true,
-      status: 409,
-      // The cue shows while nothing has failed.
-      onReady: async () => {
-        expect(await screen.findByText(/^Saved\. Click/)).toBeInTheDocument();
-      },
-    },
-  );
+  const banner = await saveFailsTypedBack(fail(409, { detail: [] }));
   expect(banner).toHaveTextContent(/your save was refused/);
   expect(screen.queryByText(/^Saved\. Click/)).not.toBeInTheDocument();
 });
@@ -409,6 +393,16 @@ const fail = (status: number, error?: unknown): Reply => ({
 });
 /** A reply that never comes: the action stays in flight. */
 const never = () => new Promise<Reply>(() => {});
+
+/** A reply that comes only when `answer` is called. */
+function held() {
+  let answer: (r: Reply) => void = () => {};
+  const reply = () =>
+    new Promise<Reply>((resolve) => {
+      answer = resolve;
+    });
+  return { reply, answer: (r: Reply) => answer(r) };
+}
 
 /** Replace the beforeEach stubs whole. Each route answers from its callback
  * at request time, so a test can change the answer mid-test. */
@@ -489,6 +483,24 @@ const UNREADABLE = {
 const REFUSED_ALERT =
   "Apply failed. beets could not read config.yaml, so nothing was changed. Fix the file and Apply again.";
 
+/** Type a draft, Save it, and type the draft back to the file while that Save
+ * runs; then the Save answers `answer`. A Save fails with its draft open, and
+ * a draft alone hides the cue and turns Apply off, so this is the one way the
+ * cue and Apply meet a failed Save. Returns the first alert. */
+async function saveFailsTypedBack(answer: Reply) {
+  const save = held();
+  mockPanel({ save: save.reply });
+  wrap(<NamingPanel />);
+  const def = await screen.findByDisplayValue(/\$albumartist/);
+  // The cue shows while nothing has failed.
+  expect(await screen.findByText(/^Saved\. Click/)).toBeInTheDocument();
+  await userEvent.type(def, "X");
+  await userEvent.click(screen.getByRole("button", { name: /save naming/i }));
+  await userEvent.type(def, "{backspace}");
+  save.answer(answer);
+  return screen.findByRole("alert");
+}
+
 test("the Save alert gives way to an invalid replace pattern, and stays gone once it is fixed", async () => {
   let replaceErrors: ReplaceError[] = [];
   const hits = mockPanel({
@@ -539,13 +551,19 @@ test("the Save alert gives way to an invalid replace pattern, and stays gone onc
 });
 
 test("a Save failure, then an Apply failure, shows only the Apply alert", async () => {
-  mockPanel({ save: () => fail(500), apply: () => fail(502) });
+  // Apply is off beside a draft, so the draft is typed back to the file while
+  // the Save runs: the one way to reach Apply with a Save failure showing.
+  const save = held();
+  mockPanel({ save: save.reply, apply: () => fail(502) });
   wrap(<NamingPanel />);
-  await userEvent.type(await screen.findByDisplayValue(/\$albumartist/), "X");
+  const def = await screen.findByDisplayValue(/\$albumartist/);
+  await userEvent.type(def, "X");
   await userEvent.click(screen.getByRole("button", { name: /save naming/i }));
+  await userEvent.type(def, "{backspace}");
+  save.answer(fail(500));
   await waitFor(() =>
     expect(namingState()).toEqual({
-      save: "Save naming",
+      save: "Save naming (off)",
       apply: "Apply",
       lines: [],
       below: [SAVE_FALLBACK_ALERT],
@@ -556,7 +574,7 @@ test("a Save failure, then an Apply failure, shows only the Apply alert", async 
   await userEvent.click(screen.getByRole("button", { name: "Apply" }));
   await waitFor(() =>
     expect(namingState()).toEqual({
-      save: "Save naming",
+      save: "Save naming (off)",
       apply: "Apply",
       lines: [],
       below: [APPLY_FALLBACK_ALERT],
@@ -577,7 +595,7 @@ test("an Apply failure, then a Save failure, shows only the Save alert", async (
   await waitFor(() =>
     expect(namingState()).toEqual({
       save: "Save naming",
-      apply: "Apply",
+      apply: "Apply (off)",
       lines: [],
       below: [SAVE_FALLBACK_ALERT],
       alerts: [SAVE_FALLBACK_ALERT],
@@ -661,50 +679,105 @@ test("an Apply 409 after the job has ended leaves nothing about a job", async ()
   );
 });
 
-test("Apply is off while a Save is in flight", async () => {
-  mockPanel({ save: never });
+/** Pending, nothing typed: the cue shows and Apply is on. */
+const PENDING_REST = {
+  save: "Save naming (off)",
+  apply: "Apply",
+  lines: [CUE],
+  below: [],
+  alerts: [],
+};
+
+test("a draft hides the Saved cue and turns Apply off; typing it back restores both", async () => {
+  mockPanel();
   wrap(<NamingPanel />);
-  await userEvent.type(await screen.findByDisplayValue(/\$albumartist/), "X");
-  // Control: both are on before the Save.
+  const def = await screen.findByDisplayValue(/\$albumartist/);
+  await waitFor(() => expect(namingState()).toEqual(PENDING_REST));
+
+  // Apply would load the file, not the draft.
+  await userEvent.type(def, "X");
   await waitFor(() =>
     expect(namingState()).toEqual({
       save: "Save naming",
-      apply: "Apply",
-      lines: [CUE],
+      apply: "Apply (off)",
+      lines: [],
       below: [],
       alerts: [],
     }),
   );
 
+  await userEvent.type(def, "{backspace}");
+  await waitFor(() => expect(namingState()).toEqual(PENDING_REST));
+});
+
+test("Apply is off while a Save is in flight", async () => {
+  mockPanel({ save: never });
+  wrap(<NamingPanel />);
+  const def = await screen.findByDisplayValue(/\$albumartist/);
+  await userEvent.type(def, "X");
   await userEvent.click(screen.getByRole("button", { name: /save naming/i }));
-  expect(namingState()).toEqual({
+  const saving = {
     save: "Saving… (off)",
     apply: "Apply (off)",
     lines: [],
     below: [],
     alerts: [],
-  });
+  };
+  expect(namingState()).toEqual(saving);
+
+  // The draft typed back to the file: only the Save in flight keeps Apply off.
+  await userEvent.type(def, "{backspace}");
+  await new Promise((r) => setTimeout(r, 50));
+  expect(namingState()).toEqual(saving);
 });
 
-test("Save is off while an Apply is in flight", async () => {
+test("Save is off while an Apply is in flight, and the cue is gone", async () => {
   mockPanel({ apply: never });
   wrap(<NamingPanel />);
-  await userEvent.type(await screen.findByDisplayValue(/\$albumartist/), "X");
+  const def = await screen.findByDisplayValue(/\$albumartist/);
+  await waitFor(() => expect(namingState()).toEqual(PENDING_REST));
+
+  await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+  const applying = {
+    save: "Save naming (off)",
+    apply: "Applying… (off)",
+    lines: [],
+    below: [],
+    alerts: [],
+  };
+  expect(namingState()).toEqual(applying);
+
+  // A draft typed while Apply runs: Save stays off.
+  await userEvent.type(def, "X");
+  await new Promise((r) => setTimeout(r, 50));
+  expect(namingState()).toEqual(applying);
+});
+
+test("the paused line shows while a job holds a pending Apply", async () => {
+  mockPanel({ jobActive: () => true });
+  wrap(<NamingPanel />);
+  await screen.findByDisplayValue(/\$albumartist/);
   await waitFor(() =>
     expect(namingState()).toEqual({
-      save: "Save naming",
-      apply: "Apply",
-      lines: [CUE],
+      save: "Save naming (off)",
+      apply: "Apply (off)",
+      lines: ["Apply paused: an import is running; available when it finishes."],
       below: [],
       alerts: [],
     }),
   );
+});
 
-  await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+test("no paused line when nothing is waiting to be applied", async () => {
+  const hits = mockPanel({ applyPending: false, jobActive: () => true });
+  wrap(<NamingPanel />);
+  await screen.findByDisplayValue(/\$albumartist/);
+  await waitFor(() => expect(hits.probe).toBeGreaterThan(0));
+  await new Promise((r) => setTimeout(r, 50));
   expect(namingState()).toEqual({
     save: "Save naming (off)",
-    apply: "Applying… (off)",
-    lines: [CUE],
+    apply: "Apply (off)",
+    lines: [],
     below: [],
     alerts: [],
   });

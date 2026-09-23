@@ -144,9 +144,10 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
   const config = useBeetsConfig();
   const applyPending = config.data?.apply_pending ?? false;
 
-  // Every draft edit goes through these, and ends the last Save's failure:
-  // its alert is about a draft that is gone, and one hidden by the replace
-  // line and shown again would be announced twice for one Save.
+  // Every draft edit goes through these, and ends the last Save's failure,
+  // whether it was about the draft or about config.yaml on disk: an alert
+  // hidden by the replace line and shown again would be announced twice for
+  // one Save.
   function draftSetter<T>(
     set: React.Dispatch<React.SetStateAction<T>>,
   ): React.Dispatch<React.SetStateAction<T>> {
@@ -433,11 +434,17 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
         >
           {save.isPending ? "Saving…" : "Save naming"}
         </Button>
+        {/* Apply loads the file on disk, so it waits while a draft differs
+            from it, the same as on the Beets page. */}
         <Button
           variant="outline"
           onClick={handleApply}
           disabled={
-            apply.isPending || save.isPending || job.active || !applyPending
+            apply.isPending ||
+            save.isPending ||
+            job.active ||
+            !applyPending ||
+            dirty
           }
         >
           {apply.isPending ? "Applying…" : "Apply"}
@@ -447,9 +454,13 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
             Invalid replace pattern. Fix to save.
           </p>
         )}
+        {/* "Saved. Click Apply" only while that is the next step: not beside
+            a draft Apply would not load, and not while Apply runs. */}
         {!hasReplaceErrors &&
           applyPending &&
+          !dirty &&
           !save.isPending &&
+          !apply.isPending &&
           !saveError &&
           !applyFailed &&
           !conflict &&
@@ -459,7 +470,8 @@ function NamingEditor({ initial }: Readonly<{ initial: NamingConfig }>) {
               it.
             </output>
           )}
-        {job.active && (
+        {/* Only when something is waiting to be applied. */}
+        {applyPending && job.active && (
           <output className="text-muted-foreground text-sm block">
             Apply paused: {job.label} is running; available when it finishes.
           </output>
