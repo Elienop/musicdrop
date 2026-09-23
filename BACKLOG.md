@@ -838,6 +838,10 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     no dot (`!!float Zq7Secrt`) to stderr (`ruamel/yaml/constructor.py:504-508`). The value is
     then refused. Only the operator can write that tag (security seat, measured; predates the
     branch).
+  - An `!!omap` top level counts as a mapping to the editor (ruamel's ordered map subclasses
+    its map), where beets refuses it: "expected a mapping node, but found sequence" (measured
+    with `confuse.YamlSource`, 2026-09-23; what a Save of one writes was not measured; predates
+    the branch).
   When the planned fix lands (parse with beets' own loader first), delete the editor's
   `_RefusingComposer` (`app/beets/config_editor.py`): it exists only to make ruamel refuse a
   reused anchor as PyYAML does.
@@ -885,12 +889,15 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     and the warning printed both file lines to stderr, secrets included. Save then wrote a file
     boot refuses. The editor's composer now refuses it, as PyYAML does (`yaml/composer.py:74-77`),
     wherever both read the anchor names alike (see the anchor-name item above).
-  - A `config.yaml` that is not UTF-8, cannot be read, or is not a regular file shows an empty
-    editor and does not say why. beets loads a UTF-16 file with a BOM, so such a file can be
-    running. A Save from the empty editor of a non-UTF-8 file answers the 409 "changed on disk"
-    conflict (tested). It used to replace the file (measured: a Plex token lost; fixed on this
-    branch, PR #232). Re-save the file as UTF-8 to edit it here. Search words: UTF-16, BOM,
-    empty editor, sha256, 409.
+  - A `config.yaml` that is not UTF-8, cannot be read, or is not a regular file opens as an
+    empty editor and does not say why. Its only lint rows are the two "Field required" rows
+    (`directory`, `library`) on line 1. For a missing, unreadable or non-regular file the banner
+    says "config.yaml is saved but not loaded yet", which is false (code seat, measured for
+    absent, EACCES, a FIFO and a directory). beets loads a UTF-16 file with a BOM, so such a file
+    can be running. Both Saves refuse a non-UTF-8 file with 422 "config.yaml is not UTF-8.",
+    whatever sha they are sent, and write nothing. On `main` a Save from the empty editor
+    replaced the file (measured: a Plex token lost; fixed in PR #232). Re-save the file as UTF-8
+    to edit it here. Search words: UTF-16, BOM, empty editor, sha256, not UTF-8, 422.
   - Save, the Naming routes and `GET /api/config` open `config.yaml` only when it is a regular
     file. A FIFO swapped in between that check and the open still blocks, the same gap confuse's
     own `os.path.isfile` read and Apply's gate have. The check bounds the file's type, not its
