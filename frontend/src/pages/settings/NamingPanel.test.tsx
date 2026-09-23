@@ -870,6 +870,15 @@ test("a row Save would not send is not a change; a rule with a query and a templ
   await userEvent.type(template, "Live/$album");
   expect(namingState()).toEqual(PENDING_REST);
 
+  // A query with a template of only spaces: Save's own trim leaves it out.
+  await userEvent.click(screen.getByRole("button", { name: /add rule/i }));
+  await userEvent.type(
+    screen.getByLabelText("Custom rule 2 query"),
+    "albumtype:ep",
+  );
+  await userEvent.type(screen.getByLabelText("Custom rule 2 template"), "  ");
+  expect(namingState()).toEqual(PENDING_REST);
+
   // Control: with a query too, it is a change.
   await userEvent.type(
     screen.getByLabelText("Custom rule 1 query"),

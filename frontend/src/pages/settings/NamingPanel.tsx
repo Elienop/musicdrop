@@ -75,9 +75,10 @@ function assemble(
   return rules;
 }
 
-/** The rules and replace rows Save sends. It leaves out the rows the backend
- * would not write (`_naming_map`, `_replace_map`): a rule with no query or a
- * blank template, and a replace row with no pattern. */
+/** The rules and replace rows Save sends. It leaves out a rule with no query
+ * and a replace row with no pattern, which the backend would not write either
+ * (`_naming_map`, `_replace_map`). It also leaves out a rule whose template is
+ * only whitespace; the backend drops only an empty one. */
 function saveBody(
   base: { default: string; comp: string; singleton: string },
   custom: NamingRuleInput[],

@@ -128,10 +128,10 @@ export function SettingsBeetsPage() {
   // button needs `view.dispatch(...)` to flip the compartment.
   const editorRef = useRef<ReactCodeMirrorRef | null>(null);
   // The editor's own text: set by every edit and by Reload, cleared by Cancel
-  // and by a read of a new file while no draft is open. `null` means the
-  // editor shows `data.yaml_text`. It is also the editor's `value`, so a read
-  // cannot replace an open draft, and a Save's own text stays on screen until
-  // its re-read lands.
+  // and by a read of a new file, unless an open draft differs from that file.
+  // `null` means the editor shows `data.yaml_text`. It is also the editor's
+  // `value`, so a read cannot replace an open draft, and a Save's own text
+  // stays on screen until its re-read lands.
   const [localText, setLocalText] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [conflict, setConflict] = useState<ConflictState | null>(null);
@@ -403,15 +403,17 @@ export function SettingsBeetsPage() {
           insert: conflict.serverDoc,
         },
       });
+      // Before the panel's focused button unmounts, or focus drops to <body>.
+      view.focus();
     }
     // The editor holds the 409's file until the re-read below lands.
     setLocalText(conflict.serverDoc);
     setDirty(false);
     setConflict(null);
     setLintErrors(0);
-    // Read the file again: the next Save sends the snapshot's sha. Once the
-    // read lands, the text and the sha come from one file version, because a
-    // read with a new sha puts its own text in the editor (the effect above).
+    // Read the file again: the next Save sends the snapshot's sha. Once a read
+    // with a new sha lands, the text and the sha come from one file version:
+    // that read puts its own text in the editor (the effect above).
     void queryClient.invalidateQueries({ queryKey: ["beets-config"] });
   }
 
@@ -425,15 +427,17 @@ export function SettingsBeetsPage() {
         base_sha256: conflict.sha,
       },
       {
+        // Focus goes to the editor before the panel's focused button
+        // unmounts, here and on a non-409 failure.
         onSuccess: () => {
           setDirty(false);
           setConflict(null);
+          editorRef.current?.view?.focus();
         },
         // Another writer since the first 409: the panel takes the newer file
         // and token, the same as for the first 409. Any other failure closes
         // the panel: the Save alert shows it, and Save is the way to retry.
-        // Focus goes to the editor, where the draft is, before the panel's
-        // focused button unmounts.
+        // Focus goes to the editor, where the draft is.
         onError: (err) => {
           if (err.status === 409) {
             openConflict(err);
@@ -457,7 +461,8 @@ export function SettingsBeetsPage() {
         <header className="flex flex-col gap-1">
           <SectionLabel>Beets configuration</SectionLabel>
           <p className="text-muted-foreground text-sm">
-            Loaded from <code className="font-mono">{data.config_path}</code>
+            Loaded from{" "}
+            <code className="font-mono break-all">{data.config_path}</code>
           </p>
         </header>
 
@@ -575,8 +580,9 @@ export function SettingsBeetsPage() {
           )}
 
         {conflict && (
-          // Keyed by the 409's token, so a second 409 remounts the panel and
-          // moves focus to it, the same as the first.
+          // Keyed by the newer file's sha, from a 409 or from a read, so a
+          // second 409 or a newer read remounts the panel and moves focus to
+          // it, the same as the first.
           <SettingsConflict
             key={conflict.sha}
             local={localText ?? data.yaml_text}
@@ -731,7 +737,7 @@ function ConfigStateBanner({
         />
         <span>
           <strong>Unsaved changes.</strong> Save to write to{" "}
-          <code className="font-mono">{data.config_path}</code>.
+          <code className="font-mono break-all">{data.config_path}</code>.
         </span>
       </output>
     );

@@ -1,9 +1,30 @@
 import { yaml } from "@codemirror/lang-yaml";
 import { MergeView } from "@codemirror/merge";
+import { EditorView } from "@codemirror/view";
 import { useEffect, useRef } from "react";
 
 import { Button } from "@/components/ui/button";
 import { READ_ONLY_EXTENSION } from "@/pages/settings/codemirror-config";
+
+/**
+ * A focused pane's ring: the app's focus dialect (`.focus-ring` in
+ * styles.css, 3px at ring/70), 3.96:1 on the panel. CodeMirror's own outline
+ * is drawn outside `.cm-editor`, whose merge-view wrapper is
+ * `overflow: hidden`, and the gutter is stacked at z-index 200. This ring is
+ * drawn inside the editor, at z-index 201.
+ */
+const PANE_FOCUS_RING = EditorView.theme({
+  "&.cm-focused": { outline: "none" },
+  "&.cm-focused::after": {
+    content: '""',
+    position: "absolute",
+    inset: "0",
+    zIndex: "201",
+    pointerEvents: "none",
+    boxShadow:
+      "inset 0 0 0 3px color-mix(in oklab, var(--ring) 70%, transparent)",
+  },
+});
 
 /**
  * Conflict resolution view: shown when Save returns 409, or when a read brings
@@ -65,12 +86,18 @@ export function SettingsConflict({
     const host = hostRef.current;
     if (!host) return;
     // The main editor's read-only set: no input, and still in the Tab order,
-    // so a keyboard user can move through the diff.
-    const readOnly = [yaml(), READ_ONLY_EXTENSION];
+    // so a keyboard user can move through the diff. Each pane is named with
+    // the panel's own words.
+    const pane = (name: string) => [
+      yaml(),
+      READ_ONLY_EXTENSION,
+      EditorView.contentAttributes.of({ "aria-label": name }),
+      PANE_FOCUS_RING,
+    ];
     const mv = new MergeView({
       parent: host,
-      a: { doc: local, extensions: readOnly },
-      b: { doc: server, extensions: readOnly },
+      a: { doc: local, extensions: pane("Your edits") },
+      b: { doc: server, extensions: pane("On-disk version") },
       highlightChanges: true,
       gutter: true,
       // Empty config = use the default (collapse runs of identical lines

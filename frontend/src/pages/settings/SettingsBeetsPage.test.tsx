@@ -1004,6 +1004,8 @@ describe("SettingsPage", () => {
         screen.queryByRole("dialog", { name: /file changed on disk/i }),
       ).not.toBeInTheDocument(),
     );
+    // Focus is in the editor, not on <body>.
+    expect(document.activeElement).toBe(content);
     // Clean state: Edit is enabled again, the dirty banner is gone.
     expect(screen.getByRole("button", { name: /^edit$/i })).toBeEnabled();
     expect(screen.queryByText(/unsaved changes/i)).not.toBeInTheDocument();
@@ -1078,6 +1080,13 @@ describe("SettingsPage", () => {
     // must carry the conflict body's `current_sha256`, NOT the original.
     expect(savedBodies[0].base_sha256).toBe("base-sha");
     expect(savedBodies[1].base_sha256).toBe("fresh-server-sha");
+    // The panel closes and focus is in the editor, not on <body>.
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: /file changed on disk/i }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(document.activeElement).toBe(content);
   });
 
   test("Save stays disabled while the linter reports validation errors", async () => {
