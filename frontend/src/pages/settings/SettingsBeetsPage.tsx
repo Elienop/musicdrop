@@ -115,16 +115,18 @@ function derivePageState(
 }
 
 /**
- * Focus the editor and scroll its caret to the middle of the window, clear
- * of the sticky topbar. `view.focus()` alone never scrolls, and the buttons
- * that call this sit below the 500px editor.
+ * Focus the editor and scroll its caret into view, below the sticky topbar
+ * (73px measured, so a margin of 80). `view.focus()` alone never scrolls, and
+ * the buttons that call this sit below the 500px editor. "nearest" leaves a
+ * caret that is already in view where it is.
  */
 function focusEditor(view: EditorView | undefined) {
   if (!view) return;
   view.focus();
   view.dispatch({
     effects: EditorView.scrollIntoView(view.state.selection.main.head, {
-      y: "center",
+      y: "nearest",
+      yMargin: 80,
     }),
   });
 }
@@ -455,14 +457,15 @@ export function SettingsBeetsPage() {
         // Another writer since the first 409: the panel takes the newer file
         // and token, the same as for the first 409. Any other failure closes
         // the panel: the Save alert shows it, and Save is the way to retry.
-        // Focus goes to the editor, where the draft is.
+        // Focus goes to the editor, where the draft is, without a scroll, so
+        // the alert below the editor stays in view.
         onError: (err) => {
           if (err.status === 409) {
             openConflict(err);
             return;
           }
           setConflict(null);
-          focusEditor(editorRef.current?.view);
+          editorRef.current?.view?.focus();
         },
       },
     );

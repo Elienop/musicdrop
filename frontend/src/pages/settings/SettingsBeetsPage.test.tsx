@@ -225,11 +225,11 @@ function watchCaretScrolls(content: HTMLElement) {
         specs.some((spec) => [spec.effects].flat().includes(effect)),
       );
     });
-  /** The one scroll the page should have asked for: the caret, mid-window. */
-  const caretCentred = () => [
-    [view.state.selection.main.head, { y: "center" }],
+  /** The one scroll the page should have asked for: the caret, below the topbar. */
+  const caretShown = () => [
+    [view.state.selection.main.head, { y: "nearest", yMargin: 80 }],
   ];
-  return { scrolls, caretCentred };
+  return { scrolls, caretShown };
 }
 
 function renderPage() {
@@ -1038,7 +1038,7 @@ describe("SettingsPage", () => {
     );
     // Focus is in the editor, not on <body>, and its caret is scrolled to.
     expect(document.activeElement).toBe(content);
-    expect(watch.scrolls()).toEqual(watch.caretCentred());
+    expect(watch.scrolls()).toEqual(watch.caretShown());
     // Clean state: Edit is enabled again, the dirty banner is gone.
     expect(screen.getByRole("button", { name: /^edit$/i })).toBeEnabled();
     expect(screen.queryByText(/unsaved changes/i)).not.toBeInTheDocument();
@@ -1122,7 +1122,7 @@ describe("SettingsPage", () => {
       ).not.toBeInTheDocument(),
     );
     expect(document.activeElement).toBe(content);
-    expect(watch.scrolls()).toEqual(watch.caretCentred());
+    expect(watch.scrolls()).toEqual(watch.caretShown());
   });
 
   test("Save stays disabled while the linter reports validation errors", async () => {
@@ -1357,7 +1357,7 @@ describe("SettingsPage", () => {
       ).not.toBeInTheDocument(),
     );
     expect(document.activeElement).toBe(content);
-    expect(watch.scrolls()).toEqual(watch.caretCentred());
+    expect(watch.scrolls()).toEqual(watch.caretShown());
   });
 
   test("/settings lands on the beets section inside the settings layout", async () => {
@@ -1955,9 +1955,9 @@ describe("SettingsBeetsPage while Apply is pending", () => {
       screen.queryByRole("dialog", { name: /file changed on disk/i }),
     ).not.toBeInTheDocument();
     // Focus is in the editor, where the draft and Save are, not on <body>,
-    // with its caret scrolled to.
+    // with no scroll, so the Save alert below the editor stays in view.
     expect(document.activeElement).toBe(content);
-    expect(watch.scrolls()).toEqual(watch.caretCentred());
+    expect(watch.scrolls()).toEqual([]);
   });
 
   test("a new file version equal to the draft opens no panel, and the page is clean", async () => {
