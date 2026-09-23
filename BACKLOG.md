@@ -830,6 +830,17 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   - YAML that ruamel accepts and PyYAML refuses: `!!python/object/apply:…` tags, complex keys
     such as `? [a]`, and a bare `=` or `<<`. (A NEL/LS/PS character in a value, or `{k: 0:}`,
     is read too, but a Save rewrites it into YAML beets loads.)
+  - Anchor names outside `[A-Za-z0-9_-]`: `&x.y`, `&é`, `&a:b`, `&a&b` save with a 200, and
+    beets' scanner then refuses the file. beets reads `&t:x Zq7` as the value `':x Zq7'`, and
+    `&t:x` beside `&t:y` is a reused anchor to beets but not to the editor (review seats,
+    2026-09-23, measured; predates the branch).
+  - A ruamel warning prints the whole value of an explicit `!!float` tag that holds an `e` and
+    no dot (`!!float Zq7Secrt`) to stderr (`ruamel/yaml/constructor.py:504-508`). The value is
+    then refused. Only the operator can write that tag (security seat, measured; predates the
+    branch).
+  When the planned fix lands (parse with beets' own loader first), delete the editor's
+  `_RefusingComposer` (`app/beets/config_editor.py`): it exists only to make ruamel refuse a
+  reused anchor as PyYAML does.
   - Not a start refusal, but the same typed-read gap: `write`, `copy` or `move` set to a number
     (`write: 1`) passes Validate and Save, and beets' `.get(bool)` refuses it. An import refuses
     it before adding any row (the pre-check), and an album edit answers a bare 500 (review seats,
@@ -872,7 +883,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   - ~~Validate and Save accept a reused YAML anchor.~~ **CLOSED 2026-09-23** on
     `feat/import-keep-downloads` (PR #232). ruamel only warned (`ruamel/yaml/composer.py:130-137`),
     and the warning printed both file lines to stderr, secrets included. Save then wrote a file
-    boot refuses. The editor's composer now refuses it, as PyYAML does (`yaml/composer.py:74-77`).
+    boot refuses. The editor's composer now refuses it, as PyYAML does (`yaml/composer.py:74-77`),
+    wherever both read the anchor names alike (see the anchor-name item above).
   - A `config.yaml` that is not UTF-8, cannot be read, or is not a regular file shows an empty
     editor and does not say why. beets loads a UTF-16 file with a BOM, so such a file can be
     running. A Save from the empty editor of a non-UTF-8 file answers the 409 "changed on disk"
@@ -903,8 +915,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     written" after the new bytes landed. A retry on the same base then answers 409 (measured
     with an injected EIO).
   - A Save publishes a new file, so only the mode carries over: the owner becomes the app's, the
-    group the app's (or the folder's, in a setgid folder), and a per-file ACL entry, extended attributes and another hard link to the old file
-    do not follow. For a regular `config.yaml` this predates the branch (security seat,
+    group the app's (or the folder's, in a setgid folder), and a per-file ACL entry, extended
+    attributes and another hard link to the old file do not follow. For a regular `config.yaml` this predates the branch (security seat,
     measured). A Save killed mid-write leaves its temp, new text included, in the target's
     folder until a later Save there sweeps it after an hour.
   - The artwork toggle reads its `_enabled.json` at startup with no regular-file check
@@ -3913,11 +3925,13 @@ the condition it names has changed.
 ## Open questions
 
 - **What should a "Try again" button do while it retries, and where should focus go after?**
-  (PR #232 round-13 UI seat, owner call.) Every Try again in the app (Trash, and the Naming
-  panel's load error since #232) gives no sign on a repeat failure: about a second passes (one
-  automatic retry), then the same alert returns and a screen reader announces nothing. On
-  success the button disappears and keyboard focus drops to `<body>`. A fix belongs to all of
-  them at once: a busy label while fetching, and a chosen focus target on success.
+  (PR #232 round-13 UI seat, owner call.) This covers every Try again or Retry button that calls
+  a query's `refetch()` (`grep -rn "refetch" frontend/src --include=*.tsx`): Trash, the Naming
+  panel's load error since #232, `ErrorState`'s Retry, the import pages' notices, and more. None
+  gives a sign on a repeat failure: about a second passes (one automatic retry), then the same
+  alert returns and a screen reader announces nothing. On success the button disappears and
+  keyboard focus drops to `<body>`. A fix belongs to all of them at once: a busy label while
+  fetching, and a chosen focus target on success.
 
 - **Should duplicates resolve / resolve-all gain 503 parity with the delete routes?**
   (#189, owner call.) Both currently keep their established structured-500 absorb shape
