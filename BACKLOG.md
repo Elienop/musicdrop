@@ -892,8 +892,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   - The folder fsync runs after the publish, so an EIO there answers "config.yaml could not be
     written" after the new bytes landed. A retry on the same base then answers 409 (measured
     with an injected EIO).
-  - A Save publishes a new file, so only the mode carries over: the owner and group become the
-    app's, and a per-file ACL entry, extended attributes and another hard link to the old file
+  - A Save publishes a new file, so only the mode carries over: the owner becomes the app's, the
+    group the app's (or the folder's, in a setgid folder), and a per-file ACL entry, extended attributes and another hard link to the old file
     do not follow. For a regular `config.yaml` this predates the branch (security seat,
     measured). A Save killed mid-write leaves its temp, new text included, in the target's
     folder until a later Save there sweeps it after an hour.
@@ -3901,6 +3901,13 @@ the condition it names has changed.
   of the net.
 
 ## Open questions
+
+- **What should a "Try again" button do while it retries, and where should focus go after?**
+  (PR #232 round-13 UI seat, owner call.) Every Try again in the app (Trash, and the Naming
+  panel's load error since #232) gives no sign on a repeat failure: about a second passes (one
+  automatic retry), then the same alert returns and a screen reader announces nothing. On
+  success the button disappears and keyboard focus drops to `<body>`. A fix belongs to all of
+  them at once: a busy label while fetching, and a chosen focus target on success.
 
 - **Should duplicates resolve / resolve-all gain 503 parity with the delete routes?**
   (#189, owner call.) Both currently keep their established structured-500 absorb shape
