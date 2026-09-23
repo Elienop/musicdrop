@@ -993,6 +993,19 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   - The diff box's rounded corners clip the focused pane's square ring corners.
   - No test covers Naming's reset of a Save failure when a custom rule or replace row is edited
     (`updateCustom`, `updateReplace`); only the base fields are pinned. Predates the branch.
+  - After a Save or "Overwrite anyway", the "saved but not loaded yet" alert above the editor can
+    sit under the 81px topbar (measured at y 10–56 at 2755 px wide and −30 at 375 px); the Apply
+    button below stays in view, and the alert is announced. Edit's focus does not scroll either.
+  - `focusEditor`'s `yMargin: 86` is the topbar measured at the default font size; a larger root
+    font size grows the topbar past it. CodeMirror's `EditorView.scrollMargins` could follow the
+    real height, and would also keep arrow-key scrolling clear of the topbar.
+  - The settings pages import `codemirror`, `@codemirror/view`, `@codemirror/state`,
+    `@codemirror/language` and `@lezer/highlight`, none declared in `package.json`; they resolve
+    as other packages' dependencies. Predates the branch.
+  - `SettingsConflict.test.tsx` pins the pane ring by exact `cssText`, so an equivalent rewrite of
+    the rule fails it.
+  - `browse/BrowsePage.tsx` ~334 and `browse/BrowsePage.test.tsx` ~91 give the topbar as 4.5rem
+    (`py-3` + `h-12`); it is 81px, set by its 56px `icon-xl` buttons. The rail still clears it.
   - Text and sha can still come from two file versions in two cases no person can reach: another
     writer puts the old bytes back before Reload's re-read lands (A-B-A), or a read lands and
     Edit, a key and Ctrl+S all follow within @uiw's 200 ms typing latch. Both predate the branch.
