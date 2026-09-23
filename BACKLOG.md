@@ -834,14 +834,17 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   answers 500 only if that restore fails too. Validate and Save DO refuse an include list over
   Apply's caps (32 entries or 1 MiB; code-review seat, measured). The Naming save answers 200 on
   a file of the third kind and writes it back with only its two keys changed (security seat).
-  The other direction is safe: ruamel refuses a duplicate key that beets loads (PyYAML keeps the
-  last), so Validate, Save and the Naming routes refuse a file Apply and boot accept (code-review
-  seat, measured). The same two parsers also disagree on values, and a save writes ruamel's
-  reading back: PyYAML (beets) reads `y`, `N` and `._5` as strings, ruamel as `True`, `False`
-  and `0.5`. So Save or a Naming save of a file holding one changes what beets reads (round-9
-  implementer, measured). Fix shape not designed: Validate would parse with beets' own loader (as
-  `setup.read_config_document` does) and ask beets' typed reads, not only ruamel; the round-trip
-  would need PyYAML's scalar rules. Search words: L4, ConfigTypeError, musicbrainz, boot,
+  The other direction is safe but blocks editing: ruamel refuses a duplicate key that beets
+  loads (PyYAML keeps the last), and a bare value starting with `%`, such as
+  `default: %the{$albumartist}/…` as beets' own docs write it (confuse allows it,
+  `confuse/yaml_util.py:70-73`). So Validate, Save and the Naming routes refuse a file Apply and
+  boot accept (review seats, measured). A negative leading-zero int (`-0644`) is the reverse: a
+  ruamel bug writes it back as `!!int '0-644'`, which beets cannot load, so Apply answers 422
+  and a restart refuses. Every other scalar now reads as beets reads it: the editor's resolver
+  takes beets' own loader table (PR #232 round 10; measured over 101,360 values, the negative
+  leading-zero int is the only difference left). Fix shape not designed: Validate would parse
+  with beets' own loader (as `setup.read_config_document` does) and ask beets' typed reads, not
+  only ruamel. Search words: L4, ConfigTypeError, musicbrainz, boot,
   validate, save, include, typed read, ruamel, PyYAML, duplicate key, y/n, implicit resolver.
 - **Small residuals of Apply's restore and the include gate** (review seats, 2026-09-23).
   - Each restore installs the plugins' default sources again: 5 more per restore with two
@@ -856,16 +859,24 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     "Save failed" banner. Both are frontend changes.
   - ruamel's round-trip drops a comment that sits before `---` and any `%YAML` line, and
     indents a comment that follows `--- ` on the same line, on Save and the Naming save alike.
-    beets reads the saved mapping back unchanged.
+    These comment changes alter no value beets reads. A NEL character (U+0085) in a submitted
+    string comes back as a space.
   - Save, the Naming routes and `GET /api/config` open `config.yaml` only when it is a regular
     file. A FIFO swapped in between that check and the open still blocks, the same gap confuse's
-    own `os.path.isfile` read and Apply's gate have.
+    own `os.path.isfile` read and Apply's gate have. The check bounds the file's type, not its
+    size: a huge or sparse regular `config.yaml` is read whole, and so is it by beets at boot, so
+    a cap in our routes alone would not keep MusicDrop up (security seat, reasoned; not run).
+  - Validate's messages name ruamel's internal types (`ScalarFloat`, `CommentedMap`) where
+    Apply's say `float`, `OrderedDict`.
+  - At boot, the starter config is written through a dangling `config.yaml` link, to wherever it
+    points (`setup.py` ~196-203). Only someone with write access to the beets dir can plant one.
   - The bank, slskd, Plex and playlist stores and the password-hash file re-read
     `MUSICDROP_BEETS_DIR` on every call, so they follow a beets-dir symlink re-pointed while
     MusicDrop runs. Apply uses the dir resolved at boot. Measured: after a re-point to a dir with
     no hash file, the password reads as not set and first-run setup opens. Deleting the file
     reaches the same state, so this adds no power. Replacing the booted dir itself with a link
-    (`mv beetsA beetsA.old; ln -s beetsB beetsA`) also moves Apply's restore to `beetsB`.
+    (`mv beetsA beetsA.old; ln -s beetsB beetsA`) also moves Apply to `beetsB`: a good Apply
+    loads it, and a failed one restores into it while answering that nothing was changed.
   - The boot refusal line names only the exception class for a tagged value in an include
     (`!!bool`, `!!int`), but the traceback uvicorn prints for the failed startup still carries
     the cause, and with it the value. beets prints the same line.
