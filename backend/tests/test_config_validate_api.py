@@ -4,6 +4,7 @@ Cheap lint pass — never writes, returns 200 even on errors so CodeMirror's
 async ``linter()`` source can display them inline.
 """
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -170,6 +171,32 @@ def test_validate_refuses_a_quoted_and_an_unquoted_string_for_a_filing_flag(
                 "column": 8,
             }
             for key, line in (("copy", 4), ("move", 5))
+        ],
+        "advisories": [],
+    }
+
+
+@pytest.mark.parametrize("value", ["n", "'no'"])
+@pytest.mark.parametrize("key", ["write", "autotag", "singletons", "incremental"])
+def test_validate_refuses_a_string_for_every_other_import_bool(
+    client: TestClient, key: str, value: str
+) -> None:
+    """Pydantic read ``n`` and ``'no'`` as False here. beets refuses ``write: n``
+    (``.get(bool)``) and reads the other three as on (a bare ``if``)."""
+    text = f"directory: /tmp/music\nlibrary: /tmp/x\nimport:\n  {key}: {value}\n"
+
+    r = client.post("/api/config/validate", json={"yaml_text": text})
+
+    assert r.status_code == 200
+    assert r.json() == {
+        "errors": [
+            {
+                "loc": f"import.{key}",
+                "msg": _NOT_A_BOOL,
+                "type": "value_error",
+                "line": 4,
+                "column": len(f"  {key}: "),
+            }
         ],
         "advisories": [],
     }

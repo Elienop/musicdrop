@@ -160,18 +160,32 @@ class ImportSection(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    @field_validator("copy", "move", "delete", "link", "hardlink", "reflink", mode="before")
+    @field_validator(
+        "copy",
+        "move",
+        "write",
+        "autotag",
+        "singletons",
+        "incremental",
+        "delete",
+        "link",
+        "hardlink",
+        "reflink",
+        mode="before",
+    )
     @classmethod
     def _reject_quoted_bool(cls, value: object, info: ValidationInfo) -> object:
         """A string is the one value the editor must not accept.
 
         Pydantic's lax bool reads ``'no'``/``'off'``/``'false'``/``'0'`` as
-        False. beets does not: it tests these flags with a bare ``if`` on the raw
-        view, and a non-empty string is truthy — so ``move: 'no'`` saved clean,
-        fired no advisory, and handed the user a MOVE they believed they had
-        turned off. Unquoted ``no`` parses to a real bool and never reaches
-        this; unquoted ``y`` and ``maybe`` are strings, as beets reads them.
-        ``reflink`` keeps ``"auto"``, a real beets value.
+        False. beets does not: it tests most of these flags with a bare ``if``
+        on the raw view, and a non-empty string is truthy — so ``move: 'no'``
+        saved clean, fired no advisory, and handed the user a MOVE they believed
+        they had turned off. ``write`` it reads with ``.get(bool)``, which
+        raises on a string (``beets/importer/stages.py:296``). Unquoted ``no``
+        parses to a real bool and never reaches this; unquoted ``y`` and
+        ``maybe`` are strings, as beets reads them. ``reflink`` keeps
+        ``"auto"``, a real beets value.
         """
         if info.field_name == "reflink":
             if isinstance(value, str) and value != "auto":

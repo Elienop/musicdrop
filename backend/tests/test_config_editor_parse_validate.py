@@ -131,14 +131,16 @@ def test_a_scalar_reads_and_saves_as_beets_reads_it(
 
 
 def test_the_resolver_table_beets_reads_with_keeps_its_shape() -> None:
-    """Tripwire for the table ``_Yaml11Resolver`` reads: PyYAML's, through beets' loader.
+    """Tripwire for the table ``_Yaml11Resolver`` copies: PyYAML's, through beets' loader.
 
     ``None`` must stay absent: ruamel appends that key's list to a first
     character's list IN PLACE (``ruamel/yaml/resolver.py:357-358``), which
-    would grow PyYAML's own table on every scalar.
+    would grow the copy on every scalar of one load or dump.
     """
     table = beets.config.loader.yaml_implicit_resolvers
-    assert _yaml().Resolver().versioned_resolver is table
+    copied = _yaml().Resolver().versioned_resolver
+    assert copied == table
+    assert copied is not table
     assert isinstance(table, dict)
     assert None not in table
     assert all(isinstance(first, str) and len(first) <= 1 for first in table)
@@ -147,3 +149,29 @@ def test_the_resolver_table_beets_reads_with_keeps_its_shape() -> None:
     assert {tag for tag, _ in pairs} >= {
         f"tag:yaml.org,2002:{kind}" for kind in ("bool", "int", "float", "null", "timestamp")
     }
+
+
+def test_a_parse_and_dump_never_change_beets_loader_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PyYAML lets any library register a catch-all (``first=None``) resolver.
+    With one registered, a parse and dump used to grow beets' own lists, and
+    beets' own load of its default config slowed with every Save.
+
+    A subclass, so the real loader's table is never touched."""
+
+    class CatchAll(beets.config.loader):  # type: ignore[misc,name-defined]  # an untyped attribute
+        pass
+
+    never = re.compile(r"(?!)")
+    CatchAll.add_implicit_resolver("tag:example.com,2026:never", never, None)
+    monkeypatch.setattr(beets.config, "loader", CatchAll)
+    before = {first: list(pairs) for first, pairs in CatchAll.yaml_implicit_resolvers.items()}
+    text = "directory: /music\nimport: {write: no, copy: yes}\npaths:\n  default: $album/$title\n"
+
+    for _ in range(3):
+        atomic_write(tmp_path / "config.yaml", parse_yaml(text), _yaml())
+
+    assert CatchAll.yaml_implicit_resolvers == before
+    # ...and the table is still read from beets' loader, not held on our side.
+    assert _yaml().Resolver().versioned_resolver[None] == [("tag:example.com,2026:never", never)]

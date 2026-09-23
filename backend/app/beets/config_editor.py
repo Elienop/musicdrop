@@ -118,6 +118,8 @@ class _Yaml11Resolver(VersionedResolver):
     a ``---`` read as 644, where beets reads 420.
     """
 
+    _table: _ImplicitResolvers | None = None
+
     @property
     def processing_version(self) -> tuple[int, int]:
         return (1, 1)
@@ -125,7 +127,14 @@ class _Yaml11Resolver(VersionedResolver):
     @property
     def versioned_resolver(self) -> _ImplicitResolvers:
         # The loader beets reads config.yaml with (``setup.read_config_document``).
-        return cast(_ImplicitResolvers, beets.config.loader.yaml_implicit_resolvers)
+        # Copied per instance, lists included: ruamel extends the list it gets in
+        # place (``ruamel/yaml/resolver.py:357-358``). Measured with a ``None``
+        # key registered: a parse and dump of beets' default config added 229
+        # entries to beets' own lists.
+        if self._table is None:
+            live = cast(_ImplicitResolvers, beets.config.loader.yaml_implicit_resolvers)
+            self._table = {first: list(pairs) for first, pairs in live.items()}
+        return self._table
 
 
 def _yaml() -> YAML:
@@ -142,8 +151,8 @@ def _yaml() -> YAML:
       (``representer.py:609``) and to quote ``?`` / ``:`` in a flow collection
       (``emitter.py:1096,1109``). Measured without it: ``0644`` was written as
       ``!!int '0o644'``, and a ``replace`` key ``\\?`` was written bare in a flow
-      mapping, which beets cannot parse. A load resets it to ``None``; every
-      dump uses a fresh instance.
+      mapping, which beets cannot parse. A load can change it (a ``---`` sets
+      ``None``, ``%YAML 1.2`` sets ``(1, 2)``); every dump uses a fresh instance.
     * ``preserve_quotes = True`` so the user's quoting style survives a
       round-trip.
     * ``indent(mapping=2, sequence=4, offset=2)`` — ruamel-recommended block
@@ -420,7 +429,7 @@ def atomic_write(dst: Path, data: CommentedMap, yaml: YAML) -> None:
     # churning the user's hand-edited config.yaml (diff noise, a changed CAS sha,
     # a no-op save that isn't byte-identical). Both 1.1 settings stay on the dump
     # side (see :func:`_yaml`): the resolver quotes a string that would read
-    # back as a bool or an int ("no"; a naming ``replace`` value "no" became
+    # back as a bool or an int ("no"; a naming ``replace`` pattern "no" became
     # False, crashing beets' re.compile on Apply), and ``yaml.version`` keeps
     # octals as ``0644`` and quotes ``?`` in a flow collection.
     buf = io.StringIO()
