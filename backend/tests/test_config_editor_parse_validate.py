@@ -25,7 +25,7 @@ import yaml as pyyaml
 # canonical home). Same class object at runtime — verified via identity.
 # Using the canonical path keeps mypy --strict clean without a scoped
 # suppression directive.
-from ruamel.yaml.error import YAMLError
+from ruamel.yaml.error import MarkedYAMLError, YAMLError
 
 from app.beets.config_editor import _yaml, atomic_write, parse_yaml, validate_known_keys
 from app.beets.setup import read_config_document
@@ -44,6 +44,32 @@ def test_parse_invalid_yaml_raises() -> None:
         pass
     else:
         raise AssertionError("expected YAMLError")
+
+
+_REUSED_ANCHOR = "a: &x 1\nb: *x\nplex:\n  token: &x Zq7Secret\n  user: &x u\n"
+
+
+def test_parse_refuses_a_reused_anchor_as_beets_does(recwarn: pytest.WarningsRecorder) -> None:
+    """ruamel only warned, quoting both lines; beets' PyYAML refuses the file.
+
+    An anchor reused AFTER its alias still refuses: PyYAML does too.
+    """
+    with pytest.raises(pyyaml.YAMLError, match="found duplicate anchor"):
+        pyyaml.safe_load(_REUSED_ANCHOR)
+
+    with pytest.raises(MarkedYAMLError) as caught:
+        parse_yaml(_REUSED_ANCHOR)
+
+    assert (caught.value.problem, caught.value.problem_mark.line + 1) == ("second occurrence", 4)
+    assert recwarn.list == []
+
+
+def test_parse_keeps_anchors_and_aliases_that_are_not_reused() -> None:
+    """The control: one anchor per name, aliased and merged, and a name per document."""
+    text = "a: &x 1\nb: *x\nc: &m {k: v}\nd:\n  <<: *m\n"
+
+    assert parse_yaml(text) == {"a": 1, "b": 1, "c": {"k": "v"}, "d": {"k": "v"}}
+    assert list(_yaml().load_all("a: &x 1\n---\nb: &x 2\n")) == [{"a": 1}, {"b": 2}]
 
 
 def test_validate_returns_empty_on_valid(tmp_path: Path) -> None:

@@ -96,8 +96,12 @@ _BROKEN_ON_DISK = pytest.mark.parametrize(
         ),
         (b"a: 1\nx: !!bool ture\n", "config.yaml does not parse." + _FIX_IN_BEETS),
         (b"a: 1\nb: caf\xe9\n", "config.yaml is not UTF-8."),
+        (
+            b"plex:\n  token: &a Hunter2First\n  user: &a u\n",
+            "config.yaml does not parse: YAML error at line 3." + _FIX_IN_BEETS,
+        ),
     ],
-    ids=["syntax", "duplicate-key", "mistyped-tag", "not-utf8"],
+    ids=["syntax", "duplicate-key", "mistyped-tag", "not-utf8", "reused-anchor"],
 )
 
 

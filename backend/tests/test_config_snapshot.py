@@ -102,10 +102,13 @@ def test_yaml_text_empty_on_non_utf8_file(loaded_handle: LibraryHandle) -> None:
     """A config.yaml corrupted to non-UTF-8 must degrade to an empty editable doc
     (like a missing file), NOT 500 the settings page. ``decode`` raises
     ``UnicodeDecodeError`` (a ``ValueError``, not ``OSError``), so the read guard
-    has to catch it too — otherwise it escapes ``build_config_snapshot``."""
+    has to catch it too — otherwise it escapes ``build_config_snapshot``.
+
+    The sha is ``""`` too, as for a missing file: measured before, the real sha
+    beside the empty editor let a Save replace the file."""
     loaded_handle.config_path.write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
     snap = build_config_snapshot(loaded_handle)  # must not raise
-    assert snap.yaml_text == ""
+    assert (snap.yaml_text, snap.sha256) == ("", "")
     # The merged view still renders from the in-memory beets.config.
     assert snap.effective_yaml != ""
 

@@ -11,6 +11,7 @@ overflow JS's ``Number.MAX_SAFE_INTEGER`` and silently corrupt the round-trip).
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import stat
 from pathlib import Path
@@ -212,6 +213,69 @@ def test_save_422_on_invalid_yaml(client: TestClient) -> None:
     assert r.json()["detail"][0]["loc"] == ""
 
 
+_REUSED_ANCHOR = (
+    "directory: /tmp/music\nlibrary: /tmp/x\nplex:\n  token: &a Zq7Secret\n  user: &a u\n"
+)
+
+
+def test_save_refuses_a_reused_anchor_and_writes_nothing(
+    client: TestClient, beets_library_config_path: Path
+) -> None:
+    """Measured before: 200, and the next start refused the file beets cannot load."""
+    before = beets_library_config_path.read_bytes()
+
+    r = client.post(
+        "/api/config/save", json={"yaml_text": _REUSED_ANCHOR, "base_sha256": _cas(client)}
+    )
+
+    assert r.status_code == 422, r.text
+    # The row Validate paints, pinned whole in test_config_validate_api.
+    lint = client.post("/api/config/validate", json={"yaml_text": _REUSED_ANCHOR}).json()
+    assert r.json() == {"detail": lint["errors"]}
+    assert lint["errors"][0]["type"] == "yaml_parse"
+    assert beets_library_config_path.read_bytes() == before
+
+
+def test_a_reused_anchor_reaches_no_log_or_stream(
+    client: TestClient,
+    beets_library_config_path: Path,
+    recwarn: pytest.WarningsRecorder,
+    capfd: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ruamel's warning quoted both lines, token included, and the default filters
+    print a warning to stderr. The recorder sees every warning, printed or not."""
+    caplog.set_level(logging.DEBUG)
+    cfg = beets_library_config_path
+    sha = _cas(client)
+    on_disk = cfg.read_text(encoding="utf-8") + "plex:\n  token: &a Zq7Secret\n  user: &a u\n"
+
+    statuses = [
+        client.post("/api/config/validate", json={"yaml_text": _REUSED_ANCHOR}).status_code,
+        client.post(
+            "/api/config/save", json={"yaml_text": _REUSED_ANCHOR, "base_sha256": sha}
+        ).status_code,
+    ]
+    cfg.write_text(on_disk, encoding="utf-8")
+    statuses += [
+        client.get("/api/config/naming").status_code,
+        client.post(
+            "/api/config/naming/save",
+            json={
+                "rules": [],
+                "replace": [],
+                "base_sha256": hashlib.sha256(on_disk.encode()).hexdigest(),
+            },
+        ).status_code,
+    ]
+
+    assert [str(w.message) for w in recwarn.list] == []
+    out, err = capfd.readouterr()
+    assert "Zq7" not in out + err
+    assert "Zq7" not in caplog.text
+    assert statuses == [200, 422, 422, 422]
+
+
 def test_save_422_on_schema_error(client: TestClient) -> None:
     sha = _cas(client)
     # Not a bare ``/tmp``: the fixture's beets dir sits under it, so that value
@@ -292,6 +356,39 @@ def test_save_409_carries_fresh_cas_token(
     )
     assert r.status_code == 409
     assert r.json()["detail"]["current_sha256"] == hashlib.sha256(new_bytes).hexdigest()
+
+
+def test_save_from_the_empty_editor_of_a_utf16_config_is_a_409(
+    client: TestClient, beets_library_config_path: Path
+) -> None:
+    """beets reads a UTF-16 file with a BOM; the editor opens it empty.
+
+    Measured before: the GET served the file's real sha, so this Save answered
+    200 and replaced the whole file, a Plex token included.
+    """
+    cfg = beets_library_config_path
+    text = cfg.read_text(encoding="utf-8") + "plex:\n  token: Zq7Secret\n"
+    raw = text.encode("utf-16")
+    cfg.write_bytes(raw)
+    assert read_config_document(cfg)["plex"] == {"token": "Zq7Secret"}
+
+    snap = client.get("/api/config").json()
+    assert (snap["yaml_text"], snap["sha256"]) == ("", "")
+    music = text.splitlines()[0]
+    r = client.post(
+        "/api/config/save",
+        json={"yaml_text": f"{music}\nlibrary: library.db\n", "base_sha256": snap["sha256"]},
+    )
+
+    assert r.status_code == 409, r.text
+    assert r.json() == {
+        "detail": {
+            "detail": "File changed on disk",
+            "current_yaml_text": raw.decode("utf-8", errors="replace"),
+            "current_sha256": hashlib.sha256(raw).hexdigest(),
+        }
+    }
+    assert cfg.read_bytes() == raw
 
 
 def test_get_serves_raw_yaml_unredacted(

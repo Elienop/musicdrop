@@ -1,6 +1,7 @@
 """Layer-3 config editor — write-side helpers.
 
-ruamel.yaml is used ONLY for the write path (load -> mutate -> dump).
+ruamel.yaml parses what Validate, Save and the Naming routes read, and writes
+what Save stores (load -> mutate -> dump).
 Per the maintainer (Anthon van der Neut, https://yaml.dev/doc/ruamel.yaml/detail/),
 the default ``YAML()`` is ``typ='rt'`` — round-trip — which preserves comments,
 key order, block style, scalar quoting style, and anchors. Booleans always
@@ -42,7 +43,9 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.composer import Composer, ComposerError
 from ruamel.yaml.error import YAMLError
+from ruamel.yaml.events import AliasEvent
 from ruamel.yaml.resolver import VersionedResolver
 
 # ``build_config_snapshot`` is used by save()/apply() to return the post-write
@@ -139,6 +142,30 @@ class _Yaml11Resolver(VersionedResolver):
         return self._table
 
 
+class _RefusingComposer(Composer):
+    """Refuses a reused anchor, as beets' loader does (PyYAML ``composer.py:74-77``).
+
+    ruamel only warns (``ruamel/yaml/composer.py:130-137``), and the warning
+    quotes both lines of the file. Measured: a token on such a line reached
+    stderr, Save wrote the file, and the next start refused it. Not a
+    ``warnings`` filter: those are process-wide, and measured, one set at import
+    no longer held inside a pytest test.
+    """
+
+    def compose_node(self, parent: Any, index: Any) -> Any:
+        if not self.parser.check_event(AliasEvent):
+            event = self.parser.peek_event()
+            anchor = event.anchor
+            if anchor is not None and anchor in self.anchors:
+                raise ComposerError(
+                    f"found duplicate anchor {anchor!r}; first occurrence",
+                    self.anchors[anchor].start_mark,
+                    "second occurrence",
+                    event.start_mark,
+                )
+        return super().compose_node(parent, index)
+
+
 def _yaml() -> YAML:
     """Construct the canonical round-trip ``YAML`` instance.
 
@@ -148,6 +175,7 @@ def _yaml() -> YAML:
       against it).
     * :class:`_Yaml11Resolver`, so ``yes`` / ``no`` are bools with or without a
       ``---`` or a ``%YAML`` line, as beets reads them.
+    * :class:`_RefusingComposer`, so a reused anchor is refused, as beets does.
     * ``version = (1, 1)`` for the dump. The serializer keeps its own copy
       (``ruamel/yaml/main.py:319``), and the dump reads it for an octal's prefix
       (``representer.py:609``) and to quote ``?`` / ``:`` in a flow collection
@@ -163,6 +191,7 @@ def _yaml() -> YAML:
     """
     yaml = YAML()
     yaml.Resolver = _Yaml11Resolver
+    yaml.Composer = _RefusingComposer
     yaml.version = (1, 1)
     yaml.preserve_quotes = True
     yaml.indent(mapping=2, sequence=4, offset=2)
@@ -181,9 +210,10 @@ def parse_yaml(text: str) -> CommentedMap:
     Raises:
         ruamel.yaml.YAMLError: on a syntax error, with a ``problem_mark``.
         Exception: not only YAMLError; measured ``KeyError`` (``!!bool ture``),
-            ``ValueError`` (``!!float abc``), ``IndexError`` (``!!int ''``) and
-            ``RecursionError`` (deep nesting). A caller that wants every parse
-            failure catches ``Exception``.
+            ``ValueError`` (``!!float abc``), ``IndexError`` (``!!int ''``),
+            ``AttributeError`` (``!!set x``), ``TypeError`` (a tagged flow
+            collection as a key) and ``RecursionError`` (deep nesting). A caller
+            that wants every parse failure catches ``Exception``.
     """
     # ruamel.yaml's `YAML.load` returns `Any` in the bundled stubs; in
     # round-trip mode the result is a `CommentedMap` for a YAML mapping (the

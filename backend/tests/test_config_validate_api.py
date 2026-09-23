@@ -47,6 +47,35 @@ def test_validate_returns_yaml_parse_error(client: TestClient) -> None:
     assert errors[0]["line"] is not None
 
 
+def test_validate_refuses_a_reused_anchor_as_beets_does(client: TestClient) -> None:
+    """Measured before: clean, where beets' loader refuses the file. The text is the
+    operator's own, sent back to them, as for every parse row."""
+    text = "directory: /tmp/music\nlibrary: /tmp/x\nplex:\n  token: &a Zq7Secret\n  user: &a u\n"
+
+    r = client.post("/api/config/validate", json={"yaml_text": text})
+
+    assert r.status_code == 200
+    assert r.json() == {
+        "errors": [
+            {
+                "loc": "",
+                "msg": "found duplicate anchor 'a'; first occurrence\n"
+                '  in "<unicode string>", line 4, column 10:\n'
+                "      token: &a Zq7Secret\n"
+                "             ^ (line: 4)\n"
+                "second occurrence\n"
+                '  in "<unicode string>", line 5, column 9:\n'
+                "      user: &a u\n"
+                "            ^ (line: 5)",
+                "type": "yaml_parse",
+                "line": 5,
+                "column": 8,
+            }
+        ],
+        "advisories": [],
+    }
+
+
 def test_validate_returns_safe_error_on_empty_text(client: TestClient) -> None:
     """A cleared editor buffer must never trigger a 500.
 

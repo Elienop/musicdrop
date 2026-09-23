@@ -17,7 +17,7 @@ class BeetsConfigSnapshot(BaseModel):
     """The RAW on-disk ``config.yaml`` text — the editable document. Comments,
     anchors, key order and quoting are preserved verbatim (secrets are NOT
     masked here: this is the user's own file, and ``POST /config/save`` writes it
-    back as-is). Empty string if the file is missing."""
+    back as-is). Empty string if the file is missing, unreadable or not UTF-8."""
 
     effective_yaml: str
     """The fully-merged EFFECTIVE config (beets + every loaded plugin's defaults)
@@ -41,7 +41,9 @@ class BeetsConfigSnapshot(BaseModel):
     is not echoed back because nanosecond ints exceed JavaScript's
     ``Number.MAX_SAFE_INTEGER`` (2^53 - 1), which would silently corrupt the
     CAS round-trip; the SHA-256 already catches any bytes-changed edit
-    (including ones that preserved mtime via ``os.utime``)."""
+    (including ones that preserved mtime via ``os.utime``). Empty string when the
+    file is missing, unreadable or not UTF-8, so a Save from that empty editor
+    cannot replace a file the page never showed."""
 
     apply_pending: bool
     """``True`` when the file is missing OR its mtime exceeds ``file_mtime_at_load``.
