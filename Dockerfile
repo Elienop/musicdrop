@@ -13,7 +13,10 @@ COPY --from=ghcr.io/astral-sh/uv:0.7 /uv /uvx /usr/local/bin/
 WORKDIR /app
 COPY backend/pyproject.toml backend/uv.lock ./
 # Base deps only — the dev extra (mypy/ruff/pytest) stays out of the image.
-RUN uv sync --frozen --no-cache
+# --compile-bytecode: the server runs as a non-root user that cannot write
+# __pycache__ into these root-owned trees, so without shipped .pyc every start
+# recompiles everything it imports (and never keeps the result).
+RUN uv sync --frozen --no-cache --compile-bytecode
 
 # ── Runtime ───────────────────────────────────────────────────────────────
 FROM python:3.12-slim
@@ -24,6 +27,11 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=backend-builder /app/.venv /app/.venv
 COPY backend/app /app/app
+# Same reason as --compile-bytecode above, for the app code and the base
+# image's standard library (the slim image ships the stdlib with no .pyc).
+# The interpreter names its own stdlib path, so a Python bump stays covered:
+# compileall exits 0 on a directory that does not exist.
+RUN python -m compileall -q "$(python -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')" /app/app
 COPY --from=frontend-builder /build/dist /app/static
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh && mkdir -p /data
