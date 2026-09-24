@@ -111,8 +111,8 @@ def _summary_of(item: BankItem) -> BankItemSummary:
 def _ensure_index(bank_dir: Path) -> tuple[dict[str, BankItemSummary], dict[str, str]]:
     """Return (id->summary, folder->id) for ``bank_dir``, building on first use.
 
-    The one and only place ``_all_items`` (the full glob+parse) runs; every
-    later call reuses the cached dicts.
+    The one and only place ``_all_summaries`` (the full glob+parse) runs;
+    every later call reuses the cached dicts.
     """
     key = _index_key(bank_dir)
     by_id = _INDEX.get(key)
@@ -120,9 +120,9 @@ def _ensure_index(bank_dir: Path) -> tuple[dict[str, BankItemSummary], dict[str,
         return by_id, _FOLDER[key]
     by_id = {}
     by_folder: dict[str, str] = {}
-    for item in _all_items(bank_dir):
-        by_id[item.id] = _summary_of(item)
-        by_folder[item.folder] = item.id
+    for summary in _all_summaries(bank_dir):
+        by_id[summary.id] = summary
+        by_folder[summary.folder] = summary.id
     _INDEX[key] = by_id
     _FOLDER[key] = by_folder
     return by_id, by_folder
@@ -177,7 +177,7 @@ def reset_bank_index() -> None:
     For tests (per-test tmp dirs share this module global) and the rare case
     where rows were written to the bank dir out-of-band.
 
-    COUPLING WARNING: the rebuild enumerates via ``_all_items``, which SKIPS
+    COUPLING WARNING: the rebuild enumerates via ``_all_summaries``, which SKIPS
     corrupt rows — so a rebuild permanently forgets that a corrupt row was
     ``applying``, and ``delete_item``'s corrupt-arm refusal (which reads the
     index precisely because the row cannot testify) stops protecting that row
@@ -288,26 +288,43 @@ def get_item(bank_dir: Path, item_id: str) -> BankItem | None:
         # (``UnicodeDecodeError`` — a ``ValueError`` the old OSError-only guard let
         # 500) and malformed (``json.JSONDecodeError`` / pydantic
         # ``ValidationError``) all read as ABSENT — matching the list-side twin
-        # (``_all_items``).
+        # (``_read_summary``).
         return None
 
 
-def _all_items(bank_dir: Path) -> list[BankItem]:
+def _read_summary(child: Path) -> BankItemSummary | None:
+    """Parse one row file fully (every row is still validated) and keep only
+    its summary; the full row dies when this returns."""
+    try:
+        item = _parse_row(child.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        # Loud skip: a silently vanished row is indistinguishable from a
+        # deleted one in the UI — name the file and the reason.
+        logger.warning("Skipping unreadable bank row %s: %s", child.name, exc)
+        return None  # unreadable/corrupt rows never break the listing
+    return _summary_of(item)
+
+
+def _all_summaries(bank_dir: Path) -> list[BankItemSummary]:
+    """Every readable row's summary, for building the index.
+
+    One full row at a time, never a list of them: resolved rows stay on disk
+    as history until the operator deletes them, and Python keeps the memory a
+    peak allocated, so a list of every full row (``parked`` payloads and all)
+    stayed pinned for the life of the process, from boot.
+    """
     if not bank_dir.exists():
         return []
-    items: list[BankItem] = []
+    summaries: list[BankItemSummary] = []
     for child in bank_dir.glob("*.json"):
-        try:
-            items.append(_parse_row(child.read_text(encoding="utf-8")))
-        except (OSError, ValueError) as exc:
-            # Loud skip: a silently vanished row is indistinguishable from a
-            # deleted one in the UI — name the file and the reason.
-            logger.warning("Skipping unreadable bank row %s: %s", child.name, exc)
-            continue  # unreadable/corrupt rows never break the listing
-    # Deterministic order for index building; the DISPLAY order (newest banked
-    # first) is applied in list_page.
-    items.sort(key=lambda item: (item.banked_at, item.id))
-    return items
+        summary = _read_summary(child)
+        if summary is not None:
+            summaries.append(summary)
+    # Deterministic order for index building (the later row in this order owns
+    # a shared folder); the DISPLAY order (newest banked first) is applied in
+    # list_page.
+    summaries.sort(key=lambda summary: (summary.banked_at, summary.id))
+    return summaries
 
 
 def list_page(

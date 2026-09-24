@@ -1,9 +1,11 @@
 """Bank store tests — pure filesystem, no beets, payloads kept None
 (ParkedAlbum construction is exercised by its own model/mapping tests)."""
 
+import gc
 import json
 import logging
 import os
+import weakref
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -692,6 +694,101 @@ def test_reset_bank_index_reveals_externally_written_row(tmp_path: Path) -> None
     assert after == {seeded, external.id}
 
 
+_T1 = datetime(2026, 1, 1, tzinfo=UTC)
+_T2 = datetime(2026, 1, 2, tzinfo=UTC)
+_T3 = datetime(2026, 1, 3, tzinfo=UTC)
+
+
+def _write_row(bank: Path, item_id: str, *, folder: str, banked_at: datetime) -> BankItem:
+    """Write a row straight to disk through the store's own sink, bypassing the
+    write-through index, so the next read has to BUILD the index from files."""
+    item = BankItem(
+        id=item_id,
+        folder=folder,
+        source="sweep",
+        reason="no_match",
+        artist=f"Artist {item_id[0]}",
+        album=f"Album {item_id[0]}",
+        parked=_parked_payload(),
+        fingerprint="f" * 64,
+        status="needs_review",
+        banked_at=banked_at,
+    )
+    bank.mkdir(parents=True, exist_ok=True)
+    (bank / f"{item_id}.json").write_text(store._row_text(item), encoding="utf-8")
+    return item
+
+
+def _seed_index_fixture(bank: Path) -> dict[str, BankItem]:
+    """Four rows plus a corrupt one: two share a folder at DIFFERENT times,
+    two share a folder at the SAME time (so only the id can order them)."""
+    rows = {
+        "a": _write_row(bank, "a" * 32, folder="/l/shared", banked_at=_T2),
+        "b": _write_row(bank, "b" * 32, folder="/l/shared", banked_at=_T1),
+        "d": _write_row(bank, "d" * 32, folder="/l/tie", banked_at=_T3),
+        "c": _write_row(bank, "c" * 32, folder="/l/tie", banked_at=_T3),
+    }
+    (bank / f"{'e' * 32}.json").write_text("{not json", encoding="utf-8")
+    return rows
+
+
+def test_index_build_orders_rows_and_picks_the_folder_winner(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The index a boot builds: ``(banked_at, id)`` order, the LATER row in
+    that order owns a shared folder, and a corrupt row is skipped out loud."""
+    bank = _bank(tmp_path)
+    rows = _seed_index_fixture(bank)
+    with caplog.at_level(logging.WARNING, logger="app.bank.store"), store._LOCK:
+        by_id, by_folder = store._ensure_index(bank)
+
+    expected_order = [rows[k].id for k in ("b", "a", "c", "d")]
+    assert list(by_id) == expected_order
+    assert {item_id: by_id[item_id] for item_id in expected_order} == {
+        rows[k].id: store._summary_of(rows[k]) for k in ("b", "a", "c", "d")
+    }
+    assert by_folder == {"/l/shared": "a" * 32, "/l/tie": "d" * 32}
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "app.bank.store" and r.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].startswith(f"Skipping unreadable bank row {'e' * 32}.json: ")
+
+
+def test_index_build_holds_one_full_row_at_a_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Building the index must not keep every full row alive at once.
+
+    Python keeps the memory a peak allocated, so a build that parses every
+    row (``parked`` payloads and all) into one list pins it for the life of
+    the process. Only the summaries may pile up.
+    """
+    bank = _bank(tmp_path)
+    _seed_index_fixture(bank)
+    parsed: list[weakref.ref[BankItem]] = []  # models are unhashable: no WeakSet
+    peak = {"alive": 0}
+    real_parse = store._parse_row
+
+    def tracking_parse(raw: str) -> BankItem:
+        gc.collect()  # count what is still REACHABLE, not what awaits collection
+        item = real_parse(raw)
+        parsed.append(weakref.ref(item))
+        alive = sum(1 for ref in parsed if ref() is not None)
+        peak["alive"] = max(peak["alive"], alive)
+        return item
+
+    monkeypatch.setattr(store, "_parse_row", tracking_parse)
+    with store._LOCK:
+        by_id, _ = store._ensure_index(bank)
+
+    assert len(parsed) == 4  # control: every healthy row went through the parse
+    assert len(by_id) == 4
+    assert peak["alive"] == 1
+
+
 def test_reconcile_interrupted_applying(tmp_path: Path) -> None:
     item_id = _create(tmp_path)
     # An applying row carries the decision that got it there (model invariant).
@@ -1196,7 +1293,7 @@ def test_non_utf8_list_skips_and_logs(tmp_path: Path, caplog: pytest.LogCaptureF
     naming the file and the reason — a silent skip reads as 'deleted'.
 
     The index is write-through (built while the healthy row was created), so
-    a rebuild is forced for the fresh-scan path — ``_all_items`` — where the
+    a rebuild is forced for the fresh-scan path — ``_read_summary`` — where the
     skip (and this log) actually happens."""
     _create(tmp_path)
     (_bank(tmp_path) / "corrupt.json").write_bytes(_NON_UTF8)
