@@ -673,25 +673,63 @@ entry carries a dated correction block where the pass changed it._
     action sets the same field, per track and per album. Not decided: what it does to the
     track's `lyrics_checked` miss marker, and how a user undoes it.
 
-13. ~~**Finished bank rows are read at every startup**~~ — **FIXED on PR #234**
-    (2026-09-24). The bank is one SQLite file, `bank.db` (`app/bank/store.py`); a boot reads the
+13. ~~**Finished bank rows are read at every startup**~~ — **FIXED in #234** (squash `451f12e`
+    = v0.52.2, 2026-09-24). The bank is one SQLite file, `bank.db` (`app/bank/store.py`); a boot reads the
     `applying` rows and the queue's head, not the whole bank. Measured on a copy of the owner's
     2,688-row bank, NVMe: the boot's bank step went from about 0.84 s to under 0.5 ms from the
     second start on. The first start after the upgrade imports the old `*.json` rows once: 1.66 s
     there, about twice one old boot. Before: v0.52.1 took 57 s from `Waiting for application
     startup` to `complete` on the NAS and idled at about 673 MB.
-    - **Residual: the NAS was not measured.** Inferred: its first start after the upgrade costs
-      about one to two old boots for the import, so that one start can outlast the health
-      check's 60 s start period (`Dockerfile:52`, counted from container start, so the
-      entrypoint's `chown` and Python's module loading come out of it too). After it, three failed checks
-      30 s apart mark the container *unhealthy*; Docker does not restart it, an autoheal-style
-      supervisor would. Every later start is flat.
+    - **Measured on the NAS, 2026-09-24** (owner's container log): the first v0.52.2 start
+      logged `bank: imported 2688 rows (0 skipped) in 1.9 s`, and `Waiting for application
+      startup` to `complete` took **2.0 s** (57.3 s on v0.52.1 that morning). That is well
+      inside the health check's 60 s start period (`Dockerfile:52`), so the risk recorded here
+      before the deploy did not happen. Memory two minutes in: 110 MB. Why the old boot took
+      57 s on the NAS was never confirmed: reading and parsing every old row took 1.9 s there,
+      so the disk alone does not explain it.
     - **The dev server's next start from this checkout** creates `data/beets/bank/bank.db` and
       imports the 32 dev rows once. Expected; the JSON files stay.
     - Memory that grows with use is a separate question, decided: `MALLOC_ARENA_MAX` under
       *Accepted residuals*.
     - Reports: `docs/superpowers/reports/2026-09-24-startup/task-startup-report.md` and
       `docs/superpowers/reports/2026-09-24-bank-sqlite/task-writer-report.md` (gitignored, local).
+
+14. **Trash rows: show when each was trashed, newest first, and shorten their sentences**
+    (owner, 2026-09-24: record now, build later). Raised while deciding whether five Trash rows
+    on the NAS were safe to empty: two copies of one album sat there, with nothing saying which
+    went first. Then: *"also the sentences are too long for those rows"*.
+    - **The data already exists.** `write_trash_origin` writes `trashed_at` (UTC ISO 8601) into
+      every origin record since #208 (`app/beets/trash_origins.py:605`). It has no reader on
+      purpose (`TrashOrigin` docstring, `:256`), so a row with a record already has its time.
+      Rows trashed before #208, or whose record is unusable, have none.
+    - **Format (owner):** date and time through the app's existing `formatTimestamp`
+      (`frontend/src/lib/format.ts:70`), in the reader's zone: "Trashed Sep 24, 2026, 4:18 PM".
+      It goes on the row's meta line, or on its own line when the row has none (artist art, an
+      audio-free folder).
+    - **Order (owner):** newest first, with rows that have no time last. Today the list sorts
+      A–Z by artist, then album (`app/beets/trash_manage.py:321`).
+    - Contract change: a new `TrashedAlbum` field, so the OpenAPI dump and `gen:api` both
+      regenerate. Engine: beets has no Trash; this is MusicDrop's own record.
+    - A malformed `trashed_at` reads as no time, typed the way `read_trash_origin` types every
+      field it keeps. Not decided: the order among rows with no time (today's A–Z is the obvious
+      default).
+    - **Shorter sentences.** The run-in labels stay ("Exact restore.", "Approximate restore.",
+      "Files moved aside.", "Can't be restored."); the sentence after each becomes one short
+      line (the *app text is short* ruling: headline plus one line). Proposed, for the owner to
+      approve when this is built:
+
+      | Where | Today (words) | Proposed |
+      |---|---|---|
+      | `_MOVED_ITEMS_NOTE` (`app/beets/trash_manage.py:155`) | 28 | "Re-imported under your naming rules." |
+      | `_NO_RECORD_NOTE` (`:139`) | 51 | "Origin unknown. Re-imported under your naming rules." |
+      | `_OUTSIDE_LIBRARY_NOTE` (`:178`) | 28 | "Its old folder is outside the library now. Re-imported under your naming rules." |
+      | `_MOVED_ASIDE_NOTE` (`:172`) | 31 | "Not an album. Copy a file back by hand to use it." |
+      | `_SYMLINKED_ENTRY_NOTE` (`:229`) | 77 | "A link; its files were never moved. Empty all removes only the link." |
+      | No readable tags, exact row (`SettingsTrashPage.tsx:341`) | 19 | "No readable audio tags." |
+      | No readable tags, other rows (`:342`) | 14 | "No readable audio tags. Empty is permanent." |
+      | Restore refused, path taken (`:158`) | 25 | "Something is at the original path. Clear it, then retry." |
+
+      Whole-string test pins and the page test's copy of `_MOVED_ASIDE_NOTE` change with them.
 
 The 40 banked #143 Plex review Minors stay fully adjudicated (2026-08-25, every item
 re-verified against v0.44.0): 12 shipped as the triage fix slice (see Recently shipped), 12
