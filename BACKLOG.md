@@ -672,6 +672,30 @@ entry carries a dated correction block where the pass changed it._
     action sets the same field, per track and per album. Not decided: what it does to the
     track's `lyrics_checked` miss marker, and how a user undoes it.
 
+13. **Finished bank rows are read at every startup** (owner question, 2026-09-24; not decided).
+    The bank keeps every row it held, resolved ones included, until the operator deletes them, and
+    every boot parses them all to build its index (`app/bank/store.py`, `_all_summaries`). The
+    owner's bank: 2,688 rows, 42 MB (`sudo docker exec musicdrop sh -c 'ls /data/beets/bank | wc
+    -l; du -sh /data/beets/bank'`). On it, v0.52.1 took 57 s from `Waiting for application
+    startup` to `complete` and idled at about 673 MB. The same boot cost is in v0.51.6, measured
+    on a rebuild of it.
+    - **Done on `docs/backlog-lyrics-followups`:** the boot no longer holds every full row at
+      once. On a 2,691-row scratch bank (NVMe): 608 → 111 MB, and startup about 1.9 → 0.9 s.
+      The parse itself stays, about 0.3 ms a row there.
+    - **Not measured:** what the NAS spends its 57 s on — a disk read per row file, a slower CPU,
+      or both.
+    - **The health check allows 60 s for startup** (`Dockerfile`, `--start-period=60s`). Past
+      that the container reads *unhealthy*. The check only observes; nothing restarts it.
+    - **Shapes named, not decided:** index finished rows lazily instead of at boot, or prune or
+      archive resolved rows. Engine check: beets reads its own import history only when an import
+      needs it (`beets/importer/session.py:253,267,301`, 2.14.0), never at startup.
+    - **Memory also grows with use**, separately: glibc's per-thread arenas took RSS 113 → 311 MB
+      over about 8,300 scripted requests, flat when idle; `MALLOC_ARENA_MAX=2` gave 224 MB.
+      Measured on this machine's glibc, not the image's. Not applied: an image setting, the
+      owner's call.
+    - Reports: `docs/superpowers/reports/2026-09-24-startup/task-startup-report.md` and
+      `task-fix-report.md` (gitignored, local).
+
 The 40 banked #143 Plex review Minors stay fully adjudicated (2026-08-25, every item
 re-verified against v0.44.0): 12 shipped as the triage fix slice (see Recently shipped), 12
 recorded below, 3 accepted as deliberate, 3 were already fixed. Of the 12 recorded, the
@@ -679,6 +703,18 @@ three that sat under Open bugs shipped in #184; the nine under Deferred minors r
 Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 ## Open bugs / hardening
+
+- **Low: two bank-row shapes stop the boot with a traceback that names no file.** Security seat,
+  2026-09-24, on crafted row files. It was the same before that day's startup-memory change.
+  The index build skips a row that fails to read or validate (`except (OSError, ValueError)`,
+  `app/bank/store.py:300`), but two shapes get past it:
+  1. A `banked_at` with no timezone beside rows that have one raises `TypeError` at the sort
+     (`store.py:326`, and again in `list_page`).
+  2. Deeply nested JSON raises `RecursionError`, which that `except` does not catch.
+
+  The lifespan turns only `OSError` into its named boot refusal (`app/main.py:353-355`). Engine
+  check: pydantic already has `AwareDatetime` (`pydantic/types.py:2280`, 2.13.4) for the first
+  shape. Not built: it is a new check, so it is recorded here per the triage rule.
 
 - **Low: an archive import (zip, or tar with an absolute member name) can reset an outside
   file's modification time.** Security seat, 2026-09-23 (zip, beets 2.13.1 and 2.14.0) and
