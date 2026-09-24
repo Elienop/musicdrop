@@ -1640,6 +1640,7 @@ def test_the_store_is_safe_across_threads(tmp_path: Path) -> None:
     for item_id in ids:
         store.decide_item(bank, item_id, BankDecision(action="asis"))
     errors: list[BaseException] = []
+    unread: list[str] = []
     claims: list[str] = []
     start = threading.Barrier(8)
 
@@ -1656,7 +1657,8 @@ def test_the_store_is_safe_across_threads(tmp_path: Path) -> None:
             # transition): enough of them overlap for an unguarded one to show.
             for _ in range(50):
                 for item_id in ids:
-                    assert store.get_item(bank, item_id) is not None
+                    if store.get_item(bank, item_id) is None:
+                        unread.append(item_id)
                 store.list_page(bank, active_only=True, offset=0, limit=50)
         except BaseException as exc:  # reported by the assert below
             errors.append(exc)
@@ -1667,5 +1669,6 @@ def test_the_store_is_safe_across_threads(tmp_path: Path) -> None:
     for thread in threads:
         thread.join(timeout=30)
     assert errors == []
+    assert unread == []
     assert sorted(claims) == sorted(ids)  # each row claimed exactly once
     assert store.count_items(bank) == 16  # 8 decided rows + one re-banked folder per worker
