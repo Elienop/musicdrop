@@ -109,10 +109,11 @@ def _legacy_failed_row(**extra: object) -> dict[str, object]:
 
 
 def test_a_row_persisted_without_error_recovery_reads_as_decide_again() -> None:
-    # Rows are re-read, never migrated, so a row banked before this field
-    # existed must still render what it renders today: "decide again to retry"
-    # and no Duplicates link. Both legacy spellings - the flag absent entirely,
-    # and the flag explicitly True - are that row.
+    # The bank's one-time import reads each legacy row file through this model,
+    # so a row banked before this field existed must still import as what it
+    # renders today: "decide again to retry" and no Duplicates link. Both legacy
+    # spellings - the flag absent entirely, and the flag explicitly True - are
+    # that row.
     bare = BankItem.model_validate(_legacy_failed_row())
     assert bare.error_recovery == "decide_again"
 

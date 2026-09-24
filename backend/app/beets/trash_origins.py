@@ -106,11 +106,11 @@ logger = logging.getLogger(__name__)
 
 #: Bumped only for a change a previous reader would misread. An unknown schema
 #: reads as "no record", which degrades to import-restore rather than acting on
-#: a payload whose meaning has moved. Kept although ``app/bank/store.py`` — the
-#: store this one is modelled on — carries no such field, because this is a
-#: Docker app shipped on release tags: pinning an older image after an upgrade
-#: is a real downgrade path, and the field a stale reader would misread steers a
-#: ``rename()`` rather than filling in a listing.
+#: a payload whose meaning has moved. Kept although the rows of
+#: ``app/bank/store.py`` — the store this one was modelled on — carry no such
+#: field, because this is a Docker app shipped on release tags: pinning an older
+#: image after an upgrade is a real downgrade path, and the field a stale reader
+#: would misread steers a ``rename()`` rather than filling in a listing.
 #:
 #: Adding ``name`` did NOT earn a bump, and the test is the definition above: an
 #: older reader handed a record WITH a name reads ``origin``/``moved`` exactly as

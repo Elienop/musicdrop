@@ -4,9 +4,9 @@ One small ``BrowseRow`` per album (sort keys + nine representative facet
 values), built by ONE full scan and kept until ``invalidate_browse_cache()``.
 Invalidation is wired into ``app.events.emit.emit_library_changed`` — the same
 choke point every mutation path already calls for SSE — so the cache inherits
-exactly the staleness signal the frontend trusts. Single-writer assumption
-(same as the bank index): this app is the library DB's only writer; out-of-band
-edits appear after a restart or an in-app Disk sync (which emits the event).
+exactly the staleness signal the frontend trusts. Single-writer assumption:
+this app is the library DB's only writer; out-of-band edits appear after a
+restart or an in-app Disk sync (which emits the event).
 
 Facet semantics are unchanged from v1: one representative value per album
 ("Unknown" when absent) so counts sum to the album total; OR within a facet,

@@ -168,8 +168,10 @@ class BankItem(BaseModel):
     def _recovery_from_the_legacy_flag(cls, data: object) -> object:
         """Read a row persisted with the old ``error_retryable`` boolean.
 
-        Rows are re-read, never migrated, so every row banked before this field
-        existed still carries the flag. ``False`` meant exactly one thing - the
+        The bank's one-time import (``app.bank.store``) reads every legacy row
+        file through this validator and stores the result, ``error_recovery``
+        included, so a row banked before this field existed carries the flag
+        only in its old file. ``False`` meant exactly one thing - the
         album landed in the library a second time, and the Duplicates page is
         the recovery - so it maps onto ``remove_duplicate``. ``True`` and absent
         both fall through to the ``decide_again`` default, which is what they

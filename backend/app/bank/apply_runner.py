@@ -129,7 +129,7 @@ def directive_for(item: BankItem) -> BankApplyDirective:
     decision = item.decided
     if decision is None:
         # The BankItem validator forbids a queued row without a decision;
-        # defensive for a hand-edited row file.
+        # defensive for a hand-edited row.
         raise RuntimeError("queued row has no decision")
     if decision.action == "duplicate":
         # "decide once": the row carries the release it was matched to (the
@@ -374,9 +374,9 @@ class BankApplyRunner:
         writes ``fix_folder`` and never ``stale``.
 
         ``item_id`` is the CAS key and ``claimed`` the row it returned - the
-        same row by construction (``set_status`` reads ``get_item(bank_dir,
-        item_id)``). The pair is passed rather than derived so the write target
-        stays the key the caller holds, not the id inside the row file.
+        same row by construction (``set_status`` reads the row stored under
+        ``item_id``). The pair is passed rather than derived so the write target
+        stays the key the caller holds, not the id inside the row's JSON.
         """
         try:
             current = folder_fingerprint(Path(claimed.folder))

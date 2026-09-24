@@ -187,6 +187,39 @@ def test_bulk_delete(client: TestClient, bank_dir: Path) -> None:
     assert survivor.status == "applying"
 
 
+def test_bulk_delete_goes_on_past_an_id_no_row_can_have(client: TestClient, bank_dir: Path) -> None:
+    """A lone surrogate is a legal JSON string but not UTF-8, so SQLite cannot
+    bind it. The store answers such an id as absent before any query, so the
+    batch goes on and both real rows are removed — no input aborts it mid-way."""
+    first = _seed(bank_dir)
+    second = _seed(bank_dir, folder="/library/A/C")
+    body = f'{{"ids": ["{first}", "\\udcf6", "{second}"]}}'
+    response = client.post(
+        "/api/bank/bulk-delete", content=body, headers={"content-type": "application/json"}
+    )
+    assert response.status_code == 200
+    assert response.json() == {"deleted": 2}
+    assert store.count_items(bank_dir) == 0
+
+
+@pytest.mark.parametrize("offset", [2**63 - 1, 2**63, 10**20])
+def test_list_offset_past_sqlite_integers_is_an_empty_page(
+    client: TestClient, bank_dir: Path, offset: int
+) -> None:
+    """``offset`` has no upper bound in the contract. Past SQLite's 64-bit
+    integers it gets the empty page any other offset past the end gets, not a 500."""
+    _seed(bank_dir)
+    response = client.get("/api/bank", params={"offset": offset})
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [],
+        "total": 1,
+        "total_all": 1,
+        "offset": offset,
+        "limit": 50,
+    }
+
+
 def test_decision_pokes_apply_runner_when_wired(client: TestClient, bank_dir: Path) -> None:
     from app.main import app
 
@@ -221,36 +254,3 @@ def test_decision_without_runner_still_works(client: TestClient, bank_dir: Path)
     response = client.post(f"/api/bank/{item_id}/decision", json={"action": "asis"})
     assert response.status_code == 200
     assert response.json()["status"] == "queued"
-
-
-def test_delete_corrupt_row_purges_file(client: TestClient, bank_dir: Path) -> None:
-    """Over the wire: DELETE on a present-but-corrupt row is 204 (not 500)
-    and removes the file — non-UTF-8 bytes are the exact 500 class."""
-    item_id = _seed(bank_dir)
-    (bank_dir / f"{item_id}.json").write_bytes(b"\x00\xe9\xff")
-    response = client.delete(f"/api/bank/{item_id}")
-    assert response.status_code == 204
-    assert not (bank_dir / f"{item_id}.json").exists()
-
-
-def test_delete_corrupt_row_being_applied_is_409(client: TestClient, bank_dir: Path) -> None:
-    item_id = _seed(bank_dir)
-    store.decide_item(bank_dir, item_id, BankDecision(action="asis"))
-    store.set_status(bank_dir, item_id, "applying")  # the runner's claim
-    (bank_dir / f"{item_id}.json").write_bytes(b"\x00\xe9\xff")
-    response = client.delete(f"/api/bank/{item_id}")
-    assert response.status_code == 409
-    assert (bank_dir / f"{item_id}.json").exists()
-
-
-def test_bulk_delete_completes_with_a_corrupt_id(client: TestClient, bank_dir: Path) -> None:
-    """No input can abort a batch mid-way: the corrupt id is skipped, the
-    rest land, the response reports the count."""
-    a = _seed(bank_dir)
-    b = _seed(bank_dir, folder="/library/A/b")
-    corrupt = _seed(bank_dir, folder="/library/A/c")
-    (bank_dir / f"{corrupt}.json").write_bytes(b"\x00\xe9\xff")
-    response = client.post("/api/bank/bulk-delete", json={"ids": [a, corrupt, b]})
-    assert response.status_code == 200
-    assert response.json() == {"deleted": 2}
-    assert (bank_dir / f"{corrupt}.json").exists()

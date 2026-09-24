@@ -1,6 +1,6 @@
 """Guard: an operator-facing INFO record must reach ``docker logs``.
 
-The shipped container runs bare ``uvicorn app.main:app`` (``Dockerfile:61``), so
+The shipped container runs bare ``uvicorn app.main:app`` (``Dockerfile:69``), so
 uvicorn's own ``LOGGING_CONFIG`` configures logging — and it leaves the root
 logger at WARNING with no handlers. An app-namespace INFO record was therefore
 dropped entirely: not mis-tagged, not unformatted, absent. A WARNING from the

@@ -434,7 +434,8 @@ _ROWS: Final[tuple[_Row, ...]] = (
 #: row. It refused layouts the module allows (a store setting naming a directory
 #: ABOVE the shipped default Trash turned a clean boot into a refusal), and its
 #: loss clause was false for every store but the inbox: nothing enumerates the
-#: exports, the Plex or slskd store, and the bank and playlist stores glob
+#: exports or the Plex or slskd store, the bank is one ``bank.db`` (its one-time
+#: import reads legacy ``*.json`` rows once), and the playlist store globs
 #: ``*.json`` one level deep.
 #:
 #: ``(participant key, cost of holding a store, fix)``.

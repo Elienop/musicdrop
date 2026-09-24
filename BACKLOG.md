@@ -92,6 +92,14 @@ entry carries a dated correction block where the pass changed it._
    `move_sidecars` plus copy and hardlink variants (beets also sends `item_hardlinked`), tidying
    empty folders up to the import root, not the library root. Sidecars follow their track's
    operation (vault `decisions` #51), so this lands with item 7.
+   **Owner, 2026-09-24: low priority**, *"not really that important since i can fetch"*. Seen again
+   live on v0.52.1, on the same kind of yubal album. Under `move` the audio left, and one `.lrc`
+   kept the download folder: beets prunes a folder it moved from only when nothing but `clutter`
+   is left (`importer/tasks.py:536-539`, `util/__init__.py:307-318`, 2.14.0). No plugin that ships
+   with beets carries sidecars such as `.lrc`; fetchart moves only the one cover image it picks
+   (`beetsplug/fetchart.py:1536-1538`). beets' plugin index lists two third-party ones,
+   `beets-copyartifacts` and `beets-filetote`; filetote also follows `beet move` (reference
+   checkout `docs/plugins/index.rst:475-491`). Neither is evaluated.
 7. **Download providers** (owner ruling 2026-09-14, vault `decisions` #51; not started). Replaces
    the saved "Download folders" idea; Add from folder's path is a free-text field today.
    - **Operation.** ONE GLOBAL SETTING, not a per-provider mode — owner ruling 2026-09-15
@@ -616,7 +624,9 @@ entry carries a dated correction block where the pass changed it._
     all six, so the family stays one shape; the Pagination one is the only page-size control.
 
 11. **Release notes owed for the beets 2.14 port** (`fix/beets-2.14`, 2026-09-23; the pin is now
-    `beets==2.14.*`). Operator-facing, for the release that ships it:
+    `beets==2.14.*`). **Shipped as v0.52.1** (#230, 2026-09-24). The short form of these notes is
+    in PR #230's description; the GitHub release page has only the generated list.
+    Operator-facing, for the release that ships it:
     - **No database migration.** `beets/library/migrations.py` is byte-identical to 2.13.1, so a
       library 2.13 already opened gets no new `library.db-before-*.bak` on the first boot
       (measured by the phase-1 reader on a scratch DB).
@@ -653,6 +663,36 @@ entry carries a dated correction block where the pass changed it._
     - **Zip is not covered by the tar default:** its member names can still move an outside
       file's mtime (open, Low; see *Open bugs / hardening*).
 
+12. **Mark a track instrumental by hand** (owner, 2026-09-24: record now, build later). A track
+    reads *instrumental* only when LRCLib returns an entry flagged instrumental. A film score LRCLib
+    has no entry for reads *none*, and *Recheck misses* cannot change that while LRCLib has none. Measured 2026-09-24: LRCLib returned 0 results for
+    four of Tom Howe's *Dog Man* score tracks, while the album's one song returned 11. Engine:
+    beets' own flag is the `lyrics_instrumental` flex field (`beets/library/migrations.py:324`,
+    2.14.0). MusicDrop already sets it on an LRCLib instrumental verdict
+    (`app/beets/lyrics.py:513`) and reads it for the album page (`app/beets/browse.py:292`); the
+    action sets the same field, per track and per album. Not decided: what it does to the
+    track's `lyrics_checked` miss marker, and how a user undoes it.
+
+13. ~~**Finished bank rows are read at every startup**~~ — **FIXED on PR #234**
+    (2026-09-24). The bank is one SQLite file, `bank.db` (`app/bank/store.py`); a boot reads the
+    `applying` rows and the queue's head, not the whole bank. Measured on a copy of the owner's
+    2,688-row bank, NVMe: the boot's bank step went from about 0.84 s to under 0.5 ms from the
+    second start on. The first start after the upgrade imports the old `*.json` rows once: 1.66 s
+    there, about twice one old boot. Before: v0.52.1 took 57 s from `Waiting for application
+    startup` to `complete` on the NAS and idled at about 673 MB.
+    - **Residual: the NAS was not measured.** Inferred: its first start after the upgrade costs
+      about one to two old boots for the import, so that one start can outlast the health
+      check's 60 s start period (`Dockerfile:52`, counted from container start, so the
+      entrypoint's `chown` and Python's module loading come out of it too). After it, three failed checks
+      30 s apart mark the container *unhealthy*; Docker does not restart it, an autoheal-style
+      supervisor would. Every later start is flat.
+    - **The dev server's next start from this checkout** creates `data/beets/bank/bank.db` and
+      imports the 32 dev rows once. Expected; the JSON files stay.
+    - Memory that grows with use is a separate question, decided: `MALLOC_ARENA_MAX` under
+      *Accepted residuals*.
+    - Reports: `docs/superpowers/reports/2026-09-24-startup/task-startup-report.md` and
+      `docs/superpowers/reports/2026-09-24-bank-sqlite/task-writer-report.md` (gitignored, local).
+
 The 40 banked #143 Plex review Minors stay fully adjudicated (2026-08-25, every item
 re-verified against v0.44.0): 12 shipped as the triage fix slice (see Recently shipped), 12
 recorded below, 3 accepted as deliberate, 3 were already fixed. Of the 12 recorded, the
@@ -660,6 +700,65 @@ three that sat under Open bugs shipped in #184; the nine under Deferred minors r
 Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
 
 ## Open bugs / hardening
+
+- ~~**Low: two bank-row shapes stop the boot with a traceback that names no file.**~~ — **CLOSED
+  on PR #234** (2026-09-24). Security seat, 2026-09-24, on crafted row files: a `banked_at` with
+  no timezone beside rows that have one raised `TypeError` at the sort, and deeply nested JSON
+  raised `RecursionError` past the index build's `except`. Now a naive time orders as UTC
+  (`_micros`, `app/bank/store.py:154`) and a `RecursionError` row is skipped out loud
+  (`_import_legacy_file`, `store.py:249`); tests `test_a_naive_banked_at_orders_as_utc`,
+  `test_a_row_the_old_boot_crashed_on_is_skipped`. The PR's fix round closed a third shape the
+  security seat found on the PR's first commit (measured,
+  `security-auditor/probe_nan_string.out`): a legacy `confidence` spelled as a STRING (`"NaN"`,
+  `"Infinity"`, `"-inf"`) validates as nan/inf, then failed the strict writer and rolled back the
+  whole import on every start. It is now skipped like any unreadable row
+  (`test_a_row_the_strict_writer_refuses_is_skipped_not_fatal`). The seats' probes for this and
+  the four entries below: `docs/superpowers/reports/2026-09-24-bank-sqlite/` (gitignored, local).
+- **Low: a stored bank row that stops validating after a FUTURE model change raises instead of
+  reading as absent.** Writer's report, 2026-09-24 (PR #234); inferred, unreachable today
+  because every stored row was validated when written. `_parse_row` (`app/bank/store.py:213`) does
+  not skip: the row's own page answers 500, a list page fails only if the SUMMARY stops
+  validating, and as the queue's head `next_queued` (`store.py:827`) raises on every poll, so the
+  drain backs off and stalls there. At boot an `applying` row that fails validation is a bare
+  traceback, not the named refusal (security seat, measured,
+  `security-auditor/probe_foreign_db.out`). Delete, bulk delete and bulk ignore raise too, so a
+  row whose summary still validates stays listed and cannot be removed in the app, against #191's
+  rule that a corrupt bank row is always purgeable (code seat, measured,
+  `final-code-reviewer/probe_invalid_row.py`). The guard for this class is the model's own: a default
+  or a `mode="before"` validator for every changed field, so old rows stay valid. Not built.
+- **Low: `PRAGMA user_version` is read as "imported yet or not", so a `bank.db` from a FUTURE
+  schema opens silently on an older image.** Security seat, 2026-09-24, measured
+  (`security-auditor/probe_foreign_db.out`: version 7 with today's columns boots, and the legacy
+  rows are not imported). `_open` (`app/bank/store.py:316-318`) imports on 0 and accepts every
+  other value. Rule for the next bank schema change: stay additive, as beets does (`_make_table`
+  only ever adds columns, `beets/dbcore/db.py:1310-1328`, 2.14.0), or refuse a version above the
+  known one. Additive is not enough for the stored `summary` column: summaries are written with
+  the row, so a field added to `BankItemSummary` (or a change to `_SUMMARY_EXCLUDE`) reads as its
+  default on every older row until the column is rebuilt from `row` in a `user_version` step
+  (code seat, measured, `final-code-reviewer/probe_summary_column.py`). Not built.
+- **Low: the bank's boot refusal advises the wrong fix for a locked database or a full disk.**
+  Security seat, 2026-09-24, measured through the real lifespan
+  (`final-security-auditor/probe_results.out`, `probe_full_disk.out`). The line (`app/main.py`,
+  the `reconcile_interrupted` refusal) says to point MUSICDROP_BANK_DIR at a readable folder or
+  restore `bank.db`; that is right for a permission problem, a symlink loop and a corrupt file,
+  but not for `database is locked` (another process holds `bank.db`) or a write failure during
+  the first-start import (disk full; the import rolls back, `user_version` stays 0, no row is
+  lost). The line prints the real error, so the operator can tell. Error-specific advice would
+  be new wording per class; not built.
+- **Low: bulk ignore and bulk delete make one synced commit per id.** Code seat, 2026-09-24,
+  measured on PR #234 (1,000 rows, NVMe btrfs, `code-reviewer/probe/bulk_time.py`), old file
+  store → SQLite: delete 0.08 s → 5.10 s, ignore 3.09 s → 5.19 s. A Review click sends at most the
+  visible page's 48 ids (`PAGE_SIZE`, `frontend/src/components/system/Pagination.tsx:17`), about
+  0.25 s locally; the API itself takes any number; the NAS was not measured. `bulk_ignore` and
+  `bulk_delete` (`app/bank/store.py:707`, `:723`) take the lock and autocommit per id. One
+  transaction per batch is SQLite's own tool, but it changes what a mid-batch failure leaves
+  behind (today every id before it has landed; in one transaction none has). Decide that before
+  building.
+- **Low: a FIFO or endless file named `*.json` in the bank folder hangs the one-time import**, as
+  it hung every boot before (`read_text` in `_import_legacy_file`, `app/bank/store.py:249`).
+  Writer's report, inferred, not probed (no unbounded-read probes). Reachable only by hand:
+  nothing in the app writes a `*.json` there any more, and once an import completes the files are
+  never read again. Not built.
 
 - **Low: an archive import (zip, or tar with an absolute member name) can reset an outside
   file's modification time.** Security seat, 2026-09-23 (zip, beets 2.13.1 and 2.14.0) and
@@ -751,8 +850,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   mount (FUSE stand-in with a sleeping `getattr`; the same probe on the previous commit read
   2.4 ms). These two routes take the same 255-character / 128-component input shape and were not in
   that round's scope. A hung share therefore still freezes every other route, live updates and
-  `/api/health` — and the image's `HEALTHCHECK --timeout=5s --retries=3` (`Dockerfile:44`) marks the
-  container unhealthy after ~15 s, which a supervisor (autoheal, a k8s liveness probe) acts on by
+  `/api/health` — and the image's `HEALTHCHECK --interval=30s --timeout=5s --retries=3` (`Dockerfile:52`)
+  marks the container unhealthy after three failed checks in a row, 30 s apart, which a supervisor (autoheal, a k8s liveness probe) acts on by
   restarting mid-operation. Fix shape: `run_in_threadpool(partial(...))` around the resolve block,
   exactly as `app/api/import_.py` and `app/api/acquisition.py` now do; the house test oracle is
   `asyncio.get_running_loop()` inside the probed callee asserting `on_loop == [False]`, NOT a timing
@@ -773,7 +872,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   the loop stall took the healthcheck down with it. The shipped `docker-compose.yml:44` sets only
   `restart: unless-stopped`, which acts on exit rather than on `unhealthy`, so nothing auto-restarts
   either way today — the cost is to operator monitoring and to any autoheal/k8s liveness probe.
-  There is no `--limit-concurrency` (`Dockerfile:61`) and no inbound rate limiting anywhere
+  There is no `--limit-concurrency` (`Dockerfile:69`) and no inbound rate limiting anywhere
   (`TokenBucketLimiter` is the OUTBOUND artwork fetcher). Caps SHIPPED 2026-09-20: a 1-token limiter on the
   import-start path (bounded at 30 s, then 503) and a 4-token limiter on the inbox filesystem
   reads, which the slskd webhook's three hops now also take. This entry stays for the two halves a
@@ -3446,6 +3545,14 @@ because a recorded decision is what stops the question being reopened from scrat
 scan here for something to pick up — scan *Open bugs / hardening*. Revisit an item only if
 the condition it names has changed.
 
+- **`MALLOC_ARENA_MAX` is not set, and is not to be re-proposed** (owner ruling 2026-09-24:
+  *"i dont think its beneficial to add it"*). Memory grows with use because glibc's per-thread
+  arenas keep freed memory between live blocks; it plateaus, and it is retention, not a leak.
+  Measured in the real image after heavy synthetic use: about 380 MB with the default, about
+  228 MB with `MALLOC_ARENA_MAX=2`, no measurable slowdown; on the 125 GB NAS that is about
+  0.15 GB. Report: `docs/superpowers/reports/2026-09-24-proper-fix/result-malloc.md`
+  (gitignored, local).
+
 - **The source-missing refusal asks "is there nothing to import", not "is every source there"**
   (2026-09-20, `feat/import-keep-downloads`). A start whose sources are all absent is refused with
   `That folder doesn't exist.` before any job exists; one absent member of a list is NOT refused.
@@ -4187,6 +4294,20 @@ the condition it names has changed.
   not reproduced; end state is a refusal with an honest message, not damage.
 
 ## Deferred minors (cosmetic / self-healing — carried from earlier waves)
+
+### Seen live on v0.52.1 (2026-09-24)
+
+- **A skipped album's row says "Decided" while the finished summary counts it as skipped.** The
+  owner's Add from folder run ended *1 album imported · 1 skipped*, and the Lamb of God row read
+  *Decided*. `StatusBadge` (`frontend/src/pages/import/ImportPage.tsx:1362-1390`) turns a row
+  that landed into *Imported* through its `album_id`; this row did not land, so it shows its wire
+  status. That status is `decided`, set the moment a choice is recorded. Likely cause, from one
+  read (not reproduced): the done summary counts a `decided` row whose action is not an apply as
+  skipped (`app/import_jobs/registry.py:546-547`), but `ImportAlbumSummary` carries no
+  `decided_action`, so the badge cannot tell a skip from an apply. A duplicate skip takes the
+  arm above it (`:544-545`) instead. The mismatch was found in the import chunk-5 review (2026-05) and
+  never recorded here. Shapes named then, not decided: a derived per-row outcome on
+  `ImportAlbumSummary`, or resolve the wire `decided` status to `applied`/`skipped`.
 
 ### From the 2026-09-21 pre-push review of `feat/import-keep-downloads`
 
