@@ -380,7 +380,7 @@ def _real_uvicorn(
 ) -> Iterator[_UvicornChild]:
     """Boot ``app.main:app`` under real uvicorn, exactly as the Dockerfile CMD does.
 
-    No ``--log-level`` and no ``--log-config``, because ``Dockerfile:61`` passes
+    No ``--log-level`` and no ``--log-config``, because ``Dockerfile:69`` passes
     neither: what these tests are for is the output an operator gets from the
     SHIPPED command, and a flag here would be a configuration the container does
     not have.
@@ -528,7 +528,7 @@ def test_both_password_lines_reach_real_uvicorns_output(
     README points an operator at these two lines, and no in-process test can
     tell whether they arrive: ``caplog`` attaches a handler to the ROOT logger,
     so a record from any logger name passes it. Under the shipped CMD
-    (``Dockerfile:61``, no log config) uvicorn's LOGGING_CONFIG configures only
+    (``Dockerfile:69``, no log config) uvicorn's LOGGING_CONFIG configures only
     its own loggers and leaves root at WARNING with no handler. Measured through
     ``logging.getLogger(__name__)``: the setup WARNING reached stderr only via
     ``logging.lastResort``, printed bare with no level to grep for, and the

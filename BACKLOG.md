@@ -96,7 +96,8 @@ entry carries a dated correction block where the pass changed it._
    live on v0.52.1, on the same kind of yubal album. Under `move` the audio left, and one `.lrc`
    kept the download folder: beets prunes a folder it moved from only when nothing but `clutter`
    is left (`importer/tasks.py:536-539`, `util/__init__.py:307-318`, 2.14.0). No plugin that ships
-   with beets carries non-audio files. beets' plugin index lists two third-party ones,
+   with beets carries sidecars such as `.lrc`; fetchart moves only the one cover image it picks
+   (`beetsplug/fetchart.py:1536-1538`). beets' plugin index lists two third-party ones,
    `beets-copyartifacts` and `beets-filetote`; filetote also follows `beet move` (reference
    checkout `docs/plugins/index.rst:475-491`). Neither is evaluated.
 7. **Download providers** (owner ruling 2026-09-14, vault `decisions` #51; not started). Replaces
@@ -664,7 +665,7 @@ entry carries a dated correction block where the pass changed it._
 
 12. **Mark a track instrumental by hand** (owner, 2026-09-24: record now, build later). A track
     reads *instrumental* only when LRCLib returns an entry flagged instrumental. A film score LRCLib
-    has no entry for reads *none* for good. Measured 2026-09-24: LRCLib returned 0 results for
+    has no entry for reads *none*, and *Recheck misses* cannot change that while LRCLib has none. Measured 2026-09-24: LRCLib returned 0 results for
     four of Tom Howe's *Dog Man* score tracks, while the album's one song returned 11. Engine:
     beets' own flag is the `lyrics_instrumental` flex field (`beets/library/migrations.py:324`,
     2.14.0). MusicDrop already sets it on an LRCLib instrumental verdict
@@ -677,15 +678,17 @@ entry carries a dated correction block where the pass changed it._
     every boot parses them all to build its index (`app/bank/store.py`, `_all_summaries`). The
     owner's bank: 2,688 rows, 42 MB (`sudo docker exec musicdrop sh -c 'ls /data/beets/bank | wc
     -l; du -sh /data/beets/bank'`). On it, v0.52.1 took 57 s from `Waiting for application
-    startup` to `complete` and idled at about 673 MB. The same boot cost is in v0.51.6, measured
-    on a rebuild of it.
+    startup` to `complete` and idled at about 673 MB. v0.51.6 costs the same per row (measured on
+    a scratch copy of its source, on this machine, not the NAS).
     - **Done on `docs/backlog-lyrics-followups`:** the boot no longer holds every full row at
       once. On a 2,691-row scratch bank (NVMe): 608 → 111 MB, and startup about 1.9 → 0.9 s.
       The parse itself stays, about 0.3 ms a row there.
     - **Not measured:** what the NAS spends its 57 s on — a disk read per row file, a slower CPU,
       or both.
-    - **The health check allows 60 s for startup** (`Dockerfile`, `--start-period=60s`). Past
-      that the container reads *unhealthy*. The check only observes; nothing restarts it.
+    - **The health check's start period is 60 s** (`Dockerfile:52`), counted from container start,
+      so the entrypoint's `chown` and the app import come out of it too. After it, three failed
+      checks in a row, 30 s apart, mark the container *unhealthy*. Docker does not restart an
+      unhealthy container; an autoheal-style supervisor would.
     - **Shapes named, not decided:** index finished rows lazily instead of at boot, or prune or
       archive resolved rows. Engine check: beets reads its own import history only when an import
       needs it (`beets/importer/session.py:253,267,301`, 2.14.0), never at startup.
@@ -806,8 +809,8 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   mount (FUSE stand-in with a sleeping `getattr`; the same probe on the previous commit read
   2.4 ms). These two routes take the same 255-character / 128-component input shape and were not in
   that round's scope. A hung share therefore still freezes every other route, live updates and
-  `/api/health` — and the image's `HEALTHCHECK --timeout=5s --retries=3` (`Dockerfile:44`) marks the
-  container unhealthy after ~15 s, which a supervisor (autoheal, a k8s liveness probe) acts on by
+  `/api/health` — and the image's `HEALTHCHECK --interval=30s --timeout=5s --retries=3` (`Dockerfile:52`)
+  marks the container unhealthy after three failed checks in a row, 30 s apart, which a supervisor (autoheal, a k8s liveness probe) acts on by
   restarting mid-operation. Fix shape: `run_in_threadpool(partial(...))` around the resolve block,
   exactly as `app/api/import_.py` and `app/api/acquisition.py` now do; the house test oracle is
   `asyncio.get_running_loop()` inside the probed callee asserting `on_loop == [False]`, NOT a timing
@@ -828,7 +831,7 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   the loop stall took the healthcheck down with it. The shipped `docker-compose.yml:44` sets only
   `restart: unless-stopped`, which acts on exit rather than on `unhealthy`, so nothing auto-restarts
   either way today — the cost is to operator monitoring and to any autoheal/k8s liveness probe.
-  There is no `--limit-concurrency` (`Dockerfile:61`) and no inbound rate limiting anywhere
+  There is no `--limit-concurrency` (`Dockerfile:69`) and no inbound rate limiting anywhere
   (`TokenBucketLimiter` is the OUTBOUND artwork fetcher). Caps SHIPPED 2026-09-20: a 1-token limiter on the
   import-start path (bounded at 30 s, then 503) and a 4-token limiter on the inbox filesystem
   reads, which the slskd webhook's three hops now also take. This entry stays for the two halves a
@@ -4249,8 +4252,11 @@ the condition it names has changed.
   owner's Add from folder run ended *1 album imported · 1 skipped*, and the Lamb of God row read
   *Decided*. `StatusBadge` (`frontend/src/pages/import/ImportPage.tsx:1362-1390`) turns a row
   that landed into *Imported* through its `album_id`; this row did not land, so it shows its wire
-  status. That status is `decided`, set the moment a choice is recorded. Why this row never became
-  `skipped` is not re-derived. The mismatch was found in the import chunk-5 review (2026-05) and
+  status. That status is `decided`, set the moment a choice is recorded. Likely cause, from one
+  read (not reproduced): the done summary counts a `decided` row whose action is not an apply as
+  skipped (`app/import_jobs/registry.py:546-547`), but `ImportAlbumSummary` carries no
+  `decided_action`, so the badge cannot tell a skip from an apply. A duplicate skip takes the
+  arm above it (`:544-545`) instead. The mismatch was found in the import chunk-5 review (2026-05) and
   never recorded here. Shapes named then, not decided: a derived per-row outcome on
   `ImportAlbumSummary`, or resolve the wire `decided` status to `applied`/`skipped`.
 

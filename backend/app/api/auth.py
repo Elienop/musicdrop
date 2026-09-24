@@ -63,7 +63,7 @@ logger = logging.getLogger(__name__)
 # The two lines an OPERATOR is told to look for in `docker logs`, and the reason
 # they do not use `logger` above: uvicorn's LOGGING_CONFIG configures only its
 # own loggers and leaves root at WARNING with no handler, so under the shipped
-# CMD (`Dockerfile:61`, no --log-config) an INFO record from `app.api.auth` is
+# CMD (`Dockerfile:69`, no --log-config) an INFO record from `app.api.auth` is
 # discarded and a WARNING one reaches stderr through `logging.lastResort` —
 # printed bare, with no level to grep for. Same reasoning, and the same choice,
 # as the boot posture line; the long version is in the comment above it
