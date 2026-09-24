@@ -353,10 +353,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ``PermissionError`` out of the bank folder's ``mkdir`` and the operator got
     # a traceback with no ERROR record naming the setting. A database SQLite
     # cannot open or read (``sqlite3.Error``, not an ``OSError``) is the same
-    # refusal.
+    # refusal, and so is a bank path that is a symlink loop (``RuntimeError``
+    # from ``Path.resolve``, as for MUSICDROP_BEETS_DIR above).
     try:
         reconcile_interrupted(get_bank_dir())
-    except (OSError, sqlite3.Error) as exc:
+    except (OSError, RuntimeError, sqlite3.Error) as exc:
         # ``%r`` of the STRING, like every other path this module logs: a
         # newline in MUSICDROP_BANK_DIR forged a second line in ``docker logs``,
         # and the repr of a ``Path`` prints ``PosixPath('...')`` around it. The
@@ -364,7 +365,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # that way — its own ``str`` names the path a second time.
         _refuse_boot(
             "refusing to start: the import bank at %r could not be read (%r)."
-            " Set MUSICDROP_BANK_DIR to a folder MusicDrop can read and write.",
+            " Set MUSICDROP_BANK_DIR to a folder MusicDrop can read and write,"
+            " or restore bank.db from a snapshot.",
             str(get_bank_dir()),
             exc,
         )

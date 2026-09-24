@@ -16,9 +16,10 @@ every transaction (``_db_lock``, ``db.py:1129-1138``), so its accesses are
 serialized too. One lock around one connection gives the same ordering, a
 connection the tests can close, and the read-modify-write transitions below
 (decide, the apply runner's compare-and-set claim, re-bank) their atomicity.
-``check_same_thread=False`` is what lets the anyio workers, the apply-runner
-thread and the event loop's threadpool share it — safe because ``_LOCK``
-never lets two threads into it at once.
+``check_same_thread=False`` is what lets the boot's one call on the event loop,
+the API's anyio worker threads (``run_in_threadpool``), the apply-runner thread
+and the sweep's import worker thread (``upsert_by_folder``) share it — safe
+because ``_LOCK`` never lets two threads into it at once.
 
 JOURNAL: SQLite's default (rollback journal, ``synchronous=FULL``), as beets
 leaves its ``library.db``. Local disk only — SQLite does not support network
@@ -27,7 +28,8 @@ filesystems (https://www.sqlite.org/useovernet.html).
 LEGACY ROWS: earlier versions kept one ``<id>.json`` file per row in the same
 folder. The first open of a bank whose database is not marked imported
 (``PRAGMA user_version`` 0) imports every such file in ONE transaction, one row
-at a time, skipping an unreadable row out loud; a crash mid-import leaves
+at a time, skipping out loud a row it cannot read, validate or store (the rest
+still import); a crash mid-import leaves
 nothing and the next boot starts over. The files are left untouched — a frozen
 backup — and never read again.
 
@@ -139,6 +141,8 @@ _SUMMARY_EXCLUDE: set[str] = {
     "resolved_at",
 }
 
+_SQLITE_MAX_INT = 2**63 - 1
+
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _MICROSECOND = timedelta(microseconds=1)
 
@@ -165,10 +169,11 @@ def _summary_of(item: BankItem) -> BankItemSummary:
 def _json_text(payload: object) -> str:
     """Lossless JSON for the database. See the module docstring (SINGLE SINK RULE).
 
-    ``allow_nan=False`` makes the sink FAIL LOUD: with the producer clamping
-    (``_confidence``) and the legacy import healing (``_parse_legacy_row``),
-    any non-finite reaching here is a bug and must raise rather than store a
-    bare NaN/Infinity token that no strict JSON parser reads back.
+    ``allow_nan=False`` makes the sink FAIL LOUD rather than store a bare
+    NaN/Infinity token that no strict JSON parser reads back. The producer
+    clamps (``_confidence``) and the legacy import heals the tokens
+    (``_parse_legacy_row``); a legacy ``"NaN"`` STRING still reaches here, and
+    the import skips that row (``_import_legacy_file``).
     """
     return json.dumps(payload, ensure_ascii=True, allow_nan=False)
 
@@ -198,9 +203,9 @@ def _finite_payload(value: object) -> object:
 def _parse_legacy_row(raw: str) -> BankItem:
     """One legacy ``<id>.json`` file's row.
 
-    A row poisoned with non-finite floats (written by a pre-clamp producer)
-    still imports: ``json.loads`` admits the NaN/Infinity/-Infinity tokens and
-    :func:`_finite_payload` clamps them to 0.0 before validation.
+    A row poisoned with non-finite float TOKENS (written by a pre-clamp
+    producer) still imports: ``json.loads`` admits the NaN/Infinity/-Infinity
+    tokens and :func:`_finite_payload` clamps them to 0.0 before validation.
     """
     return BankItem.model_validate(_finite_payload(json.loads(raw)))
 
@@ -247,21 +252,24 @@ def _import_legacy_file(conn: sqlite3.Connection, child: Path) -> bool:
     ``RecursionError`` is a deeply nested file, which ``json.loads`` refuses
     that way rather than with a ``ValueError``. An id this store never mints is
     refused too: ``_get`` answers None for it, so the row could be listed but
-    never opened or deleted. The parsed row dies when this returns, so the
-    caller's loop never holds two.
+    never opened or deleted. So is a row that validates but that ``_put``
+    cannot store: a folder str ``os.fsdecode`` could not have produced, or a
+    ``"NaN"`` STRING that pydantic's lax float parse turns into nan after the
+    healing ran. A ``sqlite3.Error`` is not a row's fault and still aborts the
+    import. The parsed row dies when this returns, so the caller's loop never
+    holds two.
     """
     try:
         item = _parse_legacy_row(child.read_text(encoding="utf-8"))
         if not _VALID_ID.match(item.id):
             raise ValueError(f"{item.id!r} is not a bank row id")
-        # Raises for a folder str ``os.fsdecode`` could not have produced.
-        os.fsencode(item.folder)
+        _put(conn, item)
     except (OSError, ValueError, RecursionError) as exc:
         # Loud skip: a silently vanished row is indistinguishable from a
-        # deleted one in the UI — name the file and the reason.
-        logger.warning("Skipping unreadable bank row %s: %s", child.name, exc)
+        # deleted one in the UI — name the file and the reason. ``%r`` keeps
+        # a newline in the file name or pydantic's multi-line text on ONE line.
+        logger.warning("Skipping unreadable bank row %r: %r", child.name, str(exc))
         return False
-    _put(conn, item)
     return True
 
 
@@ -278,7 +286,10 @@ def _import_legacy_rows(conn: sqlite3.Connection, bank_dir: Path) -> None:
     try:
         for statement in _SCHEMA:
             conn.execute(statement)
-        for child in bank_dir.glob("*.json"):
+        # ``iterdir``, not ``glob``: pathlib's glob swallows a failed listing
+        # (``_WildcardSelector``, ``except OSError: pass``), which would mark an
+        # import of zero rows done and never read the files again.
+        for child in (c for c in bank_dir.iterdir() if c.suffix == ".json"):
             if _import_legacy_file(conn, child):
                 imported += 1
             else:
@@ -427,6 +438,9 @@ def list_page(
     else:
         statuses = None
     where = {"statuses": statuses, "reason": reason}
+    # SQLite binds 64-bit integers only (a larger one is ``OverflowError``);
+    # an offset past that skips every row anyway, so answer the empty page.
+    offset = min(offset, _SQLITE_MAX_INT)
     with _LOCK:
         conn = _conn(bank_dir)
         (total_all,) = conn.execute("SELECT count(*) FROM bank").fetchone()

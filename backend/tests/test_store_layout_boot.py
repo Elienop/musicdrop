@@ -190,6 +190,35 @@ def test_an_unreadable_bank_database_gets_the_one_error_line_too(
     assert "refusing to start" in message
     assert "MUSICDROP_BANK_DIR" in message
     assert "DatabaseError" in message
+    # The folder is healthy here, so the setting alone is no remedy: pointing
+    # it elsewhere boots an EMPTY bank. The line must name the one that is.
+    assert "or restore bank.db from a snapshot." in message
+    assert "\n" not in message
+
+
+def test_a_looping_bank_path_gets_the_one_error_line_too(
+    beets_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A MUSICDROP_BANK_DIR that is a symlink loop: ``Path.resolve`` raises
+    ``RuntimeError``, which must reach the operator as the same one line."""
+    loop = tmp_path / "bankloop"
+    loop.symlink_to(loop)
+    monkeypatch.setattr("app.config.settings.bank_dir", str(loop))
+
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError):
+        with TestClient(real_app):
+            pass  # pragma: no cover - the lifespan raises before the body runs
+
+    refusals = [r for r in caplog.records if r.name == "uvicorn.error"]
+    assert len(refusals) == 1, [(r.name, r.getMessage()) for r in caplog.records]
+    assert refusals[0].exc_info is None
+    message = refusals[0].getMessage()
+    assert "refusing to start" in message
+    assert "MUSICDROP_BANK_DIR" in message
+    assert "\n" not in message
 
 
 def test_the_origin_store_inside_the_library_refuses_to_start(

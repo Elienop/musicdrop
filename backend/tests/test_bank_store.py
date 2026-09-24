@@ -595,20 +595,21 @@ def _dup_prompt() -> DuplicatePrompt:
 
 
 def test_store_scans_the_bank_dir_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # The perf pin: the bank dir is globbed EXACTLY once — the one-time import
+    # The perf pin: the bank dir is listed EXACTLY once — the one-time import
     # of the old row files — no matter how many creates/upserts/list calls
     # follow, and never again once the database is marked imported (a restart
     # included). On the pre-index store every list_items/count_items/upsert
-    # re-globbed (O(N^2) across a sweep).
+    # re-listed (O(N^2) across a sweep).
     calls = {"n": 0}
-    original_glob = Path.glob
-
-    def counting_glob(self: Path, pattern: str) -> Iterator[Path]:
-        calls["n"] += 1
-        return original_glob(self, pattern)
-
-    monkeypatch.setattr(Path, "glob", counting_glob)
+    original_iterdir = Path.iterdir
     bank = _bank(tmp_path)
+
+    def counting_iterdir(self: Path) -> Iterator[Path]:
+        if self == bank:
+            calls["n"] += 1
+        return original_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", counting_iterdir)
     for i in range(3):
         store.create_item(
             bank, folder=f"/lib/c{i}", source="sweep", reason="no_match", fingerprint="f" * 64
@@ -794,7 +795,7 @@ def test_import_orders_rows_and_picks_the_folder_winner(
     records = [r for r in caplog.records if r.name == "app.bank.store"]
     warnings = [r.getMessage() for r in records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
-    assert warnings[0].startswith(f"Skipping unreadable bank row {'e' * 32}.json: ")
+    assert warnings[0].startswith(f"Skipping unreadable bank row '{'e' * 32}.json': ")
     # The operator's line, on the logger the shipped container prints.
     infos = [r.getMessage() for r in caplog.records if r.name == "uvicorn.error"]
     assert len(infos) == 1
@@ -1372,17 +1373,26 @@ def test_the_boot_parses_only_the_applying_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Boot cost must not grow with the bank: on 1,000 rows with exactly one
-    ``applying``, the startup repair plus the apply runner's first pick parse
-    that one row and nothing else (no queued row here, so the pick parses none).
+    ``applying`` and three ``queued``, the startup repair plus the apply
+    runner's first pick parse the applying row and the queue's head — the one
+    decided first, neither the lowest id nor the first written — and nothing else.
     """
     bank = _bank(tmp_path)
     bank.mkdir(parents=True)
     statuses = ["done", "ignored", "needs_review", "failed", "stale"]
     applying_id = f"{999:032x}"
+    # id -> decision time (``_legacy_row`` stamps ``decided_at`` = ``banked_at``).
+    queued = {f"{100:032x}": _T3, f"{200:032x}": _T2, f"{300:032x}": _T1}
+    head_id = f"{300:032x}"
     for n in range(1000):
         item_id = f"{n:032x}"
-        status = "applying" if item_id == applying_id else statuses[n % len(statuses)]
-        row = _legacy_row(item_id, status=status, banked_at=_T1, folder=f"/l/{n}")
+        if item_id == applying_id:
+            status, when = "applying", _T1
+        elif item_id in queued:
+            status, when = "queued", queued[item_id]
+        else:
+            status, when = statuses[n % len(statuses)], _T1
+        row = _legacy_row(item_id, status=status, banked_at=when, folder=f"/l/{n}")
         (bank / f"{item_id}.json").write_text(json.dumps(row), encoding="utf-8")
     assert store.count_items(bank) == 1000  # the one-time import, before the boot below
     store.close_connections()  # the restart
@@ -1397,14 +1407,16 @@ def test_the_boot_parses_only_the_applying_row(
 
     monkeypatch.setattr(store, "_parse_row", counting_parse)
     assert store.reconcile_interrupted(bank) == 1
-    assert store.next_queued(bank) is None
-    assert parsed == [applying_id]
+    head = store.next_queued(bank)
+    assert head is not None
+    assert head.id == head_id
+    assert parsed == [applying_id, head_id]
 
     # Control: the counter sees every parse the store makes.
     repaired = store.get_item(bank, applying_id)
     assert repaired is not None
     assert repaired.status == "needs_review"
-    assert parsed == [applying_id, applying_id]
+    assert parsed == [applying_id, head_id, applying_id]
 
 
 def test_the_import_is_all_or_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1420,11 +1432,13 @@ def test_the_import_is_all_or_nothing(tmp_path: Path, monkeypatch: pytest.Monkey
     def failing_put(conn: sqlite3.Connection, item: BankItem) -> None:
         calls["n"] += 1
         if calls["n"] == 2:
-            raise RuntimeError("killed mid-import")
+            # A real mid-import failure (disk full, I/O): a SQLite error must
+            # abort the import, never count as one skipped row.
+            raise sqlite3.OperationalError("killed mid-import")
         real_put(conn, item)
 
     monkeypatch.setattr(store, "_put", failing_put)
-    with pytest.raises(RuntimeError, match="killed mid-import"):
+    with pytest.raises(sqlite3.OperationalError, match="killed mid-import"):
         store.count_items(bank)
     assert calls["n"] == 2  # the first row WAS written inside the transaction
 
@@ -1435,6 +1449,25 @@ def test_the_import_is_all_or_nothing(tmp_path: Path, monkeypatch: pytest.Monkey
     monkeypatch.setattr(store, "_put", real_put)  # the next start
     assert store.count_items(bank) == 3
     assert _db_rows(bank, "PRAGMA user_version") == [(1,)]
+
+
+def test_an_unlistable_bank_is_not_marked_imported(tmp_path: Path) -> None:
+    """A bank folder that can be written but not listed must fail the import,
+    not mark an import of zero rows done: the files would never be read again,
+    while the start logged ``imported 0 rows (0 skipped)``."""
+    if os.getuid() == 0:
+        pytest.skip("root lists a mode-0300 directory anyway")
+    bank = _bank(tmp_path)
+    _write_row(bank, f"{0:032x}", folder="/l/0", banked_at=_T1)
+    os.chmod(bank, 0o300)
+    try:
+        with pytest.raises(PermissionError):
+            store.count_items(bank)
+    finally:
+        os.chmod(bank, 0o755)
+    assert _db_rows(bank, "PRAGMA user_version") == [(0,)]
+
+    assert store.count_items(bank) == 1  # the next start, folder readable again
 
 
 def test_a_row_the_old_boot_crashed_on_is_skipped(
@@ -1459,6 +1492,88 @@ def test_a_row_with_an_id_the_store_never_mints_is_skipped(tmp_path: Path) -> No
     odd = _legacy_row("not-an-id", status="needs_review", banked_at=_T2, folder="/l/odd")
     (bank / "not-an-id.json").write_text(json.dumps(odd), encoding="utf-8")
     assert [s.id for s in store.list_items(bank, offset=0, limit=50)] == [real.id]
+
+
+def _import_and_log(
+    bank: Path, caplog: pytest.LogCaptureFixture
+) -> tuple[list[str], list[str], list[str]]:
+    """Run the one-time import -> (listed ids, the store's warnings, the operator's lines)."""
+    with caplog.at_level(logging.INFO):
+        listed = [s.id for s in store.list_items(bank, offset=0, limit=50)]
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "app.bank.store" and r.levelno == logging.WARNING
+    ]
+    infos = [r.getMessage() for r in caplog.records if r.name == "uvicorn.error"]
+    return listed, warnings, infos
+
+
+@pytest.mark.parametrize("spelling", ["NaN", "Infinity", "-inf"])
+def test_a_row_the_strict_writer_refuses_is_skipped_not_fatal(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, spelling: str
+) -> None:
+    """A non-finite spelled as a JSON STRING gets past the token healing, and
+    pydantic's lax float parse turns it into nan/inf, which the strict writer
+    refuses. That row is skipped out loud and every other row still imports;
+    it used to roll the whole import back and stop every start."""
+    bank = _bank(tmp_path)
+    good = _write_row(bank, "a" * 32, folder="/l/good", banked_at=_T1)
+    bad = _legacy_row("b" * 32, status="needs_review", banked_at=_T2, folder="/l/bad")
+    bad["confidence"] = spelling
+    (bank / f"{'b' * 32}.json").write_text(json.dumps(bad), encoding="utf-8")
+
+    listed, warnings, infos = _import_and_log(bank, caplog)
+
+    assert listed == [good.id]
+    assert len(warnings) == 1
+    assert warnings[0].startswith(f"Skipping unreadable bank row '{'b' * 32}.json': ")
+    assert "not JSON compliant" in warnings[0]
+    assert len(infos) == 1
+    assert infos[0].startswith("bank: imported 1 rows (1 skipped) in ")
+    assert _db_rows(bank, "PRAGMA user_version") == [(1,)]
+
+
+def test_a_row_whose_folder_names_nothing_on_disk_is_skipped(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``os.fsdecode`` never yields a surrogate outside U+DC80-U+DCFF, so a
+    folder holding one names no folder on disk, and its bytes (the folder
+    column) do not exist. Skipped and counted like any unreadable row."""
+    bank = _bank(tmp_path)
+    good = _write_row(bank, "a" * 32, folder="/l/good", banked_at=_T1)
+    odd = _legacy_row("b" * 32, status="needs_review", banked_at=_T2, folder="/l/bad\ud800")
+    (bank / f"{'b' * 32}.json").write_text(json.dumps(odd), encoding="utf-8")
+
+    listed, warnings, infos = _import_and_log(bank, caplog)
+
+    assert listed == [good.id]
+    assert len(warnings) == 1
+    assert warnings[0].startswith(f"Skipping unreadable bank row '{'b' * 32}.json': ")
+    assert "surrogates not allowed" in warnings[0]
+    assert len(infos) == 1
+    assert infos[0].startswith("bank: imported 1 rows (1 skipped) in ")
+
+
+def test_the_skip_warning_stays_one_line(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Both the file name and pydantic's error text reach the skip line, and
+    either can carry a newline (a hand-made name; a key in a nested model that
+    forbids extras). Formatted raw, each forged a second line in ``docker logs``."""
+    bank = _bank(tmp_path)
+    bank.mkdir(parents=True)
+    (bank / "x\nERROR forged-by-name.json").write_text("{not json", encoding="utf-8")
+    row = _legacy_row("e" * 32, status="queued", banked_at=_T1, folder="/l/e")
+    row["decided"] = {"action": "asis", "evil\nERROR forged-by-key": 1}
+    (bank / f"{'e' * 32}.json").write_text(json.dumps(row), encoding="utf-8")
+
+    listed, warnings, _infos = _import_and_log(bank, caplog)
+
+    assert listed == []
+    assert len(warnings) == 2
+    assert all("\n" not in text for text in warnings), warnings
+    joined = " ".join(warnings)
+    assert "'x\\nERROR forged-by-name.json'" in joined  # the name, escaped
+    assert "evil\\nERROR forged-by-key" in joined  # the key, escaped
 
 
 def test_a_naive_banked_at_orders_as_utc(tmp_path: Path) -> None:
@@ -1515,10 +1630,11 @@ def test_rows_order_by_real_time_not_by_their_text(
 
 
 def test_the_store_is_safe_across_threads(tmp_path: Path) -> None:
-    """The anyio workers, the apply-runner thread and the event loop's
-    threadpool all call the store at once. Every call must land — no
-    ``database is locked``, no connection used from two threads at once — and
-    the compare-and-set claim must still let exactly one caller win a row."""
+    """The API's anyio worker threads (``run_in_threadpool``), the apply-runner
+    thread and the sweep's import worker thread all call the store at once.
+    Every call must land — no ``database is locked``, no connection used from
+    two threads at once — and the compare-and-set claim must still let exactly
+    one caller win a row."""
     bank = _bank(tmp_path)
     ids = [_create(tmp_path, folder=f"/l/{n}") for n in range(8)]
     for item_id in ids:

@@ -2,9 +2,9 @@
 
 The bank dir resolves from ``settings`` (not ``app.state``) so the
 lifespan-less ``client`` test fixture works, same as the playlists router.
-Store calls run in the threadpool: each is one small database query, but a
-write waits on its commit reaching the disk, and the event loop never blocks
-on disk.
+Store calls run in the threadpool: each is a few small indexed queries (a
+list page three, a bulk call one or two per id), but a write waits on its
+commit reaching the disk, and the event loop never blocks on disk.
 """
 
 from __future__ import annotations
