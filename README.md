@@ -428,13 +428,13 @@ MusicDrop has no built-in backup, deliberately: its state is plain files under t
 | your music share | `/music` | the audio files, their embedded tags, `cover.<ext>`, `.lrc`/`.txt` lyric sidecars, `artist-poster.*` / `artist-background.*` |
 | slskd downloads *(acquisition only)* | `/inbox` | `.musicdrop-ledger.json` — which drops were already handled; without it, old downloads re-import |
 
-`/music` is the library; `/data` is every decision you have made about it. Snapshot both; the host paths above are `docker-compose.yml`'s placeholders.
+`/music` is the library; `/data` is every decision you have made about it. Snapshot both; the host paths above are `docker-compose.yml`'s placeholders. Keep `/data` on a local disk, not a network share: `library.db` and `bank.db` are SQLite files, and SQLite is not safe over a network filesystem.
 
 **Authoritative** — losing it loses work, and nothing regenerates it:
 
 - `data/beets/library.db` — the beets library: every match, tag and organize decision, plus the `lyrics_checked` and `lyrics_instrumental` flags. A `library.db-before-*.bak` sibling is a beets pre-migration copy, the only way back to the previous schema; having none is normal.
 - `data/beets/config.yaml` — **Settings → Beets** and **Settings → Naming** both write this file in place and keep no previous copy. If it is a link, back up the file it points to.
-- `data/beets/bank/*.json` — albums banked for review. Pending decisions, not a cache.
+- `data/beets/bank/bank.db` — albums banked for review. Pending decisions, not a cache. Versions before it kept one `*.json` file per album there; the first start after the upgrade imports them into `bank.db` once and leaves them untouched, so they can be deleted after that start succeeds.
 - `data/beets/playlists/*.json` and `data/beets/playlists/artwork/` — MusicDrop owns playlists; Plex is a push target, not a copy.
 - `<music>/.playlists/*.m3u8` — the Plex-readable exports. Rewritten only when a playlist changes, never rebuilt wholesale, so the music tree's restore is what covers them; `MUSICDROP_PLAYLISTS_EXPORT_DIR` takes them out of it — snapshot that path too.
 - `data/beets/plex/plex.json`, `data/beets/slskd/slskd.json` — the Plex and slskd integration settings, mode `0600`. Not just tokens: Plex's library path/section, slskd's downloads prefix and its `auto_import` toggle (lose that and unattended import reverts to its env default, off).

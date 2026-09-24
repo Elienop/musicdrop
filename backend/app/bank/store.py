@@ -1,9 +1,35 @@
-"""The bank store — one JSON row per set-aside album under ``<beets_dir>/bank/``.
+"""The bank store — every set-aside album as one row of ``<bank_dir>/bank.db``.
 
-Same recipe as the playlists store (uuid-hex ids + id-regex traversal guard +
-``write_atomic_text``), with one addition: a module-level mutation lock,
-because chunk 3's import worker thread writes rows while the API thread reads
-and mutates them. Pure filesystem I/O — no beets imports.
+ONE SQLite file (stdlib ``sqlite3``, the module beets' own ``dbcore`` imports).
+Each row keeps today's full row JSON beside the few columns the questions need
+— status, reason, folder, and two times as integers — so every question the app
+asks ("which rows are applying?", "the next queued row", "one page of the
+list", "the row for this folder") reads only the rows it answers with. The boot
+reads the applying rows and the first queued one, not the whole bank. Pure
+database I/O — no beets imports.
+
+CONNECTIONS: one connection per bank file, shared by every thread, and every
+use of it — reads included — under the module lock ``_LOCK``. That is beets'
+own model with the per-thread connections folded away: beets opens one
+connection per thread (``dbcore/db.py:1177-1191``) but then holds ONE lock for
+every transaction (``_db_lock``, ``db.py:1129-1138``), so its accesses are
+serialized too. One lock around one connection gives the same ordering, a
+connection the tests can close, and the read-modify-write transitions below
+(decide, the apply runner's compare-and-set claim, re-bank) their atomicity.
+``check_same_thread=False`` is what lets the anyio workers, the apply-runner
+thread and the event loop's threadpool share it — safe because ``_LOCK``
+never lets two threads into it at once.
+
+JOURNAL: SQLite's default (rollback journal, ``synchronous=FULL``), as beets
+leaves its ``library.db``. Local disk only — SQLite does not support network
+filesystems (https://www.sqlite.org/useovernet.html).
+
+LEGACY ROWS: earlier versions kept one ``<id>.json`` file per row in the same
+folder. The first open of a bank whose database is not marked imported
+(``PRAGMA user_version`` 0) imports every such file in ONE transaction, one row
+at a time, skipping an unreadable row out loud; a crash mid-import leaves
+nothing and the next boot starts over. The files are left untouched — a frozen
+backup — and never read again.
 
 SERIALIZATION (lossless, deliberately not the wire path): a stored folder can
 carry a LONE SURROGATE — ``folder`` comes from ``os.fsdecode``, so a folder
@@ -16,28 +42,29 @@ opposite guarantee — a scrubbed path would point at a non-existent folder and
 apply would break — so it belongs ONLY on responses, never in this sink.
 
 Pydantic's Rust serializers reject lone surrogates (``model_dump_json`` raises
-``PydanticSerializationError``), so the row file is written with Python's stdlib
+``PydanticSerializationError``), so the row JSON is written with Python's stdlib
 ``json`` instead: ``json.dumps(model_dump(mode="json"), ensure_ascii=True)``
 escapes each surrogate as ``\\uXXXX`` (CPython explicitly supports encoding lone
-surrogates in text output), the file stays pure ASCII — hence valid UTF-8 for
-``write_atomic_text`` — and reading with ``json.loads`` restores the identical
-str, which ``model_validate`` accepts. ``ensure_ascii=True`` is REQUIRED: a lone
-surrogate is unencodable to UTF-8, so writing it raw would be a
-``UnicodeEncodeError``, not a data loss. Trade-off: we give up serde speed and
-rely on CPython's lone-surrogate handling (stable since forever, and the ONLY
-stdlib that accepts these strings); rows stay pure-ASCII JSON that reads
-backward-compatible with earlier rows and with ``model_validate_json`` on
-surrogate-free data."""
+surrogates in text output), the text stays pure ASCII — and ``sqlite3`` binds a
+``str`` as strict UTF-8, which a raw surrogate would fail — and reading with
+``json.loads`` restores the identical str, which ``model_validate`` accepts.
+``ensure_ascii=True`` is REQUIRED (the SINGLE SINK RULE). The folder COLUMN is
+``os.fsencode``'s bytes, a BLOB, as beets stores its paths
+(``library/fields.py:82``, ``dbcore/types.py:363-372``): as text the same str
+raises ``UnicodeEncodeError`` at the bind."""
 
 from __future__ import annotations
 
 import json
 import logging
 import math
+import os
 import re
+import sqlite3
 import threading
+import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.models.bank import (
@@ -50,11 +77,15 @@ from app.models.bank import (
     BankStatus,
 )
 from app.models.import_models import DuplicatePrompt, ParkedAlbum
-from app.playlists.atomic import write_atomic_text
 
 _VALID_ID = re.compile(r"\A[0-9a-f]{32}\Z")
 
 logger = logging.getLogger(__name__)
+# The import's one INFO line must reach ``docker logs`` (tests/test_operator_logging.py).
+operator_logger = logging.getLogger("uvicorn.error")
+
+#: The database's file name inside the bank folder.
+DB_NAME = "bank.db"
 
 # The Review page's default "needs attention" view: in-flight rows stay
 # visible, resolved rows (done/ignored) don't.
@@ -62,23 +93,40 @@ ACTIVE_STATUSES: frozenset[str] = frozenset(
     {"needs_review", "queued", "applying", "failed", "stale"}
 )
 
-# One lock for all mutations: the sweep worker (chunk 3) and the API thread
-# both write; per-row files keep contention negligible. It ALSO guards the
-# in-memory summary index below (reads included) so a listing never races a
-# write-through update.
+# One lock for every use of every connection (see the module docstring).
 _LOCK = threading.Lock()
 
-# In-memory summary index — the antidote to the O(N^2) full-dir re-glob every
-# list/count/upsert used to pay. Two dicts per bank dir, keyed by the resolved
-# path: id -> summary (the list-row projection) and folder -> id (upsert's O(1)
-# dedupe lookup). Built lazily with ONE glob+parse pass, then kept coherent
-# WRITE-THROUGH by every mutation (all writes funnel through ``_write``, all
-# removals through the unlink in ``delete_item``). CONSTRAINT: the app is the
-# single writer of the bank dir — rows added out-of-band are seen only after
-# ``reset_bank_index()`` (or a restart). All index helpers assume the caller
-# already holds ``_LOCK``.
-_INDEX: dict[str, dict[str, BankItemSummary]] = {}
-_FOLDER: dict[str, dict[str, str]] = {}
+# Open connections, by resolved database path. Only touched under ``_LOCK``.
+_CONNECTIONS: dict[str, sqlite3.Connection] = {}
+
+# ``banked_at`` / ``apply_at`` are microseconds since the epoch, UTC: an ISO
+# string mis-orders a whole second (``...:00Z``) after a fractional one
+# (``...:00.500000Z``), which pydantic writes for the same field.
+# ``apply_at`` is the apply runner's FIFO key: ``decided_at``, else
+# ``banked_at`` for a row that never carried one.
+_SCHEMA = (
+    """CREATE TABLE bank (
+        id TEXT PRIMARY KEY,
+        folder BLOB NOT NULL,
+        status TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        banked_at INTEGER NOT NULL,
+        apply_at INTEGER NOT NULL,
+        summary TEXT NOT NULL,
+        row TEXT NOT NULL
+    )""",
+    "CREATE INDEX bank_folder ON bank (folder)",
+    "CREATE INDEX bank_status ON bank (status)",
+    "CREATE INDEX bank_banked ON bank (banked_at, id)",
+)
+
+# One WHERE for every list question: ``:statuses`` is a JSON array of the
+# statuses to keep (NULL = any), ``:reason`` the reason to keep (NULL = any).
+# Bound, never formatted into the text.
+_LIST_WHERE = (
+    " WHERE (:statuses IS NULL OR status IN (SELECT value FROM json_each(:statuses)))"
+    " AND (:reason IS NULL OR reason = :reason)"
+)
 
 # The heavy fields a summary drops (kept identical to what ``list_page`` needs).
 # A plain set so it satisfies pydantic ``model_dump(exclude=...)``'s IncEx type.
@@ -91,129 +139,52 @@ _SUMMARY_EXCLUDE: set[str] = {
     "resolved_at",
 }
 
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_MICROSECOND = timedelta(microseconds=1)
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _row_path(bank_dir: Path, item_id: str) -> Path:
-    return bank_dir / f"{item_id}.json"
+def _micros(moment: datetime) -> int:
+    """``moment`` as an integer the database orders by real time.
 
-
-def _index_key(bank_dir: Path) -> str:
-    return str(Path(bank_dir).resolve())
+    A NAIVE time (no offset) counts as UTC: every time this app writes carries
+    one (``_now``), so a naive one comes only from a hand-made row, and UTC is
+    the zone every other row is in. Its stored JSON keeps the value as it was.
+    """
+    aware = moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+    return (aware - _EPOCH) // _MICROSECOND
 
 
 def _summary_of(item: BankItem) -> BankItemSummary:
     return BankItemSummary(**item.model_dump(exclude=_SUMMARY_EXCLUDE))
 
 
-def _ensure_index(bank_dir: Path) -> tuple[dict[str, BankItemSummary], dict[str, str]]:
-    """Return (id->summary, folder->id) for ``bank_dir``, building on first use.
+def _json_text(payload: object) -> str:
+    """Lossless JSON for the database. See the module docstring (SINGLE SINK RULE).
 
-    The one and only place ``_all_summaries`` (the full glob+parse) runs;
-    every later call reuses the cached dicts.
+    ``allow_nan=False`` makes the sink FAIL LOUD: with the producer clamping
+    (``_confidence``) and the legacy import healing (``_parse_legacy_row``),
+    any non-finite reaching here is a bug and must raise rather than store a
+    bare NaN/Infinity token that no strict JSON parser reads back.
     """
-    key = _index_key(bank_dir)
-    by_id = _INDEX.get(key)
-    if by_id is not None:
-        return by_id, _FOLDER[key]
-    by_id = {}
-    by_folder: dict[str, str] = {}
-    for summary in _all_summaries(bank_dir):
-        by_id[summary.id] = summary
-        by_folder[summary.folder] = summary.id
-    _INDEX[key] = by_id
-    _FOLDER[key] = by_folder
-    return by_id, by_folder
-
-
-def _index_put(bank_dir: Path, item: BankItem) -> None:
-    by_id, by_folder = _ensure_index(bank_dir)
-    by_id[item.id] = _summary_of(item)
-    by_folder[item.folder] = item.id
-
-
-def _index_drop(bank_dir: Path, item_id: str) -> None:
-    by_id, by_folder = _ensure_index(bank_dir)
-    summary = by_id.pop(item_id, None)
-    if summary is not None and by_folder.get(summary.folder) == item_id:
-        del by_folder[summary.folder]
-
-
-def _index_status(bank_dir: Path, item_id: str) -> str | None:
-    """The QUEUE's own view of a row's status — from the write-through index,
-    never from the row file (which may be unreadable). Callers MUST hold
-    ``_LOCK``. Never builds the index: an id the queue has never seen has no
-    known status, and "no known status" is not "applying"."""
-    by_id = _INDEX.get(_index_key(bank_dir))
-    if by_id is None:
-        return None
-    summary = by_id.get(item_id)
-    return summary.status if summary is not None else None
-
-
-def _index_forget(bank_dir: Path, item_id: str) -> None:
-    """Stale-entry drop when a file backing an indexed id is gone.
-
-    Never builds the index (no glob): a missing file for an id we never indexed
-    is a no-op. Callers MUST hold ``_LOCK`` — a concurrent ``list_page`` iterates
-    these dicts under it, and an unlocked pop could break that iteration.
-    """
-    key = _index_key(bank_dir)
-    by_id = _INDEX.get(key)
-    if by_id is None:
-        return
-    summary = by_id.pop(item_id, None)
-    if summary is not None:
-        by_folder = _FOLDER.get(key)
-        if by_folder is not None and by_folder.get(summary.folder) == item_id:
-            del by_folder[summary.folder]
-
-
-def reset_bank_index() -> None:
-    """Drop the in-memory index so the next read rebuilds from disk.
-
-    For tests (per-test tmp dirs share this module global) and the rare case
-    where rows were written to the bank dir out-of-band.
-
-    COUPLING WARNING: the rebuild enumerates via ``_all_summaries``, which SKIPS
-    corrupt rows — so a rebuild permanently forgets that a corrupt row was
-    ``applying``, and ``delete_item``'s corrupt-arm refusal (which reads the
-    index precisely because the row cannot testify) stops protecting that row
-    from being purged mid-apply. Safe today because nothing in production
-    calls this; wiring it to a "rescan bank dir" feature needs the runner's
-    in-flight id preserved across the rebuild first.
-    """
-    _INDEX.clear()
-    _FOLDER.clear()
+    return json.dumps(payload, ensure_ascii=True, allow_nan=False)
 
 
 def _row_text(item: BankItem) -> str:
-    """Lossless row serialization. See the module docstring (SINGLE SINK RULE).
-
-    Stdlib ``json`` (not pydantic's Rust serde) because ``model_dump_json``
-    rejects lone surrogates a legal ``os.fsdecode`` folder can carry, and
-    ``ensure_ascii`` keeps the output pure ASCII — UTF-8-safe for the writer.
-
-    ``allow_nan=False`` makes the sink FAIL LOUD: with the producer clamping
-    (``_confidence``) and the read path healing (``_parse_row``), any non-finite
-    reaching here is a bug and must raise rather than write a bare NaN/Infinity
-    token that no strict JSON parser reads back.
-    """
-    return json.dumps(item.model_dump(mode="json"), ensure_ascii=True, indent=2, allow_nan=False)
+    return _json_text(item.model_dump(mode="json"))
 
 
 def _finite_payload(value: object) -> object:
-    """Heal non-finite floats in a parsed row to 0.0, recursively.
+    """Heal non-finite floats in a parsed legacy row to 0.0, recursively.
 
     ONE policy for every float in a row — the Optional top-level ``confidence``
     included: a non-finite VALUE becomes 0.0 ("no confidence"), the same clamp
     the producer applies. ``None`` stays ``None`` — healing never invents a
     value. Deliberately not None: a ``null`` in a REQUIRED nested candidate
-    float would be a ValidationError, and this store's corrupt-rows-read-as-
-    absent posture would then drop the row from every listing — and the list
-    is the only source of ids, so a vanished row is unreachable forever.
+    float would be a ValidationError, and the import would then skip the row.
     """
     if isinstance(value, dict):
         return {key: _finite_payload(child) for key, child in value.items()}
@@ -224,20 +195,177 @@ def _finite_payload(value: object) -> object:
     return value
 
 
-def _parse_row(raw: str) -> BankItem:
-    """Lossless row parse: stdlib ``json.loads`` restores lone surrogates that
-    ``model_dump_json``-era files and current rows both escape as ``\\uXXXX``.
+def _parse_legacy_row(raw: str) -> BankItem:
+    """One legacy ``<id>.json`` file's row.
 
     A row poisoned with non-finite floats (written by a pre-clamp producer)
-    still LOADS and LISTS: ``json.loads`` admits the NaN/Infinity/-Infinity
-    tokens and :func:`_finite_payload` clamps them to 0.0 before validation.
+    still imports: ``json.loads`` admits the NaN/Infinity/-Infinity tokens and
+    :func:`_finite_payload` clamps them to 0.0 before validation.
     """
     return BankItem.model_validate(_finite_payload(json.loads(raw)))
 
 
-def _write(bank_dir: Path, item: BankItem) -> None:
-    write_atomic_text(_row_path(bank_dir, item.id), _row_text(item))
-    _index_put(bank_dir, item)
+def _parse_row(raw: str) -> BankItem:
+    """A stored row: stdlib ``json.loads`` restores the escaped lone surrogates."""
+    return BankItem.model_validate(json.loads(raw))
+
+
+def _put(conn: sqlite3.Connection, item: BankItem) -> None:
+    """Insert or replace ``item``'s row. Callers hold ``_LOCK``."""
+    conn.execute(
+        "INSERT OR REPLACE INTO bank"
+        " (id, folder, status, reason, banked_at, apply_at, summary, row)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            item.id,
+            os.fsencode(item.folder),
+            item.status,
+            item.reason,
+            _micros(item.banked_at),
+            _micros(item.decided_at or item.banked_at),
+            _json_text(_summary_of(item).model_dump(mode="json")),
+            _row_text(item),
+        ),
+    )
+
+
+def _get(conn: sqlite3.Connection, item_id: str) -> BankItem | None:
+    """The row ``item_id`` names, or None. Callers hold ``_LOCK``.
+
+    ``_VALID_ID`` first: an id the store never mints is absent without a query,
+    and a lone surrogate in one never reaches the UTF-8 bind.
+    """
+    if not _VALID_ID.match(item_id):
+        return None
+    found = conn.execute("SELECT row FROM bank WHERE id = ?", (item_id,)).fetchone()
+    return None if found is None else _parse_row(found[0])
+
+
+def _import_legacy_file(conn: sqlite3.Connection, child: Path) -> bool:
+    """Import one legacy row file; False (logged) when it cannot be imported.
+
+    ``RecursionError`` is a deeply nested file, which ``json.loads`` refuses
+    that way rather than with a ``ValueError``. An id this store never mints is
+    refused too: ``_get`` answers None for it, so the row could be listed but
+    never opened or deleted. The parsed row dies when this returns, so the
+    caller's loop never holds two.
+    """
+    try:
+        item = _parse_legacy_row(child.read_text(encoding="utf-8"))
+        if not _VALID_ID.match(item.id):
+            raise ValueError(f"{item.id!r} is not a bank row id")
+        # Raises for a folder str ``os.fsdecode`` could not have produced.
+        os.fsencode(item.folder)
+    except (OSError, ValueError, RecursionError) as exc:
+        # Loud skip: a silently vanished row is indistinguishable from a
+        # deleted one in the UI — name the file and the reason.
+        logger.warning("Skipping unreadable bank row %s: %s", child.name, exc)
+        return False
+    _put(conn, item)
+    return True
+
+
+def _import_legacy_rows(conn: sqlite3.Connection, bank_dir: Path) -> None:
+    """Create the table and import every ``*.json`` row, all in ONE transaction.
+
+    One full row alive at a time: resolved rows stay as history, and Python
+    keeps the memory a peak allocated, so a list of every parsed row would stay
+    pinned for the life of the process.
+    """
+    started = time.monotonic()
+    imported = skipped = 0
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for statement in _SCHEMA:
+            conn.execute(statement)
+        for child in bank_dir.glob("*.json"):
+            if _import_legacy_file(conn, child):
+                imported += 1
+            else:
+                skipped += 1
+        # The mark, in the same transaction: imported, and never read again.
+        conn.execute("PRAGMA user_version = 1")
+        conn.execute("COMMIT")
+    except BaseException:
+        # A failure SQLite already rolled back leaves no transaction to end.
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    operator_logger.info(
+        "bank: imported %d rows (%d skipped) in %.1f s",
+        imported,
+        skipped,
+        time.monotonic() - started,
+    )
+
+
+def _open(bank_dir: Path) -> sqlite3.Connection:
+    bank_dir.mkdir(parents=True, exist_ok=True)
+    # ``isolation_level=None``: no implicit transactions — each statement
+    # commits by itself, and the import opens its one transaction explicitly.
+    conn = sqlite3.connect(bank_dir / DB_NAME, isolation_level=None, check_same_thread=False)
+    try:
+        (version,) = conn.execute("PRAGMA user_version").fetchone()
+        if version == 0:
+            _import_legacy_rows(conn, bank_dir)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
+def _conn(bank_dir: Path) -> sqlite3.Connection:
+    """The open connection for ``bank_dir``, opening (and importing) on first use.
+
+    Callers hold ``_LOCK``.
+    """
+    key = str(Path(bank_dir).resolve() / DB_NAME)
+    conn = _CONNECTIONS.get(key)
+    if conn is None:
+        conn = _open(Path(bank_dir))
+        _CONNECTIONS[key] = conn
+    return conn
+
+
+def close_connections() -> None:
+    """Close every open bank database; the next call reopens on demand.
+
+    For tests (each uses its own bank folder) and to stand in for a restart.
+    """
+    with _LOCK:
+        while _CONNECTIONS:
+            _key, conn = _CONNECTIONS.popitem()
+            conn.close()
+
+
+def _new_item(
+    *,
+    folder: str,
+    source: BankSource,
+    reason: BankReason,
+    fingerprint: str,
+    artist: str | None,
+    album: str | None,
+    recommendation: str | None,
+    confidence: float | None,
+    parked: ParkedAlbum | None,
+    duplicate: DuplicatePrompt | None,
+) -> BankItem:
+    return BankItem(
+        id=uuid.uuid4().hex,
+        folder=folder,
+        source=source,
+        reason=reason,
+        artist=artist,
+        album=album,
+        recommendation=recommendation,
+        confidence=confidence,
+        parked=parked,
+        duplicate=duplicate,
+        fingerprint=fingerprint,
+        status="needs_review",
+        banked_at=_now(),
+    )
 
 
 def create_item(
@@ -254,77 +382,26 @@ def create_item(
     parked: ParkedAlbum | None = None,
     duplicate: DuplicatePrompt | None = None,
 ) -> BankItem:
-    item = BankItem(
-        id=uuid.uuid4().hex,
+    item = _new_item(
         folder=folder,
         source=source,
         reason=reason,
+        fingerprint=fingerprint,
         artist=artist,
         album=album,
         recommendation=recommendation,
         confidence=confidence,
         parked=parked,
         duplicate=duplicate,
-        fingerprint=fingerprint,
-        status="needs_review",
-        banked_at=_now(),
     )
     with _LOCK:
-        _write(bank_dir, item)
+        _put(_conn(bank_dir), item)
     return item
 
 
 def get_item(bank_dir: Path, item_id: str) -> BankItem | None:
-    if not _VALID_ID.match(item_id):
-        return None
-    # No index cleanup here: get_item is called WITHOUT _LOCK from the API,
-    # and the index may only be mutated under it. A missing-file-for-indexed
-    # -id state can't arise under the single-writer invariant anyway; true
-    # out-of-band edits are handled by reset_bank_index().
-    try:
-        return _parse_row(_row_path(bank_dir, item_id).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        # ONE read posture: missing, unreadable (``OSError``), undecodable
-        # (``UnicodeDecodeError`` — a ``ValueError`` the old OSError-only guard let
-        # 500) and malformed (``json.JSONDecodeError`` / pydantic
-        # ``ValidationError``) all read as ABSENT — matching the list-side twin
-        # (``_read_summary``).
-        return None
-
-
-def _read_summary(child: Path) -> BankItemSummary | None:
-    """Parse one row file fully (every row is still validated) and keep only
-    its summary; the full row dies when this returns."""
-    try:
-        item = _parse_row(child.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        # Loud skip: a silently vanished row is indistinguishable from a
-        # deleted one in the UI — name the file and the reason.
-        logger.warning("Skipping unreadable bank row %s: %s", child.name, exc)
-        return None  # unreadable/corrupt rows never break the listing
-    return _summary_of(item)
-
-
-def _all_summaries(bank_dir: Path) -> list[BankItemSummary]:
-    """Every readable row's summary, for building the index.
-
-    One full row at a time, never a list of them: resolved rows stay on disk
-    as history until the operator deletes them, and Python keeps the memory a
-    peak allocated, so a list of every full row (``parked`` payloads and all)
-    stayed pinned for the life of the process, from boot.
-    """
-    if not bank_dir.exists():
-        return []
-    summaries: list[BankItemSummary] = []
-    for child in bank_dir.glob("*.json"):
-        summary = _read_summary(child)
-        if summary is not None:
-            summaries.append(summary)
-    # Deterministic order for index building (the later row in this order owns
-    # a shared folder); the DISPLAY order (newest banked first) is applied in
-    # list_page.
-    summaries.sort(key=lambda summary: (summary.banked_at, summary.id))
-    return summaries
+    with _LOCK:
+        return _get(_conn(bank_dir), item_id)
 
 
 def list_page(
@@ -336,28 +413,33 @@ def list_page(
     offset: int = 0,
     limit: int = 50,
 ) -> tuple[list[BankItemSummary], int, int]:
-    """One index pass -> (page, total_filtered, total_all).
+    """-> (page, total_filtered, total_all).
 
     ``total_all`` counts rows of ANY status (drives the Review page's section
     visibility so resolved history stays reachable when the active view empties
     out). A specific ``status`` wins over ``active_only`` (the router never
     sends both); ``reason`` ANDs with whichever status narrowing is in effect.
     """
+    if status is not None:
+        statuses: str | None = json.dumps([status])
+    elif active_only:
+        statuses = json.dumps(sorted(ACTIVE_STATUSES))
+    else:
+        statuses = None
+    where = {"statuses": statuses, "reason": reason}
     with _LOCK:
-        by_id, _ = _ensure_index(bank_dir)
+        conn = _conn(bank_dir)
+        (total_all,) = conn.execute("SELECT count(*) FROM bank").fetchone()
+        (total,) = conn.execute("SELECT count(*) FROM bank" + _LIST_WHERE, where).fetchone()
         # Display order: newest banked first (the Review page reads top-down);
         # id breaks timestamp ties. The APPLY order is next_queued's
         # oldest-decided FIFO — a queue, not this display sort.
-        rows = sorted(by_id.values(), key=lambda s: (s.banked_at, s.id), reverse=True)
-        total_all = len(rows)
-        if status is not None:
-            rows = [s for s in rows if s.status == status]
-        elif active_only:
-            rows = [s for s in rows if s.status in ACTIVE_STATUSES]
-        if reason is not None:
-            rows = [s for s in rows if s.reason == reason]
-        total = len(rows)
-        page = rows[offset : offset + limit]
+        rows = conn.execute(
+            "SELECT summary FROM bank" + _LIST_WHERE + " ORDER BY banked_at DESC, id DESC"
+            " LIMIT :limit OFFSET :offset",
+            {**where, "limit": limit, "offset": offset},
+        ).fetchall()
+    page = [BankItemSummary.model_validate(json.loads(summary)) for (summary,) in rows]
     return page, total, total_all
 
 
@@ -398,7 +480,8 @@ _DECIDABLE: frozenset[str] = frozenset({"needs_review", "failed", "stale"})
 
 def decide_item(bank_dir: Path, item_id: str, decision: BankDecision) -> BankItem | None:
     with _LOCK:
-        item = get_item(bank_dir, item_id)
+        conn = _conn(bank_dir)
+        item = _get(conn, item_id)
         if item is None:
             return None
         if item.status not in _DECIDABLE:
@@ -419,7 +502,7 @@ def decide_item(bank_dir: Path, item_id: str, decision: BankDecision) -> BankIte
             item.resolved_at = _now()
         else:
             item.status = "queued"
-        _write(bank_dir, item)
+        _put(conn, item)
         return item
 
 
@@ -448,7 +531,8 @@ def research_item(
     banner's "decide again" stays true). ``decided``/``error`` untouched.
     """
     with _LOCK:
-        item = get_item(bank_dir, item_id)
+        conn = _conn(bank_dir)
+        item = _get(conn, item_id)
         if item is None:
             return None
         if item.status not in _SEARCHABLE or item.reason == "needs_dup_resolution":
@@ -461,7 +545,7 @@ def research_item(
         item.album = album
         item.recommendation = recommendation
         item.confidence = confidence
-        _write(bank_dir, item)
+        _put(conn, item)
         return item
 
 
@@ -500,7 +584,8 @@ def rescan_item(
     failure's banner stays true.
     """
     with _LOCK:
-        item = get_item(bank_dir, item_id)
+        conn = _conn(bank_dir)
+        item = _get(conn, item_id)
         if item is None:
             return None
         if item.status not in _RESCANNABLE:
@@ -519,7 +604,7 @@ def rescan_item(
             item.decided = None
             item.error = None
             item.error_recovery = "decide_again"
-        _write(bank_dir, item)
+        _put(conn, item)
         return item
 
 
@@ -550,7 +635,8 @@ def set_status(
     is never blind-overwritten into a validator-rejected state (row loss).
     """
     with _LOCK:
-        item = get_item(bank_dir, item_id)
+        conn = _conn(bank_dir)
+        item = _get(conn, item_id)
         if item is None:
             return None
         if expected is not None and item.status != expected:
@@ -562,7 +648,7 @@ def set_status(
             item.album_id = album_id
         if status in ("done", "failed", "ignored"):
             item.resolved_at = _now()
-        _write(bank_dir, item)
+        _put(conn, item)
         return item
 
 
@@ -580,47 +666,31 @@ def refresh_duplicate(bank_dir: Path, item_id: str, prompt: DuplicatePrompt) -> 
     writer sees the half-updated shape.
     """
     with _LOCK:
-        item = get_item(bank_dir, item_id)
+        conn = _conn(bank_dir)
+        item = _get(conn, item_id)
         if item is None:
             return None
         item.duplicate = prompt
-        _write(bank_dir, item)
+        _put(conn, item)
         return item
 
 
-def delete_item(bank_dir: Path, item_id: str) -> bool:
-    """Delete the row (file + index entry). True iff a file was removed.
+def _delete_unless_applying(conn: sqlite3.Connection, item_id: str) -> bool:
+    """Remove ``item_id``'s row; False when there is none. Callers hold ``_LOCK``."""
+    item = _get(conn, item_id)
+    if item is None:
+        return False
+    if item.status == "applying":
+        raise InvalidTransitionError("row is applying; wait for the apply to finish")
+    conn.execute("DELETE FROM bank WHERE id = ?", (item_id,))
+    return True
 
-    A PRESENT-BUT-CORRUPT row is purgeable: it reads as absent, so its status
-    cannot come from the row — the refusal (when due) comes from the QUEUE's
-    own state (the write-through index the runner's queued->applying claim
-    wrote), never from the row. A missing id reports ``False`` (API -> 404).
-    """
-    if not _VALID_ID.match(item_id):
-        return False
-    path = _row_path(bank_dir, item_id)
-    if not path.exists():
-        with _LOCK:
-            _index_forget(bank_dir, item_id)  # already gone: keep the index honest
-        return False
+
+def delete_item(bank_dir: Path, item_id: str) -> bool:
+    """Delete the row. True iff a row was removed; a missing id reports
+    ``False`` (API -> 404), an ``applying`` row raises (API -> 409)."""
     with _LOCK:
-        item = get_item(bank_dir, item_id)
-        if item is not None:
-            if item.status == "applying":
-                raise InvalidTransitionError("row is applying; wait for the apply to finish")
-        elif _index_status(bank_dir, item_id) == "applying":
-            # The row is unreadable and cannot prove its own state; the queue's
-            # index is the runner's state, and an actively applying row must
-            # not be pulled out from under it (same refusal shape as the
-            # readable arm above).
-            raise InvalidTransitionError("row is applying; wait for the apply to finish")
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            _index_forget(bank_dir, item_id)  # already gone: keep the index honest
-            return False
-        _index_drop(bank_dir, item_id)
-        return True
+        return _delete_unless_applying(_conn(bank_dir), item_id)
 
 
 def bulk_ignore(bank_dir: Path, ids: list[str]) -> int:
@@ -628,12 +698,13 @@ def bulk_ignore(bank_dir: Path, ids: list[str]) -> int:
     flipped = 0
     for item_id in ids:
         with _LOCK:
-            item = get_item(bank_dir, item_id)
+            conn = _conn(bank_dir)
+            item = _get(conn, item_id)
             if item is None or item.status != "needs_review":
                 continue
             item.status = "ignored"
             item.resolved_at = _now()
-            _write(bank_dir, item)
+            _put(conn, item)
             flipped += 1
     return flipped
 
@@ -641,31 +712,17 @@ def bulk_ignore(bank_dir: Path, ids: list[str]) -> int:
 def bulk_delete(bank_dir: Path, ids: list[str]) -> int:
     """Delete every listed deletable row; return how many were actually removed.
 
-    Skip-and-report posture: an id that resolves as ABSENT — missing OR
-    corrupt (one-read-posture ``get_item``) — and an ``applying`` row are
-    skipped, so no input can abort the batch mid-way; the count reports what
-    landed. (The single-row ``delete_item`` deliberately PURGES a
-    present-but-corrupt row; a bulk batch does not — its contract is "delete
-    the rows I named", and a row the listing cannot show is not one of them.)
+    Skip-and-report posture: a missing id and an ``applying`` row are skipped,
+    so no input can abort the batch mid-way; the count reports what landed.
     """
     deleted = 0
     for item_id in ids:
         with _LOCK:
-            item = get_item(bank_dir, item_id)
-            if item is None:
-                if _VALID_ID.match(item_id) and not _row_path(bank_dir, item_id).exists():
-                    # mirror delete_item's missing-file arm: keep the index
-                    # honest for a vanished file (corrupt-but-present rows
-                    # stay per the contract in the docstring above)
-                    _index_forget(bank_dir, item_id)
-                continue  # absent — missing or corrupt: skip, don't abort
-            if item.status == "applying":
+            try:
+                if _delete_unless_applying(_conn(bank_dir), item_id):
+                    deleted += 1
+            except InvalidTransitionError:
                 continue  # an applying row can't be deleted
-        try:
-            if delete_item(bank_dir, item_id):
-                deleted += 1
-        except InvalidTransitionError:
-            continue  # flipped to applying in the race window above
     return deleted
 
 
@@ -686,27 +743,35 @@ def upsert_by_folder(
     """Bank a folder, deduplicating on (folder): same fingerprint refreshes
     ``banked_at``; a changed fingerprint replaces the payload and resets the
     row to ``needs_review`` (the spec's dedupe rule — a re-banked folder is a
-    fresh decision)."""
+    fresh decision).
+
+    Rows from before the dedupe can share a folder; the latest banked one owns
+    it (``banked_at``, then id), the order the old store's boot used."""
     with _LOCK:
-        _by_id, by_folder = _ensure_index(bank_dir)
-        existing_id = by_folder.get(folder)
-        existing = get_item(bank_dir, existing_id) if existing_id is not None else None
+        conn = _conn(bank_dir)
+        found = conn.execute(
+            "SELECT row FROM bank WHERE folder = ? ORDER BY banked_at DESC, id DESC LIMIT 1",
+            (os.fsencode(folder),),
+        ).fetchone()
+        existing = None if found is None else _parse_row(found[0])
         if existing is None:
-            if existing_id is not None:
-                # The index knew this folder's row but it reads as absent: the
-                # file is corrupt. A re-banked folder is a fresh decision, so
-                # the fresh row below owns the folder — the dead file and the
-                # index entries go with the old id, or they would survive as an
-                # invisible-but-permanent orphan.
-                _row_path(bank_dir, existing_id).unlink(missing_ok=True)
-                _index_forget(bank_dir, existing_id)
-            # fall through to create below (outside the lock reuse)
+            item = _new_item(
+                folder=folder,
+                source=source,
+                reason=reason,
+                fingerprint=fingerprint,
+                artist=artist,
+                album=album,
+                recommendation=recommendation,
+                confidence=confidence,
+                parked=parked,
+                duplicate=duplicate,
+            )
         elif existing.fingerprint == fingerprint:
             existing.banked_at = _now()
-            _write(bank_dir, existing)
-            return existing
+            item = existing
         else:
-            replaced = existing.model_copy(
+            item = existing.model_copy(
                 update={
                     "source": source,
                     "reason": reason,
@@ -726,50 +791,26 @@ def upsert_by_folder(
                     "resolved_at": None,
                 }
             )
-            _write(bank_dir, replaced)
-            return replaced
-    return create_item(
-        bank_dir,
-        folder=folder,
-        source=source,
-        reason=reason,
-        fingerprint=fingerprint,
-        artist=artist,
-        album=album,
-        recommendation=recommendation,
-        confidence=confidence,
-        parked=parked,
-        duplicate=duplicate,
-    )
+        _put(conn, item)
+        return item
 
 
 def reconcile_interrupted(bank_dir: Path) -> int:
     """Startup pass: rows stuck in ``applying`` (process died mid-apply) revert
-    to ``needs_review`` with a note. Never blind-requeues (spec §5/§8)."""
-    flipped = 0
+    to ``needs_review`` with a note. Never blind-requeues (spec §5/§8).
+
+    Reads the applying rows alone — at most one in practice (one drain claims
+    one row at a time) — whatever the size of the bank."""
     with _LOCK:
-        by_id, _ = _ensure_index(bank_dir)
-        applying_ids = [s.id for s in by_id.values() if s.status == "applying"]
-    for item_id in applying_ids:
-        with _LOCK:
-            fresh = get_item(bank_dir, item_id)
-            if fresh is None:
-                # The index saw an applying row whose file is gone or corrupt.
-                # Nothing is running (reconcile runs at startup, before any
-                # claim), so the index entry is a DEAD claim: drop it, or a
-                # corrupt file would stay un-purgeable — delete_item trusts the
-                # index as the queue's "actively applying" state.
-                if _index_status(bank_dir, item_id) == "applying":
-                    _index_forget(bank_dir, item_id)
-                continue
-            if fresh.status != "applying":
-                continue
-            fresh.status = "needs_review"
-            fresh.error = "apply interrupted by a restart - decide again"
-            fresh.error_recovery = "decide_again"
-            _write(bank_dir, fresh)
-            flipped += 1
-    return flipped
+        conn = _conn(bank_dir)
+        applying = conn.execute("SELECT row FROM bank WHERE status = 'applying'").fetchall()
+        for (raw,) in applying:
+            item = _parse_row(raw)
+            item.status = "needs_review"
+            item.error = "apply interrupted by a restart - decide again"
+            item.error_recovery = "decide_again"
+            _put(conn, item)
+    return len(applying)
 
 
 def next_queued(bank_dir: Path) -> BankItem | None:
@@ -778,18 +819,12 @@ def next_queued(bank_dir: Path) -> BankItem | None:
     Ordered by ``decided_at`` (the spec's apply order — decision time, not
     banking time), id as the tie-break. ``decided_at`` is always set on a
     queued row (decide_item stamps it); ``banked_at`` is a defensive fallback
-    for a hand-edited row file.
+    for a hand-made row (``apply_at`` in the schema).
     """
     with _LOCK:
-        by_id, _ = _ensure_index(bank_dir)
-        queued_ids = [s.id for s in by_id.values() if s.status == "queued"]
-        # decided_at lives only on the full row (not the summary), so load the
-        # queued rows — a small set — to order by it.
-        queued = [
-            row
-            for row in (get_item(bank_dir, item_id) for item_id in queued_ids)
-            if row is not None and row.status == "queued"
-        ]
-        if not queued:
-            return None
-        return min(queued, key=lambda item: (item.decided_at or item.banked_at, item.id))
+        found = (
+            _conn(bank_dir)
+            .execute("SELECT row FROM bank WHERE status = 'queued' ORDER BY apply_at, id LIMIT 1")
+            .fetchone()
+        )
+    return None if found is None else _parse_row(found[0])

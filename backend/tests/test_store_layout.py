@@ -852,8 +852,9 @@ def test_a_trash_inside_an_app_store_is_allowed(
     ``MUSICDROP_PLAYLISTS_EXPORT_DIR=<M>`` beside the compose file's own
     ``<M>/.trash`` suggestion, the app would not boot — and its loss clause
     ("trashed albums would land in it") is false for these: the Plex and slskd
-    stores read one file each, the bank and playlist stores glob ``*.json`` one
-    level deep, and nothing enumerates the exports or either cache. The two
+    stores read one file each, the bank one database file (and its old ``*.json``
+    rows once, one level deep), the playlist store globs ``*.json`` one level
+    deep, and nothing enumerates the exports or either cache. The two
     relations that remain are ``is`` and ``contains``, tested above.
     """
     store = tmp_path / "store"

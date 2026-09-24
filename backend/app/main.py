@@ -344,15 +344,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.acquisition_ledger = ledger  # the Review page lists + annotates the inbox backlog
 
     # Bank reconciliation: rows stuck in "applying" from a mid-apply crash
-    # revert to needs_review with a note (never blind-requeued).
+    # revert to needs_review with a note (never blind-requeued). Being the first
+    # bank call, it also opens ``bank.db``, and on the first start after the
+    # upgrade that imports the old per-row JSON files, once (``app.bank.store``).
     #
     # A bank the process cannot reach still stops the boot, but through the same
     # one line the layout gate writes: measured, a mode-000 parent gives
-    # ``PermissionError`` out of ``bank_dir.exists()`` and the operator got a
-    # traceback with no ERROR record naming the setting.
+    # ``PermissionError`` out of the bank folder's ``mkdir`` and the operator got
+    # a traceback with no ERROR record naming the setting. A database SQLite
+    # cannot open or read (``sqlite3.Error``, not an ``OSError``) is the same
+    # refusal.
     try:
         reconcile_interrupted(get_bank_dir())
-    except OSError as exc:
+    except (OSError, sqlite3.Error) as exc:
         # ``%r`` of the STRING, like every other path this module logs: a
         # newline in MUSICDROP_BANK_DIR forged a second line in ``docker logs``,
         # and the repr of a ``Path`` prints ``PosixPath('...')`` around it. The

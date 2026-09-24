@@ -503,18 +503,17 @@ def reset_disk_sync_registry() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def reset_bank_index() -> Iterator[None]:
-    """Drop the bank store's module-level summary index around every test.
+def close_bank_connections() -> Iterator[None]:
+    """Close the bank store's open databases around every test.
 
-    The index is keyed by resolved bank-dir path; per-test tmp dirs never
-    collide, but the glob-count perf pin and the external-file test rely on a
-    clean slate, so reset both sides.
+    Connections are kept per database file; each test's bank sits in its own
+    tmp dir, so without this every test would leave one open file behind.
     """
-    from app.bank.store import reset_bank_index as _reset
+    from app.bank.store import close_connections
 
-    _reset()
+    close_connections()
     yield
-    _reset()
+    close_connections()
 
 
 @pytest.fixture(autouse=True)

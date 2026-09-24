@@ -221,36 +221,3 @@ def test_decision_without_runner_still_works(client: TestClient, bank_dir: Path)
     response = client.post(f"/api/bank/{item_id}/decision", json={"action": "asis"})
     assert response.status_code == 200
     assert response.json()["status"] == "queued"
-
-
-def test_delete_corrupt_row_purges_file(client: TestClient, bank_dir: Path) -> None:
-    """Over the wire: DELETE on a present-but-corrupt row is 204 (not 500)
-    and removes the file — non-UTF-8 bytes are the exact 500 class."""
-    item_id = _seed(bank_dir)
-    (bank_dir / f"{item_id}.json").write_bytes(b"\x00\xe9\xff")
-    response = client.delete(f"/api/bank/{item_id}")
-    assert response.status_code == 204
-    assert not (bank_dir / f"{item_id}.json").exists()
-
-
-def test_delete_corrupt_row_being_applied_is_409(client: TestClient, bank_dir: Path) -> None:
-    item_id = _seed(bank_dir)
-    store.decide_item(bank_dir, item_id, BankDecision(action="asis"))
-    store.set_status(bank_dir, item_id, "applying")  # the runner's claim
-    (bank_dir / f"{item_id}.json").write_bytes(b"\x00\xe9\xff")
-    response = client.delete(f"/api/bank/{item_id}")
-    assert response.status_code == 409
-    assert (bank_dir / f"{item_id}.json").exists()
-
-
-def test_bulk_delete_completes_with_a_corrupt_id(client: TestClient, bank_dir: Path) -> None:
-    """No input can abort a batch mid-way: the corrupt id is skipped, the
-    rest land, the response reports the count."""
-    a = _seed(bank_dir)
-    b = _seed(bank_dir, folder="/library/A/b")
-    corrupt = _seed(bank_dir, folder="/library/A/c")
-    (bank_dir / f"{corrupt}.json").write_bytes(b"\x00\xe9\xff")
-    response = client.post("/api/bank/bulk-delete", json={"ids": [a, corrupt, b]})
-    assert response.status_code == 200
-    assert response.json() == {"deleted": 2}
-    assert (bank_dir / f"{corrupt}.json").exists()

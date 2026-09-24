@@ -2,8 +2,9 @@
 
 The bank dir resolves from ``settings`` (not ``app.state``) so the
 lifespan-less ``client`` test fixture works, same as the playlists router.
-Store calls run in the threadpool: row I/O is tiny but the listing walks the
-whole dir, and the event loop never blocks on disk.
+Store calls run in the threadpool: each is one small database query, but a
+write waits on its commit reaching the disk, and the event loop never blocks
+on disk.
 """
 
 from __future__ import annotations
@@ -90,7 +91,7 @@ async def list_bank(
     bank_dir = get_bank_dir()
     # A specific status wins; ``view=active`` only narrows the unfiltered list
     # to the Review page's needs-attention statuses (the FE never sends both).
-    # ``reason`` ANDs on top. One index pass yields the page, the filtered
+    # ``reason`` ANDs on top. One store call yields the page, the filtered
     # total, and total_all (any status) so the Review page section stays visible
     # once the active view empties.
     active_only = status_filter is None and view == "active"

@@ -165,6 +165,33 @@ def test_an_unreadable_import_bank_gets_the_one_error_line_too(
     assert "PosixPath" not in message
 
 
+def test_an_unreadable_bank_database_gets_the_one_error_line_too(
+    beets_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The same refusal when the folder is fine but SQLite cannot read
+    ``bank.db``: its error is a ``sqlite3.Error``, not an ``OSError``, and it
+    must still reach the operator as the one line naming the setting."""
+    bank = tmp_path / "bank"
+    bank.mkdir()
+    (bank / "bank.db").write_bytes(b"this is not a database, " * 100)
+    monkeypatch.setattr("app.config.settings.bank_dir", str(bank))
+
+    with caplog.at_level(logging.ERROR), pytest.raises(sqlite3.DatabaseError):
+        with TestClient(real_app):
+            pass  # pragma: no cover - the lifespan raises before the body runs
+
+    refusals = [r for r in caplog.records if r.name == "uvicorn.error"]
+    assert len(refusals) == 1, [(r.name, r.getMessage()) for r in caplog.records]
+    assert refusals[0].exc_info is None
+    message = refusals[0].getMessage()
+    assert "refusing to start" in message
+    assert "MUSICDROP_BANK_DIR" in message
+    assert "DatabaseError" in message
+
+
 def test_the_origin_store_inside_the_library_refuses_to_start(
     beets_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
