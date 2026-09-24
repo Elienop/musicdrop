@@ -20,7 +20,6 @@ from typing import Any
 import beets
 from beets import util
 from beets.library import Item
-from beets.util.functemplate import template
 
 from app.models.config_editor import (
     NamingRuleInput,
@@ -168,7 +167,7 @@ def _render_one(
     we. ``asciify`` is read ONCE in :func:`render_samples` (not per-rule) so a
     present-but-non-bool ``asciify_paths`` can't make every row error.
     """
-    sub = item.evaluate_template(template(tmpl), True)
+    sub = item.evaluate_template(tmpl, for_path=True)
     if asciify:
         sub = util.asciify_path(sub)
     legal, _ = util.legalize_path(sub, replacements, ".flac")

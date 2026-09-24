@@ -2,7 +2,7 @@ from typing import Any
 
 import pytest
 from beets import metadata_plugins
-from beets.autotag import AlbumInfo, AlbumMatch, TrackInfo
+from beets.autotag import AlbumInfo, AlbumMatch, Source, TrackInfo
 from beets.autotag.distance import distance
 from beets.autotag.match import Proposal, assign_items
 from beets.autotag.match import Recommendation as BeetsRec
@@ -13,10 +13,11 @@ from app.models.import_models import ImportSearch
 
 
 class _Task:
-    """Minimal stand-in for ImportTask (relookup only reads ``.items``)."""
+    """Minimal stand-in for ImportTask (relookup only reads ``.source``)."""
 
     def __init__(self, items: list[Item]) -> None:
         self.items = items
+        self.source = Source.from_items(items)
         self.candidates: list[Any] = []
 
 
@@ -40,7 +41,13 @@ def _info(album_id: str, album: str) -> AlbumInfo:
 def _match(album_id: str, album: str, items: list[Item]) -> AlbumMatch:
     info = _info(album_id, album)
     pairs, extra_i, extra_t = assign_items(items, info.tracks)
-    return AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_i, extra_t)
+    return AlbumMatch(
+        distance(Source.from_items(items).data, info, pairs, len(extra_i)),
+        info,
+        dict(pairs),
+        extra_i,
+        extra_t,
+    )
 
 
 def test_relookup_release_id_uses_tag_album_search_ids(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -49,16 +56,21 @@ def test_relookup_release_id_uses_tag_album_search_ids(monkeypatch: pytest.Monke
     canned = _match("a1", "Dreams", items)
 
     def fake_tag_album(
-        items_: Any, search_artist: Any = None, search_name: Any = None, search_ids: Any = None
-    ) -> Any:
+        source: Source,
+        search_artist: str | None = None,
+        search_name: str | None = None,
+        search_ids: list[str] | None = None,
+    ) -> Proposal:
         seen["search_ids"] = search_ids
-        return ("2 Brothers", "Dreams", Proposal([canned], BeetsRec.strong))
+        seen["source"] = source
+        return Proposal([canned], BeetsRec.strong)
 
     monkeypatch.setattr(rl, "tag_album", fake_tag_album)
-    cands, rec = rl.relookup(
-        _Task(items), ImportSearch(release_id="https://musicbrainz.org/release/a1")
-    )
+    task = _Task(items)
+    cands, rec = rl.relookup(task, ImportSearch(release_id="https://musicbrainz.org/release/a1"))
     assert seen["search_ids"] == ["https://musicbrainz.org/release/a1"]
+    # The task's own cached Source, as beets' manual search passes it.
+    assert seen["source"] is task.source
     assert cands == [canned]
     assert rec is BeetsRec.strong
 
@@ -91,12 +103,15 @@ def test_relookup_default_name_search_uses_public_tag_album(
     canned = _match("a1", "Dreams", items)
 
     def fake_tag_album(
-        items_: Any, search_artist: Any = None, search_name: Any = None, search_ids: Any = None
-    ) -> Any:
+        source: Source,
+        search_artist: str | None = None,
+        search_name: str | None = None,
+        search_ids: list[str] | None = None,
+    ) -> Proposal:
         seen["artist"] = search_artist
         seen["album"] = search_name
         seen["search_ids"] = search_ids
-        return ("2 Brothers", "Dreams", Proposal([canned], BeetsRec.medium))
+        return Proposal([canned], BeetsRec.medium)
 
     monkeypatch.setattr(rl, "tag_album", fake_tag_album)
     cands, rec = rl.relookup(
@@ -109,7 +124,7 @@ def test_relookup_default_name_search_uses_public_tag_album(
 
 def test_relookup_empty_results(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_tag_album(*a: Any, **k: Any) -> Any:
-        return ("x", "y", Proposal([], BeetsRec.none))
+        return Proposal([], BeetsRec.none)
 
     monkeypatch.setattr(rl, "tag_album", fake_tag_album)
     cands, rec = rl.relookup(_Task(_items()), ImportSearch(release_id="bad-id"))
@@ -117,16 +132,23 @@ def test_relookup_empty_results(monkeypatch: pytest.MonkeyPatch) -> None:
     assert rec is BeetsRec.none
 
 
-def test_relookup_items_takes_items_directly(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_relookup_source_takes_a_source_directly(monkeypatch: pytest.MonkeyPatch) -> None:
     items = _items()
     canned = _match("a1", "Dreams", items)
+    seen: dict[str, Any] = {}
 
     def fake_tag_album(
-        items_: Any, search_artist: Any = None, search_name: Any = None, search_ids: Any = None
-    ) -> Any:
-        return ("2 Brothers", "Dreams", Proposal([canned], BeetsRec.strong))
+        source: Source,
+        search_artist: str | None = None,
+        search_name: str | None = None,
+        search_ids: list[str] | None = None,
+    ) -> Proposal:
+        seen["source"] = source
+        return Proposal([canned], BeetsRec.strong)
 
     monkeypatch.setattr(rl, "tag_album", fake_tag_album)
-    cands, rec = rl.relookup_items(items, ImportSearch(release_id="a1"))
+    source = Source.from_items(items)
+    cands, rec = rl.relookup_source(source, ImportSearch(release_id="a1"))
+    assert seen["source"] is source  # the caller's Source, not a rebuilt one
     assert cands == [canned]
     assert rec is BeetsRec.strong

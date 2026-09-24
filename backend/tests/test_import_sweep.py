@@ -14,7 +14,7 @@ from typing import Any
 
 import beets.importer.tasks as beets_tasks
 import pytest
-from beets.autotag import AlbumInfo, AlbumMatch, TrackInfo
+from beets.autotag import AlbumInfo, AlbumMatch, Source, TrackInfo
 from beets.autotag.distance import distance
 from beets.autotag.match import Proposal, assign_items
 from beets.autotag.match import Recommendation as BeetsRec
@@ -52,12 +52,18 @@ def _build_match(rec_level: BeetsRec, album_id: str = "a1") -> AlbumMatch:
         va=False,
     )
     pairs, extra_items, extra_tracks = assign_items(items, info.tracks)
-    return AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_items, extra_tracks)
+    return AlbumMatch(
+        distance(Source.from_items(items).data, info, pairs, len(extra_items)),
+        info,
+        dict(pairs),
+        extra_items,
+        extra_tracks,
+    )
 
 
 def _patch_tag_album(monkeypatch: pytest.MonkeyPatch, match: AlbumMatch, rec: BeetsRec) -> None:
-    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
-        return ("Radiohead", "OK Computer", Proposal([match], rec))
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+        return Proposal([match], rec)
 
     monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
 
@@ -146,8 +152,8 @@ def test_sweep_rebank_same_folder_dedupes(tmp_path: Path, monkeypatch: pytest.Mo
 
 
 def test_sweep_banks_no_match_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
-        return ("Artist", "Album", Proposal([], BeetsRec.none))
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+        return Proposal([], BeetsRec.none)
 
     monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
     bank_dir = tmp_path / "bank"
@@ -238,8 +244,8 @@ def test_sweep_duplicate_payload_leads_with_the_matched_release(
     other = _build_match(BeetsRec.strong, album_id="a-other")
     match = _build_match(BeetsRec.strong, album_id="a-matched")
 
-    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
-        return ("Radiohead", "OK Computer", Proposal([other, match], BeetsRec.strong))
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+        return Proposal([other, match], BeetsRec.strong)
 
     monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
     bank_dir = tmp_path / "bank"
@@ -363,8 +369,8 @@ def test_sweep_without_folder_banks_nothing(
 ) -> None:
     # A pathless task has no folder identity the apply runner could ever
     # re-import: emit-and-skip only, no row, no crash.
-    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
-        return ("Artist", "Album", Proposal([], BeetsRec.none))
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+        return Proposal([], BeetsRec.none)
 
     monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
     bank_dir = tmp_path / "bank"

@@ -247,7 +247,7 @@ def art_preflight(lib: Any, album: Any, dests: list[tuple[Any, bytes]]) -> ArtPr
     of the moved item's path, and beets moves items in order) — more precisely,
     the first item whose move CHANGED its path — and, since beets'
     ``Item.move`` silently SKIPS a mover whose source file is missing
-    (``beets/library/models.py:1179``), really the first mover that exists on
+    (``beets/library/models.py:1198``), really the first mover that exists on
     disk, which is exactly whom the prediction below starts from.
     Must be called
     under ``lib.music_dir_context()`` — the same requirement as the item
@@ -270,7 +270,7 @@ def art_preflight(lib: Any, album: Any, dests: list[tuple[Any, bytes]]) -> ArtPr
     if not moving:
         return ArtPreflight(None, None)
     # Item.move silently SKIPS a mover whose source file is missing
-    # (beets/library/models.py:1179), so Album.move's "first item whose path
+    # (beets/library/models.py:1198), so Album.move's "first item whose path
     # changed" is really the first mover that exists on disk — predict from
     # exactly that one.
     present = next(
@@ -298,7 +298,7 @@ def art_preflight(lib: Any, album: Any, dests: list[tuple[Any, bytes]]) -> ArtPr
     if not os.path.exists(syspath(key)):
         return ArtPreflight(None, key)  # free name; the move will land there
     # No samefile(key, old) exemption: beets' Album.move_art (beets/library/
-    # models.py:407-463) has NO samefile guard — only the byte-equal
+    # models.py:424-480) has NO samefile guard — only the byte-equal
     # new_art == old_art short-circuit above runs before util.unique_path
     # diverts, so an occupant that is merely an ALIAS (e.g. symlink) of the
     # album's own art still gets diverted to a .N sibling. The normpath
@@ -501,7 +501,7 @@ def _disc_dir_levels(item: Any) -> int:
     protection, never more.
 
     The second render runs on ``Model.copy()``, which duplicates the field values
-    but keeps ``_db`` AND the row id (beets ``dbcore/db.py:406-419``) — the probe is
+    but keeps ``_db`` AND the row id (beets ``dbcore/db.py:410-423``) — the probe is
     DB-ATTACHED, not a detached value object. Only ``destination()`` may ever be
     called on it: ``store()`` on the copy would write the fake disc number to the
     real row.

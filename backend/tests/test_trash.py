@@ -172,12 +172,12 @@ class _StubRequest:
 # ----- The unmounted-share guard: a missing folder must not become a row drop -----
 #
 # The row-dropping primitive here is ``trash_album``, whose per-item
-# ``Album.move`` SILENTLY skips missing sources (beets 2.12
-# library/models.py:1178-1192), so an absent path reads as "the user deleted
+# ``Album.move`` SILENTLY skips missing sources (beets 2.12 onward;
+# library/models.py:1197-1211), so an absent path reads as "the user deleted
 # this". With the library root itself gone that reading is wrong for EVERY album,
 # so the shared root predicate has to run before the first mutation. It matters
 # doubly because a beets ``Transaction`` COMMITS on the way out even when it is
-# unwinding an exception (dbcore/db.py:924-941, no rollback branch): anything
+# unwinding an exception (dbcore/db.py:940-957, no rollback branch): anything
 # dropped before the raise would stick.
 
 
@@ -313,7 +313,7 @@ def test_root_unreadable_names_permissions_not_emptiness(
 #
 # Passing the root check does not make the moves happen. The window between the
 # check and ``Album.move`` is enough for a share to drop, and beets answers a
-# missing source by logging and returning (models.py:1178-1192) — so ``move``
+# missing source by logging and returning (models.py:1197-1211) — so ``move``
 # reports success, nothing is relocated, and ``remove`` drops the rows anyway.
 # Verifying the mutation AFTER the fact is what closes that, and it closes every
 # cause of a silent skip, not just an unmount.

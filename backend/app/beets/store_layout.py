@@ -1374,7 +1374,7 @@ def checked_protected_trees(
     reads ``protected_entries`` directly for the sweep's ignore list, which is a
     list of paths rather than a set of identities. The one destructive path that
     does NOT come through here is the import session's post-import cleanup
-    (``import_session.py:1774``), which holds no ``LibraryHandle``; its
+    (``import_session._trash_replaced_albums``), which holds no ``LibraryHandle``; its
     ``trash_album`` still creates the Trash by path (a recorded residual).
     Separate from :func:`checked_store_dirs` because every OTHER caller of that
     only reads the pair and would pay a dozen stats for nothing.

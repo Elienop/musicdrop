@@ -12,7 +12,6 @@ expanded (same root cause as PR #15).
 
 from __future__ import annotations
 
-import logging
 import os
 import tempfile
 from dataclasses import dataclass
@@ -21,6 +20,7 @@ from typing import Any
 
 import beets
 import confuse
+from beets import logging as beets_logging
 from beets.library import Library
 from beets.ui import should_write
 from beetsplug._utils import art
@@ -29,7 +29,10 @@ from fastapi import Request
 from app.artwork.images import MAX_IMAGE_BYTES, sniff_image_mime
 from app.models.cover import CoverInstallResult
 
-_log = logging.getLogger("musicdrop.cover")
+# The logger the embedart plugin hands ``embed_album`` (its plugin logger,
+# ``getLogger("beets").getChild("embedart")``): a BeetsLogger, which formats
+# beets' ``{}``-style messages. A stdlib logger fails on them ("--- Logging error ---").
+_log = beets_logging.getLogger("beets.embedart")
 
 # Re-exported from the shared image utils so cover + artist uploads share one cap.
 MAX_COVER_BYTES = MAX_IMAGE_BYTES

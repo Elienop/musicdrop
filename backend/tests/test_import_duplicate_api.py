@@ -55,6 +55,25 @@ def _poll(fn, want, attempts: int = 200) -> None:  # type: ignore[no-untyped-def
     raise TimeoutError("condition not met within poll budget")
 
 
+def _is_parked(registry: ImportJobRegistry, job_id: str, index: int) -> bool:
+    try:
+        registry.parked_duplicate(job_id, index)
+    except KeyError:
+        return False
+    return True
+
+
+def _poll_parked(registry: ImportJobRegistry, job_id: str, index: int) -> None:
+    """Wait until the worker is parked on the duplicate prompt, not just until its row shows.
+
+    The fake notes the row's outcome BEFORE ``park_duplicate`` registers the reply
+    slot (``app/import_jobs/fakes.py``), so a decision sent on the row alone can
+    find no slot. The prompt is published under the same lock as the slot, the
+    race ``_poll_dup_prompt`` guards for the API tests.
+    """
+    _poll(lambda: _is_parked(registry, job_id, index), bool)
+
+
 def test_drain_flips_row_to_needs_dup_resolution() -> None:
     fake = FakeImportRunner(duplicates=[_prompt(0)])
     registry = ImportJobRegistry(runner=fake)
@@ -73,7 +92,7 @@ def test_record_duplicate_decision_unblocks_and_marks() -> None:
     fake = FakeImportRunner(duplicates=[_prompt(0)])
     registry = ImportJobRegistry(runner=fake)
     job_id = registry.start("/music/incoming")
-    _poll(lambda: registry.state(job_id).albums, lambda rows: len(rows) == 1)
+    _poll_parked(registry, job_id, 0)
 
     registry.record_duplicate_decision(job_id, 0, DuplicateDecision(action=DuplicateAction.replace))
     _poll(lambda: registry.state(job_id).phase, lambda p: p is ImportPhase.done)
@@ -93,7 +112,7 @@ def test_skip_new_counts_as_skipped() -> None:
     fake = FakeImportRunner(duplicates=[_prompt(0)])
     registry = ImportJobRegistry(runner=fake)
     job_id = registry.start("/music/incoming")
-    _poll(lambda: registry.state(job_id).albums, lambda rows: len(rows) == 1)
+    _poll_parked(registry, job_id, 0)
     registry.record_duplicate_decision(
         job_id, 0, DuplicateDecision(action=DuplicateAction.skip_new)
     )

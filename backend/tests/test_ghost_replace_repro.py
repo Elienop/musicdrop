@@ -26,7 +26,7 @@ from typing import Any
 import beets.importer.tasks as beets_tasks
 import pytest
 from beets import config
-from beets.autotag import AlbumInfo, AlbumMatch, TrackInfo
+from beets.autotag import AlbumInfo, AlbumMatch, Source, TrackInfo
 from beets.autotag.distance import distance
 from beets.autotag.match import Proposal, assign_items
 from beets.autotag.match import Recommendation as BeetsRec
@@ -105,7 +105,8 @@ def _patch_match(
 ) -> None:
     """Patch beets' tag_album seam to a canned match built from the REAL items."""
 
-    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+        items = list(source.items)
         tracks = [
             TrackInfo(title=it.title or "t", track_id=f"t{i}", index=i, length=it.length or 1.0)
             for i, it in enumerate(items, start=1)
@@ -121,8 +122,10 @@ def _patch_match(
             va=False,
         )
         pairs, extra_i, extra_t = assign_items(items, info.tracks)
-        match = AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_i, extra_t)
-        return (artist, album, Proposal([match], rec))
+        match = AlbumMatch(
+            distance(source.data, info, pairs, len(extra_i)), info, dict(pairs), extra_i, extra_t
+        )
+        return Proposal([match], rec)
 
     monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
 
@@ -134,7 +137,8 @@ def _patch_match_per_item(monkeypatch: pytest.MonkeyPatch) -> None:
     Enema of the State 94% medium) so both albums park for attended review.
     """
 
-    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+        items = list(source.items)
         artist = items[0].artist or "blink-182"
         album = items[0].album or "blink-182"
         rec = BeetsRec.medium if album == "Enema of the State" else BeetsRec.none
@@ -153,8 +157,10 @@ def _patch_match_per_item(monkeypatch: pytest.MonkeyPatch) -> None:
             va=False,
         )
         pairs, extra_i, extra_t = assign_items(items, info.tracks)
-        match = AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_i, extra_t)
-        return (artist, album, Proposal([match], rec))
+        match = AlbumMatch(
+            distance(source.data, info, pairs, len(extra_i)), info, dict(pairs), extra_i, extra_t
+        )
+        return Proposal([match], rec)
 
     monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
 

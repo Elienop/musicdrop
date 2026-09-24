@@ -1,7 +1,7 @@
 """Embedded beets startup — faithful mirror of beets' own _setup.
 
-Reference: beets/ui/__init__.py:749-766 (_setup), :784-802 (_open_library), from
-beets 2.13.1 in venv. 2.13 dropped the separate ``_configure`` helper; the config
+Reference: beets/ui/__init__.py:817-834 (_setup), :852-870 (_open_library), from
+beets 2.14.0 in venv. 2.13 dropped the separate ``_configure`` helper; the config
 resolve it used to drive is what ``BEETSDIR`` + the forced resolve below stand in
 for.
 """
@@ -344,7 +344,7 @@ def _clear_metadata_source_caches() -> None:
 def reset_beets_globals(handle: LibraryHandle | None = None, *, keep_config: bool = False) -> None:
     """Tear down all beets/confuse/plugin process-global state.
 
-    Mirrors beets' own ``unload_plugins`` (beets/test/helper.py:509-515) and
+    Mirrors beets' own ``unload_plugins`` (beets/test/helper.py:474-480) and
     extends it with the confuse + metadata-source cache clears that
     ``setup_beets`` mutates. Calling this leaves the process in a state where
     :func:`open_beets` reloads plugins from scratch — used by the Apply endpoint
@@ -356,13 +356,13 @@ def reset_beets_globals(handle: LibraryHandle | None = None, *, keep_config: boo
     passes ``keep_config=True``: ``beets.config`` stays readable until
     :func:`open_beets` replaces its sources (:func:`_install_config`).
 
-    THIS IS A BEETS-2.13-PINNED COMPATIBILITY SHIM. Beets 3.x has open TODOs
-    around a real plugin manager (see beets/plugins.py FIXME, PR #5887); the
+    THIS IS A BEETS-2.14-PINNED COMPATIBILITY SHIM. Beets 3.x has open TODOs
+    around a real plugin manager (the FIXME in beets/test/helper.py:476); the
     private surface this touches (``LazyConfig._materialized`` — confuse
     core.py:749 leaves the flag set after ``clear()``; ``plugins._instances``,
     ``BeetsPlugin._raw_listeners``, and the three ``functools.cache`` wrappers
     in ``beets.metadata_plugins``) is the only way to fully reset state on
-    2.13. T9 pins ``beets==2.13.*`` in ``pyproject.toml`` so an upstream
+    2.14. T9 pins ``beets==2.14.*`` in ``pyproject.toml`` so an upstream
     rename can't silently no-op this teardown — it would surface as an
     ``AttributeError`` instead.
     """
@@ -371,7 +371,7 @@ def reset_beets_globals(handle: LibraryHandle | None = None, *, keep_config: boo
     # database"), which is the only expected race here. Anything else — an
     # ``AttributeError`` from a beets-3.x API drift, an ``OSError`` from a
     # torn-down FD — must propagate so the regression shows up in test logs,
-    # not silently no-op (the whole point of the 2.13 pin rationale above).
+    # not silently no-op (the whole point of the pin rationale above).
     if handle is not None:
         with suppress(sqlite3.ProgrammingError):
             close_library(handle.lib)

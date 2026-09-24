@@ -3,7 +3,7 @@
 Reads a banked folder's audio files into DETACHED beets Items (``Item.from_path``,
 no library DB — the trash_manage pattern) and re-matches them in one of two
 modes: the SEARCH re-lookup (a release id pin / name search, via
-:func:`relookup_items`) that powers the bank's "search for a different release",
+:func:`relookup_source`) that powers the bank's "search for a different release",
 or the RESCAN — beets' DEFAULT first-scan ``tag_album`` with no search terms,
 the "I changed the folder on purpose" re-read. Either way the winner is mapped
 through the same mappers the sweep uses, so the payload is exactly what the
@@ -11,10 +11,10 @@ review screens render. Preview-only: no file moves, no library writes, no beets
 config mutation (``search_ids`` is a ``tag_album`` argument, never set on config).
 
 Thread-safety: may run on an API threadpool thread while a live import's own
-lookups are in flight. beets 2.12's HTTP layer makes that safe by construction:
+lookups are in flight. beets' HTTP layer makes that safe by construction:
 ``TimeoutAndRetrySession`` is a singleton ``requests.Session`` whose
 ``RateLimitAdapter`` paces every request under its own ``threading.Lock``
-(beetsplug/_utils/requests.py).
+(2.14.0 beetsplug/_utils/requests.py:44-62, :65, :106-122).
 
 beets imports are allowed here (inside app/beets/, CLAUDE.md rule 3).
 """
@@ -26,10 +26,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from beets.autotag import Source
 from beets.autotag.match import Recommendation as BeetsRec
 from beets.autotag.match import tag_album
 from beets.library import Item as Item  # explicit re-export: tests patch res.Item.from_path
-from beets.util import get_most_common_tags
 
 from app.beets.import_mapping import (
     _REC_MAP,
@@ -39,7 +39,7 @@ from app.beets.import_mapping import (
     map_album_match,
     map_candidate_options,
 )
-from app.beets.relookup import relookup_items
+from app.beets.relookup import relookup_source
 from app.models.import_models import Candidate, Recommendation
 
 if TYPE_CHECKING:
@@ -99,21 +99,18 @@ def lookup_items(
     """One session-less lookup, two modes.
 
     With ``search``: the relookup dialect (release id pin / name search).
-    With ``None``: beets' DEFAULT first-scan lookup — plain ``tag_album(items)``
-    with no arguments, VA logic intact. Returns
+    With ``None``: beets' DEFAULT first-scan lookup — plain ``tag_album(source)``
+    with no search terms, VA logic intact. The identity is beets' own
+    ``Source`` of the items (its ``artist`` and ``name``). Returns
     ``(cur_artist, cur_album, candidates, beets recommendation)``.
     """
+    source = Source.from_items(items)
     if search is not None:
-        candidates, rec = relookup_items(items, search)
-        likelies, _consensus = get_most_common_tags(items)
-        return _opt_str(likelies["artist"]), _opt_str(likelies["album"]), candidates, rec
-    cur_artist, cur_album, proposal = tag_album(items)
-    return (
-        _opt_str(cur_artist),
-        _opt_str(cur_album),
-        list(proposal.candidates),
-        proposal.recommendation,
-    )
+        candidates, rec = relookup_source(source, search)
+    else:
+        proposal = tag_album(source)
+        candidates, rec = list(proposal.candidates), proposal.recommendation
+    return _opt_str(source.artist), _opt_str(source.name), candidates, rec
 
 
 def _map_result(

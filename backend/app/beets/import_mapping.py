@@ -140,9 +140,9 @@ def _album_change_from_current(
 
     Uses beets' own consensus of the items (``get_most_common_tags``) for the
     fields that have no single task-level attribute, and the task's
-    ``cur_artist``/``cur_album`` for identity (already computed by beets).
+    ``source.artist``/``source.name`` for identity (already computed by beets).
     """
-    likelies, _ = get_most_common_tags(items)
+    likelies = get_most_common_tags(items)
     return AlbumChange(
         artist=_opt_str(cur_artist),
         album=_opt_str(cur_album),
@@ -156,11 +156,12 @@ def _album_change_from_current(
 def _applied_track_number(track_info: Any, per_disc: bool) -> int | None:
     """The track number beets will actually WRITE for this release track.
 
-    beets 2.12 maps ``medium_index`` -> the item's ``track`` tag, and
+    beets maps ``medium_index`` -> the item's ``track`` tag, and
     ``TrackInfo.raw_data`` sets ``medium_index = self.medium_index (falling back
     to self.index) if config['per_disc_numbering'] else self.index``. So the
     written number is the per-disc number under per_disc_numbering, else the
-    absolute release index. Mirror that exactly (not ``medium_index or index``,
+    absolute release index (2.14.0 ``autotag/hooks.py:359``, ``:372-391``).
+    Mirror that exactly (not ``medium_index or index``,
     which would wrongly skip a legitimate medium_index of 0)."""
     if per_disc:
         mindex = getattr(track_info, "medium_index", None)

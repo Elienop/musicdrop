@@ -150,7 +150,7 @@ def test_explicit_copy_pins_every_file_flag_and_never_deletes() -> None:
 
     beets resolves move > link > hardlink > reflink > copy, each arm clearing the
     others, and keeps ``delete`` alive whenever copy is on
-    (beets/importer/session.py:118-138). With only move/copy set, beets picked
+    (beets/importer/session.py:114-138). With only move/copy set, beets picked
     HARDLINK for a run the app called a copy, and ``delete: yes`` turned that
     copy into a move. Every flag is pinned for the run and restored after it."""
     from app.beets.import_session import run_import_worker
@@ -433,7 +433,7 @@ def test_the_resolved_file_operation_is_logged(caplog: Any) -> None:
 def test_a_non_bool_copy_is_refused_before_anything_is_filed() -> None:
     """``copy`` and ``move`` are file flags a default import leaves to the
     user's config, and beets reads both with ``.get(bool)`` — at
-    ``importer/tasks.py:307-311``, inside ``finalize``, which runs AFTER
+    ``importer/tasks.py:508-512``, inside ``finalize``, which runs AFTER
     ``manipulate_files`` has already filed the album. So a hand-edited
     ``copy: 1`` (YAML parses bare ``1`` as int, and confuse's bool template
     validates rather than coerces) used to file the album and THEN fail the job.
@@ -460,8 +460,8 @@ def test_a_non_bool_copy_is_refused_before_anything_is_filed() -> None:
 
 def test_a_string_write_is_refused_before_any_row_is_added() -> None:
     """beets reads ``write`` with ``.get(bool)`` in ``manipulate_files``
-    (``importer/stages.py:296``), after ``_apply_choice`` has added the rows
-    (``:319``). beets' loader reads a hand-edited ``write: n`` as the string
+    (``importer/stages.py:385``), after ``_apply_choice`` has added the rows
+    (``:408``). beets' loader reads a hand-edited ``write: n`` as the string
     ``'n'``, so every import added its rows and then failed.
 
     Mutant this kills: dropping ``write`` from the validating loop.
@@ -550,7 +550,7 @@ def test_the_force_and_restore_cost_two_config_sources_not_two_per_key() -> None
 #
 # beets records a folder in its import history when ``incremental`` is on and
 # the album was not SKIPped under ``incremental_skip_later``
-# (``importer/tasks.py:301-305``), and skips a recorded folder before any
+# (``importer/tasks.py:502-506``), and skips a recorded folder before any
 # session hook fires (``importer/session.py:246-256``). The arms are exclusive
 # and ordered, so each test below sets an ambient config that a LATER arm would
 # answer differently — otherwise a mutant that drops one arm is caught by the

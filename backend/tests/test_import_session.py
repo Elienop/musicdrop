@@ -14,7 +14,7 @@ from typing import Any, ClassVar, cast
 import beets.importer.tasks as beets_tasks
 import pytest
 from beets import config
-from beets.autotag import AlbumInfo, AlbumMatch, TrackInfo
+from beets.autotag import AlbumInfo, AlbumMatch, Source, TrackInfo
 from beets.autotag.distance import distance
 from beets.autotag.match import Proposal, assign_items
 from beets.autotag.match import Recommendation as BeetsRec
@@ -81,7 +81,13 @@ def _build_match(rec_level: BeetsRec) -> AlbumMatch:
         va=False,
     )
     pairs, extra_items, extra_tracks = assign_items(items, info.tracks)
-    return AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_items, extra_tracks)
+    return AlbumMatch(
+        distance(Source.from_items(items).data, info, pairs, len(extra_items)),
+        info,
+        dict(pairs),
+        extra_items,
+        extra_tracks,
+    )
 
 
 def _build_other_match() -> AlbumMatch:
@@ -101,7 +107,13 @@ def _build_other_match() -> AlbumMatch:
         va=False,
     )
     pairs, extra_i, extra_t = assign_items(items, info.tracks)
-    return AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_i, extra_t)
+    return AlbumMatch(
+        distance(Source.from_items(items).data, info, pairs, len(extra_i)),
+        info,
+        dict(pairs),
+        extra_i,
+        extra_t,
+    )
 
 
 def _build_third_match() -> AlbumMatch:
@@ -119,7 +131,13 @@ def _build_third_match() -> AlbumMatch:
         va=False,
     )
     pairs, extra_i, extra_t = assign_items(items, info.tracks)
-    return AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_i, extra_t)
+    return AlbumMatch(
+        distance(Source.from_items(items).data, info, pairs, len(extra_i)),
+        info,
+        dict(pairs),
+        extra_i,
+        extra_t,
+    )
 
 
 def _build_fourth_match() -> AlbumMatch:
@@ -138,7 +156,13 @@ def _build_fourth_match() -> AlbumMatch:
         va=False,
     )
     pairs, extra_i, extra_t = assign_items(items, info.tracks)
-    return AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_i, extra_t)
+    return AlbumMatch(
+        distance(Source.from_items(items).data, info, pairs, len(extra_i)),
+        info,
+        dict(pairs),
+        extra_i,
+        extra_t,
+    )
 
 
 def _patch_tag_album(monkeypatch: pytest.MonkeyPatch, match: AlbumMatch, rec: BeetsRec) -> None:
@@ -149,8 +173,8 @@ def _patch_tag_album(monkeypatch: pytest.MonkeyPatch, match: AlbumMatch, rec: Be
     cleanest hermetic seam (spike-verified).
     """
 
-    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
-        return ("Radiohead", "OK Computer", Proposal([match], rec))
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+        return Proposal([match], rec)
 
     monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
 
@@ -247,7 +271,7 @@ def _make_session(bridge: ImportBridge) -> WebImportSession:
 def _make_task(match: AlbumMatch, monkeypatch: pytest.MonkeyPatch, rec: BeetsRec) -> ImportTask:
     _patch_tag_album(monkeypatch, match, rec)
     task = ImportTask(toppath=None, paths=[b"/music/album"], items=list(match.mapping.keys()))
-    task.lookup_candidates([])  # populates cur_artist/cur_album/candidates/rec
+    task.lookup_candidates([])  # caches task.source; sets candidates/rec
     return task
 
 
@@ -257,8 +281,8 @@ def _make_task_multi(
     """Like _make_task but the first scan offers MULTIPLE candidates, so the
     client can render a long list a later search can shrink out from under it."""
 
-    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
-        return ("Radiohead", "OK Computer", Proposal(list(matches), rec))
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+        return Proposal(list(matches), rec)
 
     monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
     task = ImportTask(toppath=None, paths=[b"/music/album"], items=list(matches[0].mapping.keys()))
@@ -620,8 +644,8 @@ def test_uncertain_rec_translates_asis_and_astracks(
 
 
 def test_no_candidates_skips_without_parking(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
-        return ("Artist", "Album", Proposal([], BeetsRec.none))
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+        return Proposal([], BeetsRec.none)
 
     monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
     bridge = ImportBridge()
@@ -1051,8 +1075,8 @@ def test_park_records_art_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Any)
 
 
 def test_no_candidates_emits_skipped_outcome(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
-        return ("Artist", "Album", Proposal([], BeetsRec.none))
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+        return Proposal([], BeetsRec.none)
 
     monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
     bridge = ImportBridge()
@@ -2395,8 +2419,8 @@ def test_directive_apply_with_no_candidates_skips(monkeypatch: pytest.MonkeyPatc
     # turns that into a retryable failed row.
     from app.models.bank import BankApplyDirective
 
-    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
-        return ("Artist", "Album", Proposal([], BeetsRec.none))
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+        return Proposal([], BeetsRec.none)
 
     monkeypatch.setattr(beets_tasks, "tag_album", fake_tag_album)
     bridge = ImportBridge()
@@ -2983,9 +3007,9 @@ def test_attended_astracks_lands_the_singletons_full_pipeline(
     music.mkdir()
     lib = build_library(str(tmp_path / "library.db"), str(music))
 
-    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
         # A canned MEDIUM-rec match built FROM the passed items so the album parks.
-        item_list = list(items)
+        item_list = list(source.items)
         tracks = [
             TrackInfo(title=f"Airbag {i}", track_id=f"t{i}", index=i, length=1.0)
             for i in range(1, len(item_list) + 1)
@@ -3002,9 +3026,13 @@ def test_attended_astracks_lands_the_singletons_full_pipeline(
         )
         pairs, extra_items, extra_tracks = assign_items(item_list, info.tracks)
         match = AlbumMatch(
-            distance(item_list, info, pairs), info, dict(pairs), extra_items, extra_tracks
+            distance(source.data, info, pairs, len(extra_items)),
+            info,
+            dict(pairs),
+            extra_items,
+            extra_tracks,
         )
-        return ("Radiohead", "OK Computer", Proposal([match], BeetsRec.medium))
+        return Proposal([match], BeetsRec.medium)
 
     def fake_tag_item(item: Any, search_ids: Any = None) -> Proposal:
         return Proposal([], BeetsRec.none)
@@ -3086,13 +3114,59 @@ def test_rescan_choice_rereads_swaps_items_and_reparks(
     assert second.candidate.search_feedback is None
     assert second.candidate.album_after.album == "Amnesiac"
     assert task.items is new_items  # the swap: asis/astracks now see the fresh read
-    assert task.cur_album == "Amnesiac"
+    assert task.source.name == "Amnesiac"
 
     bridge.push_choice(second.album_index, ImportChoice(action=ImportAction.apply))
     assert done.wait(timeout=2.0)
     t.join(timeout=2.0)
     assert task.match is other  # apply selects from the NEW candidate list
     assert original_items is not task.items
+
+
+def test_rescan_then_asis_reads_the_rescanned_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """beets caches ``task.source`` from the items it first saw, and
+    ``chosen_info()`` returns that cache - it is what beets' own duplicate check
+    and MusicDrop's variant guard compare. After a Rescan swaps the items, the
+    re-parked "before" side and an As-is pick must both see the NEW files."""
+    import app.beets.import_session as session_mod
+
+    match = _build_match(BeetsRec.medium)  # its files are tagged album "Different"
+    other = _build_other_match()  # the rescanned file is tagged album "Amnesiac"
+    bridge = ImportBridge()
+    session = _make_session(bridge)
+    task = _make_task(match, monkeypatch, BeetsRec.medium)
+    session.paths = [b"/music"]
+    new_items = list(other.mapping.keys())
+    monkeypatch.setattr(session_mod, "_read_items", lambda p: new_items)
+    monkeypatch.setattr(
+        session_mod,
+        "lookup_items",
+        lambda items, s: ("Radiohead", "Amnesiac", [other], BeetsRec.strong),
+    )
+
+    def worker() -> None:
+        task.choose_match(session)  # beets' own: asks the session, then set_choice
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    first = bridge.get_parked(timeout=2.0)
+    assert first is not None
+    assert first.candidate.album_before.album == "Different"
+    bridge.push_choice(first.album_index, ImportChoice(action=ImportAction.rescan))
+
+    second = bridge.get_parked(timeout=2.0)
+    assert second is not None
+    assert second.candidate.album_before.album == "Amnesiac"
+    bridge.push_choice(second.album_index, ImportChoice(action=ImportAction.asis))
+    t.join(timeout=2.0)
+    assert not t.is_alive()
+
+    assert task.choice_flag is Action.ASIS
+    info = task.chosen_info()
+    assert (info["artist"], info["album"]) == ("Radiohead", "Amnesiac")
 
 
 def test_successful_rescan_redetects_embedded_art(

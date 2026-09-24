@@ -283,12 +283,12 @@ def find_import_duplicates(
 ) -> list[ExistingAlbum]:
     """Library albums that the matched release would duplicate.
 
-    Faithful to beets' ``AlbumImportTask.find_duplicates`` (importer/tasks.py:391):
+    Faithful to beets' ``AlbumImportTask.find_duplicates`` (importer/tasks.py:569-600):
     builds a transient Album from the *matched release's* metadata, queries the
     library with beets' own ``duplicates_query`` over the configured
     ``import.duplicate_keys.album`` (default ``albumartist album``), and drops
     any existing album whose files all live under ``exclude_under`` (a re-import
-    of the same folder is not a collision; tasks.py:410-420). Read-only.
+    of the same folder is not a collision; tasks.py:593-598). Read-only.
 
     It shares NO machinery with the fuzzy detection above — it matches exact
     field values through beets' own query and never calls :func:`normalize`,

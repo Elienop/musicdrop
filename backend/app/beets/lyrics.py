@@ -605,13 +605,10 @@ def _apply_fetched_result(
             source=result.backend,
             written=False,
         )
-    # beets 2.12's LRCLib can return a Lyrics whose ``.text`` is None
-    # (a best candidate with null plainLyrics and synced not selected);
-    # its own ``Lyrics.text_lines`` then does ``None.splitlines()`` and
-    # raises, which would abort the whole backfill on that one track.
-    # Treat empty/blank text as no usable match — fall through to the
-    # next pair/backend and ultimately ``not_found``.
-    if (result.text or "").strip():
+    # A backend can hand back blank text (MusiXmatch builds its Lyrics from
+    # whatever its page split leaves). Treat blank text as no usable match —
+    # fall through to the next pair/backend and ultimately ``not_found``.
+    if result.text.strip():
         written = _store_lyrics(item, result, write=write)
         return ItemLyricsOutcome(
             item_id=item_id, status="found", source=result.backend, written=written

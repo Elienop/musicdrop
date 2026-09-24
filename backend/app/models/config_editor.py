@@ -182,7 +182,7 @@ class ImportSection(BaseModel):
         on the raw view, and a non-empty string is truthy — so ``move: 'no'``
         saved clean, fired no advisory, and handed the user a MOVE they believed
         they had turned off. ``write`` it reads with ``.get(bool)``, which
-        raises on a string (``beets/importer/stages.py:296``). Unquoted ``no``
+        raises on a string (``beets/importer/stages.py:385``). Unquoted ``no``
         parses to a real bool and never reaches this; unquoted ``y`` and
         ``maybe`` are strings, as beets reads them. ``reflink`` keeps
         ``"auto"``, a real beets value.
@@ -200,7 +200,9 @@ class ImportSection(BaseModel):
     autotag: bool = True
     singletons: bool = False
     incremental: bool = False
-    duplicate_action: Literal["skip", "keep", "remove", "merge", "ask"] = "ask"
+    # Mirrors beets' ``DuplicateAction.choices()``, the list beets reads this key
+    # with; tests/test_config_advisories.py fails when the two drift apart.
+    duplicate_action: Literal["skip", "keep", "remove", "merge", "ask", "upgrade"] = "ask"
     # The four file keys the editor used to drop on the floor. Unmodeled, a
     # ``delete: yes`` typed here saved clean, fired no advisory, and removed the
     # user's downloads on the next import. Defaults are beets' own.
@@ -286,8 +288,8 @@ def _duplicate_action_advisory(section: ImportSection) -> str | None:
     if section.duplicate_action == "ask":
         return None
     return (
-        'MusicDrop forces import.duplicate_action to "ask" for every import it runs, so'
-        " duplicates come back to the review queue instead of being resolved unattended."
+        'MusicDrop always runs "ask" for its own imports: duplicates come back to the'
+        " review queue instead of being resolved unattended."
         f' Your "{section.duplicate_action}" is discarded in the app — `beet import` from'
         " the command line still honours it."
     )

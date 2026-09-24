@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from beets.autotag import AlbumInfo, AlbumMatch, TrackInfo
+from beets.autotag import AlbumInfo, AlbumMatch, Source, TrackInfo
 from beets.autotag.distance import distance
 from beets.autotag.match import Proposal, assign_items
 from beets.autotag.match import Recommendation as BeetsRec
@@ -28,7 +28,13 @@ def _match(album_id: str, album: str, items: list[Item]) -> AlbumMatch:
         va=False,
     )
     pairs, extra_i, extra_t = assign_items(items, info.tracks)
-    return AlbumMatch(distance(items, info, pairs), info, dict(pairs), extra_i, extra_t)
+    return AlbumMatch(
+        distance(Source.from_items(items).data, info, pairs, len(extra_i)),
+        info,
+        dict(pairs),
+        extra_i,
+        extra_t,
+    )
 
 
 def _searched(
@@ -40,7 +46,7 @@ def _searched(
 ) -> res.ResearchResult | None:
     (tmp_path / "01 dreams.mp3").write_bytes(b"not-audio")  # walker sees a file
     monkeypatch.setattr(res, "_read_items", lambda folder: items)
-    monkeypatch.setattr(res, "relookup_items", lambda i, s: (matches, rec))
+    monkeypatch.setattr(res, "relookup_source", lambda src, s: (matches, rec))
     return res.research_folder(str(tmp_path), ImportSearch(release_id="a1"))
 
 
@@ -60,6 +66,34 @@ def test_research_maps_the_full_candidate(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert len(cand.options) == 1
     assert cand.options[0].release_id == "a1"
     assert cand.has_current_art is False  # in-memory items carry no art source
+
+
+def test_search_lookup_hands_its_one_source_to_the_relookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # beets' manual search passes one Source through; the research lookup
+    # builds it once and hands that same object on, not a second copy.
+    items = _items()
+    built: list[Source] = []
+    seen: list[Source] = []
+    real_from_items = Source.from_items
+
+    def spy_from_items(its: Any) -> Source:
+        source = real_from_items(its)
+        built.append(source)
+        return source
+
+    def fake_relookup(source: Source, search: ImportSearch) -> tuple[list[Any], BeetsRec]:
+        seen.append(source)
+        return [], BeetsRec.none
+
+    monkeypatch.setattr(Source, "from_items", staticmethod(spy_from_items))
+    monkeypatch.setattr(res, "relookup_source", fake_relookup)
+    artist, album, _cands, _rec = res.lookup_items(items, ImportSearch(release_id="a1"))
+    assert len(built) == 1
+    assert len(seen) == 1
+    assert seen[0] is built[0]
+    assert (artist, album) == ("2 Brothers", "Dreams")
 
 
 def test_research_none_when_lookup_is_empty(
@@ -111,15 +145,17 @@ def test_rescan_folder_runs_the_default_lookup(
     canned = _match("a1", "Dreams", items)
     seen: dict[str, Any] = {}
 
-    def fake_tag_album(items_: Any, *args: Any, **kwargs: Any) -> Any:
+    def fake_tag_album(source: Source, *args: Any, **kwargs: Any) -> Proposal:
+        seen["items"] = list(source.items)
         seen["args"] = args
         seen["kwargs"] = kwargs
-        return ("2 Brothers", "Dreams", Proposal([canned], BeetsRec.strong))
+        return Proposal([canned], BeetsRec.strong)
 
     monkeypatch.setattr(res, "_read_items", lambda folder: items)
     monkeypatch.setattr(res, "tag_album", fake_tag_album)
     outcome = res.rescan_folder(str(tmp_path))
-    # Default first-scan lookup: NO search terms of any kind.
+    # Default first-scan lookup over the folder's items: NO search terms of any kind.
+    assert seen["items"] == items
     assert seen["args"] == ()
     assert seen["kwargs"] == {}
     assert outcome.result is not None
@@ -133,9 +169,7 @@ def test_rescan_folder_no_candidates_keeps_cur_identity(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(res, "_read_items", lambda folder: _items())
-    monkeypatch.setattr(
-        res, "tag_album", lambda items_: ("2 Brothers", "Dreams", Proposal([], BeetsRec.none))
-    )
+    monkeypatch.setattr(res, "tag_album", lambda source: Proposal([], BeetsRec.none))
     outcome = res.rescan_folder(str(tmp_path))
     assert outcome.result is None
     assert outcome.cur_artist == "2 Brothers"

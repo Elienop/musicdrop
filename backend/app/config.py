@@ -44,9 +44,10 @@ class Settings(BaseSettings):
     allowed_hosts: str = ""
 
     # Lyrics fetches: a courtesy inter-track pause (backfill and per-album),
-    # also the inter-artist pause in the artist-image backfill. beets 2.13
+    # also the inter-artist pause in the artist-image backfill. beets
     # separately rate-limits the lyrics HTTP itself (0.25s/request + 429
-    # backoff), so this is pacing on top, not the only throttle.
+    # backoff; 2.14.0 beetsplug/_utils/requests.py:78-91), so this is
+    # pacing on top, not the only throttle.
     # (env MUSICDROP_LYRICS_BACKFILL_DELAY_SECONDS)
     lyrics_backfill_delay_seconds: float = 0.2
 

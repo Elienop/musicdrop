@@ -3,7 +3,7 @@
 A hardlink leaves the download in place, so the folder is still there to be
 added again — and beets would meet the album a second time. beets' own import
 history is what refuses that (``importer/session.py:246-256``), it is only
-written when ``incremental`` is on (``importer/tasks.py:301-305``), and
+written when ``incremental`` is on (``importer/tasks.py:502-506``), and
 ``run_import_worker`` is what turns both keys on for a hardlink run.
 
 Nothing here is faked except the MusicBrainz lookup (``tag_album``): the
@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 import beets.importer.tasks as beets_tasks
 import pytest
 from beets import config
-from beets.autotag import AlbumInfo, AlbumMatch, TrackInfo
+from beets.autotag import AlbumInfo, AlbumMatch, Source, TrackInfo
 from beets.autotag.distance import distance
 from beets.autotag.match import Proposal, assign_items
 from beets.autotag.match import Recommendation as BeetsRec
@@ -81,8 +81,8 @@ def _source_folder(tmp_path: Path, name: str = "okc", album: str = _ALBUM) -> Pa
 def _install_lookup(monkeypatch: pytest.MonkeyPatch, rec: BeetsRec) -> None:
     """Pin beets' lookup to one canned match at ``rec``, built from the items."""
 
-    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
-        item_list = list(items)
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+        item_list = list(source.items)
         tracks = [
             TrackInfo(title=f"Airbag {i}", track_id=f"t{i}", index=i, length=1.0)
             for i in range(1, len(item_list) + 1)
@@ -99,9 +99,13 @@ def _install_lookup(monkeypatch: pytest.MonkeyPatch, rec: BeetsRec) -> None:
         )
         pairs, extra_items, extra_tracks = assign_items(item_list, info.tracks)
         match = AlbumMatch(
-            distance(item_list, info, pairs), info, dict(pairs), extra_items, extra_tracks
+            distance(source.data, info, pairs, len(extra_items)),
+            info,
+            dict(pairs),
+            extra_items,
+            extra_tracks,
         )
-        return (_ARTIST, _ALBUM, Proposal([match], rec))
+        return Proposal([match], rec)
 
     def fake_tag_item(item: Any, search_ids: Any = None) -> Proposal:
         return Proposal([], BeetsRec.none)
@@ -118,8 +122,8 @@ def _install_lookup_per_album(monkeypatch: pytest.MonkeyPatch, recs: dict[str, B
     and neither reads as a duplicate of the other.
     """
 
-    def fake_tag_album(items: Any, search_ids: Any = None) -> tuple[str, str, Proposal]:
-        item_list = list(items)
+    def fake_tag_album(source: Source, search_ids: Any = None) -> Proposal:
+        item_list = list(source.items)
         album = str(item_list[0].album)
         tracks = [
             TrackInfo(title=f"Airbag {i}", track_id=f"{album}-t{i}", index=i, length=1.0)
@@ -137,9 +141,13 @@ def _install_lookup_per_album(monkeypatch: pytest.MonkeyPatch, recs: dict[str, B
         )
         pairs, extra_items, extra_tracks = assign_items(item_list, info.tracks)
         match = AlbumMatch(
-            distance(item_list, info, pairs), info, dict(pairs), extra_items, extra_tracks
+            distance(source.data, info, pairs, len(extra_items)),
+            info,
+            dict(pairs),
+            extra_items,
+            extra_tracks,
         )
-        return (_ARTIST, album, Proposal([match], recs[album]))
+        return Proposal([match], recs[album])
 
     def fake_tag_item(item: Any, search_ids: Any = None) -> Proposal:
         return Proposal([], BeetsRec.none)
@@ -294,7 +302,7 @@ def _stop_during_placement(
     (``B/util/__init__.py:586-592``) and the import run does not catch it, so an
     injected raise from the same function reaches exactly the same code. The
     filing flag and the ``util`` function ``Item.move_file`` calls for it share a
-    name (``B/library/models.py:1046-1080``). Returns an ``armed`` dict the
+    name (``B/library/models.py:1065-1099``). Returns an ``armed`` dict the
     caller flips off before the repair run.
     """
     from beets import util
@@ -441,8 +449,8 @@ def test_the_offered_remedy_finishes_the_album_and_trashes_nothing(
     run = _import(lib, source, ImportBridge(), trash_dir=trash)
     assert run.errors == []
     # beets' own shape: every row names a file this task is importing, so
-    # ``find_duplicates`` excludes the album (``B/importer/tasks.py:387-397``)
-    # and ``remove_replaced`` (``:618-625``) drops the rows at ``task.add``.
+    # ``find_duplicates`` excludes the album (``B/importer/tasks.py:588-598``)
+    # and ``remove_replaced`` (``:819-826``) drops the rows at ``task.add``.
     assert run.duplicates == []
     (album,) = list(lib.albums())
     detail = get_album_detail(lib, _require_id(album.id))

@@ -115,7 +115,7 @@ def carry_sidecars(lib: Any, old_path: bytes | str, new_path: bytes | str) -> No
     against the config default's ``Thumbs.DB``, case-sensitive on Linux).
 
     Never raises: ``prune_dirs`` wraps only its ``rmtree`` (beets
-    ``util/__init__.py:336``), so its ``os.listdir`` of an unreadable ancestor
+    ``util/__init__.py:343``), so its ``os.listdir`` of an unreadable ancestor
     propagates, and the audio has already moved by the time this runs — pinned by
     ``tests/test_delete.py::test_a_prune_that_raises_does_not_fail_the_delete``.
     """

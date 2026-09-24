@@ -1943,7 +1943,7 @@ def test_a_store_holding_only_the_cover_survives_the_delete(
 ) -> None:
     """``Album.move_art`` prunes from the COVER's directory, which is a second chain.
 
-    beets 2.13.1 ``library/models.py:446``: ``move_art`` runs its own
+    beets 2.14.0 ``library/models.py:463``: ``move_art`` runs its own
     ``prune_dirs(dirname(old_art), directory, clutter=…)``. Measured with the
     walk asking about item directories only — the store holding the cover was
     rmtree'd, contents and all, by a delete whose tracks live elsewhere.
