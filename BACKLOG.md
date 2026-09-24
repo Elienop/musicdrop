@@ -92,6 +92,13 @@ entry carries a dated correction block where the pass changed it._
    `move_sidecars` plus copy and hardlink variants (beets also sends `item_hardlinked`), tidying
    empty folders up to the import root, not the library root. Sidecars follow their track's
    operation (vault `decisions` #51), so this lands with item 7.
+   **Owner, 2026-09-24: low priority**, *"not really that important since i can fetch"*. Seen again
+   live on v0.52.1, on the same kind of yubal album. Under `move` the audio left, and one `.lrc`
+   kept the download folder: beets prunes a folder it moved from only when nothing but `clutter`
+   is left (`importer/tasks.py:536-539`, `util/__init__.py:307-318`, 2.14.0). No plugin that ships
+   with beets carries non-audio files. beets' plugin index lists two third-party ones,
+   `beets-copyartifacts` and `beets-filetote`; filetote also follows `beet move` (reference
+   checkout `docs/plugins/index.rst:475-491`). Neither is evaluated.
 7. **Download providers** (owner ruling 2026-09-14, vault `decisions` #51; not started). Replaces
    the saved "Download folders" idea; Add from folder's path is a free-text field today.
    - **Operation.** ONE GLOBAL SETTING, not a per-provider mode — owner ruling 2026-09-15
@@ -616,7 +623,9 @@ entry carries a dated correction block where the pass changed it._
     all six, so the family stays one shape; the Pagination one is the only page-size control.
 
 11. **Release notes owed for the beets 2.14 port** (`fix/beets-2.14`, 2026-09-23; the pin is now
-    `beets==2.14.*`). Operator-facing, for the release that ships it:
+    `beets==2.14.*`). **Shipped as v0.52.1** (#230, 2026-09-24). The short form of these notes is
+    in PR #230's description; the GitHub release page has only the generated list.
+    Operator-facing, for the release that ships it:
     - **No database migration.** `beets/library/migrations.py` is byte-identical to 2.13.1, so a
       library 2.13 already opened gets no new `library.db-before-*.bak` on the first boot
       (measured by the phase-1 reader on a scratch DB).
@@ -652,6 +661,16 @@ entry carries a dated correction block where the pass changed it._
       `tests/test_import_archive_extraction.py`.
     - **Zip is not covered by the tar default:** its member names can still move an outside
       file's mtime (open, Low; see *Open bugs / hardening*).
+
+12. **Mark a track instrumental by hand** (owner, 2026-09-24: record now, build later). A track
+    reads *instrumental* only when LRCLib returns an entry flagged instrumental. A film score LRCLib
+    has no entry for reads *none* for good. Measured 2026-09-24: LRCLib returned 0 results for
+    four of Tom Howe's *Dog Man* score tracks, while the album's one song returned 11. Engine:
+    beets' own flag is the `lyrics_instrumental` flex field (`beets/library/migrations.py:324`,
+    2.14.0). MusicDrop already sets it on an LRCLib instrumental verdict
+    (`app/beets/lyrics.py:513`) and reads it for the album page (`app/beets/browse.py:292`); the
+    action sets the same field, per track and per album. Not decided: what it does to the
+    track's `lyrics_checked` miss marker, and how a user undoes it.
 
 The 40 banked #143 Plex review Minors stay fully adjudicated (2026-08-25, every item
 re-verified against v0.44.0): 12 shipped as the triage fix slice (see Recently shipped), 12
@@ -4187,6 +4206,17 @@ the condition it names has changed.
   not reproduced; end state is a refusal with an honest message, not damage.
 
 ## Deferred minors (cosmetic / self-healing — carried from earlier waves)
+
+### Seen live on v0.52.1 (2026-09-24)
+
+- **A skipped album's row says "Decided" while the finished summary counts it as skipped.** The
+  owner's Add from folder run ended *1 album imported · 1 skipped*, and the Lamb of God row read
+  *Decided*. `StatusBadge` (`frontend/src/pages/import/ImportPage.tsx:1362-1390`) turns a row
+  that landed into *Imported* through its `album_id`; this row did not land, so it shows its wire
+  status. That status is `decided`, set the moment a choice is recorded. Why this row never became
+  `skipped` is not re-derived. The mismatch was found in the import chunk-5 review (2026-05) and
+  never recorded here. Shapes named then, not decided: a derived per-row outcome on
+  `ImportAlbumSummary`, or resolve the wire `decided` status to `applied`/`skipped`.
 
 ### From the 2026-09-21 pre-push review of `feat/import-keep-downloads`
 
