@@ -103,17 +103,23 @@ def test_schema_rejects_file_at_directory_path(tmp_path: Path) -> None:
     assert any(err["loc"] == ("directory",) for err in excinfo.value.errors())
 
 
-def test_schema_leaves_import_to_beets(tmp_path: Path) -> None:
-    """``import.copy: maybe`` is refused by beets' own ``.get(bool)``
-    (``app/beets/config_check.py``), in beets' words; the schema has no row."""
+def test_schema_refuses_a_string_in_an_import_flag(tmp_path: Path) -> None:
+    """beets reads ``hardlink: 'no'`` as on (a bare ``if``), so the schema
+    refuses it. For ``copy`` beets' own ``.get(bool)`` refuses first, and the
+    check drops this row (``app/beets/config_check.py``)."""
     music = tmp_path / "music"
     music.mkdir()
     data = {
         "directory": str(music),
         "library": str(tmp_path / "library.db"),
-        "import": {"copy": "maybe"},
+        "import": {"copy": "maybe", "hardlink": "no"},
     }
-    KnownKeysSchema.model_validate(data)
+    with pytest.raises(ValidationError) as excinfo:
+        KnownKeysSchema.model_validate(data)
+    assert [err["loc"] for err in excinfo.value.errors()] == [
+        ("import", "copy"),
+        ("import", "hardlink"),
+    ]
 
 
 def test_schema_accepts_any_plugin_name(tmp_path: Path) -> None:

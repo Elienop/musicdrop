@@ -216,20 +216,32 @@ def test_validate_refuses_a_non_bool_for_every_other_switch_beets_reads_typed(
     }
 
 
+@pytest.mark.parametrize("value", ["n", "'no'"])
 @pytest.mark.parametrize("key", ["autotag", "singletons", "incremental", "link", "hardlink"])
-def test_validate_leaves_a_switch_beets_reads_untyped_to_beets(
-    client: TestClient, tmp_path: Path, key: str
+def test_validate_refuses_a_string_for_a_switch_beets_tests_with_a_bare_if(
+    client: TestClient, tmp_path: Path, key: str, value: str
 ) -> None:
-    """beets tests these with a bare ``if`` and never refuses one
-    (``importer/session.py:99-138``), so neither does Validate (owner ruling
-    2026-09-25: the ``import.*`` switches beets reads TYPED). ``'no'`` reads as
-    on there; that trap is recorded in BACKLOG.md with ``asciify_paths: 'no'``."""
-    text = _head(tmp_path) + f"import:\n  {key}: 'no'\n"
+    """beets never refuses these: it tests them with a bare ``if``
+    (``importer/session.py:99-138``), where any non-empty string is on, so
+    ``hardlink: 'no'`` hardlinks. MusicDrop's own rule refuses the string, with
+    the row it had before beets' typed reads were added."""
+    text = _head(tmp_path) + f"import:\n  {key}: {value}\n"
 
     r = client.post("/api/config/validate", json={"yaml_text": text})
 
     assert r.status_code == 200
-    assert r.json()["errors"] == []
+    assert r.json() == {
+        "errors": [
+            {
+                "loc": f"import.{key}",
+                "msg": "Value error, must be a bool: write yes or no, without quotes",
+                "type": "value_error",
+                "line": 4,
+                "column": len(f"  {key}: "),
+            }
+        ],
+        "advisories": [],
+    }
 
 
 def test_validate_reads_a_file_with_a_document_marker_as_yaml_1_1(

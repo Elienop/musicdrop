@@ -1070,13 +1070,15 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   and mapping check), then MusicDrop's include gate, where a skipped include is now an error as
   it is at Apply and boot, then beets' typed reads replayed on the candidate layered as beets
   layers it: every read that can stop a start (`pluginpath`, `plugins`, `disabled_plugins`,
-  `musicbrainz`, each enabled metadata source's section, `verbose`, `library`, `directory`,
+  `musicbrainz`, each enabled plugin's section, `verbose`, `library`, `directory`,
   `timeout`, `replace` and its patterns, `create_backup_before_migrations`) and the `import.*`
   switches beets reads typed (`copy`, `move`, `write`, `delete`, `remux_mp3_in_wav`, `reflink`,
   `resume`, `duplicate_action`), plus the two match thresholds. Then MusicDrop's own policies:
-  `directory:`/`library:` required and usable, thresholds at most 1, the store layout, the
-  include caps. Rows are beets' or confuse's own sentence, once, with the line where config.yaml
-  writes the value. Save writes the submitted text byte for byte (no ruamel dump), so what beets
+  `directory:`/`library:` required and usable, thresholds at most 1, no string in the
+  `import.*` flags beets tests with a bare `if` (`autotag`, `singletons`, `incremental`, `link`,
+  `hardlink`, as before), the store layout, the include caps. Rows are beets' or confuse's own
+  sentence, once, with the line where config.yaml writes the value, or the include's name when
+  an include supplies it. No plugin module is imported. Save writes the submitted text byte for byte (no ruamel dump), so what beets
   was asked about is what is on disk. The 13-name plugin allowlist is gone: beets decides.
   `_RefusingComposer` is deleted; ruamel remains only for the Naming save, which now judges the
   file with beets' loader first and runs the same check on the text it is about to write. A
@@ -1086,11 +1088,11 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   musicbrainz, boot, validate, save, include, typed read, ruamel, PyYAML, duplicate key, y/n.
 - **A plugin whose own settings fail is dropped at start-up, and nothing says so** (recorded
   2026-09-25, not built). beets catches every error in a plugin's `__init__`, logs
-  `** error loading plugin X` and starts without it (`beets/plugins.py:537-540`): `fetchart: no`
-  or `fetchart: {minwidth: x}` with fetchart enabled boots, and fetchart is missing. Validate
-  replays no plugin's own reads (they need the plugin constructed against the global config),
-  and MusicDrop never compares `find_plugins()` with `plugins:`. The same goes for a plugin
-  listed from `pluginpath:`: the check does not import from there, so its section is not asked.
+  `** error loading plugin X` and starts without it (`beets/plugins.py:537-540`):
+  `fetchart: {minwidth: x}` with fetchart enabled boots, and fetchart is missing. Validate
+  refuses an enabled plugin's section that is not a collection (`fetchart: no`), but replays no
+  plugin's own reads (they need the plugin constructed against the global config), and
+  MusicDrop never compares `find_plugins()` with `plugins:`.
 - **Reads beets makes only after start-up are not checked** (recorded 2026-09-25, not built).
   Validate replays the reads that stop a start and the `import.*` switches, not `paths`,
   `clutter`, `max_filename_length`, `id3v23`, `art_filename`, `match.*` beyond the two
@@ -1108,13 +1110,10 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `write` with `.get(bool)` outside any `try` in both previews and applies
   (`app/beets/edit.py:771,805-806`, `app/beets/rename.py:181,210-211`). Validate and Save refuse
   the value now, so only a file edited outside MusicDrop reaches it.
-- **A quoted `'no'` reads as on where beets tests a bare `if`** (recorded 2026-09-25, not
-  built). `asciify_paths: 'no'` turns asciify on (`beets/library/models.py:1276`), and so do
-  `import.link`, `hardlink`, `autotag`, `singletons` and `incremental` set to `'no'`
-  (`beets/importer/session.py:99-138`). No typed read refuses any of them, so Validate is clean
-  (owner ruling 2026-09-25: the `import.*` switches beets reads TYPED). Before this branch the
-  editor refused a string for the five `import.*` keys; that refusal was MusicDrop's own, not
-  beets'. `copy`, `move`, `write` and `delete` are read typed and still refused.
+- **`asciify_paths: 'no'` reads as on** (recorded 2026-09-25, not built). beets tests it with a
+  bare `if` (`beets/library/models.py:1276`), so any non-empty string turns asciify on, and no
+  typed read refuses it: Validate is clean. The `import.*` flags beets tests the same way keep
+  MusicDrop's own refusal of a string.
 - **Small residuals of Apply's restore and the include gate** (review seats, 2026-09-23).
   - Each restore installs the plugins' default sources again: 5 more per restore with two
     plugins. The values are unchanged. The list resets on the next good Apply or restart.

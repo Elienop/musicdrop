@@ -132,12 +132,15 @@ LibraryFile = Annotated[Path, AfterValidator(_library_file)]
 
 
 class ImportSection(BaseModel):
-    """Reads the ``import:`` block for :func:`import_advisories`. ``extra='ignore'``
-    is explicit only for clarity — it's the Pydantic v2 default and we never re-emit.
+    """Validates the ``import:`` block, and reads it for :func:`import_advisories`.
+    ``extra='ignore'`` is explicit only for clarity — it's the Pydantic v2 default
+    and we never re-emit.
 
-    Not a refusal: beets' own typed reads of these keys are what Validate and
-    Save refuse on (``app/beets/config_check.py``). A value this refuses gets no
-    advisory.
+    Its refusal is what Validate and Save show for the flags beets tests with a
+    bare ``if`` (``autotag``, ``singletons``, ``incremental``, ``link``,
+    ``hardlink``). For the keys beets reads typed, beets' own read refuses first
+    and this row is dropped (``app/beets/config_check.py``). A value this refuses
+    gets no advisory.
 
     The ``copy`` field name is dictated by beets' YAML key (``import.copy``);
     it shadows ``BaseModel.copy()`` but Pydantic v2 only emits a UserWarning
@@ -209,7 +212,8 @@ class MatchSection(BaseModel):
 
 class KnownKeysSchema(BaseModel):
     """MusicDrop's own policies beets does not have: ``directory:`` and
-    ``library:`` required and usable, and the match thresholds at most 1.
+    ``library:`` required and usable, the match thresholds at most 1, and no
+    string in an ``import:`` flag beets reads as on.
 
     beets decides everything else, plugin names included (owner ruling
     2026-09-25): its typed reads run first (``app/beets/config_check.py``), and a
@@ -220,6 +224,7 @@ class KnownKeysSchema(BaseModel):
 
     directory: WritablePath
     library: LibraryFile
+    import_: ImportSection = Field(default_factory=ImportSection, alias="import")
     match: MatchSection = Field(default_factory=MatchSection)
 
 
@@ -414,10 +419,9 @@ def import_advisories(data: object) -> list[ConfigAdvisory]:
       is read from the raw mapping — ``ImportSection``'s defaults would make
       every config look like it had set all seven.
     * **Only VALID values.** Each key is validated on its own through
-      ``ImportSection``. A value that fails is left alone, and one bad key must
-      not mute the rules for its siblings. For the keys beets reads typed, the
-      errors channel reports it; a string in a key beets reads as a bare ``if``
-      (``link: 'no'``) gets neither, a recorded residual.
+      ``ImportSection``. A value that fails is left alone: the errors channel
+      is already reporting it, and one bad key must not mute the rules for its
+      siblings.
     """
     if not isinstance(data, Mapping):
         return []

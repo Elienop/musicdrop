@@ -12,7 +12,8 @@ Four steps, one list of rows (owner rulings 2026-09-23 and 2026-09-25):
    is ours to keep current across beets upgrades.
 4. **MusicDrop's own policies** beets does not have: ``directory:``/``library:``
    required and usable (:class:`~app.models.config_editor.KnownKeysSchema`), the
-   match thresholds at most 1, and the store layout.
+   match thresholds at most 1, no string in an ``import:`` flag beets tests
+   with a bare ``if``, and the store layout.
 
 Every message is the loader's, confuse's or beets' own text. A row names its key
 once: the editor prints ``loc: msg``.
@@ -20,8 +21,6 @@ once: the editor prints ``loc: msg``.
 
 from __future__ import annotations
 
-import importlib
-import inspect
 import re
 from collections.abc import Callable, Sequence
 from functools import partial
@@ -33,7 +32,6 @@ import confuse
 import yaml
 from beets.exceptions import UserError
 from beets.importer.actions import DuplicateAction
-from beets.plugins import BeetsPlugin
 from beets.util import unique_list
 from pydantic import ValidationError
 
@@ -122,34 +120,6 @@ class ReadFailure(NamedTuple):
     error: Exception
 
 
-def _is_metadata_source(name: str) -> bool:
-    """Whether the plugin beets would load as ``name`` is a metadata source.
-
-    The class beets' ``_get_plugin`` picks (``beets/plugins.py:519-535``), asked
-    ``hasattr(..., "data_source")`` as ``_verify_config`` does (``:196-198``).
-    Imported, not constructed: construction binds the global config. A module
-    that does not import is one beets skips too (``:537-540``).
-    """
-    try:
-        module = importlib.import_module(f"beetsplug.{name}")
-    # Broad, as beets' own arm is: any failure means beets loads no plugin.
-    except Exception:
-        return False
-    for obj in reversed(list(vars(module).values())):
-        if (
-            inspect.isclass(obj)
-            and issubclass(obj, BeetsPlugin)
-            and obj is not BeetsPlugin
-            and not inspect.isabstract(obj)
-            and (
-                obj.__module__ == module.__name__
-                or obj.__module__.startswith(f"{module.__name__}.")
-            )
-        ):
-            return hasattr(obj, "data_source")
-    return False
-
-
 def _compile_replacements(cfg: confuse.Configuration) -> None:
     """``Library.get_replacements`` (``beets/library/library.py:61-71``) asked of ``cfg``.
 
@@ -170,8 +140,8 @@ def beets_read_failures(cfg: confuse.Configuration) -> list[ReadFailure]:
     * start-up, in the order beets makes them:
       ``beets/plugins.py:472-473,485-489`` (``get_plugin_names``, replayed
       because it changes ``sys.path``, ``beetsplug.__path__`` and the global
-      config); ``:196-198`` (``_verify_config``, per loaded metadata source,
-      sent on ``pluginload``); ``:265`` (``verbose``, read by every plugin
+      config); ``:196-198`` (``_verify_config``, sent on ``pluginload``), asked
+      of every enabled plugin; ``:265`` (``verbose``, read by every plugin
       listener); ``app/beets/setup.py:275-276``; ``beets/library/library.py:84``
       and ``:64-71``; ``beets/dbcore/db.py:1064`` (on a migration).
     * import: MusicDrop's pre-check (``app/beets/import_session.py:2444-2445``);
@@ -179,6 +149,9 @@ def beets_read_failures(cfg: confuse.Configuration) -> list[ReadFailure]:
       ``beets/importer/session.py:109-112,140,179-181``; and
       ``beets/autotag/match.py:285,288`` for the two thresholds MusicDrop limits.
 
+    ``_verify_config`` runs only for a metadata source; for any other plugin a
+    section that is not a collection makes beets drop it with an error. Asking
+    it of every enabled plugin refuses both, and imports no plugin code.
     Nothing else a plugin reads is here: beets drops a plugin whose own settings
     fail and starts without it.
     """
@@ -204,8 +177,7 @@ def beets_read_failures(cfg: confuse.Configuration) -> list[ReadFailure]:
         disabled.add("musicbrainz")
     enabled = [name for name in names if name not in disabled]
     for name in enabled:
-        if _is_metadata_source(name):
-            read((name,), partial(cfg[name].__contains__, "source_weight"))
+        read((name,), partial(cfg[name].__contains__, "source_weight"))
     if enabled:
         read(("verbose",), lambda: cfg["verbose"].get(int))
     read(("library",), lambda: cfg["library"].as_filename())
@@ -362,8 +334,11 @@ def _read_rows(
         loc, msg = (
             (dotted, text[len(dotted) + 2 :]) if text.startswith(f"{dotted}: ") else ("", text)
         )
-        written = _written_in(loaded.config, failure.path) == document_file
-        line, column = positions.at(failure.path) if written else (None, None)
+        source = _written_in(loaded.config, failure.path)
+        line, column = positions.at(failure.path) if source == document_file else (None, None)
+        # An include's value has no line here; name the file it came from.
+        if source is not None and source in loaded.included:
+            msg = f"{msg} (in {loaded.included[source]})"
         rows.append(
             ValidationErrorItem(loc=loc, msg=msg, type=_BEETS_READ, line=line, column=column)
         )

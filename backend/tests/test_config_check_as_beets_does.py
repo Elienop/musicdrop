@@ -314,3 +314,74 @@ def test_a_check_leaves_the_live_beets_state_as_it_found_it(
     assert (list(sys.path), list(beetsplug.__path__)) == (path, namespace)
     assert list(plugins.find_plugins()) == instances
     assert hashlib.sha256(text.encode()).hexdigest() == _cas(client)
+
+
+@pytest.mark.parametrize("key", ["hardlink", "link"])
+def test_a_quoted_no_in_a_flag_beets_tests_with_a_bare_if_is_refused(
+    client: TestClient, beets_library: LibraryHandle, key: str
+) -> None:
+    """beets reads ``'no'`` here as on (``beets/importer/session.py:99-138``): a
+    manual import would hardlink or symlink. No typed read of beets' refuses it,
+    so MusicDrop's own rule does, as it did before beets' reads were added."""
+    text = _head(beets_library) + f"import:\n  {key}: 'no'\n"
+
+    assert _refused(client, beets_library, text) == [
+        {
+            "loc": f"import.{key}",
+            "msg": "Value error, must be a bool: write yes or no, without quotes",
+            "type": "value_error",
+            "line": 4,
+            "column": len(f"  {key}: "),
+        }
+    ]
+
+
+def test_any_enabled_plugin_with_a_section_that_is_not_a_collection_is_refused(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """``the`` is no metadata source, so beets' ``_verify_config`` would not stop
+    the start; beets drops the plugin with an error instead
+    (``research-engine.md`` §4). Neither is what the operator asked for."""
+    text = _head(beets_library) + "plugins: [the]\nthe: no\n"
+
+    assert _refused(client, beets_library, text) == [
+        _read("", "the must be a collection, not bool", 4, 5)
+    ]
+
+
+@pytest.mark.parametrize(
+    "section",
+    ["plugins: [the]\n", "plugins: [the]\nthe:\n  strip: yes\n", "fetchart: no\n"],
+    ids=["no-section", "mapping-section", "section-of-a-plugin-not-enabled"],
+)
+def test_a_plugin_section_beets_reads_is_clean(
+    client: TestClient, beets_library: LibraryHandle, section: str
+) -> None:
+    """beets asks a section only of an enabled plugin, and only whether it holds
+    ``source_weight``: no section, or a mapping, answers that."""
+    text = _head(beets_library) + section
+
+    r = client.post("/api/config/validate", json={"yaml_text": text})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["errors"] == []
+
+
+def test_a_check_imports_no_plugin_code(client: TestClient, beets_library: LibraryHandle) -> None:
+    """Validate runs while the operator types; it must not run plugin modules.
+
+    The plugin is one beets ships that nothing has imported yet in this process.
+    """
+    name = next(
+        n for n in ("bucket", "ihate", "the", "zero") if f"beetsplug.{n}" not in sys.modules
+    )
+    text = _head(beets_library) + f"plugins: [{name}]\n{name}: {{}}\n"
+    before = set(sys.modules)
+
+    lint = client.post("/api/config/validate", json={"yaml_text": text})
+    r = client.post("/api/config/save", json={"yaml_text": text, "base_sha256": _cas(client)})
+
+    assert lint.json()["errors"] == []
+    assert r.status_code == 200, r.text
+    assert f"beetsplug.{name}" not in sys.modules
+    assert [m for m in set(sys.modules) - before if m.startswith("beetsplug")] == []

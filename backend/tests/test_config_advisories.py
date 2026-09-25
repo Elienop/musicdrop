@@ -292,10 +292,11 @@ def test_a_quoted_boolean_gets_no_advisory_because_beets_reads_it_as_true() -> N
     MOVE they believed they had turned off. Measured divergence before the fix:
     ``'no'``, ``'off'``, ``'false'``, ``'0'`` — editor False, beets True.
 
-    ``ImportSection`` now only reads values for the advisories: it refuses a
-    string, so no advisory is built on a value beets reads the other way. The
-    Save refusal is beets' own ``.get(bool)`` for ``copy``/``move``/``write``/
-    ``delete`` (``app/beets/config_check.py``).
+    ``ImportSection`` refuses a string, so no advisory is built on a value
+    beets reads the other way. That refusal is also the Validate and Save row
+    for the flags beets tests with a bare ``if``; for ``copy``/``move``/
+    ``write``/``delete`` beets' own ``.get(bool)`` refuses first
+    (``app/beets/config_check.py``).
     """
     import pytest
     from pydantic import ValidationError

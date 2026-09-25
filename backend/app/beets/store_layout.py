@@ -31,6 +31,7 @@ import os
 import stat
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final, NamedTuple
 
 import beets
@@ -1639,12 +1640,14 @@ class LoadedCandidate(NamedTuple):
     """``document`` layered the way beets layers config.yaml, includes merged.
 
     ``error`` is the include refusal that stopped the merge, if any; ``config``
-    then holds the includes merged before it.
+    then holds the includes merged before it. ``included`` maps each merged
+    include's source ``filename`` to the entry as written in ``include:``.
     """
 
     config: confuse.Configuration
     skipped: tuple[SkippedInclude, ...] = ()
     error: StoreLayoutError | None = None
+    included: Mapping[str, str] = MappingProxyType({})
 
 
 def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> EffectivePaths:
@@ -1697,6 +1700,7 @@ def load_candidate(document: Mapping[str, Any], beets_dir: Path) -> LoadedCandid
     # still ``set`` again at its own position: the LAST include wins, so dropping
     # the repeat would change which file decides ``directory:``.
     read: dict[str, confuse.ConfigSource] = {}
+    included: dict[str, str] = {}
     budget = _MAX_INCLUDE_BYTES
     written = ""
     try:
@@ -1714,6 +1718,8 @@ def load_candidate(document: Mapping[str, Any], beets_dir: Path) -> LoadedCandid
                 budget -= used
                 read[target] = merged
             cfg.set(merged)
+            # The filename ``_include_source`` gave the source it read.
+            included[os.path.abspath(target)] = written
     except confuse.NotFoundError:
         pass  # no ``include:`` key at all
     except confuse.ConfigReadError as exc:
@@ -1732,10 +1738,10 @@ def load_candidate(document: Mapping[str, Any], beets_dir: Path) -> LoadedCandid
         # 500 or reported the document CLEAN.
         error = _unreadable_include(f"{written!r}: {exc}" if written else str(exc))
         error.__cause__ = exc
-        return LoadedCandidate(cfg, tuple(skipped), error)
+        return LoadedCandidate(cfg, tuple(skipped), error, included)
     except StoreLayoutError as exc:
-        return LoadedCandidate(cfg, tuple(skipped), exc)
-    return LoadedCandidate(cfg, tuple(skipped))
+        return LoadedCandidate(cfg, tuple(skipped), exc, included)
+    return LoadedCandidate(cfg, tuple(skipped), None, included)
 
 
 class LayoutCheck(NamedTuple):

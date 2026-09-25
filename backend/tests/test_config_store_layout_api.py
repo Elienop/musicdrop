@@ -686,25 +686,33 @@ def test_an_include_that_makes_directory_a_non_path_answers_a_lint_row(
 
     Measured on the parent commit for all five: Validate answered 200 with no
     row, Save wrote the file, and Apply answered 500 "directory: must be a
-    filename, not int". Now that read runs at Validate, in beets' words; the
-    value is not written in config.yaml, so the row has no line.
+    filename, not int". Now that read runs at Validate and Save, in beets'
+    words. The value is not written in config.yaml, so the row has no line and
+    names the include it came from, as written in ``include:``: config.yaml's
+    own ``directory:`` is valid, and without the name the operator cannot tell
+    where to look.
     """
     overlay = beets_library.beets_dir / "overlay.yaml"
     overlay.write_text(f"directory: {value}\n", encoding="utf-8")
     text = _with_include(Path(beets_library.lib.directory.decode()), "overlay.yaml")
+    before = beets_library.config_path.read_bytes()
 
     r = client.post("/api/config/validate", json={"yaml_text": text})
+    sha = client.get("/api/config").json()["sha256"]
+    saved = client.post("/api/config/save", json={"yaml_text": text, "base_sha256": sha})
 
     assert r.status_code == 200, r.text
     assert r.json()["errors"] == [
         {
             "loc": "directory",
-            "msg": f"must be a filename, not {kind}",
+            "msg": f"must be a filename, not {kind} (in overlay.yaml)",
             "type": "beets_read",
             "line": None,
             "column": None,
         }
     ]
+    assert (saved.status_code, saved.json()) == (422, {"detail": r.json()["errors"]})
+    assert beets_library.config_path.read_bytes() == before
 
 
 @pytest.mark.parametrize(
