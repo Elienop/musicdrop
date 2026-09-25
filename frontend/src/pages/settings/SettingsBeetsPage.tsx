@@ -40,6 +40,7 @@ import {
 } from "@/pages/settings/configFailureText";
 import {
   ImportOperationSection,
+  importLoadFailure,
   importSwitchFailure,
   importSwitchLocked,
   importSwitchReason,
@@ -292,18 +293,27 @@ export function SettingsBeetsPage() {
   const switchReason = importSwitchReason(switchGate);
   const switchLocked = importSwitchLocked(switchGate);
 
-  // A failed flip's sentence is about the moment it was pressed. Once the
-  // switch is locked (a reason line, an Apply, a Save) the latest state speaks
-  // instead, and the sentence must not come back when the lock lifts.
+  // A failed flip's sentence outranks the reason line: a flip that fails after
+  // writing the file locks the switch ("Apply saved changes first.") on the
+  // very render the failure arrives, and that lock must not hide why. It
+  // clears on the user's next action (Edit, Apply, a press on the switch; a
+  // Save needs Edit first) or when a job takes the library, whose reason line
+  // then speaks.
   const flipFailed = flip.isError;
   const resetFlip = flip.reset;
+  const jobHolds = switchGate.job !== null;
   useEffect(() => {
-    if (switchLocked && flipFailed) resetFlip();
-  }, [switchLocked, flipFailed, resetFlip]);
+    if (jobHolds && flipFailed) resetFlip();
+  }, [jobHolds, flipFailed, resetFlip]);
 
   function handleKeepDownloads(on: boolean) {
     // The switch is aria-disabled, not disabled, so a locked press lands here.
-    if (!data || switchLocked) return;
+    // It is the user's next action: the failure gives way to the reason line.
+    // Never reset a running flip: that would drop its answer.
+    if (!data || switchLocked) {
+      if (flipFailed) resetFlip();
+      return;
+    }
     // The latest action owns the one alert, as a Save ends an Apply's.
     applyMutation.reset();
     // As Apply: the editor takes no edits while beets reloads.
@@ -325,7 +335,9 @@ export function SettingsBeetsPage() {
   const importSection = (
     <ImportOperationSection
       operation={operation.data}
-      loadFailed={operation.isError}
+      loadFailure={
+        operation.isError ? importLoadFailure(operation.error) : null
+      }
       ready={operation.data !== undefined && !isPending}
       // While a flip runs the thumb sits at its target.
       checked={
@@ -335,9 +347,7 @@ export function SettingsBeetsPage() {
       }
       locked={switchLocked}
       reason={switchReason}
-      failure={
-        flip.isError && !switchLocked ? importSwitchFailure(flip.error) : null
-      }
+      failure={flip.isError ? importSwitchFailure(flip.error) : null}
       onCheckedChange={handleKeepDownloads}
     />
   );
@@ -439,8 +449,9 @@ export function SettingsBeetsPage() {
     // error mutation keeps its error state until reset, so without this the
     // old alert would resurface the moment the doc is dirty again. An Apply
     // refusal stays: it is true of the file until a Save or a new file
-    // version ends it.
+    // version ends it. A flip's failure ends too: Edit is the next action.
     save.reset();
+    flip.reset();
     const view = editorRef.current?.view;
     if (view) {
       view.dispatch({
@@ -488,6 +499,8 @@ export function SettingsBeetsPage() {
     editorRef.current?.view?.dispatch({
       effects: editableCompartment.reconfigure(READ_ONLY_EXTENSION),
     });
+    // The latest action owns the one alert: Apply ends a flip's failure.
+    flip.reset();
     // A 409 means a job this page has not seen holds the library. Ask the
     // probes again so the "Apply paused" line speaks for it, and goes when
     // the job ends.

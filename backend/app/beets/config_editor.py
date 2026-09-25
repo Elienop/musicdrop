@@ -779,9 +779,13 @@ def _import_mapping(doc: CommentedMap) -> CommentedMap:
 
     Refused: a value that is not a mapping, and one shared with another key (an
     anchor, an alias, or a ``<<`` merge), where a write here changes that key too.
+    That includes an ``import:`` the document only has through a top-level ``<<``,
+    which ruamel reads as one of its keys but is the merged mapping's own.
     """
     if "import" not in doc:
         doc["import"] = CommentedMap()
+    elif "import" not in dict(doc.non_merged_items()):
+        raise HTTPException(status_code=422, detail=IMPORT_NOT_EDITABLE)
     imp = doc["import"]
     if not isinstance(imp, CommentedMap) or imp.anchor.value is not None or imp.merge:
         raise HTTPException(status_code=422, detail=IMPORT_NOT_EDITABLE)

@@ -527,10 +527,9 @@ describe("ImportPage — what happens to the files", () => {
     renderAt("/import");
     const change = await screen.findByRole("link", { name: "Change" });
     expect(change).toHaveAttribute("href", "/settings/beets");
-    const help = change.closest("p");
-    expect(help).toHaveTextContent(`${line} Change`);
-    expect(field()).toHaveAttribute("aria-describedby", help?.id);
-    expect(help?.id).not.toBe("");
+    expect(change.closest("p")?.textContent).toBe(`${line} Change`);
+    // The box is described by the sentence alone, not by the link's word.
+    expect(field()).toHaveAccessibleDescription(line);
   });
 
   test("no line and no description while the setting loads", async () => {
@@ -1881,6 +1880,24 @@ describe("ImportPage — terminal states", () => {
     expect(
       screen.queryByRole("button", { name: /stop this run/i }),
     ).not.toBeInTheDocument();
+  });
+
+  test("a two-line job error keeps its line break", async () => {
+    const error =
+      "Hardlinks can't cross filesystems.\nError linking file: [Errno 18]";
+    server.use(
+      http.get(JOB_URL, () =>
+        HttpResponse.json(makeJob({ phase: "failed", error, albums: [] })),
+      ),
+    );
+    renderAt("/import?job=job-1");
+
+    await screen.findByText("Import failed");
+    // jsdom lays nothing out: pin the text with its "\n" intact, on the node
+    // whose `white-space` keeps it (an HTML <p> folds it into a space).
+    const text = screen.getByText(/^Hardlinks can't cross filesystems\./);
+    expect(text.textContent).toBe(error);
+    expect(text).toHaveClass("whitespace-pre-line");
   });
 
   test.each([

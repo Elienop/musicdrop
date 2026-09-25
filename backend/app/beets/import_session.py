@@ -2294,14 +2294,15 @@ def is_cross_device_hardlink(exc: FilesystemError) -> bool:
     """Whether beets raised ``exc`` because ``util.hardlink`` got ``EXDEV``.
 
     Read from the exception, never its English: beets raises it inside
-    ``except OSError`` (``util/__init__.py:586-593``), so the ``OSError`` is its
-    ``__context__``. Only ``link(2)`` and ``rename(2)`` answer ``EXDEV``, and
-    beets' ``util.move`` copies instead of raising on the rename's
-    (``:498-500``), so no other ``FilesystemError`` carries it. beets has no
+    ``except OSError`` with the verb ``"link"`` (``util/__init__.py:586-593``),
+    so the ``OSError`` is its ``__context__``. The verb is what names the
+    hardlink: ``copy_file_range(2)`` and the reflink ioctl answer ``EXDEV`` too,
+    and a beets that let one reach a ``"copy"`` or ``"reflink"`` error must keep
+    its own text, not advise turning off Keep downloads. beets has no
     hardlink-else-copy.
     """
     cause = exc.__context__
-    return isinstance(cause, OSError) and cause.errno == errno.EXDEV
+    return exc.verb == "link" and isinstance(cause, OSError) and cause.errno == errno.EXDEV
 
 
 def run_import_worker(

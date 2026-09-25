@@ -455,10 +455,11 @@ function ImportEntry() {
           {/* What the import will do with these files, from the operation beets
               loaded. Outside the <label>, so the link is not part of the field's
               click target. Nothing while it loads or if it can't be read: a
-              guess here would be a promise about the user's files. */}
+              guess here would be a promise about the user's files. The id is
+              on the sentence only, so the box is not described as "… Change". */}
           {filesLine !== null && (
-            <p id={FILES_LINE_ID} className="text-muted-foreground text-xs">
-              {filesLine}{" "}
+            <p className="text-muted-foreground text-xs">
+              <span id={FILES_LINE_ID}>{filesLine}</span>{" "}
               <Link
                 to="/settings/beets"
                 className="text-foreground focus-ring rounded-sm underline"
@@ -1853,8 +1854,12 @@ function JobFailed({
           // punctuation. The middot dialect glued the duration onto the end of
           // it, which read as part of the message and could wrap a line open on
           // a bare "·". Each clause gets its own line, its own sentence.
+          // `whitespace-pre-line` keeps the error's own line break: the
+          // cross-filesystem line and beets' text arrive as `line1\nline2`.
           <>
-            {state.error ?? "The import stopped unexpectedly."}
+            <span className="whitespace-pre-line">
+              {state.error ?? "The import stopped unexpectedly."}
+            </span>
             {counts !== null && <span className="mt-1 block">{counts}</span>}
             {setAside > 0 && (
               <span className="mt-1 block">

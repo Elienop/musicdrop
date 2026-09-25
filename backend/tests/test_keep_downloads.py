@@ -231,6 +231,16 @@ def test_an_import_section_shared_with_another_key_refuses(
     assert _refused(client, beets_library, sha, on=True, status=422) == IMPORT_NOT_EDITABLE
 
 
+def test_an_import_section_merged_in_from_another_key_refuses(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """A top-level ``<<`` supplies ``import:``: the write would land in ``base:``."""
+    extra = "base: &base\n  import:\n    move: yes\n<<: *base\n"
+    sha = _load(client, beets_library, _text(beets_library, None, extra))
+    assert _operation(client) == "move"  # beets reads the merged key
+    assert _refused(client, beets_library, sha, on=True, status=422) == IMPORT_NOT_EDITABLE
+
+
 @pytest.mark.parametrize("block", [" 3\n", "\n"], ids=["scalar", "null"])
 def test_an_import_section_that_is_not_a_mapping_refuses(
     client: TestClient, beets_library: LibraryHandle, block: str

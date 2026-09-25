@@ -368,7 +368,10 @@ entry carries a dated correction block where the pass changed it._
      - **`aria-disabled:opacity-50` is copied onto ~20 buttons.** The pending recipe
        (`aria-disabled`, click swallowed) has no dim of its own, so each site adds the class,
        and a pending button keeps its hover fill. Lifting both into `buttonVariants` beside
-       `disabled:opacity-50` is a primitive-level decision.
+       `disabled:opacity-50` is a primitive-level decision. On the Keep downloads switch the dim
+       also fades its focus ring, to 1.82:1 against the page (below 3:1; `frontend/src/styles.css`
+       already records the ring failing at 50% on every ground). The fix there is to dim the
+       thumb and track, not the element (UI seat 2026-09-26, not built).
    - **Replace disposes of the old copy before beets places the new one — BUILT 2026-09-18 on
      `feat/import-keep-downloads`** (`decisions` #58, corrected the same day). The duplicate
      hook moves every duplicate that has files to Trash, drops the rows of one that has none,
@@ -1153,8 +1156,12 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   in `docs/superpowers/reports/2026-09-25-config-validate/research-typed-reads.md` §3: `paths:
   5` or `max_filename_length: x` fails an import after its rows are added; `clutter: 5` in move
   mode fails it after the files moved; `sort_album: 5` fails every album list.
-- **The Naming save cannot edit a file beets accepts and ruamel refuses** (recorded 2026-09-25,
-  not built). It still edits `paths:`/`replace:` in place with ruamel, so a duplicate key, a
+- **The Naming save and the Keep downloads switch cannot edit a file beets accepts and ruamel
+  refuses** (recorded 2026-09-25, not built; the switch added 2026-09-26). Both edit in place
+  with ruamel (the switch only `import:`'s file-operation keys), and both rewrite every
+  `yes`/`no` in the file to `true`/`false`, untouched keys included (measured: `fetchart.auto:
+  no` came back `false` after a flip). The Naming save still edits `paths:`/`replace:` in
+  place with ruamel, so a duplicate key, a
   plain value starting with `%` (`default: %the{$albumartist}/…`, beets' own docs), or
   `!!omap {…}` answers 422 "config.yaml does not parse" there, while Validate, Save, the Naming
   GET, Apply and boot all accept the file. A negative leading-zero int (`file: -0644`) is
@@ -1162,6 +1169,11 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   422 ("invalid literal for int() with base 8: '0-644'"); nothing is written. That refusal
   ends "Check it in Settings → Beets.", and that page validates the file clean. Edit such a
   file in Settings → Beets.
+- **Two server sentences shared by Apply, the Naming save and the switch misfire on the switch**
+  (review seats 2026-09-26, not built). A switch refusal ends "Check it in Settings → Beets."
+  (`_on_disk_row`, `app/beets/config_editor.py`), said on that same page. After a flip has
+  written config.yaml, a failed reload answers Apply's recovery lines, which end "…, so nothing
+  was changed." (`_unreadable_recovery`, `_restored_refusal`), when the file did change.
 - **An album edit or rename answers a bare 500 for a hand-edited bad `import.*` switch**
   (recorded 2026-09-25, not built). `should_move`/`should_write` read `import.move`/`copy`/
   `write` with `.get(bool)` outside any `try` in both previews and applies

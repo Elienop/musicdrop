@@ -2482,32 +2482,55 @@ describe("SettingsBeetsPage Import: Keep downloads", () => {
     expect(section.querySelector('[data-slot="skeleton"]')).not.toBeNull();
   });
 
-  test("a setting that can't be read says so, with no switch", async () => {
-    defaultMocks();
-    server.use(
-      http.get(IMPORT_OP_URL, () =>
-        HttpResponse.json({ detail: "boom" }, { status: 500 }),
-      ),
-    );
-    renderPage();
-    await findEditorContent();
-    const section = importSection();
-    expect(await within(section).findByRole("alert")).toHaveTextContent(
+  test.each<[string, number, Record<string, unknown>, string]>([
+    [
+      "a 500 keeps the page's line",
+      500,
+      { detail: "boom" },
       "Couldn’t read the import setting.",
-    );
-    expect(within(section).queryByRole("switch")).toBeNull();
-  });
+    ],
+    [
+      "a 422 shows the server's sentence",
+      422,
+      { detail: "Fix import: in config.yaml first." },
+      "Fix import: in config.yaml first.",
+    ],
+    [
+      "a 422 with no sentence keeps the page's line",
+      422,
+      { detail: "  " },
+      "Couldn’t read the import setting.",
+    ],
+  ])(
+    "a setting that can't be read says so, with no switch: %s",
+    async (_name, status, body, line) => {
+      defaultMocks();
+      server.use(
+        http.get(IMPORT_OP_URL, () => HttpResponse.json(body, { status })),
+      );
+      renderPage();
+      await findEditorContent();
+      const section = importSection();
+      expect((await within(section).findByRole("alert")).textContent).toBe(
+        line,
+      );
+      expect(within(section).queryByRole("switch")).toBeNull();
+    },
+  );
 
   /** Press a gated switch by pointer and by key: nothing is sent, nothing
-   * moves, focus stays, and the reason is the one line read with the help. */
+   * moves, focus stays, and the reason is the one line read with the help
+   * (`null`: locked with no reason line). */
   async function expectGated(
     user: ReturnType<typeof userEvent.setup>,
-    reason: string,
+    reason: string | null,
     bodies: unknown[],
   ) {
     const sw = await findSwitch();
-    await waitFor(() => expect(described(sw)).toEqual([HELP, reason]));
-    expect(sw).toHaveAttribute("aria-disabled", "true");
+    await waitFor(() => {
+      expect(sw).toHaveAttribute("aria-disabled", "true");
+      expect(described(sw)).toEqual(reason === null ? [HELP] : [HELP, reason]);
+    });
     expect(sw).toBeEnabled();
     const before = sw.getAttribute("aria-checked");
     await user.click(sw);
@@ -2555,7 +2578,9 @@ describe("SettingsBeetsPage Import: Keep downloads", () => {
     await expectGated(user, "Apply saved changes first.", bodies);
   });
 
-  test("a config that can't be read gates the switch and points below", async () => {
+  test("a config that can't be read locks the switch with no reason line", async () => {
+    // A bad config.yaml reads as an empty document, so this read fails on the
+    // server or the network: nothing below can fix it.
     defaultMocks();
     server.use(
       http.get(CONFIG_URL, () =>
@@ -2566,7 +2591,7 @@ describe("SettingsBeetsPage Import: Keep downloads", () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText(/could not load configuration/i);
-    await expectGated(user, "Fix config.yaml below.", bodies);
+    await expectGated(user, null, bodies);
   });
 
   test("a flip sends the switch and the file's sha, and reloads like Apply until the new setting is read", async () => {
@@ -2675,18 +2700,42 @@ describe("SettingsBeetsPage Import: Keep downloads", () => {
     });
   });
 
-  test.each<[string, number, Record<string, unknown>, string]>([
+  // `wrote`: the server wrote config.yaml before it refused, so the re-read
+  // after the flip answers `apply_pending: true` and the switch locks on the
+  // same render the failure arrives. The failure must still show.
+  test.each<[string, number, Record<string, unknown>, boolean, string]>([
     [
       "a 409 sentence",
       409,
       { detail: "A library job is running. Try again when it finishes." },
+      false,
       "A library job is running. Try again when it finishes.",
     ],
     [
       "a 422 sentence",
       422,
       { detail: "An include file sets this." },
+      false,
       "An include file sets this.",
+    ],
+    [
+      "a 422 with Apply's recovery line, after the write",
+      422,
+      {
+        detail: {
+          message: "Apply loaded config.yaml. beets refused it.",
+          recovery: "Your config is saved. Fix it and Apply again.",
+        },
+      },
+      true,
+      "Your config is saved. Fix it and Apply again.",
+    ],
+    [
+      "a 422 with no recovery line never says it saved",
+      422,
+      { detail: [{ loc: ["body"], msg: "Field required", type: "missing" }] },
+      false,
+      "Couldn’t change the import setting. Try again.",
     ],
     [
       "a 500 with Apply's recovery line",
@@ -2697,26 +2746,104 @@ describe("SettingsBeetsPage Import: Keep downloads", () => {
           recovery: "Your config is saved. Fix it and try again.",
         },
       },
+      true,
       "Your config is saved. Fix it and try again.",
     ],
     [
       "a 500 with no recovery line",
       500,
       { detail: "boom" },
+      true,
       "Your config is saved on disk — try again or restart MusicDrop.",
     ],
-  ])("a failed flip: %s", async (_name, status, body, text) => {
+  ])("a failed flip: %s", async (_name, status, body, wrote, text) => {
     defaultMocks();
-    flipStub(() => HttpResponse.json(body, { status }));
+    let answered = false;
+    server.use(
+      http.get(CONFIG_URL, () =>
+        HttpResponse.json(
+          snapshotFixture(
+            answered && wrote ? { apply_pending: true, sha256: "written" } : {},
+          ),
+        ),
+      ),
+    );
+    flipStub(() => {
+      answered = true;
+      return HttpResponse.json(body, { status });
+    });
     const user = userEvent.setup();
     renderPage();
     await findEditorContent();
-    await user.click(await findSwitch());
-    expect(await within(importSection()).findByRole("alert")).toHaveTextContent(
-      text,
+    const sw = await findSwitch();
+    await user.click(sw);
+    const alert = await within(importSection()).findByRole("alert");
+    expect(alert.textContent).toBe(text);
+    // Past the write the switch is locked, and the failure outranks the
+    // lock's reason line; before it nothing locks.
+    await waitFor(() =>
+      expect(sw).toHaveAttribute("aria-disabled", String(wrote)),
     );
+    expect(described(sw)).toEqual([HELP]);
+    expect(within(importSection()).getByRole("alert")).toBe(alert);
     // The refused flip leaves the thumb where the loaded setting puts it.
-    expect(await findSwitch()).not.toBeChecked();
+    expect(sw).not.toBeChecked();
+  });
+
+  /** A flip that writes config.yaml, then fails: the re-read says Apply is
+   * pending, so the switch locks under the failure. */
+  async function failPastTheWrite(user: ReturnType<typeof userEvent.setup>) {
+    let answered = false;
+    server.use(
+      http.get(CONFIG_URL, () =>
+        HttpResponse.json(
+          snapshotFixture(
+            answered ? { apply_pending: true, sha256: "written" } : {},
+          ),
+        ),
+      ),
+    );
+    const bodies = flipStub(() => {
+      answered = true;
+      return HttpResponse.json(
+        { detail: { message: "m", recovery: "Fix it and Apply again." } },
+        { status: 422 },
+      );
+    });
+    renderPage();
+    await findEditorContent();
+    const sw = await findSwitch();
+    await user.click(sw);
+    await within(importSection()).findByRole("alert");
+    await waitFor(() => expect(sw).toHaveAttribute("aria-disabled", "true"));
+    return { sw, bodies };
+  }
+
+  test("past the write, a press on the locked switch swaps the failure for the reason line", async () => {
+    defaultMocks();
+    const user = userEvent.setup();
+    const { sw, bodies } = await failPastTheWrite(user);
+
+    await user.click(sw);
+    await waitFor(() =>
+      expect(described(sw)).toEqual([HELP, "Apply saved changes first."]),
+    );
+    expect(within(importSection()).queryByRole("alert")).toBeNull();
+    expect(sw).toHaveFocus();
+    expect(bodies).toHaveLength(1);
+  });
+
+  test("past the write, Apply ends the failure", async () => {
+    defaultMocks();
+    // Held, so nothing but the press itself can end the failure.
+    server.use(http.post(APPLY_URL, () => new Promise<Response>(() => {})));
+    const user = userEvent.setup();
+    await failPastTheWrite(user);
+
+    await user.click(screen.getByRole("button", { name: /apply changes/i }));
+    await waitFor(() =>
+      expect(within(importSection()).queryByRole("alert")).toBeNull(),
+    );
   });
 
   test("a job 409 asks the job probes again, and the reason line names the job", async () => {
@@ -2780,7 +2907,25 @@ describe("SettingsBeetsPage Import: Keep downloads", () => {
     expect(within(importSection()).queryByRole("alert")).toBeNull();
   });
 
-  test("an Apply reads the setting again: a load is when imports pick it up", async () => {
+  test.each<[string, () => Response]>([
+    [
+      "a load is when imports pick it up",
+      () => HttpResponse.json(snapshotFixture({ apply_pending: false })),
+    ],
+    [
+      "its 422 after the load too",
+      () =>
+        HttpResponse.json(
+          {
+            detail: {
+              message: "Apply loaded config.yaml. beets refused it.",
+              recovery: "Fix it and Apply again.",
+            },
+          },
+          { status: 422 },
+        ),
+    ],
+  ])("an Apply reads the setting again: %s", async (_name, answer) => {
     let configReads = 0;
     defaultMocks();
     server.use(
@@ -2793,9 +2938,7 @@ describe("SettingsBeetsPage Import: Keep downloads", () => {
           }),
         );
       }),
-      http.post(APPLY_URL, () =>
-        HttpResponse.json(snapshotFixture({ apply_pending: false })),
-      ),
+      http.post(APPLY_URL, answer),
     );
     const opReads = operationReads((n) => (n === 1 ? "copy" : "hardlink"));
     const user = userEvent.setup();

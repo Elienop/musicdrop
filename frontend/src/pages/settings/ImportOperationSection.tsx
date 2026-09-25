@@ -39,20 +39,33 @@ export interface ImportSwitchGate {
 /**
  * The one reason line under the switch, first match, or null. Null while
  * beets reloads too: the switch is still off then, but the page's
- * `Reloading beets…` line already says why.
+ * `Reloading beets…` line already says why. Null when only the config can't
+ * be read: that read fails on the server or the network (a bad config.yaml
+ * reads as an empty document), so nothing on the page can fix it, and the
+ * config's own error line says what happened.
  */
 export function importSwitchReason(gate: ImportSwitchGate): string | null {
   if (gate.reloading) return null;
   if (gate.job !== null) return `Available when ${gate.job} finishes.`;
   if (gate.editing) return "Save or cancel your edits first.";
   if (gate.applyPending) return "Apply saved changes first.";
-  if (gate.configUnreadable) return "Fix config.yaml below.";
   return null;
 }
 
 /** True when the switch cannot be used now, with or without a reason line. */
 export function importSwitchLocked(gate: ImportSwitchGate): boolean {
-  return gate.reloading || importSwitchReason(gate) !== null;
+  return (
+    gate.reloading ||
+    gate.configUnreadable ||
+    importSwitchReason(gate) !== null
+  );
+}
+
+/** The line shown when the setting can't be read: the server's own sentence
+ * for its 422 (beets can't read `import:`), else the fixed one. */
+export function importLoadFailure(err: ConfigOpError | Error): string {
+  if ("status" in err && err.status === 422) return err.message;
+  return "Couldn’t read the import setting.";
 }
 
 /**
@@ -60,7 +73,9 @@ export function importSwitchLocked(gate: ImportSwitchGate): boolean {
  * with a string detail) is shown as sent. The Save's 409 conflict body says
  * the file changed; the refetch that follows every flip carries the new sha,
  * so trying again is the whole recovery. A 500 is Apply's, and says what
- * Apply's alert says.
+ * Apply's alert says. So does a 422 carrying Apply's recovery line: the file
+ * was written and the reload refused it. A 422 without one wrote nothing, so
+ * it never says the config was saved.
  */
 export function importSwitchFailure(err: ConfigOpError | Error): string {
   const status = "status" in err ? err.status : 0;
@@ -75,6 +90,10 @@ export function importSwitchFailure(err: ConfigOpError | Error): string {
       "current_sha256" in detail
     ) {
       return "config.yaml changed. Try again.";
+    }
+    if (status === 422) {
+      const recovery = applyRecoveryHint(err as ConfigOpError);
+      if (recovery !== null) return recovery;
     }
   }
   if (status >= 500) {
@@ -92,10 +111,14 @@ export function importSwitchFailure(err: ConfigOpError | Error): string {
  * the page swallows the change, so a keyboard user who pressed it keeps focus
  * on it and hears the reason line through `aria-describedby`. The primitive
  * styles only `disabled:`, hence `aria-disabled:opacity-50` here.
+ *
+ * A failure outranks the reason line. A flip that fails after it wrote the
+ * file leaves the switch locked ("Apply saved changes first."), and that lock
+ * must not hide why. The page clears the failure on the user's next action.
  */
 export function ImportOperationSection({
   operation,
-  loadFailed,
+  loadFailure,
   ready,
   checked,
   locked,
@@ -105,7 +128,8 @@ export function ImportOperationSection({
 }: Readonly<{
   /** What imports use now, once read. */
   operation: FileOperation | undefined;
-  loadFailed: boolean;
+  /** Why the setting can't be read ({@link importLoadFailure}), or null. */
+  loadFailure: string | null;
   /** Both the operation and the config snapshot have answered. */
   ready: boolean;
   checked: boolean;
@@ -114,20 +138,21 @@ export function ImportOperationSection({
   failure: string | null;
   onCheckedChange: (on: boolean) => void;
 }>) {
-  if (loadFailed) {
+  if (loadFailure !== null) {
     return (
       <SettingsSection title="Import">
         <p className="text-destructive text-sm" role="alert">
-          Couldn&rsquo;t read the import setting.
+          {loadFailure}
         </p>
       </SettingsSection>
     );
   }
 
-  const note = reason === null && operation ? NOTE[operation] : undefined;
+  const reasonLine = failure === null ? reason : null;
+  const note = reasonLine === null && operation ? NOTE[operation] : undefined;
   const describedBy = [
     HELP_ID,
-    reason === null ? null : REASON_ID,
+    reasonLine === null ? null : REASON_ID,
     note === undefined ? null : NOTE_ID,
   ]
     .filter((id) => id !== null)
@@ -157,9 +182,9 @@ export function ImportOperationSection({
           <p id={HELP_ID} className="text-muted-foreground text-xs">
             Hardlinks share tag changes.
           </p>
-          {reason !== null && (
+          {reasonLine !== null && (
             <p id={REASON_ID} className="text-muted-foreground text-xs">
-              {reason}
+              {reasonLine}
             </p>
           )}
           {note !== undefined && (

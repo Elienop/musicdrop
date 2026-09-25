@@ -170,7 +170,11 @@ export function useApplyConfig() {
       // a long rebuild could leave it stale. The key here must stay in
       // lockstep with `useActiveImport`'s `queryKey: ["active-import"]`.
       void queryClient.invalidateQueries({ queryKey: ["active-import"] });
-      // What imports use is read at every load, so an Apply can change it.
+    },
+    onSettled: () => {
+      // What imports use is read at every load, so an Apply can change it. On
+      // failure too: the 422 "Apply loaded config.yaml. …" has loaded the new
+      // setting all the same.
       void queryClient.invalidateQueries({ queryKey: IMPORT_OPERATION_KEY });
     },
   });

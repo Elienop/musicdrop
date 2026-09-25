@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { client } from "@/api/client";
-import { unwrap } from "@/api/lib";
+import { detailMessage, unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
 import {
   type BeetsConfigSnapshot,
@@ -37,15 +37,22 @@ export const IMPORT_OPERATION_LINE: Record<FileOperation, string> = {
  * read at boot or at the last Apply, never the file as it stands. A saved but
  * unapplied edit therefore does not change it; an Apply or the Keep downloads
  * switch does, and both invalidate this key.
+ *
+ * A 422 (beets can't read `import:`) throws a {@link ConfigOpError} whose
+ * message is the server's sentence, which the switch shows in place of its
+ * load error. Every other failure throws a plain `Error`.
  */
 export function useImportOperation() {
-  return useQuery({
+  return useQuery<FileOperation, ConfigOpError | Error>({
     queryKey: IMPORT_OPERATION_KEY,
-    queryFn: async (): Promise<FileOperation> =>
-      unwrap(
-        await client.GET("/api/config/import-operation"),
-        "Failed to load the import setting",
-      ).operation,
+    queryFn: async (): Promise<FileOperation> => {
+      const result = await client.GET("/api/config/import-operation");
+      const sentence = detailMessage(result.error);
+      if (result.response.status === 422 && sentence !== null) {
+        throw configOpError(sentence, 422, result.error);
+      }
+      return unwrap(result, "Failed to load the import setting").operation;
+    },
   });
 }
 

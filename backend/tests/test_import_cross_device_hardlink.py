@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import errno
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -92,4 +93,28 @@ def test_another_placement_failure_keeps_beets_text(
 
     assert len(run.errors) == 1
     assert run.errors[0].startswith("FilesystemError: ")
+    assert CROSS_DEVICE_HARDLINK not in run.errors[0]
+
+
+def test_a_cross_device_copy_keeps_beets_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``copy_file_range(2)`` answers ``EXDEV`` too, and a beets whose copy let it
+    through would raise the same class around the same ``OSError``. Only beets'
+    verb says it was not a hardlink, so a copy config never reads "turn off
+    Keep downloads"."""
+    _install_lookup(monkeypatch, BeetsRec.strong)
+    lib = _library(tmp_path, "copy")
+    source = _source_folder(tmp_path)
+
+    def refuse(src: Any, dst: Any, *args: Any, **kwargs: Any) -> None:
+        raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), src, None, dst)
+
+    monkeypatch.setattr(shutil, "copyfile", refuse)  # what beets' ``util.copy`` calls
+
+    run = _import(lib, source, ImportBridge())
+
+    assert len(run.errors) == 1
+    assert run.errors[0].startswith("FilesystemError: ")
+    assert "while copying" in run.errors[0]  # beets' own verb reached the job
     assert CROSS_DEVICE_HARDLINK not in run.errors[0]
