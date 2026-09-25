@@ -52,8 +52,8 @@ def test_validate_returns_yaml_parse_error(client: TestClient) -> None:
 
 
 def test_validate_refuses_a_reused_anchor_as_beets_does(client: TestClient) -> None:
-    """Measured before: clean, where beets' loader refuses the file. The text is the
-    operator's own, sent back to them, as for every parse row."""
+    """Measured before: clean, where beets' loader refuses the file. The text is
+    beets' loader's own (PyYAML), sent back to the operator who typed it."""
     text = "directory: /tmp/music\nlibrary: /tmp/x\nplex:\n  token: &a Zq7Secret\n  user: &a u\n"
 
     r = client.post("/api/config/validate", json={"yaml_text": text})
@@ -66,11 +66,11 @@ def test_validate_refuses_a_reused_anchor_as_beets_does(client: TestClient) -> N
                 "msg": "found duplicate anchor 'a'; first occurrence\n"
                 '  in "<unicode string>", line 4, column 10:\n'
                 "      token: &a Zq7Secret\n"
-                "             ^ (line: 4)\n"
+                "             ^\n"
                 "second occurrence\n"
                 '  in "<unicode string>", line 5, column 9:\n'
                 "      user: &a u\n"
-                "            ^ (line: 5)",
+                "            ^",
                 "type": "yaml_parse",
                 "line": 5,
                 "column": 8,
@@ -156,7 +156,8 @@ def test_validate_returns_all_distinct_schema_errors(client: TestClient, tmp_pat
     assert "match.strong_rec_thresh" in locs
 
 
-_NOT_A_BOOL = "Value error, must be a bool: write yes or no, without quotes"
+#: confuse's own text for ``.get(bool)`` on a string (``confuse/templates.py``).
+_NOT_A_BOOL = "must be a bool, not str"
 
 
 def test_validate_refuses_a_quoted_and_an_unquoted_string_for_a_filing_flag(
@@ -164,7 +165,8 @@ def test_validate_refuses_a_quoted_and_an_unquoted_string_for_a_filing_flag(
 ) -> None:
     """The old text said "write y without the quotes" for an unquoted ``y``.
 
-    beets reads both as strings and refuses them (``must be a bool, not str``).
+    beets reads both as strings and refuses them (``must be a bool, not str``);
+    the row is beets' sentence, split so the editor prints the key once.
     """
     text = _head(tmp_path) + "import:\n  copy: 'no'\n  move: y\n"
 
@@ -176,7 +178,7 @@ def test_validate_refuses_a_quoted_and_an_unquoted_string_for_a_filing_flag(
             {
                 "loc": f"import.{key}",
                 "msg": _NOT_A_BOOL,
-                "type": "value_error",
+                "type": "beets_read",
                 "line": line,
                 "column": 8,
             }
@@ -186,30 +188,48 @@ def test_validate_refuses_a_quoted_and_an_unquoted_string_for_a_filing_flag(
     }
 
 
-@pytest.mark.parametrize("value", ["n", "'no'"])
-@pytest.mark.parametrize("key", ["write", "autotag", "singletons", "incremental"])
-def test_validate_refuses_a_string_for_every_other_import_bool(
+@pytest.mark.parametrize("value", ["n", "'no'", "1"])
+@pytest.mark.parametrize("key", ["write", "delete", "remux_mp3_in_wav"])
+def test_validate_refuses_a_non_bool_for_every_other_switch_beets_reads_typed(
     client: TestClient, tmp_path: Path, key: str, value: str
 ) -> None:
-    """Pydantic read ``n`` and ``'no'`` as False here. beets refuses ``write: n``
-    (``.get(bool)``) and reads the other three as on (a bare ``if``)."""
+    """beets reads these with ``.get(bool)`` (``importer/stages.py:385``,
+    ``importer/tasks.py:510,1475``). Pydantic read ``n`` and ``'no'`` as False
+    here and ``1`` as True, so ``write: 1`` used to save and fail every import."""
     text = _head(tmp_path) + f"import:\n  {key}: {value}\n"
 
     r = client.post("/api/config/validate", json={"yaml_text": text})
 
     assert r.status_code == 200
+    kind = "int" if value == "1" else "str"
     assert r.json() == {
         "errors": [
             {
                 "loc": f"import.{key}",
-                "msg": _NOT_A_BOOL,
-                "type": "value_error",
+                "msg": f"must be a bool, not {kind}",
+                "type": "beets_read",
                 "line": 4,
                 "column": len(f"  {key}: "),
             }
         ],
         "advisories": [],
     }
+
+
+@pytest.mark.parametrize("key", ["autotag", "singletons", "incremental", "link", "hardlink"])
+def test_validate_leaves_a_switch_beets_reads_untyped_to_beets(
+    client: TestClient, tmp_path: Path, key: str
+) -> None:
+    """beets tests these with a bare ``if`` and never refuses one
+    (``importer/session.py:99-138``), so neither does Validate (owner ruling
+    2026-09-25: the ``import.*`` switches beets reads TYPED). ``'no'`` reads as
+    on there; that trap is recorded in BACKLOG.md with ``asciify_paths: 'no'``."""
+    text = _head(tmp_path) + f"import:\n  {key}: 'no'\n"
+
+    r = client.post("/api/config/validate", json={"yaml_text": text})
+
+    assert r.status_code == 200
+    assert r.json()["errors"] == []
 
 
 def test_validate_reads_a_file_with_a_document_marker_as_yaml_1_1(
@@ -229,7 +249,7 @@ def test_validate_reads_a_file_with_a_document_marker_as_yaml_1_1(
             {
                 "loc": "import.move",
                 "msg": _NOT_A_BOOL,
-                "type": "value_error",
+                "type": "beets_read",
                 "line": 7,
                 "column": 8,
             }

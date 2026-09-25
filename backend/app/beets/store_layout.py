@@ -86,7 +86,7 @@ class StoreLayoutError(Exception):
     ``config_key`` — the ``config.yaml`` key the editor paints, ``None`` between
     two env-derived paths. ``unusable_value`` — set on the two ONE-value
     refusals (would not resolve, cannot be stat'd), read by
-    ``store_layout_report`` to drop a row the schema already painted: a
+    the Validate check (``app/beets/config_check.py``) to drop a row the schema already painted: a
     ``directory:`` holding a NUL produced two rows saying the same thing.
     ``headline`` — the pair alone, which Apply's 422 is built from.
     """
@@ -605,7 +605,7 @@ def checked_reachable_store_dirs(settings: Settings, handle: LibraryHandle) -> t
 
 # The five Trash-chain refusals below carry no ``config_key``: the value at
 # fault is ``MUSICDROP_TRASH_DIR``, which is env-derived and not a
-# ``config.yaml`` key the editor can paint. ``store_layout_report`` reaches them
+# ``config.yaml`` key the editor can paint. The Validate check reaches them
 # through :func:`_check_trash_is_reachable` and falls back to ``directory:``,
 # which is the line the editor can act from — so this is deliberate rather than
 # an omission to "fix".
@@ -1321,7 +1321,7 @@ def _ensure_trash_root(
 def _check_trash_is_reachable(*, music_dir: Path, settings: Settings, trash_dir: Path) -> None:
     """Raise the refusal a destructive request would, without creating anything.
 
-    ``store_layout_report`` painted Settings from the rows alone and the
+    The Validate check painted Settings from the rows alone and the
     reachability walk lives at the destructive call sites, so a Trash below the
     music root through a symlinked component read HEALTHY where the operator
     configures it while every delete, restore and Empty-Trash answered 503
@@ -1635,6 +1635,18 @@ class EffectivePaths(NamedTuple):
     skipped: tuple[SkippedInclude, ...] = ()
 
 
+class LoadedCandidate(NamedTuple):
+    """``document`` layered the way beets layers config.yaml, includes merged.
+
+    ``error`` is the include refusal that stopped the merge, if any; ``config``
+    then holds the includes merged before it.
+    """
+
+    config: confuse.Configuration
+    skipped: tuple[SkippedInclude, ...] = ()
+    error: StoreLayoutError | None = None
+
+
 def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> EffectivePaths:
     """The ``directory:`` and ``library:`` beets would LOAD from ``document``.
 
@@ -1650,6 +1662,20 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
     so this raises a row painted on ``include:``. ``skipped`` names the includes
     beets drops and this gate did not merge, as written in ``include:``, with
     why: beets prints them and carries on, and Apply and boot refuse them.
+    """
+    loaded = load_candidate(document, beets_dir)
+    if loaded.error is not None:
+        raise loaded.error
+    directory, library = _loaded_paths(loaded.config, str(beets_dir / "config.yaml"))
+    return EffectivePaths(directory, library, loaded.skipped)
+
+
+def load_candidate(document: Mapping[str, Any], beets_dir: Path) -> LoadedCandidate:
+    """``document`` over beets' defaults, with its ``include:`` files merged on top.
+
+    The include gate of :func:`effective_config_paths`: its refusal comes back
+    in ``error`` rather than raised, so a caller can still ask the typed reads
+    of what was merged.
     """
     cfg = _CandidateConfig(beets_dir)
     # Defaults first, so the document sits ABOVE them: `library: library.db` and
@@ -1704,9 +1730,12 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
         # include nested past the recursion limit. Measured, all four escaped the
         # old ``except confuse.ConfigError`` and the three routes answered a bare
         # 500 or reported the document CLEAN.
-        raise _unreadable_include(f"{written!r}: {exc}" if written else str(exc)) from exc
-    directory, library = _loaded_paths(cfg, str(beets_dir / "config.yaml"))
-    return EffectivePaths(directory, library, tuple(skipped))
+        error = _unreadable_include(f"{written!r}: {exc}" if written else str(exc))
+        error.__cause__ = exc
+        return LoadedCandidate(cfg, tuple(skipped), error)
+    except StoreLayoutError as exc:
+        return LoadedCandidate(cfg, tuple(skipped), exc)
+    return LoadedCandidate(cfg, tuple(skipped))
 
 
 class LayoutCheck(NamedTuple):
@@ -1730,11 +1759,20 @@ def layout_check_for_config(
     they are env-derived, and the two values that move through the editor are the
     two :func:`effective_config_paths` reads back out of the document.
     """
-    skipped: tuple[SkippedInclude, ...] = ()
+    return layout_check_for_candidate(load_candidate(document, handle.beets_dir), settings, handle)
+
+
+def layout_check_for_candidate(
+    loaded: LoadedCandidate, settings: Settings, handle: LibraryHandle
+) -> LayoutCheck:
+    """:func:`layout_check_for_config` over a candidate :func:`load_candidate` built."""
+    skipped = loaded.skipped
     try:
-        paths = effective_config_paths(document, handle.beets_dir)
-        skipped = paths.skipped
-        raw_directory, raw_library = paths.directory, paths.library
+        if loaded.error is not None:
+            raise loaded.error
+        raw_directory, raw_library = _loaded_paths(
+            loaded.config, str(handle.beets_dir / "config.yaml")
+        )
         if raw_directory is None or raw_library is None:
             return LayoutCheck(None, skipped)
         trash, origins = _resolve_store_dirs(settings, handle)

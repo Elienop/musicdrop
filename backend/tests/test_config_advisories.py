@@ -11,9 +11,10 @@ What each test pins:
 
 * the rule fires only when the user's config actually SETS the key — an omitted
   key is not an opinion, so it gets no advisory;
-* the rule fires on a VALID value. ``validate_known_keys`` already raises for
-  invalid ones, so an invalid value must stay on the errors channel alone and
-  produce no advisory (no double-reporting);
+* the rule fires on a VALID value. beets' typed reads refuse the invalid ones
+  of the keys beets reads typed (``app/beets/config_check.py``), so an invalid
+  value stays on the errors channel alone and produces no advisory (no
+  double-reporting);
 * every message makes the in-app vs CLI distinction. None of these keys is
   globally inert: it is beets' own config file, so ``beet import`` run from the
   command line outside MusicDrop still honours all four.
@@ -23,14 +24,18 @@ from __future__ import annotations
 
 from typing import get_args
 
+import beets
+import yaml as pyyaml
 from beets.importer import DuplicateAction
 
-from app.beets.config_editor import parse_yaml, validate_known_keys
+from app.beets.config_check import check_config_text, load_config_text
+from app.config import Settings
 from app.models.config_editor import ConfigAdvisory, ImportSection, import_advisories
 
 
 def _advise(yaml_text: str) -> list[ConfigAdvisory]:
-    return import_advisories(parse_yaml(yaml_text))
+    """The advisories of ``yaml_text`` read as Validate reads it, with beets' loader."""
+    return import_advisories(load_config_text(yaml_text))
 
 
 def _keys(advisories: list[ConfigAdvisory]) -> set[str]:
@@ -80,7 +85,8 @@ def test_the_editor_accepts_exactly_the_duplicate_actions_beets_accepts() -> Non
     offered = set(get_args(ImportSection.model_fields["duplicate_action"].annotation))
     assert offered == beets_values
     for value in sorted(beets_values):
-        errors = validate_known_keys(parse_yaml(f"import:\n  duplicate_action: {value}\n"))
+        text = f"import:\n  duplicate_action: {value}\n"
+        errors = check_config_text(text, settings=Settings(), handle=None).errors
         # Only this key is under test; the fragment omits the required roots.
         assert [e for e in errors if e.loc.startswith("import")] == [], value
 
@@ -259,9 +265,10 @@ def test_non_mapping_import_section_yields_no_advisories() -> None:
 
 
 def test_non_mapping_root_yields_no_advisories() -> None:
-    """``parse_yaml("")`` returns ``None`` — a cleared editor buffer."""
-    assert import_advisories(parse_yaml("")) == []
-    assert import_advisories(parse_yaml("- a\n- b\n")) == []
+    """beets' loader returns ``None`` for a cleared editor buffer, and a list for
+    a document Validate refuses before it asks for advisories."""
+    assert import_advisories(pyyaml.load("", Loader=beets.config.loader)) == []
+    assert import_advisories(pyyaml.load("- a\n- b\n", Loader=beets.config.loader)) == []
 
 
 def test_invalid_value_yields_no_advisory_because_errors_owns_it() -> None:
@@ -276,7 +283,7 @@ def test_one_invalid_value_does_not_mute_the_other_rules() -> None:
     assert _keys(advisories) == {"import.singletons"}
 
 
-def test_a_quoted_boolean_is_refused_because_beets_reads_it_as_true() -> None:
+def test_a_quoted_boolean_gets_no_advisory_because_beets_reads_it_as_true() -> None:
     """The one divergence that moves files against the user's intent.
 
     Pydantic's lax bool reads ``'no'`` as False; beets tests these flags with a
@@ -285,9 +292,10 @@ def test_a_quoted_boolean_is_refused_because_beets_reads_it_as_true() -> None:
     MOVE they believed they had turned off. Measured divergence before the fix:
     ``'no'``, ``'off'``, ``'false'``, ``'0'`` — editor False, beets True.
 
-    Unquoted ``no`` parses to a real bool in ruamel and never reaches the
-    validator, so ordinary configs are untouched; this refuses a string only
-    (quoted, or an unquoted ``y`` beets also reads as one), and says how to fix it.
+    ``ImportSection`` now only reads values for the advisories: it refuses a
+    string, so no advisory is built on a value beets reads the other way. The
+    Save refusal is beets' own ``.get(bool)`` for ``copy``/``move``/``write``/
+    ``delete`` (``app/beets/config_check.py``).
     """
     import pytest
     from pydantic import ValidationError

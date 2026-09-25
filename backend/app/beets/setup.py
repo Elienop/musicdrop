@@ -20,6 +20,7 @@ from typing import Any, Final
 import beets
 import confuse
 from beets import metadata_plugins, plugins
+from beets.exceptions import UserError
 from beets.library import Library
 from beets.plugins import BeetsPlugin
 
@@ -64,9 +65,11 @@ class ConfigFileMissing(ConfigUnreadable):
 
 
 #: What a config beets cannot use raises, at the read or while plugins load
-#: (a ``ConfigTypeError`` such as ``musicbrainz: no``). Exported so ``main.py``
-#: can name the file without importing confuse (CLAUDE.md rule 3).
-CONFIG_ERRORS: Final = (ConfigUnreadable, confuse.ConfigError)
+#: (a ``ConfigTypeError`` such as ``musicbrainz: no``), or when the library opens:
+#: beets' ``UserError`` for a malformed ``replace:`` pattern
+#: (``beets/library/library.py:64-71``). Exported so ``main.py`` can name the
+#: file without importing confuse or beets (CLAUDE.md rule 3).
+CONFIG_ERRORS: Final = (ConfigUnreadable, confuse.ConfigError, UserError)
 
 
 def _named(exc: Exception) -> str:

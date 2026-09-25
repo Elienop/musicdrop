@@ -6,8 +6,7 @@ page, not a public Pydantic export.
 
 Per Pydantic v2 docs (https://docs.pydantic.dev/latest/concepts/models/) the
 default ``extra='ignore'`` is exactly what we want: we validate, never
-re-emit. Unknown beets / plugin keys survive on disk in the ruamel
-``CommentedMap`` (the file-canonical posture from Layers 1+2 holds).
+re-emit. Save writes the submitted text itself, so every key survives on disk.
 """
 
 from __future__ import annotations
@@ -52,7 +51,7 @@ def loc_to_dot_sep(loc: tuple[str | int, ...]) -> str:
 #: ``ValueError`` from a validator into a row and lets the other two escape, so
 #: every one of them has to become a ``ValueError`` here or the route answers
 #: 500 — measured: a ``directory:`` that is a self-referencing symlink raised
-#: ``RuntimeError`` out of ``validate_known_keys``, and both
+#: ``RuntimeError`` out of the schema check, and both
 #: ``POST /api/config/validate`` and ``POST /api/config/save`` answered 500.
 _UNRESOLVABLE = (OSError, RuntimeError, ValueError)
 
@@ -132,26 +131,13 @@ WritablePath = Annotated[Path, AfterValidator(_writable_path)]
 LibraryFile = Annotated[Path, AfterValidator(_library_file)]
 
 
-PluginName = Literal[
-    "musicbrainz",
-    "deezer",
-    "spotify",
-    "discogs",
-    "beatport",
-    "tidal",
-    "lyrics",
-    "fetchart",
-    "chroma",
-    "lastgenre",
-    "embedart",
-    "replaygain",
-    "scrub",
-]
-
-
 class ImportSection(BaseModel):
-    """Validates the ``import:`` block. ``extra='ignore'`` is explicit only for
-    clarity — it's the Pydantic v2 default and we never re-emit.
+    """Reads the ``import:`` block for :func:`import_advisories`. ``extra='ignore'``
+    is explicit only for clarity — it's the Pydantic v2 default and we never re-emit.
+
+    Not a refusal: beets' own typed reads of these keys are what Validate and
+    Save refuse on (``app/beets/config_check.py``). A value this refuses gets no
+    advisory.
 
     The ``copy`` field name is dictated by beets' YAML key (``import.copy``);
     it shadows ``BaseModel.copy()`` but Pydantic v2 only emits a UserWarning
@@ -222,17 +208,18 @@ class MatchSection(BaseModel):
 
 
 class KnownKeysSchema(BaseModel):
-    """Validates only the ~13 keys MusicDrop models. Default ``extra='ignore'``
-    means unknown beets/plugin keys are dropped silently here — they survive
-    on disk because we save the ruamel ``CommentedMap``, never re-emit from
-    this model (per Pydantic v2 docs Models)."""
+    """MusicDrop's own policies beets does not have: ``directory:`` and
+    ``library:`` required and usable, and the match thresholds at most 1.
+
+    beets decides everything else, plugin names included (owner ruling
+    2026-09-25): its typed reads run first (``app/beets/config_check.py``), and a
+    key they refuse gets no row from here. Default ``extra='ignore'``: Save
+    writes the submitted text, never this model."""
 
     model_config = ConfigDict(extra="ignore")
 
     directory: WritablePath
     library: LibraryFile
-    plugins: list[PluginName] = Field(default_factory=list)
-    import_: ImportSection = Field(default_factory=ImportSection, alias="import")
     match: MatchSection = Field(default_factory=MatchSection)
 
 
@@ -242,8 +229,8 @@ class ValidationErrorItem(BaseModel):
     (CodeMirror reference manual)."""
 
     loc: str
-    """Dotted path, e.g. ``"import.copy"``. Empty for a YAML parse error or a file
-    that cannot be read or written."""
+    """Dotted path, e.g. ``"import.copy"``. Empty for a YAML parse error, a file
+    that cannot be read or written, or a message that names its key itself."""
 
     msg: str
     type: str
@@ -260,9 +247,9 @@ class ConfigAdvisory(BaseModel):
     # fires on is one both this app and beets accept. Two sources today — an
     # ``import:`` key MusicDrop overrides, and an ``include:`` entry beets drops.
     #
-    # No ``line``/``column``: resolving those needs the ruamel ``CommentedMap``
-    # accessor that lives behind the beets adapter (``_line_col_for_path``), and
-    # this module is import-clean of beets. ``key`` is the dotted path in the
+    # No ``line``/``column``: resolving those needs the composed YAML the beets
+    # adapter holds (``app/beets/config_check.py``), and this module is
+    # import-clean of beets. ``key`` is the dotted path in the
     # same shape as ``ValidationErrorItem.loc``, which is enough to name the
     # setting.
 
@@ -377,8 +364,8 @@ def _always_moves_advisory(key: str) -> Callable[[ImportSection], str | None]:
 #: ``import:`` plus a predicate over the parsed section that returns the message
 #: or ``None``.
 #:
-#: These are DELIBERATE semantic rules, not tightened types. ``validate_known_keys``
-#: already raises for an invalid value on any modeled key; nothing fires for
+#: These are DELIBERATE semantic rules, not tightened types. beets' typed reads
+#: refuse an invalid value of the keys it reads typed; nothing fires for
 #: ``autotag: false`` because ``false`` is a perfectly valid bool. What the user
 #: has no way to learn is that MusicDrop overrides it (``run_import_worker``
 #: snapshots, forces and restores these keys around every session —
@@ -414,11 +401,11 @@ _IMPORT_ADVISORY_RULES: Final[tuple[tuple[str, Callable[[ImportSection], str | N
 def import_advisories(data: object) -> list[ConfigAdvisory]:
     """Collect advisories for ``import:`` keys MusicDrop overrides.
 
-    ``data`` is the parsed YAML root — typed ``object`` rather than
-    ``CommentedMap`` on purpose: ``parse_yaml("")`` returns ``None`` for a
-    cleared editor buffer, and a document whose root is a list or a scalar
-    parses fine too. Every non-mapping shape simply has no ``import:`` section
-    to advise on, and the errors channel is what tells the user about it.
+    ``data`` is the parsed YAML root — typed ``object`` rather than a mapping
+    on purpose: a parse of ``""`` returns ``None`` for a cleared editor buffer,
+    and a document whose root is a list or a scalar parses fine too. Every
+    non-mapping shape simply has no ``import:`` section to advise on, and the
+    errors channel is what tells the user about it.
 
     Two rules about when this stays silent:
 
@@ -427,10 +414,10 @@ def import_advisories(data: object) -> list[ConfigAdvisory]:
       is read from the raw mapping — ``ImportSection``'s defaults would make
       every config look like it had set all seven.
     * **Only VALID values.** Each key is validated on its own through
-      ``ImportSection`` (which coerces YAML 1.1 ``no``/``yes`` the same way the
-      schema pass does). A value that fails is left alone: ``validate_known_keys``
-      is already reporting it on the errors channel, and one bad key must not
-      mute the rules for its siblings.
+      ``ImportSection``. A value that fails is left alone, and one bad key must
+      not mute the rules for its siblings. For the keys beets reads typed, the
+      errors channel reports it; a string in a key beets reads as a bare ``if``
+      (``link: 'no'``) gets neither, a recorded residual.
     """
     if not isinstance(data, Mapping):
         return []

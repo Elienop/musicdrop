@@ -43,7 +43,11 @@ def test_config_saves_hold_the_save_lock_during_write(
 
     monkeypatch.setattr(ce, "atomic_write", spy)
 
-    save_naming(beets_library, SaveNamingRequest(rules=[], replace=[], base_sha256=_sha(cfg_path)))
+    save_naming(
+        beets_library,
+        SaveNamingRequest(rules=[], replace=[], base_sha256=_sha(cfg_path)),
+        settings=Settings(),
+    )
     save(
         beets_library,
         SaveRequest(yaml_text=cfg_path.read_text() + "\n# x\n", base_sha256=_sha(cfg_path)),
@@ -93,7 +97,7 @@ def test_save_naming_roundtrip_preserves_other_keys_and_comments(
         replace=[ReplaceRuleInput(pattern="[?]", replacement="_")],
         base_sha256=_sha(cfg_path),
     )
-    save_naming(beets_library, req)
+    save_naming(beets_library, req, settings=Settings())
     text = cfg_path.read_text()
     assert "# my config" in text  # comment preserved
     assert "# where music lives" in text  # inline comment preserved
@@ -127,11 +131,11 @@ def test_save_naming_keeps_boolean_token_replace_rules_as_strings(
         ],
         base_sha256=_sha(cfg_path),
     )
-    save_naming(beets_library, req)
+    save_naming(beets_library, req, settings=Settings())
     text = cfg_path.read_text()
 
     assert "%YAML" not in text  # directive prologue stripped (M5)
-    # read_naming (ruamel, version 1.1) round-trips them as strings, not bool tokens.
+    # read_naming (beets' own loader) reads them back as strings, not bool tokens.
     rules = [(r.pattern, r.replacement) for r in read_naming(beets_library).replace]
     assert rules == [("no", "_"), ("[<>]", "off"), ("ñ", "y")]
     # confuse/beets load path is PyYAML (YAML 1.1): keys AND values must be str —
@@ -145,14 +149,14 @@ def test_save_naming_empty_rules_drops_paths_key(beets_library: LibraryHandle) -
     cfg_path = beets_library.config_path
     cfg_path.write_text("directory: /tmp/music\nlibrary: library.db\npaths:\n  default: $title\n")
     req = SaveNamingRequest(rules=[], replace=[], base_sha256=_sha(cfg_path))
-    save_naming(beets_library, req)
+    save_naming(beets_library, req, settings=Settings())
     assert "paths:" not in cfg_path.read_text()
 
 
 def test_save_naming_409_on_stale_sha(beets_library: LibraryHandle) -> None:
     req = SaveNamingRequest(rules=[], replace=[], base_sha256="stale")
     with pytest.raises(HTTPException) as ei:
-        save_naming(beets_library, req)
+        save_naming(beets_library, req, settings=Settings())
     assert ei.value.status_code == 409
 
 
@@ -164,7 +168,7 @@ def test_save_naming_422_on_bad_regex(beets_library: LibraryHandle) -> None:
         base_sha256=_sha(cfg_path),
     )
     with pytest.raises(HTTPException) as ei:
-        save_naming(beets_library, req)
+        save_naming(beets_library, req, settings=Settings())
     assert ei.value.status_code == 422
 
 
@@ -247,7 +251,7 @@ def test_save_naming_skips_empty_query_custom_row(beets_library: LibraryHandle) 
         replace=[],
         base_sha256=_sha(cfg_path),
     )
-    save_naming(beets_library, req)
+    save_naming(beets_library, req, settings=Settings())
     text = cfg_path.read_text()
     assert "''" not in text  # no stray empty-query key written
     assert "paths:" not in text  # the empty-query row was the only rule -> key dropped

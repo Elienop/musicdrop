@@ -11,17 +11,11 @@ from typing import Final
 
 from fastapi import APIRouter, Request
 
+from app.beets.config_check import check_config_text
 from app.beets.config_editor import (
-    NOT_A_MAPPING,
-    StoreLayoutReport,
     _settings,
-    parse_error_text,
-    parse_yaml,
     read_naming,
     save_naming,
-    settings_mapping,
-    store_layout_report,
-    validate_known_keys,
 )
 from app.beets.config_editor import apply as apply_config_op
 from app.beets.config_editor import save as save_config_op
@@ -37,8 +31,6 @@ from app.models.config_editor import (
     SaveRequest,
     ValidateRequest,
     ValidateResponse,
-    ValidationErrorItem,
-    import_advisories,
 )
 from app.models.errors import (
     ConfigSaveConflictDetail,
@@ -84,9 +76,9 @@ _SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
     (
         # The rows carry a 1-based line and 0-based column where there is one,
         # and a malformed request body answers with FastAPI's own shape instead.
-        "The YAML did not parse, a key has the wrong shape, its directory:/library:"
-        " would break the store layout, or config.yaml on disk cannot be read or written; the"
-        " body lists one item per problem."
+        "beets could not read the YAML or a value in it, an include would be skipped, its"
+        " directory:/library: would break the store layout, or config.yaml on disk cannot be"
+        " read or written; the body lists one item per problem."
     ),
 )
 
@@ -102,9 +94,9 @@ _NAMING_SAVE_VALIDATION_RESPONSE: Final = validation_or_model_422(
     NamingValidationErrorDetail,
     (
         "A submitted replace: pattern is not a valid regular expression, or"
-        " config.yaml on disk cannot be read or written, does not parse or is not a mapping; the"
-        " body names the problem. A malformed request body answers with FastAPI's validation"
-        " shape instead."
+        " config.yaml on disk cannot be read or written, does not parse, is not a mapping or"
+        " would not pass Validate; the body names the problem. A malformed request body answers"
+        " with FastAPI's validation shape instead."
     ),
 )
 
@@ -122,75 +114,22 @@ def validate_config(req: ValidateRequest, request: Request) -> ValidateResponse:
     # the operation's OpenAPI description, and these paragraphs are about how
     # this file works rather than about the endpoint's contract.
     #
-    # ``request`` is taken for the settings + live handle the containment check
-    # needs: whether a ``directory:`` is acceptable is not a property of the
-    # document alone, it depends on where MUSICDROP_TRASH_DIR,
-    # MUSICDROP_TRASH_ORIGINS_DIR and MUSICDROP_BEETS_DIR resolve. Same helper
-    # ``config_editor.save`` calls, so the gutter and the Save refusal are
-    # computed from one function.
-    try:
-        parsed = parse_yaml(req.yaml_text)
-    # Broad: parsing changes nothing, so whatever it raises is a parse error.
-    # Measured beyond YAMLError: RecursionError past the nesting limit, ValueError
-    # on an integer over 4300 digits, KeyError on ``!!bool ture``; each was a
-    # bare 500.
-    except Exception as e:
-        mark = getattr(e, "problem_mark", None)
-        return ValidateResponse(
-            errors=[
-                ValidationErrorItem(
-                    loc="",
-                    msg=parse_error_text(e),
-                    type="yaml_parse",
-                    line=(mark.line + 1) if mark else None,
-                    column=mark.column if mark else None,
-                )
-            ],
-            # Nothing parsed, so there is no config to advise on. The key is
-            # still sent: ``advisories`` is a required field, and a client that
-            # had to test for its presence would be defending against a shape
-            # this route never produces.
-            advisories=[],
-        )
-    # The Naming routes' rule and sentence, not Pydantic's, which names a class.
-    data = settings_mapping(req.yaml_text, parsed)
-    if data is None:
-        return ValidateResponse(
-            errors=[ValidationErrorItem(loc="", msg=NOT_A_MAPPING, type="model_type")],
-            advisories=[],
-        )
-    # Two independent channels: an advisory is a valid setting MusicDrop
-    # overrides, so it is computed from the same document but never merged into
-    # ``errors`` (the editor paints that list red). The containment row DOES
-    # belong in ``errors``: a document that would delete the library on the next
-    # Empty Trash is not a setting we merely override.
+    # The check is ``check_config_text``, the one ``config_editor.save`` runs, so
+    # the gutter and the Save refusal are computed from one function. It reads
+    # the text with beets' own loader and typed reads; ``request`` is taken for
+    # the settings + live handle the containment rows need, because whether a
+    # ``directory:`` is acceptable depends on where MUSICDROP_TRASH_DIR,
+    # MUSICDROP_TRASH_ORIGINS_DIR and MUSICDROP_BEETS_DIR resolve.
+    #
     # ``getattr``, not the direct read every other route in this file does: this
     # is the one config route that does not otherwise need a library, and two
     # guard tests (test_origin_guard / test_host_guard) exercise it in a
-    # lifespan-less child process for exactly that reason.
-    #
-    # The empty branch fails OPEN — no containment row at all — in a process
-    # where the lifespan has not run: the document lints clean, and Save then
-    # answers 500 (AttributeError on the direct handle read) rather than a
-    # layout refusal, measured. Under the lifespan the handle is set before the
-    # server accepts a request, so that gap is the child-process case the two
-    # guard tests create.
+    # lifespan-less child process for exactly that reason. There the containment
+    # rows are left out (fails OPEN); under the lifespan the handle is set before
+    # the server accepts a request.
     handle: LibraryHandle | None = getattr(request.app.state, "beets_library", None)
-    schema_errors = validate_known_keys(data)
-    layout = (
-        StoreLayoutReport([], [])
-        if handle is None
-        else store_layout_report(
-            data,
-            settings=_settings(request.app),
-            handle=handle,
-            reported_keys={item.loc for item in schema_errors},
-        )
-    )
-    return ValidateResponse(
-        errors=schema_errors + layout.errors,
-        advisories=import_advisories(data) + layout.advisories,
-    )
+    check = check_config_text(req.yaml_text, settings=_settings(request.app), handle=handle)
+    return ValidateResponse(errors=check.errors, advisories=check.advisories)
 
 
 @router.post(
@@ -198,12 +137,13 @@ def validate_config(req: ValidateRequest, request: Request) -> ValidateResponse:
     responses={409: _SAVE_CAS_CONFLICT_RESPONSE, 422: _SAVE_VALIDATION_RESPONSE},
 )
 def save_config(req: SaveRequest, request: Request) -> BeetsConfigSnapshot:
-    """Persist the user-submitted YAML to disk after CAS + schema checks."""
+    """Write the submitted YAML to config.yaml as typed, after Validate's check and CAS."""
     # The rest of the contract is here rather than in the docstring, which
     # FastAPI publishes whole: the response is the freshly-built
     # ``BeetsConfigSnapshot``, whose ``apply_pending`` is ``True`` until Apply
-    # reloads beets' globals; 422 on a parse, schema, store-layout, read or write failure;
-    # 409 on a CAS mismatch.
+    # reloads beets' globals; 422 when the check refuses the text (the rows
+    # ``POST /api/config/validate`` returns) or on a read or write failure; 409
+    # on a CAS mismatch. The text is written exactly as submitted.
     #
     # A comment, not a docstring paragraph — FastAPI publishes the docstring as
     # this operation's OpenAPI description. The error mapping lives inside
@@ -253,7 +193,7 @@ def save_naming_route(req: SaveNamingRequest, request: Request) -> BeetsConfigSn
     """Write ``paths:``/``replace:`` back into config.yaml (CAS, 409/422). Apply
     is the existing ``POST /api/config/apply``."""
     handle: LibraryHandle = request.app.state.beets_library
-    return save_naming(handle, req)
+    return save_naming(handle, req, settings=_settings(request.app))
 
 
 @router.post(

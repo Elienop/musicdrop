@@ -1,23 +1,24 @@
-"""Layer-3 config editor — parse + validate (line/col mapping) tests.
+"""Layer-3 config editor — parse + check (line/col mapping) tests.
 
-Per the Layer-3 plan (Task 2), these tests pin three load-bearing decisions:
+Two parsers, two jobs:
 
-* ruamel parses `yes`/`no` as bool, as YAML 1.1 and beets' PyYAML do
-  (`_Yaml11Resolver`) — verified by `test_parse_yes_no_as_bool`.
-* invalid YAML surfaces as a `ruamel.yaml.YAMLError` for the caller to map
-  to HTTP 422 — verified by `test_parse_invalid_yaml_raises`.
-* schema errors carry a 1-based `(line, column)` derived from ruamel's
-  `.lc.value(...)` so CodeMirror's lint gutter can render the marker —
-  verified by `test_validate_returns_loc_with_line_col_for_known_key`.
+* beets' own loader reads what Validate and Save check
+  (:func:`app.beets.config_check.load_config_text`): a reused anchor is refused
+  there, as it is at boot, and a falsy top level is no settings.
+* ruamel parses and dumps only where the Naming save edits a file in place, and
+  reads `yes`/`no` as bool, as YAML 1.1 and beets' PyYAML do (`_Yaml11Resolver`).
+
+Rows carry a 1-based `(line, column)` from the text composed with beets' loader,
+so CodeMirror's lint gutter can render the marker.
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, cast
 
 import beets
+import confuse
 import pytest
 import yaml as pyyaml
 
@@ -26,10 +27,18 @@ import yaml as pyyaml
 # canonical home). Same class object at runtime — verified via identity.
 # Using the canonical path keeps mypy --strict clean without a scoped
 # suppression directive.
-from ruamel.yaml.error import MarkedYAMLError, YAMLError
+from ruamel.yaml.error import YAMLError
 
-from app.beets.config_editor import _yaml, atomic_write, parse_yaml, validate_known_keys
+from app.beets.config_check import NotAMapping, check_config_text, load_config_text
+from app.beets.config_editor import _yaml, atomic_write, dumped, parse_yaml
 from app.beets.setup import read_config_document
+from app.config import Settings
+from app.models.config_editor import ValidationErrorItem
+
+
+def _check(text: str) -> list[ValidationErrorItem]:
+    """The rows Validate and Save give ``text``; no handle, so no store-layout rows."""
+    return check_config_text(text, settings=Settings(), handle=None).errors
 
 
 def test_parse_yes_no_as_bool() -> None:
@@ -50,18 +59,18 @@ def test_parse_invalid_yaml_raises() -> None:
 _REUSED_ANCHOR = "a: &x 1\nb: *x\nplex:\n  token: &x Zq7Secret\n  user: &x u\n"
 
 
-def test_parse_refuses_a_reused_anchor_as_beets_does(recwarn: pytest.WarningsRecorder) -> None:
-    """ruamel only warned, quoting both lines; beets' PyYAML refuses the file.
+def test_the_beets_loader_refuses_a_reused_anchor(recwarn: pytest.WarningsRecorder) -> None:
+    """beets' PyYAML refuses the file; ruamel only warned, quoting both lines,
+    which is why Validate and Save no longer read the text with ruamel.
 
-    An anchor reused AFTER its alias still refuses: PyYAML does too.
+    An anchor reused AFTER its alias still refuses. The mark is on ``reason``.
     """
-    with pytest.raises(pyyaml.YAMLError, match="found duplicate anchor"):
-        pyyaml.safe_load(_REUSED_ANCHOR)
+    with pytest.raises(confuse.ConfigReadError) as caught:
+        load_config_text(_REUSED_ANCHOR)
 
-    with pytest.raises(MarkedYAMLError) as caught:
-        parse_yaml(_REUSED_ANCHOR)
-
-    assert (caught.value.problem, caught.value.problem_mark.line + 1) == ("second occurrence", 4)
+    reason = caught.value.reason
+    assert isinstance(reason, pyyaml.MarkedYAMLError)
+    assert (reason.problem, reason.problem_mark.line + 1) == ("second occurrence", 4)
     assert recwarn.list == []
 
 
@@ -72,21 +81,35 @@ def test_parse_keeps_anchors_and_aliases_that_are_not_reused() -> None:
     assert parse_yaml(text) == {"a": 1, "b": 1, "c": {"k": "v"}, "d": {"k": "v"}}
 
 
-def test_the_mapping_rule_covers_the_root_model_too() -> None:
-    """By rule, not by list: the root is a model as well. Validate and Save refuse a
-    non-mapping root before the schema; a caller that does not still gets our text."""
-    [row] = validate_known_keys(cast(dict[str, Any], []))
-
-    assert row.model_dump() == {
-        "loc": "",
-        "msg": "config.yaml must be a mapping of settings.",
-        "type": "model_type",
-        "line": None,
-        "column": None,
-    }
+@pytest.mark.parametrize("text", ["", "# only a comment\n", "~\n", "[]\n", "false\n", "---\n...\n"])
+def test_a_falsy_top_level_is_no_settings_as_beets_reads_it(text: str) -> None:
+    """``load_yaml(...) or {}`` (``confuse/sources.py:101``): beets starts on its
+    defaults, so only MusicDrop's own required keys refuse these."""
+    assert load_config_text(text) == {}
+    assert [(row.loc, row.msg) for row in _check(text)] == [
+        ("directory", "Field required"),
+        ("library", "Field required"),
+    ]
 
 
-def test_validate_returns_empty_on_valid(tmp_path: Path) -> None:
+@pytest.mark.parametrize("text", ["- a\n", "hello\n", "5\n"])
+def test_a_list_or_a_scalar_top_level_is_refused_in_our_words(text: str) -> None:
+    """``YamlSource`` raises a ``TypeError`` naming ``<class 'list'>``
+    (``confuse/sources.py:103-107``); the row says it without the class."""
+    with pytest.raises(NotAMapping):
+        load_config_text(text)
+    assert [row.model_dump() for row in _check(text)] == [
+        {
+            "loc": "",
+            "msg": "config.yaml must be a mapping of settings.",
+            "type": "model_type",
+            "line": None,
+            "column": None,
+        }
+    ]
+
+
+def test_check_returns_empty_on_valid(tmp_path: Path) -> None:
     music = tmp_path / "music"
     music.mkdir()
     text = (
@@ -95,11 +118,11 @@ def test_validate_returns_empty_on_valid(tmp_path: Path) -> None:
         "plugins:\n  - musicbrainz\n  - deezer\n"
         "import:\n  autotag: yes\n  copy: yes\n"
     )
-    errors = validate_known_keys(parse_yaml(text))
-    assert errors == []
+    assert _check(text) == []
 
 
-def test_validate_returns_loc_with_line_col_for_known_key(tmp_path: Path) -> None:
+def test_check_returns_loc_with_line_col_for_known_key(tmp_path: Path) -> None:
+    """confuse's sentence, printed once: ``loc: msg`` reads ``import.copy: must be…``."""
     music = tmp_path / "music"
     music.mkdir()
     text = (
@@ -109,20 +132,21 @@ def test_validate_returns_loc_with_line_col_for_known_key(tmp_path: Path) -> Non
         "  autotag: yes\n"
         "  copy: maybe\n"
     )
-    errors = validate_known_keys(parse_yaml(text))
-    assert len(errors) == 1
-    assert errors[0].loc == "import.copy"
-    assert errors[0].line == 5  # 1-based, the `copy:` line
-    assert errors[0].column is not None
+    assert [row.model_dump() for row in _check(text)] == [
+        {
+            "loc": "import.copy",
+            "msg": "must be a bool, not str",
+            "type": "beets_read",
+            "line": 5,  # 1-based, the `copy:` line
+            "column": 8,  # 0-based, the value
+        }
+    ]
 
 
-def test_validate_returns_line_col_for_invalid_plugin_in_list(tmp_path: Path) -> None:
-    """Sequence-index errors (e.g. `plugins[1]` = unknown plugin) must carry
-    a line/col so CodeMirror's gutter marker lands on the offending item.
-    Regression for the original `_line_col_for_path` which always called
-    `parent.lc.value(key)`; on a `CommentedSeq` that raises ``IndexError``
-    and the marker silently disappeared. Fix uses `parent.lc.item(idx)` for
-    sequence parents."""
+def test_any_plugin_name_is_clean_because_beets_decides(tmp_path: Path) -> None:
+    """The 13-name allowlist is gone (owner ruling 2026-09-25): ``the`` and
+    ``inline`` are real beets plugins it refused, and a name beets cannot load
+    is one beets skips at start-up."""
     music = tmp_path / "music"
     music.mkdir()
     text = (
@@ -130,10 +154,11 @@ def test_validate_returns_line_col_for_invalid_plugin_in_list(tmp_path: Path) ->
         f"library: {tmp_path / 'library.db'}\n"
         "plugins:\n"
         "  - musicbrainz\n"
+        "  - the\n"
+        "  - inline\n"
         "  - not-a-real-plugin\n"
     )
-    errors = validate_known_keys(parse_yaml(text))
-    assert any(e.loc == "plugins[1]" and e.line is not None for e in errors)
+    assert _check(text) == []
 
 
 # (the value as written, what beets' loader reads, what a save writes back)
@@ -164,7 +189,7 @@ def test_a_scalar_reads_and_saves_as_beets_reads_it(
     assert isinstance(parsed, type(read))
     cfg = tmp_path / "config.yaml"
 
-    atomic_write(cfg, parse_yaml(text), _yaml())
+    atomic_write(cfg, dumped(parse_yaml(text), _yaml()))
 
     assert cfg.read_text(encoding="utf-8") == f"k: {saved}\n"
     assert read_config_document(cfg) == {"k": read}
@@ -210,7 +235,7 @@ def test_a_parse_and_dump_never_change_beets_loader_table(
     text = "directory: /music\nimport: {write: no, copy: yes}\npaths:\n  default: $album/$title\n"
 
     for _ in range(3):
-        atomic_write(tmp_path / "config.yaml", parse_yaml(text), _yaml())
+        atomic_write(tmp_path / "config.yaml", dumped(parse_yaml(text), _yaml()))
 
     assert CatchAll.yaml_implicit_resolvers == before
     # ...and the table is still read from beets' loader, not held on our side.

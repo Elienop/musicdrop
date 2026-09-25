@@ -102,10 +102,11 @@ _CASES: Final = (
     _Case(
         name="schema-violation",
         path="/api/config/save",
+        # beets' own typed read refuses it: "directory: must be a filename, not int".
         body={"yaml_text": "directory: 5\nlibrary: library.db\n", "base_sha256": _STALE_CAS_TOKEN},
         model=ConfigValidationErrorDetail,
         item_model=ValidationErrorItem,
-        item_type="path_type",
+        item_type="beets_read",
         positioned=True,
     ),
     _Case(

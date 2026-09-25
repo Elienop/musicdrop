@@ -14,6 +14,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from beets.exceptions import UserError
 from confuse import ConfigTypeError
 from fastapi.testclient import TestClient
 
@@ -83,6 +84,8 @@ def _config_refusal(beets_dir: Path, exc: BaseException) -> str:
         ("foo: [unclosed\n", ConfigUnreadable),
         (f"foo: {'9' * 5000}\n", ConfigUnreadable),
         ("foo: !!bool ture\n", ConfigUnreadable),
+        # beets' own UserError from ``Library.get_replacements``, not a confuse error.
+        ("replace:\n  '[': _\n", UserError),
     ],
     ids=[
         "a-value-of-the-wrong-type",
@@ -91,6 +94,7 @@ def _config_refusal(beets_dir: Path, exc: BaseException) -> str:
         "a-syntax-error",
         "an-over-long-integer",
         "a-mistyped-bool-tag",
+        "a-malformed-replace-pattern",
     ],
 )
 def test_a_config_error_at_boot_gets_its_own_refusal_line(

@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.beets.config_editor import parse_yaml
+from app.beets.config_check import load_config_text
 from app.beets.library import LibraryHandle
 
 
@@ -512,6 +512,14 @@ def _layout_rows(client: TestClient, yaml_text: str) -> list[dict[str, object]]:
     return rows
 
 
+def _skipped_rows(client: TestClient, yaml_text: str) -> list[object]:
+    """The messages of Validate's rows for an include beets would skip."""
+    r = client.post("/api/config/validate", json={"yaml_text": yaml_text})
+    assert r.status_code == 200, r.text
+    assert [a for a in r.json()["advisories"] if a["key"] == "include"] == []
+    return [e["msg"] for e in r.json()["errors"] if e["type"] == "include_skipped"]
+
+
 def test_validate_flags_a_directory_an_include_overrides(
     client: TestClient, beets_library: LibraryHandle
 ) -> None:
@@ -572,20 +580,22 @@ def test_the_last_include_wins_when_two_of_them_disagree(
     assert len(_layout_rows(client, _with_include(music, "safe.yaml", "unsafe.yaml"))) == 1
 
 
-def test_an_include_naming_a_file_that_is_not_there_leaves_the_document_standing(
+def test_an_include_naming_a_file_that_is_not_there_is_refused_and_the_document_still_checked(
     client: TestClient, beets_library: LibraryHandle
 ) -> None:
-    """An unreadable include is beets' own tolerated case, and both halves matter.
-
-    beets writes the failure to stderr and carries on with what it has
-    (``beets/__init__.py:29-38``), so the value that survives is the document's.
-    The second half is what keeps the tolerance from becoming a hole: a document
-    whose OWN ``directory:`` is refused stays refused when its include is
-    missing.
+    """beets writes the failure to stderr and carries on with what it has
+    (``beets/__init__.py:29-38``); Apply and boot refuse it, and since
+    2026-09-25 so do Validate and Save. The layout is still asked of the
+    document's own value: a document whose OWN ``directory:`` is refused stays
+    refused when its include is missing.
     """
     music = Path(beets_library.lib.directory.decode())
+    text = _with_include(music, "not-written-yet.yaml")
 
-    assert _layout_rows(client, _with_include(music, "not-written-yet.yaml")) == []
+    assert _layout_rows(client, text) == []
+    assert _skipped_rows(client, text) == [
+        "beets would skip the include 'not-written-yet.yaml': No such file or directory"
+    ]
     assert len(_layout_rows(client, _with_include(beets_library.beets_dir, "gone.yaml"))) == 1
 
 
@@ -665,30 +675,36 @@ def test_an_include_the_gate_will_not_read_answers_a_lint_row(
     assert "could not be read" in str(rows[0]["msg"]), rows
 
 
-@pytest.mark.parametrize("value", ["42", "~", "[/x]", "010", "yes"])
+@pytest.mark.parametrize(
+    ("value", "kind"),
+    [("42", "int"), ("~", "NoneType"), ("[/x]", "list"), ("010", "int"), ("yes", "bool")],
+)
 def test_an_include_that_makes_directory_a_non_path_answers_a_lint_row(
-    client: TestClient, beets_library: LibraryHandle, value: str
+    client: TestClient, beets_library: LibraryHandle, value: str, kind: str
 ) -> None:
-    """The overlay the schema never sees, so nothing else can report it.
+    """The overlay the document never shows, so only beets' read can report it.
 
     Measured on the parent commit for all five: Validate answered 200 with no
     row, Save wrote the file, and Apply answered 500 "directory: must be a
-    filename, not int" — with the recovery telling the operator to restart, on a
-    config a cold start refuses.
+    filename, not int". Now that read runs at Validate, in beets' words; the
+    value is not written in config.yaml, so the row has no line.
     """
     overlay = beets_library.beets_dir / "overlay.yaml"
     overlay.write_text(f"directory: {value}\n", encoding="utf-8")
+    text = _with_include(Path(beets_library.lib.directory.decode()), "overlay.yaml")
 
-    rows = _layout_rows(
-        client, _with_include(Path(beets_library.lib.directory.decode()), "overlay.yaml")
-    )
+    r = client.post("/api/config/validate", json={"yaml_text": text})
 
-    assert len(rows) == 1, rows
-    assert rows[0]["loc"] == "include", rows
-    # The filename is repr'd, like every other operator-supplied value this
-    # module echoes: it is an ``include:`` entry, so it carries whatever the
-    # operator wrote.
-    assert str(rows[0]["msg"]).startswith(f"`directory:` in {str(overlay)!r} is not a path."), rows
+    assert r.status_code == 200, r.text
+    assert r.json()["errors"] == [
+        {
+            "loc": "directory",
+            "msg": f"must be a filename, not {kind}",
+            "type": "beets_read",
+            "line": None,
+            "column": None,
+        }
+    ]
 
 
 @pytest.mark.parametrize(
@@ -988,7 +1004,7 @@ def test_a_document_with_no_directory_key_gets_the_schema_row_and_no_layout_row(
 
     The fallback is real — ``directory: ~/Music`` is beets' own default
     (``beets/config_default.yaml``) and :func:`effective_config_paths` reads the
-    defaults, so without the guard in ``store_layout_report`` this document
+    defaults, so without the guard in the Validate check this document
     produces a refusal about a path the operator did not write. ``HOME`` is
     pointed at ``tmp_path`` and the origin store placed under ``~/Music`` so the
     fallback WOULD trip a rule if it were checked: the assertion is that it is
@@ -1167,7 +1183,7 @@ def test_the_include_reproduction_agrees_with_a_real_beets_startup(
     finally:
         close_library(handle.lib)
 
-    document = parse_yaml(text)
+    document = load_config_text(text)
     paths = effective_config_paths(document, beets_dir)
     reproduced = (paths.directory, paths.library)
     assert reproduced == from_beets
@@ -1223,29 +1239,22 @@ def test_the_include_reproduction_agrees_with_beets_on_the_shapes_it_tolerates(
     finally:
         close_library(handle.lib)
 
-    paths = effective_config_paths(parse_yaml(text), beets_dir)
+    paths = effective_config_paths(load_config_text(text), beets_dir)
     reproduced = (paths.directory, paths.library)
     assert reproduced == from_beets
 
 
-def _advisories(client: TestClient, yaml_text: str) -> list[dict[str, object]]:
-    r = client.post("/api/config/validate", json={"yaml_text": yaml_text})
-    assert r.status_code == 200, r.text
-    rows: list[dict[str, object]] = [a for a in r.json()["advisories"] if a["key"] == "include"]
-    return rows
-
-
 @pytest.mark.parametrize("shape", ["directory", "socket", "dev-null", "symlink-to-dir"])
-def test_an_include_beets_drops_is_an_advisory_and_not_an_error(
+def test_an_include_beets_drops_is_an_error_at_validate(
     client: TestClient, beets_library: LibraryHandle, shape: str
 ) -> None:
-    """Four shapes a real beets START survives, so none of them is a lint row.
+    """Four shapes a real beets START survives, and three of them it skips.
 
     Measured against beets' own read and open over the same file: each one
     makes beets print one stderr line (``/dev/null`` not even that) and load the
-    document's own ``directory:``. The gate once refused all four as lint rows.
-    Since the owner ruling of 2026-09-21, Apply and boot refuse the three beets
-    prints, so the advisory says that; Validate stays a lint pass.
+    document's own ``directory:``. Since the owner ruling of 2026-09-21, Apply
+    and boot refuse the three beets prints; since 2026-09-25 Validate and Save
+    do too. None of them is a store-layout row.
     """
     music = Path(beets_library.lib.directory.decode())
     name = "overlay.yaml"
@@ -1269,15 +1278,11 @@ def test_an_include_beets_drops_is_an_advisory_and_not_an_error(
     assert _layout_rows(client, text) == []
     if shape == "dev-null":
         # ``open`` succeeds and the read is empty, which is a merge of nothing —
-        # beets does exactly that, silently, so there is nothing to advise on.
-        assert _advisories(client, text) == []
+        # beets does exactly that, silently, so there is nothing to refuse.
+        assert _skipped_rows(client, text) == []
     else:
         reason = "No such device or address" if shape == "socket" else "Is a directory"
-        rows = _advisories(client, text)
-        assert [row["message"] for row in rows] == [
-            f"beets cannot read the include {name!r} ({reason}). Apply and a restart refuse"
-            " this config until it can."
-        ]
+        assert _skipped_rows(client, text) == [f"beets would skip the include {name!r}: {reason}"]
 
 
 @pytest.mark.parametrize(
@@ -1303,10 +1308,7 @@ def test_a_skipped_include_names_why_at_validate(
         bad.chmod(0)
     text = _with_include(Path(beets_library.lib.directory.decode()), "bad.yaml")
 
-    assert [row["message"] for row in _advisories(client, text)] == [
-        f"beets cannot read the include 'bad.yaml' ({reason}). Apply and a restart refuse"
-        " this config until it can."
-    ]
+    assert _skipped_rows(client, text) == [f"beets would skip the include 'bad.yaml': {reason}"]
 
 
 @pytest.mark.parametrize(
@@ -1320,14 +1322,11 @@ def test_a_skipped_include_names_why_at_validate(
 def test_a_skipped_include_is_named_escaped_at_validate(
     client: TestClient, beets_library: LibraryHandle, entry: str, shown: str, reason: str
 ) -> None:
-    """Named raw before: a newline and an ESC reached the advisory, and an empty
+    """Named raw before: a newline and an ESC reached the row, and an empty
     entry read "the include  (Is a directory)"."""
     text = _with_include(Path(beets_library.lib.directory.decode()), entry)
 
-    assert [row["message"] for row in _advisories(client, text)] == [
-        f"beets cannot read the include {shown} ({reason}). Apply and a restart refuse"
-        " this config until it can."
-    ]
+    assert _skipped_rows(client, text) == [f"beets would skip the include {shown}: {reason}"]
 
 
 def test_a_symlinked_include_is_followed_the_way_beets_follows_it(

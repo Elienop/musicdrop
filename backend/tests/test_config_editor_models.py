@@ -1,10 +1,11 @@
 """Tests for the Layer-3 config-editor Pydantic models.
 
 Pins the validation behavior of ``KnownKeysSchema`` and the dotted-path
-helper ``loc_to_dot_sep``. The schema itself is intentionally narrow:
-``extra='ignore'`` means unknown beets keys / plugin sub-configs pass through
-silently (per Pydantic v2 docs Models). We validate the ~13 keys MusicDrop
-models; everything else lives on disk in the ruamel ``CommentedMap``.
+helper ``loc_to_dot_sep``. The schema itself is intentionally narrow: it holds
+only MusicDrop's own policies (``directory:``/``library:`` and the match
+thresholds); beets' typed reads judge the rest (``app/beets/config_check.py``).
+``extra='ignore'`` means every other key passes through silently (per Pydantic
+v2 docs Models), and Save writes the submitted text, not this model.
 """
 
 from pathlib import Path
@@ -34,7 +35,7 @@ def test_schema_accepts_starter_shape(tmp_path: Path) -> None:
         "import": {"autotag": True, "copy": True, "write": True},
     }
     schema = KnownKeysSchema.model_validate(data)
-    assert schema.plugins == ["musicbrainz", "deezer"]
+    assert schema.directory == music
 
 
 def test_schema_accepts_existing_dir_with_readonly_parent(tmp_path: Path) -> None:
@@ -102,7 +103,9 @@ def test_schema_rejects_file_at_directory_path(tmp_path: Path) -> None:
     assert any(err["loc"] == ("directory",) for err in excinfo.value.errors())
 
 
-def test_schema_rejects_invalid_bool(tmp_path: Path) -> None:
+def test_schema_leaves_import_to_beets(tmp_path: Path) -> None:
+    """``import.copy: maybe`` is refused by beets' own ``.get(bool)``
+    (``app/beets/config_check.py``), in beets' words; the schema has no row."""
     music = tmp_path / "music"
     music.mkdir()
     data = {
@@ -110,24 +113,33 @@ def test_schema_rejects_invalid_bool(tmp_path: Path) -> None:
         "library": str(tmp_path / "library.db"),
         "import": {"copy": "maybe"},
     }
-    with pytest.raises(ValidationError) as excinfo:
-        KnownKeysSchema.model_validate(data)
-    assert any(err["loc"] == ("import", "copy") for err in excinfo.value.errors())
+    KnownKeysSchema.model_validate(data)
 
 
-def test_schema_rejects_unknown_plugin(tmp_path: Path) -> None:
+def test_schema_accepts_any_plugin_name(tmp_path: Path) -> None:
+    """The 13-name allowlist is gone: beets decides (owner ruling 2026-09-25)."""
     music = tmp_path / "music"
     music.mkdir()
     data = {
         "directory": str(music),
         "library": str(tmp_path / "library.db"),
-        "plugins": ["not-a-plugin"],
+        "plugins": ["the", "inline", "not-a-plugin"],
+    }
+    KnownKeysSchema.model_validate(data)
+
+
+def test_schema_refuses_a_threshold_over_one(tmp_path: Path) -> None:
+    """MusicDrop's own policy: beets reads any number (``autotag/match.py:285``)."""
+    music = tmp_path / "music"
+    music.mkdir()
+    data = {
+        "directory": str(music),
+        "library": str(tmp_path / "library.db"),
+        "match": {"strong_rec_thresh": 5.0},
     }
     with pytest.raises(ValidationError) as excinfo:
         KnownKeysSchema.model_validate(data)
-    # Pin the location too: a future regression that accepts "not-a-plugin" by
-    # dropping it silently would otherwise still satisfy a bare ``raises``.
-    assert any(err["loc"][:1] == ("plugins",) for err in excinfo.value.errors())
+    assert [err["loc"] for err in excinfo.value.errors()] == [("match", "strong_rec_thresh")]
 
 
 def test_schema_ignores_unknown_keys(tmp_path: Path) -> None:
@@ -140,7 +152,7 @@ def test_schema_ignores_unknown_keys(tmp_path: Path) -> None:
     }
     schema = KnownKeysSchema.model_validate(data)
     # Pydantic v2 ``extra='ignore'`` (default) DROPS unknown keys at validation.
-    # The save flow relies on this: the ruamel CommentedMap on disk keeps
-    # ``myplugin``, the schema doesn't, and we never round-trip through the
-    # schema. Pin the drop here so a future ``extra='allow'`` flip is caught.
+    # Save writes the submitted text, so ``myplugin`` stays on disk while the
+    # schema drops it; we never round-trip through the schema. Pin the drop
+    # here so a future ``extra='allow'`` flip is caught.
     assert "myplugin" not in schema.model_dump()
