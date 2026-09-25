@@ -1669,7 +1669,7 @@ def effective_config_paths(document: Mapping[str, Any], beets_dir: Path) -> Effe
     loaded = load_candidate(document, beets_dir)
     if loaded.error is not None:
         raise loaded.error
-    directory, library = _loaded_paths(loaded.config, str(beets_dir / "config.yaml"))
+    directory, library = _loaded_paths(loaded.config, str(beets_dir / confuse.CONFIG_FILENAME))
     return EffectivePaths(directory, library, loaded.skipped)
 
 
@@ -1685,17 +1685,17 @@ def load_candidate(document: Mapping[str, Any], beets_dir: Path) -> LoadedCandid
     # `directory: ~/Music` are beets' own (`beets/config_default.yaml:3-4`), and
     # a document that drops either key is held to the value beets would then use.
     cfg.read(user=False, defaults=True)
-    cfg.set(confuse.ConfigSource(dict(document), filename=str(beets_dir / "config.yaml")))
+    cfg.set(confuse.ConfigSource(dict(document), filename=str(beets_dir / confuse.CONFIG_FILENAME)))
     # The loop ``IncludeLazyConfig.read`` runs after reading, reproduced here
     # because we are replacing the user source rather than reading it: each entry
     # is ``set_file``'d, which inserts it at the FRONT, so the last include wins.
     #
     # Includes are NOT confined to the beets dir. beets does not confine them, and
     # a gate that refused a config beets loads would be worse than the read this
-    # exposes. Validate's rows can quote an included value beets refuses (a
-    # ``replace:`` pattern, an ``import:`` switch). That is bounded by the session
-    # gate and the read budget, and after an Apply the running-config view shows
-    # the same values, secrets hidden.
+    # exposes. A row from Validate, Save or the Naming save can quote an included
+    # value beets refuses (a ``replace:`` pattern, an ``import:`` switch). A refused
+    # value blocks the Save, so that row can be the only place the value is shown.
+    # That is bounded by the session gate and the read budget.
     skipped: list[SkippedInclude] = []
     # One read per resolved path, so a repeated entry costs one. The entry is
     # still ``set`` again at its own position: the LAST include wins, so dropping
@@ -1778,7 +1778,7 @@ def layout_check_for_candidate(
         if loaded.error is not None:
             raise loaded.error
         raw_directory, raw_library = _loaded_paths(
-            loaded.config, str(handle.beets_dir / "config.yaml")
+            loaded.config, str(handle.beets_dir / confuse.CONFIG_FILENAME)
         )
         if raw_directory is None or raw_library is None:
             return LayoutCheck(None, skipped)

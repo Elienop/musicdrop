@@ -644,11 +644,11 @@ def _replace_map(replace: list[ReplaceRuleInput]) -> CommentedMap:
 
 
 def _on_disk_row(item: ValidationErrorItem) -> str:
-    """A check row as the Naming panel prints it: key, beets' words, where to fix it."""
+    """A check row as the Naming panel prints it: key, beets' words, where to look."""
     text = f"{item.loc}: {item.msg}" if item.loc else item.msg
     if item.type == STORE_LAYOUT:
         return text
-    return f"{text.removesuffix('.')}. Fix it in Settings → Beets."
+    return f"{text.removesuffix('.')}. Check it in Settings → Beets."
 
 
 def save_naming(
@@ -724,9 +724,12 @@ def save_naming(
             # 4. The Beets Save's check, on the text about to be written. The
             # panel shows the first ``config_on_disk`` row's text after "Save
             # failed. ", so each row carries its key the way the Beets editor
-            # prints it, and where to fix it. No row is about a value this panel
-            # writes: step 1 compiled every pattern, and the check reads no
-            # template. A store-layout row names its own remedy.
+            # prints it, and where to look. Step 1 compiled every pattern and the
+            # check reads no template, so a row is about something this panel
+            # does not write: another key in config.yaml, a value an include
+            # supplies, the folder's state, or ruamel's rewrite of a value
+            # (``-0644``, in BACKLOG). Validate in Settings → Beets shows the same
+            # row for all but the last. A store-layout row names its own remedy.
             errors = check_config_text(text, settings=settings, handle=handle).errors
             if errors:
                 raise HTTPException(

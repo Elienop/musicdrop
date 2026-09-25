@@ -380,8 +380,9 @@ def test_a_quoted_no_in_a_flag_beets_tests_with_a_bare_if_is_refused(
     [
         ("the: no\n", _read("", "the must be a collection, not bool", 4, 5)),
         ("the:\n", _read("", "the must be a collection, not NoneType", 4, 4)),
+        ("the: x\n", _read("", "the must be a collection, not str", 4, 5)),
     ],
-    ids=["bool", "null"],
+    ids=["bool", "null", "str"],
 )
 def test_any_enabled_plugin_with_a_section_that_is_not_a_collection_is_refused(
     client: TestClient, beets_library: LibraryHandle, section: str, row: dict[str, object]

@@ -155,8 +155,9 @@ def test_save_naming_empty_rules_drops_paths_key(beets_library: LibraryHandle) -
 
 def test_save_naming_409_on_stale_sha(beets_library: LibraryHandle) -> None:
     req = SaveNamingRequest(rules=[], replace=[], base_sha256="stale")
+    settings = Settings()
     with pytest.raises(HTTPException) as ei:
-        save_naming(beets_library, req, settings=Settings())
+        save_naming(beets_library, req, settings=settings)
     assert ei.value.status_code == 409
 
 
@@ -167,8 +168,9 @@ def test_save_naming_422_on_bad_regex(beets_library: LibraryHandle) -> None:
         replace=[ReplaceRuleInput(pattern="(", replacement="_")],
         base_sha256=_sha(cfg_path),
     )
+    settings = Settings()
     with pytest.raises(HTTPException) as ei:
-        save_naming(beets_library, req, settings=Settings())
+        save_naming(beets_library, req, settings=settings)
     assert ei.value.status_code == 422
 
 

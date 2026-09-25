@@ -1121,6 +1121,17 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   ~67 bytes multiplies it by 10; a 2,908-byte alias chain under `musicbrainz:` made 10^6 leaves
   (6.4 s, about 83 MiB). Boot and Apply run the same reads, and PyYAML and confuse have no
   bound. Only the signed-in operator can send it.
+- **Validate is quadratic in the number of `plugins:` names** (security seat 2026-09-25,
+  measured, not built). Validate, Save and the Naming save ask each enabled plugin's section
+  (`beets_read_failures`, `backend/app/beets/config_check.py`), and each lookup copies every
+  top-level mapping, because confuse has no cache (`confuse/core.py:418-419`). Measured, one
+  process per run, with plugin names that are also keys: 4,000 names (68 KB) 0.19 s, 8,000
+  (136 KB) 1.45 s, 16,000 (284 KB) 8.6 s. The list-section check asks three lookups per name;
+  with the one lookup before it, 16,000 names took 2.9 s. The route is a sync handler in the
+  threadpool. beets never pays this: it asks only of the metadata sources it loaded
+  (`beets/plugins.py:185,197-198`). Only the signed-in operator can send it, and no plausible
+  config has thousands of plugins; it can wait. A fix would be a cap, or a lookup straight
+  over the config sources.
 - **`directory: !!binary aGk=` still shows a Python class name** (code seat 2026-09-25,
   measured, not built). confuse's `Filename` accepts bytes (`confuse/templates.py:703`), so
   beets' read passes, and the Pydantic policy row says "Input is not a valid path for <class
@@ -1144,13 +1155,20 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `!!omap {…}` answers 422 "config.yaml does not parse" there, while Validate, Save, the Naming
   GET, Apply and boot all accept the file. A negative leading-zero int (`file: -0644`) is
   written back by ruamel as `!!int '0-644'`, so the save refuses its own text with a confusing
-  422 ("invalid literal for int() with base 8: '0-644'"); nothing is written. Edit such a file
-  in Settings → Beets.
+  422 ("invalid literal for int() with base 8: '0-644'"); nothing is written. That refusal
+  ends "Check it in Settings → Beets.", and that page validates the file clean. Edit such a
+  file in Settings → Beets.
 - **An album edit or rename answers a bare 500 for a hand-edited bad `import.*` switch**
   (recorded 2026-09-25, not built). `should_move`/`should_write` read `import.move`/`copy`/
   `write` with `.get(bool)` outside any `try` in both previews and applies
   (`app/beets/edit.py:771,805-806`, `app/beets/rename.py:181,210-211`). Validate and Save refuse
   the value now, so only a file edited outside MusicDrop reaches it.
+- **A hand-edited `pluginpath: ~nosuchuser` gets the library's boot refusal line** (security
+  seat 2026-09-25, not built). Validate and Save refuse it now, so only a file edited outside
+  MusicDrop reaches boot. The refusal there (`backend/app/main.py:242-252`) says "beets could
+  not open the library under …", prints `RuntimeError: Could not determine home directory..`
+  with a doubled period, and says to check `library:` and `directory:`, which are not the key
+  at fault. Boot text is not changed in the round that recorded it.
 - **`asciify_paths: 'no'` reads as on** (recorded 2026-09-25, not built). beets tests it with a
   bare `if` (`beets/library/models.py:1276`), so any non-empty string turns asciify on, and no
   typed read refuses it: Validate is clean. The `import.*` flags beets tests the same way keep

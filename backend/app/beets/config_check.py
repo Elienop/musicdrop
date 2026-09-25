@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Sequence
-from functools import partial
+from functools import cached_property, partial
 from pathlib import Path
 from typing import Any, Final, NamedTuple, TypeVar
 
@@ -104,21 +104,22 @@ def load_config_text(text: str) -> dict[str, Any]:
     return value
 
 
-def parse_problem(exc: BaseException) -> BaseException:
+_T = TypeVar("_T")
+_E = TypeVar("_E", bound=BaseException)
+
+
+def parse_problem(exc: _E) -> _E | Exception:
     """The parser's own error inside a ``ConfigReadError``; ``exc`` otherwise."""
     if isinstance(exc, confuse.ConfigReadError) and exc.reason is not None:
         return exc.reason
     return exc
 
 
-_T = TypeVar("_T")
-
-
 class ReadFailure(NamedTuple):
-    """One of beets' reads that raised, and the key path it read."""
+    """One of beets' reads that raised: the key path it read, and what it raised as text."""
 
     path: tuple[str, ...]
-    error: Exception
+    message: str
 
 
 def _compile_replacements(cfg: confuse.Configuration) -> None:
@@ -131,6 +132,11 @@ def _compile_replacements(cfg: confuse.Configuration) -> None:
             re.compile(pattern)
         except re.error as exc:
             raise UserError(f"Malformed regular expression in replace: {pattern}") from exc
+
+
+def _is_list_section(view: confuse.ConfigView) -> bool:
+    """A section written as a list, which :func:`beets_read_failures` does not ask."""
+    return view.exists() and isinstance(view.get(), list)
 
 
 def beets_read_failures(cfg: confuse.Configuration) -> list[ReadFailure]:
@@ -166,7 +172,7 @@ def beets_read_failures(cfg: confuse.Configuration) -> list[ReadFailure]:
             return call()
         # Broad: whatever the replayed read raises, beets' own raises too.
         except Exception as exc:
-            failures.append(ReadFailure(path, exc))
+            failures.append(ReadFailure(path, _named(exc)))
             return None
 
     read(
@@ -186,7 +192,7 @@ def beets_read_failures(cfg: confuse.Configuration) -> list[ReadFailure]:
         disabled.add("musicbrainz")
     enabled = [name for name in names if name not in disabled]
     for name in enabled:
-        if not (cfg[name].exists() and isinstance(cfg[name].get(), list)):
+        if not _is_list_section(cfg[name]):
             read((name,), partial(cfg[name].__contains__, "source_weight"))
     if enabled:
         read(("verbose",), lambda: cfg["verbose"].get(int))
@@ -222,8 +228,15 @@ class _Positions:
 
     def __init__(self, text: str) -> None:
         self._text = text
-        self._root: Any = None
-        self._composed = False
+
+    @cached_property
+    def _root(self) -> Any:
+        """The text composed once, on the first ask; ``None`` when it does not compose."""
+        try:
+            return yaml.compose(self._text, Loader=beets.config.loader)
+        # The text loaded already; a failure here only costs the position.
+        except Exception:
+            return None
 
     def at(self, path: Sequence[str | int]) -> tuple[int | None, int | None]:
         """1-based line and 0-based column; ``(None, None)`` when not written here.
@@ -232,13 +245,6 @@ class _Positions:
         where a section is read (``import: 5`` for ``import.write``) is the one
         beets refuses, so the row goes on it.
         """
-        if not self._composed:
-            self._composed = True
-            try:
-                self._root = yaml.compose(self._text, Loader=beets.config.loader)
-            # The text loaded already; a failure here only costs the position.
-            except Exception:
-                self._root = None
         node = self._root
         if not isinstance(node, yaml.MappingNode) or not path:
             return (None, None)
@@ -268,15 +274,20 @@ def _mapping_value(node: Any, key: str | int) -> Any:
     ]
     if own:
         return own[-1]
-    for name, value in node.value:
-        if name.tag != _MERGE_TAG:
-            continue
-        for merged in value.value if isinstance(value, yaml.SequenceNode) else [value]:
-            if isinstance(merged, yaml.MappingNode):
-                found = _mapping_value(merged, key)
-                if found is not None:
-                    return found
+    for merged in _merged_mappings(node):
+        found = _mapping_value(merged, key)
+        if found is not None:
+            return found
     return None
+
+
+def _merged_mappings(node: Any) -> list[Any]:
+    """The mapping nodes a mapping node's ``<<`` keys merge, in the order they are listed."""
+    merged: list[Any] = []
+    for name, value in node.value:
+        if name.tag == _MERGE_TAG:
+            merged += value.value if isinstance(value, yaml.SequenceNode) else [value]
+    return [mapping for mapping in merged if isinstance(mapping, yaml.MappingNode)]
 
 
 def _named(exc: BaseException) -> str:
@@ -335,7 +346,7 @@ def _read_rows(
     seen: set[str] = set()
     reported: list[tuple[str, ...]] = []
     for failure in failures:
-        text = _named(failure.error)
+        text = failure.message
         if text in seen or any(_related(failure.path, path) for path in reported):
             continue
         seen.add(text)

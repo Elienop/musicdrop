@@ -289,12 +289,12 @@ def test_save_naming_refuses_a_file_that_is_not_a_mapping(
 _REQUIRED = [
     {
         "loc": "",
-        "msg": "directory: Field required. Fix it in Settings → Beets.",
+        "msg": "directory: Field required. Check it in Settings → Beets.",
         "type": "config_on_disk",
     },
     {
         "loc": "",
-        "msg": "library: Field required. Fix it in Settings → Beets.",
+        "msg": "library: Field required. Check it in Settings → Beets.",
         "type": "config_on_disk",
     },
 ]
@@ -366,19 +366,27 @@ def test_save_naming_keeps_the_comments_of_the_file(
     [
         (
             "import:\n  write: 1\n",
-            "import.write: must be a bool, not int. Fix it in Settings → Beets.",
+            "import.write: must be a bool, not int. Check it in Settings → Beets.",
         ),
-        ("musicbrainz: no\n", "musicbrainz must be a dict, not bool. Fix it in Settings → Beets."),
-        ("timeout: x\n", "timeout: must be numeric, not str. Fix it in Settings → Beets."),
+        (
+            "musicbrainz: no\n",
+            "musicbrainz must be a dict, not bool. Check it in Settings → Beets.",
+        ),
+        ("timeout: x\n", "timeout: must be numeric, not str. Check it in Settings → Beets."),
+        # beets' own text ends in a period; the sentence must not print two.
+        (
+            "pluginpath: ~nosuchuser_zz/p\n",
+            "RuntimeError: Could not determine home directory. Check it in Settings → Beets.",
+        ),
     ],
-    ids=["write-int", "musicbrainz-bool", "timeout-str"],
+    ids=["write-int", "musicbrainz-bool", "timeout-str", "pluginpath-unknown-user"],
 )
 def test_save_naming_refuses_a_file_the_beets_save_would_refuse(
     client: TestClient, beets_library: LibraryHandle, section: str, row: str
 ) -> None:
     """The panel changes only ``paths:``/``replace:``, but the file it writes is
     checked whole: a hand-edited value beets refuses stops the save, and the
-    row says which one, in beets' words, and where to fix it. The panel shows
+    row says which one, in beets' words, and where to look. The panel shows
     the first row after "Save failed. "."""
     cfg = beets_library.config_path
     text = _head(beets_library) + section
@@ -401,7 +409,7 @@ def test_save_naming_leaves_a_store_layout_row_its_own_remedy(
     client: TestClient, beets_library: LibraryHandle
 ) -> None:
     """A store-layout row already says what to change, and some say to change an
-    environment variable, so "Fix it in Settings → Beets." is not added to it."""
+    environment variable, so "Check it in Settings → Beets." is not added to it."""
     cfg = beets_library.config_path
     for index in range(33):
         (beets_library.beets_dir / f"o{index}.yaml").write_text("x: 1\n", encoding="utf-8")
