@@ -943,7 +943,7 @@ export interface paths {
         put?: never;
         /**
          * Save Config
-         * @description Persist the user-submitted YAML to disk after CAS + schema checks.
+         * @description Write the submitted YAML to config.yaml as typed, after Validate's check and CAS.
          */
         post: operations["save_config_api_config_save_post"];
         delete?: never;
@@ -8694,7 +8694,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description The YAML did not parse, a key has the wrong shape, its directory:/library: would break the store layout, or config.yaml on disk cannot be read or written; the body lists one item per problem. */
+            /** @description beets could not read the YAML or a value in it, an include would be skipped, its directory:/library: would break the store layout, or config.yaml on disk cannot be read or written; the body lists one item per problem. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -8902,7 +8902,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorDetail"];
                 };
             };
-            /** @description A submitted replace: pattern is not a valid regular expression, or config.yaml on disk cannot be read or written, does not parse or is not a mapping; the body names the problem. A malformed request body answers with FastAPI's validation shape instead. */
+            /** @description A submitted replace: pattern is not a valid regular expression, or config.yaml on disk cannot be read or written, does not parse, is not a mapping or would not pass Validate; the body names the problem. A malformed request body answers with FastAPI's validation shape instead. */
             422: {
                 headers: {
                     [name: string]: unknown;

@@ -582,8 +582,13 @@ def test_a_file_that_breaks_after_the_gate_is_refused_by_the_read(
             "DIR\nlibrary: library.db\nplugins:\n  - musicbrainz\nmusicbrainz: no\n",
             "musicbrainz must be a dict, not bool",
         ),
+        # beets' UserError from ``Library.get_replacements``: before, "Apply stopped".
+        (
+            "DIR\nlibrary: library.db\nreplace:\n  '[': _\n",
+            "Malformed regular expression in replace: [",
+        ),
     ],
-    ids=["dir-int", "dir-list", "dir-map", "plugins-int", "musicbrainz-no"],
+    ids=["dir-int", "dir-list", "dir-map", "plugins-int", "musicbrainz-no", "replace-malformed"],
 )
 def test_a_value_beets_rejects_after_the_teardown_is_fixed_by_a_second_apply(
     client: TestClient, beets_library: LibraryHandle, bad: str, cause: str

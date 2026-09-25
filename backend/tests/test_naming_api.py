@@ -15,6 +15,12 @@ def _cfg_sha(client: TestClient) -> str:
     return str(body["sha256"])
 
 
+def _head(beets_library: LibraryHandle) -> str:
+    """``directory:`` and ``library:`` the Beets Save's check accepts: a Naming
+    save is held to it (it never writes a file the Beets Save would refuse)."""
+    return f"directory: {beets_library.lib.directory.decode()}\nlibrary: library.db\n"
+
+
 def test_get_naming_returns_split_and_previews(client: TestClient) -> None:
     r = client.get("/api/config/naming")
     assert r.status_code == 200
@@ -81,8 +87,8 @@ def test_save_naming_409_on_stale_sha(client: TestClient) -> None:
 
 _FIX_IN_BEETS = " Fix it in Settings → Beets."
 
-# A duplicate key is the case beets' loader accepts (it keeps the last value),
-# and ruamel's text quoted both values.
+# Files beets' own loader refuses. The parser's text is left out: for an
+# unknown tag or an undefined alias it quotes the token.
 _BROKEN_ON_DISK = pytest.mark.parametrize(
     ("data", "message"),
     [
@@ -91,8 +97,8 @@ _BROKEN_ON_DISK = pytest.mark.parametrize(
             "config.yaml does not parse: YAML error at line 3." + _FIX_IN_BEETS,
         ),
         (
-            b"plex:\n  token: Hunter2First\n  token: Hunter2Last\n",
-            "config.yaml does not parse: YAML error at line 3." + _FIX_IN_BEETS,
+            b"a: 1\nplex: !!python/name:Hunter2 ''\n",
+            "config.yaml does not parse: YAML error at line 2." + _FIX_IN_BEETS,
         ),
         (b"a: 1\nx: !!bool ture\n", "config.yaml does not parse." + _FIX_IN_BEETS),
         (b"a: 1\nb: caf\xe9\n", "config.yaml is not UTF-8."),
@@ -101,7 +107,7 @@ _BROKEN_ON_DISK = pytest.mark.parametrize(
             "config.yaml does not parse: YAML error at line 3." + _FIX_IN_BEETS,
         ),
     ],
-    ids=["syntax", "duplicate-key", "mistyped-tag", "not-utf8", "reused-anchor"],
+    ids=["syntax", "python-tag", "mistyped-tag", "not-utf8", "reused-anchor"],
 )
 
 
@@ -134,6 +140,38 @@ def test_save_naming_names_the_parse_error_of_the_file_on_disk(
 
     assert r.status_code == 422, r.text
     assert r.json() == {"detail": [{"loc": "", "msg": message, "type": "config_on_disk"}]}
+    assert beets_library.config_path.read_bytes() == data
+
+
+def test_a_duplicate_key_reads_as_beets_reads_it_and_the_save_cannot_edit_it(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """beets' loader keeps the last value, so the GET does too. The save still
+    edits with ruamel, which refuses the file: a recorded residual."""
+    data = (
+        _head(beets_library) + "paths:\n  default: $album/first\n  default: $album/last\n"
+    ).encode()
+    beets_library.config_path.write_bytes(data)
+
+    body = client.get("/api/config/naming").json()
+    r = client.post(
+        "/api/config/naming/save",
+        json={"rules": [], "replace": [], "base_sha256": body["sha256"]},
+    )
+
+    assert body["default"] == "$album/last"
+    assert (r.status_code, r.json()) == (
+        422,
+        {
+            "detail": [
+                {
+                    "loc": "",
+                    "msg": "config.yaml does not parse: YAML error at line 5." + _FIX_IN_BEETS,
+                    "type": "config_on_disk",
+                }
+            ]
+        },
+    )
     assert beets_library.config_path.read_bytes() == data
 
 
@@ -180,30 +218,20 @@ def test_get_naming_reads_an_empty_file_as_beets_defaults(
     }
 
 
+_REFUSED_TOP_LEVELS = ["- a\n", "hello\n"]
+_FALSY_TOP_LEVELS = ["~\n", "# a\n~\n# b\n", "[]\n", "false\n", "0\n", "''\n"]
+_FALSY_IDS = ["null", "null-with-comments", "empty-list", "false", "zero", "empty-str"]
 _NOT_A_MAPPING = pytest.mark.parametrize(
     "text",
-    ["- a\n", "hello\n", "~\n", "# a\n~\n# b\n", "[]\n", "false\n", "0\n", "''\n"],
-    ids=[
-        "list",
-        "scalar",
-        "null",
-        "null-with-comments",
-        "empty-list",
-        "false",
-        "zero",
-        "empty-str",
-    ],
+    _REFUSED_TOP_LEVELS + _FALSY_TOP_LEVELS,
+    ids=["list", "scalar", *_FALSY_IDS],
 )
 
 
-@_NOT_A_MAPPING
-def test_get_naming_refuses_a_file_that_is_not_a_mapping(
+@pytest.mark.parametrize("text", _REFUSED_TOP_LEVELS, ids=["list", "scalar"])
+def test_get_naming_refuses_a_file_beets_refuses_as_not_a_mapping(
     client: TestClient, beets_library: LibraryHandle, text: str
 ) -> None:
-    """beets refuses the first two and reads the falsy ones as no settings.
-
-    Refused here all the same: a save could not keep a falsy file's comments.
-    """
     beets_library.config_path.write_text(text, encoding="utf-8")
 
     r = client.get("/api/config/naming")
@@ -212,10 +240,31 @@ def test_get_naming_refuses_a_file_that_is_not_a_mapping(
     assert r.json() == {"detail": "config.yaml must be a mapping of settings."}
 
 
+@pytest.mark.parametrize("text", _FALSY_TOP_LEVELS, ids=_FALSY_IDS)
+def test_get_naming_reads_a_falsy_top_level_as_beets_defaults(
+    client: TestClient, beets_library: LibraryHandle, text: str
+) -> None:
+    """beets reads these as no settings (``confuse/sources.py:101``), so the GET
+    judges them the same way; before, ruamel refused them here."""
+    beets_library.config_path.write_text("a: 1\n", encoding="utf-8")
+    defaults = client.get("/api/config/naming").json()
+    beets_library.config_path.write_text(text, encoding="utf-8")
+
+    r = client.get("/api/config/naming")
+
+    assert r.status_code == 200, r.text
+    assert {k: v for k, v in r.json().items() if k != "sha256"} == {
+        k: v for k, v in defaults.items() if k != "sha256"
+    }
+
+
 @_NOT_A_MAPPING
 def test_save_naming_refuses_a_file_that_is_not_a_mapping(
     client: TestClient, beets_library: LibraryHandle, text: str
 ) -> None:
+    """beets refuses the first two. The falsy ones it reads as no settings, and
+    ruamel cannot edit them keeping their comments; with no ``directory:`` the
+    Beets Save would refuse them too."""
     beets_library.config_path.write_text(text, encoding="utf-8")
     sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -237,50 +286,38 @@ def test_save_naming_refuses_a_file_that_is_not_a_mapping(
     assert beets_library.config_path.read_text(encoding="utf-8") == text
 
 
-def test_save_naming_writes_into_an_empty_file(
-    client: TestClient, beets_library: LibraryHandle
-) -> None:
-    beets_library.config_path.write_text("", encoding="utf-8")
-    sha = hashlib.sha256(b"").hexdigest()
-
-    r = client.post(
-        "/api/config/naming/save",
-        json={
-            "rules": [{"query": "default", "template": "$artist/$title"}],
-            "replace": [],
-            "base_sha256": sha,
-        },
-    )
-
-    assert r.status_code == 200, r.text
-    assert beets_library.config_path.read_text(encoding="utf-8") == (
-        "paths:\n  default: $artist/$title\n"
-    )
-
-
+_REQUIRED = [
+    {
+        "loc": "",
+        "msg": "directory: Field required. Check it in Settings → Beets.",
+        "type": "config_on_disk",
+    },
+    {
+        "loc": "",
+        "msg": "library: Field required. Check it in Settings → Beets.",
+        "type": "config_on_disk",
+    },
+]
 _SAVED_RULE = {"query": "default", "template": "$artist/$title"}
 
 
 @pytest.mark.parametrize(
-    ("text", "rules", "written"),
+    ("text", "rules"),
     [
-        ("# a\n# b\n", [_SAVED_RULE], "# a\n# b\npaths:\n  default: $artist/$title\n"),
-        ("# a\n# b\n", [], "# a\n# b\n{}\n"),
-        ("# a", [_SAVED_RULE], "# a\npaths:\n  default: $artist/$title\n"),
-        ("%YAML 1.1\n---\n# a\n", [_SAVED_RULE], "# a\npaths:\n  default: $artist/$title\n"),
+        ("", [_SAVED_RULE]),
+        ("# a\n# b\n", [_SAVED_RULE]),
+        ("# a\n# b\n", []),
+        ("# a", [_SAVED_RULE]),
+        ("%YAML 1.1\n---\n# a\n", [_SAVED_RULE]),
     ],
-    ids=["comments", "comments-no-rules", "no-final-newline", "markers"],
+    ids=["empty", "comments", "comments-no-rules", "no-final-newline", "markers"],
 )
-def test_save_naming_keeps_the_comments_of_a_file_with_no_settings(
-    client: TestClient,
-    beets_library: LibraryHandle,
-    text: str,
-    rules: list[dict[str, str]],
-    written: str,
+def test_save_naming_refuses_a_file_with_no_settings_as_the_beets_save_does(
+    client: TestClient, beets_library: LibraryHandle, text: str, rules: list[dict[str, str]]
 ) -> None:
-    """Measured before: the 200 wrote only the new keys and every comment was gone."""
-    from app.beets.setup import read_config_document
-
+    """beets reads these as no settings, and the Beets Save refuses them for
+    the ``directory:`` and ``library:`` MusicDrop requires: the Naming save
+    never writes a file the Beets Save would refuse. The rows name the keys."""
     cfg = beets_library.config_path
     cfg.write_text(text, encoding="utf-8")
     sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -290,9 +327,146 @@ def test_save_naming_keeps_the_comments_of_a_file_with_no_settings(
         json={"rules": rules, "replace": [], "base_sha256": sha},
     )
 
+    assert (r.status_code, r.json()) == (422, {"detail": _REQUIRED})
+    assert cfg.read_text(encoding="utf-8") == text
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ("# a\n{head}# b\n", "# a\n{head}# b\npaths:\n  default: $artist/$title\n"),
+        ("{head}# a", "{head}# a\npaths:\n  default: $artist/$title\n"),
+        ("%YAML 1.1\n---\n# a\n{head}", "# a\n{head}paths:\n  default: $artist/$title\n"),
+    ],
+    ids=["comments", "no-final-newline", "markers"],
+)
+def test_save_naming_keeps_the_comments_of_the_file(
+    client: TestClient, beets_library: LibraryHandle, before: str, after: str
+) -> None:
+    """Measured before: a save wrote only the new keys and every comment was gone."""
+    from app.beets.setup import read_config_document
+
+    cfg = beets_library.config_path
+    text = before.format(head=_head(beets_library))
+    cfg.write_text(text, encoding="utf-8")
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    r = client.post(
+        "/api/config/naming/save",
+        json={"rules": [_SAVED_RULE], "replace": [], "base_sha256": sha},
+    )
+
     assert r.status_code == 200, r.text
-    assert cfg.read_text(encoding="utf-8") == written
-    assert read_config_document(cfg) == ({"paths": {"default": "$artist/$title"}} if rules else {})
+    assert cfg.read_text(encoding="utf-8") == after.format(head=_head(beets_library))
+    assert read_config_document(cfg)["paths"] == {"default": "$artist/$title"}
+
+
+@pytest.mark.parametrize(
+    ("section", "row"),
+    [
+        (
+            "import:\n  write: 1\n",
+            "import.write: must be a bool, not int. Check it in Settings → Beets.",
+        ),
+        (
+            "musicbrainz: no\n",
+            "musicbrainz must be a dict, not bool. Check it in Settings → Beets.",
+        ),
+        ("timeout: x\n", "timeout: must be numeric, not str. Check it in Settings → Beets."),
+        # beets' own text ends in a period; the sentence must not print two.
+        (
+            "pluginpath: ~nosuchuser_zz/p\n",
+            "RuntimeError: Could not determine home directory. Check it in Settings → Beets.",
+        ),
+    ],
+    ids=["write-int", "musicbrainz-bool", "timeout-str", "pluginpath-unknown-user"],
+)
+def test_save_naming_refuses_a_file_the_beets_save_would_refuse(
+    client: TestClient, beets_library: LibraryHandle, section: str, row: str
+) -> None:
+    """The panel changes only ``paths:``/``replace:``, but the file it writes is
+    checked whole: a hand-edited value beets refuses stops the save, and the
+    row says which one, in beets' words, and where to look. The panel shows
+    the first row after "Save failed. "."""
+    cfg = beets_library.config_path
+    text = _head(beets_library) + section
+    cfg.write_text(text, encoding="utf-8")
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    r = client.post(
+        "/api/config/naming/save",
+        json={"rules": [_SAVED_RULE], "replace": [], "base_sha256": sha},
+    )
+
+    assert (r.status_code, r.json()) == (
+        422,
+        {"detail": [{"loc": "", "msg": row, "type": "config_on_disk"}]},
+    )
+    assert cfg.read_text(encoding="utf-8") == text
+
+
+def test_save_naming_leaves_a_store_layout_row_its_own_remedy(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """A store-layout row already says what to change, and some say to change an
+    environment variable, so "Check it in Settings → Beets." is not added to it."""
+    cfg = beets_library.config_path
+    for index in range(33):
+        (beets_library.beets_dir / f"o{index}.yaml").write_text("x: 1\n", encoding="utf-8")
+    names = ", ".join(f"o{index}.yaml" for index in range(33))
+    text = _head(beets_library) + f"include: [{names}]\n"
+    cfg.write_text(text, encoding="utf-8")
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    r = client.post(
+        "/api/config/naming/save",
+        json={"rules": [_SAVED_RULE], "replace": [], "base_sha256": sha},
+    )
+
+    assert (r.status_code, r.json()) == (
+        422,
+        {
+            "detail": [
+                {
+                    "loc": "",
+                    "msg": "include: `include:` in config.yaml lists 33 files; the limit is 32."
+                    " Shorten the include: list.",
+                    "type": "config_on_disk",
+                }
+            ]
+        },
+    )
+    assert cfg.read_text(encoding="utf-8") == text
+
+
+def test_save_naming_edits_a_file_whose_plugin_sections_are_lists(
+    client: TestClient, beets_library: LibraryHandle
+) -> None:
+    """``advancedrewrite`` and ``loadext`` read their section as a list, and beets
+    boots with them. Measured before: the save answered 422 "advancedrewrite
+    must be a collection, not list" and wrote nothing."""
+    from app.beets.setup import read_config_document
+
+    cfg = beets_library.config_path
+    sections = (
+        "plugins: [advancedrewrite, loadext]\n"
+        "advancedrewrite:\n  - artist ODD EYE CIRCLE: Odd Eye Circle\n"
+        "loadext: []\n"
+    )
+    text = _head(beets_library) + sections
+    cfg.write_text(text, encoding="utf-8")
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    r = client.post(
+        "/api/config/naming/save",
+        json={"rules": [_SAVED_RULE], "replace": [], "base_sha256": sha},
+    )
+
+    assert r.status_code == 200, r.text
+    document = read_config_document(cfg)
+    assert document["advancedrewrite"] == [{"artist ODD EYE CIRCLE": "Odd Eye Circle"}]
+    assert document["loadext"] == []
+    assert document["paths"] == {"default": "$artist/$title"}
 
 
 def test_save_naming_writes_no_as_a_bool_under_a_document_marker(
@@ -305,7 +479,8 @@ def test_save_naming_writes_no_as_a_bool_under_a_document_marker(
     from app.beets.setup import read_config_document
 
     cfg = beets_library.config_path
-    text = "---\nimport: {write: no, copy: yes, move: no}\n"
+    head = _head(beets_library)
+    text = f"---\n{head}import: {{write: no, copy: yes, move: no}}\n"
     cfg.write_text(text, encoding="utf-8")
     sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -316,12 +491,10 @@ def test_save_naming_writes_no_as_a_bool_under_a_document_marker(
 
     assert r.status_code == 200, r.text
     assert cfg.read_text(encoding="utf-8") == (
-        "import: {write: false, copy: true, move: false}\npaths:\n  default: $artist/$title\n"
+        f"{head}import: {{write: false, copy: true, move: false}}\n"
+        "paths:\n  default: $artist/$title\n"
     )
-    assert read_config_document(cfg) == {
-        "import": {"write": False, "copy": True, "move": False},
-        "paths": {"default": "$artist/$title"},
-    }
+    assert read_config_document(cfg)["import"] == {"write": False, "copy": True, "move": False}
 
 
 def test_save_naming_quotes_a_question_mark_in_a_flow_mapping(
@@ -331,7 +504,8 @@ def test_save_naming_quotes_a_question_mark_in_a_flow_mapping(
     from app.beets.setup import read_config_document
 
     cfg = beets_library.config_path
-    text = "{directory: /music, library: library.db}\n"
+    music = beets_library.lib.directory.decode()
+    text = f"{{directory: {music}, library: library.db}}\n"
     cfg.write_text(text, encoding="utf-8")
     sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -346,11 +520,11 @@ def test_save_naming_quotes_a_question_mark_in_a_flow_mapping(
 
     assert r.status_code == 200, r.text
     assert cfg.read_text(encoding="utf-8") == (
-        "{directory: /music, library: library.db, paths: {default: $artist/$title},"
+        f"{{directory: {music}, library: library.db, paths: {{default: $artist/$title}},"
         " replace: {'\\?': _}}\n"
     )
     assert read_config_document(cfg) == {
-        "directory": "/music",
+        "directory": music,
         "library": "library.db",
         "paths": {"default": "$artist/$title"},
         "replace": {"\\?": "_"},
@@ -365,7 +539,8 @@ def test_naming_reads_and_saves_one_letter_replacements_as_beets_reads_them(
     from app.beets.setup import read_config_document
 
     cfg = beets_library.config_path
-    text = "---\nreplace:\n  'ñ': n\n  'ý': y\n"
+    head = _head(beets_library)
+    text = f"---\n{head}replace:\n  'ñ': n\n  'ý': y\n"
     cfg.write_text(text, encoding="utf-8")
     rows = [{"pattern": "ñ", "replacement": "n"}, {"pattern": "ý", "replacement": "y"}]
 
@@ -377,8 +552,8 @@ def test_naming_reads_and_saves_one_letter_replacements_as_beets_reads_them(
         json={"rules": [], "replace": body["replace"], "base_sha256": body["sha256"]},
     )
     assert r.status_code == 200, r.text
-    assert cfg.read_text(encoding="utf-8") == "replace:\n  ñ: n\n  ý: y\n"
-    assert read_config_document(cfg) == {"replace": {"ñ": "n", "ý": "y"}}
+    assert cfg.read_text(encoding="utf-8") == f"{head}replace:\n  ñ: n\n  ý: y\n"
+    assert read_config_document(cfg)["replace"] == {"ñ": "n", "ý": "y"}
 
 
 def _chain_to_dotfile(cfg: Path, mode: int) -> Path:

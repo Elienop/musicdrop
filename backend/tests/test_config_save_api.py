@@ -1,8 +1,9 @@
 """End-to-end tests for ``POST /api/config/save``.
 
-Covers the full Layer-3 save flow: parse, schema-validate, SHA-256 CAS, atomic
-write. The editor serves and edits the RAW ``config.yaml``, so Save writes the
-submitted document verbatim (no secret-preserve merge) — the comment/secret
+Covers the full Layer-3 save flow: the Validate check (beets' loader and typed
+reads, then MusicDrop's policies), SHA-256 CAS, atomic write. The editor serves
+and edits the RAW ``config.yaml``, so Save writes the submitted text exactly as
+typed (no re-dump, no secret-preserve merge) — the comment/secret
 regressions the raw-serve fix closed are pinned here too. The CAS branch is
 exercised with a stale ``base_sha256`` — SHA alone is the CAS token (mtime would
 overflow JS's ``Number.MAX_SAFE_INTEGER`` and silently corrupt the round-trip).
@@ -20,6 +21,7 @@ import pytest
 import yaml as pyyaml
 from fastapi.testclient import TestClient
 
+from app.beets.config_check import load_config_text
 from app.beets.setup import read_config_document
 from tests.conftest import answer_before_a_fifo_blocks
 
@@ -43,23 +45,46 @@ def test_save_happy_path(client: TestClient, beets_library_config_path: Path) ->
     assert "# trailing comment" in beets_library_config_path.read_text()
 
 
-def test_save_normalizes_yes_no_to_true_false(
+def test_save_writes_the_starter_back_byte_for_byte(
     client: TestClient, beets_library_config_path: Path
 ) -> None:
-    # Starter has ``autotag: yes`` — submitting unchanged should still cause
-    # ruamel to emit ``true``/``false`` per the maintainer's invariant.
-    sha = _cas(client)
-    r = client.post(
-        "/api/config/save",
-        json={
-            "yaml_text": beets_library_config_path.read_text(),
-            "base_sha256": sha,
-        },
+    """Starter has ``autotag: yes``: it used to come back as ``true``, with
+    every comment the dump dropped (owner ruling 2026-09-25: Save writes exactly
+    the text the operator submitted)."""
+    text = beets_library_config_path.read_text(encoding="utf-8")
+
+    r = client.post("/api/config/save", json={"yaml_text": text, "base_sha256": _cas(client)})
+
+    assert r.status_code == 200, r.text
+    assert beets_library_config_path.read_bytes() == text.encode("utf-8")
+    assert "autotag: yes" in text
+
+
+def test_save_writes_what_the_dump_used_to_change_exactly_as_typed(
+    client: TestClient, beets_library_config_path: Path
+) -> None:
+    """Measured on the ruamel dump: the comment above ``---`` and the ``---``
+    itself dropped, ``autotag: yes`` became ``true``, ``file: -0644`` became
+    ``!!int '0-644'`` (which beets then refused), and a NEL became a space."""
+    cfg = beets_library_config_path
+    music = cfg.read_text(encoding="utf-8").splitlines()[0]
+    text = (
+        "# above the marker\n---\n"
+        f"{music}\nlibrary: library.db   # spacing kept\n"
+        "import:\n  autotag: yes\n  write: no\n"
+        "permissions:\n  file: -0644\n"
+        'lastgenre:\n  separator: "a\x85b"\n'
     )
-    assert r.status_code == 200
-    text = beets_library_config_path.read_text()
-    assert "autotag: true" in text
-    assert "autotag: yes" not in text
+
+    r = client.post("/api/config/save", json={"yaml_text": text, "base_sha256": _cas(client)})
+
+    assert r.status_code == 200, r.text
+    assert cfg.read_bytes() == text.encode("utf-8")
+    # What beets reads from disk is what the check read from the text: YAML folds
+    # the NEL inside the quotes, and it does so for both.
+    document = read_config_document(cfg)
+    assert document == load_config_text(text)
+    assert (document["import"]["write"], document["permissions"]["file"]) == (False, -420)
 
 
 def test_save_writes_no_as_a_bool_under_a_document_marker(
@@ -67,7 +92,8 @@ def test_save_writes_no_as_a_bool_under_a_document_marker(
 ) -> None:
     """``---`` made ruamel read ``no`` as a string, which Save wrote as ``'no'``.
 
-    confuse reads that string as TRUE, so ``auto: no`` turned fetchart on.
+    confuse reads that string as TRUE, so ``auto: no`` turned fetchart on. The
+    text is now written as typed, marker included, and beets reads a bool.
     """
     cfg = beets_library_config_path
     music = cfg.read_text(encoding="utf-8").splitlines()[0]
@@ -77,9 +103,7 @@ def test_save_writes_no_as_a_bool_under_a_document_marker(
     r = client.post("/api/config/save", json={"yaml_text": text, "base_sha256": sha})
 
     assert r.status_code == 200, r.text
-    assert cfg.read_text(encoding="utf-8") == (
-        f"{music}\nlibrary: library.db\nimport:\n  write: false\nfetchart:\n  auto: false\n"
-    )
+    assert cfg.read_text(encoding="utf-8") == text
     document = read_config_document(cfg)
     flags = (document["import"]["write"], document["fetchart"]["auto"])
     assert flags == (False, False)
@@ -316,18 +340,19 @@ _NO_SETTINGS = [
 _NOT_A_MAPPING = [_row("", "config.yaml must be a mapping of settings.", "model_type")]
 
 
+# beets reads an empty or falsy top level as no settings (``load_yaml(...) or {}``,
+# ``confuse/sources.py:101``), so only MusicDrop's own required keys refuse those.
 @pytest.mark.parametrize(
     ("text", "rows"),
     [
         ("", _NO_SETTINGS),
         ("# my beets config\n\n# more\n", _NO_SETTINGS),
         ("{}\n", _NO_SETTINGS),
-        ("~\n", _NOT_A_MAPPING),
-        ("[]\n", _NOT_A_MAPPING),
-        ("false\n", _NOT_A_MAPPING),
+        ("~\n", _NO_SETTINGS),
+        ("[]\n", _NO_SETTINGS),
+        ("false\n", _NO_SETTINGS),
         ("hello\n", _NOT_A_MAPPING),
-        # beets reads it as {}; the Naming routes refuse it too.
-        ("---\n...\n", _NOT_A_MAPPING),
+        ("---\n...\n", _NO_SETTINGS),
     ],
     ids=[
         "empty",
@@ -355,68 +380,34 @@ def test_validate_and_save_answer_a_top_level_with_no_settings_in_our_words(
     assert beets_library_config_path.read_bytes() == before
 
 
+def _read_row(loc: str, msg: str, line: int, column: int) -> dict[str, object]:
+    return {"loc": loc, "msg": msg, "type": "beets_read", "line": line, "column": column}
+
+
 @pytest.mark.parametrize(
     ("section", "row"),
     [
-        (
-            "import: 5\n",
-            {
-                "loc": "import",
-                "msg": "must be a mapping of settings.",
-                "type": "model_type",
-                "line": 3,
-                "column": 8,
-            },
-        ),
-        (
-            "match: []\n",
-            {
-                "loc": "match",
-                "msg": "must be a mapping of settings.",
-                "type": "model_type",
-                "line": 3,
-                "column": 7,
-            },
-        ),
-        # A key with no value: YAML null, placed on the line after it.
-        (
-            "import:\n",
-            {
-                "loc": "import",
-                "msg": "must be a mapping of settings.",
-                "type": "model_type",
-                "line": 4,
-                "column": 0,
-            },
-        ),
-        # Controls: rows of every other type keep Pydantic's text.
-        (
-            "import:\n  copy: 5\n",
-            {
-                "loc": "import.copy",
-                "msg": "Input should be a valid boolean, unable to interpret input",
-                "type": "bool_parsing",
-                "line": 4,
-                "column": 8,
-            },
-        ),
+        # confuse names the section itself, so the whole sentence is the message.
+        ("import: 5\n", _read_row("", "import must be a collection, not int", 3, 8)),
+        ("match: []\n", _read_row("", "match must be a collection, not list", 3, 7)),
+        # A key with no value: YAML null.
+        ("import:\n", _read_row("", "import must be a collection, not NoneType", 3, 7)),
+        ("musicbrainz: no\n", _read_row("", "musicbrainz must be a dict, not bool", 3, 13)),
+        # confuse's templates write "key: problem"; the key becomes ``loc``.
+        ("import:\n  copy: 5\n", _read_row("import.copy", "must be a bool, not int", 4, 8)),
         (
             "plugins: 5\n",
-            {
-                "loc": "plugins",
-                "msg": "Input should be a valid list",
-                "type": "list_type",
-                "line": 3,
-                "column": 9,
-            },
+            _read_row("plugins", "must be a whitespace-separated string or a list", 3, 9),
         ),
     ],
-    ids=["import-int", "match-list", "import-null", "control-bool", "control-list"],
+    ids=["import-int", "match-list", "import-null", "musicbrainz-bool", "copy-int", "plugins-int"],
 )
-def test_a_section_that_is_not_a_mapping_is_named_without_a_class(
+def test_a_section_that_is_not_a_mapping_reads_in_beets_words(
     client: TestClient, beets_library_config_path: Path, section: str, row: dict[str, object]
 ) -> None:
-    """Measured before: "Input should be a valid dictionary or instance of ImportSection"."""
+    """Measured before: "Input should be a valid dictionary or instance of
+    ImportSection", then our own "must be a mapping of settings.". One row per
+    problem: ``import: 5`` fails every ``import.*`` read with one sentence."""
     cfg = beets_library_config_path
     text = f"{cfg.read_text(encoding='utf-8').splitlines()[0]}\nlibrary: library.db\n{section}"
     before = cfg.read_bytes()
@@ -460,8 +451,8 @@ def test_save_refuses_write_n_and_writes_nothing(
     assert r.json()["detail"] == [
         {
             "loc": "import.write",
-            "msg": "Value error, must be a bool: write yes or no, without quotes",
-            "type": "value_error",
+            "msg": "must be a bool, not str",
+            "type": "beets_read",
             "line": 4,
             "column": 9,
         }

@@ -80,6 +80,7 @@ module = [
     "app.beets.setup",
     "app.beets.config_snapshot",
     "app.beets.config_editor",
+    "app.beets.config_check",
     "app.beets.duplicates",
     "app.beets.existing_album",
     "app.beets.edit",

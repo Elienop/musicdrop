@@ -1,8 +1,8 @@
 """Layer-3 config editor — atomic write tests (Plan Task 4).
 
-``atomic_write`` dumps the YAML and hands the bytes to the shared writer
+``atomic_write`` hands the text to the shared writer
 (``app.playlists.atomic.write_atomic_text``), so what is pinned here is this
-file's policy on top of that recipe: the YAML directive is stripped, the
+file's policy on top of that recipe: ``dumped`` strips the YAML directive, the
 parent directory is fsynced, and ``mode=None`` preserves the config's own mode
 bits while letting mtime advance (``shutil.copystat`` would carry the old mtime
 over and freeze the Save signal ``apply_pending`` reads).
@@ -28,14 +28,14 @@ from typing import Any
 
 import pytest
 
-from app.beets.config_editor import _yaml, atomic_write, parse_yaml
+from app.beets.config_editor import _yaml, atomic_write, dumped, parse_yaml
 
 
 def test_atomic_write_writes_content(tmp_path: Path) -> None:
     cfg = tmp_path / "config.yaml"
     cfg.write_text("a: 1\n")
     data = parse_yaml("a: 2\nb: 3\n")
-    atomic_write(cfg, data, _yaml())
+    atomic_write(cfg, dumped(data, _yaml()))
     text = cfg.read_text()
     assert "a: 2" in text
     assert "b: 3" in text
@@ -49,7 +49,7 @@ def test_atomic_write_preserves_mode(tmp_path: Path) -> None:
     cfg.write_text("a: 1\n")
     cfg.chmod(0o600)
     data = parse_yaml("a: 2\n")
-    atomic_write(cfg, data, _yaml())
+    atomic_write(cfg, dumped(data, _yaml()))
     mode = stat_mod.S_IMODE(cfg.stat().st_mode)
     assert mode == 0o600
 
@@ -64,7 +64,7 @@ def test_atomic_write_first_time_takes_umask_default(tmp_path: Path) -> None:
     assert not cfg.exists()
     old_umask = os.umask(0o022)
     try:
-        atomic_write(cfg, data, _yaml())
+        atomic_write(cfg, dumped(data, _yaml()))
     finally:
         os.umask(old_umask)
     assert cfg.exists()
@@ -74,7 +74,7 @@ def test_atomic_write_first_time_takes_umask_default(tmp_path: Path) -> None:
     cfg2 = tmp_path / "config2.yaml"
     old_umask = os.umask(0o077)
     try:
-        atomic_write(cfg2, data, _yaml())
+        atomic_write(cfg2, dumped(data, _yaml()))
     finally:
         os.umask(old_umask)
     mode = stat_mod.S_IMODE(cfg2.stat().st_mode)
@@ -85,7 +85,7 @@ def test_atomic_write_cleans_up_tmpfile_on_success(tmp_path: Path) -> None:
     cfg = tmp_path / "config.yaml"
     cfg.write_text("a: 1\n")
     data = parse_yaml("a: 2\n")
-    atomic_write(cfg, data, _yaml())
+    atomic_write(cfg, dumped(data, _yaml()))
     # The whole directory, not a glob of one shape: the temp name is picked per
     # call, so a leftover under any shape shows up here.
     assert sorted(p.name for p in tmp_path.iterdir()) == ["config.yaml"]
@@ -108,7 +108,7 @@ def test_a_symlink_at_the_old_derived_tmp_path_is_neither_followed_nor_published
     planted = tmp_path / f".{cfg.name}.tmp"  # exactly the path this writer used to derive
     planted.symlink_to(secret)
 
-    atomic_write(cfg, parse_yaml("a: 2\n"), _yaml())
+    atomic_write(cfg, dumped(parse_yaml("a: 2\n"), _yaml()))
 
     assert secret.read_bytes() == b"the beets database"  # not written through
     assert not cfg.is_symlink()  # the destination is the file itself, not the link
@@ -142,7 +142,7 @@ def test_atomic_write_parent_dir_fsync_open_carries_o_directory(
         return real_open(*args, **kwargs)  # pass-through spy
 
     monkeypatch.setattr(os, "open", spy_open)
-    atomic_write(cfg, parse_yaml("a: 2\n"), _yaml())
+    atomic_write(cfg, dumped(parse_yaml("a: 2\n"), _yaml()))
 
     parent = [flags for path, flags in opened if Path(str(path)) == tmp_path]
     assert parent, "the parent directory was not fsynced through os.open"
@@ -154,12 +154,12 @@ def test_atomic_write_omits_yaml_directive_header(tmp_path: Path) -> None:
     """``_yaml()`` sets ``version=(1,1)`` for the dump's octals and flow quoting, and ruamel
     then injects a ``%YAML 1.1\\n---\\n`` prologue on every dump —
     unrequested churn in the user's hand-edited config.yaml (diff noise, a
-    changed CAS sha, a no-op save that isn't byte-identical). ``atomic_write``
+    changed CAS sha, a no-op save that isn't byte-identical). ``dumped``
     must strip that directive."""
     cfg = tmp_path / "config.yaml"
     cfg.write_text("a: 1\n")
     data = parse_yaml("# keep me\nplugins: [fetchart]\n")
-    atomic_write(cfg, data, _yaml())
+    atomic_write(cfg, dumped(data, _yaml()))
     text = cfg.read_text()
     assert not text.startswith("%YAML")
     assert "%YAML" not in text

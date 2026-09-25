@@ -1063,67 +1063,117 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   that refusal. Thread census over the full suite: no drain thread alive after any test (on the
   parent commit, 1, left by `test_an_unreadable_import_bank_gets_the_one_error_line_too`). Search
   words: thread leak, acquisition, drain, census.
-- **Save accepts a config that stops MusicDrop starting** (security seat, 2026-09-21, measured;
-  owner: record it, fix on the next branch). Three ways, each measured: Validate is clean and
-  Save writes the file, then the next start refuses it.
-  - A value beets rejects only when it reads it typed: `musicbrainz: no`, `plugins: 5`,
-    `directory: 5` (`ConfigTypeError`).
-  - A skipped include, which Validate and Save only advise on; Apply and boot refuse it.
-  - YAML that ruamel accepts and PyYAML refuses: `!!python/object/apply:…` tags, complex keys
-    such as `? [a]`, and a bare `=` or `<<`. (A NEL/LS/PS character in a value, or `{k: 0:}`,
-    is read too, but a Save rewrites it into YAML beets loads.)
-  - Anchor names outside `[A-Za-z0-9_-]`: `&x.y`, `&é`, `&a&b` save with a 200, and beets'
-    scanner then refuses the file. A `:` ends the anchor name for beets: it reads `k: &a:b 1` as
-    `':b 1'`, refuses it only once an alias uses it (in its parser), and sees `&t:x` beside
-    `&t:y` as a reused anchor where the editor does not (review seats, 2026-09-23, measured;
-    predates the branch).
-  - A ruamel warning prints the whole value of an explicit `!!float` tag that holds an `e` and
-    no dot (`!!float Zq7Secrt`) to stderr (`ruamel/yaml/constructor.py:1148`, the round-trip
-    constructor). The value is
-    then refused. Only the operator can write that tag (security seat, measured; predates the
-    branch).
-  - An `!!omap` sequence counts as a mapping to the editor at any depth (`import: !!omap
-    [copy: yes]`, or the top level): Validate is clean, Save writes it back (`[copy: yes]` as
-    `[copy: true]`), and beets refuses the file ("expected a mapping node, but found
-    sequence"); Apply refuses before unloading anything. The reverse too: beets accepts
-    `!!omap {…}` (`confuse/yaml_util.py:83`) and the editor refuses it (review seats,
-    2026-09-23, measured; predates the branch).
-  - Validate rows that name internals: a non-string `directory:` or `library:` (including one
-    typed with no value yet) reads "Input is not a valid path for <class 'pathlib.Path'>", and
-    a bad `import.reflink` gives two rows, `import.reflink.bool` and
-    `import.reflink.literal['auto']`, both with no line (review seats, 2026-09-23, measured).
-  - **The planned fix, owner ruling 2026-09-23 ("Cut and ship", after asking whether this was
-    over-engineered):** Validate and Save check the text with beets' own loader and typed reads
-    (`confuse.YamlSource` with `beets.config.loader`, which Apply already reads config.yaml
-    through: `read_config_document`, `app/beets/setup.py:111`), and keep ruamel only for
-    writing, because it keeps comments. That closes this whole list at once and deletes the
-    editor's `_RefusingComposer` (`app/beets/config_editor.py`), which exists only to make
-    ruamel refuse a reused anchor as PyYAML does. Do NOT keep patching ruamel or rewording
-    Pydantic messages one case at a time.
-  - Not a start refusal, but the same typed-read gap: `write`, `copy` or `move` set to a number
-    (`write: 1`) passes Validate and Save, and beets' `.get(bool)` refuses it. An import refuses
-    it before adding any row (the pre-check), and an album edit answers a bare 500 (review seats,
-    2026-09-23, measured).
-  Apply is no longer part of the harm: when beets rejects a value after the teardown, Apply puts
-  the running config back and answers 422 with beets' error (owner ruling 2026-09-23). It
-  answers 500 only if that restore fails too. Validate and Save DO refuse an include list over
-  Apply's caps (32 entries or 1 MiB; code-review seat, measured). The Naming save answers 200 on
-  a file of the third kind and writes it back with only its two keys changed (security seat).
-  The other direction is safe but blocks editing: ruamel refuses a duplicate key that beets
-  loads (PyYAML keeps the last), and a bare value starting with `%`, such as
-  `default: %the{$albumartist}/…` as beets' own docs write it (confuse allows it,
-  `confuse/yaml_util.py:70-73`). So Validate, Save and the Naming routes refuse a file Apply and
-  boot accept (review seats, measured). A negative leading-zero int (`-0644`) is the reverse: a
-  ruamel bug writes it back as `!!int '0-644'`, which beets cannot load, so Apply answers 422
-  and a restart refuses. The editor's resolver reads a copy of beets' own loader table (PR #232
-  rounds 10-11): over 101,360 plain values, each resolves to the type beets gives it except the
-  negative leading-zero int. Still different: tagged values (`!!str x` reads as a ruamel
-  TaggedScalar, `!!bool 'y'` as True where beets errors), a timestamp with more than 6 fraction
-  digits (ruamel rounds, beets truncates), and the YAML listed above (review seats, measured).
-  Fix shape not designed: Validate would parse with beets' own loader (as
-  `setup.read_config_document` does) and ask beets' typed reads, not only ruamel. Search words:
-  L4, ConfigTypeError, musicbrainz, boot,
-  validate, save, include, typed read, ruamel, PyYAML, duplicate key, y/n, implicit resolver.
+- ~~**Save accepts a config that stops MusicDrop starting**~~ — **CLOSED 2026-09-25** on
+  `fix/config-save-uses-beets-loader` (owner rulings 2026-09-23 "Cut and ship" and 2026-09-25).
+  Validate and Save now run one check (`app/beets/config_check.py`): beets' own loader
+  (`confuse.yaml_util.load_yaml_string` with `beets.config.loader`, plus YamlSource's `or {}`
+  and mapping check), then MusicDrop's include gate, where a skipped include is now an error as
+  it is at Apply and boot, then beets' typed reads replayed on the candidate layered as beets
+  layers it: the reads beets makes at start-up that can stop it (`pluginpath` as beets
+  expands it, `plugins`, `disabled_plugins`, `musicbrainz`, each enabled plugin's section
+  unless it is a list, `verbose`, `library`, `directory`, `timeout`, `replace` and its
+  patterns, `create_backup_before_migrations`; not a plugin's own start-up code, and not a
+  self-include: see the residuals below) and the `import.*`
+  switches beets reads typed (`copy`, `move`, `write`, `delete`, `remux_mp3_in_wav`, `reflink`,
+  `resume`, `duplicate_action`), plus the two match thresholds. Then MusicDrop's own policies:
+  `directory:`/`library:` required and usable, thresholds at most 1, no string in the
+  `import.*` flags beets tests with a bare `if` (`autotag`, `singletons`, `incremental`, `link`,
+  `hardlink`, as before, when config.yaml itself writes the value), the store layout, the
+  include caps. Rows are beets' or confuse's own
+  sentence, once, with the line where config.yaml writes the value, or the include's name when
+  an include supplies it. No plugin module is imported. Save writes the submitted text byte for byte (no ruamel dump), so what beets
+  was asked about is what is on disk. The 13-name plugin allowlist is gone: beets decides.
+  `_RefusingComposer` is deleted; ruamel remains only for the Naming save, which now judges the
+  file with beets' loader first and runs the same check on the text it is about to write. A
+  malformed `replace:` pattern (beets' `UserError`) now gets the boot refusal line, and Apply
+  reads it as "beets rejected a value". Every YAML and typed-read case this entry listed is a
+  test at both routes (`backend/tests/test_config_check_as_beets_does.py`); the include caps
+  are pinned at Validate (`test_config_store_layout_api.py`), which shares Save's check.
+  Search words: L4, ConfigTypeError,
+  musicbrainz, boot, validate, save, include, typed read, ruamel, PyYAML, duplicate key, y/n.
+- **A plugin whose own settings fail is dropped at start-up, and nothing says so** (recorded
+  2026-09-25, not built). beets catches every error in a plugin's `__init__`, logs
+  `** error loading plugin X` and starts without it (`beets/plugins.py:537-540`):
+  `fetchart: {minwidth: x}` with fetchart enabled boots, and fetchart is missing. Validate
+  refuses an enabled plugin's section that is a `null` or a scalar (`fetchart: no`), but
+  replays no plugin's own reads (they need the plugin constructed against the global config),
+  and MusicDrop never compares `find_plugins()` with `plugins:`.
+- **A list-shaped section passes Validate for any plugin** (recorded 2026-09-25, not built).
+  `advancedrewrite` and `loadext` read their section as a list
+  (`beetsplug/advancedrewrite.py:168`, `beetsplug/loadext.py:29`), so Validate does not ask a
+  list section beets' `"source_weight" in` read: which plugins read a list is only known by
+  importing them. A plugin that reads keys, given a list (`fetchart: [a]`), then passes
+  Validate, and beets drops the plugin at start-up, or stops the start if it is a metadata
+  source (`deezer: [1, 2]`; Apply puts the old config back).
+- **A plugin's own start-up code can stop a start that Validate passed** (security seat
+  2026-09-25, measured, not built). `advancedrewrite` parses its rules when it loads and raises
+  `UserError` for a bad one; boot refuses it. Validate cannot see it without loading plugin
+  code, which it must not do while the operator types.
+- **A self-include hides a bad value from Validate** (security seat 2026-09-25, measured, not
+  built). `include: [config.yaml]` merges the file ON DISK above the submitted text, so with
+  `timeout: 5` on disk a submitted `timeout: x` validates clean and saves, and the next start
+  refuses it. beets allows the self-include (`beets/__init__.py:29-38`); refusing it would be a
+  new rule of our own.
+- **Validate expands YAML merges and aliases with no bound** (security seat 2026-09-25,
+  measured, not built). Validate now runs PyYAML's merge handling and beets'
+  `musicbrainz.flatten()` on every debounce. About 3 KB of text can expand to gigabytes: a
+  2,787-byte chain of 10-way merges made 10^7 pairs (1.86 s, about 170 MiB), and each extra
+  ~67 bytes multiplies it by 10; a 2,908-byte alias chain under `musicbrainz:` made 10^6 leaves
+  (6.4 s, about 83 MiB). Boot and Apply run the same reads, and PyYAML and confuse have no
+  bound. Only the signed-in operator can send it.
+- **Validate is quadratic in the number of `plugins:` names** (security seat 2026-09-25,
+  measured, not built). Validate, Save and the Naming save ask each enabled plugin's section
+  (`beets_read_failures`, `backend/app/beets/config_check.py`), and each lookup copies every
+  top-level mapping, because confuse has no cache (`confuse/core.py:418-419`). Measured, one
+  process per run, with plugin names that are also keys: 4,000 names (68 KB) 0.19 s, 8,000
+  (136 KB) 1.45 s, 16,000 (284 KB) 8.6 s. The list-section check asks three lookups per name;
+  with the one lookup before it, 16,000 names took 2.9 s. The route is a sync handler in the
+  threadpool. beets never pays this: it asks only of the metadata sources it loaded
+  (`beets/plugins.py:185,197-198`). Only the signed-in operator can send it, and no plausible
+  config has thousands of plugins; it can wait. A fix would be a cap, or a lookup straight
+  over the config sources.
+- **`directory: !!binary aGk=` still shows a Python class name** (code seat 2026-09-25,
+  measured, not built). confuse's `Filename` accepts bytes (`confuse/templates.py:703`), so
+  beets' read passes, and the Pydantic policy row says "Input is not a valid path for <class
+  'pathlib.Path'>". Same as `main`. Not reworded (owner ruling 2026-09-23: no Pydantic rewording
+  case by case).
+- **Two Naming-save helpers only choose a refusal's text** (code seat 2026-09-25, not built).
+  `_empty_mapping_keeping` and `settings_mapping`'s `None` branch (`app/beets/config_editor.py`)
+  are reached only for a file with no YAML node, which the check then refuses as "Field
+  required". Deleting them would switch that text to "config.yaml must be a mapping of
+  settings."; decide later.
+- **Reads beets makes only after start-up are not checked** (recorded 2026-09-25, not built).
+  Validate replays the reads that stop a start and the `import.*` switches, not `paths`,
+  `clutter`, `max_filename_length`, `id3v23`, `art_filename`, `match.*` beyond the two
+  thresholds, `sort_album`/`sort_item`, `search_ids`, `ignore`, or any plugin lookup. Measured
+  in `docs/superpowers/reports/2026-09-25-config-validate/research-typed-reads.md` §3: `paths:
+  5` or `max_filename_length: x` fails an import after its rows are added; `clutter: 5` in move
+  mode fails it after the files moved; `sort_album: 5` fails every album list.
+- **The Naming save cannot edit a file beets accepts and ruamel refuses** (recorded 2026-09-25,
+  not built). It still edits `paths:`/`replace:` in place with ruamel, so a duplicate key, a
+  plain value starting with `%` (`default: %the{$albumartist}/…`, beets' own docs), or
+  `!!omap {…}` answers 422 "config.yaml does not parse" there, while Validate, Save, the Naming
+  GET, Apply and boot all accept the file. A negative leading-zero int (`file: -0644`) is
+  written back by ruamel as `!!int '0-644'`, so the save refuses its own text with a confusing
+  422 ("invalid literal for int() with base 8: '0-644'"); nothing is written. That refusal
+  ends "Check it in Settings → Beets.", and that page validates the file clean. Edit such a
+  file in Settings → Beets.
+- **An album edit or rename answers a bare 500 for a hand-edited bad `import.*` switch**
+  (recorded 2026-09-25, not built). `should_move`/`should_write` read `import.move`/`copy`/
+  `write` with `.get(bool)` outside any `try` in both previews and applies
+  (`app/beets/edit.py:771,805-806`, `app/beets/rename.py:181,210-211`). Validate and Save refuse
+  the value now, so only a file edited outside MusicDrop reaches it.
+- **A hand-edited `pluginpath: ~nosuchuser` gets the library's boot refusal line** (security
+  seat 2026-09-25, not built). Validate and Save refuse it now, so only a file edited outside
+  MusicDrop reaches boot. The refusal there (`backend/app/main.py:242-252`) says "beets could
+  not open the library under …", prints `RuntimeError: Could not determine home directory..`
+  with a doubled period, and says to check `library:` and `directory:`, which are not the key
+  at fault. Boot text is not changed in the round that recorded it.
+- **`asciify_paths: 'no'` reads as on** (recorded 2026-09-25, not built). beets tests it with a
+  bare `if` (`beets/library/models.py:1276`), so any non-empty string turns asciify on, and no
+  typed read refuses it: Validate is clean. The `import.*` flags beets tests the same way keep
+  MusicDrop's own refusal of a string, but only when config.yaml itself writes the value: an
+  include's `import: {hardlink: "no"}` validates clean, as on `main`.
 - **Small residuals of Apply's restore and the include gate** (review seats, 2026-09-23).
   - Each restore installs the plugins' default sources again: 5 more per restore with two
     plugins. The values are unchanged. The list resets on the next good Apply or restart.
@@ -1136,14 +1186,16 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
     text for a `config.yaml` that cannot be read, does not parse, or is not a mapping, because
     the frontend never read that body.
   - ruamel's round-trip drops a comment that sits before `---` and any `%YAML` line, and
-    indents a comment that follows `--- ` on the same line, on Save and the Naming save alike.
-    These comment changes alter no value beets reads. A NEL character (U+0085) in a submitted
-    string comes back as a space.
+    indents a comment that follows `--- ` on the same line. Since 2026-09-25 only the Naming
+    save round-trips; the Beets Save writes the text as typed. These comment changes alter no
+    value beets reads. A NEL character (U+0085) in a string comes back as a space.
   - ~~Validate and Save accept a reused YAML anchor.~~ **CLOSED 2026-09-23** on
     `feat/import-keep-downloads` (PR #232). ruamel only warned (`ruamel/yaml/composer.py:130-137`),
     and the warning printed both file lines to stderr, secrets included. Save then wrote a file
     boot refuses. The editor's composer now refuses it, as PyYAML does (`yaml/composer.py:74-77`),
-    wherever both read the anchor names alike (see the anchor-name item above).
+    wherever both read the anchor names alike. Since
+    2026-09-25 Validate and Save read with beets' own loader, which refuses it itself, and that
+    composer is deleted.
   - A `config.yaml` that is not UTF-8, cannot be read, or is not a regular file opens as an
     empty editor and does not say why. Its only lint rows are the two "Field required" rows
     (`directory`, `library`) on line 1. For a missing, unreadable or non-regular file the banner
@@ -3026,10 +3078,13 @@ Dispositions with per-item evidence: the vault note `plex-143-review-minors`.
   `fix/undoable-deletes`.) Trigger: a
   loaded beets plugin listening on `album_removed` and raising. **Measured how far away
   that is**: no plugin bundled with beets 2.13.1 listens on it (`album_removed` appears in
-  the installed tree only at the emitter and in the event list), and the app's own editor
-  offers a 13-name allowlist (`models/config_editor.PluginName`) containing none — so it
-  takes a third-party plugin installed into the image and enabled by editing `config.yaml`
-  by hand (unknown keys survive the editor's round-trip). Listed anyway because the
+  the installed tree only at the emitter and in the event list), so it takes a third-party
+  plugin installed into the image and enabled in `config.yaml`. (Corrected 2026-09-25: this
+  said such a plugin is enabled by hand because "unknown keys survive the editor's
+  round-trip". Half wrong: the plugin's NAME is a value of the `plugins:` key, which the
+  editor's 13-name allowlist checked, so every Save was refused while it was listed; measured
+  with `the`. The allowlist is gone since 2026-09-25, so the editor can now enable one too.)
+  Listed anyway because the
   consequence is the one state the delete path cannot name. Mechanism, by symbol:
   `beets.library.Album.remove` deletes the album row (`super().remove()`) and THEN calls
   `plugins.send("album_removed", ...)`, and `beets.plugins.send` wraps no handler in
