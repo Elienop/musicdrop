@@ -3,6 +3,10 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
 import { useActiveImport } from "@/api/useActiveImport";
+import {
+  IMPORT_OPERATION_LINE,
+  useImportOperation,
+} from "@/api/useImportOperation";
 import { invalidateLibraryContent } from "@/api/useEventStream";
 import type {
   ImportAlbumSummary,
@@ -269,6 +273,8 @@ function resumeBannerText(origin: string | undefined): string {
  * alert (the branches below are exclusive), so a constant is enough — the same
  * shape as {@link IMPORT_AGAIN_ERROR_ID} and the `resume-import-hint` above. */
 const START_ERROR_ID = "start-import-error";
+/** The line under the path box saying what happens to the files. */
+const FILES_LINE_ID = "import-files-help";
 
 /** Entry: a server-path input + Start. Polls the active-import probe so a
  * running import the user navigated away from surfaces a Resume banner (and
@@ -282,6 +288,9 @@ function ImportEntry() {
   const start = useStartImport();
   const queryClient = useQueryClient();
   const active = useActiveImport();
+  const operation = useImportOperation();
+  const filesLine =
+    operation.data === undefined ? null : IMPORT_OPERATION_LINE[operation.data];
 
   // The active job's id (resume target) and whether an import owns the slot.
   // `active` and `job_id` are consistent server-side; guard both here so the
@@ -418,28 +427,47 @@ function ImportEntry() {
           </p>
         </div>
 
-        <label className="flex flex-col gap-2">
-          <span className="text-sm font-medium">Folder path</span>
-          <Input
-            type="text"
-            value={path}
-            onChange={(e) => onPathChange(e.target.value)}
-            placeholder="/music/incoming"
-            aria-label="Folder path"
-            // The contract's own bound (`StartImportRequest.path`,
-            // max_length=4096 — Linux PATH_MAX, so no real path reaches it).
-            // Past it the server answers FastAPI's array-shaped 422, which is
-            // machine copy and falls through to the page's generic sentence
-            // (see ImportStartRejectedError): a refusal that never says the
-            // word "long". The field refuses the overlong paste instead.
-            maxLength={4096}
-            // Only a 422 is about what is IN this field ("That folder doesn't
-            // exist.", the in-library guard). A 409, a 503 or a dead backend
-            // says nothing is wrong with the path, and reddening it there sends
-            // the user off to edit the one thing that was fine.
-            aria-invalid={start.error instanceof ImportStartRejectedError}
-          />
-        </label>
+        <div className="flex flex-col gap-2">
+          <label className="flex flex-col gap-2">
+            <span className="text-sm font-medium">Folder path</span>
+            <Input
+              type="text"
+              value={path}
+              onChange={(e) => onPathChange(e.target.value)}
+              // Outside a default library (/media/music), which an import refuses.
+              placeholder="/media/downloads/Artist - Album"
+              aria-label="Folder path"
+              aria-describedby={filesLine === null ? undefined : FILES_LINE_ID}
+              // The contract's own bound (`StartImportRequest.path`,
+              // max_length=4096 — Linux PATH_MAX, so no real path reaches it).
+              // Past it the server answers FastAPI's array-shaped 422, which is
+              // machine copy and falls through to the page's generic sentence
+              // (see ImportStartRejectedError): a refusal that never says the
+              // word "long". The field refuses the overlong paste instead.
+              maxLength={4096}
+              // Only a 422 is about what is IN this field ("That folder doesn't
+              // exist.", the in-library guard). A 409, a 503 or a dead backend
+              // says nothing is wrong with the path, and reddening it there sends
+              // the user off to edit the one thing that was fine.
+              aria-invalid={start.error instanceof ImportStartRejectedError}
+            />
+          </label>
+          {/* What the import will do with these files, from the operation beets
+              loaded. Outside the <label>, so the link is not part of the field's
+              click target. Nothing while it loads or if it can't be read: a
+              guess here would be a promise about the user's files. */}
+          {filesLine !== null && (
+            <p id={FILES_LINE_ID} className="text-muted-foreground text-xs">
+              {filesLine}{" "}
+              <Link
+                to="/settings/beets"
+                className="text-foreground focus-ring rounded-sm underline"
+              >
+                Change
+              </Link>
+            </p>
+          )}
+        </div>
 
         {failure !== null && (
           // `break-words`: these sentences carry repr'd filesystem paths, and

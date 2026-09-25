@@ -28,10 +28,10 @@ services:
       # - MUSICDROP_PASSWORD_HASH=scrypt$$131072$$8$$1$$c2FsdA==$$ZGlnZXN0
       # Optional integrations (see README):
       # - MUSICDROP_ARTIST_IMAGE_FANARTTV_API_KEY=...
-      # - MUSICDROP_INBOX_DIR=/inbox   # pair with the /inbox volume below
-      # Trash: default under /data (copies across volumes); inside /music a
-      # delete is a rename. It may not be or contain /music or /data/beets.
-      # - MUSICDROP_TRASH_DIR=/music/.trash
+      # - MUSICDROP_INBOX_DIR=/media/downloads/slskd   # slskd's downloads, inside /media
+      # Trash: default under /data (a delete copies across mounts); inside the
+      # library a delete is a rename. It may not be or contain the library or /data/beets.
+      # - MUSICDROP_TRASH_DIR=/media/music/.trash
       # Browsing MusicDrop via a DNS name (e.g. behind Caddy/Traefik/nginx)?
       # List every such name here or those requests are rejected with a 400
       # (the DNS-rebinding guard). By-IP access needs nothing.
@@ -39,6 +39,7 @@ services:
       # - MUSICDROP_ALLOWED_HOSTS=music.example.com
     volumes:
       - ./data:/data            # beets library.db + config.yaml + app state
-      - /path/to/music:/music   # your music library (beets `directory`)
-      # - /path/to/slskd/downloads:/inbox   # if using slskd acquisition
+      - /path/to/media:/media   # ONE folder on ONE filesystem, holding for example:
+                                #   /media/music             your library (beets `directory`)
+                                #   /media/downloads/slskd   slskd's downloads
     restart: unless-stopped

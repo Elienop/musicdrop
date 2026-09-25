@@ -4,6 +4,11 @@ import { client } from "@/api/client";
 import { unwrap } from "@/api/lib";
 import type { components } from "@/api/schema";
 
+/** Key of `GET /api/config/import-operation`, which `useApplyConfig` and the
+ * Keep downloads switch invalidate: both reload beets. Here, not in
+ * `useImportOperation.ts`, which imports this file. */
+export const IMPORT_OPERATION_KEY = ["config", "import-operation"] as const;
+
 /** Effective beets config + file freshness for the `/settings` view (generated). */
 export type BeetsConfigSnapshot = components["schemas"]["BeetsConfigSnapshot"];
 /** Body of `POST /api/config/save` (generated contract). */
@@ -34,7 +39,7 @@ export interface ConfigOpError extends Error {
   body: unknown;
 }
 
-function configOpError(
+export function configOpError(
   message: string,
   status: number,
   body: unknown,
@@ -165,6 +170,8 @@ export function useApplyConfig() {
       // a long rebuild could leave it stale. The key here must stay in
       // lockstep with `useActiveImport`'s `queryKey: ["active-import"]`.
       void queryClient.invalidateQueries({ queryKey: ["active-import"] });
+      // What imports use is read at every load, so an Apply can change it.
+      void queryClient.invalidateQueries({ queryKey: IMPORT_OPERATION_KEY });
     },
   });
 }

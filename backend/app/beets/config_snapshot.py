@@ -96,6 +96,11 @@ SECRET_KEY_PATTERN = re.compile(
 )
 
 
+def is_apply_pending(handle: LibraryHandle, current_mtime: float | None) -> bool:
+    """Whether config.yaml at ``current_mtime`` (``None``: no file) is newer than the load."""
+    return current_mtime is None or current_mtime > handle.file_mtime_at_load
+
+
 def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
     """Build the config snapshot: the RAW on-disk file (editable) + the merged
     effective view (read-only, redacted) + freshness fields."""
@@ -137,7 +142,7 @@ def build_config_snapshot(handle: LibraryHandle) -> BeetsConfigSnapshot:
     except (OSError, UnicodeDecodeError):
         pass
 
-    apply_pending = current_mtime is None or current_mtime > handle.file_mtime_at_load
+    apply_pending = is_apply_pending(handle, current_mtime)
 
     return BeetsConfigSnapshot(
         yaml_text=yaml_text,

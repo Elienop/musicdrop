@@ -110,10 +110,10 @@ entry carries a dated correction block where the pass changed it._
      `DONT_OVERWRITE`). A link that cannot be made fails the import loudly — beets raises
      `Cannot hard link across devices.` (`util/__init__.py:587-589`) — and MusicDrop does not
      downgrade it to a copy: `decisions` #57 drops the fallback #51 described. While it is on,
-     no download folder empties itself, and the setting's own text must say so. NOT BUILT YET:
-     there is no switch route and no switch UI — `config_editor` models `hardlink` only for its
-     advisory — so today the user edits `import:` by hand in Settings -> Beets, which is the
-     same keys with a worse face.
+     no download folder empties itself, and the setting's own text must say so. BUILT (branch 2,
+     S5): **Keep downloads** in Settings -> Beets, `POST /api/config/import-operation`, writes
+     those keys and runs Apply's reload in one request, under Apply's lock and job gate; a
+     cross-filesystem hardlink fails the job with one plain line, then beets' own.
      slskd's auto-import keeps MOVING until branch 2 — the inbox routes and the drain send
      `operation="move"`, overriding the global switch by design, and `config_editor`'s
      link/hardlink/reflink advisory is where that is currently disclosed.

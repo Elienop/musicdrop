@@ -35,6 +35,7 @@ from app.etag import stat_etag
 from app.fsutil import is_in_library_source
 from app.models.album import Album, AlbumDetail, OutsideLibrary, Track
 from app.models.artist import Artist
+from app.models.config_api import FileOperation
 from app.models.import_models import ExistingAlbum
 from app.models.search import SearchEntity, SearchResults, SearchTrack, TypedSearchPage
 
@@ -64,6 +65,11 @@ class LibraryHandle:
     ``config.yaml``, when beets last loaded it (boot or Apply), and the file's
     mtime at load —
     used to flag "restart required" when the file changes on disk.
+
+    ``file_operation`` is what a default import does with the files under the
+    config this handle loaded (``import_operation.loaded_file_operation``), or
+    ``None`` when beets cannot read ``import:``. Read here, never from the live
+    config, which a running import overlays.
     """
 
     lib: Library
@@ -71,6 +77,7 @@ class LibraryHandle:
     config_path: Path
     loaded_at: datetime
     file_mtime_at_load: float  # raw stat.st_mtime for direct comparison
+    file_operation: FileOperation | None
 
 
 def open_library(library_path: str, directory: str | None = None) -> Library:

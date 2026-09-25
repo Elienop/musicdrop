@@ -30,8 +30,12 @@ def test_setup_copies_starter_when_missing(tmp_path: Path) -> None:
         # singleton — a force-resolve regression (e.g. BEETSDIR set after
         # resolve) would still pass the field/existence asserts above.
         assert beets.config["plugins"].as_str_seq() == ["musicbrainz", "deezer"]
-        assert beets.config["import"]["copy"].get(bool) is True
+        assert beets.config["import"]["move"].get(bool) is True
         assert beets.config["import"]["autotag"].get(bool) is True
+        # A new install moves (decisions #76.2): ``move: yes`` and no ``copy:``
+        # line, so the first flip of Keep downloads is the only file-op write.
+        assert "copy:" not in cfg.read_text()
+        assert handle.file_operation == "move"
     finally:
         close_library(handle.lib)
 
@@ -139,8 +143,33 @@ def test_starter_directory_default_container(tmp_path: Path) -> None:
     handle = setup_beets(str(tmp_path), container_music_default=True)
     try:
         text = (tmp_path / "config.yaml").read_text(encoding="utf-8")
-        assert "directory: /music" in text
+        # The library inside the one /media mount it shares with the downloads.
+        assert "directory: /media/music " in text
         assert "../music" not in text
+    finally:
+        close_library(handle.lib)
+
+
+def test_an_existing_config_is_never_rewritten_at_boot(tmp_path: Path) -> None:
+    """The control for the two above: the starter is for brand-new installs only.
+
+    An old install's file, ``directory: /music`` and ``copy: yes`` included,
+    comes out of a container boot byte for byte.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    cfg = tmp_path / "config.yaml"
+    before = (
+        f"directory: {music}   # an old install\n"
+        "library: library.db\n"
+        "plugins:\n  - musicbrainz\n"
+        "import:\n  copy: yes\n  move: no\n"
+    ).encode()
+    cfg.write_bytes(before)
+    handle = setup_beets(str(tmp_path), container_music_default=True)
+    try:
+        assert cfg.read_bytes() == before
+        assert handle.file_operation == "copy"
     finally:
         close_library(handle.lib)
 

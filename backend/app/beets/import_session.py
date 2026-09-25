@@ -11,6 +11,7 @@ beets imports are allowed here (inside app/beets/, CLAUDE.md rule 3).
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import queue
@@ -22,7 +23,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generic, Literal, NoReturn, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Final, Generic, Literal, NoReturn, TypeVar, cast
 
 from beets import config
 from beets.autotag.match import Recommendation as BeetsRec
@@ -34,6 +35,7 @@ from beets.importer.actions import DuplicateAction as BeetsDuplicateAction
 # and must not import beets itself (CLAUDE.md rule 3).
 from beets.importer.session import ImportAbortError as ImportAbortError
 from beets.importer.session import ImportSession
+from beets.util import FilesystemError
 
 from app.bank import store as bank_store
 from app.bank.fingerprint import folder_fingerprint
@@ -49,6 +51,7 @@ from app.beets.import_mapping import (
     map_candidate_options,
 )
 from app.beets.import_operation import (
+    EVERY_RUN,
     configured_file_operation,
     file_flags,
     forced_file_operation,
@@ -2275,6 +2278,32 @@ def _history_flags(
     return {}
 
 
+#: The first line of a job that stopped on a cross-filesystem hardlink; beets'
+#: own line, naming both paths, follows it.
+CROSS_DEVICE_HARDLINK: Final = (
+    "Can’t hardlink across filesystems. Put downloads and library on one,"
+    " or turn off Keep downloads."
+)
+
+
+class CrossDeviceHardlinkError(Exception):
+    """A hardlink import met two filesystems. ``str()`` is our line, then beets'."""
+
+
+def is_cross_device_hardlink(exc: FilesystemError) -> bool:
+    """Whether beets raised ``exc`` because ``util.hardlink`` got ``EXDEV``.
+
+    Read from the exception, never its English: beets raises it inside
+    ``except OSError`` (``util/__init__.py:586-593``), so the ``OSError`` is its
+    ``__context__``. Only ``link(2)`` and ``rename(2)`` answer ``EXDEV``, and
+    beets' ``util.move`` copies instead of raising on the rename's
+    (``:498-500``), so no other ``FilesystemError`` carries it. beets has no
+    hardlink-else-copy.
+    """
+    cause = exc.__context__
+    return isinstance(cause, OSError) and cause.errno == errno.EXDEV
+
+
 def run_import_worker(
     session: WebImportSession,
     *,
@@ -2470,8 +2499,9 @@ def run_import_worker(
             # (``importer/session.py:136-138``) and then removes the originals
             # (``importer/tasks.py:527-534``), so a default import under a user
             # ``delete: yes`` is a move wearing the word "copy"; the config
-            # editor advises that the key is ignored.
-            "delete": False,
+            # editor advises that the key is ignored. ``loaded_file_operation``
+            # reads the same overlay, so the Settings switch reports what runs.
+            **EVERY_RUN,
         }
         # The five filing flags are pinned only when a caller NAMES an
         # operation: copy-vs-move is the user's filing preference, and a
@@ -2498,7 +2528,12 @@ def run_import_worker(
             # nothing in the shipped container (see ``operator_logger``). Read
             # after the force, so it reports what beets will resolve.
             operator_logger.info("import file operation: %s", configured_file_operation())
-            session.run()
+            try:
+                session.run()
+            except FilesystemError as exc:
+                if is_cross_device_hardlink(exc):
+                    raise CrossDeviceHardlinkError(f"{CROSS_DEVICE_HARDLINK}\n{exc}") from exc
+                raise
             # The album is in the library the moment run() returns, so a failed
             # Trash move annotates rather than invalidates: reporting a committed
             # import as failed would re-trigger duplicate detection on retry.

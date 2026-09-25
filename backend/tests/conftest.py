@@ -356,6 +356,7 @@ def make_test_handle(lib: "Library", beets_dir: Path) -> LibraryHandle:
       file backs it, so any ``.stat()`` / ``.read_text()`` against it raises.
     * ``loaded_at`` is the Unix epoch.
     * ``file_mtime_at_load`` is ``0.0``.
+    * ``file_operation`` is ``in_place``, which beets' defaults never load.
     """
     return LibraryHandle(
         lib=lib,
@@ -363,6 +364,7 @@ def make_test_handle(lib: "Library", beets_dir: Path) -> LibraryHandle:
         config_path=Path("__placeholder__"),
         loaded_at=datetime(1970, 1, 1, tzinfo=UTC),
         file_mtime_at_load=0.0,
+        file_operation="in_place",
     )
 
 

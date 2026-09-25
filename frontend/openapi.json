@@ -4856,6 +4856,232 @@
         }
       }
     },
+    "/api/config/import-operation": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Get Import Operation",
+        "description": "What imports do with the files, as loaded at boot or by the last Apply.",
+        "operationId": "get_import_operation_api_config_import_operation_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportOperation"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "beets cannot read import: in the loaded config (not a mapping).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Set Import Operation",
+        "description": "Keep downloads: write hardlink (on) or move (off) into config.yaml, then reload beets.",
+        "operationId": "set_import_operation_api_config_import_operation_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetImportOperation"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BeetsConfigSnapshot"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A library job is running, config.yaml has saved edits Apply has not loaded, or the file changed since it was read (the Save's conflict body).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "properties": {
+                        "detail": {
+                          "properties": {
+                            "detail": {
+                              "type": "string",
+                              "title": "Detail"
+                            },
+                            "current_yaml_text": {
+                              "type": "string",
+                              "title": "Current Yaml Text"
+                            },
+                            "current_sha256": {
+                              "type": "string",
+                              "title": "Current Sha256"
+                            }
+                          },
+                          "type": "object",
+                          "required": [
+                            "detail",
+                            "current_yaml_text",
+                            "current_sha256"
+                          ],
+                          "title": "ConfigSaveConflict",
+                          "description": "What the config editor sends back when its compare-and-swap loses.\n\n``POST /api/config/save`` and ``POST /api/config/naming/save`` hash the file\non disk and compare it with the ``base_sha256`` the editor loaded from\n(``app/beets/config_editor.py``). A mismatch means someone else wrote\n``config.yaml`` in between, so the save is refused with 409 and the client is\nhanded everything it needs to recover WITHOUT a second round trip:\n``current_yaml_text`` is the file as it now stands and ``current_sha256`` is\nthe CAS token to resubmit with if the user chooses to overwrite anyway.\n\n``detail`` is the human sentence (\"File changed on disk\"). Unlike\n:class:`OperationFailure`, the inner key really IS named ``detail`` here -\nthat is what the raise sends, and this model documents the wire, not the\nnaming we would pick today."
+                        }
+                      },
+                      "type": "object",
+                      "required": [
+                        "detail"
+                      ],
+                      "title": "ConfigSaveConflictDetail",
+                      "description": "The THIRD real error body: ``{\"detail\": {detail, current_yaml_text, current_sha256}}``.\n\nStarlette wraps an ``HTTPException``'s ``detail`` verbatim, so the object the\nconfig editor raises with becomes the value of the outer ``detail`` key.\n\nNeither existing model describes it, and declaring it as either would be a\nlie the generated client cannot recover from:\n\n- :class:`ErrorDetail` types ``detail`` as a ``str``, so the two fields the\n  conflict UI reads would not exist in the contract at all;\n- :class:`StructuredErrorDetail` types ``detail`` as ``{message, recovery}``\n  - three keys wrong out of three, and it would promise a ``recovery``\n  sentence this body never carries.\n\nA wrongly-typed status is worse than an undeclared one (see\n:class:`StructuredErrorDetail`), which is why this shape got a model of its\nown rather than being folded into one of those two."
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "import: in config.yaml is not a plain mapping, an include decides the operation, or config.yaml cannot be read, written or checked, and nothing was written; or Apply's reload refused the written file, with its recovery line.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDetail"
+                    },
+                    {
+                      "properties": {
+                        "detail": {
+                          "properties": {
+                            "message": {
+                              "type": "string",
+                              "title": "Message"
+                            },
+                            "recovery": {
+                              "type": "string",
+                              "title": "Recovery"
+                            }
+                          },
+                          "type": "object",
+                          "required": [
+                            "message",
+                            "recovery"
+                          ],
+                          "title": "OperationFailure",
+                          "description": "What a long-running library op failed at, and what the user can do next.\n\n``message`` names the cause (it embeds the underlying exception's text);\n``recovery`` says what state the library is in and what to do about it.\n``message`` rather than ``detail`` for the inner key on purpose - Starlette\nalready wraps the payload in an outer ``detail``, so an inner ``detail``\nwould render the confusing ``{\"detail\": {\"detail\": ...}}``."
+                        }
+                      },
+                      "type": "object",
+                      "required": [
+                        "detail"
+                      ],
+                      "title": "StructuredErrorDetail",
+                      "description": "The SECOND real error body in this API: ``{\"detail\": {message, recovery}}``.\n\nEvery blanket ``except Exception`` on a beets write op raises a 500 whose\n``detail`` is an OBJECT, not a sentence (cover install, album edit, artist\nrename, duplicate resolve, delete, config Apply). The frontend unwraps it in\n``frontend/src/api/lib.ts::structuredDetailMessage``, so the shape is read,\nnot decorative.\n\nDeclaring such a 500 as ``ErrorDetail`` would be worse than leaving it out:\nit swaps an UNDECLARED status for a WRONGLY-TYPED one, and the generated\nclient would parse an object as a string. Use this model instead, and only\non routes whose 500 really carries the nested shape - a route that can also\n500 with a flat sentence needs an ``anyOf`` (none does today)."
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The reload failed and putting the old config back failed too, as Apply's 500.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/duplicates": {
       "get": {
         "tags": [
@@ -13319,6 +13545,29 @@
         "title": "ImportJobState",
         "description": "Response of ``GET /api/import/{job}``: phase + progress + the live feed."
       },
+      "ImportOperation": {
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "move",
+              "copy",
+              "link",
+              "hardlink",
+              "reflink",
+              "reflink_auto",
+              "in_place"
+            ],
+            "title": "Operation"
+          }
+        },
+        "type": "object",
+        "required": [
+          "operation"
+        ],
+        "title": "ImportOperation",
+        "description": "What imports do with the files, as loaded at boot or by the last Apply."
+      },
       "ImportOptions": {
         "properties": {
           "operation": {
@@ -16226,6 +16475,25 @@
           "duration_seconds"
         ],
         "title": "SearchTrack"
+      },
+      "SetImportOperation": {
+        "properties": {
+          "keep_downloads": {
+            "type": "boolean",
+            "title": "Keep Downloads"
+          },
+          "base_sha256": {
+            "type": "string",
+            "title": "Base Sha256"
+          }
+        },
+        "type": "object",
+        "required": [
+          "keep_downloads",
+          "base_sha256"
+        ],
+        "title": "SetImportOperation",
+        "description": "Keep downloads on (beets hardlinks) or off (beets moves), then reload beets.\n\n``base_sha256`` is ``GET /api/config``'s ``sha256``: a file changed since\nthen is refused, as a Save is."
       },
       "SetupRequest": {
         "properties": {

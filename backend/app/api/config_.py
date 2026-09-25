@@ -9,20 +9,22 @@ via a ``get_library`` override.
 
 from typing import Final
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from app.beets.config_check import check_config_text
 from app.beets.config_editor import (
+    IMPORT_NOT_EDITABLE,
     _settings,
     read_naming,
     save_naming,
+    set_file_operation,
 )
 from app.beets.config_editor import apply as apply_config_op
 from app.beets.config_editor import save as save_config_op
 from app.beets.config_snapshot import build_config_snapshot
 from app.beets.library import LibraryHandle
 from app.beets.naming import assemble_rules, render_samples
-from app.models.config_api import BeetsConfigSnapshot
+from app.models.config_api import BeetsConfigSnapshot, ImportOperation, SetImportOperation
 from app.models.config_editor import (
     NamingConfig,
     NamingPreviewRequest,
@@ -38,6 +40,8 @@ from app.models.errors import (
     ErrorDetail,
     NamingValidationErrorDetail,
     StructuredErrorDetail,
+    detail_or_model,
+    validation_detail_or_model_422,
     validation_or_model_422,
 )
 
@@ -244,3 +248,54 @@ async def apply_config(request: Request) -> BeetsConfigSnapshot:
     # and the recovery-hint error mapping all live in the adapter, so the beets
     # boundary stays clean (CLAUDE.md rule 3).
     return await apply_config_op(request)
+
+
+@router.get(
+    "/config/import-operation",
+    responses={
+        422: {
+            "model": ErrorDetail,
+            "description": "beets cannot read import: in the loaded config (not a mapping).",
+        },
+    },
+)
+def get_import_operation(request: Request) -> ImportOperation:
+    """What imports do with the files, as loaded at boot or by the last Apply."""
+    handle: LibraryHandle = request.app.state.beets_library
+    if handle.file_operation is None:
+        raise HTTPException(status_code=422, detail=IMPORT_NOT_EDITABLE)
+    return ImportOperation(operation=handle.file_operation)
+
+
+@router.post(
+    "/config/import-operation",
+    responses={
+        409: detail_or_model(
+            ConfigSaveConflictDetail,
+            (
+                "A library job is running, config.yaml has saved edits Apply has not loaded, or"
+                " the file changed since it was read (the Save's conflict body)."
+            ),
+        ),
+        # Apply's {message, recovery} body where its reload refuses after the
+        # write, as ``POST /api/config/apply`` documents it.
+        422: validation_detail_or_model_422(
+            StructuredErrorDetail,
+            (
+                "import: in config.yaml is not a plain mapping, an include decides the"
+                " operation, or config.yaml cannot be read, written or checked, and nothing"
+                " was written; or Apply's reload refused the written file, with its recovery"
+                " line."
+            ),
+        ),
+        500: {
+            "model": StructuredErrorDetail,
+            "description": (
+                "The reload failed and putting the old config back failed too, as Apply's 500."
+            ),
+        },
+    },
+)
+async def set_import_operation(req: SetImportOperation, request: Request) -> BeetsConfigSnapshot:
+    """Keep downloads: write hardlink (on) or move (off) into config.yaml, then reload beets."""
+    return await set_file_operation(request, req)

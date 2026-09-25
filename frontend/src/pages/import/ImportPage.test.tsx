@@ -26,6 +26,15 @@ const SWEEP_JOB_URL = `${window.location.origin}/api/import/s1`;
 // The sweep's Pause posts the same /stop the run page's Stop does — one
 // route, two labels.
 const SWEEP_STOP_URL = `${window.location.origin}/api/import/s1/stop`;
+const IMPORT_OP_URL = `${window.location.origin}/api/config/import-operation`;
+
+// The path box's line reads what imports do with the files. Every entry
+// render asks; `move` is the starter's answer.
+beforeEach(() => {
+  server.use(
+    http.get(IMPORT_OP_URL, () => HttpResponse.json({ operation: "move" })),
+  );
+});
 
 function makeJob(overrides: Partial<ImportJobState> = {}): ImportJobState {
   return {
@@ -488,6 +497,79 @@ describe("ImportPage — entry", () => {
     expect(screen.getByLabelText("Folder path")).toHaveAttribute(
       "aria-invalid",
       "false",
+    );
+  });
+});
+
+describe("ImportPage — what happens to the files", () => {
+  beforeEach(() => {
+    server.use(
+      http.get(ACTIVE_URL, () =>
+        HttpResponse.json({ active: false, job_id: null }),
+      ),
+    );
+  });
+
+  const field = () => screen.getByLabelText("Folder path");
+
+  test.each<[string, string]>([
+    ["move", "Files move into your library."],
+    ["hardlink", "Files stay, hardlinked into your library."],
+    ["copy", "Files stay, copied into your library."],
+    ["link", "Files stay, symlinked into your library."],
+    ["reflink", "Files stay, cloned into your library."],
+    ["reflink_auto", "Files stay, cloned into your library."],
+    ["in_place", "Files stay where they are."],
+  ])("%s: the line under the path box, read with it", async (op, line) => {
+    server.use(
+      http.get(IMPORT_OP_URL, () => HttpResponse.json({ operation: op })),
+    );
+    renderAt("/import");
+    const change = await screen.findByRole("link", { name: "Change" });
+    expect(change).toHaveAttribute("href", "/settings/beets");
+    const help = change.closest("p");
+    expect(help).toHaveTextContent(`${line} Change`);
+    expect(field()).toHaveAttribute("aria-describedby", help?.id);
+    expect(help?.id).not.toBe("");
+  });
+
+  test("no line and no description while the setting loads", async () => {
+    let reads = 0;
+    server.use(
+      http.get(IMPORT_OP_URL, () => {
+        reads += 1;
+        return new Promise<Response>(() => {});
+      }),
+    );
+    renderAt("/import");
+    await waitFor(() => expect(reads).toBe(1));
+    expect(screen.queryByRole("link", { name: "Change" })).toBeNull();
+    expect(screen.queryByText(/^Files /)).toBeNull();
+    expect(field()).not.toHaveAttribute("aria-describedby");
+  });
+
+  test("no line and no description when the setting can't be read", async () => {
+    let reads = 0;
+    server.use(
+      http.get(IMPORT_OP_URL, () => {
+        reads += 1;
+        return HttpResponse.json({ detail: "boom" }, { status: 500 });
+      }),
+    );
+    renderAt("/import");
+    await waitFor(() => expect(reads).toBeGreaterThan(0));
+    // Let the failed read settle before looking for the line.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByRole("link", { name: "Change" })).toBeNull();
+    expect(screen.queryByText(/^Files /)).toBeNull();
+    expect(field()).not.toHaveAttribute("aria-describedby");
+  });
+
+  test("the placeholder is a folder outside a default library", () => {
+    renderAt("/import");
+    expect(field()).toHaveAttribute(
+      "placeholder",
+      "/media/downloads/Artist - Album",
     );
   });
 });

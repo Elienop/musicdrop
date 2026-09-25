@@ -87,6 +87,8 @@ const VALIDATE_URL = `${window.location.origin}/api/config/validate`;
 const ACTIVE_IMPORT_URL = `${window.location.origin}/api/imports/active`;
 const REORGANIZE_STATUS_URL = `${window.location.origin}/api/reorganize/status`;
 const DISK_SYNC_STATUS_URL = `${window.location.origin}/api/disk-sync/status`;
+const IMPORT_OP_URL = `${window.location.origin}/api/config/import-operation`;
+type FileOperation = components["schemas"]["ImportOperation"]["operation"];
 
 /** Idle reorganize job — shape mirrors useReorganizeStatus's fallback. */
 function idleReorganizeStatus() {
@@ -134,6 +136,9 @@ beforeEach(() => {
     http.get(DISK_SYNC_STATUS_URL, () =>
       HttpResponse.json(idleDiskSyncStatus()),
     ),
+    // The Import section above the editor reads this on every render of the
+    // page; `move` shows no note, so the older tests see what they saw.
+    http.get(IMPORT_OP_URL, () => HttpResponse.json({ operation: "move" })),
   );
 });
 
@@ -171,9 +176,11 @@ function snapshotFixture(
 function defaultMocks(
   snapshot: BeetsConfigSnapshot = snapshotFixture(),
   importActive = false,
+  operation: FileOperation = "move",
 ) {
   server.use(
     http.get(CONFIG_URL, () => HttpResponse.json(snapshot)),
+    http.get(IMPORT_OP_URL, () => HttpResponse.json({ operation })),
     http.get(ACTIVE_IMPORT_URL, () =>
       HttpResponse.json({ active: importActive }),
     ),
@@ -2374,5 +2381,433 @@ describe("SettingsBeetsPage config advisories", () => {
     const key = screen.getByText(AUTOTAG_ADVISORY.key);
     expect(key.closest('[role="status"]')).not.toBeNull();
     expect(screen.getByText(AUTOTAG_ADVISORY.message)).toBeInTheDocument();
+  });
+});
+
+describe("SettingsBeetsPage Import: Keep downloads", () => {
+  const LABEL = "Keep downloads (hardlink)";
+  const HELP = "Hardlinks share tag changes.";
+  /** A flip in flight: the page is `applying`, but Apply did not start it,
+   * so its button still reads "Apply changes" (off). */
+  const FLIP_STATE = {
+    edit: false,
+    save: false,
+    cancel: null,
+    apply: false,
+    alerts: [],
+    status: ["Reloading beets…"],
+    helpers: [],
+  };
+
+  const findSwitch = () => screen.findByRole("switch", { name: LABEL });
+  const importSection = () => screen.getByRole("region", { name: "Import" });
+
+  /** The text of every node the switch's `aria-describedby` names, in order. */
+  function described(sw: HTMLElement) {
+    return (sw.getAttribute("aria-describedby") ?? "")
+      .split(" ")
+      .filter((id) => id !== "")
+      .map((id) => document.getElementById(id)?.textContent);
+  }
+
+  /** Record every POST to the switch's endpoint, answering `reply`. */
+  function flipStub(reply: () => Response | Promise<Response>) {
+    const bodies: unknown[] = [];
+    server.use(
+      http.post(IMPORT_OP_URL, async ({ request }) => {
+        bodies.push(await request.json());
+        return reply();
+      }),
+    );
+    return bodies;
+  }
+
+  /** Reads of the setting, answering `op(n)` on read n. */
+  function operationReads(op: (n: number) => FileOperation) {
+    const reads = { count: 0 };
+    server.use(
+      http.get(IMPORT_OP_URL, () => {
+        reads.count += 1;
+        return HttpResponse.json({ operation: op(reads.count) });
+      }),
+    );
+    return reads;
+  }
+
+  test.each<[FileOperation, boolean]>([
+    ["move", false],
+    ["hardlink", true],
+    ["copy", false],
+    ["link", false],
+    ["reflink", false],
+    ["reflink_auto", false],
+    ["in_place", false],
+  ])("the switch is on only for hardlink (%s: %s)", async (op, on) => {
+    defaultMocks(snapshotFixture(), false, op);
+    renderPage();
+    const sw = await findSwitch();
+    expect(sw).toHaveAttribute("aria-checked", String(on));
+  });
+
+  test.each<[FileOperation, string | null]>([
+    ["move", null],
+    ["hardlink", null],
+    ["copy", "Your config copies. This switch sets hardlink or move."],
+    ["link", "Your config symlinks. This switch sets hardlink or move."],
+    ["reflink", "Your config clones. This switch sets hardlink or move."],
+    ["reflink_auto", "Your config clones. This switch sets hardlink or move."],
+    [
+      "in_place",
+      "Your config imports in place. This switch sets hardlink or move.",
+    ],
+  ])("the note for %s, read with the help line", async (op, note) => {
+    defaultMocks(snapshotFixture(), false, op);
+    renderPage();
+    const sw = await findSwitch();
+    await waitFor(() =>
+      expect(described(sw)).toEqual(note === null ? [HELP] : [HELP, note]),
+    );
+    // After S6 slskd downloads follow the config, so no line may say they move.
+    expect(importSection().textContent).not.toMatch(/slskd/i);
+  });
+
+  test("while the setting loads, the switch's place is a skeleton, never an unchecked switch", async () => {
+    defaultMocks();
+    server.use(http.get(IMPORT_OP_URL, () => new Promise<Response>(() => {})));
+    renderPage();
+    await findEditorContent();
+    const section = importSection();
+    expect(within(section).getByText(LABEL)).toBeInTheDocument();
+    expect(within(section).queryByRole("switch")).toBeNull();
+    expect(section.querySelector('[data-slot="skeleton"]')).not.toBeNull();
+  });
+
+  test("a setting that can't be read says so, with no switch", async () => {
+    defaultMocks();
+    server.use(
+      http.get(IMPORT_OP_URL, () =>
+        HttpResponse.json({ detail: "boom" }, { status: 500 }),
+      ),
+    );
+    renderPage();
+    await findEditorContent();
+    const section = importSection();
+    expect(await within(section).findByRole("alert")).toHaveTextContent(
+      "Couldn’t read the import setting.",
+    );
+    expect(within(section).queryByRole("switch")).toBeNull();
+  });
+
+  /** Press a gated switch by pointer and by key: nothing is sent, nothing
+   * moves, focus stays, and the reason is the one line read with the help. */
+  async function expectGated(
+    user: ReturnType<typeof userEvent.setup>,
+    reason: string,
+    bodies: unknown[],
+  ) {
+    const sw = await findSwitch();
+    await waitFor(() => expect(described(sw)).toEqual([HELP, reason]));
+    expect(sw).toHaveAttribute("aria-disabled", "true");
+    expect(sw).toBeEnabled();
+    const before = sw.getAttribute("aria-checked");
+    await user.click(sw);
+    expect(sw).toHaveFocus();
+    await user.keyboard(" ");
+    expect(sw).toHaveFocus();
+    expect(sw).toHaveAttribute("aria-checked", before);
+    expect(bodies).toEqual([]);
+  }
+
+  test("a running job gates the switch and names the job", async () => {
+    defaultMocks(snapshotFixture(), true);
+    const bodies = flipStub(() => HttpResponse.json(snapshotFixture()));
+    const user = userEvent.setup();
+    renderPage();
+    await expectGated(user, "Available when an import finishes.", bodies);
+  });
+
+  test("a job outranks a pending Apply: one reason line, the first match", async () => {
+    defaultMocks(snapshotFixture({ apply_pending: true }), true);
+    const bodies = flipStub(() => HttpResponse.json(snapshotFixture()));
+    const user = userEvent.setup();
+    renderPage();
+    await expectGated(user, "Available when an import finishes.", bodies);
+  });
+
+  test("a draft in the editor gates the switch", async () => {
+    defaultMocks();
+    const bodies = flipStub(() => HttpResponse.json(snapshotFixture()));
+    const user = userEvent.setup();
+    renderPage();
+    const content = await findEditorContent();
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    content.focus();
+    await user.keyboard("x");
+    await screen.findByText(/unsaved changes/i);
+    await expectGated(user, "Save or cancel your edits first.", bodies);
+  });
+
+  test("a saved but unapplied config gates the switch", async () => {
+    defaultMocks(snapshotFixture({ apply_pending: true }));
+    const bodies = flipStub(() => HttpResponse.json(snapshotFixture()));
+    const user = userEvent.setup();
+    renderPage();
+    await expectGated(user, "Apply saved changes first.", bodies);
+  });
+
+  test("a config that can't be read gates the switch and points below", async () => {
+    defaultMocks();
+    server.use(
+      http.get(CONFIG_URL, () =>
+        HttpResponse.json({ detail: "boom" }, { status: 500 }),
+      ),
+    );
+    const bodies = flipStub(() => HttpResponse.json(snapshotFixture()));
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/could not load configuration/i);
+    await expectGated(user, "Fix config.yaml below.", bodies);
+  });
+
+  test("a flip sends the switch and the file's sha, and reloads like Apply until the new setting is read", async () => {
+    defaultMocks();
+    let answer: (r: Response) => void = () => {};
+    const bodies = flipStub(
+      () =>
+        new Promise<Response>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    // The re-read after the flip is held too, so the test sees the page wait
+    // for it instead of dropping back to the old value for one refetch.
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reads = 0;
+    server.use(
+      http.get(IMPORT_OP_URL, async () => {
+        reads += 1;
+        if (reads === 1) return HttpResponse.json({ operation: "move" });
+        await held;
+        return HttpResponse.json({ operation: "hardlink" });
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await findEditorContent();
+    const sw = await findSwitch();
+    expect(sw).not.toBeChecked();
+
+    await user.click(sw);
+    await waitFor(() =>
+      expect(bodies).toEqual([{ keep_downloads: true, base_sha256: "base-sha" }]),
+    );
+    // In flight: the thumb sits at the target, the page is reloading, and the
+    // page's own line is the only reason (none under the switch).
+    expect(sw).toBeChecked();
+    expect(sw).toHaveAttribute("aria-disabled", "true");
+    expect(described(sw)).toEqual([HELP]);
+    await waitFor(() => expect(beetsState()).toEqual(FLIP_STATE));
+
+    answer(HttpResponse.json(snapshotFixture({ sha256: "after-flip" })));
+    await waitFor(() => expect(reads).toBe(2));
+    // The write has landed but the new setting has not been read yet.
+    expect(sw).toBeChecked();
+    expect(beetsState()).toEqual(FLIP_STATE);
+
+    release();
+    await waitFor(() => expect(beetsState().status).toEqual([]));
+    expect(sw).toBeChecked();
+    expect(sw).toHaveAttribute("aria-disabled", "false");
+  });
+
+  test("the Save's 409 says the file changed, and the retry carries the re-read sha", async () => {
+    defaultMocks();
+    let configReads = 0;
+    server.use(
+      http.get(CONFIG_URL, () => {
+        configReads += 1;
+        return HttpResponse.json(
+          snapshotFixture({ sha256: `sha-${configReads}` }),
+        );
+      }),
+    );
+    const opReads = operationReads(() => "move");
+    let posts = 0;
+    const bodies = flipStub(() => {
+      posts += 1;
+      return posts === 1
+        ? HttpResponse.json(
+            {
+              detail: {
+                current_yaml_text: SAMPLE_YAML,
+                current_sha256: "sha-on-disk",
+              },
+            },
+            { status: 409 },
+          )
+        : HttpResponse.json(snapshotFixture({ sha256: "sha-after" }));
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await findEditorContent();
+    const sw = await findSwitch();
+    const before = { config: configReads, op: opReads.count };
+
+    await user.click(sw);
+    expect(await within(importSection()).findByRole("alert")).toHaveTextContent(
+      "config.yaml changed. Try again.",
+    );
+    expect(configReads).toBeGreaterThan(before.config);
+    expect(opReads.count).toBeGreaterThan(before.op);
+    expect(bodies[0]).toEqual({
+      keep_downloads: true,
+      base_sha256: `sha-${before.config}`,
+    });
+
+    const latest = configReads;
+    await user.click(await findSwitch());
+    await waitFor(() => expect(bodies).toHaveLength(2));
+    expect(bodies[1]).toEqual({
+      keep_downloads: true,
+      base_sha256: `sha-${latest}`,
+    });
+  });
+
+  test.each<[string, number, Record<string, unknown>, string]>([
+    [
+      "a 409 sentence",
+      409,
+      { detail: "A library job is running. Try again when it finishes." },
+      "A library job is running. Try again when it finishes.",
+    ],
+    [
+      "a 422 sentence",
+      422,
+      { detail: "An include file sets this." },
+      "An include file sets this.",
+    ],
+    [
+      "a 500 with Apply's recovery line",
+      500,
+      {
+        detail: {
+          message: "beets failed to load",
+          recovery: "Your config is saved. Fix it and try again.",
+        },
+      },
+      "Your config is saved. Fix it and try again.",
+    ],
+    [
+      "a 500 with no recovery line",
+      500,
+      { detail: "boom" },
+      "Your config is saved on disk — try again or restart MusicDrop.",
+    ],
+  ])("a failed flip: %s", async (_name, status, body, text) => {
+    defaultMocks();
+    flipStub(() => HttpResponse.json(body, { status }));
+    const user = userEvent.setup();
+    renderPage();
+    await findEditorContent();
+    await user.click(await findSwitch());
+    expect(await within(importSection()).findByRole("alert")).toHaveTextContent(
+      text,
+    );
+    // The refused flip leaves the thumb where the loaded setting puts it.
+    expect(await findSwitch()).not.toBeChecked();
+  });
+
+  test("a job 409 asks the job probes again, and the reason line names the job", async () => {
+    defaultMocks();
+    // A reorganize the page has not seen starts as the flip is refused. This
+    // probe polls only while running, so only a refetch after the 409 finds it.
+    let refused = false;
+    server.use(
+      http.get(REORGANIZE_STATUS_URL, () =>
+        HttpResponse.json(
+          refused
+            ? { ...idleReorganizeStatus(), phase: "running", job_id: "r1" }
+            : idleReorganizeStatus(),
+        ),
+      ),
+    );
+    flipStub(() => {
+      refused = true;
+      return HttpResponse.json(
+        { detail: "A library job is running. Try again when it finishes." },
+        { status: 409 },
+      );
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await findEditorContent();
+    const sw = await findSwitch();
+    // Control: nothing names a job before the press.
+    expect(described(sw)).toEqual([HELP]);
+    await user.click(sw);
+    await waitFor(() =>
+      expect(described(sw)).toEqual([
+        HELP,
+        "Available when a library reorganize finishes.",
+      ]),
+    );
+    expect(sw).toHaveFocus();
+  });
+
+  test("a failure gives way to a reason line and does not come back after it", async () => {
+    defaultMocks();
+    flipStub(() =>
+      HttpResponse.json({ detail: "An include file sets this." }, { status: 422 }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    const content = await findEditorContent();
+    await user.click(await findSwitch());
+    await within(importSection()).findByRole("alert");
+
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    content.focus();
+    await user.keyboard("x");
+    await waitFor(() =>
+      expect(within(importSection()).queryByRole("alert")).toBeNull(),
+    );
+
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+    const sw = await findSwitch();
+    await waitFor(() => expect(described(sw)).toEqual([HELP]));
+    expect(within(importSection()).queryByRole("alert")).toBeNull();
+  });
+
+  test("an Apply reads the setting again: a load is when imports pick it up", async () => {
+    let configReads = 0;
+    defaultMocks();
+    server.use(
+      http.get(CONFIG_URL, () => {
+        configReads += 1;
+        return HttpResponse.json(
+          snapshotFixture({
+            apply_pending: configReads === 1,
+            sha256: `sha-${configReads}`,
+          }),
+        );
+      }),
+      http.post(APPLY_URL, () =>
+        HttpResponse.json(snapshotFixture({ apply_pending: false })),
+      ),
+    );
+    const opReads = operationReads((n) => (n === 1 ? "copy" : "hardlink"));
+    const user = userEvent.setup();
+    renderPage();
+    await findEditorContent();
+    await waitFor(() => expect(beetsState()).toEqual(PENDING_STATE));
+    expect(await findSwitch()).not.toBeChecked();
+
+    await user.click(screen.getByRole("button", { name: /apply changes/i }));
+    await waitFor(() => expect(opReads.count).toBe(2));
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: LABEL })).toBeChecked(),
+    );
   });
 });

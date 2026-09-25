@@ -1034,6 +1034,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/config/import-operation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Import Operation
+         * @description What imports do with the files, as loaded at boot or by the last Apply.
+         */
+        get: operations["get_import_operation_api_config_import_operation_get"];
+        put?: never;
+        /**
+         * Set Import Operation
+         * @description Keep downloads: write hardlink (on) or move (off) into config.yaml, then reload beets.
+         */
+        post: operations["set_import_operation_api_config_import_operation_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/duplicates": {
         parameters: {
             query?: never;
@@ -3534,6 +3558,17 @@ export interface components {
             aborted: boolean;
         };
         /**
+         * ImportOperation
+         * @description What imports do with the files, as loaded at boot or by the last Apply.
+         */
+        ImportOperation: {
+            /**
+             * Operation
+             * @enum {string}
+             */
+            operation: "move" | "copy" | "link" | "hardlink" | "reflink" | "reflink_auto" | "in_place";
+        };
+        /**
          * ImportOptions
          * @description Per-import overrides for one import request.
          */
@@ -4856,6 +4891,19 @@ export interface components {
             album_id: number | null;
             /** Duration Seconds */
             duration_seconds: number | null;
+        };
+        /**
+         * SetImportOperation
+         * @description Keep downloads on (beets hardlinks) or off (beets moves), then reload beets.
+         *
+         *     ``base_sha256`` is ``GET /api/config``'s ``sha256``: a file changed since
+         *     then is refused, as a Save is.
+         */
+        SetImportOperation: {
+            /** Keep Downloads */
+            keep_downloads: boolean;
+            /** Base Sha256 */
+            base_sha256: string;
         };
         /**
          * SetupRequest
@@ -9002,6 +9050,183 @@ export interface operations {
                 };
             };
             /** @description The rebuild failed and putting the old config back failed too; fix the error the recovery line quotes and Apply again. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredErrorDetail"];
+                };
+            };
+        };
+    };
+    get_import_operation_api_config_import_operation_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportOperation"];
+                };
+            };
+            /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description beets cannot read import: in the loaded config (not a mapping). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+        };
+    };
+    set_import_operation_api_config_import_operation_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetImportOperation"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BeetsConfigSnapshot"];
+                };
+            };
+            /** @description Rejected by the host guard before the route ran: the Host header (or X-Forwarded-Host, when present) is not an allowed name (DNS-rebinding allowlist; bare IP literals, localhost, and MUSICDROP_ALLOWED_HOSTS pass). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the session gate before the route ran: no valid MusicDrop session cookie was presented (missing, tampered with, or expired). Sign in at POST /api/auth/login. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description Rejected by the cross-origin write guard before the route ran: the Origin header is not allowed to write (browser-CSRF protection; requests without an Origin pass). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description A library job is running, config.yaml has saved edits Apply has not loaded, or the file changed since it was read (the Save's conflict body). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"] | {
+                        /**
+                         * ConfigSaveConflict
+                         * @description What the config editor sends back when its compare-and-swap loses.
+                         *
+                         *     ``POST /api/config/save`` and ``POST /api/config/naming/save`` hash the file
+                         *     on disk and compare it with the ``base_sha256`` the editor loaded from
+                         *     (``app/beets/config_editor.py``). A mismatch means someone else wrote
+                         *     ``config.yaml`` in between, so the save is refused with 409 and the client is
+                         *     handed everything it needs to recover WITHOUT a second round trip:
+                         *     ``current_yaml_text`` is the file as it now stands and ``current_sha256`` is
+                         *     the CAS token to resubmit with if the user chooses to overwrite anyway.
+                         *
+                         *     ``detail`` is the human sentence ("File changed on disk"). Unlike
+                         *     :class:`OperationFailure`, the inner key really IS named ``detail`` here -
+                         *     that is what the raise sends, and this model documents the wire, not the
+                         *     naming we would pick today.
+                         */
+                        detail: {
+                            /** Detail */
+                            detail: string;
+                            /** Current Yaml Text */
+                            current_yaml_text: string;
+                            /** Current Sha256 */
+                            current_sha256: string;
+                        };
+                    };
+                };
+            };
+            /** @description Rejected by the body-size guard before the route ran: the declared Content-Length exceeds the limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            /** @description import: in config.yaml is not a plain mapping, an include decides the operation, or config.yaml cannot be read, written or checked, and nothing was written; or Apply's reload refused the written file, with its recovery line. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"] | {
+                        /**
+                         * OperationFailure
+                         * @description What a long-running library op failed at, and what the user can do next.
+                         *
+                         *     ``message`` names the cause (it embeds the underlying exception's text);
+                         *     ``recovery`` says what state the library is in and what to do about it.
+                         *     ``message`` rather than ``detail`` for the inner key on purpose - Starlette
+                         *     already wraps the payload in an outer ``detail``, so an inner ``detail``
+                         *     would render the confusing ``{"detail": {"detail": ...}}``.
+                         */
+                        detail: {
+                            /** Message */
+                            message: string;
+                            /** Recovery */
+                            recovery: string;
+                        };
+                    } | components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The reload failed and putting the old config back failed too, as Apply's 500. */
             500: {
                 headers: {
                     [name: string]: unknown;
