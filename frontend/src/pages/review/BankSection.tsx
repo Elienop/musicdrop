@@ -199,6 +199,12 @@ export function BankSection() {
     .filter((row) => selected.has(row.id) && row.status === "needs_review")
     .map((row) => row.id);
 
+  // Any slskd row in the selection changes what Remove means for it: the
+  // folder is listed again under "Not imported yet" instead of staying away.
+  const removesInbox = data.items.some(
+    (row) => selected.has(row.id) && row.source === "inbox",
+  );
+
   const allSelected =
     selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
   const headerChecked = triState(allSelected, visibleSelected.length > 0);
@@ -334,8 +340,9 @@ export function BankSection() {
                   {visibleSelected.length === 1 ? "" : "s"}?
                 </AlertDialogTitle>
                 <AlertDialogDescription>
-                  The files stay on disk, but the banked candidates are
-                  forfeited; a re-sweep will NOT pick these folders up again.
+                  {removesInbox
+                    ? "The files stay on disk. slskd folders go back to Not imported yet."
+                    : "The files stay on disk, but the banked candidates are forfeited; a re-sweep will NOT pick these folders up again."}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -566,8 +573,11 @@ function BankRow({
             <AlertDialogHeader>
               <AlertDialogTitle>Remove this row?</AlertDialogTitle>
               <AlertDialogDescription>
-                The files stay on disk, but the banked candidates are
-                forfeited; a re-sweep will NOT pick this folder up again.
+                {/* `source` is display-only here: it picks the sentence, and
+                    the server decides what Remove does. */}
+                {row.source === "inbox"
+                  ? "The files stay on disk. The folder goes back to Not imported yet."
+                  : "The files stay on disk, but the banked candidates are forfeited; a re-sweep will NOT pick this folder up again."}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>

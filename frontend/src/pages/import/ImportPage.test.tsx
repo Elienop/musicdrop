@@ -371,7 +371,7 @@ describe("ImportPage — entry", () => {
     ).toBeDisabled();
   });
 
-  test("shows the inbox-origin + set-aside cue for an unattended import", async () => {
+  test("an inbox run's banner takes the sweep's wording and no count", async () => {
     server.use(
       http.get(ACTIVE_URL, () =>
         HttpResponse.json({
@@ -385,11 +385,11 @@ describe("ImportPage — entry", () => {
     renderAt("/import");
 
     expect(
-      await screen.findByText(/an inbox import is running/i),
+      await screen.findByText(
+        "An inbox import is running; unsure albums are being banked for review.",
+      ),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/3 albums set aside for review/i),
-    ).toBeInTheDocument();
+    expect(screen.queryByText(/set aside/i)).not.toBeInTheDocument();
   });
 
   test("a 409 refreshes the probe so the Resume banner appears (race recovery)", async () => {
@@ -1393,7 +1393,7 @@ describe("ImportPage — live feed", () => {
     renderAt("/import");
     await screen.findByRole("link", { name: /resume/i });
     const banner = spinnerOf(
-      lineOf(screen.getByText(/3 albums set aside for review/)),
+      lineOf(screen.getByText(/an inbox import is running/i)),
     );
     const bannerTokens = banner.getAttribute("class")?.split(/\s+/) ?? [];
     expect(bannerTokens).toContain("size-5");

@@ -252,21 +252,15 @@ export function ImportPage() {
   return <ImportRun jobId={jobId} />;
 }
 
-/** Derive the resume-banner copy from the active job's origin + set-aside
- * count. Returns the headline sentence (without the set-aside clause, which
- * the JSX appends as a separate muted span). */
-function resumeBannerText(
-  origin: string | undefined,
-  needsReview: number,
-): string {
+/** Derive the resume-banner copy from the active job's origin. An inbox run
+ * banks what it is unsure of, as a sweep does, so it takes the sweep's wording
+ * and no count: the banked albums wait on the Review page, not on this run. */
+function resumeBannerText(origin: string | undefined): string {
   if (origin === "sweep") {
     return "A sweep is running; uncertain albums are being banked for review.";
   }
   if (origin === "inbox") {
-    // The set-aside clause completes the sentence when there's a count.
-    return needsReview > 0
-      ? "An inbox import is running"
-      : "An inbox import is running.";
+    return "An inbox import is running; unsure albums are being banked for review.";
   }
   return "An import is already running.";
 }
@@ -294,11 +288,8 @@ function ImportEntry() {
   // banner never renders a link to a null id.
   const activeJobId = active.data?.job_id ?? null;
   const importActive = (active.data?.active ?? false) && activeJobId !== null;
-  // An inbox-origin import is the unattended slskd path: name it as such and,
-  // when it set albums aside, surface the count so the user knows there's a
-  // review to do once it finishes.
+  // An inbox-origin import is the unattended slskd path: name it as such.
   const origin = active.data?.origin;
-  const needsReview = active.data?.needs_review_count ?? 0;
 
   const trimmed = path.trim();
   // The ONE sentence this screen owns: a 409 with a resumable import names the
@@ -403,22 +394,7 @@ function ImportEntry() {
               className="text-muted-foreground size-5 shrink-0 animate-spin"
               aria-hidden="true"
             />
-            <span>
-              {resumeBannerText(origin, needsReview)}
-              {origin === "inbox" && needsReview > 0 && (
-                // This paragraph IS the Start button's aria-describedby, and a
-                // middot is not spoken — the description ran the two clauses
-                // together ("…is running 3 albums set aside…"). The glyph is
-                // hidden and a full stop stands in for it. Not verified with a
-                // real screen reader.
-                <span className="text-muted-foreground font-normal">
-                  <span aria-hidden="true">{SEGMENT_SEP}</span>
-                  <span className="sr-only">{". "}</span>
-                  {needsReview} album{needsReview === 1 ? "" : "s"} set aside for
-                  review.
-                </span>
-              )}
-            </span>
+            <span>{resumeBannerText(origin)}</span>
           </p>
         </StatusBanner>
       )}

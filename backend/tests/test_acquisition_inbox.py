@@ -178,7 +178,7 @@ def test_settled_folders_excludes_a_recently_touched_folder(tmp_path: Path) -> N
     inbox = tmp_path / "inbox"
     quiet = _drop(inbox, "Quiet", mtime=now - 600)
     _drop(inbox, "Busy", mtime=now - 5)  # inside the window -> still arriving
-    assert settled_folders(inbox, settle_seconds=60, now=now) == [quiet]
+    assert settled_folders(inbox, held=frozenset(), settle_seconds=60, now=now) == [quiet]
 
 
 def test_settled_folders_watches_NON_audio_files_too(tmp_path: Path) -> None:
@@ -193,7 +193,7 @@ def test_settled_folders_watches_NON_audio_files_too(tmp_path: Path) -> None:
     partial = folder / "02 track.flac.part"
     partial.write_bytes(b"\0")
     os.utime(partial, (now - 2, now - 2))
-    assert settled_folders(inbox, settle_seconds=60, now=now) == []
+    assert settled_folders(inbox, held=frozenset(), settle_seconds=60, now=now) == []
 
 
 def test_settled_folders_looks_into_subfolders(tmp_path: Path) -> None:
@@ -209,7 +209,7 @@ def test_settled_folders_looks_into_subfolders(tmp_path: Path) -> None:
     track.write_bytes(b"\0")
     os.utime(track, (now - 1, now - 1))
     os.utime(disc2, (now - 600, now - 600))
-    assert settled_folders(inbox, settle_seconds=60, now=now) == []
+    assert settled_folders(inbox, held=frozenset(), settle_seconds=60, now=now) == []
 
 
 def test_newest_mtime_returns_none_when_the_tree_turns_unreadable(tmp_path: Path) -> None:
@@ -254,7 +254,7 @@ def test_settled_folders_skips_a_folder_whose_walk_fails(tmp_path: Path, monkeyp
             return None
 
     monkeypatch.setattr(inbox_mod, "_newest_mtime", guarded)
-    assert settled_folders(inbox, settle_seconds=60, now=now) == []
+    assert settled_folders(inbox, held=frozenset(), settle_seconds=60, now=now) == []
 
 
 def test_settled_folders_treats_an_unreadable_subdir_as_in_flight(tmp_path: Path) -> None:
@@ -269,7 +269,7 @@ def test_settled_folders_treats_an_unreadable_subdir_as_in_flight(tmp_path: Path
     locked.mkdir()
     _os.chmod(locked, 0o000)
     try:
-        settled = settled_folders(inbox, settle_seconds=60, now=now)
+        settled = settled_folders(inbox, held=frozenset(), settle_seconds=60, now=now)
     finally:
         _os.chmod(locked, 0o755)
     if settled:  # root ignores mode bits
@@ -288,7 +288,7 @@ def test_settled_folders_sees_a_fresh_DIRECTORY_mtime(tmp_path: Path) -> None:
     inbox = tmp_path / "inbox"
     folder = _drop(inbox, "Album", mtime=now - 999_999)  # ancient FILE mtimes
     _os.utime(folder, (now - 1, now - 1))  # ...but an entry was just added
-    assert settled_folders(inbox, settle_seconds=60, now=now) == []
+    assert settled_folders(inbox, held=frozenset(), settle_seconds=60, now=now) == []
 
 
 def test_settled_folders_future_mtime_still_settles(tmp_path: Path) -> None:
@@ -301,7 +301,7 @@ def test_settled_folders_future_mtime_still_settles(tmp_path: Path) -> None:
     inbox = tmp_path / "inbox"
     folder = _drop(inbox, "Album", mtime=now + 3600)  # an hour ahead
     _os.utime(folder, (now + 3600, now + 3600))
-    assert settled_folders(inbox, settle_seconds=0, now=now) == [folder]
+    assert settled_folders(inbox, held=frozenset(), settle_seconds=0, now=now) == [folder]
 
 
 def test_settled_folders_ignores_hidden_ledger_and_audio_free_entries(tmp_path: Path) -> None:
@@ -313,4 +313,4 @@ def test_settled_folders_ignores_hidden_ledger_and_audio_free_entries(tmp_path: 
     (inbox / ".musicdrop-ledger.json").write_text("{}")
     (inbox / "ArtOnly").mkdir()
     (inbox / "ArtOnly" / "cover.jpg").write_bytes(b"\0")
-    assert settled_folders(inbox, settle_seconds=60, now=now) == [keeper]
+    assert settled_folders(inbox, held=frozenset(), settle_seconds=60, now=now) == [keeper]

@@ -51,9 +51,10 @@ const REVIEW_ORIGIN: { from: AlbumOrigin } = {
  * import is parked on, routing into the existing candidate/duplicate screens;
  * (2) "Waiting for review" — the durable bank backlog of swept decisions;
  * (3) "Importing now" — the live acquisition-queue snapshot (current folder +
- * queued count), only while non-idle; (4) "Waiting in the inbox" — the
- * per-item set-aside backlog; (5) "Recently landed" — the durable tally. The
- * library duplicate finder is a PLAIN link (no eager full-library scan).
+ * queued count), only while non-idle; (4) "Not imported yet" — the inbox
+ * folders not already waiting for review; (5) "Recently landed" — the durable
+ * tally. The library duplicate finder is a PLAIN link (no eager full-library
+ * scan).
  */
 export function ReviewPage() {
   const navigate = useNavigate();
@@ -213,11 +214,11 @@ export function ReviewPage() {
       {inboxQuery.isError && (
         // The listing probe can fail now, and a silent failure here reads as an
         // empty backlog. One line, one retry — the house error recipe. The
-        // section below is called "Waiting in the inbox", so the sentence says
+        // section below is called "Not imported yet", so the sentence says
         // that and not "the inbox backlog", which is our word, not the user's.
         <ErrorState
           variant="inline"
-          message="Couldn’t load what’s waiting in the inbox."
+          message="Couldn’t load what’s not imported yet."
           onRetry={() => void inboxQuery.refetch()}
         />
       )}
@@ -551,7 +552,7 @@ function useInboxStart(
   };
 }
 
-/** "Waiting in the inbox" — the per-item set-aside backlog. Each row imports its
+/** "Not imported yet" — the per-item inbox backlog. Each row imports its
  * own folder; "Review all" imports the whole inbox. Both are unavailable while an
  * import runs (the single slot is busy) — the visible helper line below carries
  * the reason (no disabled-button `title`, per the spec §4 rule). NEITHER answer
@@ -573,9 +574,9 @@ function InboxSection({
   if (items.length === 0) return null;
 
   return (
-    <section aria-label="Waiting in the inbox" className="flex flex-col gap-3">
+    <section aria-label="Not imported yet" className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
-        <SectionLabel>Waiting in the inbox</SectionLabel>
+        <SectionLabel>Not imported yet</SectionLabel>
         <Button
           type="button"
           variant="outline"
@@ -690,13 +691,13 @@ function RecentSection({
         </p>
       ) : (
         <p className="text-muted-foreground text-sm">
-          {imported} imported · {setAside} set aside · {failed} failed
+          {imported} imported · {setAside} sent to review · {failed} failed
         </p>
       )}
       {error && (
         <p className="text-destructive flex items-start gap-2 text-sm">
           <Warning className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-          <span>Last error: {error}</span>
+          <span className="min-w-0 break-words">Last error: {error}</span>
         </p>
       )}
     </section>

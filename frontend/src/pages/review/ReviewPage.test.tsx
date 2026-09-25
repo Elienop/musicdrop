@@ -241,6 +241,11 @@ describe("ReviewPage", () => {
     renderWithProviders(<ReviewPage />);
 
     expect(await screen.findByText("Lost Tapes")).toBeInTheDocument();
+    // The section is named for what it holds once banking covers the inbox
+    // (#77), and the row's own "Set aside" subtitle stays.
+    const section = screen.getByRole("region", { name: "Not imported yet" });
+    expect(within(section).getByText("Not imported yet")).toBeInTheDocument();
+    expect(screen.queryByText(/waiting in the inbox/i)).not.toBeInTheDocument();
     expect(screen.getByText(/set aside/i)).toBeInTheDocument();
     expect(screen.getByText(/9 tracks/)).toBeInTheDocument();
     expect(screen.getByText(/1 track\b/)).toBeInTheDocument();
@@ -741,7 +746,7 @@ describe("ReviewPage", () => {
     renderWithProviders(<ReviewPage />);
 
     expect(
-      await screen.findByText(/couldn.t load what.s waiting in the inbox/i),
+      await screen.findByText("Couldn’t load what’s not imported yet."),
     ).toBeInTheDocument();
     expect(screen.queryByText(/nothing to review/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
@@ -781,7 +786,7 @@ describe("ReviewPage", () => {
     renderWithProviders(<ReviewPage />);
 
     const recent = await screen.findByRole("region", { name: /recent/i });
-    expect(within(recent).getByText(/1 imported · 2 set aside · 0 failed/)).toBeInTheDocument();
+    expect(within(recent).getByText("1 imported · 2 sent to review · 0 failed")).toBeInTheDocument();
     expect(screen.getByText(/last error: disk full/i)).toBeInTheDocument();
   });
 
@@ -1486,6 +1491,49 @@ describe("ReviewPage", () => {
     expect(
       within(section).queryByRole("checkbox", { name: /select album z/i }),
     ).not.toBeInTheDocument();
+  });
+
+  // `source` is display-only: it picks the sentence, never the action.
+  test.each([
+    ["inbox", "The files stay on disk. The folder goes back to Not imported yet."],
+    ["sweep", "The files stay on disk, but the banked candidates are forfeited; a re-sweep will NOT pick this folder up again."],
+  ])("Remove on a %s row says where the folder goes", async (source, sentence) => {
+    server.use(
+      http.get(BANK, () =>
+        HttpResponse.json({ items: [bankRow({ source })], total: 1, total_all: 1, offset: 0, limit: 48 }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+    const section = await screen.findByRole("region", { name: /waiting for review/i });
+    await userEvent.click(within(section).getByRole("button", { name: /remove album x/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText(sentence)).toBeInTheDocument();
+  });
+
+  test.each([
+    ["any slskd row", "inbox", "The files stay on disk. slskd folders go back to Not imported yet."],
+    ["sweep rows only", "sweep", "The files stay on disk, but the banked candidates are forfeited; a re-sweep will NOT pick these folders up again."],
+  ])("Delete selected with %s says where the folders go", async (_, second, sentence) => {
+    server.use(
+      http.get(BANK, () =>
+        HttpResponse.json({
+          items: [bankRow(), bankRow({ id: "b2", album: "Album Y", source: second })],
+          total: 2,
+          total_all: 2,
+          offset: 0,
+          limit: 48,
+        }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />);
+    const section = await screen.findByRole("region", { name: /waiting for review/i });
+    await userEvent.click(within(section).getByRole("checkbox", { name: /select album x/i }));
+    await userEvent.click(within(section).getByRole("checkbox", { name: /select album y/i }));
+    await userEvent.click(
+      within(section).getByRole("button", { name: /delete selected \(2\)/i }),
+    );
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText(sentence)).toBeInTheDocument();
   });
 
   test("Remove confirms, then deletes the row", async () => {

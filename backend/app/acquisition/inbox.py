@@ -11,9 +11,10 @@ resolves to the inbox root itself or has the inbox root among its parents. Becau
 ``Path.resolve()`` follows symlinks, a symlink planted under the inbox that points
 outside is rejected too — the resolved target is no longer under the inbox.
 
-``count_pending`` / ``list_inbox`` hold the ONE "what counts as an inbox item"
-definition (a top-level non-hidden, non-symlinked dir holding audio) shared by
-the nav badge, the Review listing, and the one-click review start.
+``_not_imported_yet`` is the ONE "Not imported yet" rule (a top-level
+non-hidden, non-symlinked dir holding audio that no row in "Waiting for review"
+holds), shared by the nav badge (``count_pending``), the Review listing
+(``list_inbox``) and Review all (``settled_folders``).
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ import time
 from pathlib import Path
 
 from app.acquisition.ledger import AcquisitionLedger
+from app.bank.store import active_folders_under
 from app.beets.library import LibraryHandle
 from app.config import INBOX_STORE, Settings, store_dir
 from app.models.acquisition import InboxItem, LedgerEntry, LedgerOutcome
@@ -144,26 +146,56 @@ def audio_stats(folder: Path) -> tuple[int, int]:
     return count, size
 
 
-def count_pending(inbox_dir: Path) -> int:
-    """Count top-level inbox folders holding audio — the SAME item definition the
-    Review listing uses, so the nav badge can't show a phantom count from a loose
-    non-audio file, an empty leftover dir, or a symlink. Skips hidden entries, the
-    ledger file, and symlinked entries (parity with the import path's symlink
-    guard). 0 on any OS error.
+def bank_held_names(inbox_dir: Path, bank_dir: Path) -> frozenset[str]:
+    """Names of the inbox entries a row in "Waiting for review" holds.
+
+    ONE bank read for the whole inbox, not one per entry. A row holds the
+    top-level entry it sits at or below: the drain banks the album folder,
+    which can be deeper than the entry (``inbox/X/CD1`` holds ``inbox/X``).
+    Both sides are resolved paths, so whole names are enough.
     """
+    prefix = os.path.join(inbox_dir, "")
+    names = (
+        folder[len(prefix) :].split("/", 1)[0]
+        for folder in active_folders_under(bank_dir, inbox_dir)
+    )
+    return frozenset(name for name in names if name)
+
+
+def _entry_is_inbox_item(entry: os.DirEntry[str]) -> bool:
+    """True when an inbox entry is a plain top-level dir: not hidden/ledger/symlink."""
+    if entry.name.startswith(".") or entry.name == LEDGER_FILENAME:
+        return False
+    # Skip symlinked entries: the import path's contain() rejects symlink
+    # escapes, so the listing must not follow one out of the inbox either.
+    return entry.is_dir(follow_symlinks=False)
+
+
+def _not_imported_yet(entry: os.DirEntry[str], held: frozenset[str]) -> bool:
+    """THE rule for one "Not imported yet" entry, shared by the list, the count
+    and Review all so the three can never disagree.
+
+    A plain top-level dir holding audio that no row in "Waiting for review"
+    holds (``held``, from ``bank_held_names``): that row is where its album is
+    decided. An empty leftover dir or a loose file is never an entry.
+    """
+    if not _entry_is_inbox_item(entry) or entry.name in held:
+        return False
+    return has_audio(Path(entry.path))
+
+
+def _not_imported_entries(inbox_dir: Path, held: frozenset[str]) -> list[os.DirEntry[str]]:
+    """Every inbox entry ``_not_imported_yet`` keeps; empty on an OS error."""
     try:
         entries = list(os.scandir(inbox_dir))
     except OSError:
-        return 0
-    count = 0
-    for entry in entries:
-        if entry.name.startswith(".") or entry.name == LEDGER_FILENAME:
-            continue
-        if not entry.is_dir(follow_symlinks=False):
-            continue
-        if has_audio(Path(entry.path)):
-            count += 1
-    return count
+        return []
+    return [entry for entry in entries if _not_imported_yet(entry, held)]
+
+
+def count_pending(inbox_dir: Path, *, held: frozenset[str]) -> int:
+    """How many entries "Not imported yet" lists: the nav badge's count."""
+    return len(_not_imported_entries(inbox_dir, held))
 
 
 def _max_mtime(current: float | None, candidate: float) -> float:
@@ -205,30 +237,21 @@ def _newest_mtime(folder: Path) -> float | None:
     return newest
 
 
-def settled_folders(inbox_dir: Path, *, settle_seconds: float, now: float) -> list[Path]:
-    """Top-level inbox items that have been QUIET for ``settle_seconds``.
+def settled_folders(
+    inbox_dir: Path, *, held: frozenset[str], settle_seconds: float, now: float
+) -> list[Path]:
+    """The "Not imported yet" entries that have been QUIET for ``settle_seconds``.
 
-    Same item definition as ``list_inbox``/``count_pending`` (one immediate
-    child dir holding audio, no hidden/ledger/symlink entries), minus the ones
-    still receiving files. Ledger-seen folders stay eligible: a failed or
-    set-aside drop is still sitting there and must remain reviewable.
+    What Review all hands over: the listed entries minus the ones still
+    receiving files. Ledger-seen folders stay eligible: a failed or set-aside
+    drop is still sitting there and must remain reviewable.
 
     Skipping is always the safe direction — a folder we cannot stat, or one that
     vanishes mid-walk, is treated as in-flight rather than swept into an import.
     """
-    try:
-        entries = list(os.scandir(inbox_dir))
-    except OSError:
-        return []
     settled: list[Path] = []
-    for entry in entries:
-        if entry.name.startswith(".") or entry.name == LEDGER_FILENAME:
-            continue
-        if not entry.is_dir(follow_symlinks=False):
-            continue
+    for entry in _not_imported_entries(inbox_dir, held):
         folder = Path(entry.path)
-        if not has_audio(folder):
-            continue
         newest = _newest_mtime(folder)
         if newest is None:
             continue
@@ -242,15 +265,6 @@ def settled_folders(inbox_dir: Path, *, settle_seconds: float, now: float) -> li
         settled.append(folder)
     settled.sort(key=lambda f: f.name)
     return settled
-
-
-def _entry_is_inbox_item(entry: os.DirEntry[str]) -> bool:
-    """True when an inbox entry is a plain top-level dir: not hidden/ledger/symlink."""
-    if entry.name.startswith(".") or entry.name == LEDGER_FILENAME:
-        return False
-    # Skip symlinked entries: the import path's contain() rejects symlink
-    # escapes, so the listing must not follow one out of the inbox either.
-    return entry.is_dir(follow_symlinks=False)
 
 
 def _entry_in_flight(entry: os.DirEntry[str], *, settle_seconds: float, now: float | None) -> bool:
@@ -287,12 +301,8 @@ def _inbox_item_for_entry(
     settle_seconds: float,
     now: float | None,
 ) -> InboxItem | None:
-    """Build the ``InboxItem`` for one scandir entry, or ``None`` if it is skipped."""
-    if not _entry_is_inbox_item(entry):
-        return None
+    """Build the ``InboxItem`` for one listed entry, or ``None`` if it vanished."""
     tracks, size = audio_stats(Path(entry.path))
-    if tracks == 0:
-        return None
     try:
         st = entry.stat()
     except OSError:
@@ -314,24 +324,20 @@ def list_inbox(
     inbox_dir: Path,
     ledger: AcquisitionLedger | None,
     *,
+    held: frozenset[str],
     settle_seconds: float = 0.0,
     now: float | None = None,
 ) -> list[InboxItem]:
-    """Top-level non-hidden inbox dirs holding audio, ledger-annotated (never filtered).
+    """The "Not imported yet" entries, ledger-annotated (never filtered by it).
 
-    An item = one immediate child directory with >=1 audio file beneath it (empty
-    leftovers after a successful move-out are skipped). A set-aside item IS in the
-    ledger, so the ledger only ANNOTATES (``set_aside``/``failed``) — it never
-    removes a row. The ledger keys the (possibly deeper) album path the webhook
-    coalesced, so a row is annotated when a ledger entry sits at or under it.
+    A set-aside item IS in the ledger, so the ledger only ANNOTATES
+    (``set_aside``/``failed``) — it never removes a row. The ledger keys the
+    (possibly deeper) album path the webhook coalesced, so a row is annotated
+    when a ledger entry sits at or under it.
     """
-    items: list[InboxItem] = []
-    try:
-        entries = list(os.scandir(inbox_dir))
-    except OSError:
-        return items
     ledger_rows = ledger.entries() if ledger is not None else []
-    for entry in entries:
+    items: list[InboxItem] = []
+    for entry in _not_imported_entries(inbox_dir, held):
         item = _inbox_item_for_entry(entry, ledger_rows, settle_seconds=settle_seconds, now=now)
         if item is not None:
             items.append(item)

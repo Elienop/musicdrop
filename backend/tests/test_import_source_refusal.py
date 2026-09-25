@@ -532,6 +532,7 @@ def _settled_album(inbox: Path, name: str) -> Path:
     return album
 
 
+@pytest.mark.usefixtures("inbox_bank_dir")
 def test_both_inbox_routes_answer_the_refusal_as_422(tmp_path: Path) -> None:
     """An inbox that holds the library lists the library's own folder."""
     inbox = tmp_path / "inbox"

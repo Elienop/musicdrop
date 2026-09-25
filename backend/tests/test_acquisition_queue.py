@@ -556,7 +556,7 @@ def test_a_stopped_inbox_import_is_recorded_failed_not_imported(tmp_path: Path) 
 
         # The inbox list annotates it rather than dropping it, so the row the
         # user re-imports by hand carries why it is there.
-        items = list_inbox(inbox, led)
+        items = list_inbox(inbox, led, held=frozenset())
         assert [(i.name, i.outcome) for i in items] == [("Radiohead - Kid A", "failed")]
         # MEASURED, and narrower than "importable again": a ledger row of ANY
         # outcome blocks the automatic drain while the folder's (mtime, size) is

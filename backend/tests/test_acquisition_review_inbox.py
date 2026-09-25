@@ -23,6 +23,9 @@ from app.import_jobs.fakes import FakeImportRunner
 from app.import_jobs.registry import reset_registry
 from app.main import app
 
+# Every route here reads the bank; keep it in the test's tmp dir.
+pytestmark = pytest.mark.usefixtures("inbox_bank_dir")
+
 
 @contextmanager
 def _inbox_on_state(path: Path | None) -> Iterator[None]:

@@ -483,6 +483,32 @@ def count_items(
     return total
 
 
+def active_folders_under(bank_dir: Path, root: Path) -> list[str]:
+    """The folders of rows in ``ACTIVE_STATUSES`` that sit strictly inside ``root``.
+
+    One read on the ``bank_folder`` index: the folder bytes that start with
+    ``root/`` sort from ``root + b"/"`` up to, not including, ``root + b"0"``
+    (``0`` is the byte after ``/``). Whole names, so ``/in`` never reaches
+    ``/inbox``. The folders come back as the rows hold them.
+    """
+    where = {
+        "statuses": json.dumps(sorted(ACTIVE_STATUSES)),
+        "reason": None,
+        "low": os.fsencode(root) + b"/",
+        "high": os.fsencode(root) + b"0",
+    }
+    with _LOCK:
+        rows = (
+            _conn(bank_dir)
+            .execute(
+                "SELECT folder FROM bank" + _LIST_WHERE + " AND folder >= :low AND folder < :high",
+                where,
+            )
+            .fetchall()
+        )
+    return [os.fsdecode(folder) for (folder,) in rows]
+
+
 class InvalidTransitionError(RuntimeError):
     """A decision/delete that the row's current status forbids (API -> 409)."""
 

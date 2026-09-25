@@ -516,6 +516,19 @@ def close_bank_connections() -> Iterator[None]:
     close_connections()
 
 
+@pytest.fixture
+def inbox_bank_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the bank the inbox routes ask at this test's own tmp dir.
+
+    The three inbox routes read the bank through ``get_bank_dir()``, and the
+    suite's ``beets_dir`` is the cwd-relative default: without this a test
+    opens ``backend/data/beets/bank/bank.db``, the dev checkout's own bank.
+    """
+    bank_dir = tmp_path / "bank"
+    monkeypatch.setattr(settings, "bank_dir", str(bank_dir))
+    return bank_dir
+
+
 @pytest.fixture(autouse=True)
 def reset_artwork_log_throttle() -> Iterator[None]:
     """Forget throttled artwork conditions around every test.

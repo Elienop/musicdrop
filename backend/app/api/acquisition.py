@@ -25,8 +25,15 @@ import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 
-from app.acquisition.inbox import contain, count_pending, list_inbox, settled_folders
+from app.acquisition.inbox import (
+    bank_held_names,
+    contain,
+    count_pending,
+    list_inbox,
+    settled_folders,
+)
 from app.acquisition.ledger import AcquisitionLedger
+from app.api.bank import get_bank_dir
 from app.api.import_ import ensure_import_can_start, start_import_off_loop
 from app.beets.library import LibraryRootUnavailableError
 from app.config import settings
@@ -103,6 +110,15 @@ async def inbox_read(read: Callable[[], _T]) -> _T:
     """
     async with _INBOX_SCAN_SLOTS:
         return await run_in_threadpool(read)
+
+
+async def _held_names(inbox_dir: Path) -> frozenset[str]:
+    """The inbox entries a row in "Waiting for review" holds.
+
+    ONE bank read per request, shared by every inbox read the request makes,
+    so a route that both counts and hands over asks the bank once.
+    """
+    return await inbox_read(partial(bank_held_names, inbox_dir, get_bank_dir()))
 
 
 #: The batch route's own refusal copy, for the case it can actually reach: this
@@ -198,9 +214,10 @@ _IMPORT_SLOT_TAKEN_RESPONSE: Final = {
 @router.get("/acquisition/status")
 async def get_acquisition_status(request: Request) -> AcquisitionQueueStatus:
     inbox_dir = getattr(request.app.state, "inbox_dir", None)
-    inbox_pending = (
-        await inbox_read(partial(count_pending, inbox_dir)) if inbox_dir is not None else 0
-    )
+    inbox_pending = 0
+    if inbox_dir is not None:
+        held = await _held_names(inbox_dir)
+        inbox_pending = await inbox_read(partial(count_pending, inbox_dir, held=held))
     queue = getattr(request.app.state, "acquisition_queue", None)
     if queue is None:
         return AcquisitionQueueStatus(
@@ -265,19 +282,20 @@ async def review_inbox(
         return ReviewInboxResponse(started=False, job_id=None, pending=0)
     app_settings = getattr(request.app.state, "settings", None) or settings
     settle = float(getattr(app_settings, "inbox_settle_seconds", 60))
+    held = await _held_names(inbox_dir)
     folders = await inbox_read(
-        partial(settled_folders, inbox_dir, settle_seconds=settle, now=time.time())
+        partial(settled_folders, inbox_dir, held=held, settle_seconds=settle, now=time.time())
     )
     if not folders:
         # Nothing to review right now — but distinguish WHY. An empty inbox is
         # "all done"; folders still receiving files are "not yet", and the caller
         # must not tell the user the inbox cleared while their rows are on screen.
-        total = await inbox_read(partial(count_pending, inbox_dir))
+        total = await inbox_read(partial(count_pending, inbox_dir, held=held))
         return ReviewInboxResponse(started=False, job_id=None, pending=0, in_flight=total)
     pending = len(folders)
     # Any listed item we did not hand over is still arriving; report it so the UI
     # can say so rather than implying the backlog is now empty.
-    total = await inbox_read(partial(count_pending, inbox_dir))
+    total = await inbox_read(partial(count_pending, inbox_dir, held=held))
     in_flight = max(0, total - pending)
     try:
         # Off the loop: ``start`` -> ``validate`` stats each handed-over folder,
@@ -338,8 +356,9 @@ async def list_inbox_items(request: Request) -> InboxListing:
     settle = float(getattr(app_settings, "inbox_settle_seconds", 60))
     # Same window "Review all" uses, so a row's in_flight cue agrees with whether
     # that button would actually import it.
+    held = await _held_names(inbox_dir)
     items = await inbox_read(
-        partial(list_inbox, inbox_dir, ledger, settle_seconds=settle, now=time.time())
+        partial(list_inbox, inbox_dir, ledger, held=held, settle_seconds=settle, now=time.time())
     )
     return InboxListing(items=items)
 
