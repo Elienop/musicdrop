@@ -22,6 +22,9 @@ What each test pins:
 
 from __future__ import annotations
 
+import subprocess
+import sys
+from pathlib import Path
 from typing import get_args
 
 import beets
@@ -216,6 +219,33 @@ def test_delete_false_yields_no_advisory() -> None:
 def test_config_omitting_the_keys_yields_no_advisories() -> None:
     """A config that never mentions them has no opinion to contradict."""
     assert _advise("directory: /tmp\nimport:\n  copy: yes\n  move: no\n") == []
+
+
+def test_no_model_field_shadows_a_pydantic_attribute() -> None:
+    """Every start logged Pydantic's ``Field name "copy" in "ImportSection"
+    shadows an attribute in parent "BaseModel"``. The warning fires when the
+    class is defined, so a fresh interpreter imports every model module with
+    that warning turned into an error."""
+    probe = (
+        "import importlib, pkgutil, app.models\n"
+        "for m in pkgutil.iter_modules(app.models.__path__):\n"
+        "    importlib.import_module(f'app.models.{m.name}')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-W", "error:Field name:UserWarning", "-c", probe],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=Path(__file__).resolve().parents[1],
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_import_section_reads_copy_under_its_beets_key() -> None:
+    """``copy`` is beets' YAML key; the attribute is named differently only so
+    it does not shadow ``BaseModel.copy()``."""
+    assert ImportSection.model_validate({"copy": False}).copy_ is False
+    assert ImportSection().copy_ is True
 
 
 def test_import_section_defaults_match_what_musicdrop_forces() -> None:

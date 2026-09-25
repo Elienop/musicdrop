@@ -142,15 +142,14 @@ class ImportSection(BaseModel):
     and this row is dropped (``app/beets/config_check.py``). A value this refuses
     gets no advisory.
 
-    The ``copy`` field name is dictated by beets' YAML key (``import.copy``);
-    it shadows ``BaseModel.copy()`` but Pydantic v2 only emits a UserWarning
-    and the model still works. The type: ignore handles mypy's stricter
-    objection to redefining an inherited method's type."""
+    beets' key ``import.copy`` is read into ``copy_`` through Pydantic's alias,
+    because a field named ``copy`` shadows ``BaseModel.copy()`` and Pydantic
+    warns about it on every start."""
 
     model_config = ConfigDict(extra="ignore")
 
     @field_validator(
-        "copy",
+        "copy_",
         "move",
         "write",
         "autotag",
@@ -183,7 +182,7 @@ class ImportSection(BaseModel):
             raise ValueError("must be a bool: write yes or no, without quotes")
         return value
 
-    copy: bool = True  # type: ignore[assignment]  # beets YAML key; shadows BaseModel.copy()
+    copy_: bool = Field(default=True, alias="copy")
     move: bool = False
     write: bool = True
     autotag: bool = True
